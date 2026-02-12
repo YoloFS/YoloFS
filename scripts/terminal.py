@@ -8,6 +8,7 @@ import sys
 import termios
 import time
 import tty
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
@@ -19,7 +20,15 @@ ANSI_ESCAPE_RE = re.compile(
 CONTROL_RE = re.compile(r"[\x00-\x08\x0B-\x1F\x7F]")
 STDIN_FILENO = sys.stdin.fileno()
 STDOUT_FILENO = sys.stdout.fileno()
-INITIAL_INPUT_DELAY_SECONDS = 1.0
+
+
+@dataclass(frozen=True)
+class Agent:
+    name: str
+    command: list[str]
+    newline: str = "\n"
+    start_delay: float = 3.0
+    input_delay: float = 0.5
 
 
 def write_raw(text: str, raw_output_file: TextIO) -> None:
@@ -44,14 +53,14 @@ def write_screen(screen: pyte.Screen, screen_output_file: TextIO) -> None:
 
 
 def run(
-    command: list[str],
-    input_str: str,
+    agent: Agent,
+    input_lines: list[str],
     raw_output_path: Path,
     screen_output_path: Path,
 ) -> None:
     master_fd, slave_fd = pty.openpty()
     process = subprocess.Popen(
-        command,
+        agent.command,
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
@@ -85,7 +94,6 @@ def run(
         if data:
             os.write(master_fd, data)
 
-
     old_stdin_attrs = termios.tcgetattr(STDIN_FILENO)
     tty.setraw(STDIN_FILENO)
     try:
@@ -95,13 +103,8 @@ def run(
         ):
             handle_output(raw_output_file, screen_output_file)
 
-            time.sleep(3)
-            os.write(master_fd, input_str.encode("utf-8"))
-            time.sleep(0.5)
-            os.write(master_fd, b"\n")
-            time.sleep(0.5)
-            os.write(master_fd, b"\r")
-
+            if input_lines:
+                time.sleep(agent.start_delay)
 
             while process.poll() is None:
                 readable, _, _ = select.select([master_fd, STDIN_FILENO], [], [])
@@ -109,6 +112,11 @@ def run(
                     handle_output(raw_output_file, screen_output_file)
                 if STDIN_FILENO in readable:
                     handle_input()
+                if input_lines:
+                    os.write(master_fd, input_lines[0].encode("utf-8"))
+                    time.sleep(agent.input_delay)
+                    os.write(master_fd, agent.newline.encode("utf-8"))
+                    input_lines.pop(0)
     finally:
         termios.tcsetattr(STDIN_FILENO, termios.TCSADRAIN, old_stdin_attrs)
         process.kill()

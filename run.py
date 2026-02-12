@@ -5,21 +5,25 @@ import os
 from datetime import datetime
 
 from scripts.consts import LOG_DIR
-from scripts.terminal import run
+from scripts.terminal import Agent, run
 
+agents = [
+    Agent(name="claude", command=["claude"], newline="\r"),
+]
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", nargs="*", default=["claude"])
+    parser.add_argument("agent_name", type=str, default="claude", nargs="?")
     args = parser.parse_args()
 
     os.makedirs(LOG_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    agent = next(agent for agent in agents if agent.name == args.agent_name)
     run(
-        command=args.command,
-        input_str="/exit",
-        raw_output_path=LOG_DIR / f"{timestamp}-raw.txt",
-        screen_output_path=LOG_DIR / f"{timestamp}-screen.txt",
+        agent=agent,
+        input_lines=["hi", "/exit"],
+        raw_output_path=LOG_DIR / f"{timestamp}-{agent.name}-raw.txt",
+        screen_output_path=LOG_DIR / f"{timestamp}-{agent.name}-screen.txt",
     )
 
 
