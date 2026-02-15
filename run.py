@@ -36,7 +36,7 @@ def main(agent_name: str, data_root: Path, prompt_keys: list[str]) -> None:
         system(f"{PROJ_DIR}/prep_fs.sh {data_root}")
         Terminal(
             agent=agent,
-            input_lines=[PROMPTS[prompt_key]],
+            prompt=PROMPTS[prompt_key],
             log_dir=log_dir,
             cwd=cwd,
         ).run()

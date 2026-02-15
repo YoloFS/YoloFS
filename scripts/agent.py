@@ -28,6 +28,12 @@ class Agent:
     def ask_reply(self, screen: pyte.Screen) -> str | None:
         return None
 
+    def is_waiting_for_input(self, screen: pyte.Screen) -> bool:
+        return False
+
+    def is_busy(self, screen: pyte.Screen) -> bool:
+        return False
+
 
 @dataclass(frozen=True)
 class ClaudeAgent(Agent):
@@ -40,6 +46,14 @@ class ClaudeAgent(Agent):
 
     def ask_reply(self, screen: pyte.Screen) -> str | None:
         return "1"
+
+    def is_waiting_for_input(self, screen: pyte.Screen) -> bool:
+        lines = [line.strip() for line in screen.display]
+        has_prompt = any(line.startswith("❯") for line in lines)
+        return has_prompt and not self.is_busy(screen)
+
+    def is_busy(self, screen: pyte.Screen) -> bool:
+        return any("esc to interrupt" in line.lower() for line in screen.display)
 
     def project_dir_for_cwd(self, cwd: Path) -> Path:
         project_name = str(cwd.resolve()).replace("/", "-")

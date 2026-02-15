@@ -7,6 +7,7 @@ import sys
 import termios
 import time
 import tty
+from enum import Enum, auto
 from pathlib import Path
 from typing import TextIO
 
@@ -25,16 +26,29 @@ def write_screen(screen: pyte.Screen, output_file: TextIO) -> None:
     output_file.flush()
 
 
+class RunPhase(Enum):
+    # Waiting for terminal to become ready and send the scripted prompt.
+    INIT = auto()
+    # Prompt has been sent; waiting for the agent to start processing.
+    WAITING_FOR_WORK_START = auto()
+    # A permission prompt is currently on screen and being handled.
+    WAITING_FOR_PERMISSION = auto()
+    # Agent is processing; waiting until it returns to input-ready state.
+    WAITING_FOR_WORK_COMPLETE = auto()
+    # Run completed for this prompt.
+    FINISHED = auto()
+
+
 class Terminal:
     def __init__(
         self,
         agent: Agent,
-        input_lines: list[str],
+        prompt: str,
         log_dir: Path,
         cwd: Path,
     ) -> None:
         self.agent = agent
-        self.input_lines = input_lines
+        self.prompt = prompt
         self.log_dir = log_dir
         self.cwd = cwd
 
@@ -43,12 +57,16 @@ class Terminal:
         self.screen = pyte.Screen(80, 24)
         self.stream = pyte.Stream(self.screen, strict=False)
         self.is_screen_ready = False
-        self.was_ask = False
+        self.phase = RunPhase.INIT
+        self.has_sent_input = False
 
     def run(self) -> None:
         self._start_process()
-        old_stdin_attrs = termios.tcgetattr(STDIN_FILENO)
-        tty.setraw(STDIN_FILENO)
+        old_stdin_attrs = None
+        use_raw_stdin = os.isatty(STDIN_FILENO)
+        if use_raw_stdin:
+            old_stdin_attrs = termios.tcgetattr(STDIN_FILENO)
+            tty.setraw(STDIN_FILENO)
         try:
             with (
                 (self.log_dir / "raw.txt").open("w") as raw_output,
@@ -57,7 +75,8 @@ class Terminal:
             ):
                 self._run_loop(raw_output, screen_output, permission_output)
         finally:
-            termios.tcsetattr(STDIN_FILENO, termios.TCSADRAIN, old_stdin_attrs)
+            if old_stdin_attrs is not None:
+                termios.tcsetattr(STDIN_FILENO, termios.TCSADRAIN, old_stdin_attrs)
             self._cleanup()
 
     def _start_process(self) -> None:
@@ -83,12 +102,14 @@ class Terminal:
         assert self.master_fd is not None
         assert self.process is not None
         while self.process.poll() is None:
-            readable, _, _ = select.select([self.master_fd, STDIN_FILENO], [], [])
+            readable, _, _ = select.select([self.master_fd, STDIN_FILENO], [], [], 0.2)
             if self.master_fd in readable:
                 should_stop = self._handle_output(
                     raw_output, screen_output, permission_output
                 )
                 if should_stop:
+                    return
+                if self._is_done():
                     return
             if STDIN_FILENO in readable:
                 self._handle_input()
@@ -117,18 +138,40 @@ class Terminal:
             pass
 
         write_screen(self.screen, screen_output)
-        self._maybe_handle_permission(permission_output)
         self.is_screen_ready = self.agent.is_screen_ready(self.screen)
+        self._advance_phase(permission_output)
         return False
 
-    def _maybe_handle_permission(self, permission_output: TextIO) -> None:
+    def _advance_phase(self, permission_output: TextIO) -> None:
         is_ask = self.agent.is_ask(self.screen)
-        if is_ask and not self.was_ask:
-            write_screen(self.screen, permission_output)
-            ask_reply = self.agent.ask_reply(self.screen)
-            if ask_reply is not None:
-                self._send_line(ask_reply)
-        self.was_ask = is_ask
+        if is_ask:
+            if self.phase is not RunPhase.WAITING_FOR_PERMISSION:
+                self.phase = RunPhase.WAITING_FOR_PERMISSION
+                write_screen(self.screen, permission_output)
+                ask_reply = self.agent.ask_reply(self.screen)
+                if ask_reply is not None:
+                    self._send_line(ask_reply)
+            return
+
+        if self.phase is RunPhase.WAITING_FOR_PERMISSION:
+            self.phase = (
+                RunPhase.WAITING_FOR_WORK_START
+                if self.has_sent_input
+                else RunPhase.INIT
+            )
+
+        if self.phase is RunPhase.WAITING_FOR_WORK_START and self.agent.is_busy(
+            self.screen
+        ):
+            self.phase = RunPhase.WAITING_FOR_WORK_COMPLETE
+            return
+
+        if self.phase is RunPhase.WAITING_FOR_WORK_COMPLETE and self.agent.is_waiting_for_input(self.screen):
+            self.phase = (
+                RunPhase.FINISHED
+                if self.has_sent_input
+                else RunPhase.INIT
+            )
 
     def _handle_input(self) -> None:
         assert self.master_fd is not None
@@ -136,10 +179,16 @@ class Terminal:
             os.write(self.master_fd, data)
 
     def _maybe_send_prompt(self) -> None:
-        if not self.is_screen_ready or not self.input_lines:
+        if self.phase is not RunPhase.INIT:
             return
-        input_line = self.input_lines.pop(0)
-        self._send_line(input_line)
+        if not self.is_screen_ready or self.has_sent_input:
+            return
+        self.phase = RunPhase.WAITING_FOR_WORK_START
+        self._send_line(self.prompt)
+        self.has_sent_input = True
+
+    def _is_done(self) -> bool:
+        return self.phase is RunPhase.FINISHED
 
     def _send_line(self, text: str) -> None:
         assert self.master_fd is not None
