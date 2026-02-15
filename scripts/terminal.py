@@ -57,6 +57,7 @@ def run(
     input_lines: list[str],
     raw_output_path: Path,
     screen_output_path: Path,
+    cwd: Path,
 ) -> None:
     master_fd, slave_fd = pty.openpty()
     process = subprocess.Popen(
@@ -65,6 +66,7 @@ def run(
         stdout=slave_fd,
         stderr=slave_fd,
         close_fds=True,
+        cwd=cwd,
     )
     os.close(slave_fd)
 
