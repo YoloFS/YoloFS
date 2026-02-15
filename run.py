@@ -1,6 +1,7 @@
 #!/usr/bin/env -S uv run
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -46,7 +47,39 @@ class ClaudeAgent(Agent):
             print(f"No .jsonl file found in {project_dir}")
             return
         latest_jsonl = max(jsonl_files, key=lambda path: path.stat().st_mtime)
-        latest_jsonl.rename(log_dir / "conversation.jsonl")
+        conversation_path = log_dir / "conversation.jsonl"
+        latest_jsonl.rename(conversation_path)
+        self.extract_command_results(conversation_path, log_dir / "command.jsonl")
+
+    def extract_command_results(
+        self, conversation_path: Path, output_path: Path
+    ) -> None:
+        results: list[dict[str, object]] = []
+
+        with conversation_path.open("r", encoding="utf-8") as file:
+            for line in file:
+                line = line.strip()
+                if not line:
+                    continue
+                event = json.loads(line)
+
+                message = event.get("message")
+                if not isinstance(message, dict):
+                    continue
+
+                content = message.get("content")
+                if not isinstance(content, list):
+                    continue
+
+                for item in content:
+                    if item.get("type") not in {"tool_use", "tool_result"}:
+                        continue
+                    results.append(item)
+
+        with output_path.open("w", encoding="utf-8") as file:
+            for record in results:
+                file.write(json.dumps(record))
+                file.write("\n")
 
 
 AGENTS = [ClaudeAgent()]
