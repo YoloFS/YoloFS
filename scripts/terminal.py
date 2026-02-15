@@ -1,7 +1,6 @@
 import errno
 import os
 import pty
-import re
 import select
 import subprocess
 import sys
@@ -14,10 +13,6 @@ from typing import TextIO
 
 import pyte
 
-ANSI_ESCAPE_RE = re.compile(
-    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))"
-)
-CONTROL_RE = re.compile(r"[\x00-\x08\x0B-\x1F\x7F]")
 STDIN_FILENO = sys.stdin.fileno()
 STDOUT_FILENO = sys.stdout.fileno()
 
@@ -27,7 +22,6 @@ class Agent:
     name: str
     command: tuple[str, ...]
     newline: str = "\n"
-    start_delay: float = 3.0
     input_delay: float = 1.0
 
     def prepare_run(self, cwd: Path, log_dir: Path) -> None:
@@ -36,11 +30,12 @@ class Agent:
     def finalize_run(self, cwd: Path, log_dir: Path) -> None:
         pass
 
+    def is_screen_ready(self, screen: pyte.Screen) -> bool:
+        return any(line.strip() for line in screen.display)
+
+
 def write_screen(screen: pyte.Screen, screen_output_file: TextIO) -> None:
     for line in screen.display:
-        line = line.rstrip()
-        if not line:
-            continue
         screen_output_file.write(line)
         screen_output_file.write("\n")
     screen_output_file.flush()
@@ -63,32 +58,8 @@ def run(
     )
     os.close(slave_fd)
 
-    screen = pyte.Screen(*os.get_terminal_size())
+    screen = pyte.Screen(80, 24)
     stream = pyte.Stream(screen, strict=False)
-
-    def handle_output(raw_output_file: TextIO, screen_output_file: TextIO):
-        try:
-            data = os.read(master_fd, 4096)
-        except OSError as exc:
-            if exc.errno == errno.EIO:
-                return
-            raise
-        if not data:
-            return
-        os.write(STDOUT_FILENO, data)
-        os.write(raw_output_file.fileno(), data)
-        decoded = data.decode("utf-8", errors="replace")
-        try:
-            stream.feed(decoded)
-        except TypeError:
-            pass
-        
-        write_screen(screen, screen_output_file)
-
-    def handle_input():
-        data = os.read(STDIN_FILENO, 1024)
-        if data:
-            os.write(master_fd, data)
 
     old_stdin_attrs = termios.tcgetattr(STDIN_FILENO)
     tty.setraw(STDIN_FILENO)
@@ -97,18 +68,29 @@ def run(
             (log_dir / "raw.txt").open("w", encoding="utf-8") as raw_output_file,
             (log_dir / "screen.txt").open("w", encoding="utf-8") as screen_output_file,
         ):
-            handle_output(raw_output_file, screen_output_file)
-
-            if input_lines:
-                time.sleep(agent.start_delay)
-
+            is_screen_ready = False
             while process.poll() is None:
                 readable, _, _ = select.select([master_fd, STDIN_FILENO], [], [])
                 if master_fd in readable:
-                    handle_output(raw_output_file, screen_output_file)
+                    try:
+                        data = os.read(master_fd, 4096)
+                    except OSError as exc:
+                        if exc.errno == errno.EIO:
+                            return
+                        raise
+                    os.write(STDOUT_FILENO, data)
+                    os.write(raw_output_file.fileno(), data)
+                    decoded = data.decode("utf-8", errors="replace")
+                    try:
+                        stream.feed(decoded)
+                    except TypeError:
+                        pass
+                    write_screen(screen, screen_output_file)
+                    is_screen_ready = agent.is_screen_ready(screen)
                 if STDIN_FILENO in readable:
-                    handle_input()
-                if input_lines:
+                    if data := os.read(STDIN_FILENO, 1024):
+                        os.write(master_fd, data)
+                if is_screen_ready and input_lines:
                     os.write(master_fd, input_lines[0].encode("utf-8"))
                     time.sleep(agent.input_delay)
                     os.write(master_fd, agent.newline.encode("utf-8"))
