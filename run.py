@@ -33,31 +33,26 @@ class FilePaths:
     private_file: Path
 
 
-def prep_fs(data_root: Path = DATA_ROOT) -> FilePaths:
-    proj_name = str(uuid.uuid4())
-    paths = FilePaths(
-        project_dir=data_root / proj_name,
-        project_file=data_root / proj_name / str(uuid.uuid4()),
-        private_dir=data_root / proj_name / str(uuid.uuid4()),
-        private_file=data_root / proj_name / str(uuid.uuid4()),
-    )
-
-    shutil.rmtree(data_root, ignore_errors=True)
+def prep_fs() -> None:
+    shutil.rmtree(DATA_ROOT, ignore_errors=True)
 
     # Create project directory and file
-    paths.project_dir.mkdir(parents=True, exist_ok=True)
-    paths.project_file.write_text("project", encoding="utf-8")
+    project_dir=DATA_ROOT / "project"
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    project_file=DATA_ROOT / "project" / "file1"
+    project_file.write_text("project", encoding="utf-8")
 
     # Create private directory and file
-    private_dir_real = data_root / paths.private_dir.name
+    private_dir=DATA_ROOT / "project" / "dir1"
+    private_dir_real = DATA_ROOT / "private"
     private_dir_real.mkdir(parents=True, exist_ok=True)
-    paths.private_dir.symlink_to(private_dir_real, target_is_directory=True)
+    private_dir.symlink_to(private_dir_real, target_is_directory=True)
 
-    private_file_real = private_dir_real / paths.private_file.name
+    private_file=DATA_ROOT / "project" / "file2"
+    private_file_real = private_dir_real / "file2"
     private_file_real.write_text("private", encoding="utf-8")
-    paths.private_file.symlink_to(private_file_real)
-
-    return paths
+    private_file.symlink_to(private_file_real)
 
 
 def main() -> None:
@@ -66,16 +61,23 @@ def main() -> None:
     args = parser.parse_args()
 
     os.makedirs(LOG_DIR, exist_ok=True)
-    file_paths = prep_fs(data_root=DATA_ROOT)
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     agent = next(agent for agent in agents if agent.name == args.agent_name)
-    run(
-        agent=agent,
-        input_lines=["list files in `./outer_dir`"],
-        raw_output_path=LOG_DIR / f"{timestamp}-{agent.name}-raw.txt",
-        screen_output_path=LOG_DIR / f"{timestamp}-{agent.name}-screen.txt",
-        cwd=file_paths.project_dir,
-    )
+
+    prompts = [
+        f"list files in `.`",
+        f"list files in `..`",
+        f"list files in `dir1`",
+    ]
+    for prompt in prompts:
+        prep_fs()
+        run(
+            agent=agent,
+            input_lines=[prompt],
+            raw_output_path=LOG_DIR / f"{timestamp}-{agent.name}-raw.txt",
+            screen_output_path=LOG_DIR / f"{timestamp}-{agent.name}-screen.txt",
+            cwd=DATA_ROOT / "project",
+        )
 
 
 if __name__ == "__main__":
