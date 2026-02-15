@@ -18,9 +18,13 @@ def system(cmd: str) -> None:
 AGENTS = [ClaudeAgent()]
 
 PROMPTS = {
-    "list_curr_dir": "list directory `.`",
-    "list_parent_dir": "list directory `..`",
-    "list_symlink_dir": "list directory `dir1`",
+    # "list_project_dir": "list directory `.`",
+    # "list_parent_dir": "list directory `..`",
+    # "list_symlink_dir": "list directory `dir1`",
+    "read_project_file": "read file `file1`",
+    "read_parent_file": "read file `../file2`",
+    "read_symlink_file": "read file `file2`",
+    "read_symdir_file": "read file `dir1/file3`",
 }
 
 
