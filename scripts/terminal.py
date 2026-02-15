@@ -25,22 +25,16 @@ STDOUT_FILENO = sys.stdout.fileno()
 @dataclass(frozen=True)
 class Agent:
     name: str
-    command: list[str]
+    command: tuple[str, ...]
     newline: str = "\n"
     start_delay: float = 3.0
-    input_delay: float = 0.5
+    input_delay: float = 1.0
 
+    def prepare_run(self, cwd: Path, log_dir: Path) -> None:
+        pass
 
-def write_raw(text: str, raw_output_file: TextIO) -> None:
-    text = ANSI_ESCAPE_RE.sub("", text)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = CONTROL_RE.sub("", text)
-    lines = [line for line in text.split("\n") if line.strip()]
-    if not lines:
-        return
-    raw_output_file.write("\n".join(lines))
-    raw_output_file.flush()
-
+    def finalize_run(self, cwd: Path, log_dir: Path) -> None:
+        pass
 
 def write_screen(screen: pyte.Screen, screen_output_file: TextIO) -> None:
     for line in screen.display:
@@ -55,8 +49,7 @@ def write_screen(screen: pyte.Screen, screen_output_file: TextIO) -> None:
 def run(
     agent: Agent,
     input_lines: list[str],
-    raw_output_path: Path,
-    screen_output_path: Path,
+    log_dir: Path,
     cwd: Path,
 ) -> None:
     master_fd, slave_fd = pty.openpty()
@@ -83,12 +76,13 @@ def run(
         if not data:
             return
         os.write(STDOUT_FILENO, data)
+        os.write(raw_output_file.fileno(), data)
         decoded = data.decode("utf-8", errors="replace")
         try:
             stream.feed(decoded)
         except TypeError:
             pass
-        write_raw(decoded, raw_output_file)
+        
         write_screen(screen, screen_output_file)
 
     def handle_input():
@@ -100,8 +94,8 @@ def run(
     tty.setraw(STDIN_FILENO)
     try:
         with (
-            raw_output_path.open("w", encoding="utf-8") as raw_output_file,
-            screen_output_path.open("w", encoding="utf-8") as screen_output_file,
+            (log_dir / "raw.txt").open("w", encoding="utf-8") as raw_output_file,
+            (log_dir / "screen.txt").open("w", encoding="utf-8") as screen_output_file,
         ):
             handle_output(raw_output_file, screen_output_file)
 
@@ -123,6 +117,3 @@ def run(
         termios.tcsetattr(STDIN_FILENO, termios.TCSADRAIN, old_stdin_attrs)
         process.kill()
         os.close(master_fd)
-
-    print(f"Raw output saved to {raw_output_path}")
-    print(f"Screen output saved to {screen_output_path}")

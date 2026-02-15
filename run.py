@@ -3,65 +3,91 @@
 import argparse
 import os
 import shutil
-import uuid
+import subprocess
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
-from scripts.consts import DATA_ROOT, LOG_DIR
+from scripts.consts import LOG_DIR, PROJ_DIR
 from scripts.terminal import Agent, run
 
-agents = [
-    Agent(name="claude", command=["claude"], newline="\r"),
-]
+
+def system(cmd: str) -> None:
+    print(f"Running command: `{cmd}`")
+    subprocess.run(cmd, shell=True, check=True)
 
 
-def prep_fs() -> None:
-    shutil.rmtree(DATA_ROOT, ignore_errors=True)
+@dataclass(frozen=True)
+class ClaudeAgent(Agent):
+    name: str = "claude"
+    command: tuple[str, ...] = ("claude",)
+    newline: str = "\r"
 
-    # Create project directory and file
-    project_dir=DATA_ROOT / "project"
-    project_dir.mkdir(parents=True, exist_ok=True)
+    def project_dir_for_cwd(self, cwd: Path) -> Path:
+        project_name = str(cwd.resolve()).replace("/", "-")
+        return Path.home() / ".claude" / "projects" / project_name
 
-    project_file=DATA_ROOT / "project" / "file1"
-    project_file.write_text("project", encoding="utf-8")
+    def prepare_run(self, cwd: Path, log_dir: Path) -> None:
+        project_dir = self.project_dir_for_cwd(cwd)
+        project_dir.mkdir(parents=True, exist_ok=True)
+        for entry in project_dir.iterdir():
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
 
-    # Create private directory and file
-    private_dir=DATA_ROOT / "project" / "dir1"
-    private_dir_real = DATA_ROOT / "private"
-    private_dir_real.mkdir(parents=True, exist_ok=True)
-    private_dir.symlink_to(private_dir_real, target_is_directory=True)
+    def finalize_run(self, cwd: Path, log_dir: Path) -> None:
+        project_dir = self.project_dir_for_cwd(cwd)
+        jsonl_files = [
+            path
+            for path in project_dir.iterdir()
+            if path.is_file() and path.suffix == ".jsonl"
+        ]
+        if not jsonl_files:
+            print(f"No .jsonl file found in {project_dir}")
+            return
+        latest_jsonl = max(jsonl_files, key=lambda path: path.stat().st_mtime)
+        latest_jsonl.rename(log_dir / "conversation.jsonl")
 
-    private_file=DATA_ROOT / "project" / "file2"
-    private_file_real = private_dir_real / "file2"
-    private_file_real.write_text("private", encoding="utf-8")
-    private_file.symlink_to(private_file_real)
+
+AGENTS = [ClaudeAgent()]
+
+PROMPTS = {
+    "list_curr_dir": "list directory `.`",
+    "list_parent_dir": "list directory `..`",
+    "list_symlink_dir": "list directory `dir1`",
+}
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("agent_name", type=str, default="claude", nargs="?")
-    args = parser.parse_args()
-
+def main(agent_name: str, data_root: Path, prompt_keys: list[str]) -> None:
     os.makedirs(LOG_DIR, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    agent = next(agent for agent in agents if agent.name == args.agent_name)
+    agent = next(agent for agent in AGENTS if agent.name == agent_name)
 
-    prompts = [
-        f"list files in `.`",
-        f"list files in `..`",
-        f"list files in `dir1`",
-    ]
-    for prompt in prompts:
-        prep_fs()
+    for prompt_key in prompt_keys:
+        log_dir = LOG_DIR / f"{agent_name}" / prompt_key
+        log_dir.mkdir(parents=True, exist_ok=True)
+        cwd = data_root / "project"
+        agent.prepare_run(cwd=cwd, log_dir=log_dir)
+        system(f"{PROJ_DIR}/prep_fs.sh {data_root}")
         run(
             agent=agent,
-            input_lines=[prompt],
-            raw_output_path=LOG_DIR / f"{timestamp}-{agent.name}-raw.txt",
-            screen_output_path=LOG_DIR / f"{timestamp}-{agent.name}-screen.txt",
-            cwd=DATA_ROOT / "project",
+            input_lines=[PROMPTS[prompt_key]],
+            log_dir=log_dir,
+            cwd=cwd,
         )
+        agent.finalize_run(cwd=cwd, log_dir=log_dir)
+        print(f"Log saved to {log_dir}")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("agent_name", type=str, default="claude", nargs="?")
+    parser.add_argument("--data-root", type=Path, default=Path("/tmp/agentctl"))
+    parser.add_argument(
+        "--prompts",
+        type=str,
+        nargs="+",
+        default=list(PROMPTS.keys()),
+        choices=list(PROMPTS.keys()),
+    )
+    args = parser.parse_args()
+    main(args.agent_name, args.data_root, args.prompts)
