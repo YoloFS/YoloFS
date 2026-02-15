@@ -8,6 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import pyte
 from scripts.consts import LOG_DIR, PROJ_DIR
 from scripts.terminal import Agent, run
 
@@ -22,6 +23,12 @@ class ClaudeAgent(Agent):
     name: str = "claude"
     command: tuple[str, ...] = ("claude",)
     newline: str = "\r"
+
+    def is_ask(self, screen: pyte.Screen) -> bool:
+        return any("1. Yes" in line for line in screen.display)
+
+    def ask_reply(self, screen: pyte.Screen) -> str | None:
+        return "1"
 
     def project_dir_for_cwd(self, cwd: Path) -> Path:
         project_name = str(cwd.resolve()).replace("/", "-")

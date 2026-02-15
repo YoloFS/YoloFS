@@ -33,6 +33,12 @@ class Agent:
     def is_screen_ready(self, screen: pyte.Screen) -> bool:
         return any(line.strip() for line in screen.display)
 
+    def is_ask(self, screen: pyte.Screen) -> bool:
+        return False
+
+    def ask_reply(self, screen: pyte.Screen) -> str | None:
+        return None
+
 
 def write_screen(screen: pyte.Screen, screen_output_file: TextIO) -> None:
     for line in screen.display:
@@ -67,8 +73,12 @@ def run(
         with (
             (log_dir / "raw.txt").open("w", encoding="utf-8") as raw_output_file,
             (log_dir / "screen.txt").open("w", encoding="utf-8") as screen_output_file,
+            (log_dir / "permission.txt").open(
+                "w", encoding="utf-8"
+            ) as permission_output_file,
         ):
             is_screen_ready = False
+            was_ask = False
             while process.poll() is None:
                 readable, _, _ = select.select([master_fd, STDIN_FILENO], [], [])
                 if master_fd in readable:
@@ -86,6 +96,14 @@ def run(
                     except TypeError:
                         pass
                     write_screen(screen, screen_output_file)
+                    is_ask = agent.is_ask(screen)
+                    if is_ask and not was_ask:
+                        write_screen(screen, permission_output_file)
+                        ask_reply = agent.ask_reply(screen)
+                        if ask_reply is not None:
+                            os.write(master_fd, ask_reply.encode("utf-8"))
+                            time.sleep(agent.input_delay)
+                    was_ask = is_ask
                     is_screen_ready = agent.is_screen_ready(screen)
                 if STDIN_FILENO in readable:
                     if data := os.read(STDIN_FILENO, 1024):
