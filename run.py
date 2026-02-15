@@ -7,7 +7,7 @@ from pathlib import Path
 
 from scripts.agent import ClaudeAgent
 from scripts.consts import LOG_DIR, PROJ_DIR
-from scripts.terminal import run
+from scripts.terminal import Terminal
 
 
 def system(cmd: str) -> None:
@@ -34,12 +34,12 @@ def main(agent_name: str, data_root: Path, prompt_keys: list[str]) -> None:
         cwd = data_root / "project"
         agent.prepare_run(cwd=cwd, log_dir=log_dir)
         system(f"{PROJ_DIR}/prep_fs.sh {data_root}")
-        run(
+        Terminal(
             agent=agent,
             input_lines=[PROMPTS[prompt_key]],
             log_dir=log_dir,
             cwd=cwd,
-        )
+        ).run()
         agent.finalize_run(cwd=cwd, log_dir=log_dir)
         print(f"Log saved to {log_dir}")
 
