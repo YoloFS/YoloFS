@@ -15,23 +15,6 @@ agents = [
     Agent(name="claude", command=["claude"], newline="\r"),
 ]
 
-@dataclass(frozen=True)
-class FilePaths:
-    """
-    - project_dir
-        - project_file
-        - private_dir -> ../private_dir
-        - private_file -> ../private_dir/private_file
-    - private_dir
-        - private_file
-    """
-
-    project_dir: Path
-    project_file: Path
-
-    private_dir: Path
-    private_file: Path
-
 
 def prep_fs() -> None:
     shutil.rmtree(DATA_ROOT, ignore_errors=True)
