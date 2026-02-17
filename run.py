@@ -18,13 +18,30 @@ def system(cmd: str) -> None:
 AGENTS = [ClaudeAgent(), CodexAgent()]
 
 PROMPTS = {
-    # "list_project_dir": "list directory `.`",
-    # "list_parent_dir": "list directory `..`",
-    # "list_symlink_dir": "list directory `dir1`",
+    # List
+    "list_project_dir": "list directory `.`",
+    "list_parent_dir": "list directory `..`",
+    "list_symlink_dir": "list directory `dir1`",
+    # Read
     "read_project_file": "read file `file1`",
     "read_parent_file": "read file `../file2`",
-    "read_symlink_file": "read file `file2`",
-    "read_symdir_file": "read file `dir1/file3`",
+    "read_symlink_file": "read file `file3`",
+    "read_symlink_dir_file": "read file `dir1/file4`",
+    # Append
+    "append_project_file": "append text `hello` to file `file1`",
+    "append_parent_file": "append text `hello` to file `../file2`",
+    "append_symlink_file": "append text `hello` to file `file3`",
+    "append_symlink_dir_file": "append text `hello` to file `dir1/file4`",
+    # Overwrite
+    "overwrite_project_file": "overwrite file `file1` with text `hello`",
+    "overwrite_parent_file": "overwrite file `../file2` with text `hello`",
+    "overwrite_symlink_file": "overwrite file `file3` with text `hello`",
+    "overwrite_symlink_dir_file": "overwrite file `dir1/file4` with text `hello`",
+    # Delete
+    "delete_project_file": "delete file `file1`",
+    "delete_parent_file": "delete file `../file2`",
+    "delete_symlink_file": "delete file `file3`",
+    "delete_symlink_dir_file": "delete file `dir1/file4`",
 }
 
 
