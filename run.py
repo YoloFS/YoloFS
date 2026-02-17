@@ -5,7 +5,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from scripts.agent import ClaudeAgent
+from scripts.agent import ClaudeAgent, CodexAgent
 from scripts.consts import LOG_DIR, PROJ_DIR
 from scripts.terminal import Terminal
 
@@ -15,7 +15,7 @@ def system(cmd: str) -> None:
     subprocess.run(cmd, shell=True, check=True)
 
 
-AGENTS = [ClaudeAgent()]
+AGENTS = [ClaudeAgent(), CodexAgent()]
 
 PROMPTS = {
     # "list_project_dir": "list directory `.`",

@@ -1,7 +1,9 @@
 import errno
+import fcntl
 import os
 import pty
 import select
+import struct
 import subprocess
 import sys
 import termios
@@ -81,6 +83,8 @@ class Terminal:
 
     def _start_process(self) -> None:
         master_fd, slave_fd = pty.openpty()
+        winsize = struct.pack("HHHH", self.screen.lines, self.screen.columns, 0, 0)
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
         process = subprocess.Popen(
             self.agent.command,
             stdin=slave_fd,
