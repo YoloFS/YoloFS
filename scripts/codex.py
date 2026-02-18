@@ -22,7 +22,7 @@ class CodexAgent(Agent):
             stripped = line.strip()
             if stripped and all(c == "─" for c in stripped):
                 return True
-        return False
+        return any(line.lstrip().startswith("›") for line in screen.display)
 
     def is_busy(self, screen: pyte.Screen) -> bool:
         return any("esc to interrupt" in line.lower() for line in screen.display)
