@@ -1,6 +1,7 @@
 import difflib
 import errno
 import fcntl
+import json
 import os
 import pty
 import select
@@ -15,7 +16,7 @@ from typing import TextIO
 
 import pyte
 
-from scripts.agent import Agent
+from scripts.agent import Agent, ToolCall
 
 STDOUT_FILENO = sys.stdout.fileno()
 TERMINAL_COLUMNS = 100
@@ -35,7 +36,7 @@ class RunPhase(Enum):
     FINISHED = auto()
 
 
-class Terminal:
+class Runner:
     def __init__(
         self,
         agent: Agent,
@@ -66,7 +67,7 @@ class Terminal:
         self.screen = pyte.Screen(TERMINAL_COLUMNS, TERMINAL_LINES)
         self.stream = pyte.Stream(self.screen, strict=False)
         self.previous_screen_lines: list[str] = []
-        self.screen_diff_index = 0
+        self.screen_index = 0
         self.ask_index = 0
 
         # Run state machine.
@@ -79,6 +80,21 @@ class Terminal:
             self._run_loop()
         finally:
             self._cleanup()
+
+        session_path = self.agent.save_session(self.cwd, self.log_dir)
+        tool_calls = self.agent.extract_tool_calls(session_path) if session_path else []
+        self._write_result(tool_calls)
+
+    def _write_result(self, tool_calls: list[ToolCall]) -> None:
+        result = {
+            "agent": self.agent.name,
+            "prompt": self.prompt,
+            "cwd": str(self.cwd),
+            "asks": self.ask_index,
+            "tool_calls": [tc.to_dict() for tc in tool_calls],
+        }
+        with (self.log_dir / "result.json").open("w") as f:
+            json.dump(result, f, indent=2)
 
     def _start_process(self) -> None:
         master_fd, slave_fd = pty.openpty()
@@ -151,13 +167,13 @@ class Terminal:
             line for line in self.previous_screen_lines if line.strip()
         ]
         current_non_empty = [line for line in current_lines if line.strip()]
-        next_diff_index = self.screen_diff_index + 1
+        next_index = self.screen_index + 1
         diff_lines = list(
             difflib.unified_diff(
                 previous_non_empty,
                 current_non_empty,
-                fromfile=f"screen-{self.screen_diff_index}",
-                tofile=f"screen-{next_diff_index}",
+                fromfile=f"screen-{self.screen_index}",
+                tofile=f"screen-{next_index}",
                 n=0,
                 lineterm="",
             )
@@ -168,8 +184,8 @@ class Terminal:
             output_file.flush()
             for line in diff_lines[3:]:
                 print(line.rstrip())
-            self.screen_diff_index = next_diff_index
-            self.write_screen_snapshot(self.screen_diff_index)
+            self.screen_index = next_index
+            self.write_screen_snapshot(self.screen_index)
         self.previous_screen_lines = current_lines
 
     def write_screen(self, output_file: TextIO) -> None:

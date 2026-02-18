@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pyte
 
-from scripts.agent import Agent
+from scripts.agent import Agent, ToolCall
 
 
 @dataclass(frozen=True)
@@ -49,37 +49,51 @@ class CodexAgent(Agent):
             shutil.rmtree(sessions)
         sessions.mkdir(parents=True, exist_ok=True)
 
-    def finalize_run(self, cwd: Path, log_dir: Path) -> None:
+    def save_session(self, cwd: Path, log_dir: Path) -> Path | None:
         sessions = self.sessions_dir()
         rollout_files = list(sessions.rglob("rollout-*.jsonl"))
         if not rollout_files:
             print(f"No rollout-*.jsonl file found in {sessions}")
-            return
+            return None
         latest = max(rollout_files, key=lambda p: p.stat().st_mtime)
-        conversation_path = log_dir / "conversation.jsonl"
-        latest.rename(conversation_path)
-        self.extract_command_results(conversation_path, log_dir / "command.jsonl")
+        session_path = log_dir / "session.jsonl"
+        shutil.copy2(latest, session_path)
+        return session_path
 
-    def extract_command_results(
-        self, conversation_path: Path, output_path: Path
-    ) -> None:
-        results: list[dict[str, object]] = []
+    def extract_tool_calls(self, session_path: Path) -> list[ToolCall]:
+        pending: dict[str, ToolCall] = {}
+        results: list[ToolCall] = []
 
-        with conversation_path.open("r", encoding="utf-8") as file:
+        with session_path.open("r", encoding="utf-8") as file:
             for line in file:
                 line = line.strip()
                 if not line:
                     continue
                 event = json.loads(line)
 
-                # Codex JSONL: response_item events with payload
                 payload = event.get("payload")
-                if isinstance(payload, dict):
-                    payload_type = payload.get("type", "")
-                    if payload_type in ("function_call", "function_call_output"):
-                        results.append(payload)
+                if not isinstance(payload, dict):
+                    continue
 
-        with output_path.open("w", encoding="utf-8") as file:
-            for record in results:
-                file.write(json.dumps(record))
-                file.write("\n")
+                payload_type = payload.get("type", "")
+                if payload_type == "function_call":
+                    try:
+                        args = json.loads(payload.get("arguments", "{}"))
+                    except json.JSONDecodeError:
+                        args = {}
+                    func_name = payload["name"]
+                    call = ToolCall(
+                        id=payload["call_id"],
+                        name=func_name,
+                        type="command" if func_name == "exec_command" else "built-in",
+                        input=args,
+                        cwd=args.get("workdir"),
+                    )
+                    pending[payload["call_id"]] = call
+                    results.append(call)
+                elif payload_type == "function_call_output":
+                    call_id = payload.get("call_id")
+                    if call_id and call_id in pending:
+                        pending[call_id].output = payload.get("output")
+
+        return results
