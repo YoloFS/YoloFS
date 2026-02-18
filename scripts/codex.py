@@ -43,20 +43,20 @@ class CodexAgent(Agent):
     def ask_reply(self, screen: pyte.Screen) -> str | None:
         return "y"
 
-    def prepare_run(self, cwd: Path, log_dir: Path) -> None:
+    def prepare_run(self, cwd: Path, result_dir: Path) -> None:
         sessions = self.sessions_dir()
         if sessions.exists():
             shutil.rmtree(sessions)
         sessions.mkdir(parents=True, exist_ok=True)
 
-    def save_session(self, cwd: Path, log_dir: Path) -> Path | None:
+    def save_session(self, cwd: Path, result_dir: Path) -> Path | None:
         sessions = self.sessions_dir()
         rollout_files = list(sessions.rglob("rollout-*.jsonl"))
         if not rollout_files:
             print(f"No rollout-*.jsonl file found in {sessions}")
             return None
         latest = max(rollout_files, key=lambda p: p.stat().st_mtime)
-        session_path = log_dir / "session.jsonl"
+        session_path = result_dir / "session.jsonl"
         shutil.copy2(latest, session_path)
         return session_path
 

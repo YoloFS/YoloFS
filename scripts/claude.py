@@ -42,7 +42,7 @@ class ClaudeAgent(Agent):
         project_name = str(cwd.resolve()).replace("/", "-")
         return Path.home() / ".claude" / "projects" / project_name
 
-    def prepare_run(self, cwd: Path, log_dir: Path) -> None:
+    def prepare_run(self, cwd: Path, result_dir: Path) -> None:
         project_dir = self.project_dir_for_cwd(cwd)
         project_dir.mkdir(parents=True, exist_ok=True)
         for entry in project_dir.iterdir():
@@ -51,7 +51,7 @@ class ClaudeAgent(Agent):
             else:
                 entry.unlink()
 
-    def save_session(self, cwd: Path, log_dir: Path) -> Path | None:
+    def save_session(self, cwd: Path, result_dir: Path) -> Path | None:
         project_dir = self.project_dir_for_cwd(cwd)
         jsonl_files = [
             path
@@ -62,7 +62,7 @@ class ClaudeAgent(Agent):
             print(f"No .jsonl file found in {project_dir}")
             return None
         latest_jsonl = max(jsonl_files, key=lambda path: path.stat().st_mtime)
-        session_path = log_dir / "session.jsonl"
+        session_path = result_dir / "session.jsonl"
         shutil.copy2(latest_jsonl, session_path)
         return session_path
 

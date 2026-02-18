@@ -35,10 +35,10 @@ class Agent:
     input_delay: float = 1.0
     select_timeout: float = 1.0
 
-    def prepare_run(self, cwd: Path, log_dir: Path) -> None:
+    def prepare_run(self, cwd: Path, result_dir: Path) -> None:
         pass
 
-    def save_session(self, cwd: Path, log_dir: Path) -> Path | None:
+    def save_session(self, cwd: Path, result_dir: Path) -> Path | None:
         return None
 
     def extract_tool_calls(self, session_path: Path) -> list["ToolCall"]:

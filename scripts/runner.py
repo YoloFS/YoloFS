@@ -5,6 +5,7 @@ import json
 import os
 import pty
 import select
+import shutil
 import struct
 import subprocess
 import sys
@@ -18,6 +19,7 @@ import pyte
 
 from scripts.agent import Agent, ToolCall
 from scripts.consts import TERM_BLUE, TERM_GREEN, TERM_RED, TERM_RESET
+from scripts.prompts import ALL_PROMPTS
 
 STDOUT_FILENO = sys.stdout.fileno()
 TERMINAL_COLUMNS = 100
@@ -41,24 +43,22 @@ class Runner:
     def __init__(
         self,
         agent: Agent,
-        prompt: str,
-        log_dir: Path,
+        prompt_key: str,
+        result_dir: Path,
         cwd: Path,
     ) -> None:
         # Run configuration.
         self.agent = agent
-        self.prompt = prompt
-        self.log_dir = log_dir
+        self.prompt_key = prompt_key
+        self.prompt = ALL_PROMPTS[prompt_key]
+        self.result_dir = result_dir
         self.cwd = cwd
 
         # Log paths and directories.
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.screens_dir = self.log_dir / "screens"
-        self.ask_dir = self.log_dir / "ask"
-        self.screens_dir.mkdir(parents=True, exist_ok=True)
-        self.ask_dir.mkdir(parents=True, exist_ok=True)
-        self.raw_output: TextIO = (self.log_dir / "screen.raw").open("w")
-        self.screen_output: TextIO = (self.log_dir / "screen.diff").open("w")
+        self.screens_dir = self.result_dir / "screens"
+        self.ask_dir = self.result_dir / "ask"
+        self.raw_output: TextIO | None = None
+        self.screen_output: TextIO | None = None
 
         # Child process/PTY handles.
         self.master_fd: int | None = None
@@ -76,19 +76,28 @@ class Runner:
         self.is_in_ask = False
 
     def run(self) -> None:
-        print(
-            f"{TERM_BLUE}Running prompt: {self.prompt} on {self.agent.name}{TERM_RESET}"
-        )
+        self._prepare_run()
+        print(f"{TERM_BLUE}{self.agent.name}: {self.prompt_key}{TERM_RESET}")
+        print(f"{TERM_BLUE}Result: {self.result_dir}{TERM_RESET}")
         self._start_process()
         try:
             self._run_loop()
         finally:
             self._cleanup()
 
-        session_path = self.agent.save_session(self.cwd, self.log_dir)
+        session_path = self.agent.save_session(self.cwd, self.result_dir)
         tool_calls = self.agent.extract_tool_calls(session_path) if session_path else []
         self._write_result(tool_calls)
-        print(f"{TERM_BLUE}Result saved to {self.log_dir}{TERM_RESET}")
+        print(f"{TERM_BLUE}Result saved to {self.result_dir}{TERM_RESET}")
+
+    def _prepare_run(self) -> None:
+        shutil.rmtree(self.result_dir, ignore_errors=True)
+        self.agent.prepare_run(cwd=self.cwd, result_dir=self.result_dir)
+        self.result_dir.mkdir(parents=True, exist_ok=True)
+        self.screens_dir.mkdir(parents=True, exist_ok=True)
+        self.ask_dir.mkdir(parents=True, exist_ok=True)
+        self.raw_output = (self.result_dir / "screen.raw").open("w")
+        self.screen_output = (self.result_dir / "screen.diff").open("w")
 
     def _write_result(self, tool_calls: list[ToolCall]) -> None:
         result = {
@@ -98,7 +107,7 @@ class Runner:
             "asks": self.ask_index,
             "tool_calls": [tc.to_dict() for tc in tool_calls],
         }
-        with (self.log_dir / "result.json").open("w") as f:
+        with (self.result_dir / "result.json").open("w") as f:
             json.dump(result, f, indent=2)
 
     def _start_process(self) -> None:
@@ -140,6 +149,8 @@ class Runner:
 
     def _handle_output(self) -> bool:
         assert self.master_fd is not None
+        assert self.raw_output is not None
+        assert self.screen_output is not None
         try:
             data = os.read(self.master_fd, 4096)
         except OSError as exc:
@@ -251,8 +262,10 @@ class Runner:
         os.write(self.master_fd, self.agent.newline.encode("utf-8"))
 
     def _cleanup(self) -> None:
-        self.raw_output.close()
-        self.screen_output.close()
+        if self.raw_output is not None:
+            self.raw_output.close()
+        if self.screen_output is not None:
+            self.screen_output.close()
         if self.process is not None and self.process.poll() is None:
             self.process.kill()
         if self.master_fd is not None:
