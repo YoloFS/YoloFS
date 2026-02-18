@@ -50,32 +50,34 @@ class Terminal:
         self.log_dir = log_dir
         self.cwd = cwd
 
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.screens_dir = self.log_dir / "screens"
+        self.ask_dir = self.log_dir / "ask"
+        self.screens_dir.mkdir(parents=True, exist_ok=True)
+        self.ask_dir.mkdir(parents=True, exist_ok=True)
+
         self.master_fd: int | None = None
         self.process: subprocess.Popen[bytes] | None = None
+        self.raw_output: TextIO = (self.log_dir / "raw.txt").open("w")
+        self.screen_output: TextIO = (self.log_dir / "screen.diff").open("w")
         self.screen = pyte.Screen(TERMINAL_COLUMNS, TERMINAL_LINES)
         self.stream = pyte.Stream(self.screen, strict=False)
         self.previous_screen_lines: list[str] = []
         self.screen_diff_index = 0
-        self.screens_dir = self.log_dir / "screens"
+        self.ask_index = 0
         self.is_screen_ready = False
         self.phase = RunPhase.INIT
         self.has_sent_input = False
 
     def run(self) -> None:
         self._start_process()
-        self.screens_dir.mkdir(parents=True, exist_ok=True)
         old_stdin_attrs = None
         use_raw_stdin = os.isatty(STDIN_FILENO)
         if use_raw_stdin:
             old_stdin_attrs = termios.tcgetattr(STDIN_FILENO)
             tty.setraw(STDIN_FILENO)
         try:
-            with (
-                (self.log_dir / "raw.txt").open("w") as raw_output,
-                (self.log_dir / "screen.diff").open("w") as screen_output,
-                (self.log_dir / "permission.txt").open("w") as permission_output,
-            ):
-                self._run_loop(raw_output, screen_output, permission_output)
+            self._run_loop()
         finally:
             if old_stdin_attrs is not None:
                 termios.tcsetattr(STDIN_FILENO, termios.TCSADRAIN, old_stdin_attrs)
@@ -98,20 +100,13 @@ class Terminal:
         self.master_fd = master_fd
         self.process = process
 
-    def _run_loop(
-        self,
-        raw_output: TextIO,
-        screen_output: TextIO,
-        permission_output: TextIO,
-    ) -> None:
+    def _run_loop(self) -> None:
         assert self.master_fd is not None
         assert self.process is not None
         while self.process.poll() is None:
             readable, _, _ = select.select([self.master_fd, STDIN_FILENO], [], [], 0.2)
             if self.master_fd in readable:
-                should_stop = self._handle_output(
-                    raw_output, screen_output, permission_output
-                )
+                should_stop = self._handle_output()
                 if should_stop:
                     return
                 if self._is_done():
@@ -120,12 +115,7 @@ class Terminal:
                 self._handle_input()
             self._maybe_send_prompt()
 
-    def _handle_output(
-        self,
-        raw_output: TextIO,
-        screen_output: TextIO,
-        permission_output: TextIO,
-    ) -> bool:
+    def _handle_output(self) -> bool:
         assert self.master_fd is not None
         try:
             data = os.read(self.master_fd, 4096)
@@ -135,16 +125,16 @@ class Terminal:
             raise
 
         os.write(STDOUT_FILENO, data)
-        os.write(raw_output.fileno(), data)
+        os.write(self.raw_output.fileno(), data)
         decoded = data.decode("utf-8", errors="replace")
         try:
             self.stream.feed(decoded)
         except TypeError:
             pass
 
-        self.write_screen_diff(screen_output)
+        self.write_screen_diff(self.screen_output)
         self.is_screen_ready = self.agent.is_screen_ready(self.screen)
-        self._advance_phase(permission_output)
+        self._advance_phase()
         return False
 
     def write_screen_snapshot(self, index: int) -> None:
@@ -186,12 +176,18 @@ class Terminal:
             output_file.write("\n")
         output_file.flush()
 
-    def _advance_phase(self, permission_output: TextIO) -> None:
+    def write_ask_snapshot(self) -> None:
+        ask_path = self.ask_dir / f"{self.ask_index}.txt"
+        with ask_path.open("w") as output_file:
+            self.write_screen(output_file)
+        self.ask_index += 1
+
+    def _advance_phase(self) -> None:
         is_ask = self.agent.is_ask(self.screen)
         if is_ask:
             if self.phase is not RunPhase.WAITING_FOR_PERMISSION:
                 self.phase = RunPhase.WAITING_FOR_PERMISSION
-                self.write_screen(permission_output)
+                self.write_ask_snapshot()
                 ask_reply = self.agent.ask_reply(self.screen)
                 if ask_reply is not None:
                     self._send_line(ask_reply)
@@ -241,6 +237,8 @@ class Terminal:
         os.write(self.master_fd, self.agent.newline.encode("utf-8"))
 
     def _cleanup(self) -> None:
+        self.raw_output.close()
+        self.screen_output.close()
         if self.process is not None and self.process.poll() is None:
             self.process.kill()
         if self.master_fd is not None:
