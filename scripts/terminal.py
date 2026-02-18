@@ -29,8 +29,6 @@ class RunPhase(Enum):
     INIT = auto()
     # Prompt has been sent; waiting for the agent to start processing.
     WAITING_FOR_WORK_START = auto()
-    # A permission prompt is currently on screen and being handled.
-    WAITING_FOR_PERMISSION = auto()
     # Agent is processing; waiting until it returns to input-ready state.
     WAITING_FOR_WORK_COMPLETE = auto()
     # Run completed for this prompt.
@@ -45,29 +43,35 @@ class Terminal:
         log_dir: Path,
         cwd: Path,
     ) -> None:
+        # Run configuration.
         self.agent = agent
         self.prompt = prompt
         self.log_dir = log_dir
         self.cwd = cwd
 
+        # Log paths and directories.
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.screens_dir = self.log_dir / "screens"
         self.ask_dir = self.log_dir / "ask"
         self.screens_dir.mkdir(parents=True, exist_ok=True)
         self.ask_dir.mkdir(parents=True, exist_ok=True)
-
-        self.master_fd: int | None = None
-        self.process: subprocess.Popen[bytes] | None = None
         self.raw_output: TextIO = (self.log_dir / "raw.txt").open("w")
         self.screen_output: TextIO = (self.log_dir / "screen.diff").open("w")
+
+        # Child process/PTY handles.
+        self.master_fd: int | None = None
+        self.process: subprocess.Popen[bytes] | None = None
+
+        # Virtual screen state.
         self.screen = pyte.Screen(TERMINAL_COLUMNS, TERMINAL_LINES)
         self.stream = pyte.Stream(self.screen, strict=False)
         self.previous_screen_lines: list[str] = []
         self.screen_diff_index = 0
         self.ask_index = 0
-        self.is_screen_ready = False
+
+        # Run state machine.
         self.phase = RunPhase.INIT
-        self.has_sent_input = False
+        self.is_in_ask = False
 
     def run(self) -> None:
         self._start_process()
@@ -133,7 +137,6 @@ class Terminal:
             pass
 
         self.write_screen_diff(self.screen_output)
-        self.is_screen_ready = self.agent.is_screen_ready(self.screen)
         self._advance_phase()
         return False
 
@@ -185,20 +188,15 @@ class Terminal:
     def _advance_phase(self) -> None:
         is_ask = self.agent.is_ask(self.screen)
         if is_ask:
-            if self.phase is not RunPhase.WAITING_FOR_PERMISSION:
-                self.phase = RunPhase.WAITING_FOR_PERMISSION
+            if not self.is_in_ask:
+                self.is_in_ask = True
                 self.write_ask_snapshot()
                 ask_reply = self.agent.ask_reply(self.screen)
                 if ask_reply is not None:
                     self._send_line(ask_reply)
             return
 
-        if self.phase is RunPhase.WAITING_FOR_PERMISSION:
-            self.phase = (
-                RunPhase.WAITING_FOR_WORK_START
-                if self.has_sent_input
-                else RunPhase.INIT
-            )
+        self.is_in_ask = False
 
         is_busy = self.agent.is_busy(self.screen)
         if self.phase is RunPhase.WAITING_FOR_WORK_START and is_busy:
@@ -207,11 +205,7 @@ class Terminal:
 
         is_waiting_for_input = self.agent.is_waiting_for_input(self.screen)
         if self.phase is RunPhase.WAITING_FOR_WORK_COMPLETE and is_waiting_for_input:
-            self.phase = (
-                RunPhase.FINISHED
-                if self.has_sent_input
-                else RunPhase.INIT
-            )
+            self.phase = RunPhase.FINISHED
 
     def _handle_input(self) -> None:
         assert self.master_fd is not None
@@ -221,11 +215,10 @@ class Terminal:
     def _maybe_send_prompt(self) -> None:
         if self.phase is not RunPhase.INIT:
             return
-        if not self.is_screen_ready or self.has_sent_input:
+        if not self.agent.is_screen_ready(self.screen):
             return
         self.phase = RunPhase.WAITING_FOR_WORK_START
         self._send_line(self.prompt)
-        self.has_sent_input = True
 
     def _is_done(self) -> bool:
         return self.phase is RunPhase.FINISHED
