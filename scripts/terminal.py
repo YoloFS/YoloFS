@@ -18,8 +18,8 @@ import pyte
 from scripts.agent import Agent
 
 STDOUT_FILENO = sys.stdout.fileno()
-TERMINAL_COLUMNS = 132
-TERMINAL_LINES = 43
+TERMINAL_COLUMNS = 100
+TERMINAL_LINES = 500
 
 
 class RunPhase(Enum):
@@ -173,7 +173,10 @@ class Terminal:
         self.previous_screen_lines = current_lines
 
     def write_screen(self, output_file: TextIO) -> None:
-        for line in self.screen.display:
+        lines = list(self.screen.display)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        for line in lines:
             output_file.write(line)
             output_file.write("\n")
         output_file.flush()
