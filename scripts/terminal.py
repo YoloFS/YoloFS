@@ -20,8 +20,8 @@ from scripts.agent import Agent
 
 STDIN_FILENO = sys.stdin.fileno()
 STDOUT_FILENO = sys.stdout.fileno()
-TERMINAL_COLUMNS = 120
-TERMINAL_LINES = 20
+TERMINAL_COLUMNS = 132
+TERMINAL_LINES = 43
 
 
 class RunPhase(Enum):
