@@ -10,6 +10,7 @@ class Agent:
     command: tuple[str, ...]
     newline: str = "\n"
     input_delay: float = 1.0
+    select_timeout: float = 1.0
 
     def prepare_run(self, cwd: Path, log_dir: Path) -> None:
         pass

@@ -9,7 +9,6 @@ import subprocess
 import sys
 import termios
 import time
-import tty
 from enum import Enum, auto
 from pathlib import Path
 from typing import TextIO
@@ -18,7 +17,6 @@ import pyte
 
 from scripts.agent import Agent
 
-STDIN_FILENO = sys.stdin.fileno()
 STDOUT_FILENO = sys.stdout.fileno()
 TERMINAL_COLUMNS = 132
 TERMINAL_LINES = 43
@@ -77,16 +75,9 @@ class Terminal:
 
     def run(self) -> None:
         self._start_process()
-        old_stdin_attrs = None
-        use_raw_stdin = os.isatty(STDIN_FILENO)
-        if use_raw_stdin:
-            old_stdin_attrs = termios.tcgetattr(STDIN_FILENO)
-            tty.setraw(STDIN_FILENO)
         try:
             self._run_loop()
         finally:
-            if old_stdin_attrs is not None:
-                termios.tcsetattr(STDIN_FILENO, termios.TCSADRAIN, old_stdin_attrs)
             self._cleanup()
 
     def _start_process(self) -> None:
@@ -110,19 +101,20 @@ class Terminal:
         assert self.master_fd is not None
         assert self.process is not None
         while self.process.poll() is None:
-            readable, _, _ = select.select([self.master_fd, STDIN_FILENO], [], [], 0.2)
+            readable, _, _ = select.select(
+                [self.master_fd], [], [], self.agent.select_timeout
+            )
             if self.master_fd in readable:
                 should_stop = self._handle_output()
                 if should_stop:
                     return
                 if self._is_done():
-                    time.sleep(1.0)
                     self.phase = RunPhase.DRAINING_OUTPUT
+                if self.phase is RunPhase.DRAINING_OUTPUT:
                     continue
-            if self.phase is RunPhase.DRAINING_OUTPUT:
+            elif self.phase is RunPhase.DRAINING_OUTPUT:
                 return
-            if STDIN_FILENO in readable:
-                self._handle_input()
+
             self._maybe_send_prompt()
 
     def _handle_output(self) -> bool:
@@ -134,7 +126,6 @@ class Terminal:
                 return True
             raise
 
-        os.write(STDOUT_FILENO, data)
         os.write(self.raw_output.fileno(), data)
         decoded = data.decode("utf-8", errors="replace")
         try:
@@ -175,6 +166,8 @@ class Terminal:
             for line in diff_lines:
                 output_file.write(f"{line}\n")
             output_file.flush()
+            for line in diff_lines[3:]:
+                print(line.rstrip())
             self.screen_diff_index = next_diff_index
             self.write_screen_snapshot(self.screen_diff_index)
         self.previous_screen_lines = current_lines
@@ -212,11 +205,6 @@ class Terminal:
         is_waiting_for_input = self.agent.is_waiting_for_input(self.screen)
         if self.phase is RunPhase.WAITING_FOR_WORK_COMPLETE and is_waiting_for_input:
             self.phase = RunPhase.FINISHED
-
-    def _handle_input(self) -> None:
-        assert self.master_fd is not None
-        if data := os.read(STDIN_FILENO, 1024):
-            os.write(self.master_fd, data)
 
     def _maybe_send_prompt(self) -> None:
         if self.phase is not RunPhase.INIT:
