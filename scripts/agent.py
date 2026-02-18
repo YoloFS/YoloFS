@@ -136,7 +136,13 @@ class CodexAgent(Agent):
     def is_ask(self, screen: pyte.Screen) -> bool:
         for line in screen.display:
             lower = line.lower()
-            if "approve" in lower or "allow" in lower or "(y/n)" in lower:
+            if (
+                "approve" in lower
+                or "allow" in lower
+                or "(y/n)" in lower
+                or "would you like to run" in lower
+                or "press enter to confirm" in lower
+            ):
                 return True
         return False
 
