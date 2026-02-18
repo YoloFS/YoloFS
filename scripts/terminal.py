@@ -31,6 +31,8 @@ class RunPhase(Enum):
     WAITING_FOR_WORK_START = auto()
     # Agent is processing; waiting until it returns to input-ready state.
     WAITING_FOR_WORK_COMPLETE = auto()
+    # Brief grace period after completion before shutdown.
+    DRAINING_OUTPUT = auto()
     # Run completed for this prompt.
     FINISHED = auto()
 
@@ -55,7 +57,7 @@ class Terminal:
         self.ask_dir = self.log_dir / "ask"
         self.screens_dir.mkdir(parents=True, exist_ok=True)
         self.ask_dir.mkdir(parents=True, exist_ok=True)
-        self.raw_output: TextIO = (self.log_dir / "raw.txt").open("w")
+        self.raw_output: TextIO = (self.log_dir / "screen.raw").open("w")
         self.screen_output: TextIO = (self.log_dir / "screen.diff").open("w")
 
         # Child process/PTY handles.
@@ -114,7 +116,11 @@ class Terminal:
                 if should_stop:
                     return
                 if self._is_done():
-                    return
+                    time.sleep(1.0)
+                    self.phase = RunPhase.DRAINING_OUTPUT
+                    continue
+            if self.phase is RunPhase.DRAINING_OUTPUT:
+                return
             if STDIN_FILENO in readable:
                 self._handle_input()
             self._maybe_send_prompt()
