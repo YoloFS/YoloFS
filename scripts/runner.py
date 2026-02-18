@@ -77,7 +77,8 @@ class Runner:
 
     def run(self) -> None:
         self._prepare_run()
-        print(f"{TERM_BLUE}{self.agent.name}: {self.prompt_key}{TERM_RESET}")
+        print(f"{TERM_BLUE}Agent: {self.agent.name}{TERM_RESET}")
+        print(f"{TERM_BLUE}Prompt: {self.prompt}{TERM_RESET}")
         print(f"{TERM_BLUE}Result: {self.result_dir}{TERM_RESET}")
         self._start_process()
         try:
@@ -96,7 +97,7 @@ class Runner:
         self.result_dir.mkdir(parents=True, exist_ok=True)
         self.screens_dir.mkdir(parents=True, exist_ok=True)
         self.ask_dir.mkdir(parents=True, exist_ok=True)
-        self.raw_output = (self.result_dir / "screen.raw").open("w")
+        self.raw_output = (self.screens_dir / "raw.txt").open("w")
         self.screen_output = (self.result_dir / "screen.diff").open("w")
 
     def _write_result(self, tool_calls: list[ToolCall]) -> None:
