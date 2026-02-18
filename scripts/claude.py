@@ -68,6 +68,7 @@ class ClaudeAgent(Agent):
                 event = json.loads(line)
 
                 cwd = event.get("cwd")
+                tool_use_result = event.get("toolUseResult")
                 message = event.get("message")
                 if not isinstance(message, dict):
                     continue
@@ -80,12 +81,16 @@ class ClaudeAgent(Agent):
                     item_type = item.get("type")
                     if item_type == "tool_use":
                         tool_name = item["name"]
+                        is_builtin = tool_name != "Bash"
+                        if not is_builtin:
+                            tool_name = item.get("input", {}).get("command", tool_name)
                         call = ToolCall(
                             id=item["id"],
+                            is_builtin=is_builtin,
                             name=tool_name,
-                            type="command" if tool_name == "Bash" else "built-in",
                             input=item.get("input", {}),
                             cwd=cwd,
+                            raw=[item],
                         )
                         pending[item["id"]] = call
                         results.append(call)
@@ -93,16 +98,11 @@ class ClaudeAgent(Agent):
                         tool_use_id = item.get("tool_use_id")
                         if tool_use_id and tool_use_id in pending:
                             call = pending[tool_use_id]
-                            raw = item.get("content")
-                            if isinstance(raw, list):
-                                call.output = "\n".join(
-                                    c.get("text", "")
-                                    for c in raw
-                                    if isinstance(c, dict) and c.get("type") == "text"
-                                )
-                            else:
-                                call.output = str(raw) if raw is not None else None
+                            call.output = {"content": item.get("content")}
+                            if tool_use_result is not None:
+                                call.output.update(tool_use_result)
                             if "is_error" in item:
                                 call.is_error = bool(item["is_error"])
+                            call.raw.append(item)
 
         return results

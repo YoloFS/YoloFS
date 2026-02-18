@@ -82,18 +82,23 @@ class CodexAgent(Agent):
                     except json.JSONDecodeError:
                         args = {}
                     func_name = payload["name"]
+                    is_builtin = func_name != "exec_command"
+                    if not is_builtin:
+                        func_name = args.get("cmd", func_name)
                     call = ToolCall(
                         id=payload["call_id"],
+                        is_builtin=is_builtin,
                         name=func_name,
-                        type="command" if func_name == "exec_command" else "built-in",
                         input=args,
                         cwd=args.get("workdir"),
+                        raw=[payload],
                     )
                     pending[payload["call_id"]] = call
                     results.append(call)
                 elif payload_type == "function_call_output":
                     call_id = payload.get("call_id")
                     if call_id and call_id in pending:
-                        pending[call_id].output = payload.get("output")
+                        pending[call_id].output = {"output": payload.get("output")}
+                        pending[call_id].raw.append(payload)
 
         return results
