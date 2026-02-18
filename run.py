@@ -8,7 +8,7 @@ from pathlib import Path
 from scripts.claude import ClaudeAgent
 from scripts.codex import CodexAgent
 from scripts.consts import LOG_DIR, PROJ_DIR
-from scripts.terminal import Terminal
+from scripts.runner import Runner
 
 
 def system(cmd: str) -> None:
@@ -100,6 +100,8 @@ EDGE_CASES = {
     "copy_project_file_then_overwrite_source": "copy file `file1` to `file1_backup` and then overwrite `file1` with text `updated`",
 }
 
+ALL_PROMPTS = {**PROMPTS, **EDGE_CASES}
+
 
 def main(agent_name: str, data_root: Path, prompt_keys: list[str]) -> None:
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -107,17 +109,10 @@ def main(agent_name: str, data_root: Path, prompt_keys: list[str]) -> None:
 
     for prompt_key in prompt_keys:
         log_dir = LOG_DIR / f"{agent_name}" / prompt_key
-        log_dir.mkdir(parents=True, exist_ok=True)
         cwd = data_root / "project"
         agent.prepare_run(cwd=cwd, log_dir=log_dir)
         system(f"{PROJ_DIR}/prep_fs.sh {data_root}")
-        Terminal(
-            agent=agent,
-            prompt=PROMPTS[prompt_key],
-            log_dir=log_dir,
-            cwd=cwd,
-        ).run()
-        agent.finalize_run(cwd=cwd, log_dir=log_dir)
+        Runner(agent=agent, prompt=ALL_PROMPTS[prompt_key], log_dir=log_dir, cwd=cwd).run()
         print(f"Log saved to {log_dir}")
 
 
@@ -130,7 +125,7 @@ if __name__ == "__main__":
         type=str,
         nargs="+",
         default=list(PROMPTS.keys()),
-        choices=list(PROMPTS.keys()),
+        choices=list(ALL_PROMPTS.keys()),
     )
     args = parser.parse_args()
     main(args.agent_name, args.data_root, args.prompts)

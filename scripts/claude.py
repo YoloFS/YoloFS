@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pyte
 
-from scripts.agent import Agent
+from scripts.agent import Agent, ToolCall
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,7 @@ class ClaudeAgent(Agent):
             else:
                 entry.unlink()
 
-    def finalize_run(self, cwd: Path, log_dir: Path) -> None:
+    def save_session(self, cwd: Path, log_dir: Path) -> Path | None:
         project_dir = self.project_dir_for_cwd(cwd)
         jsonl_files = [
             path
@@ -50,24 +50,24 @@ class ClaudeAgent(Agent):
         ]
         if not jsonl_files:
             print(f"No .jsonl file found in {project_dir}")
-            return
+            return None
         latest_jsonl = max(jsonl_files, key=lambda path: path.stat().st_mtime)
-        conversation_path = log_dir / "conversation.jsonl"
-        latest_jsonl.rename(conversation_path)
-        self.extract_command_results(conversation_path, log_dir / "command.jsonl")
+        session_path = log_dir / "session.jsonl"
+        shutil.copy2(latest_jsonl, session_path)
+        return session_path
 
-    def extract_command_results(
-        self, conversation_path: Path, output_path: Path
-    ) -> None:
-        results: list[dict[str, object]] = []
+    def extract_tool_calls(self, session_path: Path) -> list[ToolCall]:
+        pending: dict[str, ToolCall] = {}
+        results: list[ToolCall] = []
 
-        with conversation_path.open("r", encoding="utf-8") as file:
+        with session_path.open("r", encoding="utf-8") as file:
             for line in file:
                 line = line.strip()
                 if not line:
                     continue
                 event = json.loads(line)
 
+                cwd = event.get("cwd")
                 message = event.get("message")
                 if not isinstance(message, dict):
                     continue
@@ -77,11 +77,32 @@ class ClaudeAgent(Agent):
                     continue
 
                 for item in content:
-                    if item.get("type") not in {"tool_use", "tool_result"}:
-                        continue
-                    results.append(item)
+                    item_type = item.get("type")
+                    if item_type == "tool_use":
+                        tool_name = item["name"]
+                        call = ToolCall(
+                            id=item["id"],
+                            name=tool_name,
+                            type="command" if tool_name == "Bash" else "built-in",
+                            input=item.get("input", {}),
+                            cwd=cwd,
+                        )
+                        pending[item["id"]] = call
+                        results.append(call)
+                    elif item_type == "tool_result":
+                        tool_use_id = item.get("tool_use_id")
+                        if tool_use_id and tool_use_id in pending:
+                            call = pending[tool_use_id]
+                            raw = item.get("content")
+                            if isinstance(raw, list):
+                                call.output = "\n".join(
+                                    c.get("text", "")
+                                    for c in raw
+                                    if isinstance(c, dict) and c.get("type") == "text"
+                                )
+                            else:
+                                call.output = str(raw) if raw is not None else None
+                            if "is_error" in item:
+                                call.is_error = bool(item["is_error"])
 
-        with output_path.open("w", encoding="utf-8") as file:
-            for record in results:
-                file.write(json.dumps(record))
-                file.write("\n")
+        return results
