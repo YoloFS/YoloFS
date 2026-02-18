@@ -112,8 +112,9 @@ def main(agent_name: str, data_root: Path, prompt_keys: list[str]) -> None:
         cwd = data_root / "project"
         agent.prepare_run(cwd=cwd, log_dir=log_dir)
         system(f"{PROJ_DIR}/prep_fs.sh {data_root}")
-        Runner(agent=agent, prompt=ALL_PROMPTS[prompt_key], log_dir=log_dir, cwd=cwd).run()
-        print(f"Log saved to {log_dir}")
+        Runner(
+            agent=agent, prompt=ALL_PROMPTS[prompt_key], log_dir=log_dir, cwd=cwd
+        ).run()
 
 
 if __name__ == "__main__":

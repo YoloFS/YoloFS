@@ -83,8 +83,6 @@ class CodexAgent(Agent):
                         args = {}
                     func_name = payload["name"]
                     is_builtin = func_name != "exec_command"
-                    if not is_builtin:
-                        func_name = args.get("cmd", func_name)
                     call = ToolCall(
                         id=payload["call_id"],
                         is_builtin=is_builtin,

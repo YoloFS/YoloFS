@@ -11,7 +11,7 @@ class ToolCall:
     id: str
     # False for shell commands (Bash/exec_command).
     is_builtin: bool
-    # Tool name, or full shell command for non-builtins.
+    # Tool name for all calls (including shell-command tools).
     name: str
     input: dict[str, Any]
     # Keyed by "content" (Claude) or "output" (Codex); merged with toolUseResult when present.

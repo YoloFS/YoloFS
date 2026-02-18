@@ -17,6 +17,7 @@ from typing import TextIO
 import pyte
 
 from scripts.agent import Agent, ToolCall
+from scripts.consts import TERM_BLUE, TERM_GREEN, TERM_RED, TERM_RESET
 
 STDOUT_FILENO = sys.stdout.fileno()
 TERMINAL_COLUMNS = 100
@@ -75,6 +76,9 @@ class Runner:
         self.is_in_ask = False
 
     def run(self) -> None:
+        print(
+            f"{TERM_BLUE}Running prompt: {self.prompt} on {self.agent.name}{TERM_RESET}"
+        )
         self._start_process()
         try:
             self._run_loop()
@@ -84,6 +88,7 @@ class Runner:
         session_path = self.agent.save_session(self.cwd, self.log_dir)
         tool_calls = self.agent.extract_tool_calls(session_path) if session_path else []
         self._write_result(tool_calls)
+        print(f"{TERM_BLUE}Result saved to {self.log_dir}{TERM_RESET}")
 
     def _write_result(self, tool_calls: list[ToolCall]) -> None:
         result = {
@@ -182,8 +187,11 @@ class Runner:
             for line in diff_lines:
                 output_file.write(f"{line}\n")
             output_file.flush()
-            for line in diff_lines[3:]:
-                print(line.rstrip())
+            for line in diff_lines[2:]:
+                if line.startswith("+"):
+                    print(f"{TERM_GREEN}{line.rstrip()}{TERM_RESET}")
+                elif line.startswith("-"):
+                    print(f"{TERM_RED}{line.rstrip()}{TERM_RESET}")
             self.screen_index = next_index
             self.write_screen_snapshot(self.screen_index)
         self.previous_screen_lines = current_lines

@@ -26,7 +26,17 @@ class ClaudeAgent(Agent):
         return has_prompt and not self.is_busy(screen)
 
     def is_busy(self, screen: pyte.Screen) -> bool:
-        return any("esc to interrupt" in line.lower() for line in screen.display)
+        # Claude shows this footer when it's idle at the input prompt.
+        if any("? for shortcuts" in line.lower() for line in screen.display):
+            return False
+
+        busy_markers = (
+            "esc to interrupt",
+            "…",
+        )
+        return any(
+            marker in line.lower() for line in screen.display for marker in busy_markers
+        )
 
     def project_dir_for_cwd(self, cwd: Path) -> Path:
         project_name = str(cwd.resolve()).replace("/", "-")
@@ -82,8 +92,6 @@ class ClaudeAgent(Agent):
                     if item_type == "tool_use":
                         tool_name = item["name"]
                         is_builtin = tool_name != "Bash"
-                        if not is_builtin:
-                            tool_name = item.get("input", {}).get("command", tool_name)
                         call = ToolCall(
                             id=item["id"],
                             is_builtin=is_builtin,
