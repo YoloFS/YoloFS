@@ -5,7 +5,8 @@ import os
 import subprocess
 from pathlib import Path
 
-from scripts.agent import ClaudeAgent, CodexAgent
+from scripts.claude import ClaudeAgent
+from scripts.codex import CodexAgent
 from scripts.consts import LOG_DIR, PROJ_DIR
 from scripts.terminal import Terminal
 
