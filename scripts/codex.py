@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pyte
 
-from scripts.agent import Agent, ToolCall
+from scripts.agent import Agent
+from scripts.models import ToolCall
 
 
 @dataclass(frozen=True)
@@ -28,19 +29,42 @@ class CodexAgent(Agent):
         return any("esc to interrupt" in line.lower() for line in screen.display)
 
     def is_ask(self, screen: pyte.Screen) -> bool:
-        for line in screen.display:
-            lower = line.lower()
-            if (
-                "approve" in lower
-                or "allow" in lower
-                or "(y/n)" in lower
-                or "would you like to run" in lower
-                or "press enter to confirm" in lower
-            ):
-                return True
-        return False
+        lines = [line.lower().strip() for line in screen.display]
+
+        has_trust_prompt = any(
+            "do you trust the contents of this directory" in line
+            or "is this a project you created or one you trust" in line
+            or "yes, i trust this folder" in line
+            for line in lines
+        )
+        if has_trust_prompt:
+            return True
+
+        has_yn_prompt = any("(y/n)" in line or "[y/n]" in line for line in lines)
+        if has_yn_prompt:
+            return True
+
+        has_command_approval = any(
+            "would you like to run the following command?" in line for line in lines
+        )
+        has_command_options = any(
+            "1. yes, proceed" in line
+            or "press enter to confirm or esc to cancel" in line
+            for line in lines
+        )
+        if has_command_approval and has_command_options:
+            return True
+
+        has_generic_approval = any("do you want to proceed?" in line for line in lines)
+        has_generic_options = any("1. yes" in line for line in lines)
+        return has_generic_approval and has_generic_options
 
     def ask_reply(self, screen: pyte.Screen) -> str | None:
+        lines = [line.lower() for line in screen.display]
+        if any("1. yes, proceed" in line for line in lines):
+            return "y"
+        if any("1. yes" in line for line in lines):
+            return "1"
         return "y"
 
     def prepare_run(self, cwd: Path, result_dir: Path) -> None:

@@ -11,15 +11,17 @@ import subprocess
 import sys
 import termios
 import time
+from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
 from typing import TextIO
 
 import pyte
 
-from scripts.agent import Agent, ToolCall
-from scripts.consts import TERM_BLUE, TERM_GREEN, TERM_RED, TERM_RESET
-from scripts.prompts import ALL_PROMPTS
+from scripts.agent import Agent
+from scripts.consts import ROOTS_DIR, TERM_BLUE, TERM_GREEN, TERM_RED, TERM_RESET
+from scripts.models import ToolCall
+from scripts.tasks import Task
 
 STDOUT_FILENO = sys.stdout.fileno()
 TERMINAL_COLUMNS = 100
@@ -43,16 +45,17 @@ class Runner:
     def __init__(
         self,
         agent: Agent,
-        prompt_key: str,
+        task: Task,
         result_dir: Path,
-        cwd: Path,
     ) -> None:
         # Run configuration.
         self.agent = agent
-        self.prompt_key = prompt_key
-        self.prompt = ALL_PROMPTS[prompt_key]
+        self.task = task
         self.result_dir = result_dir
-        self.cwd = cwd
+        self.roots_dir = ROOTS_DIR
+        self.root_path = self._new_root_path()
+        self.root_link = result_dir / "root"
+        self.cwd = self.root_path / "project"
 
         # Log paths and directories.
         self.screens_dir = self.result_dir / "screens"
@@ -74,12 +77,15 @@ class Runner:
         # Run state machine.
         self.phase = RunPhase.INIT
         self.is_in_ask = False
+        self.last_ask_signature: str | None = None
 
     def run(self) -> None:
         self._prepare_run()
         print(f"{TERM_BLUE}Agent: {self.agent.name}{TERM_RESET}")
-        print(f"{TERM_BLUE}Prompt: {self.prompt}{TERM_RESET}")
+        print(f"{TERM_BLUE}Prompt: {self.task.prompt}{TERM_RESET}")
         print(f"{TERM_BLUE}Result: {self.result_dir}{TERM_RESET}")
+        print(f"{TERM_BLUE}Root: {self.root_path}{TERM_RESET}")
+        print(f"{TERM_BLUE}Cmd: {self.agent.command}{TERM_RESET}")
         self._start_process()
         try:
             self._run_loop()
@@ -88,24 +94,43 @@ class Runner:
 
         session_path = self.agent.save_session(self.cwd, self.result_dir)
         tool_calls = self.agent.extract_tool_calls(session_path) if session_path else []
-        self._write_result(tool_calls)
+        success = self.task.check(self.root_path, self.cwd, tool_calls)
+        self._write_result(tool_calls, success)
         print(f"{TERM_BLUE}Result saved to {self.result_dir}{TERM_RESET}")
+
+    def _new_root_path(self) -> Path:
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        base_path = self.roots_dir / timestamp
+        if not base_path.exists():
+            return base_path
+        index = 1
+        while True:
+            candidate = self.roots_dir / f"{timestamp}-{index}"
+            if not candidate.exists():
+                return candidate
+            index += 1
 
     def _prepare_run(self) -> None:
         shutil.rmtree(self.result_dir, ignore_errors=True)
-        self.agent.prepare_run(cwd=self.cwd, result_dir=self.result_dir)
+        self.roots_dir.mkdir(parents=True, exist_ok=True)
+        self.root_path.mkdir(parents=True, exist_ok=True)
         self.result_dir.mkdir(parents=True, exist_ok=True)
+        self.root_link.symlink_to(self.root_path)
         self.screens_dir.mkdir(parents=True, exist_ok=True)
         self.ask_dir.mkdir(parents=True, exist_ok=True)
+        self.cwd.mkdir(parents=True, exist_ok=True)
+        self.task.prep(self.root_path, self.cwd)
+        self.agent.prepare_run(cwd=self.cwd, result_dir=self.result_dir)
         self.raw_output = (self.screens_dir / "raw.txt").open("w")
         self.screen_output = (self.result_dir / "screen.diff").open("w")
 
-    def _write_result(self, tool_calls: list[ToolCall]) -> None:
+    def _write_result(self, tool_calls: list[ToolCall], success: bool) -> None:
         result = {
             "agent": self.agent.name,
-            "prompt": self.prompt,
+            "prompt": self.task.prompt,
             "cwd": str(self.cwd),
             "asks": self.ask_index,
+            "success": success,
             "tool_calls": [tc.to_dict() for tc in tool_calls],
         }
         with (self.result_dir / "result.json").open("w") as f:
@@ -115,6 +140,8 @@ class Runner:
         master_fd, slave_fd = pty.openpty()
         winsize = struct.pack("HHHH", TERMINAL_LINES, TERMINAL_COLUMNS, 0, 0)
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
         process = subprocess.Popen(
             self.agent.command,
             stdin=slave_fd,
@@ -122,6 +149,7 @@ class Runner:
             stderr=slave_fd,
             close_fds=True,
             cwd=self.cwd,
+            env=env,
             preexec_fn=lambda: os.setsid(),  # Detach from terminal.
         )
         os.close(slave_fd)
@@ -226,8 +254,12 @@ class Runner:
     def _advance_phase(self) -> None:
         is_ask = self.agent.is_ask(self.screen)
         if is_ask:
-            if not self.is_in_ask:
+            ask_signature = "\n".join(
+                line.rstrip() for line in self.screen.display if line.strip()
+            )
+            if not self.is_in_ask or ask_signature != self.last_ask_signature:
                 self.is_in_ask = True
+                self.last_ask_signature = ask_signature
                 self.write_ask_snapshot()
                 ask_reply = self.agent.ask_reply(self.screen)
                 if ask_reply is not None:
@@ -235,6 +267,7 @@ class Runner:
             return
 
         self.is_in_ask = False
+        self.last_ask_signature = None
 
         is_busy = self.agent.is_busy(self.screen)
         if self.phase is RunPhase.WAITING_FOR_WORK_START and is_busy:
@@ -250,8 +283,10 @@ class Runner:
             return
         if not self.agent.is_screen_ready(self.screen):
             return
+        if self.is_in_ask or self.agent.is_ask(self.screen):
+            return
         self.phase = RunPhase.WAITING_FOR_WORK_START
-        self._send_line(self.prompt)
+        self._send_line(self.task.prompt)
 
     def _is_done(self) -> bool:
         return self.phase is RunPhase.FINISHED

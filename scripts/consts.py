@@ -3,6 +3,7 @@ from pathlib import Path
 PROJ_DIR = Path(__file__).resolve().parent.parent
 RESULTS_DIR = PROJ_DIR / "data" / "results"
 DATA_DIR = PROJ_DIR / "data"
+ROOTS_DIR = DATA_DIR / "roots"
 
 TERM_RED = "\033[31m"
 TERM_GREEN = "\033[32m"

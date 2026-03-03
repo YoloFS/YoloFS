@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pyte
 
-from scripts.agent import Agent, ToolCall
+from scripts.agent import Agent
+from scripts.models import ToolCall
 
 
 @dataclass(frozen=True)
@@ -15,9 +16,20 @@ class ClaudeAgent(Agent):
     newline: str = "\r"
 
     def is_ask(self, screen: pyte.Screen) -> bool:
-        return any("1. Yes" in line for line in screen.display)
+        markers = (
+            "1. yes",
+            "do you trust the contents of this directory",
+            "is this a project you created or one you trust",
+        )
+        lines = [line.lower() for line in screen.display]
+        return any(marker in line for line in lines for marker in markers)
 
     def ask_reply(self, screen: pyte.Screen) -> str | None:
+        lines = [line.lower() for line in screen.display]
+        if any("1. yes" in line for line in lines):
+            return "1"
+        if any("y/n" in line or "(y/n)" in line or "[y/n]" in line for line in lines):
+            return "y"
         return "1"
 
     def is_waiting_for_input(self, screen: pyte.Screen) -> bool:
@@ -39,7 +51,7 @@ class ClaudeAgent(Agent):
         )
 
     def project_dir_for_cwd(self, cwd: Path) -> Path:
-        project_name = str(cwd.resolve()).replace("/", "-")
+        project_name = str(cwd.resolve()).replace("/", "-").replace("_", "-")
         return Path.home() / ".claude" / "projects" / project_name
 
     def prepare_run(self, cwd: Path, result_dir: Path) -> None:
