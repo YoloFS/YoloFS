@@ -22,3 +22,27 @@ class ToolCall:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class OutputCheckResult:
+    success: bool
+    failed_reasons: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"success": self.success}
+        if self.failed_reasons:
+            result["failed_reasons"] = self.failed_reasons
+        return result
+
+
+@dataclass(frozen=True)
+class FsCheckResult:
+    success: bool
+    failed_reasons: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"success": self.success}
+        if self.failed_reasons:
+            result["failed_reasons"] = self.failed_reasons
+        return result

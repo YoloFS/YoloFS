@@ -6,7 +6,7 @@ from pathlib import Path
 import pyte
 
 from scripts.agent import Agent
-from scripts.models import ToolCall
+from scripts.records import ToolCall
 
 
 @dataclass(frozen=True)
@@ -119,8 +119,10 @@ class ClaudeAgent(Agent):
                         if tool_use_id and tool_use_id in pending:
                             call = pending[tool_use_id]
                             call.output = {"content": item.get("content")}
-                            if tool_use_result is not None:
+                            if isinstance(tool_use_result, dict):
                                 call.output.update(tool_use_result)
+                            elif tool_use_result is not None:
+                                call.output["toolUseResult"] = tool_use_result
                             if "is_error" in item:
                                 call.is_error = bool(item["is_error"])
                             call.raw.append(item)

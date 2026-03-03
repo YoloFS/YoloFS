@@ -3,7 +3,7 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from scripts.models import ToolCall
+from scripts.records import FsCheckResult, OutputCheckResult, ToolCall
 
 
 @dataclass(frozen=True)
@@ -64,30 +64,25 @@ class Task:
                 result.add(FileEntry(rel, path.read_text().strip(), mode))
         return result
 
-    def check_outputs(self, tool_calls: list[ToolCall]) -> bool:
-        ok = True
+    def check_outputs(self, tool_calls: list[ToolCall]) -> OutputCheckResult:
         tc_outputs = [str(tc.output) for tc in tool_calls]
+        failed_reasons: list[str] = []
         for expected in self.outputs:
             found = any(expected in o for o in tc_outputs)
-            print(f"  Output {expected!r}: {'found' if found else 'not found'}")
-            ok = ok and found
-        return ok
+            if not found:
+                failed_reasons.append(f"Missing expected output: {expected!r}")
+        return OutputCheckResult(success=not failed_reasons, failed_reasons=failed_reasons)
 
-    def check_fs(self, root_path: Path, cwd: Path) -> bool:
+    def check_fs(self, root_path: Path, cwd: Path) -> FsCheckResult:
         actual = self._scan_fs(root_path, cwd)
         expected = set(self.after if self.after is not None else self.before)
-
-        if actual == expected:
-            print("  Filesystem: matches")
-        else:
-            for entry in sorted(expected - actual, key=lambda e: e.path):
-                print(f"  Missing: {entry}")
-            for entry in sorted(actual - expected, key=lambda e: e.path):
-                print(f"  Unexpected: {entry}")
-        return actual == expected
-
-    def check(self, root_path: Path, cwd: Path, tool_calls: list[ToolCall]) -> bool:
-        return self.check_outputs(tool_calls) and self.check_fs(root_path, cwd)
+        missing = [repr(entry) for entry in sorted(expected - actual, key=lambda e: e.path)]
+        unexpected = [repr(entry) for entry in sorted(actual - expected, key=lambda e: e.path)]
+        failed_reasons = [f"Missing filesystem entry: {entry}" for entry in missing]
+        failed_reasons.extend(
+            f"Unexpected filesystem entry: {entry}" for entry in unexpected
+        )
+        return FsCheckResult(success=not failed_reasons, failed_reasons=failed_reasons)
 
 
 TASKS: list[Task] = [
@@ -157,33 +152,33 @@ TASKS: list[Task] = [
     Task(
         name="append_symlink_dir_file",
         prompt="append text `hello` to file `dir/file`",
-        before=[FileEntry("../dir/file", ""), SymlinkEntry("dir", "../dir")],
-        after=[FileEntry("../dir/file", "hello"), SymlinkEntry("dir", "../dir")],
+        before=[DirEntry("../dir"), FileEntry("../dir/file", ""), SymlinkEntry("dir", "../dir")],
+        after=[DirEntry("../dir"), FileEntry("../dir/file", "hello"), SymlinkEntry("dir", "../dir")],
     ),
     # Overwrite
     Task(
         name="overwrite_project_file",
         prompt="overwrite file `file` with text `hello`",
-        before=[FileEntry("file", "")],
+        before=[FileEntry("file", "foo")],
         after=[FileEntry("file", "hello")],
     ),
     Task(
         name="overwrite_parent_file",
         prompt="overwrite file `../file` with text `hello`",
-        before=[FileEntry("../file", "")],
+        before=[FileEntry("../file", "foo")],
         after=[FileEntry("../file", "hello")],
     ),
     Task(
         name="overwrite_symlink_file",
         prompt="overwrite file `file` with text `hello`",
-        before=[FileEntry("../file", ""), SymlinkEntry("file", "../file")],
+        before=[FileEntry("../file", "foo"), SymlinkEntry("file", "../file")],
         after=[FileEntry("../file", "hello"), SymlinkEntry("file", "../file")],
     ),
     Task(
         name="overwrite_symlink_dir_file",
         prompt="overwrite file `dir/file` with text `hello`",
-        before=[FileEntry("../dir/file", ""), SymlinkEntry("dir", "../dir")],
-        after=[FileEntry("../dir/file", "hello"), SymlinkEntry("dir", "../dir")],
+        before=[DirEntry("../dir"), FileEntry("../dir/file", "foo"), SymlinkEntry("dir", "../dir")],
+        after=[DirEntry("../dir"), FileEntry("../dir/file", "hello"), SymlinkEntry("dir", "../dir")],
     ),
     # Edit
     Task(
@@ -207,8 +202,8 @@ TASKS: list[Task] = [
     Task(
         name="edit_symlink_dir_file",
         prompt="replace text `hello` with `replaced` in file `dir/file`",
-        before=[FileEntry("../dir/file", "hello"), SymlinkEntry("dir", "../dir")],
-        after=[FileEntry("../dir/file", "replaced"), SymlinkEntry("dir", "../dir")],
+        before=[DirEntry("../dir"), FileEntry("../dir/file", "hello"), SymlinkEntry("dir", "../dir")],
+        after=[DirEntry("../dir"), FileEntry("../dir/file", "replaced"), SymlinkEntry("dir", "../dir")],
     ),
     # Create
     Task(

@@ -6,7 +6,7 @@ from pathlib import Path
 import pyte
 
 from scripts.agent import Agent
-from scripts.models import ToolCall
+from scripts.records import ToolCall
 
 
 @dataclass(frozen=True)
