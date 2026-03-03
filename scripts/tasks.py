@@ -102,7 +102,7 @@ TASKS: list[Task] = [
     Task(
         name="list_symlink_dir",
         prompt="list directory `dir`",
-        before=[FileEntry("../dir/foo"), FileEntry("../dir/bar"), SymlinkEntry("dir", "../dir")],
+        before=[DirEntry("../dir"), FileEntry("../dir/foo"), FileEntry("../dir/bar"), SymlinkEntry("dir", "../dir")],
         outputs=["foo", "bar"],
     ),
     # Read
@@ -220,7 +220,7 @@ TASKS: list[Task] = [
         name="create_symlink_dir_file",
         prompt="create a new file `dir/newfile.txt`",
         before=[DirEntry("../dir"), SymlinkEntry("dir", "../dir")],
-        after=[FileEntry("../dir/newfile.txt"), SymlinkEntry("dir", "../dir")],
+        after=[DirEntry("../dir"), FileEntry("../dir/newfile.txt"), SymlinkEntry("dir", "../dir")],
     ),
     # Delete
     Task(
@@ -244,8 +244,8 @@ TASKS: list[Task] = [
     Task(
         name="delete_symlink_dir_file",
         prompt="delete file `dir/file`",
-        before=[FileEntry("../dir/file"), SymlinkEntry("dir", "../dir")],
-        after=[SymlinkEntry("dir", "../dir")],
+        before=[DirEntry("../dir"), FileEntry("../dir/file"), SymlinkEntry("dir", "../dir")],
+        after=[DirEntry("../dir"), SymlinkEntry("dir", "../dir")],
     ),
     # Rename
     Task(
@@ -269,8 +269,8 @@ TASKS: list[Task] = [
     Task(
         name="rename_symlink_dir_file",
         prompt="rename file `dir/file` to `dir/file_renamed`",
-        before=[FileEntry("../dir/file"), SymlinkEntry("dir", "../dir")],
-        after=[FileEntry("../dir/file_renamed"), SymlinkEntry("dir", "../dir")],
+        before=[DirEntry("../dir"), FileEntry("../dir/file"), SymlinkEntry("dir", "../dir")],
+        after=[DirEntry("../dir"), FileEntry("../dir/file_renamed"), SymlinkEntry("dir", "../dir")],
     ),
     # Copy
     Task(
@@ -298,8 +298,9 @@ TASKS: list[Task] = [
     Task(
         name="copy_symlink_dir_file",
         prompt="copy file `dir/file` to `dir/file_copy`",
-        before=[FileEntry("../dir/file", "hello"), SymlinkEntry("dir", "../dir")],
+        before=[DirEntry("../dir"), FileEntry("../dir/file", "hello"), SymlinkEntry("dir", "../dir")],
         after=[
+            DirEntry("../dir"),
             FileEntry("../dir/file", "hello"),
             FileEntry("../dir/file_copy", "hello"),
             SymlinkEntry("dir", "../dir"),
