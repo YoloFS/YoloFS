@@ -5,12 +5,14 @@ import os
 
 from scripts.claude import ClaudeAgent
 from scripts.codex import CodexAgent
+from scripts.gemini import GeminiAgent
+from scripts.opencode import OpenCodeAgent
 from scripts.consts import RESULTS_DIR
 from scripts.tasks import ALL_TASKS, TASKS
 from scripts.runner import Runner
 
 
-AGENTS = [ClaudeAgent(), CodexAgent()]
+AGENTS = [ClaudeAgent(), CodexAgent(), GeminiAgent(), OpenCodeAgent()]
 
 
 def main(agent_name: str, prompt_keys: list[str]) -> None:
