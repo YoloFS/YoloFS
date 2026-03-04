@@ -1,0 +1,132 @@
+import json
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+import pyte
+
+from scripts.agent import Agent
+from scripts.records import ToolCall
+
+
+COPILOT_DIR = Path.home() / ".copilot"
+SESSION_STATE_DIR = COPILOT_DIR / "session-state"
+SHELL_TOOL_NAME = "shell"
+
+
+@dataclass(frozen=True)
+class CopilotAgent(Agent):
+    name: str = "copilot"
+    command: tuple[str, ...] = ("copilot",)
+    newline: str = "\r"
+
+    def is_screen_ready(self, screen: pyte.Screen) -> bool:
+        lines = list(screen.display)
+        return any(
+            "Type @ to mention files" in line or "Confirm folder trust" in line
+            for line in lines
+        )
+
+    def is_waiting_for_input(self, screen: pyte.Screen) -> bool:
+        lines = list(screen.display)
+        has_input_prompt = any("Type @ to mention files" in line for line in lines)
+        return has_input_prompt and not self.is_busy(screen)
+
+    def is_busy(self, screen: pyte.Screen) -> bool:
+        return any("Esc to cancel" in line for line in screen.display)
+
+    def is_ask(self, screen: pyte.Screen) -> bool:
+        lines = [line.lower() for line in screen.display]
+        return any(
+            "confirm folder trust" in line
+            or "do you trust the files in this folder" in line
+            for line in lines
+        )
+
+    def ask_reply(self, screen: pyte.Screen) -> str | None:
+        # Press Enter to select the highlighted option (1. Yes).
+        return ""
+
+    def save_session(self, cwd: Path, result_dir: Path) -> Path | None:
+        session_dir = self._latest_session_dir(cwd)
+        if not session_dir:
+            print(f"No session found for {cwd}")
+            return None
+        events_file = session_dir / "events.jsonl"
+        if not events_file.exists():
+            print(f"No events.jsonl found in {session_dir}")
+            return None
+        session_path = result_dir / "session.jsonl"
+        shutil.copy2(events_file, session_path)
+        return session_path
+
+    def extract_tool_calls(self, session_path: Path) -> list[ToolCall]:
+        pending: dict[str, ToolCall] = {}
+        results: list[ToolCall] = []
+
+        with session_path.open("r", encoding="utf-8") as file:
+            for line in file:
+                line = line.strip()
+                if not line:
+                    continue
+                event = json.loads(line)
+                event_type = event.get("type")
+                data = event.get("data", {})
+
+                if event_type == "tool.execution_start":
+                    call_id = data.get("toolCallId", "")
+                    tool_name = data.get("toolName", "")
+                    args = data.get("arguments", {})
+                    is_builtin = tool_name.lower() != SHELL_TOOL_NAME
+                    call = ToolCall(
+                        id=call_id,
+                        is_builtin=is_builtin,
+                        name=tool_name,
+                        input=args,
+                        raw=[event],
+                    )
+                    pending[call_id] = call
+                    results.append(call)
+                elif event_type == "tool.execution_complete":
+                    call_id = data.get("toolCallId", "")
+                    if call_id and call_id in pending:
+                        pending[call_id].output = {"result": data.get("result", {})}
+                        if not data.get("success", True):
+                            pending[call_id].is_error = True
+                        pending[call_id].raw.append(event)
+
+        return results
+
+    def _latest_session_dir(self, cwd: Path) -> Path | None:
+        if not SESSION_STATE_DIR.exists():
+            return None
+        cwd_str = str(cwd.resolve())
+        best: Path | None = None
+        best_time: str | None = None
+        for session_dir in SESSION_STATE_DIR.iterdir():
+            if not session_dir.is_dir():
+                continue
+            workspace = session_dir / "workspace.yaml"
+            if not workspace.exists():
+                continue
+            try:
+                data = _parse_workspace_yaml(workspace)
+                if data.get("cwd") != cwd_str:
+                    continue
+                updated_at = data.get("updated_at", "")
+                if best_time is None or updated_at > best_time:
+                    best = session_dir
+                    best_time = updated_at
+            except Exception:
+                continue
+        return best
+
+
+def _parse_workspace_yaml(path: Path) -> dict[str, str]:
+    """Parse the simple key: value YAML format used by Copilot's workspace.yaml."""
+    result: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if ": " in line:
+            key, _, value = line.partition(": ")
+            result[key.strip()] = value.strip()
+    return result

@@ -8,12 +8,13 @@ from scripts.agent import Agent
 from scripts.claude import ClaudeAgent
 from scripts.codex import CodexAgent
 from scripts.consts import RESULTS_DIR
+from scripts.copilot import CopilotAgent
 from scripts.gemini import GeminiAgent
 from scripts.opencode import OpenCodeAgent
 from scripts.runner import Runner
 from scripts.tasks import TASKS, Task
 
-AGENTS = [ClaudeAgent(), CodexAgent(), GeminiAgent(), OpenCodeAgent()]
+AGENTS = [ClaudeAgent(), CodexAgent(), CopilotAgent(), GeminiAgent(), OpenCodeAgent()]
 TASK_TIMEOUT = 3 * 60  # seconds
 
 
