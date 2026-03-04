@@ -8,13 +8,14 @@ use nix::sys::signal::{SigHandler, signal};
 use nix::sys::wait::waitpid;
 use nix::unistd::{ForkResult, chroot, fork};
 use std::env;
-use std::fs::{self, Permissions};
+use std::fs::{self, File, Permissions};
 use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 const APPARMOR_USERNS_SYSCTL: &str = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns";
+const CAPTURE_DIR_IN_CHROOT: &str = "/.agfs-capture";
 
 /// Represents a sandbox directory structure.
 pub struct Sandbox {
@@ -49,6 +50,12 @@ impl Sandbox {
             temproot,
         })
     }
+}
+
+pub struct SandboxRunResult {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 /// Check if unprivileged user namespaces are allowed and try to enable them if not.
@@ -202,15 +209,12 @@ fn mount_overlays(sandbox: &Sandbox) -> Result<()> {
     Ok(())
 }
 
-fn exec_in_chroot(sandbox: &Sandbox, workdir: &PathBuf, command: &[String]) -> ! {
+fn exec_in_chroot(sandbox: &Sandbox, workdir: &Path, command: &str) -> ! {
     chroot(&sandbox.temproot).expect("Failed to chroot");
     env::set_current_dir("/").expect("Failed to chdir to /");
     env::set_current_dir(workdir).expect("Failed to chdir to workdir");
 
-    let status = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(command.join(" "))
-        .status();
+    let status = Command::new("/bin/sh").arg("-c").arg(command).status();
 
     match status {
         Ok(s) => std::process::exit(s.code().unwrap_or(1)),
@@ -221,19 +225,105 @@ fn exec_in_chroot(sandbox: &Sandbox, workdir: &PathBuf, command: &[String]) -> !
     }
 }
 
-/// Run a command inside the sandbox.
-pub fn run_in_sandbox(sandbox: &Sandbox, command: &[String]) -> Result<i32> {
+struct CapturePaths {
+    stdout_host: PathBuf,
+    stderr_host: PathBuf,
+}
+
+impl CapturePaths {
+    fn new(sandbox: &Sandbox) -> Result<Self> {
+        let capture_dir = sandbox.temproot.join(".agfs-capture");
+        fs::create_dir_all(&capture_dir).context("Failed to create capture directory")?;
+
+        let stdout_host = capture_dir.join("stdout");
+        let stderr_host = capture_dir.join("stderr");
+
+        for path in [&stdout_host, &stderr_host] {
+            if path.exists() {
+                fs::remove_file(path)
+                    .with_context(|| format!("Failed to clear capture file {}", path.display()))?;
+            }
+        }
+
+        Ok(Self {
+            stdout_host,
+            stderr_host,
+        })
+    }
+
+    fn stdout_in_chroot(&self) -> String {
+        format!("{}/stdout", CAPTURE_DIR_IN_CHROOT)
+    }
+
+    fn stderr_in_chroot(&self) -> String {
+        format!("{}/stderr", CAPTURE_DIR_IN_CHROOT)
+    }
+
+    fn collect(self, exit_code: i32) -> SandboxRunResult {
+        let stdout = fs::read(&self.stdout_host).unwrap_or_default();
+        let stderr = fs::read(&self.stderr_host).unwrap_or_default();
+
+        SandboxRunResult {
+            exit_code,
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        }
+    }
+}
+
+fn exec_in_chroot_capture(
+    sandbox: &Sandbox,
+    workdir: &Path,
+    command: &str,
+    capture: &CapturePaths,
+) -> ! {
+    chroot(&sandbox.temproot).expect("Failed to chroot");
+    env::set_current_dir("/").expect("Failed to chdir to /");
+    env::set_current_dir(workdir).expect("Failed to chdir to workdir");
+
+    let stdout_path = capture.stdout_in_chroot();
+    let stderr_path = capture.stderr_in_chroot();
+    let stdout = File::create(&stdout_path).expect("Failed to open stdout capture");
+    let stderr = File::create(&stderr_path).expect("Failed to open stderr capture");
+
+    let status = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .status();
+
+    match status {
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Err(e) => {
+            let _ = fs::write(stderr_path, e.to_string());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_shell_command_in_sandbox_internal(
+    sandbox: &Sandbox,
+    workdir: &Path,
+    command: &str,
+    capture_output: bool,
+) -> Result<SandboxRunResult> {
     // Ensure unprivileged user namespaces are allowed
     ensure_userns_allowed()?;
 
-    let start_dir = env::current_dir()?;
     let uid = nix::unistd::getuid();
     let gid = nix::unistd::getgid();
+    let workdir = workdir.to_path_buf();
+    let capture = if capture_output {
+        Some(CapturePaths::new(sandbox)?)
+    } else {
+        None
+    };
 
     // Prepare sandbox structure before forking
     prepare_sandbox(sandbox)?;
 
-    match unsafe { fork() }? {
+    let exit_code = match unsafe { fork() }? {
         ForkResult::Parent { child } => {
             let status = waitpid(child, None)?;
             unsafe {
@@ -247,8 +337,8 @@ pub fn run_in_sandbox(sandbox: &Sandbox, command: &[String]) -> Result<i32> {
                 signal(SIGTTOU, SigHandler::SigDfl).unwrap();
             }
             match status {
-                nix::sys::wait::WaitStatus::Exited(_, code) => Ok(code),
-                _ => Ok(1),
+                nix::sys::wait::WaitStatus::Exited(_, code) => code,
+                _ => 1,
             }
         }
         ForkResult::Child => {
@@ -277,10 +367,69 @@ pub fn run_in_sandbox(sandbox: &Sandbox, command: &[String]) -> Result<i32> {
                 }
                 Ok(ForkResult::Child) => {
                     mount_overlays(sandbox).expect("Failed to mount");
-                    exec_in_chroot(sandbox, &start_dir, command);
+                    if let Some(capture) = capture.as_ref() {
+                        exec_in_chroot_capture(sandbox, &workdir, command, capture);
+                    } else {
+                        exec_in_chroot(sandbox, &workdir, command);
+                    }
                 }
                 Err(e) => panic!("Failed to fork: {}", e),
             }
         }
+    };
+
+    Ok(match capture {
+        Some(capture) => capture.collect(exit_code),
+        None => SandboxRunResult {
+            exit_code,
+            stdout: String::new(),
+            stderr: String::new(),
+        },
+    })
+}
+
+fn shell_command_from_args(command: &[String]) -> Result<String> {
+    shlex::try_join(command.iter().map(String::as_str).collect::<Vec<_>>())
+        .map_err(|err| anyhow::anyhow!("Failed to quote command: {err}"))
+}
+
+/// Run a command inside the sandbox.
+pub fn run_in_sandbox(sandbox: &Sandbox, command: &[String]) -> Result<i32> {
+    let command = shell_command_from_args(command)?;
+    Ok(
+        run_shell_command_in_sandbox_internal(sandbox, &env::current_dir()?, &command, false)?
+            .exit_code,
+    )
+}
+
+pub fn run_shell_command_in_sandbox(
+    sandbox: &Sandbox,
+    workdir: &Path,
+    command: &str,
+) -> Result<SandboxRunResult> {
+    run_shell_command_in_sandbox_internal(sandbox, workdir, command, true)
+}
+
+fn prepare_dir_for_removal(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+
+    if file_type.is_symlink() || !file_type.is_dir() {
+        return Ok(());
     }
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    for entry in fs::read_dir(path)? {
+        prepare_dir_for_removal(&entry?.path())?;
+    }
+
+    Ok(())
+}
+
+pub fn destroy_sandbox(sandbox: &Sandbox) -> Result<()> {
+    if sandbox.root.exists() {
+        prepare_dir_for_removal(&sandbox.root)?;
+        fs::remove_dir_all(&sandbox.root)?;
+    }
+    Ok(())
 }

@@ -2,18 +2,18 @@
 
 mod changes;
 mod executor;
+mod mcp;
 
 use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
-use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use changes::{commit_changes, show_summary};
-use executor::{Sandbox, run_in_sandbox};
+use executor::{Sandbox, destroy_sandbox, run_in_sandbox};
+use mcp::serve_mcp;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ChangeAction {
@@ -29,6 +29,10 @@ enum ChangeAction {
     about = "Run commands in a sandboxed overlay filesystem"
 )]
 struct Cli {
+    /// Run as an MCP stdio server
+    #[arg(long)]
+    mcp: bool,
+
     /// Use sandbox directory (default: ./.staging)
     #[arg(short = 'D', long, value_name = "DIR")]
     sandbox_dir: Option<PathBuf>,
@@ -63,27 +67,8 @@ fn prompt_change_action() -> ChangeAction {
     }
 }
 
-fn prepare_dir_for_removal(path: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    let file_type = metadata.file_type();
-
-    if file_type.is_symlink() || !file_type.is_dir() {
-        return Ok(());
-    }
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    for entry in fs::read_dir(path)? {
-        prepare_dir_for_removal(&entry?.path())?;
-    }
-
-    Ok(())
-}
-
 fn abort_changes(sandbox: &Sandbox) -> Result<()> {
-    if sandbox.root.exists() {
-        prepare_dir_for_removal(&sandbox.root)?;
-        fs::remove_dir_all(&sandbox.root)?;
-    }
+    destroy_sandbox(sandbox)?;
     println!("Aborted. Removed sandbox: {}", sandbox.root.display());
     Ok(())
 }
@@ -92,8 +77,16 @@ fn default_sandbox_dir() -> Result<PathBuf> {
     Ok(std::env::current_dir()?.join(".staging"))
 }
 
-fn run() -> Result<ExitCode> {
+async fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
+
+    if cli.mcp {
+        if !cli.args.is_empty() {
+            anyhow::bail!("--mcp cannot be used with a command");
+        }
+        serve_mcp().await?;
+        return Ok(ExitCode::SUCCESS);
+    }
 
     let sandbox = match cli.sandbox_dir {
         Some(d) => Sandbox::new_at(d)?,
@@ -120,8 +113,9 @@ fn run() -> Result<ExitCode> {
     Ok(ExitCode::from(exit_code as u8))
 }
 
-fn main() -> ExitCode {
-    match run() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
+    match run().await {
         Ok(code) => code,
         Err(e) => {
             eprintln!("{}: {}", "Error".red().bold(), e);

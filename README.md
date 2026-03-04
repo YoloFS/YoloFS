@@ -1,3 +1,8 @@
+```
+codex --disable shell_tool --config 'mcp_servers.agfs={command = "/users/szhong/agentctl/target/debug/agfs", args = ["--mcp"]}' 'Use the shell tool to run this exact command: printf "hello from agfs\n" > smoke.txt. check the result, but instead of commiting, abort the changes.'
+```
+
+
 Install uv
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
