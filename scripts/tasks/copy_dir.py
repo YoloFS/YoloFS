@@ -30,8 +30,12 @@ COPY_DIR_TASKS: list[Task] = [
         prompt="copy directory `foo` to `bar` including all files and subdirectories",
         before=[FileEntry("foo/a.txt", "A"), FileEntry("foo/sub/b.txt", "B")],
         after=[
+            DirEntry("foo"),
+            DirEntry("foo/sub"),
             FileEntry("foo/a.txt", "A"),
             FileEntry("foo/sub/b.txt", "B"),
+            DirEntry("bar"),
+            DirEntry("bar/sub"),
             FileEntry("bar/a.txt", "A"),
             FileEntry("bar/sub/b.txt", "B"),
         ],

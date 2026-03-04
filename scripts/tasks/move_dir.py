@@ -24,7 +24,12 @@ MOVE_DIR_TASKS: list[Task] = [
         name="move_dir_nonempty",
         prompt="move directory `foo` to `bar`",
         before=[FileEntry("foo/a.txt", "A"), FileEntry("foo/sub/b.txt", "B")],
-        after=[FileEntry("bar/a.txt", "A"), FileEntry("bar/sub/b.txt", "B")],
+        after=[
+            DirEntry("bar"),
+            DirEntry("bar/sub"),
+            FileEntry("bar/a.txt", "A"),
+            FileEntry("bar/sub/b.txt", "B"),
+        ],
     ),
     Task(
         name="move_dir_project_backtrack",

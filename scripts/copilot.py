@@ -22,6 +22,8 @@ class CopilotAgent(Agent):
 
     def is_screen_ready(self, screen: pyte.Screen) -> bool:
         lines = list(screen.display)
+        if any("Loading environment:" in line for line in lines):
+            return False
         return any(
             "Type @ to mention files" in line or "Confirm folder trust" in line
             for line in lines
@@ -42,6 +44,7 @@ class CopilotAgent(Agent):
             or "do you trust the files in this folder" in line
             or "allow directory access" in line
             or "do you want to add these directories to the allowed list" in line
+            or "do you want to run this command?" in line
             for line in lines
         )
 
