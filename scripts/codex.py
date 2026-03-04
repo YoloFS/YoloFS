@@ -44,15 +44,17 @@ class CodexAgent(Agent):
         if has_yn_prompt:
             return True
 
-        has_command_approval = any(
-            "would you like to run the following command?" in line for line in lines
+        has_approval_prompt = any(
+            "would you like to run the following command?" in line
+            or "would you like to make the following edits?" in line
+            for line in lines
         )
-        has_command_options = any(
+        has_approval_options = any(
             "1. yes, proceed" in line
             or "press enter to confirm or esc to cancel" in line
             for line in lines
         )
-        if has_command_approval and has_command_options:
+        if has_approval_prompt and has_approval_options:
             return True
 
         has_generic_approval = any("do you want to proceed?" in line for line in lines)

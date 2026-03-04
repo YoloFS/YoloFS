@@ -1,3 +1,9 @@
 [submodule "results"]
 	path = results
 	url = https://github.com/ShawnZhong/agentctl-results
+[submodule "third_party/codex"]
+	path = third_party/codex
+	url = https://github.com/openai/codex
+[submodule "third_party/opencode"]
+	path = third_party/opencode
+	url = https://github.com/anomalyco/opencode
