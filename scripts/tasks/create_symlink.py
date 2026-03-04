@@ -10,18 +10,18 @@ CREATE_SYMLINK_TASKS: list[Task] = [
     ),
     Task(
         name="create_symlink_parent",
-        prompt="create a symlink `../foo` pointing to `/`",
+        prompt="create a symlink `../foo` pointing to `.`",
         before=[],
-        after=[SymlinkEntry("../foo", "/")],
+        after=[SymlinkEntry("../foo", ".")],
     ),
     Task(
         name="create_symlink_with_spaces",
-        prompt="create a symlink `foo bar` pointing to `/`",
-        before=[SymlinkEntry("foo", "/"), SymlinkEntry("bar", "/")],
+        prompt="create a symlink `foo bar` pointing to `.`",
+        before=[SymlinkEntry("foo", "."), SymlinkEntry("bar", ".")],
         after=[
-            SymlinkEntry("foo", "/"),
-            SymlinkEntry("bar", "/"),
-            SymlinkEntry("foo bar", "/"),
+            SymlinkEntry("foo", "."),
+            SymlinkEntry("bar", "."),
+            SymlinkEntry("foo bar", "."),
         ],
     ),
 ]
