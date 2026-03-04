@@ -1,4 +1,4 @@
-use crate::changes::{ChangeSummary, commit_changes_silent, summarize_changes};
+use crate::changes::{ChangeSummary, summarize_changes};
 use crate::executor::{Sandbox, destroy_sandbox, run_shell_command_in_sandbox};
 use anyhow::{Context, Result};
 use rmcp::schemars::JsonSchema;
@@ -6,15 +6,19 @@ use rmcp::{
     Json, Peer, RoleServer, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CreateElicitationRequestParams, ElicitationAction, ElicitationSchema, ServerCapabilities,
-        ServerInfo,
+        CreateElicitationRequestParams, ElicitationAction, ElicitationSchema, EnumSchema,
+        ServerCapabilities, ServerInfo,
     },
+    serde_json,
     service::ElicitationMode,
     tool, tool_handler, tool_router,
     transport::stdio,
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ShellRequest {
@@ -32,7 +36,6 @@ pub struct ListChangesRequest {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeAction {
-    Commit,
     Abort,
     Stage,
 }
@@ -49,12 +52,6 @@ pub struct DecideChangesRequest {
 pub enum StagedChangesDecision {
     Abort,
     Stage,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct CommitChangesRequest {
-    pub cwd: Option<String>,
-    pub sandbox_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -88,13 +85,32 @@ pub struct DecideChangesResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct CommitChangesResponse {
-    pub cwd: String,
-    pub sandbox_dir: String,
-    pub committed: bool,
-    pub previous_changed_files: Vec<ChangeSummary>,
-    pub remaining_changed_files: Vec<ChangeSummary>,
-    pub message: String,
+pub struct AskUserRequest {
+    pub questions: Vec<AskUserQuestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AskUserQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    pub options: Vec<AskUserOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AskUserOption {
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AskUserResponse {
+    pub answers: BTreeMap<String, AskUserAnswer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AskUserAnswer {
+    pub answers: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -156,56 +172,146 @@ impl AgfsMcpServer {
         Sandbox::new_at(sandbox_dir).map(Some)
     }
 
-    fn build_commit_confirmation_message(
-        &self,
-        cwd: &Path,
-        sandbox: &Sandbox,
-        changed_files: &[ChangeSummary],
-    ) -> String {
-        let mut message = format!(
-            "Allow agfs to commit {} staged change{} into `{}`?\nThis writes the staged files from `{}` into the real workspace.",
-            changed_files.len(),
-            if changed_files.len() == 1 { "" } else { "s" },
-            cwd.display(),
-            sandbox.root.display(),
-        );
+    fn validate_ask_user_request(request: &AskUserRequest) -> Result<(), String> {
+        if request.questions.is_empty() {
+            return Err("ask_user requires at least one question.".into());
+        }
+        if request.questions.len() > 3 {
+            return Err("ask_user supports at most three questions.".into());
+        }
 
-        if !changed_files.is_empty() {
-            message.push_str("\n\nFiles:");
-            for change in changed_files.iter().take(5) {
-                let path = change
-                    .cwd_relative_path
-                    .as_deref()
-                    .unwrap_or(change.path.as_str());
-                message.push_str("\n- ");
-                message.push_str(path);
+        let mut question_ids = HashSet::new();
+        for question in &request.questions {
+            if question.id.trim().is_empty() {
+                return Err("ask_user question id must not be empty.".into());
             }
-            if changed_files.len() > 5 {
-                message.push_str(&format!("\n- ... and {} more", changed_files.len() - 5));
+            if !question_ids.insert(question.id.as_str()) {
+                return Err(format!(
+                    "ask_user question id `{}` must be unique.",
+                    question.id
+                ));
+            }
+            if question.header.trim().is_empty() {
+                return Err(format!(
+                    "ask_user question `{}` must have a non-empty header.",
+                    question.id
+                ));
+            }
+            if question.header.chars().count() > 12 {
+                return Err(format!(
+                    "ask_user question `{}` header must be 12 characters or fewer.",
+                    question.id
+                ));
+            }
+            if question.question.trim().is_empty() {
+                return Err(format!(
+                    "ask_user question `{}` must have a non-empty prompt.",
+                    question.id
+                ));
+            }
+            if !(2..=3).contains(&question.options.len()) {
+                return Err(format!(
+                    "ask_user question `{}` must provide two or three options.",
+                    question.id
+                ));
+            }
+
+            let mut labels = HashSet::new();
+            for option in &question.options {
+                if option.label.trim().is_empty() {
+                    return Err(format!(
+                        "ask_user question `{}` has an empty option label.",
+                        question.id
+                    ));
+                }
+                if option.description.trim().is_empty() {
+                    return Err(format!(
+                        "ask_user question `{}` option `{}` must have a description.",
+                        question.id, option.label
+                    ));
+                }
+                if !labels.insert(option.label.as_str()) {
+                    return Err(format!(
+                        "ask_user question `{}` option labels must be unique.",
+                        question.id
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn build_ask_user_message(questions: &[AskUserQuestion]) -> String {
+        let mut message = String::from("Answer the following questions to continue.");
+
+        for question in questions {
+            message.push_str("\n\n");
+            message.push_str(&question.header);
+            message.push_str(": ");
+            message.push_str(&question.question);
+
+            for option in &question.options {
+                message.push_str("\n- ");
+                message.push_str(&option.label);
+                message.push_str(": ");
+                message.push_str(&option.description);
             }
         }
 
         message
     }
 
-    async fn request_commit_confirmation(
-        &self,
+    fn build_ask_user_schema(questions: &[AskUserQuestion]) -> Result<ElicitationSchema, String> {
+        let mut schema = ElicitationSchema::builder()
+            .title("Ask user")
+            .description("Answer the selected options for each question.");
+
+        for question in questions {
+            let option_labels = question
+                .options
+                .iter()
+                .map(|option| option.label.clone())
+                .collect::<Vec<_>>();
+            let option_titles = question
+                .options
+                .iter()
+                .map(|option| format!("{}: {}", option.label, option.description))
+                .collect::<Vec<_>>();
+
+            let enum_schema = EnumSchema::builder(option_labels)
+                .title(question.header.clone())
+                .description(question.question.clone())
+                .enum_titles(option_titles)
+                .map_err(|err| {
+                    format!(
+                        "Failed to build ask_user schema for `{}`: {err}",
+                        question.id
+                    )
+                })?
+                .build();
+
+            schema = schema.required_enum_schema(question.id.clone(), enum_schema);
+        }
+
+        schema
+            .build()
+            .map_err(|err| format!("Failed to build ask_user schema: {err}"))
+    }
+
+    async fn request_user_answers(
         peer: &Peer<RoleServer>,
-        cwd: &Path,
-        sandbox: &Sandbox,
-        changed_files: &[ChangeSummary],
-    ) -> Result<bool, String> {
+        request: &AskUserRequest,
+    ) -> Result<AskUserResponse, String> {
         if !peer
             .supported_elicitation_modes()
             .contains(&ElicitationMode::Form)
         {
-            return Err("MCP client does not support elicitation for commit approval.".into());
+            return Err("MCP client does not support form elicitation for ask_user.".into());
         }
 
-        let requested_schema = ElicitationSchema::builder()
-            .build()
-            .map_err(|err| format!("Failed to build commit approval schema: {err}"))?;
-        let message = self.build_commit_confirmation_message(cwd, sandbox, changed_files);
+        let requested_schema = Self::build_ask_user_schema(&request.questions)?;
+        let message = Self::build_ask_user_message(&request.questions);
         let response = peer
             .create_elicitation(CreateElicitationRequestParams::FormElicitationParams {
                 meta: None,
@@ -213,9 +319,49 @@ impl AgfsMcpServer {
                 requested_schema,
             })
             .await
-            .map_err(|err| format!("Failed to request commit approval: {err}"))?;
+            .map_err(|err| format!("Failed to request ask_user input: {err}"))?;
 
-        Ok(matches!(response.action, ElicitationAction::Accept))
+        match response.action {
+            ElicitationAction::Accept => {
+                let Some(content) = response.content else {
+                    return Err("ask_user did not return any answers.".into());
+                };
+                let raw_answers = serde_json::from_value::<BTreeMap<String, String>>(content)
+                    .map_err(|err| format!("Failed to parse ask_user answers: {err}"))?;
+
+                let mut answers = BTreeMap::new();
+                for question in &request.questions {
+                    let Some(answer) = raw_answers.get(&question.id) else {
+                        return Err(format!(
+                            "ask_user response was missing an answer for `{}`.",
+                            question.id
+                        ));
+                    };
+
+                    if !question
+                        .options
+                        .iter()
+                        .any(|option| option.label == *answer)
+                    {
+                        return Err(format!(
+                            "ask_user response for `{}` was not one of the provided options.",
+                            question.id
+                        ));
+                    }
+
+                    answers.insert(
+                        question.id.clone(),
+                        AskUserAnswer {
+                            answers: vec![answer.clone()],
+                        },
+                    );
+                }
+
+                Ok(AskUserResponse { answers })
+            }
+            ElicitationAction::Decline => Err("ask_user was declined by the user.".into()),
+            ElicitationAction::Cancel => Err("ask_user was cancelled by the user.".into()),
+        }
     }
 }
 
@@ -223,7 +369,7 @@ impl AgfsMcpServer {
 impl AgfsMcpServer {
     #[tool(
         name = "shell",
-        description = "Run a shell command inside an agfs sandbox. The command result includes the current staged files so the agent can decide whether to commit, abort, or keep staging."
+        description = "Run a shell command inside an agfs sandbox. The command result includes the current staged files so the agent can decide whether to abort them or keep them staged."
     )]
     async fn shell(
         &self,
@@ -255,11 +401,7 @@ impl AgfsMcpServer {
             available_actions: if changed_files.is_empty() {
                 Vec::new()
             } else {
-                vec![
-                    ChangeAction::Commit,
-                    ChangeAction::Abort,
-                    ChangeAction::Stage,
-                ]
+                vec![ChangeAction::Abort, ChangeAction::Stage]
             },
             changed_files,
         }))
@@ -367,76 +509,23 @@ impl AgfsMcpServer {
     }
 
     #[tool(
-        name = "commit_changes",
-        description = "Commit the current agfs staged changes into the real workspace.",
+        name = "ask_user",
+        description = "Ask the user one to three short multiple-choice questions and wait for a response.",
         annotations(
-            title = "Commit staged changes",
+            title = "Ask the user",
             read_only_hint = false,
-            destructive_hint = true,
+            destructive_hint = false,
             open_world_hint = false,
             idempotent_hint = false
         )
     )]
-    async fn commit_changes(
+    async fn ask_user(
         &self,
         peer: Peer<RoleServer>,
-        Parameters(request): Parameters<CommitChangesRequest>,
-    ) -> Result<Json<CommitChangesResponse>, String> {
-        let cwd = self
-            .resolve_cwd(request.cwd.as_deref())
-            .map_err(|err| err.to_string())?;
-        let sandbox_dir = self.resolve_sandbox_dir(&cwd, request.sandbox_dir.as_deref());
-        let Some(sandbox) = self
-            .open_sandbox(&cwd, request.sandbox_dir.as_deref(), false)
-            .map_err(|err| err.to_string())?
-        else {
-            return Ok(Json(CommitChangesResponse {
-                cwd: cwd.display().to_string(),
-                sandbox_dir: sandbox_dir.display().to_string(),
-                committed: false,
-                previous_changed_files: Vec::new(),
-                remaining_changed_files: Vec::new(),
-                message: "No staged changes found.".into(),
-            }));
-        };
-
-        let previous_changed_files =
-            summarize_changes(&sandbox, &cwd).map_err(|err| err.to_string())?;
-        if previous_changed_files.is_empty() {
-            return Ok(Json(CommitChangesResponse {
-                cwd: cwd.display().to_string(),
-                sandbox_dir: sandbox.root.display().to_string(),
-                committed: false,
-                previous_changed_files,
-                remaining_changed_files: Vec::new(),
-                message: "No staged changes found.".into(),
-            }));
-        }
-
-        if !self
-            .request_commit_confirmation(&peer, &cwd, &sandbox, &previous_changed_files)
-            .await?
-        {
-            return Ok(Json(CommitChangesResponse {
-                cwd: cwd.display().to_string(),
-                sandbox_dir: sandbox.root.display().to_string(),
-                committed: false,
-                previous_changed_files: previous_changed_files.clone(),
-                remaining_changed_files: previous_changed_files,
-                message: "Commit was not approved. Kept staged changes in the sandbox.".into(),
-            }));
-        }
-
-        commit_changes_silent(&sandbox).map_err(|err| err.to_string())?;
-
-        Ok(Json(CommitChangesResponse {
-            cwd: cwd.display().to_string(),
-            sandbox_dir: sandbox.root.display().to_string(),
-            committed: true,
-            previous_changed_files,
-            remaining_changed_files: Vec::new(),
-            message: "Committed staged changes.".to_string(),
-        }))
+        Parameters(request): Parameters<AskUserRequest>,
+    ) -> Result<Json<AskUserResponse>, String> {
+        Self::validate_ask_user_request(&request)?;
+        Ok(Json(Self::request_user_answers(&peer, &request).await?))
     }
 }
 
@@ -444,7 +533,7 @@ impl AgfsMcpServer {
 impl ServerHandler for AgfsMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Use `shell` to run a command. Inspect `changed_files`, then call `decide_changes` with `abort` or `stage`, or call `commit_changes` to request user approval before writing the staged changes into the workspace.",
+            "Use `shell` to run a command in the sandbox. Inspect `changed_files`, then call `decide_changes` with `abort` or `stage`. Use `ask_user` when you need a short multiple-choice answer from the user.",
         )
     }
 }
@@ -453,4 +542,85 @@ pub async fn serve_mcp() -> Result<()> {
     let server = AgfsMcpServer::new(std::env::current_dir()?);
     server.serve(stdio()).await?.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rmcp::serde_json::json;
+
+    fn sample_ask_request() -> AskUserRequest {
+        AskUserRequest {
+            questions: vec![AskUserQuestion {
+                id: "sandbox_choice".into(),
+                header: "Sandbox".into(),
+                question: "What should happen to the staged changes?".into(),
+                options: vec![
+                    AskUserOption {
+                        label: "Abort".into(),
+                        description: "Discard the staged changes.".into(),
+                    },
+                    AskUserOption {
+                        label: "Stage".into(),
+                        description: "Keep the staged changes for later.".into(),
+                    },
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn ask_user_validation_rejects_too_many_questions() {
+        let request = AskUserRequest {
+            questions: vec![
+                sample_ask_request().questions[0].clone(),
+                AskUserQuestion {
+                    id: "second".into(),
+                    header: "Second".into(),
+                    question: "Second question?".into(),
+                    options: sample_ask_request().questions[0].options.clone(),
+                },
+                AskUserQuestion {
+                    id: "third".into(),
+                    header: "Third".into(),
+                    question: "Third question?".into(),
+                    options: sample_ask_request().questions[0].options.clone(),
+                },
+                AskUserQuestion {
+                    id: "fourth".into(),
+                    header: "Fourth".into(),
+                    question: "Fourth question?".into(),
+                    options: sample_ask_request().questions[0].options.clone(),
+                },
+            ],
+        };
+
+        let error = AgfsMcpServer::validate_ask_user_request(&request).unwrap_err();
+        assert_eq!(error, "ask_user supports at most three questions.");
+    }
+
+    #[test]
+    fn ask_user_schema_uses_question_ids_and_option_labels() {
+        let request = sample_ask_request();
+        let schema = AgfsMcpServer::build_ask_user_schema(&request.questions).unwrap();
+        let json = serde_json::to_value(schema).unwrap();
+
+        assert_eq!(json["required"], json!(["sandbox_choice"]));
+        assert_eq!(
+            json["properties"]["sandbox_choice"]["title"],
+            json!("Sandbox")
+        );
+        assert_eq!(
+            json["properties"]["sandbox_choice"]["description"],
+            json!("What should happen to the staged changes?")
+        );
+        assert_eq!(
+            json["properties"]["sandbox_choice"]["oneOf"][0]["const"],
+            json!("Abort")
+        );
+        assert_eq!(
+            json["properties"]["sandbox_choice"]["oneOf"][1]["const"],
+            json!("Stage")
+        );
+    }
 }

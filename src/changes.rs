@@ -154,10 +154,6 @@ pub fn commit_changes(sandbox: &Sandbox) -> Result<()> {
     commit_changes_with_output(sandbox, true)
 }
 
-pub fn commit_changes_silent(sandbox: &Sandbox) -> Result<()> {
-    commit_changes_with_output(sandbox, false)
-}
-
 fn commit_changes_with_output(sandbox: &Sandbox, verbose: bool) -> Result<()> {
     let changes = detect_changes(sandbox)?;
     if changes.is_empty() {
