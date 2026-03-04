@@ -1,5 +1,4 @@
-data/results/
-data/roots/
+data/
 __pycache__
 /target
 .staging

@@ -19,7 +19,7 @@ from typing import TextIO
 import pyte
 
 from scripts.agent import Agent
-from scripts.consts import ROOTS_DIR, TERM_BLUE, TERM_GREEN, TERM_RED, TERM_RESET
+from scripts.consts import DATA_DIR, TERM_BLUE, TERM_GREEN, TERM_RED, TERM_RESET
 from scripts.records import FsCheckResult, OutputCheckResult, Result, ToolCall
 from scripts.tasks import Task
 
@@ -55,7 +55,6 @@ class Runner:
         self.result_dir = result_dir
         self.timeout = timeout
         self._timed_out = False
-        self.roots_dir = ROOTS_DIR
         self.root_path = self._new_root_path()
         self.root_link = result_dir / "root"
         self.cwd = self.root_path / "project"
@@ -110,10 +109,10 @@ class Runner:
 
     def _new_root_path(self) -> Path:
         timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        return self.roots_dir / f"{timestamp}-{os.getpid()}"
+        return DATA_DIR / f"{timestamp}-{os.getpid()}"
 
     def _prepare_run(self) -> None:
-        self.roots_dir.mkdir(parents=True, exist_ok=True)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.root_path.mkdir(parents=True, exist_ok=True)
         self.result_dir.mkdir(parents=True, exist_ok=True)
         self.root_link.symlink_to(self.root_path)
