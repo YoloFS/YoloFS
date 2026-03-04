@@ -207,16 +207,10 @@ fn exec_in_chroot(sandbox: &Sandbox, workdir: &PathBuf, command: &[String]) -> !
     env::set_current_dir("/").expect("Failed to chdir to /");
     env::set_current_dir(workdir).expect("Failed to chdir to workdir");
 
-    let shell = "/bin/sh".to_string();
-    println!("Shell: {}", shell);
-    let status = if command.is_empty() {
-        Command::new(&shell).status()
-    } else {
-        Command::new(&shell)
-            .arg("-c")
-            .arg(command.join(" "))
-            .status()
-    };
+    let status = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command.join(" "))
+        .status();
 
     match status {
         Ok(s) => std::process::exit(s.code().unwrap_or(1)),

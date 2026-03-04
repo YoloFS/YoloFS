@@ -6,12 +6,21 @@ mod executor;
 use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
+use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use changes::{commit_changes, show_summary};
 use executor::{Sandbox, run_in_sandbox};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChangeAction {
+    Commit,
+    Abort,
+    Stage,
+}
 
 #[derive(Parser)]
 #[command(
@@ -29,12 +38,54 @@ struct Cli {
     args: Vec<String>,
 }
 
-fn prompt_commit() -> bool {
-    print!("\nCommit these changes? [y/N] ");
-    io::stdout().flush().unwrap();
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+fn parse_change_action(input: &str) -> Option<ChangeAction> {
+    match input.trim().to_lowercase().as_str() {
+        "c" | "commit" => Some(ChangeAction::Commit),
+        "a" | "abort" => Some(ChangeAction::Abort),
+        "" | "s" | "stage" => Some(ChangeAction::Stage),
+        _ => None,
+    }
+}
+
+fn prompt_change_action() -> ChangeAction {
+    loop {
+        print!("\nChoose [c]ommit, [a]bort, or [s]tage [default: stage]: ");
+        io::stdout().flush().unwrap();
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+
+        if let Some(action) = parse_change_action(&input) {
+            return action;
+        }
+
+        println!("Enter commit, abort, or stage.");
+    }
+}
+
+fn prepare_dir_for_removal(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+
+    if file_type.is_symlink() || !file_type.is_dir() {
+        return Ok(());
+    }
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    for entry in fs::read_dir(path)? {
+        prepare_dir_for_removal(&entry?.path())?;
+    }
+
+    Ok(())
+}
+
+fn abort_changes(sandbox: &Sandbox) -> Result<()> {
+    if sandbox.root.exists() {
+        prepare_dir_for_removal(&sandbox.root)?;
+        fs::remove_dir_all(&sandbox.root)?;
+    }
+    println!("Aborted. Removed sandbox: {}", sandbox.root.display());
+    Ok(())
 }
 
 fn default_sandbox_dir() -> Result<PathBuf> {
@@ -57,10 +108,12 @@ fn run() -> Result<ExitCode> {
     };
 
     if show_summary(&sandbox)? {
-        if prompt_commit() {
-            commit_changes(&sandbox)?;
-        } else {
-            println!("Not committing. Sandbox at: {}", sandbox.root.display());
+        match prompt_change_action() {
+            ChangeAction::Commit => commit_changes(&sandbox)?,
+            ChangeAction::Abort => abort_changes(&sandbox)?,
+            ChangeAction::Stage => {
+                println!("Staged. Sandbox at: {}", sandbox.root.display());
+            }
         }
     }
 
