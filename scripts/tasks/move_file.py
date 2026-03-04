@@ -1,27 +1,27 @@
 from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # File Move: project, parent, symlink file, symlink dir file, spaces
-FILE_RENAME_TASKS: list[Task] = [
+MOVE_FILE_TASKS: list[Task] = [
     Task(
-        name="move_project_file",
+        name="move_file_project",
         prompt="move file `foo` to `bar`",
         before=[FileEntry("foo", "hello")],
         after=[FileEntry("bar", "hello")],
     ),
     Task(
-        name="move_parent_file",
+        name="move_file_parent",
         prompt="move file `../foo` to `../bar`",
         before=[FileEntry("../foo", "hello")],
         after=[FileEntry("../bar", "hello")],
     ),
     Task(
-        name="move_symlink_file",
+        name="move_file_symlink",
         prompt="move file `foo` to `bar`",
         before=[FileEntry("../foo"), SymlinkEntry("foo", "../foo")],
         after=[FileEntry("../foo"), SymlinkEntry("bar", "../foo")],
     ),
     Task(
-        name="move_symlink_dir_file",
+        name="move_file_symlink_dir",
         prompt="move file `baz/foo` to `baz/bar`",
         before=[
             DirEntry("../baz"),

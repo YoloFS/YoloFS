@@ -1,21 +1,21 @@
 from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # File Copy: project, parent, symlink file, symlink dir file, spaces
-FILE_COPY_TASKS: list[Task] = [
+COPY_FILE_TASKS: list[Task] = [
     Task(
-        name="copy_project_file",
+        name="copy_file_project",
         prompt="copy file `foo` to `bar`",
         before=[FileEntry("foo", "hello")],
         after=[FileEntry("foo", "hello"), FileEntry("bar", "hello")],
     ),
     Task(
-        name="copy_parent_file",
+        name="copy_file_parent",
         prompt="copy file `../foo` to `../bar`",
         before=[FileEntry("../foo", "hello")],
         after=[FileEntry("../foo", "hello"), FileEntry("../bar", "hello")],
     ),
     Task(
-        name="copy_symlink_file",
+        name="copy_file_symlink",
         prompt="copy file `foo` to `bar`",
         before=[FileEntry("../foo", "hello"), SymlinkEntry("foo", "../foo")],
         after=[
@@ -25,7 +25,7 @@ FILE_COPY_TASKS: list[Task] = [
         ],
     ),
     Task(
-        name="copy_symlink_dir_file",
+        name="copy_file_symlink_dir",
         prompt="copy file `baz/foo` to `baz/bar`",
         before=[
             DirEntry("../baz"),

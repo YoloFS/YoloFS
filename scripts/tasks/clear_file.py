@@ -1,27 +1,27 @@
 from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # Clear: project, parent, symlink file, symlink dir file, spaces
-FILE_CLEAR_TASKS: list[Task] = [
+CLEAR_FILE_TASKS: list[Task] = [
     Task(
-        name="clear_project_file",
+        name="clear_file_project",
         prompt="clear the content of file `foo`",
         before=[FileEntry("foo", "hello")],
         after=[FileEntry("foo", "")],
     ),
     Task(
-        name="clear_parent_file",
+        name="clear_file_parent",
         prompt="clear the content of file `../foo`",
         before=[FileEntry("../foo", "hello")],
         after=[FileEntry("../foo", "")],
     ),
     Task(
-        name="clear_symlink_file",
+        name="clear_file_symlink",
         prompt="clear the content of file `foo`",
         before=[FileEntry("../foo", "hello"), SymlinkEntry("foo", "../foo")],
         after=[FileEntry("../foo", ""), SymlinkEntry("foo", "../foo")],
     ),
     Task(
-        name="clear_symlink_dir_file",
+        name="clear_file_symlink_dir",
         prompt="clear the content of file `baz/foo`",
         before=[
             DirEntry("../baz"),

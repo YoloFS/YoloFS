@@ -1,14 +1,14 @@
 from scripts.tasks.base import DirEntry, FileEntry, Task
 
 # Dir Create: project, parent, spaces, missing parent
-DIR_CREATE_TASKS: list[Task] = [
+CREATE_DIR_TASKS: list[Task] = [
     Task(
-        name="create_project_dir",
+        name="create_dir_project",
         prompt="create a new directory `foo`",
         after=[DirEntry("foo")],
     ),
     Task(
-        name="create_parent_dir",
+        name="create_dir_parent",
         prompt="create a new directory `../foo`",
         after=[DirEntry("../foo")],
     ),

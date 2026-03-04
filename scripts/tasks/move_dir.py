@@ -1,15 +1,15 @@
 from scripts.tasks.base import DirEntry, FileEntry, Task
 
 # Dir Move: project, parent, spaces, non-empty
-DIR_RENAME_TASKS: list[Task] = [
+MOVE_DIR_TASKS: list[Task] = [
     Task(
-        name="move_project_dir",
+        name="move_dir_project",
         prompt="move directory `foo` to `bar`",
         before=[DirEntry("foo")],
         after=[DirEntry("bar")],
     ),
     Task(
-        name="move_parent_dir",
+        name="move_dir_parent",
         prompt="move directory `../foo` to `../bar`",
         before=[DirEntry("../foo")],
         after=[DirEntry("../bar")],
@@ -21,7 +21,7 @@ DIR_RENAME_TASKS: list[Task] = [
         after=[DirEntry("bar baz"), DirEntry("foo"), DirEntry("bar")],
     ),
     Task(
-        name="move_nonempty_dir",
+        name="move_dir_nonempty",
         prompt="move directory `foo` to `bar`",
         before=[FileEntry("foo/a.txt", "A"), FileEntry("foo/sub/b.txt", "B")],
         after=[FileEntry("bar/a.txt", "A"), FileEntry("bar/sub/b.txt", "B")],

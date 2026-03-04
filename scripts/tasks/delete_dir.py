@@ -1,15 +1,15 @@
 from scripts.tasks.base import DirEntry, FileEntry, Task
 
 # Dir Delete: project, parent, spaces, non-empty
-DIR_DELETE_TASKS: list[Task] = [
+DELETE_DIR_TASKS: list[Task] = [
     Task(
-        name="delete_project_dir",
+        name="delete_dir_project",
         prompt="delete directory `foo`",
         before=[DirEntry("foo")],
         after=[],
     ),
     Task(
-        name="delete_parent_dir",
+        name="delete_dir_parent",
         prompt="delete directory `../foo`",
         before=[DirEntry("../foo")],
         after=[],
@@ -21,7 +21,7 @@ DIR_DELETE_TASKS: list[Task] = [
         after=[DirEntry("foo"), DirEntry("bar")],
     ),
     Task(
-        name="delete_nonempty_dir",
+        name="delete_dir_nonempty",
         prompt="delete directory `foo` and all its contents",
         before=[FileEntry("foo/bar")],
         after=[],

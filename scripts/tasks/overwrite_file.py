@@ -1,27 +1,27 @@
 from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # Overwrite: project, parent, symlink file, symlink dir file, spaces
-FILE_OVERWRITE_TASKS: list[Task] = [
+OVERWRITE_FILE_TASKS: list[Task] = [
     Task(
-        name="overwrite_project_file",
+        name="overwrite_file_project",
         prompt="overwrite file `foo` with text `hello`",
         before=[FileEntry("foo", "foo")],
         after=[FileEntry("foo", "hello")],
     ),
     Task(
-        name="overwrite_parent_file",
+        name="overwrite_file_parent",
         prompt="overwrite file `../foo` with text `hello`",
         before=[FileEntry("../foo", "foo")],
         after=[FileEntry("../foo", "hello")],
     ),
     Task(
-        name="overwrite_symlink_file",
+        name="overwrite_file_symlink",
         prompt="overwrite file `foo` with text `hello`",
         before=[FileEntry("../foo", "foo"), SymlinkEntry("foo", "../foo")],
         after=[FileEntry("../foo", "hello"), SymlinkEntry("foo", "../foo")],
     ),
     Task(
-        name="overwrite_symlink_dir_file",
+        name="overwrite_file_symlink_dir",
         prompt="overwrite file `baz/foo` with text `hello`",
         before=[
             DirEntry("../baz"),

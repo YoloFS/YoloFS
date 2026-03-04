@@ -1,27 +1,27 @@
 from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # Read: project, parent, symlink file, symlink dir file, spaces
-FILE_READ_TASKS: list[Task] = [
+READ_FILE_TASKS: list[Task] = [
     Task(
-        name="read_project_file",
+        name="read_file_project",
         prompt="read file `foo`",
         before=[FileEntry("foo", "bar")],
         outputs=["bar"],
     ),
     Task(
-        name="read_parent_file",
+        name="read_file_parent",
         prompt="read file `../foo`",
         before=[FileEntry("../foo", "bar")],
         outputs=["bar"],
     ),
     Task(
-        name="read_symlink_file",
+        name="read_file_symlink",
         prompt="read file `foo`",
         before=[FileEntry("../foo", "bar"), SymlinkEntry("foo", "../foo")],
         outputs=["bar"],
     ),
     Task(
-        name="read_symlink_dir_file",
+        name="read_file_symlink_dir",
         prompt="read file `baz/foo`",
         before=[
             DirEntry("../baz"),

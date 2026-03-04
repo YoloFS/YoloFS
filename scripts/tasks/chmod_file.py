@@ -1,27 +1,27 @@
 from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # Chmod: project, parent, symlink file, symlink dir file, spaces
-CHMOD_TASKS: list[Task] = [
+CHMOD_FILE_TASKS: list[Task] = [
     Task(
-        name="chmod_project_file",
+        name="chmod_file_project",
         prompt="change permissions of file `foo` to `600`",
         before=[FileEntry("foo", "hello", 0o644)],
         after=[FileEntry("foo", "hello", 0o600)],
     ),
     Task(
-        name="chmod_parent_file",
+        name="chmod_file_parent",
         prompt="change permissions of file `../foo` to `600`",
         before=[FileEntry("../foo", "hello", 0o644)],
         after=[FileEntry("../foo", "hello", 0o600)],
     ),
     Task(
-        name="chmod_symlink_file",
+        name="chmod_file_symlink",
         prompt="change permissions of file `foo` to `600`",
         before=[FileEntry("../foo", "hello", 0o644), SymlinkEntry("foo", "../foo")],
         after=[FileEntry("../foo", "hello", 0o600), SymlinkEntry("foo", "../foo")],
     ),
     Task(
-        name="chmod_symlink_dir_file",
+        name="chmod_file_symlink_dir",
         prompt="change permissions of file `baz/foo` to `600`",
         before=[
             DirEntry("../baz"),

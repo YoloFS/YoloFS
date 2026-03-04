@@ -1,27 +1,27 @@
 from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # Append: project, parent, symlink file, symlink dir file, spaces
-FILE_APPEND_TASKS: list[Task] = [
+APPEND_FILE_TASKS: list[Task] = [
     Task(
-        name="append_project_file",
+        name="append_file_project",
         prompt="append text `hello` to file `foo`",
         before=[FileEntry("foo", "")],
         after=[FileEntry("foo", "hello")],
     ),
     Task(
-        name="append_parent_file",
+        name="append_file_parent",
         prompt="append text `hello` to file `../foo`",
         before=[FileEntry("../foo", "")],
         after=[FileEntry("../foo", "hello")],
     ),
     Task(
-        name="append_symlink_file",
+        name="append_file_symlink",
         prompt="append text `hello` to file `foo`",
         before=[FileEntry("../foo", ""), SymlinkEntry("foo", "../foo")],
         after=[FileEntry("../foo", "hello"), SymlinkEntry("foo", "../foo")],
     ),
     Task(
-        name="append_symlink_dir_file",
+        name="append_file_symlink_dir",
         prompt="append text `hello` to file `baz/foo`",
         before=[
             DirEntry("../baz"),

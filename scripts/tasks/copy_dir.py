@@ -1,15 +1,15 @@
 from scripts.tasks.base import DirEntry, FileEntry, Task
 
 # Dir Copy: project, parent, spaces, non-empty
-DIR_COPY_TASKS: list[Task] = [
+COPY_DIR_TASKS: list[Task] = [
     Task(
-        name="copy_project_dir",
+        name="copy_dir_project",
         prompt="copy directory `foo` to `bar`",
         before=[DirEntry("foo")],
         after=[DirEntry("foo"), DirEntry("bar")],
     ),
     Task(
-        name="copy_parent_dir",
+        name="copy_dir_parent",
         prompt="copy directory `../foo` to `../bar`",
         before=[DirEntry("../foo")],
         after=[DirEntry("../foo"), DirEntry("../bar")],
@@ -26,7 +26,7 @@ DIR_COPY_TASKS: list[Task] = [
         ],
     ),
     Task(
-        name="copy_nonempty_dir",
+        name="copy_dir_nonempty",
         prompt="copy directory `foo` to `bar` including all files and subdirectories",
         before=[FileEntry("foo/a.txt", "A"), FileEntry("foo/sub/b.txt", "B")],
         after=[

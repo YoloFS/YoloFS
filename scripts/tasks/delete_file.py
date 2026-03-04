@@ -1,27 +1,27 @@
 from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # File Delete: project, parent, symlink file, symlink dir file, spaces
-FILE_DELETE_TASKS: list[Task] = [
+DELETE_FILE_TASKS: list[Task] = [
     Task(
-        name="delete_project_file",
+        name="delete_file_project",
         prompt="delete file `foo`",
         before=[FileEntry("foo")],
         after=[],
     ),
     Task(
-        name="delete_parent_file",
+        name="delete_file_parent",
         prompt="delete file `../foo`",
         before=[FileEntry("../foo")],
         after=[],
     ),
     Task(
-        name="delete_symlink_file",
+        name="delete_file_symlink",
         prompt="delete file `foo`",
         before=[FileEntry("../foo"), SymlinkEntry("foo", "../foo")],
         after=[FileEntry("../foo")],
     ),
     Task(
-        name="delete_symlink_dir_file",
+        name="delete_file_symlink_dir",
         prompt="delete file `baz/foo`",
         before=[
             DirEntry("../baz"),

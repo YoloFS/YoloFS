@@ -1,19 +1,19 @@
 from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # File Create: project, parent, symlink dir, spaces
-FILE_CREATE_TASKS: list[Task] = [
+CREATE_FILE_TASKS: list[Task] = [
     Task(
-        name="create_project_file",
+        name="create_file_project",
         prompt="create a new file `foo.txt`",
         after=[FileEntry("foo.txt")],
     ),
     Task(
-        name="create_parent_file",
+        name="create_file_parent",
         prompt="create a new file `../foo.txt`",
         after=[FileEntry("../foo.txt")],
     ),
     Task(
-        name="create_symlink_dir_file",
+        name="create_file_symlink_dir",
         prompt="create a new file `baz/foo.txt`",
         before=[DirEntry("../baz"), SymlinkEntry("baz", "../baz")],
         after=[

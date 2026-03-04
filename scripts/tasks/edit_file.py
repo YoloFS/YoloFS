@@ -1,27 +1,27 @@
 from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # Edit: project, parent, symlink file, symlink dir file, spaces
-FILE_EDIT_TASKS: list[Task] = [
+EDIT_FILE_TASKS: list[Task] = [
     Task(
-        name="edit_project_file",
+        name="edit_file_project",
         prompt="replace text `hello` with `replaced` in file `foo`",
         before=[FileEntry("foo", "hello")],
         after=[FileEntry("foo", "replaced")],
     ),
     Task(
-        name="edit_parent_file",
+        name="edit_file_parent",
         prompt="replace text `hello` with `replaced` in file `../foo`",
         before=[FileEntry("../foo", "hello")],
         after=[FileEntry("../foo", "replaced")],
     ),
     Task(
-        name="edit_symlink_file",
+        name="edit_file_symlink",
         prompt="replace text `hello` with `replaced` in file `foo`",
         before=[FileEntry("../foo", "hello"), SymlinkEntry("foo", "../foo")],
         after=[FileEntry("../foo", "replaced"), SymlinkEntry("foo", "../foo")],
     ),
     Task(
-        name="edit_symlink_dir_file",
+        name="edit_file_symlink_dir",
         prompt="replace text `hello` with `replaced` in file `baz/foo`",
         before=[
             DirEntry("../baz"),
