@@ -40,6 +40,8 @@ class CopilotAgent(Agent):
         return any(
             "confirm folder trust" in line
             or "do you trust the files in this folder" in line
+            or "allow directory access" in line
+            or "do you want to add these directories to the allowed list" in line
             for line in lines
         )
 
