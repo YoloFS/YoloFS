@@ -46,3 +46,18 @@ class FsCheckResult:
         if self.failed_reasons:
             result["failed_reasons"] = self.failed_reasons
         return result
+
+
+@dataclass
+class Result:
+    agent: str
+    prompt: str
+    cwd: str
+    asks: int
+    complete: bool
+    output_check: OutputCheckResult
+    fs_check: FsCheckResult
+    tool_calls: list[ToolCall]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

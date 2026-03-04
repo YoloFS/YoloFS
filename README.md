@@ -33,6 +33,6 @@ npm install -g @google/gemini-cli@0.29.0
 
 Install GitHub Copilot CLI 0.0.411
 ```bash
-npm install -g @github/copilot@0.0.411
+curl -fsSL https://gh.io/copilot-install | VERSION=0.0.411 bash
 ```
 

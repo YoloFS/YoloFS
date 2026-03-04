@@ -20,7 +20,7 @@ import pyte
 
 from scripts.agent import Agent
 from scripts.consts import ROOTS_DIR, TERM_BLUE, TERM_GREEN, TERM_RED, TERM_RESET
-from scripts.records import FsCheckResult, OutputCheckResult, ToolCall
+from scripts.records import FsCheckResult, OutputCheckResult, Result, ToolCall
 from scripts.tasks import Task
 
 STDOUT_FILENO = sys.stdout.fileno()
@@ -47,11 +47,14 @@ class Runner:
         agent: Agent,
         task: Task,
         result_dir: Path,
+        timeout: float | None = None,
     ) -> None:
         # Run configuration.
         self.agent = agent
         self.task = task
         self.result_dir = result_dir
+        self.timeout = timeout
+        self._timed_out = False
         self.roots_dir = ROOTS_DIR
         self.root_path = self._new_root_path()
         self.root_link = result_dir / "root"
@@ -102,21 +105,12 @@ class Runner:
         print(f"  Filesystem check: {'pass' if fs_check.success else 'fail'}")
         for reason in fs_check.failed_reasons:
             print(f"    {reason}")
-        success = outputs_check.success and fs_check.success
-        self._write_result(tool_calls, success, outputs_check, fs_check)
+        self._write_result(tool_calls, outputs_check, fs_check)
         print(f"{TERM_BLUE}Result saved to {self.result_dir}{TERM_RESET}")
 
     def _new_root_path(self) -> Path:
         timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        base_path = self.roots_dir / timestamp
-        if not base_path.exists():
-            return base_path
-        index = 1
-        while True:
-            candidate = self.roots_dir / f"{timestamp}-{index}"
-            if not candidate.exists():
-                return candidate
-            index += 1
+        return self.roots_dir / f"{timestamp}-{os.getpid()}"
 
     def _prepare_run(self) -> None:
         self.roots_dir.mkdir(parents=True, exist_ok=True)
@@ -134,24 +128,21 @@ class Runner:
     def _write_result(
         self,
         tool_calls: list[ToolCall],
-        success: bool,
         outputs_check: OutputCheckResult,
         fs_check: FsCheckResult,
     ) -> None:
-        result = {
-            "agent": self.agent.name,
-            "prompt": self.task.prompt,
-            "cwd": str(self.cwd),
-            "asks": self.ask_index,
-            "success": success,
-            "checks": {
-                "outputs": outputs_check.to_dict(),
-                "filesystem": fs_check.to_dict(),
-            },
-            "tool_calls": [tc.to_dict() for tc in tool_calls],
-        }
+        result = Result(
+            agent=self.agent.name,
+            prompt=self.task.prompt,
+            cwd=str(self.cwd),
+            asks=self.ask_index,
+            complete=not self._timed_out,
+            output_check=outputs_check,
+            fs_check=fs_check,
+            tool_calls=tool_calls,
+        )
         with (self.result_dir / "result.json").open("w") as f:
-            json.dump(result, f, indent=2)
+            json.dump(result.to_dict(), f, indent=2)
 
     def _start_process(self) -> None:
         master_fd, slave_fd = pty.openpty()
@@ -176,7 +167,12 @@ class Runner:
     def _run_loop(self) -> None:
         assert self.master_fd is not None
         assert self.process is not None
+        deadline = time.monotonic() + self.timeout if self.timeout is not None else None
         while self.process.poll() is None:
+            if deadline is not None and time.monotonic() > deadline:
+                self._timed_out = True
+                print(f"Task {self.task.name} timed out, moving on...")
+                return
             readable, _, _ = select.select(
                 [self.master_fd], [], [], self.agent.select_timeout
             )

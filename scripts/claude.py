@@ -56,12 +56,8 @@ class ClaudeAgent(Agent):
 
     def prepare_run(self, cwd: Path, result_dir: Path) -> None:
         project_dir = self.project_dir_for_cwd(cwd)
+        shutil.rmtree(project_dir, ignore_errors=True)
         project_dir.mkdir(parents=True, exist_ok=True)
-        for entry in project_dir.iterdir():
-            if entry.is_dir():
-                shutil.rmtree(entry)
-            else:
-                entry.unlink()
 
     def save_session(self, cwd: Path, result_dir: Path) -> Path | None:
         project_dir = self.project_dir_for_cwd(cwd)

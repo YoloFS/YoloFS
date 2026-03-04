@@ -2,35 +2,45 @@
 
 import argparse
 import os
-from datetime import datetime
+import shutil
 
+from scripts.agent import Agent
 from scripts.claude import ClaudeAgent
 from scripts.codex import CodexAgent
+from scripts.consts import RESULTS_DIR
 from scripts.gemini import GeminiAgent
 from scripts.opencode import OpenCodeAgent
-from scripts.consts import RESULTS_DIR
-from scripts.tasks import TASKS
 from scripts.runner import Runner
-
+from scripts.tasks import TASKS, Task
 
 AGENTS = [ClaudeAgent(), CodexAgent(), GeminiAgent(), OpenCodeAgent()]
+TASK_TIMEOUT = 3 * 60  # seconds
 
 
-def main(agent_name: str, prompt_keys: list[str]) -> None:
+def run_task(agent: Agent, task: Task, i: int) -> None:
+    result_dir = RESULTS_DIR / agent.name / task.name / str(i)
+    if result_dir.exists():
+        return
+    tmp_dir = RESULTS_DIR / agent.name / task.name / f"{i}.tmp"
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    Runner(agent=agent, task=task, result_dir=tmp_dir, timeout=TASK_TIMEOUT).run()
+    tmp_dir.rename(result_dir)
+
+
+def main(agent_name: str, keys: list[str], runs: int) -> None:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     agent = next(agent for agent in AGENTS if agent.name == agent_name)
-    tasks = [t for t in TASKS if t.name in prompt_keys]
-
-    for task in tasks:
-        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        result_dir = RESULTS_DIR / agent_name / task.name / timestamp
-        Runner(agent=agent, task=task, result_dir=result_dir).run()
-
+    tasks = [t for t in TASKS if t.name in keys]
+    for i in range(runs):
+        for task in tasks:
+            run_task(agent, task, i)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("agent_name", type=str, default="claude", nargs="?")
+    parser.add_argument("--runs", type=int, default=1)
     parser.add_argument(
         "--prompts",
         type=str,
@@ -39,4 +49,4 @@ if __name__ == "__main__":
         choices=[t.name for t in TASKS],
     )
     args = parser.parse_args()
-    main(args.agent_name, args.prompts)
+    main(args.agent_name, args.prompts, args.runs)
