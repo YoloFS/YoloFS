@@ -2,18 +2,16 @@
 
 mod changes;
 mod executor;
-mod sandbox;
 
-use anyhow::{Result, bail};
-use clap::{Parser, Subcommand};
+use anyhow::Result;
+use clap::Parser;
 use colored::Colorize;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use changes::{commit_changes, show_summary};
-use executor::run_in_sandbox;
-use sandbox::Sandbox;
+use executor::{Sandbox, run_in_sandbox};
 
 #[derive(Parser)]
 #[command(
@@ -22,38 +20,13 @@ use sandbox::Sandbox;
     about = "Run commands in a sandboxed overlay filesystem"
 )]
 struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
-
-    /// Don't commit or prompt for commit
-    #[arg(short = 'n', long)]
-    no_commit: bool,
-
-    /// Assume yes to commit prompt
-    #[arg(short = 'y', long)]
-    yes: bool,
-
-    /// Use existing sandbox directory
+    /// Use sandbox directory (default: ./.staging)
     #[arg(short = 'D', long, value_name = "DIR")]
     sandbox_dir: Option<PathBuf>,
-
-    /// Disable network access
-    #[arg(short = 'x', long)]
-    no_network: bool,
 
     /// Command to run
     #[arg(trailing_var_arg = true)]
     args: Vec<String>,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Show summary of changes in a sandbox
-    Summary { dir: PathBuf },
-    /// Commit changes from a sandbox
-    Commit { dir: PathBuf },
-    /// Explore a sandbox interactively
-    Explore { dir: Option<PathBuf> },
 }
 
 fn prompt_commit() -> bool {
@@ -64,70 +37,34 @@ fn prompt_commit() -> bool {
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
+fn default_sandbox_dir() -> Result<PathBuf> {
+    Ok(std::env::current_dir()?.join(".staging"))
+}
+
 fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
 
-    match cli.command {
-        Some(Commands::Summary { dir }) => {
-            let sandbox = Sandbox::new_at(dir)?;
-            if !sandbox.upperdir.exists() {
-                bail!("Not a valid sandbox directory");
-            }
-            show_summary(&sandbox)?;
-            Ok(ExitCode::SUCCESS)
-        }
+    let sandbox = match cli.sandbox_dir {
+        Some(d) => Sandbox::new_at(d)?,
+        None => Sandbox::new_at(default_sandbox_dir()?)?,
+    };
+    println!("{}: {}", "Sandbox".cyan(), sandbox.root.display());
 
-        Some(Commands::Commit { dir }) => {
-            let sandbox = Sandbox::new_at(dir)?;
-            if !sandbox.upperdir.exists() {
-                bail!("Not a valid sandbox directory");
-            }
+    let exit_code = if cli.args.is_empty() {
+        0
+    } else {
+        run_in_sandbox(&sandbox, &cli.args)?
+    };
+
+    if show_summary(&sandbox)? {
+        if prompt_commit() {
             commit_changes(&sandbox)?;
-            Ok(ExitCode::SUCCESS)
-        }
-
-        Some(Commands::Explore { dir }) => {
-            let sandbox = match dir {
-                Some(d) => Sandbox::new_at(d)?,
-                None => Sandbox::new_temp()?,
-            };
-            println!("{}: {}", "Sandbox".cyan(), sandbox.root.display());
-            let exit_code = run_in_sandbox(&sandbox, &[], cli.no_network)?;
-            if !cli.no_commit && show_summary(&sandbox)? {
-                if cli.yes || prompt_commit() {
-                    commit_changes(&sandbox)?;
-                } else {
-                    println!("Not committing. Sandbox at: {}", sandbox.root.display());
-                }
-            }
-            Ok(ExitCode::from(exit_code as u8))
-        }
-
-        None => {
-            if cli.args.is_empty() {
-                bail!("No command specified. Use --help for usage.");
-            }
-            let sandbox = match cli.sandbox_dir {
-                Some(d) => Sandbox::new_at(d)?,
-                None => Sandbox::new_temp()?,
-            };
-            if !sandbox.is_valid() {
-                bail!("Invalid sandbox directory");
-            }
-            println!("{}: {}", "Sandbox".cyan(), sandbox.root.display());
-            let exit_code = run_in_sandbox(&sandbox, &cli.args, cli.no_network)?;
-            if cli.no_commit {
-                println!("{}", sandbox.root.display());
-            } else if show_summary(&sandbox)? {
-                if cli.yes || prompt_commit() {
-                    commit_changes(&sandbox)?;
-                } else {
-                    println!("Not committing. Sandbox at: {}", sandbox.root.display());
-                }
-            }
-            Ok(ExitCode::from(exit_code as u8))
+        } else {
+            println!("Not committing. Sandbox at: {}", sandbox.root.display());
         }
     }
+
+    Ok(ExitCode::from(exit_code as u8))
 }
 
 fn main() -> ExitCode {

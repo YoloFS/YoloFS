@@ -10,5 +10,4 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 colored = "2"
 nix = { version = "0.29", features = ["mount", "fs", "sched", "process", "user", "signal"] }
-tempfile = "3"
 walkdir = "2"

@@ -1,6 +1,6 @@
 //! Change detection and commit functionality.
 
-use crate::sandbox::Sandbox;
+use crate::executor::Sandbox;
 use anyhow::Result;
 use colored::Colorize;
 use std::fs;

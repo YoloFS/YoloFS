@@ -1,6 +1,4 @@
-//! Command execution in sandboxed environment.
-
-use crate::sandbox::Sandbox;
+//! Sandbox directory management and command execution.
 use anyhow::{Context, Result};
 use nix::libc::{getpgrp, tcsetpgrp};
 use nix::mount::{MsFlags, mount};
@@ -17,6 +15,41 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const APPARMOR_USERNS_SYSCTL: &str = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns";
+
+/// Represents a sandbox directory structure.
+pub struct Sandbox {
+    pub root: PathBuf,
+    pub upperdir: PathBuf,
+    pub workdir: PathBuf,
+    pub temproot: PathBuf,
+}
+
+impl Sandbox {
+    /// Create a sandbox in an existing directory.
+    pub fn new_at(path: PathBuf) -> Result<Self> {
+        if !path.exists() {
+            fs::create_dir_all(&path).context("Failed to create sandbox directory")?;
+        }
+        Self::init(path)
+    }
+
+    fn init(root: PathBuf) -> Result<Self> {
+        let upperdir = root.join("upperdir");
+        let workdir = root.join("workdir");
+        let temproot = root.join("temproot");
+
+        fs::create_dir_all(&upperdir).context("Failed to create upperdir")?;
+        fs::create_dir_all(&workdir).context("Failed to create workdir")?;
+        fs::create_dir_all(&temproot).context("Failed to create temproot")?;
+
+        Ok(Self {
+            root,
+            upperdir,
+            workdir,
+            temproot,
+        })
+    }
+}
 
 /// Check if unprivileged user namespaces are allowed and try to enable them if not.
 fn ensure_userns_allowed() -> Result<()> {
@@ -174,7 +207,8 @@ fn exec_in_chroot(sandbox: &Sandbox, workdir: &PathBuf, command: &[String]) -> !
     env::set_current_dir("/").expect("Failed to chdir to /");
     env::set_current_dir(workdir).expect("Failed to chdir to workdir");
 
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let shell = "/bin/sh".to_string();
+    println!("Shell: {}", shell);
     let status = if command.is_empty() {
         Command::new(&shell).status()
     } else {
@@ -194,7 +228,7 @@ fn exec_in_chroot(sandbox: &Sandbox, workdir: &PathBuf, command: &[String]) -> !
 }
 
 /// Run a command inside the sandbox.
-pub fn run_in_sandbox(sandbox: &Sandbox, command: &[String], no_network: bool) -> Result<i32> {
+pub fn run_in_sandbox(sandbox: &Sandbox, command: &[String]) -> Result<i32> {
     // Ensure unprivileged user namespaces are allowed
     ensure_userns_allowed()?;
 
@@ -225,11 +259,8 @@ pub fn run_in_sandbox(sandbox: &Sandbox, command: &[String], no_network: bool) -
         }
         ForkResult::Child => {
             // Create namespaces
-            let mut flags =
+            let flags =
                 CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_NEWPID;
-            if no_network {
-                flags |= CloneFlags::CLONE_NEWNET;
-            }
 
             unshare(flags).expect("Failed to unshare");
 
