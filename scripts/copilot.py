@@ -22,7 +22,11 @@ class CopilotAgent(Agent):
 
     def is_screen_ready(self, screen: pyte.Screen) -> bool:
         lines = list(screen.display)
-        if any("Loading environment:" in line for line in lines):
+        last_idx = max((i for i, l in enumerate(lines) if l.strip()), default=-1)
+        if last_idx < 0:
+            return False
+        recent = lines[max(0, last_idx - 9): last_idx + 1]
+        if any("Loading environment:" in line for line in recent):
             return False
         return any(
             "Type @ to mention files" in line or "Confirm folder trust" in line
@@ -35,7 +39,10 @@ class CopilotAgent(Agent):
         return has_input_prompt and not self.is_busy(screen)
 
     def is_busy(self, screen: pyte.Screen) -> bool:
-        return any("Esc to cancel" in line for line in screen.display)
+        lines = list(screen.display)
+        last_idx = max((i for i, l in enumerate(lines) if l.strip()), default=-1)
+        recent = lines[max(0, last_idx - 6): last_idx + 1]
+        return any("Esc to cancel" in line for line in recent)
 
     def is_ask(self, screen: pyte.Screen) -> bool:
         lines = [line.lower() for line in screen.display]

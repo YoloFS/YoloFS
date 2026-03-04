@@ -20,6 +20,9 @@ class ClaudeAgent(Agent):
             "1. yes",
             "do you trust the contents of this directory",
             "is this a project you created or one you trust",
+            "is irreversible",
+            "confirm you want to run",
+            "shall i proceed",
         )
         lines = [line.lower() for line in screen.display]
         return any(marker in line for line in lines for marker in markers)
@@ -30,6 +33,12 @@ class ClaudeAgent(Agent):
             return "1"
         if any("y/n" in line or "(y/n)" in line or "[y/n]" in line for line in lines):
             return "y"
+        if any(
+            marker in line
+            for line in lines
+            for marker in ("is irreversible", "confirm you want to run", "shall i proceed")
+        ):
+            return "yes"
         return "1"
 
     def is_waiting_for_input(self, screen: pyte.Screen) -> bool:
