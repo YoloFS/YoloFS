@@ -5,7 +5,6 @@ import json
 import os
 import pty
 import select
-import shutil
 import signal
 import struct
 import subprocess
@@ -120,7 +119,6 @@ class Runner:
             index += 1
 
     def _prepare_run(self) -> None:
-        shutil.rmtree(self.result_dir, ignore_errors=True)
         self.roots_dir.mkdir(parents=True, exist_ok=True)
         self.root_path.mkdir(parents=True, exist_ok=True)
         self.result_dir.mkdir(parents=True, exist_ok=True)

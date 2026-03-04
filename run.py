@@ -2,6 +2,7 @@
 
 import argparse
 import os
+from datetime import datetime
 
 from scripts.claude import ClaudeAgent
 from scripts.codex import CodexAgent
@@ -21,7 +22,8 @@ def main(agent_name: str, prompt_keys: list[str]) -> None:
     tasks = [t for t in TASKS if t.name in prompt_keys]
 
     for task in tasks:
-        result_dir = RESULTS_DIR / f"{agent_name}" / task.name
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        result_dir = RESULTS_DIR / agent_name / task.name / timestamp
         Runner(agent=agent, task=task, result_dir=result_dir).run()
 
 
