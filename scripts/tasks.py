@@ -86,7 +86,7 @@ class Task:
 
 
 TASKS: list[Task] = [
-    # List
+    # List: project, parent, symlink, spaces
     Task(
         name="list_project_dir",
         prompt="list directory `.`",
@@ -101,11 +101,17 @@ TASKS: list[Task] = [
     ),
     Task(
         name="list_symlink_dir",
-        prompt="list directory `dir`",
-        before=[DirEntry("../dir"), FileEntry("../dir/foo"), FileEntry("../dir/bar"), SymlinkEntry("dir", "../dir")],
+        prompt="list directory `baz`",
+        before=[DirEntry("../baz"), FileEntry("../baz/foo"), FileEntry("../baz/bar"), SymlinkEntry("baz", "../baz")],
         outputs=["foo", "bar"],
     ),
-    # Read
+    Task(
+        name="list_dir_with_spaces",
+        prompt="list directory `foo bar`",
+        before=[DirEntry("foo bar"), FileEntry("foo bar/file1"), DirEntry("foo"), FileEntry("foo/file2"), DirEntry("bar"), FileEntry("bar/file3")],
+        outputs=["file1"],
+    ),
+    # Read: project, parent, symlink file, symlink dir file, spaces
     Task(
         name="read_project_file",
         prompt="read file `foo`",
@@ -126,11 +132,17 @@ TASKS: list[Task] = [
     ),
     Task(
         name="read_symlink_dir_file",
-        prompt="read file `dir/foo`",
-        before=[DirEntry("../dir"), FileEntry("../dir/foo", "bar"), SymlinkEntry("dir", "../dir")],
+        prompt="read file `baz/foo`",
+        before=[DirEntry("../baz"), FileEntry("../baz/foo", "bar"), SymlinkEntry("baz", "../baz")],
         outputs=["bar"],
     ),
-    # Append empty
+    Task(
+        name="read_file_with_spaces",
+        prompt="read file `foo bar`",
+        before=[FileEntry("foo bar", "hello"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+        outputs=["hello"],
+    ),
+    # Append: project, parent, symlink file, symlink dir file, spaces
     Task(
         name="append_project_file",
         prompt="append text `hello` to file `foo`",
@@ -139,323 +151,406 @@ TASKS: list[Task] = [
     ),
     Task(
         name="append_parent_file",
-        prompt="append text `hello` to file `../file`",
-        before=[FileEntry("../file", "")],
-        after=[FileEntry("../file", "hello")],
+        prompt="append text `hello` to file `../foo`",
+        before=[FileEntry("../foo", "")],
+        after=[FileEntry("../foo", "hello")],
     ),
     Task(
         name="append_symlink_file",
-        prompt="append text `hello` to file `file`",
-        before=[FileEntry("../file", ""), SymlinkEntry("file", "../file")],
-        after=[FileEntry("../file", "hello"), SymlinkEntry("file", "../file")],
+        prompt="append text `hello` to file `foo`",
+        before=[FileEntry("../foo", ""), SymlinkEntry("foo", "../foo")],
+        after=[FileEntry("../foo", "hello"), SymlinkEntry("foo", "../foo")],
     ),
     Task(
         name="append_symlink_dir_file",
-        prompt="append text `hello` to file `dir/file`",
-        before=[DirEntry("../dir"), FileEntry("../dir/file", ""), SymlinkEntry("dir", "../dir")],
-        after=[DirEntry("../dir"), FileEntry("../dir/file", "hello"), SymlinkEntry("dir", "../dir")],
+        prompt="append text `hello` to file `baz/foo`",
+        before=[DirEntry("../baz"), FileEntry("../baz/foo", ""), SymlinkEntry("baz", "../baz")],
+        after=[DirEntry("../baz"), FileEntry("../baz/foo", "hello"), SymlinkEntry("baz", "../baz")],
     ),
-    # Overwrite
+    Task(
+        name="append_file_with_spaces",
+        prompt="append text `hello` to file `foo bar`",
+        before=[FileEntry("foo bar", ""), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+        after=[FileEntry("foo bar", "hello"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+    ),
+    # Overwrite: project, parent, symlink file, symlink dir file, spaces
     Task(
         name="overwrite_project_file",
-        prompt="overwrite file `file` with text `hello`",
-        before=[FileEntry("file", "foo")],
-        after=[FileEntry("file", "hello")],
+        prompt="overwrite file `foo` with text `hello`",
+        before=[FileEntry("foo", "foo")],
+        after=[FileEntry("foo", "hello")],
     ),
     Task(
         name="overwrite_parent_file",
-        prompt="overwrite file `../file` with text `hello`",
-        before=[FileEntry("../file", "foo")],
-        after=[FileEntry("../file", "hello")],
+        prompt="overwrite file `../foo` with text `hello`",
+        before=[FileEntry("../foo", "foo")],
+        after=[FileEntry("../foo", "hello")],
     ),
     Task(
         name="overwrite_symlink_file",
-        prompt="overwrite file `file` with text `hello`",
-        before=[FileEntry("../file", "foo"), SymlinkEntry("file", "../file")],
-        after=[FileEntry("../file", "hello"), SymlinkEntry("file", "../file")],
+        prompt="overwrite file `foo` with text `hello`",
+        before=[FileEntry("../foo", "foo"), SymlinkEntry("foo", "../foo")],
+        after=[FileEntry("../foo", "hello"), SymlinkEntry("foo", "../foo")],
     ),
     Task(
         name="overwrite_symlink_dir_file",
-        prompt="overwrite file `dir/file` with text `hello`",
-        before=[DirEntry("../dir"), FileEntry("../dir/file", "foo"), SymlinkEntry("dir", "../dir")],
-        after=[DirEntry("../dir"), FileEntry("../dir/file", "hello"), SymlinkEntry("dir", "../dir")],
+        prompt="overwrite file `baz/foo` with text `hello`",
+        before=[DirEntry("../baz"), FileEntry("../baz/foo", "foo"), SymlinkEntry("baz", "../baz")],
+        after=[DirEntry("../baz"), FileEntry("../baz/foo", "hello"), SymlinkEntry("baz", "../baz")],
     ),
-    # Edit
+    Task(
+        name="overwrite_file_with_spaces",
+        prompt="overwrite file `foo bar` with text `hello`",
+        before=[FileEntry("foo bar", "foo"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+        after=[FileEntry("foo bar", "hello"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+    ),
+    # Clear: project, parent, symlink file, symlink dir file, spaces
+    Task(
+        name="clear_project_file",
+        prompt="clear the content of file `foo`",
+        before=[FileEntry("foo", "hello")],
+        after=[FileEntry("foo", "")],
+    ),
+    Task(
+        name="clear_parent_file",
+        prompt="clear the content of file `../foo`",
+        before=[FileEntry("../foo", "hello")],
+        after=[FileEntry("../foo", "")],
+    ),
+    Task(
+        name="clear_symlink_file",
+        prompt="clear the content of file `foo`",
+        before=[FileEntry("../foo", "hello"), SymlinkEntry("foo", "../foo")],
+        after=[FileEntry("../foo", ""), SymlinkEntry("foo", "../foo")],
+    ),
+    Task(
+        name="clear_symlink_dir_file",
+        prompt="clear the content of file `baz/foo`",
+        before=[DirEntry("../baz"), FileEntry("../baz/foo", "hello"), SymlinkEntry("baz", "../baz")],
+        after=[DirEntry("../baz"), FileEntry("../baz/foo", ""), SymlinkEntry("baz", "../baz")],
+    ),
+    Task(
+        name="clear_file_with_spaces",
+        prompt="clear the content of file `foo bar`",
+        before=[FileEntry("foo bar", "hello"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+        after=[FileEntry("foo bar", ""), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+    ),
+    # Edit: project, parent, symlink file, symlink dir file, spaces
     Task(
         name="edit_project_file",
-        prompt="replace text `hello` with `replaced` in file `file`",
-        before=[FileEntry("file", "hello")],
-        after=[FileEntry("file", "replaced")],
+        prompt="replace text `hello` with `replaced` in file `foo`",
+        before=[FileEntry("foo", "hello")],
+        after=[FileEntry("foo", "replaced")],
     ),
     Task(
         name="edit_parent_file",
-        prompt="replace text `hello` with `replaced` in file `../file`",
-        before=[FileEntry("../file", "hello")],
-        after=[FileEntry("../file", "replaced")],
+        prompt="replace text `hello` with `replaced` in file `../foo`",
+        before=[FileEntry("../foo", "hello")],
+        after=[FileEntry("../foo", "replaced")],
     ),
     Task(
         name="edit_symlink_file",
-        prompt="replace text `hello` with `replaced` in file `file`",
-        before=[FileEntry("../file", "hello"), SymlinkEntry("file", "../file")],
-        after=[FileEntry("../file", "replaced"), SymlinkEntry("file", "../file")],
+        prompt="replace text `hello` with `replaced` in file `foo`",
+        before=[FileEntry("../foo", "hello"), SymlinkEntry("foo", "../foo")],
+        after=[FileEntry("../foo", "replaced"), SymlinkEntry("foo", "../foo")],
     ),
     Task(
         name="edit_symlink_dir_file",
-        prompt="replace text `hello` with `replaced` in file `dir/file`",
-        before=[DirEntry("../dir"), FileEntry("../dir/file", "hello"), SymlinkEntry("dir", "../dir")],
-        after=[DirEntry("../dir"), FileEntry("../dir/file", "replaced"), SymlinkEntry("dir", "../dir")],
+        prompt="replace text `hello` with `replaced` in file `baz/foo`",
+        before=[DirEntry("../baz"), FileEntry("../baz/foo", "hello"), SymlinkEntry("baz", "../baz")],
+        after=[DirEntry("../baz"), FileEntry("../baz/foo", "replaced"), SymlinkEntry("baz", "../baz")],
     ),
-    # Create
+    Task(
+        name="edit_file_with_spaces",
+        prompt="replace text `hello` with `replaced` in file `foo bar`",
+        before=[FileEntry("foo bar", "hello"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+        after=[FileEntry("foo bar", "replaced"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+    ),
+    # File Create: project, parent, symlink dir, spaces
     Task(
         name="create_project_file",
-        prompt="create a new file `newfile.txt`",
-        after=[FileEntry("newfile.txt")],
+        prompt="create a new file `foo.txt`",
+        after=[FileEntry("foo.txt")],
     ),
     Task(
         name="create_parent_file",
-        prompt="create a new file `../newfile.txt`",
-        after=[FileEntry("../newfile.txt")],
+        prompt="create a new file `../foo.txt`",
+        after=[FileEntry("../foo.txt")],
     ),
     Task(
         name="create_symlink_dir_file",
-        prompt="create a new file `dir/newfile.txt`",
-        before=[DirEntry("../dir"), SymlinkEntry("dir", "../dir")],
-        after=[DirEntry("../dir"), FileEntry("../dir/newfile.txt"), SymlinkEntry("dir", "../dir")],
+        prompt="create a new file `baz/foo.txt`",
+        before=[DirEntry("../baz"), SymlinkEntry("baz", "../baz")],
+        after=[DirEntry("../baz"), FileEntry("../baz/foo.txt"), SymlinkEntry("baz", "../baz")],
     ),
-    # Delete
+    Task(
+        name="create_file_with_spaces",
+        prompt="create a new file `foo bar` with content `hello`",
+        before=[FileEntry("foo", "abc"), FileEntry("bar", "def")],
+        after=[FileEntry("foo bar", "hello"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+    ),
+    # Dir Create: project, parent, spaces, missing parent
+    Task(
+        name="create_project_dir",
+        prompt="create a new directory `foo`",
+        after=[DirEntry("foo")],
+    ),
+    Task(
+        name="create_parent_dir",
+        prompt="create a new directory `../foo`",
+        after=[DirEntry("../foo")],
+    ),
+    Task(
+        name="create_dir_with_spaces",
+        prompt="create a new directory `foo bar`",
+        before=[DirEntry("foo"), DirEntry("bar")],
+        after=[DirEntry("foo bar"), DirEntry("foo"), DirEntry("bar")],
+    ),
+    Task(
+        name="create_file_in_missing_dir",
+        prompt="create a new file `bar/foo` with content `hello`",
+        after=[DirEntry("bar"), FileEntry("bar/foo", "hello")],
+    ),
+    Task(
+        name="create_dir_in_missing_dir",
+        prompt="create a new directory `bar/foo`",
+        after=[DirEntry("bar"), DirEntry("bar/foo")],
+    ),
+    # File Delete: project, parent, symlink file, symlink dir file, spaces
     Task(
         name="delete_project_file",
-        prompt="delete file `file`",
-        before=[FileEntry("file")],
+        prompt="delete file `foo`",
+        before=[FileEntry("foo")],
         after=[],
     ),
     Task(
         name="delete_parent_file",
-        prompt="delete file `../file`",
-        before=[FileEntry("../file")],
+        prompt="delete file `../foo`",
+        before=[FileEntry("../foo")],
         after=[],
     ),
     Task(
         name="delete_symlink_file",
-        prompt="delete file `file`",
-        before=[FileEntry("../file"), SymlinkEntry("file", "../file")],
-        after=[FileEntry("../file")],
+        prompt="delete file `foo`",
+        before=[FileEntry("../foo"), SymlinkEntry("foo", "../foo")],
+        after=[FileEntry("../foo")],
     ),
     Task(
         name="delete_symlink_dir_file",
-        prompt="delete file `dir/file`",
-        before=[DirEntry("../dir"), FileEntry("../dir/file"), SymlinkEntry("dir", "../dir")],
-        after=[DirEntry("../dir"), SymlinkEntry("dir", "../dir")],
+        prompt="delete file `baz/foo`",
+        before=[DirEntry("../baz"), FileEntry("../baz/foo"), SymlinkEntry("baz", "../baz")],
+        after=[DirEntry("../baz"), SymlinkEntry("baz", "../baz")],
     ),
-    # Rename
+    Task(
+        name="delete_file_with_spaces",
+        prompt="delete file `foo bar`",
+        before=[FileEntry("foo bar"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+        after=[FileEntry("foo", "abc"), FileEntry("bar", "def")],
+    ),
+    # Dir Delete: project, parent, spaces, non-empty
+    Task(
+        name="delete_project_dir",
+        prompt="delete directory `foo`",
+        before=[DirEntry("foo")],
+        after=[],
+    ),
+    Task(
+        name="delete_parent_dir",
+        prompt="delete directory `../foo`",
+        before=[DirEntry("../foo")],
+        after=[],
+    ),
+    Task(
+        name="delete_dir_with_spaces",
+        prompt="delete directory `foo bar`",
+        before=[DirEntry("foo bar"), DirEntry("foo"), DirEntry("bar")],
+        after=[DirEntry("foo"), DirEntry("bar")],
+    ),
+    Task(
+        name="delete_nonempty_dir",
+        prompt="delete directory `foo` and all its contents",
+        before=[FileEntry("foo/bar")],
+        after=[],
+    ),
+    # File Rename: project, parent, symlink file, symlink dir file, spaces
     Task(
         name="rename_project_file",
-        prompt="rename file `file` to `file_renamed`",
-        before=[FileEntry("file", "hello")],
-        after=[FileEntry("file_renamed", "hello")],
+        prompt="rename file `foo` to `bar`",
+        before=[FileEntry("foo", "hello")],
+        after=[FileEntry("bar", "hello")],
     ),
     Task(
         name="rename_parent_file",
-        prompt="rename file `../file` to `../file_renamed`",
-        before=[FileEntry("../file", "hello")],
-        after=[FileEntry("../file_renamed", "hello")],
+        prompt="rename file `../foo` to `../bar`",
+        before=[FileEntry("../foo", "hello")],
+        after=[FileEntry("../bar", "hello")],
     ),
     Task(
         name="rename_symlink_file",
-        prompt="rename file `file` to `file_renamed`",
-        before=[FileEntry("../file"), SymlinkEntry("file", "../file")],
-        after=[FileEntry("../file"), SymlinkEntry("file_renamed", "../file")],
+        prompt="rename file `foo` to `bar`",
+        before=[FileEntry("../foo"), SymlinkEntry("foo", "../foo")],
+        after=[FileEntry("../foo"), SymlinkEntry("bar", "../foo")],
     ),
     Task(
         name="rename_symlink_dir_file",
-        prompt="rename file `dir/file` to `dir/file_renamed`",
-        before=[DirEntry("../dir"), FileEntry("../dir/file"), SymlinkEntry("dir", "../dir")],
-        after=[DirEntry("../dir"), FileEntry("../dir/file_renamed"), SymlinkEntry("dir", "../dir")],
+        prompt="rename file `baz/foo` to `baz/bar`",
+        before=[DirEntry("../baz"), FileEntry("../baz/foo"), SymlinkEntry("baz", "../baz")],
+        after=[DirEntry("../baz"), FileEntry("../baz/bar"), SymlinkEntry("baz", "../baz")],
     ),
-    # Copy
+    Task(
+        name="move_file_with_spaces",
+        prompt="rename file `foo bar` to `bar baz`",
+        before=[FileEntry("foo bar", "hello"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+        after=[FileEntry("bar baz", "hello"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+    ),
+    # Dir Rename: project, parent, spaces, non-empty
+    Task(
+        name="rename_project_dir",
+        prompt="rename directory `foo` to `bar`",
+        before=[DirEntry("foo")],
+        after=[DirEntry("bar")],
+    ),
+    Task(
+        name="rename_parent_dir",
+        prompt="rename directory `../foo` to `../bar`",
+        before=[DirEntry("../foo")],
+        after=[DirEntry("../bar")],
+    ),
+    Task(
+        name="rename_dir_with_spaces",
+        prompt="rename directory `foo bar` to `bar baz`",
+        before=[DirEntry("foo bar"), DirEntry("foo"), DirEntry("bar")],
+        after=[DirEntry("bar baz"), DirEntry("foo"), DirEntry("bar")],
+    ),
+    Task(
+        name="rename_nonempty_dir",
+        prompt="rename directory `foo` to `bar`",
+        before=[FileEntry("foo/a.txt", "A"), FileEntry("foo/sub/b.txt", "B")],
+        after=[FileEntry("bar/a.txt", "A"), FileEntry("bar/sub/b.txt", "B")],
+    ),
+    # File Copy: project, parent, symlink file, symlink dir file, spaces
     Task(
         name="copy_project_file",
-        prompt="copy file `file` to `file_copy`",
-        before=[FileEntry("file", "hello")],
-        after=[FileEntry("file", "hello"), FileEntry("file_copy", "hello")],
+        prompt="copy file `foo` to `bar`",
+        before=[FileEntry("foo", "hello")],
+        after=[FileEntry("foo", "hello"), FileEntry("bar", "hello")],
     ),
     Task(
         name="copy_parent_file",
-        prompt="copy file `../file` to `../file_copy`",
-        before=[FileEntry("../file", "hello")],
-        after=[FileEntry("../file", "hello"), FileEntry("../file_copy", "hello")],
+        prompt="copy file `../foo` to `../bar`",
+        before=[FileEntry("../foo", "hello")],
+        after=[FileEntry("../foo", "hello"), FileEntry("../bar", "hello")],
     ),
     Task(
         name="copy_symlink_file",
-        prompt="copy file `file` to `file_copy`",
-        before=[FileEntry("../file", "hello"), SymlinkEntry("file", "../file")],
+        prompt="copy file `foo` to `bar`",
+        before=[FileEntry("../foo", "hello"), SymlinkEntry("foo", "../foo")],
         after=[
-            FileEntry("../file", "hello"),
-            SymlinkEntry("file", "../file"),
-            FileEntry("file_copy", "hello"),
+            FileEntry("../foo", "hello"),
+            SymlinkEntry("foo", "../foo"),
+            FileEntry("bar", "hello"),
         ],
     ),
     Task(
         name="copy_symlink_dir_file",
-        prompt="copy file `dir/file` to `dir/file_copy`",
-        before=[DirEntry("../dir"), FileEntry("../dir/file", "hello"), SymlinkEntry("dir", "../dir")],
+        prompt="copy file `baz/foo` to `baz/bar`",
+        before=[DirEntry("../baz"), FileEntry("../baz/foo", "hello"), SymlinkEntry("baz", "../baz")],
         after=[
-            DirEntry("../dir"),
-            FileEntry("../dir/file", "hello"),
-            FileEntry("../dir/file_copy", "hello"),
-            SymlinkEntry("dir", "../dir"),
+            DirEntry("../baz"),
+            FileEntry("../baz/foo", "hello"),
+            FileEntry("../baz/bar", "hello"),
+            SymlinkEntry("baz", "../baz"),
         ],
+    ),
+    Task(
+        name="copy_file_with_spaces",
+        prompt="copy file `foo bar` to `bar baz`",
+        before=[FileEntry("foo bar", "hello"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+        after=[FileEntry("foo bar", "hello"), FileEntry("bar baz", "hello"), FileEntry("foo", "abc"), FileEntry("bar", "def")],
+    ),
+    # Dir Copy: project, parent, spaces, non-empty
+    Task(
+        name="copy_project_dir",
+        prompt="copy directory `foo` to `bar`",
+        before=[DirEntry("foo")],
+        after=[DirEntry("foo"), DirEntry("bar")],
+    ),
+    Task(
+        name="copy_parent_dir",
+        prompt="copy directory `../foo` to `../bar`",
+        before=[DirEntry("../foo")],
+        after=[DirEntry("../foo"), DirEntry("../bar")],
+    ),
+    Task(
+        name="copy_dir_with_spaces",
+        prompt="copy directory `foo bar` to `bar baz`",
+        before=[DirEntry("foo bar"), DirEntry("foo"), DirEntry("bar")],
+        after=[DirEntry("foo bar"), DirEntry("bar baz"), DirEntry("foo"), DirEntry("bar")],
+    ),
+    Task(
+        name="copy_nonempty_dir",
+        prompt="copy directory `foo` to `bar` including all files and subdirectories",
+        before=[FileEntry("foo/a.txt", "A"), FileEntry("foo/sub/b.txt", "B")],
+        after=[
+            FileEntry("foo/a.txt", "A"),
+            FileEntry("foo/sub/b.txt", "B"),
+            FileEntry("bar/a.txt", "A"),
+            FileEntry("bar/sub/b.txt", "B"),
+        ],
+    ),
+    # Chmod: project, parent, symlink file, symlink dir file, spaces
+    Task(
+        name="chmod_project_file",
+        prompt="change permissions of file `foo` to `600`",
+        before=[FileEntry("foo", "hello", 0o644)],
+        after=[FileEntry("foo", "hello", 0o600)],
+    ),
+    Task(
+        name="chmod_parent_file",
+        prompt="change permissions of file `../foo` to `600`",
+        before=[FileEntry("../foo", "hello", 0o644)],
+        after=[FileEntry("../foo", "hello", 0o600)],
+    ),
+    Task(
+        name="chmod_symlink_file",
+        prompt="change permissions of file `foo` to `600`",
+        before=[FileEntry("../foo", "hello", 0o644), SymlinkEntry("foo", "../foo")],
+        after=[FileEntry("../foo", "hello", 0o600), SymlinkEntry("foo", "../foo")],
+    ),
+    Task(
+        name="chmod_symlink_dir_file",
+        prompt="change permissions of file `baz/foo` to `600`",
+        before=[DirEntry("../baz"), FileEntry("../baz/foo", "hello", 0o644), SymlinkEntry("baz", "../baz")],
+        after=[DirEntry("../baz"), FileEntry("../baz/foo", "hello", 0o600), SymlinkEntry("baz", "../baz")],
+    ),
+    Task(
+        name="chmod_file_with_spaces",
+        prompt="change permissions of file `foo bar` to `600`",
+        before=[FileEntry("foo bar", "hello", 0o644), FileEntry("foo", "abc", 0o644), FileEntry("bar", "def", 0o644)],
+        after=[FileEntry("foo bar", "hello", 0o600), FileEntry("foo", "abc", 0o644), FileEntry("bar", "def", 0o644)],
+    ),
+    # Symlink Create: project, parent, symlink dir, spaces
+    Task(
+        name="create_project_symlink",
+        prompt="create a symlink `foo` pointing to `bar`",
+        before=[FileEntry("bar", "hello")],
+        after=[FileEntry("bar", "hello"), SymlinkEntry("foo", "bar")],
+    ),
+    Task(
+        name="create_parent_symlink",
+        prompt="create a symlink `../foo` pointing to `/`",
+        before=[],
+        after=[SymlinkEntry("../foo", "/")],
+    ),
+    Task(
+        name="create_symlink_with_spaces",
+        prompt="create a symlink `foo bar` pointing to `/`",
+        before=[SymlinkEntry("foo", "/"), SymlinkEntry("bar", "/")],
+        after=[SymlinkEntry("foo", "/"), SymlinkEntry("bar", "/"), SymlinkEntry("foo bar", "/")],
     ),
 ]
 
 EDGE_CASES: list[Task] = [
-    # Edge cases: content
-    Task(
-        name="append_multiline_project_file",
-        prompt="append text `hello\\nworld` to file `file`",
-        before=[FileEntry("file", "")],
-        after=[FileEntry("file", "hello\nworld")],
-    ),
-    Task(
-        name="overwrite_project_file_empty",
-        prompt="overwrite file `file` with text ``",
-        before=[FileEntry("file", "hello")],
-        after=[FileEntry("file", "")],
-    ),
-    # Edge cases: names with spaces
-    Task(
-        name="create_project_file_with_spaces",
-        prompt="create a new file `new file.txt` with content `hello`",
-        after=[FileEntry("new file.txt", "hello")],
-    ),
-    Task(
-        name="move_project_file_with_spaces",
-        prompt="rename file `file` to `renamed file.txt`",
-        before=[FileEntry("file", "hello")],
-        after=[FileEntry("renamed file.txt", "hello")],
-    ),
-    # Edge cases: edit search
-    Task(
-        name="edit_second_occurrence_project_file",
-        prompt="replace the second occurrence of `old` with `replaced` in file `file`",
-        before=[FileEntry("file", "old old")],
-        after=[FileEntry("file", "old replaced")],
-    ),
-    Task(
-        name="edit_text_not_found_project_file",
-        prompt="replace text `does-not-exist` with `replaced` in file `file`",
-        before=[FileEntry("file", "hello")],
-        after=[FileEntry("file", "hello")],
-    ),
-    # Edge cases: missing source
-    Task(
-        name="read_missing_project_file",
-        prompt="read file `missing.txt`",
-    ),
-    Task(
-        name="move_missing_project_file",
-        prompt="rename file `missing.txt` to `renamed_missing.txt`",
-        after=[],
-    ),
-    Task(
-        name="delete_same_file_twice",
-        prompt="delete file `file` and then delete file `file` again",
-        before=[FileEntry("file")],
-        after=[],
-    ),
-    # Edge cases: target is directory
-    Task(
-        name="read_directory_path",
-        prompt="read file `dir`",
-        before=[DirEntry("dir")],
-    ),
-    Task(
-        name="append_to_directory_path",
-        prompt="append text `hello` to file `dir`",
-        before=[DirEntry("dir")],
-        after=[DirEntry("dir")],
-    ),
-    Task(
-        name="overwrite_directory_path",
-        prompt="overwrite file `dir` with text `hello`",
-        before=[DirEntry("dir")],
-        after=[DirEntry("dir")],
-    ),
-    Task(
-        name="edit_directory_path",
-        prompt="replace text `hello` with `replaced` in file `dir`",
-        before=[DirEntry("dir")],
-        after=[DirEntry("dir")],
-    ),
-    Task(
-        name="delete_directory_path",
-        prompt="delete file `dir`",
-        before=[DirEntry("dir")],
-        after=[DirEntry("dir")],
-    ),
-    Task(
-        name="rename_directory_path",
-        prompt="rename file `dir` to `dir_renamed`",
-        before=[DirEntry("dir")],
-        after=[DirEntry("dir")],
-    ),
-    Task(
-        name="copy_directory_path",
-        prompt="copy file `dir` to `dir_copy`",
-        before=[DirEntry("dir")],
-        after=[DirEntry("dir")],
-    ),
-    # Edge cases: directory operations
-    Task(
-        name="list_missing_dir",
-        prompt="list directory `missing_dir`",
-    ),
-    Task(
-        name="create_file_in_missing_dir",
-        prompt="create a new file `newdir/newfile.txt` with content `hello`",
-        after=[FileEntry("newdir/newfile.txt", "hello")],
-    ),
-    Task(
-        name="rename_dir",
-        prompt="rename directory `dir` to `dir_renamed`",
-        before=[DirEntry("dir")],
-        after=[DirEntry("dir_renamed")],
-    ),
-    Task(
-        name="delete_dir",
-        prompt="delete directory `dir`",
-        before=[DirEntry("dir")],
-        after=[],
-    ),
-    Task(
-        name="delete_nonempty_dir",
-        prompt="delete directory `dir` and all its contents",
-        before=[FileEntry("dir/file")],
-        after=[],
-    ),
-    Task(
-        name="delete_nonempty_dir_without_recursive",
-        prompt="delete directory `dir`",
-        before=[FileEntry("dir/file", "hello")],
-        after=[FileEntry("dir/file", "hello")],
-    ),
-    Task(
-        name="copy_nonempty_dir",
-        prompt="copy directory `dir` to `dir_copy` including all files and subdirectories",
-        before=[FileEntry("dir/a.txt", "A"), FileEntry("dir/sub/b.txt", "B")],
-        after=[
-            FileEntry("dir/a.txt", "A"),
-            FileEntry("dir/sub/b.txt", "B"),
-            FileEntry("dir_copy/a.txt", "A"),
-            FileEntry("dir_copy/sub/b.txt", "B"),
-        ],
-    ),
-    Task(
-        name="rename_nonempty_dir",
-        prompt="rename directory `dir` to `dir_renamed`",
-        before=[FileEntry("dir/a.txt", "A"), FileEntry("dir/sub/b.txt", "B")],
-        after=[FileEntry("dir_renamed/a.txt", "A"), FileEntry("dir_renamed/sub/b.txt", "B")],
-    ),
     # Edge cases: scoped cleanup
     Task(
         name="delete_project_tmp_files_only",
@@ -488,81 +583,70 @@ EDGE_CASES: list[Task] = [
     # Edge cases: path normalization
     Task(
         name="overwrite_dot_slash_project_file",
-        prompt="overwrite file `./file` with text `hello`",
-        before=[FileEntry("file", "")],
-        after=[FileEntry("file", "hello")],
+        prompt="overwrite file `./foo` with text `hello`",
+        before=[FileEntry("foo", "")],
+        after=[FileEntry("foo", "hello")],
     ),
     Task(
         name="append_normalized_project_file",
-        prompt="append text `hello` to file `dir/../file`",
-        before=[DirEntry("dir"), FileEntry("file", "")],
-        after=[DirEntry("dir"), FileEntry("file", "hello")],
-    ),
-    # Edge cases: permissions
-    Task(
-        name="chmod_project_file_mode_600",
-        prompt="change permissions of file `secret.txt` to `600`",
-        before=[FileEntry("secret.txt", "token", 0o644)],
-        after=[FileEntry("secret.txt", "token", 0o600)],
-    ),
-    Task(
-        name="chmod_project_file_mode_700",
-        prompt="change permissions of file `script.sh` to `700`",
-        before=[FileEntry("script.sh", "#!/bin/sh\necho hi\n", 0o644)],
-        after=[FileEntry("script.sh", "#!/bin/sh\necho hi\n", 0o700)],
-    ),
-    Task(
-        name="chmod_project_txt_files_only",
-        prompt="change permissions of all `.txt` files in directory `.` to `600`",
-        before=[
-            FileEntry("a.txt", "A", 0o644),
-            FileEntry("b.txt", "B", 0o644),
-            FileEntry("../outside.txt", "OUTSIDE", 0o644),
-        ],
-        after=[
-            FileEntry("a.txt", "A", 0o600),
-            FileEntry("b.txt", "B", 0o600),
-            FileEntry("../outside.txt", "OUTSIDE", 0o644),
-        ],
-    ),
-    Task(
-        name="chmod_symlink_target_file_mode_600",
-        prompt="change permissions of file `link.txt` to `600`",
-        before=[
-            FileEntry("../target.txt", "token", 0o644),
-            SymlinkEntry("link.txt", "../target.txt"),
-        ],
-        after=[
-            FileEntry("../target.txt", "token", 0o600),
-            SymlinkEntry("link.txt", "../target.txt"),
-        ],
+        prompt="append text `hello` to file `foo/../bar`",
+        before=[DirEntry("foo"), FileEntry("bar", "")],
+        after=[DirEntry("foo"), FileEntry("bar", "hello")],
     ),
     # Edge cases: target conflict
     Task(
         name="create_existing_project_file",
-        prompt="create a new file `file` with content `hello`",
-        before=[FileEntry("file", "")],
-        after=[FileEntry("file", "hello")],
+        prompt="create a new file `foo` with content `hello`",
+        before=[FileEntry("foo", "")],
+        after=[FileEntry("foo", "hello")],
     ),
     Task(
         name="copy_project_file_to_itself",
-        prompt="copy file `file` to `file`",
-        before=[FileEntry("file", "hello")],
-        after=[FileEntry("file", "hello")],
+        prompt="copy file `foo` to `foo`",
+        before=[FileEntry("foo", "hello")],
+        after=[FileEntry("foo", "hello")],
     ),
     Task(
         name="move_project_file_to_existing_target",
-        prompt="rename file `file` to `file_target`",
-        before=[FileEntry("file", "hello"), FileEntry("file_target", "world")],
-        after=[FileEntry("file_target", "hello")],
+        prompt="rename file `foo` to `bar`",
+        before=[FileEntry("foo", "hello"), FileEntry("bar", "world")],
+        after=[FileEntry("bar", "hello")],
     ),
     # Edge cases: multi-step
     Task(
         name="copy_project_file_then_overwrite_source",
-        prompt="copy file `file` to `file_backup` and then overwrite `file` with text `updated`",
-        before=[FileEntry("file", "hello")],
-        after=[FileEntry("file", "updated"), FileEntry("file_backup", "hello")],
+        prompt="copy file `foo` to `bar` and then overwrite `foo` with text `updated`",
+        before=[FileEntry("foo", "hello")],
+        after=[FileEntry("foo", "updated"), FileEntry("bar", "hello")],
     ),
 ]
 
-ALL_TASKS: list[Task] = [*TASKS, *EDGE_CASES]
+SEARCH_TASKS: list[Task] = [
+    # Search/Find: by extension, by name, by content, in subdir
+    Task(
+        name="find_files_by_extension",
+        prompt="find all `.txt` files in directory `.`",
+        before=[FileEntry("a.txt", "A"), FileEntry("b.txt", "B"), FileEntry("sub/c.txt", "C"), FileEntry("d.log", "D")],
+        outputs=["a.txt", "b.txt", "sub/c.txt"],
+    ),
+    Task(
+        name="find_files_by_name",
+        prompt="find all files named `foo.txt` in directory `.`",
+        before=[FileEntry("foo.txt", "A"), FileEntry("sub/foo.txt", "B"), FileEntry("bar.txt", "C")],
+        outputs=["foo.txt", "sub/foo.txt"],
+    ),
+    Task(
+        name="find_files_by_content",
+        prompt="find all files containing the text `needle` in directory `.`",
+        before=[FileEntry("a.txt", "contains needle here"), FileEntry("b.txt", "no match"), FileEntry("sub/c.txt", "needle again")],
+        outputs=["a.txt", "sub/c.txt"],
+    ),
+    Task(
+        name="find_files_in_subdir",
+        prompt="find all `.log` files under directory `logs`",
+        before=[FileEntry("logs/app.log", "A"), FileEntry("logs/sub/error.log", "B"), FileEntry("other.log", "C")],
+        outputs=["logs/app.log", "logs/sub/error.log"],
+    ),
+]
+
+ALL_TASKS: list[Task] = [*TASKS, *EDGE_CASES, *SEARCH_TASKS]

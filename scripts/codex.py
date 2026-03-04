@@ -120,7 +120,12 @@ class CodexAgent(Agent):
                 elif payload_type == "function_call_output":
                     call_id = payload.get("call_id")
                     if call_id and call_id in pending:
-                        pending[call_id].output = {"output": payload.get("output")}
+                        output = payload.get("output") or ""
+                        pending[call_id].output = {"output": output}
+                        call = pending[call_id]
+                        if call.name == "exec_command":
+                            if "Process exited with code 0" not in output:
+                                call.is_error = True
                         pending[call_id].raw.append(payload)
 
         return results
