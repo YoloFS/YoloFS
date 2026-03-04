@@ -48,13 +48,13 @@ GLOB_AND_READ_TASKS: list[Task] = [
         outputs=["hello", "world"],
     ),
     Task(
-        name="glob_and_read_subdir_backtrack",
+        name="glob_and_read_project_backtrack",
         prompt="read all files matching `*.txt` in directory `foo/..`",
         before=[DirEntry("foo"), FileEntry("a.txt", "hello"), FileEntry("b.txt", "world"), FileEntry("c.log", "ignore")],
         outputs=["hello", "world"],
     ),
     Task(
-        name="glob_and_read_parent_reentry",
+        name="glob_and_read_project_reentry",
         prompt="read all files matching `*.txt` in directory `../project`",
         before=[FileEntry("a.txt", "hello"), FileEntry("b.txt", "world"), FileEntry("c.log", "ignore")],
         outputs=["hello", "world"],

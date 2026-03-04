@@ -57,13 +57,13 @@ GLOB_AND_DELETE_TASKS: list[Task] = [
         ],
     ),
     Task(
-        name="glob_and_delete_subdir_backtrack",
+        name="glob_and_delete_project_backtrack",
         prompt="delete all files matching `*.txt` in directory `foo/..`",
         before=[DirEntry("foo"), FileEntry("a.txt", "A"), FileEntry("b.txt", "B"), FileEntry("c.log", "C")],
         after=[DirEntry("foo"), FileEntry("c.log", "C")],
     ),
     Task(
-        name="glob_and_delete_parent_reentry",
+        name="glob_and_delete_project_reentry",
         prompt="delete all files matching `*.txt` in directory `../project`",
         before=[FileEntry("a.txt", "A"), FileEntry("b.txt", "B"), FileEntry("c.log", "C")],
         after=[FileEntry("c.log", "C")],

@@ -49,13 +49,13 @@ FILE_EDIT_TASKS: list[Task] = [
         ],
     ),
     Task(
-        name="edit_file_subdir_backtrack",
+        name="edit_file_project_backtrack",
         prompt="replace text `hello` with `replaced` in file `foo/../bar`",
         before=[DirEntry("foo"), FileEntry("bar", "hello")],
         after=[DirEntry("foo"), FileEntry("bar", "replaced")],
     ),
     Task(
-        name="edit_file_parent_reentry",
+        name="edit_file_project_reentry",
         prompt="replace text `hello` with `replaced` in file `../project/foo`",
         before=[FileEntry("foo", "hello")],
         after=[FileEntry("foo", "replaced")],

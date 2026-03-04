@@ -48,13 +48,13 @@ GREP_TASKS: list[Task] = [
         outputs=["a.txt", "c.txt"],
     ),
     Task(
-        name="grep_subdir_backtrack",
+        name="grep_project_backtrack",
         prompt="find all files containing the text `needle` in directory `foo/..`",
         before=[DirEntry("foo"), FileEntry("a.txt", "contains needle here"), FileEntry("b.txt", "no match"), FileEntry("c.txt", "needle again")],
         outputs=["a.txt", "c.txt"],
     ),
     Task(
-        name="grep_parent_reentry",
+        name="grep_project_reentry",
         prompt="find all files containing the text `needle` in directory `../project`",
         before=[FileEntry("a.txt", "contains needle here"), FileEntry("b.txt", "no match"), FileEntry("c.txt", "needle again")],
         outputs=["a.txt", "c.txt"],

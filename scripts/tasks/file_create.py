@@ -33,13 +33,13 @@ FILE_CREATE_TASKS: list[Task] = [
         ],
     ),
     Task(
-        name="create_file_subdir_backtrack",
+        name="create_file_project_backtrack",
         prompt="create a new file `foo/../bar` with content `hello`",
         before=[DirEntry("foo")],
         after=[DirEntry("foo"), FileEntry("bar", "hello")],
     ),
     Task(
-        name="create_file_parent_reentry",
+        name="create_file_project_reentry",
         prompt="create a new file `../project/foo` with content `hello`",
         after=[FileEntry("foo", "hello")],
     ),

@@ -29,13 +29,13 @@ DIR_CREATE_TASKS: list[Task] = [
         after=[DirEntry("bar"), DirEntry("bar/foo")],
     ),
     Task(
-        name="create_dir_subdir_backtrack",
+        name="create_dir_project_backtrack",
         prompt="create a new directory `foo/../bar`",
         before=[DirEntry("foo")],
         after=[DirEntry("foo"), DirEntry("bar")],
     ),
     Task(
-        name="create_dir_parent_reentry",
+        name="create_dir_project_reentry",
         prompt="create a new directory `../project/foo`",
         after=[DirEntry("foo")],
     ),

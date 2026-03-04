@@ -37,13 +37,13 @@ FILE_DELETE_TASKS: list[Task] = [
         after=[FileEntry("foo", "abc"), FileEntry("bar", "def")],
     ),
     Task(
-        name="delete_file_subdir_backtrack",
+        name="delete_file_project_backtrack",
         prompt="delete file `foo/../bar`",
         before=[DirEntry("foo"), FileEntry("bar")],
         after=[DirEntry("foo")],
     ),
     Task(
-        name="delete_file_parent_reentry",
+        name="delete_file_project_reentry",
         prompt="delete file `../project/foo`",
         before=[FileEntry("foo")],
         after=[],

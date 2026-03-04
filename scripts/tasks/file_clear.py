@@ -49,13 +49,13 @@ FILE_CLEAR_TASKS: list[Task] = [
         ],
     ),
     Task(
-        name="clear_file_subdir_backtrack",
+        name="clear_file_project_backtrack",
         prompt="clear the content of file `foo/../bar`",
         before=[DirEntry("foo"), FileEntry("bar", "hello")],
         after=[DirEntry("foo"), FileEntry("bar", "")],
     ),
     Task(
-        name="clear_file_parent_reentry",
+        name="clear_file_project_reentry",
         prompt="clear the content of file `../project/foo`",
         before=[FileEntry("foo", "hello")],
         after=[FileEntry("foo", "")],

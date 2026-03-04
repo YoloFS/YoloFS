@@ -48,13 +48,13 @@ GLOB_TASKS: list[Task] = [
         outputs=["a.txt", "b.txt"],
     ),
     Task(
-        name="glob_subdir_backtrack",
+        name="glob_project_backtrack",
         prompt="list all files matching `*.txt` in directory `foo/..`",
         before=[DirEntry("foo"), FileEntry("a.txt", "A"), FileEntry("b.txt", "B"), FileEntry("c.log", "C")],
         outputs=["a.txt", "b.txt"],
     ),
     Task(
-        name="glob_parent_reentry",
+        name="glob_project_reentry",
         prompt="list all files matching `*.txt` in directory `../project`",
         before=[FileEntry("a.txt", "A"), FileEntry("b.txt", "B"), FileEntry("c.log", "C")],
         outputs=["a.txt", "b.txt"],

@@ -41,13 +41,13 @@ FILE_READ_TASKS: list[Task] = [
         outputs=["hello"],
     ),
     Task(
-        name="read_file_subdir_backtrack",
+        name="read_file_project_backtrack",
         prompt="read file `foo/../bar`",
         before=[DirEntry("foo"), FileEntry("bar", "hello")],
         outputs=["hello"],
     ),
     Task(
-        name="read_file_parent_reentry",
+        name="read_file_project_reentry",
         prompt="read file `../project/foo`",
         before=[FileEntry("foo", "hello")],
         outputs=["hello"],

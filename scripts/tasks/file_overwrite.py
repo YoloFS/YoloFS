@@ -49,13 +49,13 @@ FILE_OVERWRITE_TASKS: list[Task] = [
         ],
     ),
     Task(
-        name="overwrite_file_subdir_backtrack",
+        name="overwrite_file_project_backtrack",
         prompt="overwrite file `foo/../bar` with text `hello`",
         before=[DirEntry("foo"), FileEntry("bar", "old")],
         after=[DirEntry("foo"), FileEntry("bar", "hello")],
     ),
     Task(
-        name="overwrite_file_parent_reentry",
+        name="overwrite_file_project_reentry",
         prompt="overwrite file `../project/foo` with text `hello`",
         before=[FileEntry("foo", "old")],
         after=[FileEntry("foo", "hello")],

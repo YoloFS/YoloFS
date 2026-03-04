@@ -39,13 +39,13 @@ DIR_LIST_TASKS: list[Task] = [
         outputs=["file1"],
     ),
     Task(
-        name="list_dir_subdir_backtrack",
+        name="list_dir_project_backtrack",
         prompt="list directory `foo/..`",
         before=[DirEntry("foo"), FileEntry("bar"), FileEntry("baz")],
         outputs=["bar", "baz"],
     ),
     Task(
-        name="list_dir_parent_reentry",
+        name="list_dir_project_reentry",
         prompt="list directory `../project`",
         before=[FileEntry("bar"), FileEntry("baz")],
         outputs=["bar", "baz"],

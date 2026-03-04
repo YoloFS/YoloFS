@@ -49,13 +49,13 @@ FILE_RENAME_TASKS: list[Task] = [
         ],
     ),
     Task(
-        name="move_file_subdir_backtrack",
+        name="move_file_project_backtrack",
         prompt="move file `foo/../bar` to `baz`",
         before=[DirEntry("foo"), FileEntry("bar", "hello")],
         after=[DirEntry("foo"), FileEntry("baz", "hello")],
     ),
     Task(
-        name="move_file_parent_reentry",
+        name="move_file_project_reentry",
         prompt="move file `../project/foo` to `../project/bar`",
         before=[FileEntry("foo", "hello")],
         after=[FileEntry("bar", "hello")],

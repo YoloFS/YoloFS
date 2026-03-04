@@ -37,13 +37,13 @@ DIR_COPY_TASKS: list[Task] = [
         ],
     ),
     Task(
-        name="copy_dir_subdir_backtrack",
+        name="copy_dir_project_backtrack",
         prompt="copy directory `foo/../bar` to `baz`",
         before=[DirEntry("foo"), DirEntry("bar")],
         after=[DirEntry("foo"), DirEntry("bar"), DirEntry("baz")],
     ),
     Task(
-        name="copy_dir_parent_reentry",
+        name="copy_dir_project_reentry",
         prompt="copy directory `../project/foo` to `../project/bar`",
         before=[DirEntry("foo")],
         after=[DirEntry("foo"), DirEntry("bar")],

@@ -49,13 +49,13 @@ FILE_APPEND_TASKS: list[Task] = [
         ],
     ),
     Task(
-        name="append_file_subdir_backtrack",
+        name="append_file_project_backtrack",
         prompt="append text `hello` to file `foo/../bar`",
         before=[DirEntry("foo"), FileEntry("bar", "")],
         after=[DirEntry("foo"), FileEntry("bar", "hello")],
     ),
     Task(
-        name="append_file_parent_reentry",
+        name="append_file_project_reentry",
         prompt="append text `hello` to file `../project/foo`",
         before=[FileEntry("foo", "")],
         after=[FileEntry("foo", "hello")],

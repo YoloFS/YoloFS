@@ -55,13 +55,13 @@ FILE_COPY_TASKS: list[Task] = [
         ],
     ),
     Task(
-        name="copy_file_subdir_backtrack",
+        name="copy_file_project_backtrack",
         prompt="copy file `foo/../bar` to `baz`",
         before=[DirEntry("foo"), FileEntry("bar", "hello")],
         after=[DirEntry("foo"), FileEntry("bar", "hello"), FileEntry("baz", "hello")],
     ),
     Task(
-        name="copy_file_parent_reentry",
+        name="copy_file_project_reentry",
         prompt="copy file `../project/foo` to `../project/bar`",
         before=[FileEntry("foo", "hello")],
         after=[FileEntry("foo", "hello"), FileEntry("bar", "hello")],

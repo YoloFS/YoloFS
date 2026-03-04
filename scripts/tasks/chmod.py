@@ -49,13 +49,13 @@ CHMOD_TASKS: list[Task] = [
         ],
     ),
     Task(
-        name="chmod_file_subdir_backtrack",
+        name="chmod_file_project_backtrack",
         prompt="change permissions of file `foo/../bar` to `600`",
         before=[DirEntry("foo"), FileEntry("bar", "hello", 0o644)],
         after=[DirEntry("foo"), FileEntry("bar", "hello", 0o600)],
     ),
     Task(
-        name="chmod_file_parent_reentry",
+        name="chmod_file_project_reentry",
         prompt="change permissions of file `../project/foo` to `600`",
         before=[FileEntry("foo", "hello", 0o644)],
         after=[FileEntry("foo", "hello", 0o600)],

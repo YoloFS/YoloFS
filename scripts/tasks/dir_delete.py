@@ -27,13 +27,13 @@ DIR_DELETE_TASKS: list[Task] = [
         after=[],
     ),
     Task(
-        name="delete_dir_subdir_backtrack",
+        name="delete_dir_project_backtrack",
         prompt="delete directory `foo/../bar`",
         before=[DirEntry("foo"), DirEntry("bar")],
         after=[DirEntry("foo")],
     ),
     Task(
-        name="delete_dir_parent_reentry",
+        name="delete_dir_project_reentry",
         prompt="delete directory `../project/foo`",
         before=[DirEntry("foo")],
         after=[],

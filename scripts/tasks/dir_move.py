@@ -27,13 +27,13 @@ DIR_RENAME_TASKS: list[Task] = [
         after=[FileEntry("bar/a.txt", "A"), FileEntry("bar/sub/b.txt", "B")],
     ),
     Task(
-        name="move_dir_subdir_backtrack",
+        name="move_dir_project_backtrack",
         prompt="move directory `foo/../bar` to `baz`",
         before=[DirEntry("foo"), DirEntry("bar")],
         after=[DirEntry("foo"), DirEntry("baz")],
     ),
     Task(
-        name="move_dir_parent_reentry",
+        name="move_dir_project_reentry",
         prompt="move directory `../project/foo` to `../project/bar`",
         before=[DirEntry("foo")],
         after=[DirEntry("bar")],
