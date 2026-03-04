@@ -1,4 +1,4 @@
-from scripts.tasks.base import DirEntry, FileEntry, FsEntry, SymlinkEntry, Task
+from scripts.tasks.base import Task
 from scripts.tasks.chmod import CHMOD_TASKS
 from scripts.tasks.dir_copy import DIR_COPY_TASKS
 from scripts.tasks.dir_create import DIR_CREATE_TASKS
@@ -11,13 +11,14 @@ from scripts.tasks.file_copy import FILE_COPY_TASKS
 from scripts.tasks.file_create import FILE_CREATE_TASKS
 from scripts.tasks.file_delete import FILE_DELETE_TASKS
 from scripts.tasks.file_edit import FILE_EDIT_TASKS
+from scripts.tasks.file_move import FILE_RENAME_TASKS
 from scripts.tasks.file_overwrite import FILE_OVERWRITE_TASKS
 from scripts.tasks.file_read import FILE_READ_TASKS
-from scripts.tasks.file_move import FILE_RENAME_TASKS
 from scripts.tasks.glob import GLOB_TASKS
 from scripts.tasks.glob_and_delete import GLOB_AND_DELETE_TASKS
 from scripts.tasks.glob_and_read import GLOB_AND_READ_TASKS
 from scripts.tasks.grep import GREP_TASKS
+from scripts.tasks.special import SPECIAL_TASKS
 from scripts.tasks.symlink_create import SYMLINK_CREATE_TASKS
 
 TASKS: list[Task] = [
@@ -41,16 +42,5 @@ TASKS: list[Task] = [
     *GLOB_AND_READ_TASKS,
     *GLOB_AND_DELETE_TASKS,
     *GREP_TASKS,
+    *SPECIAL_TASKS,
 ]
-
-EDGE_CASES: list[Task] = [
-    # Edge cases: multi-step
-    Task(
-        name="copy_project_file_then_overwrite_source",
-        prompt="copy file `foo` to `bar` and then overwrite `foo` with text `updated`",
-        before=[FileEntry("foo", "hello")],
-        after=[FileEntry("foo", "updated"), FileEntry("bar", "hello")],
-    ),
-]
-
-ALL_TASKS: list[Task] = [*TASKS, *EDGE_CASES]
