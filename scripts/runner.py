@@ -6,6 +6,7 @@ import os
 import pty
 import select
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -321,6 +322,9 @@ class Runner:
         if self.screen_output is not None:
             self.screen_output.close()
         if self.process is not None and self.process.poll() is None:
-            self.process.kill()
+            try:
+                os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         if self.master_fd is not None:
             os.close(self.master_fd)
