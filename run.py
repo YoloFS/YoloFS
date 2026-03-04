@@ -21,6 +21,7 @@ TASK_TIMEOUT = 3 * 60  # seconds
 def run_task(agent: Agent, task: Task, i: int) -> None:
     result_dir = RESULTS_DIR / agent.name / task.name / str(i)
     if result_dir.exists():
+        print(f"Skipping {result_dir} because it already exists")
         return
     tmp_dir = RESULTS_DIR / agent.name / task.name / f"{i}.tmp"
     if tmp_dir.exists():

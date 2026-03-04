@@ -15,9 +15,9 @@ Install Claude 2.1.45
 curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.45
 ```
 
-Install Codex 0.103.0
+Install Codex 0.101.0
 ```bash
-npm i -g @openai/codex@0.103.0
+npm i -g @openai/codex@0.101.0
 ```
 
 Install OpenCode 1.2.6
