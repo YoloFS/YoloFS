@@ -1,4 +1,4 @@
-from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
+from scripts.microtasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # Overwrite: project, parent, symlink file, symlink dir file, spaces
 OVERWRITE_FILE_TASKS: list[Task] = [

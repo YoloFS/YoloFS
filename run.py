@@ -13,7 +13,7 @@ from scripts.gemini import GeminiAgent
 from scripts.opencode import OpenCodeAgent
 from scripts.runner import Runner
 from scripts.minitasks import MINITASKS
-from scripts.tasks import MICROTASKS, Task
+from scripts.microtasks import MICROTASKS, Task
 
 ALL_TASKS = [*MICROTASKS, *MINITASKS]
 AGENTS = [ClaudeAgent(), CodexAgent(), CopilotAgent(), GeminiAgent(), OpenCodeAgent()]
@@ -47,10 +47,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "prompts",
         type=str,
-        nargs="+",
+        nargs="*",
         default=[t.name for t in ALL_TASKS],
         choices=[t.name for t in ALL_TASKS],
     )
     parser.add_argument("--runs", type=int, default=1)
     args = parser.parse_args()
-    main(args.agent_name, args.prompts, args.runs)
+    prompts = args.prompts or [t.name for t in ALL_TASKS]
+    main(args.agent_name, prompts, args.runs)

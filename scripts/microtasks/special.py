@@ -1,4 +1,4 @@
-from scripts.tasks.base import FileEntry, Task
+from scripts.microtasks.base import FileEntry, Task
 
 SPECIAL_TASKS: list[Task] = [
     # Multi-step

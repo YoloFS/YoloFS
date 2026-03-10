@@ -1,4 +1,4 @@
-from scripts.tasks.base import DirEntry, FileEntry, Task
+from scripts.microtasks.base import DirEntry, FileEntry, Task
 
 # Dir Copy: project, parent, spaces, non-empty
 COPY_DIR_TASKS: list[Task] = [

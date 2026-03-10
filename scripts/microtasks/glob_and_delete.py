@@ -1,4 +1,4 @@
-from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
+from scripts.microtasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # Glob and Delete: project, parent, symlink dir, spaces
 GLOB_AND_DELETE_TASKS: list[Task] = [

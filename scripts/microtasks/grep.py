@@ -1,4 +1,4 @@
-from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
+from scripts.microtasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # Grep: project, parent, symlink dir, spaces
 GREP_TASKS: list[Task] = [

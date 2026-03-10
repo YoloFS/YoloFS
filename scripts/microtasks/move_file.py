@@ -1,4 +1,4 @@
-from scripts.tasks.base import DirEntry, FileEntry, SymlinkEntry, Task
+from scripts.microtasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # File Move: project, parent, symlink file, symlink dir file, spaces
 MOVE_FILE_TASKS: list[Task] = [

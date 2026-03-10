@@ -3,28 +3,8 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from scripts.fs import DirEntry, FileEntry, FsEntry, SymlinkEntry
 from scripts.records import FsCheckResult, OutputCheckResult, ToolCall
-
-
-@dataclass(frozen=True)
-class FileEntry:
-    path: str
-    content: str = ""
-    mode: int | None = 0o644
-
-
-@dataclass(frozen=True)
-class DirEntry:
-    path: str
-
-
-@dataclass(frozen=True)
-class SymlinkEntry:
-    path: str
-    target: str
-
-
-FsEntry = FileEntry | DirEntry | SymlinkEntry
 
 
 @dataclass

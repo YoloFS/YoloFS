@@ -1,4 +1,4 @@
-from scripts.tasks.base import FileEntry, SymlinkEntry, Task
+from scripts.microtasks.base import FileEntry, SymlinkEntry, Task
 
 # Symlink Create: project, parent, symlink dir, spaces
 CREATE_SYMLINK_TASKS: list[Task] = [

@@ -1,4 +1,4 @@
-from scripts.tasks.base import DirEntry, FileEntry, Task
+from scripts.microtasks.base import DirEntry, FileEntry, Task
 
 # Dir Delete: project, parent, spaces, non-empty
 DELETE_DIR_TASKS: list[Task] = [

@@ -63,6 +63,11 @@ class GeminiAgent(Agent):
                 box_end = i
                 break
             if stripped.startswith("╰"):
+                # The border may have wrapped to the next line when wider
+                # than the terminal (e.g. garbled multi-byte characters).
+                if i + 1 < len(lines) and "╯" in lines[i + 1]:
+                    box_end = i
+                    break
                 return None
         if box_end is None:
             return None
