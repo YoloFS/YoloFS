@@ -12,8 +12,10 @@ from scripts.copilot import CopilotAgent
 from scripts.gemini import GeminiAgent
 from scripts.opencode import OpenCodeAgent
 from scripts.runner import Runner
-from scripts.tasks import TASKS, Task
+from scripts.minitasks import MINITASKS
+from scripts.tasks import MICROTASKS, Task
 
+ALL_TASKS = [*MICROTASKS, *MINITASKS]
 AGENTS = [ClaudeAgent(), CodexAgent(), CopilotAgent(), GeminiAgent(), OpenCodeAgent()]
 TASK_TIMEOUT = 3 * 60  # seconds
 
@@ -33,7 +35,7 @@ def run_task(agent: Agent, task: Task, i: int) -> None:
 def main(agent_name: str, keys: list[str], runs: int) -> None:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     agent = next(agent for agent in AGENTS if agent.name == agent_name)
-    tasks = [t for t in TASKS if t.name in keys]
+    tasks = [t for t in ALL_TASKS if t.name in keys]
     for i in range(runs):
         for task in tasks:
             run_task(agent, task, i)
@@ -46,8 +48,8 @@ if __name__ == "__main__":
         "prompts",
         type=str,
         nargs="+",
-        default=[t.name for t in TASKS],
-        choices=[t.name for t in TASKS],
+        default=[t.name for t in ALL_TASKS],
+        choices=[t.name for t in ALL_TASKS],
     )
     parser.add_argument("--runs", type=int, default=1)
     args = parser.parse_args()

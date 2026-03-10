@@ -1,0 +1,5 @@
+{
+  "database": "postgres://localhost/mydb",
+  "port": 8080,
+  "debug": true
+}

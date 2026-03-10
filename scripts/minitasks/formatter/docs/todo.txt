@@ -1,0 +1,3 @@
+- Fix authentication bug
+- Add pagination
+- Write tests

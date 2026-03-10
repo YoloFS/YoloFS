@@ -50,6 +50,32 @@ class GeminiAgent(Agent):
             for line in lines
         )
 
+    def ask_signature(self, screen: pyte.Screen) -> str | None:
+        lines = list(screen.display)
+        # Scan bottom-to-top for the last dialog box (╭…╰).
+        # Return None while the box is still rendering so the runner waits.
+        box_end = None
+        for i in range(len(lines) - 1, -1, -1):
+            stripped = lines[i].strip()
+            if not stripped:
+                continue
+            if stripped.startswith("╰") and stripped.endswith("╯"):
+                box_end = i
+                break
+            if stripped.startswith("╰"):
+                return None
+        if box_end is None:
+            return None
+        box_start = None
+        for i in range(box_end - 1, -1, -1):
+            stripped = lines[i].strip()
+            if stripped.startswith("╭") and stripped.endswith("╮"):
+                box_start = i
+                break
+        if box_start is None:
+            return None
+        return "\n".join(lines[i].rstrip() for i in range(box_start, box_end + 1))
+
     def ask_reply(self, screen: pyte.Screen) -> str | None:
         lines = [line.lower() for line in screen.display]
         if any("do you trust this folder" in line for line in lines):

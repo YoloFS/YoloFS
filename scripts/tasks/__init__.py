@@ -21,7 +21,7 @@ from scripts.tasks.grep import GREP_TASKS
 from scripts.tasks.special import SPECIAL_TASKS
 from scripts.tasks.create_symlink import CREATE_SYMLINK_TASKS
 
-TASKS: list[Task] = [
+MICROTASKS: list[Task] = [
     *LIST_DIR_TASKS,
     *READ_FILE_TASKS,
     *APPEND_FILE_TASKS,

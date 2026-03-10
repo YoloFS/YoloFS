@@ -266,9 +266,11 @@ class Runner:
     def _advance_phase(self) -> None:
         is_ask = self.agent.is_ask(self.screen)
         if is_ask:
-            ask_signature = "\n".join(
-                line.rstrip() for line in self.screen.display if line.strip()
-            )
+            ask_signature = self.agent.ask_signature(self.screen)
+            if ask_signature is None:
+                # Dialog detected but not fully rendered; wait.
+                self.is_in_ask = True
+                return
             if not self.is_in_ask or ask_signature != self.last_ask_signature:
                 self.is_in_ask = True
                 self.last_ask_signature = ask_signature

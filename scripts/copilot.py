@@ -55,6 +55,32 @@ class CopilotAgent(Agent):
             for line in lines
         )
 
+    def ask_signature(self, screen: pyte.Screen) -> str | None:
+        lines = list(screen.display)
+        # Scan bottom-to-top for the last outermost dialog box.
+        box_end = None
+        for i in range(len(lines) - 1, -1, -1):
+            stripped = lines[i].strip()
+            if not stripped:
+                continue
+            if stripped.startswith("╰"):
+                box_end = i
+                break
+        if box_end is None:
+            return None
+        box_start = None
+        for i in range(box_end - 1, -1, -1):
+            stripped = lines[i].strip()
+            if stripped.startswith("╭") and stripped.endswith("╮"):
+                box_start = i
+                break
+        if box_start is None:
+            return None
+        # Use content lines only (between borders) for a stable signature.
+        # This ignores both the bottom border (may be partially rendered or
+        # truncated by terminal width) and any LLM output above the box.
+        return "\n".join(lines[i].rstrip() for i in range(box_start + 1, box_end))
+
     def ask_reply(self, screen: pyte.Screen) -> str | None:
         # Press Enter to select the highlighted option (1. Yes).
         return ""
