@@ -12,7 +12,7 @@ from scripts.records import ToolCall
 @dataclass(frozen=True)
 class ClaudeAgent(Agent):
     name: str = "claude"
-    command: tuple[str, ...] = ("claude",)
+    command: tuple[str, ...] = ("claude", "--model", "claude-sonnet-4-5", "--effort", "low")
     newline: str = "\r"
 
     def is_ask(self, screen: pyte.Screen) -> bool:

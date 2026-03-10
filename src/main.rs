@@ -33,6 +33,10 @@ struct Cli {
     #[arg(long)]
     mcp: bool,
 
+    /// Automatically stage changes without prompting
+    #[arg(long)]
+    auto_stage: bool,
+
     /// Use sandbox directory (default: ./.staging)
     #[arg(short = 'D', long, value_name = "DIR")]
     sandbox_dir: Option<PathBuf>,
@@ -92,6 +96,27 @@ async fn run() -> Result<ExitCode> {
         Some(d) => Sandbox::new_at(d)?,
         None => Sandbox::new_at(default_sandbox_dir()?)?,
     };
+
+    // Handle commit/abort subcommands on existing sandbox
+    if let Some(first) = cli.args.first() {
+        match first.as_str() {
+            "commit" => {
+                if show_summary(&sandbox)? {
+                    commit_changes(&sandbox)?;
+                    println!("Committed.");
+                } else {
+                    println!("Nothing to commit.");
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
+            "abort" => {
+                abort_changes(&sandbox)?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            _ => {}
+        }
+    }
+
     println!("{}: {}", "Sandbox".cyan(), sandbox.root.display());
 
     let exit_code = if cli.args.is_empty() {
@@ -101,7 +126,12 @@ async fn run() -> Result<ExitCode> {
     };
 
     if show_summary(&sandbox)? {
-        match prompt_change_action() {
+        let action = if cli.auto_stage {
+            ChangeAction::Stage
+        } else {
+            prompt_change_action()
+        };
+        match action {
             ChangeAction::Commit => commit_changes(&sandbox)?,
             ChangeAction::Abort => abort_changes(&sandbox)?,
             ChangeAction::Stage => {

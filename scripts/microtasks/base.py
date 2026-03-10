@@ -20,7 +20,7 @@ class Task:
             path = cwd / entry.path
             if isinstance(entry, FileEntry):
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(entry.content)
+                path.write_text(entry.content or "")
                 if entry.mode is not None:
                     path.chmod(entry.mode)
             elif isinstance(entry, SymlinkEntry):
@@ -41,7 +41,8 @@ class Task:
                 result.add(DirEntry(rel))
             else:
                 mode = stat.S_IMODE(path.lstat().st_mode)
-                result.add(FileEntry(rel, path.read_text().strip(), mode))
+                content = path.read_text().strip()
+                result.add(FileEntry(rel, content, mode))
         return result
 
     def check_outputs(self, tool_calls: list[ToolCall]) -> OutputCheckResult:
@@ -58,11 +59,33 @@ class Task:
     def check_fs(self, root_path: Path, cwd: Path) -> FsCheckResult:
         actual = self._scan_fs(root_path, cwd)
         expected = set(self.after if self.after is not None else self.before)
+
+        # FileEntry with content=None means "any content is acceptable".
+        # Match these loosely by path+mode, then exclude from strict diff.
+        matched_actual: set[FsEntry] = set()
+        matched_expected: set[FsEntry] = set()
+        for exp in expected:
+            if isinstance(exp, FileEntry) and exp.content is None:
+                for act in actual:
+                    if (
+                        isinstance(act, FileEntry)
+                        and act.path == exp.path
+                        and (exp.mode is None or act.mode == exp.mode)
+                    ):
+                        matched_actual.add(act)
+                        matched_expected.add(exp)
+                        break
+
+        remaining_expected = expected - matched_expected
+        remaining_actual = actual - matched_actual
+
         missing = [
-            repr(entry) for entry in sorted(expected - actual, key=lambda e: e.path)
+            repr(entry)
+            for entry in sorted(remaining_expected - remaining_actual, key=lambda e: e.path)
         ]
         unexpected = [
-            repr(entry) for entry in sorted(actual - expected, key=lambda e: e.path)
+            repr(entry)
+            for entry in sorted(remaining_actual - remaining_expected, key=lambda e: e.path)
         ]
         failed_reasons = [f"Missing filesystem entry: {entry}" for entry in missing]
         failed_reasons.extend(

@@ -52,6 +52,9 @@ class CopilotAgent(Agent):
             or "allow directory access" in line
             or "do you want to add these directories to the allowed list" in line
             or "do you want to run this command?" in line
+            or "do you want to edit" in line
+            or "do you want to create" in line
+            or "do you want to delete" in line
             for line in lines
         )
 

@@ -19,7 +19,7 @@ class GeminiAgent(Agent):
     name: str = "gemini"
     command: tuple[str, ...] = ("gemini",)
     newline: str = "\r"
-    select_timeout: float = 2.0
+    select_timeout: float = 3.0
     input_delay: float = 2.0
 
     def _get_project_slug(self, cwd: Path) -> str | None:
@@ -47,6 +47,7 @@ class GeminiAgent(Agent):
         return any(
             "do you trust this folder" in line
             or "action required" in line
+            or "answer questions" in line
             for line in lines
         )
 
@@ -79,7 +80,15 @@ class GeminiAgent(Agent):
                 break
         if box_start is None:
             return None
-        return "\n".join(lines[i].rstrip() for i in range(box_start, box_end + 1))
+        # Use only the inner │…│ content lines as signature so that
+        # screen scrolling (different line positions) doesn't create
+        # a different signature for the same dialog.
+        inner = []
+        for i in range(box_start + 1, box_end):
+            line = lines[i].strip()
+            if line.startswith("│") and line.endswith("│"):
+                inner.append(line)
+        return "\n".join(inner)
 
     def ask_reply(self, screen: pyte.Screen) -> str | None:
         lines = [line.lower() for line in screen.display]
