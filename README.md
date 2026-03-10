@@ -12,7 +12,7 @@ Install npm v24.13.1
 ```bash
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 bash -c ". ~/.nvm/nvm.sh && nvm install 24.13.1"
-# for fish: fish_add_path ~/.nvm/versions/node/v24.13.1/bin
+if set -q FISH_VERSION; fish_add_path ~/.nvm/versions/node/v24.13.1/bin; end
 ```
 
 Install Claude 2.1.45
@@ -28,7 +28,7 @@ npm i -g @openai/codex@0.101.0
 Install OpenCode 1.2.6
 ```bash
 curl -fsSL https://opencode.ai/install | bash -s -- --version 1.2.6
-# for fish: fish_add_path ~/.opencode/bin
+if set -q FISH_VERSION; fish_add_path ~/.opencode/bin; end
 ```
 
 Install Gemini CLI 0.29.0
