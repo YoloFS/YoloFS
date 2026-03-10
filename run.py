@@ -41,14 +41,14 @@ def main(agent_name: str, keys: list[str], runs: int) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("agent_name", type=str, default="claude", nargs="?")
-    parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument("agent_name", type=str)
     parser.add_argument(
-        "--prompts",
+        "prompts",
         type=str,
         nargs="+",
         default=[t.name for t in TASKS],
         choices=[t.name for t in TASKS],
     )
+    parser.add_argument("--runs", type=int, default=1)
     args = parser.parse_args()
     main(args.agent_name, args.prompts, args.runs)
