@@ -337,7 +337,7 @@ Two levels:
   `lookup()` by inheriting from the nearest ancestor dentry with a rule.
   Checked in `permission()` with O(1) cost.
 
-**Setting a rule** (`agfs rule add /src allow-rw`):
+**Setting a rule** (`agfs rule add src allow-rw`):
 
 1. Write the rule to `./agfs/config.toml` (source of truth on disk):
   ```toml
@@ -352,10 +352,12 @@ Two levels:
    "/usr/bin"   = "allow-rx"
   ```
 
-   Paths can be **absolute** (`/etc`) or **relative** to the CWD where
-   `agfs` was launched (`src` → resolved to `/home/user/project/src` at
-   mount time).
-2. `ioctl(AGFS_IOC_RULE_ADD)` → kernel resolves `/src` to a dentry.
+   Paths can be **absolute** (`/etc`) or **relative** to the session root:
+   the directory containing `./agfs/` (equivalently, the CWD where `agfs`
+   was launched). For example, `src` resolves to
+   `/home/user/project/src`.
+2. `ioctl(AGFS_IOC_RULE_ADD)` → kernel resolves the normalized absolute path
+   to a dentry.
 3. Set `AGFS_D(dentry)->perm = ALLOW_RW`.
 4. Pin the dentry.
 5. `atomic_inc(&sb->perm_gen)` — invalidates all cached inode perms.
@@ -454,8 +456,10 @@ static int agfs_open(struct inode *inode, struct file *file)
     enum agfs_perm perm = AGFS_I(inode)->cached_perm;
 
     if (perm == AGFS_PERM_ASK) {
-        char buf[PATH_MAX];
-        char *relpath = dentry_path_raw(dentry, buf, PATH_MAX);
+        char buf[AGFS_PATH_MAX];
+        char *relpath = dentry_path_raw(dentry, buf, AGFS_PATH_MAX);
+        if (IS_ERR(relpath))
+            return PTR_ERR(relpath);   // -ENAMETOOLONG if path won't fit
         err = agfs_ask_userspace(dentry, relpath, file->f_flags, &perm);
         if (err)
             return err;
@@ -473,10 +477,10 @@ do_open:
 **Example**:
 
 ```bash
-agfs rule add /src         allow-rw
-agfs rule add /etc         deny
-agfs rule add /etc/hosts   allow-ro
-agfs rule add /usr/bin     allow-rx
+ agfs rule add src          allow-rw
+ agfs rule add /etc         deny
+ agfs rule add /etc/hosts   allow-ro
+ agfs rule add /usr/bin     allow-rx
 ```
 
 - `permission("src/main.rs")` → cached_perm=ALLOW_RW (from lookup) → **pass**
@@ -599,6 +603,10 @@ struct agfs_ctl_response {
     __u8    _pad[7];
 };
 ```
+
+`path` is never truncated in-kernel. If the resolved mounted-view path does
+not fit in `AGFS_PATH_MAX` bytes including the terminating NUL, the access
+fails with `-ENAMETOOLONG` and no ask request is enqueued.
 
 ### 5.4 Pending Permission Request (internal)
 
@@ -801,19 +809,23 @@ agfs log --dump
 ```bash
 # Mount and drop into a shell inside the sandbox
 $ agfs
-   → creates ./agfs/, mounts at ./agfs/mnt, runs $SHELL inside it
+   → creates ./agfs/, mounts at ./agfs/mnt, `chroot`s into `./agfs/mnt`,
+     then runs $SHELL starting in the caller's current working directory
+     inside that mounted view
 
 # Mount and run a specific command
 $ agfs -- make build
-   → creates ./agfs/, mounts, runs `make build` inside ./agfs/mnt, exits
+   → creates ./agfs/, mounts, `chroot`s into `./agfs/mnt`, runs
+     `make build` with the caller's current working directory preserved
+     inside that mounted view, exits
 
 # Subcommands (operate on an existing ./agfs/ session)
 $ agfs status            # show staged changes
 $ agfs diff              # git-style diff of staged vs base (rename-aware)
 $ agfs commit            # apply staged changes to base
 $ agfs abort             # discard staged changes
-$ agfs rule add /src allow-rw
-$ agfs rule remove /src
+$ agfs rule add src allow-rw
+$ agfs rule remove src
 $ agfs log --follow      # tail the debug log
 $ agfs watch             # handle ask requests (daemon mode)
 ```
@@ -830,9 +842,14 @@ Configured via `./agfs/config.toml` or CLI flags:
 | `nostaging` | false | Disable staging (passthrough + gating only) |
 | `log_size` | 1024 | Ring buffer entries for `./agfs/log` |
 
-Inside `./agfs/mnt`, the agent sees the full root filesystem with staging
-and permission gating applied. Files under the current working directory
-are typically ruled `allow-rw`; everything else defaults to `ask`.
+Inside the launched shell or command, agfs `chroot`s into `./agfs/mnt`, so
+that mounted view becomes `/`. The initial working directory is the caller's
+original CWD mapped into that view. For example, launching from
+`/home/user/project` starts the shell at `/home/user/project` inside agfs,
+not at `/`. That is why runtime examples use absolute paths like `/src` and
+`/etc` even when a rule was added as the relative path `src` from the
+session root. Files under that session root are typically ruled `allow-rw`;
+everything else defaults to `ask`.
 
 ---
 
@@ -873,13 +890,16 @@ agfs/
 ## 11. Lifecycle Example
 
 ```
-# 1. Mount agfs and enter shell (base is always /)
+# 1. Mount agfs and enter shell (`agfs` chroots into `./agfs/mnt`)
 $ cd /home/user/project
 $ agfs
-   → creates ./agfs/, mounts / → ./agfs/mnt, drops into $SHELL
+   → creates ./agfs/, mounts / → ./agfs/mnt, `chroot`s into that mount,
+     and drops into $SHELL with the starting directory set to
+     `/home/user/project` inside the mounted view
 
-# 1b. Install rules via CLI (attaches perm directly to dentries)
-$ agfs rule add /src allow-rw
+# 1b. Install rules via CLI from the session root (attaches perm directly
+#     to dentries)
+$ agfs rule add src allow-rw
 $ agfs rule add /etc deny
 $ agfs rule add /etc/hosts allow-ro
 
@@ -973,8 +993,13 @@ longest-prefix-match for free. This satisfies all three principles:
   walk up. O(1) invalidation.
 - On `AGFS_IOC_CACHE_INVAL` (after userspace commit/abort): bumps perm_gen
   and invalidates staging-related dentry caches, including pinned rename dentries.
-- On `rename`: inode keeps its `cached_perm` but the dentry chain changes.
-  Next stale check re-resolves against the new parent chain.
+- On `rename`: pure renames do **not** bump `perm_gen`. The inode keeps its
+  `cached_perm` until some later invalidation event (rule add/remove or
+  `AGFS_IOC_CACHE_INVAL`). This is intentional: rename is treated as a path
+  move, not an immediate permission re-resolution point. A file moved from
+  `src` under `/etc` may therefore continue to use its pre-rename effective
+  permission until the next generation bump. This trades strict
+  post-rename freshness for O(1) steady-state checks.
 
 **Limitation**: directory permissions are not gated — only regular files
 are checked. Directory access is controlled by standard Unix permissions on
@@ -1013,3 +1038,56 @@ for interactive approval.
 **Portability**: overlayfs's `RENAME_WHITEOUT` requires filesystem support
 (ext4, xfs). agfs uses a `.renames` sidecar file and standard `mknod()`
 whiteouts, working on any lower FS.
+
+---
+
+## 14. Comparison with Landlock
+
+Landlock is a Linux Security Module (LSM) for unprivileged process
+sandboxing. It shares the goal of path-based access control but differs
+significantly in design.
+
+**Rule interface**: Landlock uses file descriptors to identify paths. The
+userspace process opens a path with `O_PATH`, passes the fd to
+`landlock_add_rule()`, and the kernel resolves it to an inode. Rules follow
+the inode, not the name — immune to rename attacks. agfs uses path strings
+resolved to dentries; rules are name-based and stay on the dentry.
+
+**Rule storage**: Landlock stores rules in an rb-tree keyed by inode object
+pointer, one tree per ruleset. On access, it walks up every ancestor of the
+target path and does an rb-tree lookup for each — O(depth × log n). agfs
+stores rules directly on dentries and caches the resolved permission on
+inodes with a generation counter — O(1) in steady state.
+
+**Overlapping rules**: Landlock is additive — rules only grant permissions.
+If `/foo` has no rule and `/foo/bar` has `READ`, then `/foo/bar` is
+readable but `/foo/baz` is denied. However, you **cannot** deny a child
+when a parent is allowed: if `/foo` grants `READ`, then `/foo/bar` also
+gets `READ` and there is no way to revoke it. agfs uses nearest-ancestor
+wins: `/foo = allow-rw` + `/foo/bar = deny` works because the walk-up
+finds `/foo/bar`'s rule first. Both directions (allow parent deny child,
+deny parent allow child) are supported.
+
+**Dynamic rules**: Landlock rulesets are immutable once enforced via
+`landlock_restrict_self()`. You cannot add or remove rules at runtime.
+agfs rules can be added, changed, or removed at any time via ioctl, with
+O(1) invalidation via generation counter.
+
+**Default policy**: Landlock is deny-by-default for "handled" access rights.
+agfs is ask-by-default — unmatched paths trigger the ask protocol, which
+blocks the thread until a daemon decides.
+
+**Scope**: Landlock is per-process (attached to credentials, inherited by
+children). agfs is per-mount (all processes inside the mount share the same
+rules and staging area).
+
+| Aspect | Landlock | agfs |
+|---|---|---|
+| Rule target | fd → inode (follows renames) | path → dentry (name-based) |
+| Rule storage | rb-tree per ruleset | `perm` field on dentry |
+| Access check | O(depth × log n) per ancestor | O(1) via inode cache + gen counter |
+| Overlap support | Additive only (can't deny child of allowed parent) | Nearest-ancestor wins (both directions) |
+| Dynamic rules | No (immutable after enforce) | Yes (add/remove/change anytime) |
+| Default | Deny (handled rights) | Ask (block + prompt) |
+| Scope | Per-process (cred-attached) | Per-mount |
+| Staging | N/A | Full commit/abort staging layer |
