@@ -37,10 +37,10 @@ either can be disabled at mount time.
                       │ VFS syscall
  ┌────────────────────▼─────────────────────────────┐
  │                    agfs                           │
- │  ┌─────────────┐  ┌──────────────┐  ┌─────────┐ │
- │  │ Perm Gating │→ │   Staging    │→ │ Passthru│ │
- │  │   Layer     │  │    Layer     │  │  Layer  │ │
- │  └─────────────┘  └──────────────┘  └─────────┘ │
+ │       ┌─────────────┐    ┌──────────────┐        │
+ │       │ Perm Gating │ →  │   Staging    │        │
+ │       │   Layer     │    │    Layer     │        │
+ │       └─────────────┘    └──────────────┘        │
  └────────────────────┬─────────────────────────────┘
                       │ vfs_*() on lower FS
  ┌────────────────────▼─────────────────────────────┐
@@ -56,7 +56,7 @@ either can be disabled at mount time.
  └──────────────────────────────────────────────────┘
 ```
 
-The three internal layers execute in order for every VFS operation:
+The two layers execute in order for every VFS operation:
 
 1. **Perm Gating Layer** — resolves the effective permission for the file.
    Only applies to **regular files** — directories always pass through
@@ -66,9 +66,9 @@ The three internal layers execute in order for every VFS operation:
 2. **Staging Layer** — routes reads to the staging dir if the file has been
    modified, otherwise to the base. Ensures writes go to the staging directory.
    Handles whiteouts for deletions.
-3. **Passthrough Layer** — delegates the actual I/O to the lower filesystem
-   (the wrapfs delegation pattern: swap the `kiocb->ki_filp` / call
-   `lower_inode->i_op->…`).
+
+All I/O is ultimately delegated to the lower filesystem via the standard
+wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
 
 ---
 
@@ -94,7 +94,7 @@ The three internal layers execute in order for every VFS operation:
 ├── ctl                          # virtual control file (read/write/poll/ioctl)
 ├── log                          # virtual log file (read/poll) for debugging
 ├── config.toml                  # TOML: mount options + rules
-├── renames                      # rename records: src\0dst\0 pairs (for commit)
+├── renames                      # persisted rename log: src\0dst\0 pairs
 ├── staging/                     # staged files + whiteouts (mirrors / tree)
 └── mnt/                         # mount point — agent works here
 ```
@@ -102,16 +102,30 @@ The three internal layers execute in order for every VFS operation:
 ### 3.3 Path Resolution
 
 ```
-resolve(relpath):
+resolve(dentry):
+    relpath = dentry_relpath(dentry)
+
     if staging_has(relpath):
         if is_whiteout(staging_path(relpath)):  return -ENOENT
         return staging_path(relpath)
-    if base_has(relpath):        return base_path(relpath)
+
+    if AGFS_D(dentry)->lower_path is set:
+        return AGFS_D(dentry)->lower_path
+
+    if base_has(relpath):
+        return base_path(relpath)
+
     return -ENOENT
 ```
 
 A whiteout is a char device with major/minor 0/0 (`mknod(path, S_IFCHR, 0)`).
 Staging files take priority over base. Whiteouts in the staging dir shadow the base.
+`./agfs/renames` is not consulted on the hot path. Runtime rename state lives
+in dentries: a renamed destination dentry has `lower_path` redirected to the
+original base object, and the old path is hidden by a staging whiteout. On
+mount, agfs replays `./agfs/renames` to reinstall those redirected destination
+dentries; source hiding continues to come from the whiteouts already present in
+`./agfs/staging/`.
 
 ### 3.4 Open / Read / Write Path
 
@@ -137,7 +151,7 @@ agfs_open(inode, file):
             file_info->needs_cow = true
     else:
         // Read-only open: prefer staging, fall back to base.
-        file_info->lower_file = open(resolve(inode), O_RDONLY)
+        file_info->lower_file = open(resolve(file->f_path.dentry), O_RDONLY)
         file_info->needs_cow = false
 
 agfs_read_iter(kiocb, iov_iter):
@@ -190,8 +204,23 @@ that has not been modified.
 just to move it. For large files this is wasteful — the content hasn't
 changed, only the path.
 
-**Solution**: record the rename in `./agfs/renames` and redirect the new
-dentry's `lower_path` to the original base file. No data copy.
+**Solution**: append the rename to `./agfs/renames`, redirect the destination
+dentry's `lower_path` to the original base object, pin that dentry until
+commit/abort, and create a whiteout at the old path. The on-disk file is only
+persisted recovery/commit data; kernel path resolution uses dentry state. No
+data copy is needed for a pure rename.
+
+`./agfs/renames` is a sequence of `old_path\0new_path\0` pairs. Each path is
+absolute and NUL-terminated.
+
+On mount, agfs replays this file and reinstalls the redirected destination
+dentries. Each runtime rename appends one record to the file.
+
+Each record means:
+
+- hide `old_path` from the merged view, and
+- resolve `new_path` to the base file currently stored at `old_path`
+  until a staged copy exists at `new_path`.
 
 ```
 agfs_rename(old_dir, old_dentry, new_dir, new_dentry):
@@ -202,26 +231,30 @@ agfs_rename(old_dir, old_dentry, new_dir, new_dentry):
         // Already staged — just rename within staging dir.
         vfs_rename(staging/old_path, staging/new_path)
     else:
-        // File only in base. Redirect, don't copy.
-        new_info->lower_path = old_info->lower_path   // point to base file
-        append(renames_file, old_path, new_path)       // persist for commit
+        // File only in base. Record the move; no copy yet.
+        new_info->lower_path = old_info->lower_path
+        dget(new_dentry)   // pin until commit/abort
+        append(renames_file, old_path, new_path)
 
     // Hide the old path.
     create_whiteout(staging/old_path)
 ```
 
-**Read after rename**: the new dentry's `lower_path` points to the original
-base file. Reads go there directly. No extra lookup or table scan.
+**Read after rename**: `resolve(new_dentry)` follows
+`AGFS_D(new_dentry)->lower_path` and returns `base/old_path` until
+`staging/new_path` exists. A lookup of `old_path` sees the whiteout and returns
+`-ENOENT`.
 
-**Write after rename**: triggers lazy COW as usual. The base file (at the
-original path) is copied into `staging/new_path`, and `lower_path` is
-updated to point to the staging file. The `.renames` entry stays on disk
-so commit knows to also delete the original.
+**Write after rename**: triggers lazy COW as usual. The base file at
+`old_path` is copied into `staging/new_path`; from that point on,
+`resolve(new_dentry)` returns the staged file because staging wins over the
+redirected `lower_path`. The rename record stays on disk so commit knows to delete the
+original path after installing the new file.
 
 **Commit**: userspace reads `./agfs/renames` and handles each entry:
 - If a staging file exists at `new_path` (file was written after rename):
-  copy staging file → `base/new_path`, then `unlink(base/old_path)`.
-- If no staging file (never written): `rename(base/old_path, base/new_path)`.
+  `rename(staging/new_path, base/new_path)`, then `unlink(base/old_path)`.
+- If no staging file exists (pure rename): `rename(base/old_path, base/new_path)`.
 
 **Abort**: delete `./agfs/renames` along with the staging directory.
 
@@ -233,35 +266,58 @@ directory and applies changes to the base:
 
 **Commit** (`agfs commit`):
 
-1. Read `./agfs/renames` and process each entry:
-   - If staging file exists at `new_path`: copy staging → `base/new_path`,
+1. Read `./agfs/renames` and build `old→new` / `new→old` lookup tables.
+2. Process rename records first:
+   - If a staged file exists at `new_path`: `rename(staging/new_path, base/new_path)`,
      then `unlink(base/old_path)`.
-   - If no staging file: `rename(base/old_path, base/new_path)`.
-2. Walk `./agfs/staging/` recursively.
-3. For each whiteout (char dev 0/0): `unlink()` / `rmdir()` the corresponding
-   base path.
-4. For each regular file: `rename()` from `staging/<path>` → `base/<path>`,
-   creating parent directories as needed.
-5. Remove the `staging/` directory and `renames` file.
-6. Signal the kernel module to invalidate caches.
+   - If no staged file exists at `new_path`: `rename(base/old_path, base/new_path)`.
+3. Walk `./agfs/staging/` recursively.
+4. Skip entries already explained by rename records:
+   - whiteouts at `old_path` for renamed files,
+   - staged files at `new_path` already consumed by step 2.
+5. For each remaining whiteout (char dev 0/0): `unlink()` / `rmdir()` the
+   corresponding base path.
+6. For each remaining regular file: `rename()` from `staging/<path>` →
+   `base/<path>`, creating parent directories as needed.
+7. Remove the `staging/` directory and `renames` file.
+8. Signal the kernel module to invalidate caches and drop pinned rename dentries.
 
 **Abort** (`agfs abort`):
 
 1. `rm -rf ./agfs/staging/` and `rm ./agfs/renames`.
-2. Signal the kernel module to invalidate caches.
+2. Signal the kernel module to invalidate caches and drop pinned rename dentries.
 
 **Status** (`agfs status`):
 
-1. Walk `staging/`, classify each entry as added (no base), modified (base
-  exists), or deleted (whiteout). Print summary.
+1. Read `./agfs/renames` first.
+2. For each rename record:
+   - If no staged file exists at `new_path`: report a pure rename
+     (`old_path -> new_path`).
+   - If a staged file exists at `new_path`: report rename + modified
+     (`old_path -> new_path`, modified).
+3. Walk `staging/`.
+4. Skip entries already explained by rename records:
+   - whiteouts at `old_path`,
+   - staged files at `new_path`.
+5. Classify all remaining entries as added, modified, or deleted.
 
 **Diff** (`agfs diff`):
 
-1. Walk `staging/` recursively.
-2. For each regular file: run unified diff against the corresponding base file.
-   Added files are shown as entirely new. Modified files show the delta.
-3. For each whiteout: show as a deleted file.
-4. Output in standard unified diff format (compatible with `patch`).
+1. Read `./agfs/renames` first.
+2. For each rename record:
+   - If no staged file exists at `new_path`: emit a rename-only record.
+   - If a staged file exists at `new_path`: diff `base/old_path` against
+     `staging/new_path` and label it as a rename + modification.
+3. Walk `staging/` recursively.
+4. Skip entries already explained by rename records:
+   - whiteouts at `old_path`,
+   - staged files at `new_path`.
+5. For each remaining regular file: run unified diff against the corresponding
+   base file. Added files are shown as entirely new. Modified files show the
+   delta.
+6. For each remaining whiteout: show as a deleted file.
+7. Output in git-style unified diff format. Pure renames are represented as
+   rename metadata and are not plain POSIX `patch` input.
 
 ---
 
@@ -282,11 +338,15 @@ enum agfs_perm {
 
 ### 4.2 Rule Engine
 
-Rules are **attached directly to dentries**. Only dentries with explicit
-rules have `perm` set; all others have `AGFS_PERM_NONE`. At access time,
-the kernel walks up the dentry parent chain to find the nearest ancestor
-with a rule. **No caching on children, no inheritance at lookup, no
-invalidation on rule change.**
+Rules are **attached to dentries**. Resolved permissions are **cached on
+inodes** with a **generation counter** for cheap invalidation.
+
+Two levels:
+- **Dentry**: `perm` field — only set on dentries that have an explicit rule
+  (`AGFS_PERM_NONE` otherwise). Rules are pinned so the dentry is never evicted.
+- **Inode**: `cached_perm` + `perm_gen` — resolved permission cached during
+  `lookup()` by inheriting from the nearest ancestor dentry with a rule.
+  Checked in `permission()` with O(1) cost.
 
 **Setting a rule** (`agfs rule add /src allow-rw`):
 
@@ -308,55 +368,90 @@ invalidation on rule change.**
    mount time).
 2. `ioctl(AGFS_IOC_RULE_ADD)` → kernel resolves `/src` to a dentry.
 3. Set `AGFS_D(dentry)->perm = ALLOW_RW`.
-4. Pin the dentry (bump refcount so it's never evicted by memory pressure).
+4. Pin the dentry.
+5. `atomic_inc(&sb->perm_gen)` — invalidates all cached inode perms.
 
 On mount, the kernel reads `./agfs/config.toml` and applies all rules.
 
-**Changing a rule**: just set it again. No child invalidation needed —
-children don't cache anything.
-
-- `agfs rule add /foo/bar allow-ro` → sets perm on `/foo/bar`
-- Later: `agfs rule add /foo/bar ask` → changes it. Immediate effect.
+**Changing a rule**: just set it again + bump generation.
 
 **Removing a rule** (`agfs rule remove /foo/bar`):
 
 1. Remove the rule from `./agfs/config.toml`.
 2. `ioctl(AGFS_IOC_RULE_REMOVE)` → kernel sets `AGFS_D(dentry)->perm = NONE`.
 3. Unpin the dentry.
-4. No invalidation needed — the walk-up will skip past it and find the
-  parent's rule instead.
+4. `atomic_inc(&sb->perm_gen)`.
 
-**Permission resolution at open() — walk up to nearest rule**:
+**Permission resolution — cached on inode, resolved lazily**:
 
 ```c
+// Resolve by walking up dentry chain (only called on cache miss).
 enum agfs_perm agfs_resolve_perm(struct dentry *dentry)
 {
     struct dentry *cur = dentry;
     while (cur) {
-        enum agfs_perm p = AGFS_D(cur)->perm;
-        if (p != AGFS_PERM_NONE)
-            return p;
+        if (AGFS_D(cur)->perm != AGFS_PERM_NONE)
+            return AGFS_D(cur)->perm;
         cur = cur->d_parent;
     }
-    return AGFS_PERM_ASK;  // root default
+    return AGFS_PERM_ASK;
+}
+
+// Called during lookup() — cache the resolved perm on the inode.
+void agfs_cache_perm(struct inode *inode, struct dentry *dentry)
+{
+    struct agfs_inode_info *info = AGFS_I(inode);
+    struct agfs_sb_info *sb = AGFS_SB(inode->i_sb);
+
+    info->cached_perm = agfs_resolve_perm(dentry);
+    info->perm_gen = atomic64_read(&sb->perm_gen);
+}
+
+// Called by permission() — O(1) in steady state.
+static int agfs_permission(struct inode *inode, int mask)
+{
+    struct agfs_inode_info *info = AGFS_I(inode);
+    struct agfs_sb_info *sb = AGFS_SB(inode->i_sb);
+
+    if (!S_ISREG(inode->i_mode))
+        return inode_permission(info->lower_inode, mask);
+
+    // Check generation — re-resolve if stale.
+    enum agfs_perm perm = info->cached_perm;
+    if (info->perm_gen != atomic64_read(&sb->perm_gen)) {
+        struct dentry *dentry = d_find_alias(inode);
+        if (dentry) {
+            perm = agfs_resolve_perm(dentry);
+            info->cached_perm = perm;
+            info->perm_gen = atomic64_read(&sb->perm_gen);
+            dput(dentry);
+        }
+    }
+
+    if (perm == AGFS_PERM_ASK)
+        return 0;  // ask is handled in open(), not here
+
+    switch (perm) {
+    case AGFS_PERM_ALLOW_RW:  return 0;
+    case AGFS_PERM_ALLOW_RO:
+        return (mask & MAY_WRITE) ? -EACCES : 0;
+    case AGFS_PERM_ALLOW_RX:
+        return (mask & MAY_WRITE) ? -EACCES : 0;
+    case AGFS_PERM_DENY:      return -EACCES;
+    default:                  return -EACCES;
+    }
 }
 ```
 
-The root dentry has `perm = AGFS_PERM_ASK`. Rule dentries are pinned and
-always in memory. The walk is O(depth) — typically 3-8 pointer hops.
+The root dentry has `perm = AGFS_PERM_ASK`. In steady state (no rule
+changes), `permission()` is a single generation compare + switch — O(1).
+On rule change, the generation bumps and inodes re-resolve lazily on
+next access.
 
-Gating only applies to regular files. Directories are not gated — their
-access is controlled by standard Unix permissions on the lower FS.
-Since the VFS `->permission()` callback only receives the inode (not the
-dentry), gating is performed in `agfs_open()` where the dentry is available:
+The `ask` path is handled in `agfs_open()` where the dentry is directly
+available and the thread can sleep:
 
 ```c
-static int agfs_permission(struct inode *inode, int mask)
-{
-    struct inode *lower = AGFS_I(inode)->lower_inode;
-    return inode_permission(lower, mask);
-}
-
 static int agfs_open(struct inode *inode, struct file *file)
 {
     struct dentry *dentry = file->f_path.dentry;
@@ -365,18 +460,14 @@ static int agfs_open(struct inode *inode, struct file *file)
     if (S_ISDIR(inode->i_mode))
         goto do_open;
 
-    // Walk up dentry chain to find nearest rule.
-    enum agfs_perm perm = agfs_resolve_perm(dentry);
+    enum agfs_perm perm = AGFS_I(inode)->cached_perm;
 
     if (perm == AGFS_PERM_ASK) {
-        bool persist;
         char buf[PATH_MAX];
         char *relpath = dentry_path_raw(dentry, buf, PATH_MAX);
-        err = agfs_ask_userspace(dentry, relpath, file->f_flags, &perm, &persist);
+        err = agfs_ask_userspace(dentry, relpath, file->f_flags, &perm);
         if (err)
             return err;
-        if (persist)
-            AGFS_D(dentry)->perm = perm;
     }
 
     err = agfs_check_perm(perm, file->f_flags);
@@ -397,11 +488,10 @@ agfs rule add /etc/hosts   allow-ro
 agfs rule add /usr/bin     allow-rx
 ```
 
-- `open("src/main.rs")` → walk: main.rs(NONE) → src(ALLOW_RW) → **allow-rw**
-- `open("src/deep/nested/f.py")` → walk: f.py → nested → deep → src(ALLOW_RW) → **allow-rw**
-- `open("etc/passwd")` → walk: passwd(NONE) → etc(DENY) → **deny**
-- `open("etc/hosts")` → walk: hosts(ALLOW_RO) → **allow-ro**
-- `open("tmp/foo")` → walk: foo(NONE) → tmp(NONE) → root(ASK) → **ask**
+- `permission("src/main.rs")` → cached_perm=ALLOW_RW (from lookup) → **pass**
+- `permission("etc/passwd")` → cached_perm=DENY → **-EACCES**
+- `permission("etc/hosts")` → cached_perm=ALLOW_RO → **pass for read, deny write**
+- `open("tmp/foo")` → cached_perm=ASK → ask daemon → **sleeps until decision**
 
 ### 4.3 The Ask Protocol
 
@@ -424,16 +514,15 @@ When a thread accesses a file whose effective permission is `ask`:
                                              ↓
                                             Daemon shows prompt / applies policy
                                              ↓
-                                            write() → struct agfs_ctl_response {
-                                                        id: 42, decision: ALLOW_RW,
-                                                        persist: 1 }
-                                             ↓
-  6. req->decision = ALLOW_RW               ioctl / write handler:
-  7. complete(&req->done)                     find request by id
+                                             write() → struct agfs_ctl_response {
+                                                         id: 42, decision: ALLOW_RW }
+                                              ↓
+   6. req->decision = ALLOW_RW               ioctl / write handler:
+   7. complete(&req->done)                     find request by id
      …thread wakes…                           set decision
-  8. If persist: save to dentry->perm        complete(&req->done)
-     If !persist: use for this open only
-  9. Proceed with operation
+  8. Proceed with operation                  complete(&req->done)
+     (one-time; daemon may separately
+      `ioctl(RULE_ADD)` to persist)
 ```
 
 Key properties:
@@ -443,11 +532,12 @@ request is removed from the pending list and `-EINTR` is returned.
 - **Timeout**: Configurable via mount option `ask_timeout=<seconds>`.
 If the daemon doesn't respond, the default action (configurable:
 `deny` or `allow-ro`) is applied.
-- **Caching**: The daemon controls whether a decision is persistent:
-  - `persist: true` (default) → stored in `agfs_dentry_info->perm`.
-    Subsequent accesses skip the ask path.
-  - `persist: false` → used for this one open only. Next access to the
-    same file triggers ask again ("allow once").
+- **Minimal response**: `agfs_ctl_response` only carries `{ id, decision }`.
+  Persisting policy is always a separate `ioctl(AGFS_IOC_RULE_ADD)`.
+- **One-time by default**: The decision applies to this single access only.
+  Next access to the same file triggers ask again. To persist a decision,
+  the daemon separately calls `ioctl(AGFS_IOC_RULE_ADD)` to install a rule
+  on the dentry.
 
 ---
 
@@ -463,9 +553,11 @@ struct agfs_sb_info {
 
     // Staging
     struct path             staging_dir;       // ./agfs/staging/
-    struct rw_semaphore     staging_sem;     // protects staging dir
+    struct path             renames_file;      // ./agfs/renames
+    struct rw_semaphore     staging_sem;       // protects staging dir + rename log updates/replay
 
     // Permission gating
+    atomic64_t              perm_gen;        // bumped on rule change; invalidates inode caches
     struct list_head        pending_reqs;    // list of agfs_perm_request
     spinlock_t              pending_lock;
     wait_queue_head_t       request_waitq;   // daemon blocks here
@@ -483,6 +575,11 @@ struct agfs_sb_info {
 ```c
 struct agfs_inode_info {
     struct inode           *lower_inode;     // passthrough target
+
+    // Permission cache (resolved at lookup, checked at permission)
+    enum agfs_perm          cached_perm;
+    u64                     perm_gen;        // sb->perm_gen at time of caching
+
     struct inode            vfs_inode;       // embedded VFS inode
 };
 ```
@@ -493,21 +590,22 @@ Fixed-size structs for the `./agfs/ctl` read/write interface. No parsing —
 just `copy_to_user()` / `copy_from_user()`.
 
 ```c
+#define AGFS_PATH_MAX 256
+
 // kernel → userspace: read() returns one of these
 struct agfs_ctl_request {
     __u64   id;
     __u32   op;                  // AGFS_OP_READ / WRITE / EXEC
     __u32   pid;
     char    comm[16];
-    char    path[PATH_MAX];
+    char    path[AGFS_PATH_MAX];
 };
 
 // userspace → kernel: write() accepts one of these
 struct agfs_ctl_response {
     __u64   id;
     __u8    decision;            // enum agfs_perm value
-    __u8    persist;             // 1 = save to dentry, 0 = one-time
-    __u8    _pad[6];
+    __u8    _pad[7];
 };
 ```
 
@@ -516,13 +614,12 @@ struct agfs_ctl_response {
 ```c
 struct agfs_perm_request {
     u64                     id;
-    char                    path[PATH_MAX];
+    char                    path[AGFS_PATH_MAX];
     unsigned int            op;
     pid_t                   pid;
     char                    comm[TASK_COMM_LEN];
 
     enum agfs_perm          decision;       // set by daemon
-    bool                    persist;        // set by daemon
     struct completion        done;          // thread sleeps on this
     struct list_head         list;          // sb->pending_reqs
 };
@@ -533,10 +630,14 @@ struct agfs_perm_request {
 ```c
 struct agfs_dentry_info {
     spinlock_t              lock;
-    struct path             lower_path;      // resolved lower path (staging or base)
+    struct path             lower_path;      // resolved lower path (staging, base, or redirected base after rename)
     enum agfs_perm          perm;            // AGFS_PERM_NONE unless this dentry has a rule
 };
 ```
+
+For pure renamed destinations, `lower_path` points at the original base object
+until the first write copies it into staging. Such destination dentries are
+pinned until commit/abort so the redirect remains the runtime source of truth.
 
 ### 5.6 File Info
 
@@ -552,12 +653,11 @@ struct agfs_file_info {
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Staging directory | `rw_semaphore` (read for path resolution, write for cache invalidation) |
+| `sb->staging_sem` | Staging directory + `./agfs/renames` updates/replay | `rw_semaphore` (read for path resolution, write for rename/commit/abort) |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
 | `dentry_info->lock` | Lower path in dentry | `spinlock` |
 
 **Lock ordering**: `staging_sem` → `pending_lock` → `dentry_info->lock`
-
 ---
 
 ## 6. VFS Operations Map
@@ -580,14 +680,14 @@ struct agfs_file_info {
 
 | Operation    | Perm check                                                   | Staging layer                                                                     | Passthrough                               |
 | ------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------- |
-| `lookup`     | —                                                            | Resolve: check staging (whiteout → ENOENT, regular → use it), then base.          | `lookup_one_len()` on resolved lower dir. |
+| `lookup`     | —                                                            | Resolve: check staging first; otherwise use redirected `dentry->lower_path` when present; otherwise use base (whiteout → ENOENT). | `lookup_one_len()` on resolved lower dir. |
 | `create`     | — (dir perm via lower FS)                                    | Create file in staging directory.                                                 | `vfs_create()` on staging dir.            |
 | `mkdir`      | — (dir perm via lower FS)                                    | Create dir in staging.                                                            | `vfs_mkdir()` on staging dir.             |
 | `unlink`     | — (dir perm via lower FS)                                    | Create whiteout (char dev 0/0) in staging. Remove regular staging file if exists. | —                                         |
 | `rmdir`      | — (dir perm via lower FS)                                    | Create whiteout in staging. Remove staging dir if exists.                         | —                                         |
 | `rename` | — (dir perm via lower FS) | See §3.5 Rename Handling. | — |
 | `symlink`    | — (dir perm via lower FS)                                    | Create symlink in staging.                                                        | `vfs_symlink()`.                          |
-| `permission` | **Gating for regular files; delegate to lower FS for dirs.** | —                                                                                 | `inode_permission()` on lower inode.      |
+| `permission` | **Gating for regular files (O(1) cached); delegate to lower FS for dirs.** | —                                                                                 | `inode_permission()` on lower inode.      |
 | `setattr`    | Gated (regular files only).                                  | Copy base→staging first, then setattr on staging.                                 | `notify_change()` on lower.               |
 | `getattr`    | Gated (regular files only).                                  | Stat from resolved path (staging or base).                                        | `vfs_getattr()` on lower.                 |
 
@@ -642,9 +742,9 @@ CLI tools interact with it via standard file operations.
 #define AGFS_IOC_CACHE_INVAL     _IO('A', 20)
 ```
 
-`AGFS_IOC_CACHE_INVAL` is called by userspace after commit/abort to
-invalidate the kernel's dentry and inode caches so the mount reflects
-the new base state.
+`AGFS_IOC_CACHE_INVAL` is called by userspace after commit/abort to invalidate
+the kernel's dentry and inode caches so stale redirected rename dentries are
+dropped and the mount reflects the new base state.
 
 ---
 
@@ -657,6 +757,7 @@ structured binary log entries to a ring buffer; userspace reads them from
 ### 8.1 Log Entry
 
 ```c
+// Fixed size. `path` must be NUL-terminated; unused tail bytes are zeroed.
 struct agfs_log_entry {
     __u64   timestamp_ns;        // ktime_get_real_ns()
     __u64   req_id;              // perm request id (0 if not applicable)
@@ -664,15 +765,15 @@ struct agfs_log_entry {
     __u32   pid;
     __u8    event;               // AGFS_LOG_* (see below)
     __u8    perm;                // enum agfs_perm (result)
-    __u8    _pad[6];
+    __u16   _pad;
     char    comm[16];            // process name (TASK_COMM_LEN)
-    char    path[PATH_MAX];
+    char    path[AGFS_PATH_MAX];
 };
 
 // Event types
 #define AGFS_LOG_OPEN        1   // file opened (path, perm result)
 #define AGFS_LOG_ASK         2   // ask request sent to daemon
-#define AGFS_LOG_DECISION    3   // daemon responded (decision, persist)
+#define AGFS_LOG_DECISION    3   // daemon responded (decision)
 #define AGFS_LOG_DENY        4   // access denied
 #define AGFS_LOG_COW         5   // base→staging copy triggered
 #define AGFS_LOG_RULE        6   // rule added/changed
@@ -717,7 +818,7 @@ $ agfs -- make build
 
 # Subcommands (operate on an existing ./agfs/ session)
 $ agfs status            # show staged changes
-$ agfs diff              # unified diff of staged vs base
+$ agfs diff              # git-style diff of staged vs base (rename-aware)
 $ agfs commit            # apply staged changes to base
 $ agfs abort             # discard staged changes
 $ agfs rule add /src allow-rw
@@ -818,8 +919,8 @@ $ cat /tmp/secrets
    → kernel: enqueue request, thread sleeps
    → daemon: read(./agfs/ctl) → agfs_ctl_request { id:1, path:"/tmp/secrets", ... }
    → daemon: decision: allow-ro
-   → daemon: write(./agfs/ctl, agfs_ctl_response { id:1, decision:ALLOW_RO, persist:1 })
-   → kernel: wake thread, update perm=ALLOW_RO on dentry
+   → daemon: write(./agfs/ctl, agfs_ctl_response { id:1, decision:ALLOW_RO })
+   → kernel: wake thread, apply one-shot ALLOW_RO to this open
    → kernel: open base/tmp/secrets read-only, proceed
 
 # 6. Agent tries to write /etc/hosts (walk up finds ALLOW_RO)
@@ -876,9 +977,17 @@ longest-prefix-match for free. This satisfies all three principles:
 
 ### Permission cache invalidation
 
-- On `AGFS_IOC_CACHE_INVAL` (via ./agfs/ctl after userspace commit/abort):
-  staging-related caches are invalidated.
-- On `rule add/remove`: **no invalidation needed**. Children don't cache
-  perms; the walk-up resolves against the updated rule immediately.
-- On `rename`: no invalidation needed — walk-up uses the new parent chain.
+- On rule add/remove: `atomic_inc(&sb->perm_gen)`. All inode caches go
+  stale; next `permission()` call re-resolves lazily via `d_find_alias()` +
+  walk up. O(1) invalidation.
+- On `AGFS_IOC_CACHE_INVAL` (after userspace commit/abort): bumps perm_gen
+  and invalidates staging-related dentry caches, including pinned rename dentries.
+- On `rename`: inode keeps its `cached_perm` but the dentry chain changes.
+  Next stale check re-resolves against the new parent chain.
 
+**Limitation**: directory permissions are not gated — only regular files
+are checked. Directory access is controlled by standard Unix permissions on
+the lower FS. This is intentional: gating directories would require
+intercepting `lookup()` and `readdir()`, adding latency to every path
+traversal. For agent sandboxing, controlling file-level read/write/exec is
+sufficient.
