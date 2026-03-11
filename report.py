@@ -45,6 +45,8 @@ def load_all(results_dir: Path) -> dict[str, dict[str, TaskResult]]:
         for task_dir in sorted(agent_dir.iterdir()):
             if not task_dir.is_dir():
                 continue
+            if task_dir.name.startswith("mini"):
+                continue
             # Use the first run (run 0)
             for run_dir in sorted(task_dir.iterdir()):
                 result_path = run_dir / "result.json"

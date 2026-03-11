@@ -1,4 +1,12 @@
 /data
 __pycache__
-/target
+target
 third_party/linux*
+kmod/*.o
+kmod/*.cmd
+kmod/*.mod.c
+kmod/*.mod
+kmod/*.ko
+kmod/Module.symvers
+kmod/modules.order
+.agfs

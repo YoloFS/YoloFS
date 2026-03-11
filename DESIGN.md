@@ -48,7 +48,7 @@ either can be disabled at mount time.
  └──────────────────────────────────────────────────┘
 
  ┌──────────────────────────────────────────────────┐
- │  ./agfs/ctl  (virtual control file)     │
+ │  .agfs/ctl  (virtual control file)     │
  │    ← read():  dequeue pending perm request       │
  │    → write(): post decision for a request id     │
  │    ← ioctl(): rules / cache invalidation         │
@@ -80,9 +80,9 @@ wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
 | Term                  | Meaning |
 | --------------------- | ------- |
 | **base**              | Always `/` — the entire root filesystem, read-only from agfs's perspective until commit. |
-| **staging directory** | `./agfs/staging/` — stores modified files, mirroring the base tree structure. Each staging file is always a **complete copy** — no partial/block-level tracking. |
+| **staging directory** | `.agfs/staging/` — stores modified files, mirroring the base tree structure. Each staging file is always a **complete copy** — no partial/block-level tracking. |
 | **whiteout**          | A character device node with major/minor 0/0 in the staging directory, indicating that the corresponding base file has been deleted. Same convention as overlayfs. |
-| **mount point**       | `./agfs/mnt/` — the agent's view of the filesystem. Shows the merged base + staging with permission gating applied. |
+| **mount point**       | `.agfs/mnt/` — the agent's view of the filesystem. Shows the merged base + staging with permission gating applied. |
 | **commit**            | Applies all staged files and whiteouts to the base filesystem. |
 | **abort**             | Discards the staging directory. O(1). |
 
@@ -90,7 +90,7 @@ wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
 ### 3.2 Storage Layout
 
 ```
-./agfs/                          # created by `agfs` in CWD
+.agfs/                          # created by `agfs` in CWD
 ├── ctl                          # virtual control file (read/write/poll/ioctl)
 ├── log                          # virtual log file (read/poll) for debugging
 ├── config.toml                  # TOML: mount options + rules
@@ -120,12 +120,12 @@ resolve(dentry):
 
 A whiteout is a char device with major/minor 0/0 (`mknod(path, S_IFCHR, 0)`).
 Staging files take priority over base. Whiteouts in the staging dir shadow the base.
-`./agfs/renames` is not consulted on the hot path. Runtime rename state lives
+`.agfs/renames` is not consulted on the hot path. Runtime rename state lives
 in dentries: a renamed destination dentry has `lower_path` redirected to the
 original base object, and the old path is hidden by a staging whiteout. On
-mount, agfs replays `./agfs/renames` to reinstall those redirected destination
+mount, agfs replays `.agfs/renames` to reinstall those redirected destination
 dentries; source hiding continues to come from the whiteouts already present in
-`./agfs/staging/`.
+`.agfs/staging/`.
 
 ### 3.4 Open / Read / Write Path
 
@@ -175,6 +175,25 @@ agfs_write_iter(kiocb, iov_iter):
     kiocb->ki_filp = file   // restore
     fsstack_copy_inode_size(inode, file_inode(lower_file))
     return ret
+
+agfs_mmap(file, vma):
+    if file_info->needs_cow and (vma->vm_flags & (VM_WRITE | VM_SHARED)):
+        // Writable shared mapping on a file opened O_RDWR whose lower
+        // file is still read-only (COW not yet triggered).  Perform COW
+        // now so the lower file is writable before we delegate mmap.
+        do_cow(...)
+        fput(file_info->lower_file)
+        file_info->lower_file = open(staging_path, file->f_flags)
+        file_info->needs_cow = false
+
+    lower_file = file_info->lower_file
+    vma->vm_file = lower_file
+    ret = lower_file->f_op->mmap(lower_file, vma)
+    if ret:
+        vma->vm_file = file   // restore on error
+    else:
+        fput(file)             // balance do_mmap's get_file
+    return ret
 ```
 
 **Three cases, in order of likelihood for agent workloads:**
@@ -204,13 +223,13 @@ that has not been modified.
 just to move it. For large files this is wasteful — the content hasn't
 changed, only the path.
 
-**Solution**: append the rename to `./agfs/renames`, redirect the destination
+**Solution**: append the rename to `.agfs/renames`, redirect the destination
 dentry's `lower_path` to the original base object, pin that dentry until
 commit/abort, and create a whiteout at the old path. The on-disk file is only
 persisted recovery/commit data; kernel path resolution uses dentry state. No
 data copy is needed for a pure rename.
 
-`./agfs/renames` is a sequence of `old_path\0new_path\0` pairs. Each path is
+`.agfs/renames` is a sequence of `old_path\0new_path\0` pairs. Each path is
 absolute and NUL-terminated.
 
 On mount, agfs replays this file and reinstalls the redirected destination
@@ -261,10 +280,10 @@ directory and applies changes to the base.
 
 All staging operations except abort share a common **staging walk**:
 
-1. Read `./agfs/renames` and build `old→new` / `new→old` lookup tables.
+1. Read `.agfs/renames` and build `old→new` / `new→old` lookup tables.
 2. Process rename records: for each entry, check whether a staged file
    exists at `new_path` (rename + modification) or not (pure rename).
-3. Walk `./agfs/staging/` recursively.
+3. Walk `.agfs/staging/` recursively.
 4. Skip entries already explained by rename records:
    - whiteouts at `old_path` for renamed files,
    - staged files at `new_path` already consumed by step 2.
@@ -285,7 +304,7 @@ All staging operations except abort share a common **staging walk**:
 
 **Abort** (`agfs abort`):
 
-1. `rm -rf ./agfs/staging/` and `rm ./agfs/renames`.
+1. `rm -rf .agfs/staging/` and `rm .agfs/renames`.
 2. Signal the kernel module to invalidate caches and drop pinned rename dentries.
 
 **Status** (`agfs status`):
@@ -339,7 +358,7 @@ Two levels:
 
 **Setting a rule** (`agfs rule add src allow-rw`):
 
-1. Write the rule to `./agfs/config.toml` (source of truth on disk):
+1. Write the rule to `.agfs/config.toml` (source of truth on disk):
   ```toml
    [mount]
    ask_timeout = 30
@@ -353,7 +372,7 @@ Two levels:
   ```
 
    Paths can be **absolute** (`/etc`) or **relative** to the session root:
-   the directory containing `./agfs/` (equivalently, the CWD where `agfs`
+   the directory containing `.agfs/` (equivalently, the CWD where `agfs`
    was launched). For example, `src` resolves to
    `/home/user/project/src`.
 2. `ioctl(AGFS_IOC_RULE_ADD)` → kernel resolves the normalized absolute path
@@ -362,13 +381,13 @@ Two levels:
 4. Pin the dentry.
 5. `atomic_inc(&sb->perm_gen)` — invalidates all cached inode perms.
 
-On mount, the kernel reads `./agfs/config.toml` and applies all rules.
+On mount, the kernel reads `.agfs/config.toml` and applies all rules.
 
 **Changing a rule**: just set it again + bump generation.
 
 **Removing a rule** (`agfs rule remove /foo/bar`):
 
-1. Remove the rule from `./agfs/config.toml`.
+1. Remove the rule from `.agfs/config.toml`.
 2. `ioctl(AGFS_IOC_RULE_REMOVE)` → kernel sets `AGFS_D(dentry)->perm = NONE`.
 3. Unpin the dentry.
 4. `atomic_inc(&sb->perm_gen)`.
@@ -501,7 +520,7 @@ When a thread accesses a file whose effective permission is `ask`:
      }
   3. Enqueue request on sb->pending_list
   4. wake_up(&sb->request_waitq)
-  5. wait_event_interruptible(              poll() on ./agfs/ctl
+  5. wait_event_interruptible(              poll() on .agfs/ctl
        req->done,                            returns POLLIN
        req->decision != UNDECIDED            ↓
      )                                      read() → dequeue request
@@ -544,11 +563,11 @@ If the daemon doesn't respond, the default action (configurable:
 struct agfs_sb_info {
     struct super_block     *lower_sb;
     struct path             base_path;       // always "/"
-    struct path             storage_path;    // ./agfs/ directory
+    struct path             storage_path;    // .agfs/ directory
 
     // Staging
-    struct path             staging_dir;       // ./agfs/staging/
-    struct path             renames_file;      // ./agfs/renames
+    struct path             staging_dir;       // .agfs/staging/
+    struct path             renames_file;      // .agfs/renames
     struct rw_semaphore     staging_sem;       // protects staging dir + rename log updates/replay
 
     // Permission gating
@@ -561,7 +580,7 @@ struct agfs_sb_info {
     enum agfs_perm          ask_default;     // fallback on timeout
 
     // Control file
-    struct file_operations  ctl_fops;        // ./agfs/ctl file ops
+    struct file_operations  ctl_fops;        // .agfs/ctl file ops
 };
 ```
 
@@ -581,7 +600,7 @@ struct agfs_inode_info {
 
 ### 5.3 Control File Protocol (binary)
 
-Fixed-size structs for the `./agfs/ctl` read/write interface. No parsing —
+Fixed-size structs for the `.agfs/ctl` read/write interface. No parsing —
 just `copy_to_user()` / `copy_from_user()`.
 
 ```c
@@ -644,6 +663,7 @@ pinned until commit/abort so the redirect remains the runtime source of truth.
 struct agfs_file_info {
     struct file            *lower_file;     // opened lower file (base or staging)
     bool                    needs_cow;      // true until first write copies base→staging
+    bool                    is_staging;     // true when lower_file points at a staging file
     const struct vm_operations_struct *lower_vm_ops;
 };
 ```
@@ -652,7 +672,7 @@ struct agfs_file_info {
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Staging directory + `./agfs/renames` updates/replay | `rw_semaphore` (read for path resolution, write for rename/commit/abort) |
+| `sb->staging_sem` | Staging directory + `.agfs/renames` updates/replay | `rw_semaphore` (read for path resolution, write for rename/commit/abort) |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
 | `dentry_info->lock` | Lower path in dentry | `spinlock` |
 
@@ -699,8 +719,8 @@ struct agfs_file_info {
 | `open`       | Perm gating (via dentry). If writable and staging file exists: open staging file. If writable and no staging file: open base read-only, set `needs_cow`. If read-only: open staging file or base. |
 | `read_iter`  | Swap `kiocb->ki_filp` to lower file, call `lower->read_iter()`.                                                                                                                                   |
 | `write_iter` | If `needs_cow`: copy base→staging, reopen as writable. Then delegate to `lower->write_iter()`.                                                                                                    |
-| `mmap`       | Delegate to lower. Save `vm_ops` for fault handling.                                                                                                                                              |
-| `fsync`      | Delegate to lower (staging file if COW'd).                                                                                                                                                        |
+| `mmap`       | If `needs_cow` and mapping is writable+shared: trigger COW first (same as `write_iter`), then delegate to the now-writable lower file. Otherwise delegate directly. Save `vm_ops` for fault handling. |
+| `fsync`      | If `is_staging`: return 0 (staging files are ephemeral — committed or aborted, never persisted in place). Otherwise delegate to lower.                                                            |
 | `release`    | `fput()` lower file. Free `agfs_file_info`.                                                                                                                                                       |
 | `llseek`     | Delegate to lower.                                                                                                                                                                                |
 
@@ -716,7 +736,7 @@ struct agfs_file_info {
 
 ---
 
-## 7. Control File (`./agfs/ctl`)
+## 7. Control File (`.agfs/ctl`)
 
 A virtual file created by the kernel module at mount time. The daemon and
 CLI tools interact with it via standard file operations.
@@ -747,11 +767,11 @@ dropped and the mount reflects the new base state.
 
 ---
 
-## 8. Log File (`./agfs/log`)
+## 8. Log File (`.agfs/log`)
 
 A virtual read-only file for debugging and testing. The kernel writes
 structured binary log entries to a ring buffer; userspace reads them from
-`./agfs/log`.
+`.agfs/log`.
 
 ### 8.1 Log Entry
 
@@ -807,23 +827,21 @@ agfs log --dump
 ## 9. CLI Interface
 
 ```bash
-# Mount and drop into a shell inside the sandbox
+# Full interactive workflow (no subcommand):
+#   mount → run $SHELL → show diff → commit/abort (unmounts automatically)
 $ agfs
-   → creates ./agfs/, mounts at ./agfs/mnt, `chroot`s into `./agfs/mnt`,
-     then runs $SHELL starting in the caller's current working directory
-     inside that mounted view
+$ agfs -- make build     # same but runs a specific command instead of $SHELL
 
-# Mount and run a specific command
-$ agfs -- make build
-   → creates ./agfs/, mounts, `chroot`s into `./agfs/mnt`, runs
-     `make build` with the caller's current working directory preserved
-     inside that mounted view, exits
+# Individual lifecycle commands
+$ agfs mount             # create .agfs/ layout and mount the filesystem
+$ agfs run               # run $SHELL inside .agfs/mnt (requires existing mount)
+$ agfs run -- make build # run a specific command inside .agfs/mnt
 
-# Subcommands (operate on an existing ./agfs/ session)
+# Subcommands (operate on an existing .agfs/ session)
 $ agfs status            # show staged changes
 $ agfs diff              # git-style diff of staged vs base (rename-aware)
-$ agfs commit            # apply staged changes to base
-$ agfs abort             # discard staged changes
+$ agfs commit            # apply staged changes to base, then unmount
+$ agfs abort             # discard staged changes, then unmount
 $ agfs rule add src allow-rw
 $ agfs rule remove src
 $ agfs log --follow      # tail the debug log
@@ -832,7 +850,7 @@ $ agfs watch             # handle ask requests (daemon mode)
 
 ### 9.1 Mount Options
 
-Configured via `./agfs/config.toml` or CLI flags:
+Configured via `.agfs/config.toml` or CLI flags:
 
 | Option | Default | Description |
 |---|---|---|
@@ -840,13 +858,14 @@ Configured via `./agfs/config.toml` or CLI flags:
 | `ask_default` | `deny` | Fallback permission on timeout |
 | `nogating` | false | Disable permission gating entirely |
 | `nostaging` | false | Disable staging (passthrough + gating only) |
-| `log_size` | 1024 | Ring buffer entries for `./agfs/log` |
+| `log_size` | 1024 | Ring buffer entries for `.agfs/log` |
 
-Inside the launched shell or command, agfs `chroot`s into `./agfs/mnt`, so
-that mounted view becomes `/`. The initial working directory is the caller's
-original CWD mapped into that view. For example, launching from
-`/home/user/project` starts the shell at `/home/user/project` inside agfs,
-not at `/`. That is why runtime examples use absolute paths like `/src` and
+Inside the launched shell or command, agfs `chroot`s into `.agfs/mnt` so
+that the mounted view becomes `/`. The working directory remains the
+caller's original CWD. For example, launching from `/home/user/project`
+chroots into `.agfs/mnt` and sets the working directory to
+`/home/user/project` — same absolute path, but now resolved through the
+agfs mount. That is why runtime examples use absolute paths like `/src` and
 `/etc` even when a rule was added as the relative path `src` from the
 session root. Files under that session root are typically ruled `allow-rw`;
 everything else defaults to `ask`.
@@ -875,6 +894,8 @@ agfs/
     ├── Cargo.toml             # path = "main.rs"
     ├── main.rs
     ├── mount.rs
+    ├── run.rs
+    ├── unmount.rs           # internal helper (called by commit/abort)
     ├── rule.rs
     ├── commit.rs
     ├── abort.rs
@@ -890,14 +911,22 @@ agfs/
 ## 11. Lifecycle Example
 
 ```
-# 1. Mount agfs and enter shell (`agfs` chroots into `./agfs/mnt`)
+# 1. Full interactive workflow (mount → run → diff → commit/abort → unmount)
 $ cd /home/user/project
 $ agfs
-   → creates ./agfs/, mounts / → ./agfs/mnt, `chroot`s into that mount,
-     and drops into $SHELL with the starting directory set to
-     `/home/user/project` inside the mounted view
+   → creates .agfs/, mounts / → .agfs/mnt, chroots into .agfs/mnt,
+     spawns $SHELL with cwd preserved as the caller's original CWD
+   → on shell exit: runs `agfs diff`, prompts user to commit or abort
+     (both unmount automatically)
 
-# 1b. Install rules via CLI from the session root (attaches perm directly
+# 1b. Or use individual commands for more control:
+$ agfs mount
+$ agfs run -- make build
+$ agfs diff
+$ agfs commit
+$ agfs unmount
+
+# 1c. Install rules via CLI from the session root (attaches perm directly
 #     to dentries)
 $ agfs rule add src allow-rw
 $ agfs rule add /etc deny
@@ -928,9 +957,9 @@ $ cat /tmp/secrets
    → kernel: agfs_lookup("secrets") → no rule (NONE)
    → kernel: agfs_open() → walk up: secrets(NONE) → tmp(NONE) → root(ASK)
    → kernel: enqueue request, thread sleeps
-   → daemon: read(./agfs/ctl) → agfs_ctl_request { id:1, path:"/tmp/secrets", ... }
+   → daemon: read(.agfs/ctl) → agfs_ctl_request { id:1, path:"/tmp/secrets", ... }
    → daemon: decision: allow-ro
-   → daemon: write(./agfs/ctl, agfs_ctl_response { id:1, decision:ALLOW_RO })
+   → daemon: write(.agfs/ctl, agfs_ctl_response { id:1, decision:ALLOW_RO })
    → kernel: wake thread, apply one-shot ALLOW_RO to this open
    → kernel: open base/tmp/secrets read-only, proceed
 
@@ -941,8 +970,9 @@ $ echo x >> /etc/hosts
 # 7. Commit all staged changes to the real filesystem (userspace)
 $ agfs commit
    → userspace: walk staging/, rename files to base, unlink whiteouts
-   → userspace: ioctl(AGFS_IOC_CACHE_INVAL) on ./agfs/ctl
+   → userspace: ioctl(AGFS_IOC_CACHE_INVAL) on .agfs/ctl
    → kernel: invalidate dentry + inode caches
+   → umount .agfs/mnt
 ```
 
 ---

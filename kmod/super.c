@@ -1,0 +1,419 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * agfs — superblock operations and module init/exit.
+ */
+
+#include "agfs.h"
+#include <linux/fs_context.h>
+#include <linux/fs_parser.h>
+#include <linux/statfs.h>
+#include <linux/seq_file.h>
+
+/* ── Mount Options ─────────────────────────────────────────────────── */
+
+enum agfs_param {
+	Opt_nogating,
+	Opt_nostaging,
+	Opt_ask_timeout,
+	Opt_ask_default,
+	Opt_log_size,
+	Opt_storage,
+};
+
+static const struct fs_parameter_spec agfs_fs_parameters[] = {
+	fsparam_flag("nogating",	Opt_nogating),
+	fsparam_flag("nostaging",	Opt_nostaging),
+	fsparam_u32("ask_timeout",	Opt_ask_timeout),
+	fsparam_u32("ask_default",	Opt_ask_default),
+	fsparam_u32("log_size",		Opt_log_size),
+	fsparam_string("storage",	Opt_storage),
+	{}
+};
+
+struct agfs_fs_opts {
+	bool		nogating;
+	bool		nostaging;
+	unsigned int	ask_timeout_s;
+	unsigned int	ask_default;
+	unsigned int	log_size;
+	char		*storage;
+};
+
+/* ── Inode Slab Cache ──────────────────────────────────────────────── */
+
+struct kmem_cache *agfs_inode_cachep;
+
+static struct inode *agfs_alloc_inode(struct super_block *sb)
+{
+	struct agfs_inode_info *i;
+
+	i = alloc_inode_sb(sb, agfs_inode_cachep, GFP_KERNEL);
+	if (!i)
+		return NULL;
+
+	i->lower_inode = NULL;
+	i->cached_perm = AGFS_PERM_NONE;
+	i->perm_gen = 0;
+	return &i->vfs_inode;
+}
+
+static void agfs_free_inode(struct inode *inode)
+{
+	kmem_cache_free(agfs_inode_cachep, AGFS_I(inode));
+}
+
+static void agfs_evict_inode(struct inode *inode)
+{
+	struct inode *lower_inode;
+
+	truncate_inode_pages(&inode->i_data, 0);
+	clear_inode(inode);
+
+	lower_inode = agfs_lower_inode(inode);
+	if (lower_inode)
+		iput(lower_inode);
+}
+
+/* ── Superblock Ops ────────────────────────────────────────────────── */
+
+static void agfs_put_super(struct super_block *sb)
+{
+	struct agfs_sb_info *sbi = AGFS_SB(sb);
+	struct agfs_pinned_dentry *pd, *tmp;
+
+	if (!sbi)
+		return;
+
+	agfs_log_destroy(sbi);
+
+	/* Release rename-pinned dentries */
+	list_for_each_entry_safe(pd, tmp, &sbi->pinned_dentries, list) {
+		dput(pd->dentry);
+		list_del(&pd->list);
+		kfree(pd);
+	}
+
+	if (sbi->staging_dir.dentry)
+		path_put(&sbi->staging_dir);
+	if (sbi->renames_path.dentry)
+		path_put(&sbi->renames_path);
+	if (sbi->storage_path.dentry)
+		path_put(&sbi->storage_path);
+	if (sbi->base_path.dentry)
+		path_put(&sbi->base_path);
+	if (sbi->lower_sb)
+		atomic_dec(&sbi->lower_sb->s_active);
+
+	kfree(sbi);
+	sb->s_fs_info = NULL;
+}
+
+static int agfs_statfs(struct dentry *dentry, struct kstatfs *buf)
+{
+	struct path lower_path;
+	int err;
+
+	agfs_get_lower_path(dentry, &lower_path);
+	err = vfs_statfs(&lower_path, buf);
+	agfs_put_lower_path(dentry, &lower_path);
+
+	if (!err)
+		buf->f_type = AGFS_SUPER_MAGIC;
+	return err;
+}
+
+static int agfs_show_options(struct seq_file *m, struct dentry *root)
+{
+	struct agfs_sb_info *sbi = AGFS_SB(root->d_sb);
+
+	if (sbi->ask_timeout_s)
+		seq_printf(m, ",ask_timeout=%u", sbi->ask_timeout_s);
+	if (sbi->ask_default != AGFS_PERM_DENY)
+		seq_printf(m, ",ask_default=%d", sbi->ask_default);
+	if (sbi->nogating)
+		seq_puts(m, ",nogating");
+	if (sbi->nostaging)
+		seq_puts(m, ",nostaging");
+	if (sbi->log_size != AGFS_LOG_DEFAULT_SIZE)
+		seq_printf(m, ",log_size=%u", sbi->log_size);
+	return 0;
+}
+
+const struct super_operations agfs_sops = {
+	.alloc_inode	= agfs_alloc_inode,
+	.free_inode	= agfs_free_inode,
+	.evict_inode	= agfs_evict_inode,
+	.put_super	= agfs_put_super,
+	.statfs		= agfs_statfs,
+	.show_options	= agfs_show_options,
+};
+
+/* ── Fill Superblock (mount) ───────────────────────────────────────── */
+
+static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
+{
+	struct agfs_fs_opts *opts = fc->fs_private;
+	struct agfs_sb_info *sbi;
+	struct inode *inode;
+	struct path base_path;
+	int err;
+
+	sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
+	if (!sbi)
+		return -ENOMEM;
+
+	sb->s_fs_info = sbi;
+	sb->s_op = &agfs_sops;
+	sb->s_d_op = &agfs_dops;
+	sb->s_magic = AGFS_SUPER_MAGIC;
+	sb->s_maxbytes = MAX_LFS_FILESIZE;
+	sb->s_stack_depth = 0;
+
+	/* Apply mount options */
+	sbi->ask_timeout_s = opts->ask_timeout_s;
+	sbi->ask_default = opts->ask_default ? opts->ask_default : AGFS_PERM_DENY;
+	sbi->nogating = opts->nogating;
+	sbi->nostaging = opts->nostaging;
+	sbi->log_size = opts->log_size ? opts->log_size : AGFS_LOG_DEFAULT_SIZE;
+
+	/* Initialize perm gating state */
+	atomic64_set(&sbi->perm_gen, 0);
+	INIT_LIST_HEAD(&sbi->pending_reqs);
+	spin_lock_init(&sbi->pending_lock);
+	init_waitqueue_head(&sbi->request_waitq);
+	atomic64_set(&sbi->next_req_id, 1);
+
+	/* Initialize staging semaphore */
+	init_rwsem(&sbi->staging_sem);
+	INIT_LIST_HEAD(&sbi->pinned_dentries);
+
+	/* Resolve base path ("/") */
+	err = kern_path("/", LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &base_path);
+	if (err)
+		goto out_free;
+
+	sbi->base_path = base_path;
+	sbi->lower_sb = base_path.dentry->d_sb;
+	atomic_inc(&sbi->lower_sb->s_active);
+	sb->s_maxbytes = sbi->lower_sb->s_maxbytes;
+	sb->s_stack_depth = sbi->lower_sb->s_stack_depth + 1;
+	if (sb->s_stack_depth > FILESYSTEM_MAX_STACK_DEPTH) {
+		err = -EINVAL;
+		goto out_put_base;
+	}
+
+	/* Initialize log */
+	err = agfs_log_init(sbi);
+	if (err)
+		goto out_put_base;
+
+	/* Resolve storage path if provided */
+	if (opts->storage) {
+		err = kern_path(opts->storage, LOOKUP_FOLLOW | LOOKUP_DIRECTORY,
+				&sbi->storage_path);
+		if (err)
+			goto out_log;
+
+		/* Resolve staging dir */
+		{
+			struct path staging;
+			err = vfs_path_lookup(sbi->storage_path.dentry,
+					      sbi->storage_path.mnt,
+					      "staging", LOOKUP_DIRECTORY,
+					      &staging);
+			if (!err)
+				sbi->staging_dir = staging;
+			/* staging may not exist yet — that's ok */
+		}
+
+		/* Resolve renames file */
+		{
+			struct path renames;
+			err = vfs_path_lookup(sbi->storage_path.dentry,
+					      sbi->storage_path.mnt,
+					      "renames", 0, &renames);
+			if (!err)
+				sbi->renames_path = renames;
+		}
+		err = 0;
+	}
+
+	/* Create root inode from lower root */
+	inode = agfs_iget(sb, d_inode(base_path.dentry));
+	if (IS_ERR(inode)) {
+		err = PTR_ERR(inode);
+		goto out_log;
+	}
+
+	sb->s_root = d_make_root(inode);
+	if (!sb->s_root) {
+		err = -ENOMEM;
+		goto out_log;
+	}
+
+	/* Set up root dentry private data */
+	err = agfs_new_dentry_private_data(sb->s_root);
+	if (err)
+		goto out_root;
+
+	/* Set lower path on root dentry (needs its own reference) */
+	path_get(&base_path);
+	agfs_set_lower_path(sb->s_root, &base_path);
+
+	/* Root dentry has perm = ASK by default */
+	AGFS_D(sb->s_root)->perm = AGFS_PERM_ASK;
+
+	return 0;
+
+out_root:
+	dput(sb->s_root);
+	sb->s_root = NULL;
+out_log:
+	agfs_log_destroy(sbi);
+out_put_base:
+	path_put(&base_path);
+	atomic_dec(&sbi->lower_sb->s_active);
+out_free:
+	kfree(sbi);
+	sb->s_fs_info = NULL;
+	return err;
+}
+
+/* ── fs_context operations ─────────────────────────────────────────── */
+
+static int agfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
+{
+	struct agfs_fs_opts *opts = fc->fs_private;
+	struct fs_parse_result result;
+	int opt;
+
+	opt = fs_parse(fc, agfs_fs_parameters, param, &result);
+	if (opt < 0)
+		return opt;
+
+	switch (opt) {
+	case Opt_nogating:
+		opts->nogating = true;
+		break;
+	case Opt_nostaging:
+		opts->nostaging = true;
+		break;
+	case Opt_ask_timeout:
+		opts->ask_timeout_s = result.uint_32;
+		break;
+	case Opt_ask_default:
+		opts->ask_default = result.uint_32;
+		break;
+	case Opt_log_size:
+		opts->log_size = result.uint_32;
+		break;
+	case Opt_storage:
+		kfree(opts->storage);
+		opts->storage = kstrdup(param->string, GFP_KERNEL);
+		if (!opts->storage)
+			return -ENOMEM;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int agfs_get_tree(struct fs_context *fc)
+{
+	return get_tree_nodev(fc, agfs_fill_super);
+}
+
+static void agfs_free_fc(struct fs_context *fc)
+{
+	struct agfs_fs_opts *opts = fc->fs_private;
+
+	if (opts) {
+		kfree(opts->storage);
+		kfree(opts);
+	}
+}
+
+static const struct fs_context_operations agfs_context_ops = {
+	.parse_param	= agfs_parse_param,
+	.get_tree	= agfs_get_tree,
+	.free		= agfs_free_fc,
+};
+
+static int agfs_init_fs_context(struct fs_context *fc)
+{
+	struct agfs_fs_opts *opts;
+
+	opts = kzalloc(sizeof(*opts), GFP_KERNEL);
+	if (!opts)
+		return -ENOMEM;
+
+	fc->fs_private = opts;
+	fc->ops = &agfs_context_ops;
+	return 0;
+}
+
+static void agfs_kill_super(struct super_block *sb)
+{
+	kill_anon_super(sb);
+}
+
+/* ── Filesystem Type & Module ──────────────────────────────────────── */
+
+static struct file_system_type agfs_fs_type = {
+	.owner			= THIS_MODULE,
+	.name			= "agfs",
+	.init_fs_context	= agfs_init_fs_context,
+	.kill_sb		= agfs_kill_super,
+	.fs_flags		= FS_USERNS_MOUNT,
+};
+MODULE_ALIAS_FS("agfs");
+
+static void agfs_inode_init_once(void *obj)
+{
+	struct agfs_inode_info *i = obj;
+	inode_init_once(&i->vfs_inode);
+}
+
+static int __init agfs_init(void)
+{
+	int err;
+
+	agfs_inode_cachep = kmem_cache_create("agfs_inode_cache",
+					      sizeof(struct agfs_inode_info), 0,
+					      SLAB_RECLAIM_ACCOUNT | SLAB_ACCOUNT,
+					      agfs_inode_init_once);
+	if (!agfs_inode_cachep)
+		return -ENOMEM;
+
+	err = agfs_init_dentry_cache();
+	if (err)
+		goto out_inode;
+
+	err = register_filesystem(&agfs_fs_type);
+	if (err)
+		goto out_dentry;
+
+	pr_info("agfs: module loaded\n");
+	return 0;
+
+out_dentry:
+	agfs_destroy_dentry_cache();
+out_inode:
+	kmem_cache_destroy(agfs_inode_cachep);
+	return err;
+}
+
+static void __exit agfs_exit(void)
+{
+	unregister_filesystem(&agfs_fs_type);
+	agfs_destroy_dentry_cache();
+	kmem_cache_destroy(agfs_inode_cachep);
+	pr_info("agfs: module unloaded\n");
+}
+
+module_init(agfs_init);
+module_exit(agfs_exit);
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("agfs — agentic filesystem with staging-commit and permission gating");
