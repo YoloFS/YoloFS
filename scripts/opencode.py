@@ -19,6 +19,11 @@ class OpenCodeAgent(Agent):
     command: tuple[str, ...] = ("opencode",)
     newline: str = "\r"
 
+    def is_screen_ready(self, screen: pyte.Screen) -> bool:
+        # The bottom bar shows "commands" (from "ctrl+p commands") once the UI
+        # is fully loaded and the input field is focused.
+        return any("commands" in line for line in screen.display)
+
     def is_waiting_for_input(self, screen: pyte.Screen) -> bool:
         # The idle bottom bar shows "commands" (from the "ctrl+p commands" hint).
         lines = [line for line in screen.display]
