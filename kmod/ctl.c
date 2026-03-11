@@ -1,51 +1,51 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * agfs — control file (./agfs/ctl).
+ * agfs — control interface via ioctl on any agfs directory fd.
  *
- * Binary read/write/poll/ioctl interface for permission daemon.
+ * The permission daemon opens .agfs/mnt (or any dir on the mount) and uses:
+ *   ioctl(fd, AGFS_IOC_CTL_READ, &req)   — dequeue pending ask request
+ *   ioctl(fd, AGFS_IOC_CTL_WRITE, &resp)  — submit decision
+ *   poll(fd, POLLIN)                       — wait for pending requests
+ *   ioctl(fd, AGFS_IOC_RULE_ADD, &rule)   — add permission rule
+ *   ioctl(fd, AGFS_IOC_RULE_REMOVE, &rule)
+ *   ioctl(fd, AGFS_IOC_CACHE_INVAL)
  *
- * Request lifecycle:
- *   pending  → read() dequeues, moves to dispatched list
- *   dispatched → write() finds by id, sets decision, completes
- *   on ctl release → all dispatched requests get default decision
+ * On close, any dispatched-but-unanswered requests get the default decision.
  */
 
 #include "agfs.h"
 #include <linux/poll.h>
 
-/* Per-open-file state: track dispatched requests so we can clean up
- * if the daemon closes the ctl fd without responding. */
-struct agfs_ctl_private {
-	struct list_head	dispatched;	/* requests sent to this fd */
-	spinlock_t		lock;
-};
+/* ── Lazy-allocate ctl private on first CTL_READ ───────────────────── */
 
-static int agfs_ctl_open(struct inode *inode, struct file *file)
+static struct agfs_ctl_private *ensure_ctl(struct file *file)
 {
-	struct agfs_ctl_private *priv;
+	struct agfs_file_info *fi = AGFS_F(file);
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
-	if (!priv)
-		return -ENOMEM;
-	INIT_LIST_HEAD(&priv->dispatched);
-	spin_lock_init(&priv->lock);
-	file->private_data = priv;
-	return 0;
+	if (fi->ctl)
+		return fi->ctl;
+
+	fi->ctl = kzalloc(sizeof(*fi->ctl), GFP_KERNEL);
+	if (!fi->ctl)
+		return ERR_PTR(-ENOMEM);
+	INIT_LIST_HEAD(&fi->ctl->dispatched);
+	spin_lock_init(&fi->ctl->lock);
+	return fi->ctl;
 }
 
-/* ── read: dequeue pending request → dispatched list ───────────────── */
+/* ── CTL_READ: dequeue pending request ─────────────────────────────── */
 
-static ssize_t agfs_ctl_read(struct file *file, char __user *buf,
-			     size_t count, loff_t *ppos)
+static long agfs_ctl_read_ioctl(struct file *file, unsigned long arg)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
-	struct agfs_ctl_private *priv = file->private_data;
+	struct agfs_ctl_private *priv;
 	struct agfs_perm_request *req;
 	struct agfs_ctl_request out;
 	int err;
 
-	if (count < sizeof(out))
-		return -EINVAL;
+	priv = ensure_ctl(file);
+	if (IS_ERR(priv))
+		return PTR_ERR(priv);
 
 	/* Wait for a pending request */
 	if (file->f_flags & O_NONBLOCK) {
@@ -66,13 +66,11 @@ static ssize_t agfs_ctl_read(struct file *file, char __user *buf,
 		}
 	}
 
-	/* Dequeue oldest request */
 	req = list_first_entry(&sbi->pending_reqs,
 			       struct agfs_perm_request, list);
 	list_del_init(&req->list);
 	spin_unlock(&sbi->pending_lock);
 
-	/* Fill output struct */
 	memset(&out, 0, sizeof(out));
 	out.id = req->id;
 	out.op = req->op;
@@ -80,13 +78,11 @@ static ssize_t agfs_ctl_read(struct file *file, char __user *buf,
 	strscpy(out.comm, req->comm, sizeof(out.comm));
 	strscpy(out.path, req->path, sizeof(out.path));
 
-	/* Move to this fd's dispatched list */
 	spin_lock(&priv->lock);
 	list_add_tail(&req->list, &priv->dispatched);
 	spin_unlock(&priv->lock);
 
-	if (copy_to_user(buf, &out, sizeof(out))) {
-		/* Move back to pending so another read can pick it up */
+	if (copy_to_user((void __user *)arg, &out, sizeof(out))) {
 		spin_lock(&priv->lock);
 		list_del_init(&req->list);
 		spin_unlock(&priv->lock);
@@ -98,26 +94,25 @@ static ssize_t agfs_ctl_read(struct file *file, char __user *buf,
 		return -EFAULT;
 	}
 
-	return sizeof(out);
+	return 0;
 }
 
-/* ── write: submit decision for a dispatched request ───────────────── */
+/* ── CTL_WRITE: submit decision ────────────────────────────────────── */
 
-static ssize_t agfs_ctl_write(struct file *file, const char __user *buf,
-			      size_t count, loff_t *ppos)
+static long agfs_ctl_write_ioctl(struct file *file, unsigned long arg)
 {
-	struct agfs_ctl_private *priv = file->private_data;
+	struct agfs_file_info *fi = AGFS_F(file);
+	struct agfs_ctl_private *priv = fi->ctl;
 	struct agfs_ctl_response in;
 	struct agfs_perm_request *req, *tmp;
 	bool found = false;
 
-	if (count < sizeof(in))
+	if (!priv)
 		return -EINVAL;
 
-	if (copy_from_user(&in, buf, sizeof(in)))
+	if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
 		return -EFAULT;
 
-	/* Find request by id in dispatched list */
 	spin_lock(&priv->lock);
 	list_for_each_entry_safe(req, tmp, &priv->dispatched, list) {
 		if (req->id == in.id) {
@@ -132,23 +127,16 @@ static ssize_t agfs_ctl_write(struct file *file, const char __user *buf,
 	if (!found)
 		return -ENOENT;
 
-	/* Wake the sleeping thread */
 	complete(&req->done);
-	return sizeof(in);
+	return 0;
 }
 
-/* ── release: complete all orphaned dispatched requests ────────────── */
+/* ── Cleanup dispatched requests on fd close ───────────────────────── */
 
-static int agfs_ctl_release(struct inode *inode, struct file *file)
+void agfs_ctl_cleanup(struct agfs_sb_info *sbi, struct agfs_ctl_private *priv)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
-	struct agfs_ctl_private *priv = file->private_data;
 	struct agfs_perm_request *req, *tmp;
 
-	if (!priv)
-		return 0;
-
-	/* Complete any dispatched requests the daemon never answered */
 	spin_lock(&priv->lock);
 	list_for_each_entry_safe(req, tmp, &priv->dispatched, list) {
 		req->decision = sbi->ask_default;
@@ -156,16 +144,12 @@ static int agfs_ctl_release(struct inode *inode, struct file *file)
 		complete(&req->done);
 	}
 	spin_unlock(&priv->lock);
-
 	kfree(priv);
-	file->private_data = NULL;
-	return 0;
 }
 
-/* ── poll ──────────────────────────────────────────────────────────── */
+/* ── Poll for pending requests ─────────────────────────────────────── */
 
-static __poll_t agfs_ctl_poll(struct file *file,
-			      struct poll_table_struct *wait)
+__poll_t agfs_ctl_poll(struct file *file, struct poll_table_struct *wait)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
 	__poll_t mask = 0;
@@ -177,19 +161,23 @@ static __poll_t agfs_ctl_poll(struct file *file,
 		mask |= EPOLLIN | EPOLLRDNORM;
 	spin_unlock(&sbi->pending_lock);
 
-	/* Always writable */
 	mask |= EPOLLOUT | EPOLLWRNORM;
 	return mask;
 }
 
-/* ── ioctl ─────────────────────────────────────────────────────────── */
+/* ── Unified ioctl handler (rules + ctl) ───────────────────────────── */
 
-static long agfs_ctl_ioctl(struct file *file, unsigned int cmd,
-			   unsigned long arg)
+long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
 
 	switch (cmd) {
+	case AGFS_IOC_CTL_READ:
+		return agfs_ctl_read_ioctl(file, arg);
+
+	case AGFS_IOC_CTL_WRITE:
+		return agfs_ctl_write_ioctl(file, arg);
+
 	case AGFS_IOC_RULE_ADD: {
 		struct agfs_ioc_rule rule;
 		struct path rule_path;
@@ -201,7 +189,6 @@ static long agfs_ctl_ioctl(struct file *file, unsigned int cmd,
 
 		rule.path[AGFS_PATH_MAX - 1] = '\0';
 
-		/* Resolve path to dentry — must be on this agfs instance */
 		err = kern_path(rule.path, LOOKUP_FOLLOW, &rule_path);
 		if (err)
 			return err;
@@ -221,10 +208,7 @@ static long agfs_ctl_ioctl(struct file *file, unsigned int cmd,
 		di->perm = (enum agfs_perm)rule.perm;
 		spin_unlock(&di->lock);
 
-		/* Pin the dentry so it's not evicted */
 		dget(rule_path.dentry);
-
-		/* Bump generation to invalidate all cached perms */
 		atomic64_inc(&sbi->perm_gen);
 		path_put(&rule_path);
 
@@ -263,9 +247,7 @@ static long agfs_ctl_ioctl(struct file *file, unsigned int cmd,
 		di->perm = AGFS_PERM_NONE;
 		spin_unlock(&di->lock);
 
-		/* Unpin the dentry */
 		dput(rule_path.dentry);
-
 		atomic64_inc(&sbi->perm_gen);
 		path_put(&rule_path);
 		return 0;
@@ -280,16 +262,3 @@ static long agfs_ctl_ioctl(struct file *file, unsigned int cmd,
 		return -ENOTTY;
 	}
 }
-
-/* ── File Ops ──────────────────────────────────────────────────────── */
-
-const struct file_operations agfs_ctl_fops = {
-	.owner		= THIS_MODULE,
-	.open		= agfs_ctl_open,
-	.release	= agfs_ctl_release,
-	.read		= agfs_ctl_read,
-	.write		= agfs_ctl_write,
-	.poll		= agfs_ctl_poll,
-	.unlocked_ioctl	= agfs_ctl_ioctl,
-	.compat_ioctl	= agfs_ctl_ioctl,
-};

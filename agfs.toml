@@ -1,5 +1,7 @@
 [mount]
-ask_timeout = 0
 ask_default = "deny"
+ask_timeout = 0
 
 [rules]
+"/etc" = "allow-ro"
+"/usr/bin" = "allow-rx"

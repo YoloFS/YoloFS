@@ -91,13 +91,19 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Full workflow: mount → run → diff → ask commit/abort/stage.
+/// Full workflow: mount → background watch → run → diff → commit/abort/stage.
 fn interactive_workflow(exec_args: &[String]) -> anyhow::Result<()> {
     // 1. Mount
     mount::run()?;
 
-    // 2. Run (spawn + wait, not exec)
+    // 2. Start background watch daemon (auto-allows ask requests)
+    let watch_stop = watch::run_background()?;
+
+    // 3. Run (spawn + wait, not exec)
     let exit_status = run::spawn_and_wait(exec_args)?;
+
+    // 4. Stop watch daemon
+    watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
 
     if !exit_status.success() {
         eprintln!(

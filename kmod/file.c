@@ -363,6 +363,8 @@ static int agfs_release(struct inode *inode, struct file *file)
 	struct agfs_file_info *fi = AGFS_F(file);
 
 	if (fi) {
+		if (fi->ctl)
+			agfs_ctl_cleanup(AGFS_SB(inode->i_sb), fi->ctl);
 		if (fi->lower_file)
 			fput(fi->lower_file);
 		kfree(fi);
@@ -457,4 +459,7 @@ const struct file_operations agfs_dir_fops = {
 	.iterate_shared	= agfs_readdir,
 	.llseek		= agfs_llseek,
 	.fsync		= agfs_fsync,
+	.poll		= agfs_ctl_poll,
+	.unlocked_ioctl	= agfs_ioctl,
+	.compat_ioctl	= agfs_ioctl,
 };

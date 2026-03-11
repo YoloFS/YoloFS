@@ -68,6 +68,8 @@ struct agfs_ioc_rule {
 #define AGFS_IOC_RULE_ADD	_IOW('A', 10, struct agfs_ioc_rule)
 #define AGFS_IOC_RULE_REMOVE	_IOW('A', 11, struct agfs_ioc_rule)
 #define AGFS_IOC_CACHE_INVAL	_IO('A', 20)
+#define AGFS_IOC_CTL_READ	_IOR('A', 30, struct agfs_ctl_request)
+#define AGFS_IOC_CTL_WRITE	_IOW('A', 31, struct agfs_ctl_response)
 
 /* ── Control-File Protocol (binary, fixed-size) ────────────────────── */
 
@@ -179,6 +181,13 @@ struct agfs_dentry_info {
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
 };
 
+/* ── Per-File Ctl State (for permission daemon fds) ─────────────────── */
+
+struct agfs_ctl_private {
+	struct list_head	dispatched;	/* requests sent to this fd */
+	spinlock_t		lock;
+};
+
 /* ── Per-File Info ─────────────────────────────────────────────────── */
 
 struct agfs_file_info {
@@ -186,6 +195,7 @@ struct agfs_file_info {
 	bool			needs_cow;
 	bool			is_staging;
 	const struct vm_operations_struct *lower_vm_ops;
+	struct agfs_ctl_private	*ctl;	/* non-NULL if this fd is a ctl daemon */
 };
 
 /* ── Accessor Macros ───────────────────────────────────────────────── */
@@ -336,7 +346,9 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 		       enum agfs_perm *result);
 
 /* ctl.c */
-extern const struct file_operations agfs_ctl_fops;
+long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+__poll_t agfs_ctl_poll(struct file *file, struct poll_table_struct *wait);
+void agfs_ctl_cleanup(struct agfs_sb_info *sbi, struct agfs_ctl_private *priv);
 
 /* log.c */
 extern const struct file_operations agfs_log_fops;

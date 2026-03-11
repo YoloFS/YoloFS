@@ -1,13 +1,15 @@
 // agfs CLI — watch.rs
 //
-// `agfs watch` — daemon mode: poll .agfs/ctl for ask requests,
-// prompt the user (or apply policy), and write decisions back.
+// `agfs watch` — daemon mode: poll .agfs/mnt for ask requests,
+// prompt the user (or apply policy), and write decisions back via ioctl.
 
 use crate::ctl::{self, perm_from_str, perm_to_str, AgfsCtlRequest};
 use anyhow::Result;
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
 use std::os::unix::io::AsRawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
     eprintln!(
@@ -33,17 +35,20 @@ fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
     }
 }
 
+/// Interactive watch — prompts user for each request.
 pub fn run() -> Result<()> {
     let agfs = ctl::agfs_dir()?;
     if !agfs.exists() {
         anyhow::bail!("no agfs session found (no .agfs/ directory)");
     }
 
-    let mut ctl_file = ctl::open_ctl(&agfs)?;
-    eprintln!("agfs: watching for permission requests (Ctrl-C to stop)");
+    let ctl_file = ctl::open_ctl(&agfs)?;
+    eprintln!(
+        "{}",
+        "agfs: watching for permission requests (Ctrl-C to stop)".cyan()
+    );
 
     loop {
-        // Poll for requests
         let fd = ctl_file.as_raw_fd();
         let mut pollfd = nix::poll::PollFd::new(
             unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd) },
@@ -57,8 +62,7 @@ pub fn run() -> Result<()> {
             Err(e) => return Err(e.into()),
         }
 
-        // Read the request
-        let req = match ctl::ctl_read_request(&mut ctl_file) {
+        let req = match ctl::ctl_read_request(&ctl_file) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("agfs watch: read error: {e}");
@@ -66,11 +70,9 @@ pub fn run() -> Result<()> {
             }
         };
 
-        // Prompt user for decision
         let decision = prompt_decision(&req);
 
-        // Write the response
-        if let Err(e) = ctl::ctl_write_response(&mut ctl_file, req.id, decision) {
+        if let Err(e) = ctl::ctl_write_response(&ctl_file, req.id, decision) {
             eprintln!("agfs watch: write error: {e}");
         } else {
             eprintln!(
@@ -80,4 +82,49 @@ pub fn run() -> Result<()> {
             );
         }
     }
+}
+
+/// Background watch — auto-allows all ask requests.
+/// Returns a stop handle; drop it or set it to stop the thread.
+pub fn run_background() -> Result<Arc<AtomicBool>> {
+    let agfs = ctl::agfs_dir()?;
+    let ctl_file = ctl::open_ctl(&agfs)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = stop.clone();
+
+    std::thread::spawn(move || {
+        while !stop2.load(Ordering::Relaxed) {
+            let fd = ctl_file.as_raw_fd();
+            let mut pollfd = nix::poll::PollFd::new(
+                unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd) },
+                nix::poll::PollFlags::POLLIN,
+            );
+
+            // Short timeout so we can check the stop flag
+            match nix::poll::poll(
+                std::slice::from_mut(&mut pollfd),
+                nix::poll::PollTimeout::from(500u16),
+            ) {
+                Ok(0) => continue,
+                Ok(_) => {}
+                Err(_) => continue,
+            }
+
+            let req = match ctl::ctl_read_request(&ctl_file) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            // Auto-allow: read→allow-ro, write→allow-rw, exec→allow-rx
+            let decision = match req.op {
+                ctl::AGFS_OP_WRITE => ctl::AGFS_PERM_ALLOW_RW,
+                ctl::AGFS_OP_EXEC => ctl::AGFS_PERM_ALLOW_RX,
+                _ => ctl::AGFS_PERM_ALLOW_RO,
+            };
+
+            let _ = ctl::ctl_write_response(&ctl_file, req.id, decision);
+        }
+    });
+
+    Ok(stop)
 }

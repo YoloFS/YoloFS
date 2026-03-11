@@ -411,22 +411,24 @@ Two levels:
    the directory containing `.agfs/` (equivalently, the CWD where `agfs`
    was launched). For example, `src` resolves to
    `/home/user/project/src`.
-2. `ioctl(AGFS_IOC_RULE_ADD)` → kernel resolves the normalized absolute path
-   to a dentry.
-3. Set `AGFS_D(dentry)->perm = ALLOW_RW`.
-4. Pin the dentry.
-5. `atomic_inc(&sb->perm_gen)` — invalidates all cached inode perms.
+2. If a mount exists (`.agfs/mnt` is mounted), also apply live:
+   `ioctl(AGFS_IOC_RULE_ADD)` → kernel resolves the normalized absolute path
+   to a dentry, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps
+   `perm_gen` to invalidate all cached inode perms.
 
-On mount, the kernel reads `agfs.toml` and applies all rules.
+If no mount exists, the rule is persisted to `agfs.toml` only. It will be
+applied on the next `agfs mount`.
+
+On mount, the CLI reads `agfs.toml` and applies all `[rules]` via ioctl.
 
 **Changing a rule**: just set it again + bump generation.
 
 **Removing a rule** (`agfs rule remove /foo/bar`):
 
 1. Remove the rule from `agfs.toml`.
-2. `ioctl(AGFS_IOC_RULE_REMOVE)` → kernel sets `AGFS_D(dentry)->perm = NONE`.
-3. Unpin the dentry.
-4. `atomic_inc(&sb->perm_gen)`.
+2. If a mount exists, also apply live:
+   `ioctl(AGFS_IOC_RULE_REMOVE)` → kernel sets `AGFS_D(dentry)->perm = NONE`,
+   unpins the dentry, and bumps `perm_gen`.
 
 **Permission resolution — cached on inode, resolved lazily**:
 
@@ -864,7 +866,9 @@ agfs log --dump
 
 ```bash
 # Full interactive workflow (no subcommand):
-#   mount → run $SHELL → show diff → commit/abort (unmounts automatically)
+#   mount → start watch daemon → run $SHELL → show diff → commit/abort/stage
+# The watch daemon runs in the background to handle permission ask requests
+# automatically, so no separate terminal is needed.
 $ agfs
 $ agfs -- make build     # same but runs a specific command instead of $SHELL
 
@@ -947,20 +951,21 @@ agfs/
 ## 11. Lifecycle Example
 
 ```
-# 1. Full interactive workflow (mount → run → diff → commit/abort → unmount)
+# 1. Full interactive workflow (mount → watch + run → diff → commit/abort)
 $ cd /home/user/project
 $ agfs
-   → creates .agfs/, mounts / → .agfs/mnt, chroots into .agfs/mnt,
-     spawns $SHELL with cwd preserved as the caller's original CWD
-   → on shell exit: runs `agfs diff`, prompts user to commit or abort
-     (both unmount automatically)
+   → creates .agfs/, mounts / → .agfs/mnt, applies rules from agfs.toml,
+     starts background watch daemon for permission requests, chroots into
+     .agfs/mnt, spawns $SHELL with cwd preserved as the caller's original CWD
+   → on shell exit: stops watch daemon, runs `agfs diff`, prompts user to
+     commit, abort, or keep staged (commit/abort unmount automatically)
 
 # 1b. Or use individual commands for more control:
 $ agfs mount
+$ agfs watch &           # start daemon in background
 $ agfs run -- make build
 $ agfs diff
 $ agfs commit
-$ agfs unmount
 
 # 1c. Install rules via CLI from the session root (attaches perm directly
 #     to dentries)

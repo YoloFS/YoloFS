@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
@@ -42,6 +42,8 @@ pub const AGFS_LOG_ABORT: u8 = 8;
 nix::ioctl_write_ptr!(ioctl_rule_add, b'A', 10, AgfsIocRule);
 nix::ioctl_write_ptr!(ioctl_rule_remove, b'A', 11, AgfsIocRule);
 nix::ioctl_none!(ioctl_cache_inval, b'A', 20);
+nix::ioctl_read!(ioctl_ctl_read, b'A', 30, AgfsCtlRequest);
+nix::ioctl_write_ptr!(ioctl_ctl_write, b'A', 31, AgfsCtlResponse);
 
 /// Matches `struct agfs_ioc_rule` in the kernel.
 #[repr(C)]
@@ -175,37 +177,30 @@ pub fn perm_from_str(s: &str) -> Option<u8> {
     }
 }
 
-/// Read one `AgfsCtlRequest` from the ctl file.
-pub fn ctl_read_request(ctl: &mut File) -> Result<AgfsCtlRequest> {
-    let mut buf = [0u8; size_of::<AgfsCtlRequest>()];
-    ctl.read_exact(&mut buf)
-        .context("reading ctl request")?;
-    Ok(unsafe { std::ptr::read(buf.as_ptr() as *const AgfsCtlRequest) })
+/// Read one `AgfsCtlRequest` via ioctl on a directory fd.
+pub fn ctl_read_request(fd: &File) -> Result<AgfsCtlRequest> {
+    let mut req = AgfsCtlRequest {
+        id: 0,
+        op: 0,
+        pid: 0,
+        comm: [0u8; 16],
+        path: [0u8; AGFS_PATH_MAX],
+    };
+    unsafe { ioctl_ctl_read(fd.as_raw_fd(), &mut req) }
+        .context("ioctl CTL_READ")?;
+    Ok(req)
 }
 
-/// Write one `AgfsCtlResponse` to the ctl file.
-pub fn ctl_write_response(ctl: &mut File, id: u64, decision: u8) -> Result<()> {
+/// Write one `AgfsCtlResponse` via ioctl on a directory fd.
+pub fn ctl_write_response(fd: &File, id: u64, decision: u8) -> Result<()> {
     let resp = AgfsCtlResponse {
         id,
         decision,
         _pad: [0u8; 7],
     };
-    let bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(
-            &resp as *const AgfsCtlResponse as *const u8,
-            size_of::<AgfsCtlResponse>(),
-        )
-    };
-    ctl.write_all(bytes).context("writing ctl response")?;
+    unsafe { ioctl_ctl_write(fd.as_raw_fd(), &resp) }
+        .context("ioctl CTL_WRITE")?;
     Ok(())
-}
-
-/// Read one `AgfsLogEntry` from the log file.
-pub fn log_read_entry(log: &mut File) -> Result<AgfsLogEntry> {
-    let mut buf = [0u8; size_of::<AgfsLogEntry>()];
-    log.read_exact(&mut buf)
-        .context("reading log entry")?;
-    Ok(unsafe { std::ptr::read(buf.as_ptr() as *const AgfsLogEntry) })
 }
 
 /// Locate the agfs session directory.
@@ -223,18 +218,13 @@ pub fn agfs_dir() -> Result<PathBuf> {
     }
 }
 
-/// Open the ctl file for read+write.
+/// Open the mount point directory for ioctl (ctl + rules).
 pub fn open_ctl(agfs_dir: &Path) -> Result<File> {
+    let mnt = agfs_dir.join("mnt");
     OpenOptions::new()
         .read(true)
-        .write(true)
-        .open(agfs_dir.join("ctl"))
-        .context("opening .agfs/ctl")
-}
-
-/// Open the log file for reading.
-pub fn open_log(agfs_dir: &Path) -> Result<File> {
-    File::open(agfs_dir.join("log")).context("opening .agfs/log")
+        .open(&mnt)
+        .context("opening .agfs/mnt for ioctl")
 }
 
 /// Send AGFS_IOC_RULE_ADD ioctl.
