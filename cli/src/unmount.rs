@@ -10,6 +10,12 @@ pub fn run() -> Result<()> {
     let agfs_dir = crate::ctl::agfs_dir()?;
     let mnt = agfs_dir.join("mnt");
 
+    // Unmount pseudo-filesystems first (reverse order)
+    for pseudo in &["sys", "proc", "dev"] {
+        let target = mnt.join(pseudo);
+        let _ = nix::mount::umount2(&target, nix::mount::MntFlags::MNT_DETACH);
+    }
+
     nix::mount::umount2(&mnt, nix::mount::MntFlags::MNT_DETACH)
         .context("unmounting .agfs/mnt")?;
 

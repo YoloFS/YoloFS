@@ -21,7 +21,7 @@ fn agfs_bin() -> PathBuf {
 
 impl AgfsSession {
     /// Create a new test session in the given directory.
-    /// Seeds some base files and mounts agfs with nogating.
+    /// Seeds some base files and mounts agfs with noperm.
     pub fn new() -> Result<Self> {
         let root = tempfile::tempdir()
             .context("creating temp dir")?
@@ -51,7 +51,7 @@ impl AgfsSession {
     }
 
     fn mount(&mut self) -> Result<()> {
-        let data = format!("nogating,storage={}", self.agfs_dir.display());
+        let data = format!("noperm,storage={}", self.agfs_dir.display());
         mount(
             Some("none"),
             &self.mnt,

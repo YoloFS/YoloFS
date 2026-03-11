@@ -19,6 +19,13 @@ fn resolve_rule_path(path: &str) -> Result<String> {
     Ok(full.to_string_lossy().to_string())
 }
 
+/// Return the agfs.toml config path (in CWD, parent of .agfs/).
+fn config_path() -> Result<std::path::PathBuf> {
+    let agfs = ctl::agfs_dir()?;
+    let cwd = agfs.parent().unwrap_or(Path::new("."));
+    Ok(cwd.join("agfs.toml"))
+}
+
 pub fn add(path: &str, perm_str: &str) -> Result<()> {
     let perm = perm_from_str(perm_str)
         .ok_or_else(|| anyhow::anyhow!("unknown permission: {perm_str}"))?;
@@ -30,10 +37,10 @@ pub fn add(path: &str, perm_str: &str) -> Result<()> {
     ctl::ioctl_add_rule(&ctl_file, &resolved, perm)?;
     eprintln!("{} {} = {}", "rule added:".green().bold(), path, perm_str);
 
-    // Also persist to config.toml
-    let config_path = agfs.join("config.toml");
-    if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path)?;
+    // Persist to agfs.toml
+    let cp = config_path()?;
+    if cp.exists() {
+        let content = std::fs::read_to_string(&cp)?;
         let mut doc: toml::Table = content.parse().unwrap_or_default();
         let rules = doc
             .entry("rules")
@@ -41,7 +48,7 @@ pub fn add(path: &str, perm_str: &str) -> Result<()> {
         if let toml::Value::Table(t) = rules {
             t.insert(path.to_string(), toml::Value::String(perm_str.to_string()));
         }
-        std::fs::write(&config_path, doc.to_string())?;
+        std::fs::write(&cp, doc.to_string())?;
     }
 
     Ok(())
@@ -55,15 +62,15 @@ pub fn remove(path: &str) -> Result<()> {
     ctl::ioctl_remove_rule(&ctl_file, &resolved)?;
     eprintln!("{} {}", "rule removed:".yellow().bold(), path);
 
-    // Remove from config.toml
-    let config_path = agfs.join("config.toml");
-    if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path)?;
+    // Remove from agfs.toml
+    let cp = config_path()?;
+    if cp.exists() {
+        let content = std::fs::read_to_string(&cp)?;
         let mut doc: toml::Table = content.parse().unwrap_or_default();
         if let Some(toml::Value::Table(t)) = doc.get_mut("rules") {
             t.remove(path);
         }
-        std::fs::write(&config_path, doc.to_string())?;
+        std::fs::write(&cp, doc.to_string())?;
     }
 
     Ok(())

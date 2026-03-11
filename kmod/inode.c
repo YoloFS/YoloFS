@@ -487,6 +487,9 @@ static int agfs_rename(struct mnt_idmap *idmap,
 			/* Pin dentry and track for cleanup on commit/abort/unmount */
 			pd->dentry = dget(new_dentry);
 			list_add(&pd->list, &sbi->pinned_dentries);
+
+			/* Persist rename record for userspace */
+			err = agfs_append_rename(sbi, old_buf, new_buf);
 		}
 	}
 
@@ -518,7 +521,7 @@ static int agfs_permission(struct mnt_idmap *idmap,
 	if (!S_ISREG(inode->i_mode))
 		return inode_permission(idmap, agfs_lower_inode(inode), mask);
 
-	if (sbi->nogating)
+	if (sbi->noperm)
 		return inode_permission(idmap, agfs_lower_inode(inode), mask);
 
 	/* Check generation — re-resolve if stale */

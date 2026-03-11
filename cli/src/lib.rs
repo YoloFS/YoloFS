@@ -2,6 +2,7 @@ pub mod abort;
 pub mod commit;
 pub mod ctl;
 pub mod diff;
+pub mod init;
 pub mod log;
 pub mod mount;
 pub mod rule;

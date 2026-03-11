@@ -506,3 +506,70 @@ int agfs_resolve_lower(struct dentry *dentry, struct path *result)
 
 	return -ENOENT;
 }
+
+/* ── Append Rename Record ──────────────────────────────────────────── */
+
+int agfs_append_rename(struct agfs_sb_info *sbi,
+		       const char *old_path, const char *new_path)
+{
+	struct file *f;
+	struct path renames_p;
+	loff_t pos;
+	ssize_t ret;
+	size_t old_len = strlen(old_path) + 1; /* include \0 */
+	size_t new_len = strlen(new_path) + 1;
+	int err;
+
+	/* Open or create the renames file */
+	if (sbi->renames_path.dentry) {
+		f = dentry_open(&sbi->renames_path,
+				O_WRONLY | O_APPEND, current_cred());
+	} else {
+		/* Create the file */
+		struct dentry *new_dentry;
+		struct inode *dir;
+
+		dir = d_inode(sbi->storage_path.dentry);
+		inode_lock(dir);
+		new_dentry = lookup_one_len("renames",
+					    sbi->storage_path.dentry, 7);
+		if (IS_ERR(new_dentry)) {
+			inode_unlock(dir);
+			return PTR_ERR(new_dentry);
+		}
+		if (d_is_negative(new_dentry)) {
+			err = vfs_create(mnt_idmap(sbi->storage_path.mnt),
+					 dir, new_dentry, 0644, true);
+			if (err) {
+				dput(new_dentry);
+				inode_unlock(dir);
+				return err;
+			}
+		}
+		dput(new_dentry);
+		inode_unlock(dir);
+
+		/* Resolve and cache */
+		err = vfs_path_lookup(sbi->storage_path.dentry,
+				      sbi->storage_path.mnt,
+				      "renames", 0, &renames_p);
+		if (err)
+			return err;
+		sbi->renames_path = renames_p;
+
+		f = dentry_open(&sbi->renames_path,
+				O_WRONLY | O_APPEND, current_cred());
+	}
+	if (IS_ERR(f))
+		return PTR_ERR(f);
+
+	pos = f->f_pos;
+	ret = kernel_write(f, old_path, old_len, &pos);
+	if (ret < 0) {
+		fput(f);
+		return ret;
+	}
+	ret = kernel_write(f, new_path, new_len, &pos);
+	fput(f);
+	return ret < 0 ? ret : 0;
+}

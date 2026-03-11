@@ -27,26 +27,13 @@ pub fn setup_agfs_dir(agfs_dir: &Path) -> Result<()> {
         .context("creating .agfs/staging/")?;
     fs::create_dir_all(agfs_dir.join("mnt"))
         .context("creating .agfs/mnt/")?;
-
-    let config_path = agfs_dir.join("config.toml");
-    if !config_path.exists() {
-        let default_config = r#"[mount]
-ask_timeout = 0
-ask_default = "deny"
-
-[rules]
-"#;
-        fs::write(&config_path, default_config)
-            .context("writing default config.toml")?;
-    }
-
     Ok(())
 }
 
 pub fn do_mount(agfs_dir: &Path) -> Result<()> {
     let mnt = agfs_dir.join("mnt");
     let storage = agfs_dir.to_string_lossy().to_string();
-    let mount_data = format!("storage={},nogating", storage);
+    let mount_data = format!("storage={}", storage);
 
     nix::mount::mount(
         Some("none"),
@@ -56,6 +43,26 @@ pub fn do_mount(agfs_dir: &Path) -> Result<()> {
         Some(mount_data.as_str()),
     )
     .context("mounting agfs (is the kernel module loaded?)")?;
+
+    // Mount fresh pseudo-filesystems so they bypass agfs
+    let pseudos: &[(&str, &str)] = &[
+        ("dev", "devtmpfs"),
+        ("proc", "proc"),
+        ("sys", "sysfs"),
+    ];
+    for &(dir, fstype) in pseudos {
+        let target = mnt.join(dir);
+        if target.exists() {
+            nix::mount::mount(
+                Some(fstype),
+                &target,
+                Some(fstype),
+                nix::mount::MsFlags::empty(),
+                None::<&str>,
+            )
+            .with_context(|| format!("mounting {fstype} at {dir}"))?;
+        }
+    }
 
     eprintln!("{} {}", "agfs: mounted at".green(), mnt.display());
     Ok(())

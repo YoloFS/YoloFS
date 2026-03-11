@@ -7,7 +7,7 @@ build: cli kmod
 cli:
 	cargo build --release --manifest-path cli/Cargo.toml
 
-install: build
+install: cli
 	sudo install -m 755 cli/target/release/agfs /usr/local/bin/agfs
 
 uninstall:

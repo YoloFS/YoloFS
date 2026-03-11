@@ -26,7 +26,7 @@ static int agfs_open(struct inode *inode, struct file *file)
 		return -ENOMEM;
 
 	/* ── Permission gating for regular files ────────────────────── */
-	if (S_ISREG(inode->i_mode) && !sbi->nogating) {
+	if (S_ISREG(inode->i_mode) && !sbi->noperm) {
 		enum agfs_perm perm = AGFS_I(inode)->cached_perm;
 
 		/* Re-resolve if stale */

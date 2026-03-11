@@ -90,14 +90,22 @@ wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
 ### 3.2 Storage Layout
 
 ```
+agfs.toml                       # config file in CWD (mount options + rules)
 .agfs/                          # created by `agfs` in CWD
 ├── ctl                          # virtual control file (read/write/poll/ioctl)
 ├── log                          # virtual log file (read/poll) for debugging
-├── config.toml                  # TOML: mount options + rules
 ├── renames                      # persisted rename log: src\0dst\0 pairs
 ├── staging/                     # staged files + whiteouts (mirrors / tree)
 └── mnt/                         # mount point — agent works here
+    ├── dev/                     # fresh devtmpfs mount
+    ├── proc/                    # fresh proc mount
+    └── sys/                     # fresh sysfs mount
 ```
+
+After mounting agfs at `.agfs/mnt/`, the CLI mounts fresh `/dev` (devtmpfs),
+`/proc` (proc), and `/sys` (sysfs) inside the mount point so they bypass agfs
+entirely. This avoids unnecessary staging checks on pseudo-filesystems and
+will integrate naturally with PID/user namespace isolation later.
 
 ### 3.3 Path Resolution
 
@@ -386,7 +394,7 @@ Two levels:
 
 **Setting a rule** (`agfs rule add src allow-rw`):
 
-1. Write the rule to `.agfs/config.toml` (source of truth on disk):
+1. Write the rule to `agfs.toml` (source of truth on disk):
   ```toml
    [mount]
    ask_timeout = 30
@@ -409,13 +417,13 @@ Two levels:
 4. Pin the dentry.
 5. `atomic_inc(&sb->perm_gen)` — invalidates all cached inode perms.
 
-On mount, the kernel reads `.agfs/config.toml` and applies all rules.
+On mount, the kernel reads `agfs.toml` and applies all rules.
 
 **Changing a rule**: just set it again + bump generation.
 
 **Removing a rule** (`agfs rule remove /foo/bar`):
 
-1. Remove the rule from `.agfs/config.toml`.
+1. Remove the rule from `agfs.toml`.
 2. `ioctl(AGFS_IOC_RULE_REMOVE)` → kernel sets `AGFS_D(dentry)->perm = NONE`.
 3. Unpin the dentry.
 4. `atomic_inc(&sb->perm_gen)`.
@@ -878,13 +886,13 @@ $ agfs watch             # handle ask requests (daemon mode)
 
 ### 9.1 Mount Options
 
-Configured via `.agfs/config.toml` or CLI flags:
+Configured via `agfs.toml` or CLI flags:
 
 | Option | Default | Description |
 |---|---|---|
 | `ask_timeout` | 0 (infinite) | Seconds before ask request times out |
 | `ask_default` | `deny` | Fallback permission on timeout |
-| `nogating` | false | Disable permission gating entirely |
+| `noperm` | false | Disable permission gating entirely |
 | `nostaging` | false | Disable staging (passthrough + gating only) |
 | `log_size` | 1024 | Ring buffer entries for `.agfs/log` |
 

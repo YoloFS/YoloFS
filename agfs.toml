@@ -1,0 +1,5 @@
+[mount]
+ask_timeout = 0
+ask_default = "deny"
+
+[rules]

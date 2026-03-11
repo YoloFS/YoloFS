@@ -73,7 +73,7 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 	long timeout;
 	int err = 0;
 
-	if (sbi->nogating) {
+	if (sbi->noperm) {
 		*result = AGFS_PERM_ALLOW;
 		return 0;
 	}

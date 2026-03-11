@@ -154,7 +154,7 @@ struct agfs_sb_info {
 	atomic64_t		next_req_id;
 	unsigned int		ask_timeout_s;
 	enum agfs_perm		ask_default;
-	bool			nogating;
+	bool			noperm;
 	bool			nostaging;
 
 	/* Log */
@@ -324,6 +324,8 @@ int agfs_create_staging_empty(struct agfs_sb_info *sbi, const char *relpath,
 			      struct file **new_file, int flags);
 int agfs_create_staging_parents(struct agfs_sb_info *sbi, const char *relpath);
 int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen);
+int agfs_append_rename(struct agfs_sb_info *sbi,
+		       const char *old_path, const char *new_path);
 
 /* perm.c */
 enum agfs_perm agfs_resolve_perm(struct dentry *dentry);

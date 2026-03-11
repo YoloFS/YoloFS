@@ -1,6 +1,6 @@
 // agfs CLI — main.rs
 
-use agfs::{abort, commit, diff, log, mount, rule, run, status, watch};
+use agfs::{abort, commit, diff, init, log, mount, rule, run, status, watch};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
@@ -18,6 +18,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create agfs.toml in the current directory
+    Init,
     /// Create .agfs/ layout and mount the filesystem
     Mount,
     /// Run a command inside the sandbox (requires existing mount)
@@ -72,6 +74,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Some(Command::Init) => init::run(),
         Some(Command::Mount) => mount::run(),
         Some(Command::Run { exec_args }) => run::exec(&exec_args),
         Some(Command::Status) => status::run(),

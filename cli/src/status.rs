@@ -105,34 +105,37 @@ pub fn staging_walk(agfs_dir: &Path) -> Result<Vec<Change>> {
     for (old_path, new_path) in &renames {
         let staging_new = staging_dir.join(new_path.trim_start_matches('/'));
         if staging_new.exists() && !is_whiteout(&staging_new) {
-            // Rename + modification
             changes.push(Change::RenamedModified {
                 from: old_path.clone(),
                 to: new_path.clone(),
             });
-            consumed_renames.insert(new_path.clone());
+            consumed_renames.insert(new_path.trim_start_matches('/').to_string());
         } else {
-            // Pure rename
             changes.push(Change::Renamed {
                 from: old_path.clone(),
                 to: new_path.clone(),
             });
         }
-        consumed_renames.insert(old_path.clone());
+        consumed_renames.insert(old_path.trim_start_matches('/').to_string());
     }
 
     // Step 4: Classify remaining entries
     for (relpath, full_path) in staging_entries {
+        let normalized = relpath.trim_start_matches('/').to_string();
         // Skip entries already explained by renames
-        if consumed_renames.contains(&relpath) {
+        if consumed_renames.contains(&normalized) {
             continue;
         }
         // Also skip whiteouts at old_path of a rename
-        if rename_old_set.contains_key(&relpath) {
+        if rename_old_set.contains_key(&relpath)
+            || rename_old_set.contains_key(&format!("/{relpath}"))
+        {
             continue;
         }
         // Skip staged files at new_path of a rename
-        if rename_new_set.contains_key(&relpath) {
+        if rename_new_set.contains_key(&relpath)
+            || rename_new_set.contains_key(&format!("/{relpath}"))
+        {
             continue;
         }
 
