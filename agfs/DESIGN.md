@@ -251,36 +251,37 @@ agfs_rename(old_dir, old_dentry, new_dir, new_dentry):
 redirected `lower_path`. The rename record stays on disk so commit knows to delete the
 original path after installing the new file.
 
-**Commit**: userspace reads `./agfs/renames` and handles each entry:
-- If a staging file exists at `new_path` (file was written after rename):
-  `rename(staging/new_path, base/new_path)`, then `unlink(base/old_path)`.
-- If no staging file exists (pure rename): `rename(base/old_path, base/new_path)`.
-
-**Abort**: delete `./agfs/renames` along with the staging directory.
+Commit and abort handling for renames is covered in §3.6.
 
 ### 3.6 Staging Operations (Userspace)
 
 Commit and abort are **userspace operations** — the kernel module only handles
 I/O redirection. The `agfs` CLI tool walks the staging
-directory and applies changes to the base:
+directory and applies changes to the base.
 
-**Commit** (`agfs commit`):
+All staging operations except abort share a common **staging walk**:
 
 1. Read `./agfs/renames` and build `old→new` / `new→old` lookup tables.
-2. Process rename records first:
-   - If a staged file exists at `new_path`: `rename(staging/new_path, base/new_path)`,
-     then `unlink(base/old_path)`.
-   - If no staged file exists at `new_path`: `rename(base/old_path, base/new_path)`.
+2. Process rename records: for each entry, check whether a staged file
+   exists at `new_path` (rename + modification) or not (pure rename).
 3. Walk `./agfs/staging/` recursively.
 4. Skip entries already explained by rename records:
    - whiteouts at `old_path` for renamed files,
    - staged files at `new_path` already consumed by step 2.
-5. For each remaining whiteout (char dev 0/0): `unlink()` / `rmdir()` the
+5. Classify remaining entries (regular files, whiteouts) per operation.
+
+**Commit** (`agfs commit`):
+
+1. Staging walk (above). In step 2, apply renames:
+   - Staged file at `new_path`: `rename(staging/new_path, base/new_path)`,
+     then `unlink(base/old_path)`.
+   - No staged file: `rename(base/old_path, base/new_path)`.
+2. For each remaining whiteout (char dev 0/0): `unlink()` / `rmdir()` the
    corresponding base path.
-6. For each remaining regular file: `rename()` from `staging/<path>` →
+3. For each remaining regular file: `rename()` from `staging/<path>` →
    `base/<path>`, creating parent directories as needed.
-7. Remove the `staging/` directory and `renames` file.
-8. Signal the kernel module to invalidate caches and drop pinned rename dentries.
+4. Remove the `staging/` directory and `renames` file.
+5. Signal the kernel module to invalidate caches and drop pinned rename dentries.
 
 **Abort** (`agfs abort`):
 
@@ -289,34 +290,21 @@ directory and applies changes to the base:
 
 **Status** (`agfs status`):
 
-1. Read `./agfs/renames` first.
-2. For each rename record:
-   - If no staged file exists at `new_path`: report a pure rename
-     (`old_path -> new_path`).
-   - If a staged file exists at `new_path`: report rename + modified
-     (`old_path -> new_path`, modified).
-3. Walk `staging/`.
-4. Skip entries already explained by rename records:
-   - whiteouts at `old_path`,
-   - staged files at `new_path`.
-5. Classify all remaining entries as added, modified, or deleted.
+1. Staging walk (above). In step 2, collect renames:
+   - No staged file at `new_path`: pure rename (`old_path -> new_path`).
+   - Staged file at `new_path`: rename + modified.
+2. Classify remaining entries as added, modified, or deleted.
 
 **Diff** (`agfs diff`):
 
-1. Read `./agfs/renames` first.
-2. For each rename record:
-   - If no staged file exists at `new_path`: emit a rename-only record.
-   - If a staged file exists at `new_path`: diff `base/old_path` against
-     `staging/new_path` and label it as a rename + modification.
-3. Walk `staging/` recursively.
-4. Skip entries already explained by rename records:
-   - whiteouts at `old_path`,
-   - staged files at `new_path`.
-5. For each remaining regular file: run unified diff against the corresponding
-   base file. Added files are shown as entirely new. Modified files show the
-   delta.
-6. For each remaining whiteout: show as a deleted file.
-7. Output in git-style unified diff format. Pure renames are represented as
+1. Staging walk (above). In step 2, diff renames:
+   - No staged file at `new_path`: emit rename-only record.
+   - Staged file at `new_path`: diff `base/old_path` against
+     `staging/new_path`, label as rename + modification.
+2. For each remaining regular file: unified diff against the corresponding
+   base file. Added files shown as entirely new; modified files show the delta.
+3. For each remaining whiteout: show as a deleted file.
+4. Output in git-style unified diff format. Pure renames are represented as
    rename metadata and are not plain POSIX `patch` input.
 
 ---
@@ -329,9 +317,10 @@ directory and applies changes to the base:
 enum agfs_perm {
     AGFS_PERM_NONE,        // No rule on this dentry (walk up to find one).
     AGFS_PERM_ASK,         // Default. Block thread, ask userspace.
-    AGFS_PERM_ALLOW_RW,    // Read + write + create + delete allowed.
-    AGFS_PERM_ALLOW_RO,    // Read-only. Writes return -EACCES.
-    AGFS_PERM_ALLOW_RX,    // Read + execute (for binaries/scripts).
+    AGFS_PERM_ALLOW,       // Read + write + execute allowed.
+    AGFS_PERM_ALLOW_RW,    // Read + write. No execute.
+    AGFS_PERM_ALLOW_RO,    // Read only. No write, no execute.
+    AGFS_PERM_ALLOW_RX,    // Read + execute. No write.
     AGFS_PERM_DENY,        // All access returns -EACCES.
 };
 ```
@@ -432,9 +421,11 @@ static int agfs_permission(struct inode *inode, int mask)
         return 0;  // ask is handled in open(), not here
 
     switch (perm) {
-    case AGFS_PERM_ALLOW_RW:  return 0;
+    case AGFS_PERM_ALLOW:     return 0;
+    case AGFS_PERM_ALLOW_RW:
+        return (mask & MAY_EXEC) ? -EACCES : 0;
     case AGFS_PERM_ALLOW_RO:
-        return (mask & MAY_WRITE) ? -EACCES : 0;
+        return (mask & (MAY_WRITE | MAY_EXEC)) ? -EACCES : 0;
     case AGFS_PERM_ALLOW_RX:
         return (mask & MAY_WRITE) ? -EACCES : 0;
     case AGFS_PERM_DENY:      return -EACCES;
@@ -991,3 +982,34 @@ the lower FS. This is intentional: gating directories would require
 intercepting `lookup()` and `readdir()`, adding latency to every path
 traversal. For agent sandboxing, controlling file-level read/write/exec is
 sufficient.
+
+---
+
+## 13. Comparison with overlayfs
+
+agfs borrows the whiteout convention from overlayfs but differs in
+architecture and purpose.
+
+**Staging vs live union**: overlayfs is a live union filesystem — the upper
+layer *is* the persistent state. There is no commit or abort. A renamed
+file is copied up to upper with `RENAME_WHITEOUT` and stays there forever.
+agfs treats staging as a scratch area that is explicitly committed or
+discarded. The `.renames` file tracks rename origins so commit can do
+`rename(base/old, base/new)` with no data copy — something overlayfs
+never needs because it never merges back to lower.
+
+**Copy-up**: overlayfs always does a full copy-up on first write, even for
+truncating writes (`echo "x" > file` copies the entire file, then
+truncates). agfs detects `O_TRUNC` and creates an empty staging file
+directly — zero copy for the most common agent write pattern.
+
+**Lookup**: overlayfs does two lookups per component (upper + lower) and
+merges the results. agfs does one (check staging, fall back to base).
+
+**Permission model**: overlayfs uses standard Unix permissions only. agfs
+adds the progressive gating layer (ask/allow/deny) with the ask protocol
+for interactive approval.
+
+**Portability**: overlayfs's `RENAME_WHITEOUT` requires filesystem support
+(ext4, xfs). agfs uses a `.renames` sidecar file and standard `mknod()`
+whiteouts, working on any lower FS.
