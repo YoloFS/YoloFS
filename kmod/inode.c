@@ -604,7 +604,6 @@ static int agfs_setattr(struct mnt_idmap *idmap,
 		fsstack_copy_inode_size(inode, lower_inode);
 	}
 
-out:
 	agfs_put_lower_path(dentry, &lower_path);
 	return err;
 }

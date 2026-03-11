@@ -4,9 +4,10 @@
 // prompt the user (or apply policy), and write decisions back via ioctl.
 
 use crate::ctl::{self, perm_from_str, perm_to_str, AgfsCtlRequest};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -84,15 +85,35 @@ pub fn run() -> Result<()> {
     }
 }
 
-/// Background watch — auto-allows all ask requests.
-/// Returns a stop handle; drop it or set it to stop the thread.
-pub fn run_background() -> Result<Arc<AtomicBool>> {
+/// Handle for stopping and joining the background watch thread.
+pub struct WatchHandle {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl WatchHandle {
+    pub fn stop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Background watch — prompts for all ask requests.
+/// Returns a handle to stop and join the thread.
+pub fn run_background() -> Result<WatchHandle> {
     let agfs = ctl::agfs_dir()?;
-    let ctl_file = ctl::open_ctl(&agfs)?;
+    let ctl_file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_DIRECTORY)
+        .open(agfs.join("mnt"))
+        .context("opening .agfs/mnt for background watch")?;
+
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
 
-    std::thread::spawn(move || {
+    let thread = std::thread::spawn(move || {
         while !stop2.load(Ordering::Relaxed) {
             let fd = ctl_file.as_raw_fd();
             let mut pollfd = nix::poll::PollFd::new(
@@ -100,7 +121,6 @@ pub fn run_background() -> Result<Arc<AtomicBool>> {
                 nix::poll::PollFlags::POLLIN,
             );
 
-            // Short timeout so we can check the stop flag
             match nix::poll::poll(
                 std::slice::from_mut(&mut pollfd),
                 nix::poll::PollTimeout::from(500u16),
@@ -115,16 +135,10 @@ pub fn run_background() -> Result<Arc<AtomicBool>> {
                 Err(_) => continue,
             };
 
-            // Auto-allow: read→allow-ro, write→allow-rw, exec→allow-rx
-            let decision = match req.op {
-                ctl::AGFS_OP_WRITE => ctl::AGFS_PERM_ALLOW_RW,
-                ctl::AGFS_OP_EXEC => ctl::AGFS_PERM_ALLOW_RX,
-                _ => ctl::AGFS_PERM_ALLOW_RO,
-            };
-
+            let decision = prompt_decision(&req);
             let _ = ctl::ctl_write_response(&ctl_file, req.id, decision);
         }
     });
 
-    Ok(stop)
+    Ok(WatchHandle { stop, thread: Some(thread) })
 }

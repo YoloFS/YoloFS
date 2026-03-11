@@ -1,15 +1,15 @@
 use anyhow::{Context, Result};
-use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// A managed agfs session for testing. Unmounts + cleans up on drop.
+/// A managed agfs session for testing, driven entirely through the CLI.
+///
+/// Creates a temp directory, seeds base files, and uses `agfs mount` /
+/// `agfs commit` / `agfs abort` for the full lifecycle.
 pub struct AgfsSession {
     pub root: PathBuf,
-    pub agfs_dir: PathBuf,
     pub mnt: PathBuf,
-    pub staging: PathBuf,
     mounted: bool,
 }
 
@@ -20,18 +20,11 @@ fn agfs_bin() -> PathBuf {
 }
 
 impl AgfsSession {
-    /// Create a new test session in the given directory.
-    /// Seeds some base files and mounts agfs with noperm.
+    /// Create a new test session: seed files, write agfs.toml, `agfs mount`.
     pub fn new() -> Result<Self> {
         let root = tempfile::tempdir()
             .context("creating temp dir")?
             .keep();
-        let agfs_dir = root.join(".agfs");
-        let mnt = agfs_dir.join("mnt");
-        let staging = agfs_dir.join("staging");
-
-        fs::create_dir_all(&staging).context("creating staging dir")?;
-        fs::create_dir_all(&mnt).context("creating mnt dir")?;
 
         // Seed base test files
         fs::write(root.join("hello.txt"), "base content\n")?;
@@ -39,11 +32,17 @@ impl AgfsSession {
         fs::create_dir_all(root.join("subdir"))?;
         fs::write(root.join("subdir/deep.txt"), "nested\n")?;
 
+        // Write agfs.toml with noperm for testing
+        fs::write(
+            root.join("agfs.toml"),
+            "[mount]\nnoperm = true\n\n[rules]\n",
+        )?;
+
+        let mnt = root.join(".agfs/mnt");
+
         let mut session = Self {
             root,
-            agfs_dir,
             mnt,
-            staging,
             mounted: false,
         };
         session.mount()?;
@@ -51,15 +50,16 @@ impl AgfsSession {
     }
 
     fn mount(&mut self) -> Result<()> {
-        let data = format!("noperm,storage={}", self.agfs_dir.display());
-        mount(
-            Some("none"),
-            &self.mnt,
-            Some("agfs"),
-            MsFlags::empty(),
-            Some(data.as_str()),
-        )
-        .context("mounting agfs")?;
+        let output = Command::new(agfs_bin())
+            .arg("mount")
+            .current_dir(&self.root)
+            .env("NO_COLOR", "1")
+            .output()
+            .context("running agfs mount")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("agfs mount failed: {stderr}");
+        }
         self.mounted = true;
         Ok(())
     }
@@ -77,16 +77,18 @@ impl AgfsSession {
 
     /// Resolve a staging path.
     pub fn staging_path(&self, rel: &str) -> PathBuf {
-        self.staging
+        self.root
+            .join(".agfs/staging")
             .join(self.root.strip_prefix("/").unwrap())
             .join(rel)
     }
 
-    /// Run an agfs CLI subcommand and return stdout.
+    /// Run an agfs CLI subcommand from the session root, return stdout.
     pub fn cli(&self, args: &[&str]) -> Result<String> {
         let output = Command::new(agfs_bin())
             .args(args)
-            .env("AGFS_SESSION", &self.agfs_dir)
+            .current_dir(&self.root)
+            .env("NO_COLOR", "1")
             .output()
             .context("running agfs CLI")?;
         if !output.status.success() {
@@ -103,11 +105,12 @@ impl AgfsSession {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Run an agfs CLI subcommand and return stdout even on failure.
+    /// Run an agfs CLI subcommand and return (success, stdout, stderr).
     pub fn cli_output(&self, args: &[&str]) -> Result<(bool, String, String)> {
         let output = Command::new(agfs_bin())
             .args(args)
-            .env("AGFS_SESSION", &self.agfs_dir)
+            .current_dir(&self.root)
+            .env("NO_COLOR", "1")
             .output()
             .context("running agfs CLI")?;
         Ok((
@@ -121,7 +124,12 @@ impl AgfsSession {
 impl Drop for AgfsSession {
     fn drop(&mut self) {
         if self.mounted {
-            let _ = umount2(&self.mnt, MntFlags::MNT_DETACH);
+            // Use CLI abort to cleanly unmount + remove .agfs/
+            let _ = Command::new(agfs_bin())
+                .arg("abort")
+                .current_dir(&self.root)
+                .env("NO_COLOR", "1")
+                .output();
             self.mounted = false;
         }
         let _ = fs::remove_dir_all(&self.root);
@@ -136,7 +144,6 @@ macro_rules! skip_if_not_root {
             eprintln!("SKIPPED: must run as root");
             return;
         }
-        // Check module is loaded
         let mods = std::fs::read_to_string("/proc/modules").unwrap_or_default();
         if !mods.contains("agfs ") {
             eprintln!("SKIPPED: agfs module not loaded");

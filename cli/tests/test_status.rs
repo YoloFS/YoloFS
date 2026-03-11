@@ -8,7 +8,7 @@ fn status_empty() {
     let s = AgfsSession::new().expect("session setup");
 
     let output = s.cli(&["status"]).expect("status");
-    assert!(output.contains("nothing staged"), "output: {output}");
+    assert!(output.contains("No changes staged"), "output: {output}");
 }
 
 #[test]

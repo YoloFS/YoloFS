@@ -1,11 +1,10 @@
 pub mod abort;
 pub mod commit;
+pub mod config;
 pub mod ctl;
 pub mod diff;
-pub mod init;
 pub mod log;
 pub mod mount;
-pub mod rule;
 pub mod run;
 pub mod status;
 pub mod unmount;

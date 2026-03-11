@@ -244,10 +244,13 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		}
 
 		spin_lock(&di->lock);
-		di->perm = AGFS_PERM_NONE;
-		spin_unlock(&di->lock);
-
-		dput(rule_path.dentry);
+		if (di->perm != AGFS_PERM_NONE) {
+			di->perm = AGFS_PERM_NONE;
+			spin_unlock(&di->lock);
+			dput(rule_path.dentry); /* balance dget from RULE_ADD */
+		} else {
+			spin_unlock(&di->lock);
+		}
 		atomic64_inc(&sbi->perm_gen);
 		path_put(&rule_path);
 		return 0;

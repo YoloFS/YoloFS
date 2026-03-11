@@ -31,16 +31,8 @@ int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen)
 static int resolve_subpath(const struct path *root, const char *relpath,
 			   struct path *result)
 {
-	struct path p;
-	int err;
-
-	p = *root;
-	path_get(&p);
-
-	err = vfs_path_lookup(root->dentry, root->mnt, relpath,
-			      LOOKUP_FOLLOW, result);
-	path_put(&p);
-	return err;
+	return vfs_path_lookup(root->dentry, root->mnt, relpath,
+			       LOOKUP_FOLLOW, result);
 }
 
 /* ── Public Helpers ────────────────────────────────────────────────── */

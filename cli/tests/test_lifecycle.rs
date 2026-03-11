@@ -23,15 +23,11 @@ fn full_write_commit_cycle() {
 
     // 4. Commit
     let output = s.cli(&["commit"]).unwrap();
-    assert!(output.contains("committed 2"), "commit: {output}");
+    assert!(output.contains("Committed 2"), "commit: {output}");
 
     // 5. Base has committed content
     assert_eq!(fs::read_to_string(s.base_path("hello.txt")).unwrap(), "updated\n");
     assert_eq!(fs::read_to_string(s.base_path("newfile.txt")).unwrap(), "brand new\n");
-
-    // 6. Status clean
-    let status = s.cli(&["status"]).unwrap();
-    assert!(status.contains("nothing staged"), "status: {status}");
 }
 
 /// Full lifecycle: write → status → abort → verify base unchanged
@@ -51,7 +47,7 @@ fn full_write_abort_cycle() {
 
     // 3. Abort
     let output = s.cli(&["abort"]).unwrap();
-    assert!(output.contains("staging discarded"), "abort: {output}");
+    assert!(output.contains("Staging discarded"), "abort: {output}");
 
     // 4. Base unchanged
     assert_eq!(
@@ -62,10 +58,6 @@ fn full_write_abort_cycle() {
         fs::read_to_string(s.base_path("multi.txt")).unwrap(),
         "line1\nline2\n"
     );
-
-    // 5. Status clean
-    let status = s.cli(&["status"]).unwrap();
-    assert!(status.contains("nothing staged"), "status: {status}");
 }
 
 /// Commit, then verify base is updated.

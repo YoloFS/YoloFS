@@ -1,6 +1,6 @@
 // agfs CLI — main.rs
 
-use agfs::{abort, commit, diff, init, log, mount, rule, run, status, watch};
+use agfs::{abort, commit, config, diff, log, mount, run, status, watch};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
@@ -60,7 +60,7 @@ enum RuleAction {
     Add {
         /// Path (relative to session root or absolute)
         path: String,
-        /// Permission: allow, allow-rw, allow-ro, allow-rx, deny
+        /// Permission: allow, allow-rw, allow-ro, allow-rx, deny, ask
         perm: String,
     },
     /// Remove a permission rule
@@ -74,16 +74,22 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Init) => init::run(),
+        Some(Command::Init) => config::init(),
         Some(Command::Mount) => mount::run(),
-        Some(Command::Run { exec_args }) => run::exec(&exec_args),
+        Some(Command::Run { exec_args }) => {
+            let status = run::run(&exec_args)?;
+            std::process::exit(status.code().unwrap_or(1));
+        }
         Some(Command::Status) => status::run(),
-        Some(Command::Diff) => diff::run().map(|_| ()),
+        Some(Command::Diff) => {
+            diff::run()?;
+            Ok(())
+        }
         Some(Command::Commit) => commit::run(),
         Some(Command::Abort) => abort::run(),
         Some(Command::Rule { action }) => match action {
-            RuleAction::Add { path, perm } => rule::add(&path, &perm),
-            RuleAction::Remove { path } => rule::remove(&path),
+            RuleAction::Add { path, perm } => config::add_rule(&path, &perm),
+            RuleAction::Remove { path } => config::remove_rule(&path),
         },
         Some(Command::Log { follow, dump }) => log::run(follow, dump),
         Some(Command::Watch) => watch::run(),
@@ -96,14 +102,14 @@ fn interactive_workflow(exec_args: &[String]) -> anyhow::Result<()> {
     // 1. Mount
     mount::run()?;
 
-    // 2. Start background watch daemon (auto-allows ask requests)
-    let watch_stop = watch::run_background()?;
+    // 2. Start background watch daemon (prompts for ask requests)
+    let mut watch_handle = watch::run_background()?;
 
     // 3. Run (spawn + wait, not exec)
-    let exit_status = run::spawn_and_wait(exec_args)?;
+    let exit_status = run::run(exec_args)?;
 
-    // 4. Stop watch daemon
-    watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    // 4. Stop and join watch thread before any unmount
+    watch_handle.stop();
 
     if !exit_status.success() {
         eprintln!(

@@ -8,7 +8,7 @@ fn diff_empty() {
     let s = AgfsSession::new().expect("session setup");
 
     let output = s.cli(&["diff"]).expect("diff");
-    assert!(output.contains("nothing staged"), "output: {output}");
+    assert!(output.contains("No changes staged"), "output: {output}");
 }
 
 #[test]
@@ -19,8 +19,8 @@ fn diff_modified_file() {
     fs::write(s.mnt_path("hello.txt"), "new content\n").unwrap();
 
     let output = s.cli(&["diff"]).expect("diff");
-    assert!(output.contains("diff --agfs"), "output: {output}");
     assert!(output.contains("hello.txt"), "output: {output}");
+    assert!(output.contains("modified"), "output: {output}");
     assert!(output.contains("+new content"), "output: {output}");
 }
 

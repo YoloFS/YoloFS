@@ -1,7 +1,7 @@
 // agfs CLI — ctl.rs
 //
 // Binary protocol helpers for communicating with the kernel module
-// via .agfs/ctl (read/write/ioctl).
+// via ioctl on .agfs/mnt directory.
 
 use anyhow::{Context, Result};
 use std::fs::{File, OpenOptions};

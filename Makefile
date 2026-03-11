@@ -8,7 +8,7 @@ cli:
 	cargo build --release --manifest-path cli/Cargo.toml
 
 install: cli
-	sudo install -m 755 cli/target/release/agfs /usr/local/bin/agfs
+	sudo install -m 4755 -o root cli/target/release/agfs /usr/local/bin/agfs
 
 uninstall:
 	sudo rm -f /usr/local/bin/agfs

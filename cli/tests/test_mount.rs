@@ -22,8 +22,8 @@ fn mount_creates_layout() {
     skip_if_not_root!();
     let session = AgfsSession::new().expect("session setup");
 
-    assert!(session.agfs_dir.exists());
-    assert!(session.staging.exists());
+    assert!(session.root.join(".agfs").exists());
+    assert!(session.root.join(".agfs/staging").exists());
     assert!(session.mnt.exists());
 
     drop(session);

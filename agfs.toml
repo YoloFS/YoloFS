@@ -5,3 +5,6 @@ ask_timeout = 0
 [rules]
 "/etc" = "allow-ro"
 "/usr/bin" = "allow-rx"
+"/usr/lib" = "allow-rx"
+"/usr/bin/git" = "deny"
+"test.txt" = "ask"
