@@ -102,7 +102,7 @@ Target kernel: Linux 6.8. Reference: third_party/wrapfs_nfs (wrapfs skeleton).
 - `agfs_ask_userspace()` — allocate perm_request, enqueue on pending_reqs, wake request_waitq, wait_event_interruptible with timeout, return decision
 - `agfs_perm_request_alloc()` / `agfs_perm_request_free()`
 
-### 10. Control File (`ctl.c`)
+### 10. Control File (`ioctl.c`)
 - `agfs_ctl_open()` — no-op
 - `agfs_ctl_read()` — dequeue oldest pending request, `copy_to_user()` as `agfs_ctl_request`; block if empty (or EAGAIN for O_NONBLOCK)
 - `agfs_ctl_write()` — `copy_from_user()` as `agfs_ctl_response`, find request by id, set decision, `complete()`
@@ -115,7 +115,7 @@ Target kernel: Linux 6.8. Reference: third_party/wrapfs_nfs (wrapfs skeleton).
 - Ring buffer: `struct agfs_log_ring` with `agfs_log_entry` array, head/tail, spinlock
 - `agfs_log_init()` — allocate ring buffer (default 1024 entries)
 - `agfs_log_destroy()` — free ring buffer
-- `agfs_log_emit()` — add entry to ring buffer (called from perm.c, file.c, ctl.c)
+- `agfs_log_emit()` — add entry to ring buffer (called from perm.c, file.c, ioctl.c)
 - `agfs_log_read()` — dequeue entries, `copy_to_user()`; block if empty (EAGAIN for O_NONBLOCK)
 - `agfs_log_poll()` — POLLIN when entries available
 - `agfs_log_fops` struct

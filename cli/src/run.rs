@@ -30,8 +30,9 @@ unsafe fn chroot_pre_exec(mnt: &Path, cwd: &Path) -> Result<(), std::io::Error> 
 }
 
 /// Spawn a command in the sandbox and wait for it to exit.
-pub fn run(exec_args: &[String]) -> Result<process::ExitStatus> {
-    let agfs_dir = crate::ctl::agfs_dir()?;
+/// Returns the process exit code (0 = success).
+pub fn run(exec_args: &[String]) -> Result<u8> {
+    let agfs_dir = crate::session_dir()?;
     let mnt = agfs_dir.join("mnt");
     let cwd = env::current_dir().context("getting cwd")?;
 
@@ -57,5 +58,11 @@ pub fn run(exec_args: &[String]) -> Result<process::ExitStatus> {
             .status()
             .with_context(|| format!("spawning {cmd}"))?
     };
-    Ok(status)
+
+    let code = status.code().unwrap_or(1) as u8;
+    if code != 0 {
+        eprintln!("{} {}", "agfs: command exited with".red(), code);
+    }
+
+    Ok(code)
 }

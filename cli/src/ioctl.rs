@@ -1,4 +1,4 @@
-// agfs CLI — ctl.rs
+// agfs CLI — ioctl.rs
 //
 // Binary protocol helpers for communicating with the kernel module
 // via ioctl on .agfs/mnt directory.
@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::fs::{File, OpenOptions};
 
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub const AGFS_PATH_MAX: usize = 256;
 
@@ -178,7 +178,7 @@ pub fn perm_from_str(s: &str) -> Option<u8> {
 }
 
 /// Read one `AgfsCtlRequest` via ioctl on a directory fd.
-pub fn ctl_read_request(fd: &File) -> Result<AgfsCtlRequest> {
+pub fn read_request(fd: &File) -> Result<AgfsCtlRequest> {
     let mut req = AgfsCtlRequest {
         id: 0,
         op: 0,
@@ -192,7 +192,7 @@ pub fn ctl_read_request(fd: &File) -> Result<AgfsCtlRequest> {
 }
 
 /// Write one `AgfsCtlResponse` via ioctl on a directory fd.
-pub fn ctl_write_response(fd: &File, id: u64, decision: u8) -> Result<()> {
+pub fn write_response(fd: &File, id: u64, decision: u8) -> Result<()> {
     let resp = AgfsCtlResponse {
         id,
         decision,
@@ -203,23 +203,8 @@ pub fn ctl_write_response(fd: &File, id: u64, decision: u8) -> Result<()> {
     Ok(())
 }
 
-/// Locate the agfs session directory.
-/// Checks AGFS_SESSION env var first, then falls back to .agfs/.
-pub fn agfs_dir() -> Result<PathBuf> {
-    if let Ok(session) = std::env::var("AGFS_SESSION") {
-        return Ok(PathBuf::from(session));
-    }
-    let cwd = std::env::current_dir().context("getting cwd")?;
-    let dir = cwd.join(".agfs");
-    if dir.exists() {
-        Ok(dir)
-    } else {
-        anyhow::bail!("no agfs session found (no .agfs/ directory)")
-    }
-}
-
-/// Open the mount point directory for ioctl (ctl + rules).
-pub fn open_ctl(agfs_dir: &Path) -> Result<File> {
+/// Open the mount point directory for ioctl.
+pub fn open(agfs_dir: &Path) -> Result<File> {
     let mnt = agfs_dir.join("mnt");
     OpenOptions::new()
         .read(true)
@@ -228,24 +213,24 @@ pub fn open_ctl(agfs_dir: &Path) -> Result<File> {
 }
 
 /// Send AGFS_IOC_RULE_ADD ioctl.
-pub fn ioctl_add_rule(ctl: &File, path: &str, perm: u8) -> Result<()> {
+pub fn add_rule(fd: &File, path: &str, perm: u8) -> Result<()> {
     let rule = AgfsIocRule::new(path, perm);
-    unsafe { ioctl_rule_add(ctl.as_raw_fd(), &rule) }
-        .context("ioctl RULE_ADD")?;
+    unsafe { ioctl_rule_add(fd.as_raw_fd(), &rule) }
+        .with_context(|| format!("ioctl RULE_ADD for {path}"))?;
     Ok(())
 }
 
 /// Send AGFS_IOC_RULE_REMOVE ioctl.
-pub fn ioctl_remove_rule(ctl: &File, path: &str) -> Result<()> {
+pub fn remove_rule(fd: &File, path: &str) -> Result<()> {
     let rule = AgfsIocRule::new(path, AGFS_PERM_NONE);
-    unsafe { ioctl_rule_remove(ctl.as_raw_fd(), &rule) }
-        .context("ioctl RULE_REMOVE")?;
+    unsafe { ioctl_rule_remove(fd.as_raw_fd(), &rule) }
+        .with_context(|| format!("ioctl RULE_REMOVE for {path}"))?;
     Ok(())
 }
 
 /// Send AGFS_IOC_CACHE_INVAL ioctl.
-pub fn ioctl_invalidate_cache(ctl: &File) -> Result<()> {
-    unsafe { ioctl_cache_inval(ctl.as_raw_fd()) }
+pub fn invalidate_cache(fd: &File) -> Result<()> {
+    unsafe { ioctl_cache_inval(fd.as_raw_fd()) }
         .context("ioctl CACHE_INVAL")?;
     Ok(())
 }

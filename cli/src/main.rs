@@ -1,9 +1,10 @@
 // agfs CLI — main.rs
 
-use agfs::{abort, commit, config, diff, log, mount, run, status, watch};
+use agfs::{abort, commit, config, diff, log, mount, run, status, unmount, watch};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
+use std::process::ExitCode;
 
 #[derive(Parser)]
 #[command(name = "agfs", about = "Agentic filesystem — staging-commit + permission gating")]
@@ -70,65 +71,62 @@ enum RuleAction {
     },
 }
 
-fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-
-    match cli.command {
-        Some(Command::Init) => config::init(),
-        Some(Command::Mount) => mount::run(),
-        Some(Command::Run { exec_args }) => {
-            let status = run::run(&exec_args)?;
-            std::process::exit(status.code().unwrap_or(1));
+fn main() -> ExitCode {
+    match run_cli() {
+        Ok(code) => ExitCode::from(code),
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            ExitCode::from(1)
         }
-        Some(Command::Status) => status::run(),
-        Some(Command::Diff) => {
-            diff::run()?;
-            Ok(())
-        }
-        Some(Command::Commit) => commit::run(),
-        Some(Command::Abort) => abort::run(),
-        Some(Command::Rule { action }) => match action {
-            RuleAction::Add { path, perm } => config::add_rule(&path, &perm),
-            RuleAction::Remove { path } => config::remove_rule(&path),
-        },
-        Some(Command::Log { follow, dump }) => log::run(follow, dump),
-        Some(Command::Watch) => watch::run(),
-        None => interactive_workflow(&cli.exec_args),
     }
 }
 
+fn run_cli() -> anyhow::Result<u8> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Some(Command::Run { exec_args }) => return run::run(&exec_args),
+        Some(Command::Init) => config::init()?,
+        Some(Command::Mount) => mount::run()?,
+        Some(Command::Status) => status::run()?,
+        Some(Command::Diff) => { diff::run()?; }
+        Some(Command::Commit) => commit::run()?,
+        Some(Command::Abort) => abort::run()?,
+        Some(Command::Rule { action }) => match action {
+            RuleAction::Add { path, perm } => config::add_rule(&path, &perm)?,
+            RuleAction::Remove { path } => config::remove_rule(&path)?,
+        },
+        Some(Command::Log { follow, dump }) => log::run(follow, dump)?,
+        Some(Command::Watch) => watch::run()?,
+        None => return interactive_workflow(&cli.exec_args),
+    }
+
+    Ok(0)
+}
+
 /// Full workflow: mount → background watch → run → diff → commit/abort/stage.
-fn interactive_workflow(exec_args: &[String]) -> anyhow::Result<()> {
+fn interactive_workflow(exec_args: &[String]) -> anyhow::Result<u8> {
     // 1. Mount
     mount::run()?;
 
     // 2. Start background watch daemon (prompts for ask requests)
     let mut watch_handle = watch::run_background()?;
 
-    // 3. Run (spawn + wait, not exec)
-    let exit_status = run::run(exec_args)?;
+    // 3. Run (spawn + wait) — continue to diff even if command fails
+    let cmd_exit_code = run::run(exec_args).unwrap_or(1);
 
     // 4. Stop and join watch thread before any unmount
     watch_handle.stop();
 
-    if !exit_status.success() {
-        eprintln!(
-            "{} {}",
-            "agfs: command exited with".red(),
-            exit_status.code().unwrap_or(-1)
-        );
-    }
-
-    // 3. Show diff
-    eprintln!();
+    // 5. Show diff
     let has_changes = diff::run()?;
 
     if !has_changes {
-        abort::run()?;
-        return Ok(());
+        unmount::run()?;
+        return Ok(cmd_exit_code);
     }
 
-    // 4. Ask commit, abort, or stage
+    // 6. Ask commit, abort, or stage
     eprint!(
         "\n{} ",
         "Choose [c]ommit, [a]bort, or [s]tage [default: stage]:".bold()
@@ -149,5 +147,5 @@ fn interactive_workflow(exec_args: &[String]) -> anyhow::Result<()> {
         }
     }
 
-    Ok(())
+    Ok(cmd_exit_code)
 }

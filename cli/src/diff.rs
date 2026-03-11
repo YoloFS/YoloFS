@@ -2,7 +2,6 @@
 //
 // `agfs diff` — git-style unified diff of staged vs base (§3.6).
 
-use crate::ctl;
 use crate::status;
 use anyhow::Result;
 use colored::Colorize;
@@ -40,7 +39,7 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
 
 /// Returns true if there were staged changes.
 pub fn run() -> Result<bool> {
-    let agfs = ctl::agfs_dir()?;
+    let agfs = crate::session_dir()?;
     if !agfs.exists() {
         anyhow::bail!("no agfs session found (no .agfs/ directory)");
     }

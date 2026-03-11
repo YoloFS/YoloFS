@@ -345,7 +345,7 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 		       const char *relpath, int f_flags,
 		       enum agfs_perm *result);
 
-/* ctl.c */
+/* ioctl.c */
 long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 __poll_t agfs_ctl_poll(struct file *file, struct poll_table_struct *wait);
 void agfs_ctl_cleanup(struct agfs_sb_info *sbi, struct agfs_ctl_private *priv);

@@ -2,13 +2,13 @@
 //
 // `agfs abort` — discard staged changes (§3.6).
 
-use crate::{ctl, unmount};
+use crate::{ioctl, unmount};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
 
 pub fn run() -> Result<()> {
-    let agfs = ctl::agfs_dir()?;
+    let agfs = crate::session_dir()?;
     if !agfs.exists() {
         anyhow::bail!("no agfs session found (no .agfs/ directory)");
     }
@@ -31,8 +31,8 @@ pub fn run() -> Result<()> {
     }
 
     // Signal kernel to invalidate caches
-    if let Ok(ctl_file) = ctl::open_ctl(&agfs) {
-        let _ = ctl::ioctl_invalidate_cache(&ctl_file);
+    if let Ok(ctl_file) = ioctl::open(&agfs) {
+        let _ = ioctl::invalidate_cache(&ctl_file);
     }
 
     println!("{}", "Staging discarded.".yellow().bold());

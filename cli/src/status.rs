@@ -158,7 +158,7 @@ pub fn staging_walk(agfs_dir: &Path) -> Result<Vec<Change>> {
 use colored::Colorize;
 
 pub fn run() -> Result<()> {
-    let agfs = crate::ctl::agfs_dir()?;
+    let agfs = crate::session_dir()?;
     if !agfs.exists() {
         anyhow::bail!("no agfs session found (no .agfs/ directory)");
     }

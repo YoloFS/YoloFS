@@ -3,7 +3,7 @@
 // `agfs watch` — daemon mode: poll .agfs/mnt for ask requests,
 // prompt the user (or apply policy), and write decisions back via ioctl.
 
-use crate::ctl::{self, perm_from_str, perm_to_str, AgfsCtlRequest};
+use crate::ioctl::{self, perm_from_str, perm_to_str, AgfsCtlRequest};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
@@ -28,22 +28,22 @@ fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
     if io::stdin().lock().read_line(&mut line).is_ok() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            return ctl::AGFS_PERM_DENY;
+            return ioctl::AGFS_PERM_DENY;
         }
-        perm_from_str(trimmed).unwrap_or(ctl::AGFS_PERM_DENY)
+        perm_from_str(trimmed).unwrap_or(ioctl::AGFS_PERM_DENY)
     } else {
-        ctl::AGFS_PERM_DENY
+        ioctl::AGFS_PERM_DENY
     }
 }
 
 /// Interactive watch — prompts user for each request.
 pub fn run() -> Result<()> {
-    let agfs = ctl::agfs_dir()?;
+    let agfs = crate::session_dir()?;
     if !agfs.exists() {
         anyhow::bail!("no agfs session found (no .agfs/ directory)");
     }
 
-    let ctl_file = ctl::open_ctl(&agfs)?;
+    let ctl_file = ioctl::open(&agfs)?;
     eprintln!(
         "{}",
         "agfs: watching for permission requests (Ctrl-C to stop)".cyan()
@@ -63,7 +63,7 @@ pub fn run() -> Result<()> {
             Err(e) => return Err(e.into()),
         }
 
-        let req = match ctl::ctl_read_request(&ctl_file) {
+        let req = match ioctl::read_request(&ctl_file) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("agfs watch: read error: {e}");
@@ -73,7 +73,7 @@ pub fn run() -> Result<()> {
 
         let decision = prompt_decision(&req);
 
-        if let Err(e) = ctl::ctl_write_response(&ctl_file, req.id, decision) {
+        if let Err(e) = ioctl::write_response(&ctl_file, req.id, decision) {
             eprintln!("agfs watch: write error: {e}");
         } else {
             eprintln!(
@@ -103,7 +103,7 @@ impl WatchHandle {
 /// Background watch — prompts for all ask requests.
 /// Returns a handle to stop and join the thread.
 pub fn run_background() -> Result<WatchHandle> {
-    let agfs = ctl::agfs_dir()?;
+    let agfs = crate::session_dir()?;
     let ctl_file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK | libc::O_DIRECTORY)
@@ -130,13 +130,13 @@ pub fn run_background() -> Result<WatchHandle> {
                 Err(_) => continue,
             }
 
-            let req = match ctl::ctl_read_request(&ctl_file) {
+            let req = match ioctl::read_request(&ctl_file) {
                 Ok(r) => r,
                 Err(_) => continue,
             };
 
             let decision = prompt_decision(&req);
-            let _ = ctl::ctl_write_response(&ctl_file, req.id, decision);
+            let _ = ioctl::write_response(&ctl_file, req.id, decision);
         }
     });
 

@@ -48,10 +48,11 @@ either can be disabled at mount time.
  └──────────────────────────────────────────────────┘
 
  ┌──────────────────────────────────────────────────┐
- │  .agfs/ctl  (virtual control file)     │
- │    ← read():  dequeue pending perm request       │
- │    → write(): post decision for a request id     │
- │    ← ioctl(): rules / cache invalidation         │
+ │  ioctl on any agfs directory fd (.agfs/mnt)      │
+ │    ← AGFS_IOC_CTL_READ:  dequeue perm request   │
+ │    → AGFS_IOC_CTL_WRITE: post decision           │
+ │    → AGFS_IOC_RULE_ADD/REMOVE: manage rules      │
+ │    → AGFS_IOC_CACHE_INVAL: invalidate caches     │
  │    ← poll():  POLLIN when requests are pending   │
  └──────────────────────────────────────────────────┘
 ```
@@ -92,11 +93,10 @@ wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
 ```
 agfs.toml                       # config file in CWD (mount options + rules)
 .agfs/                          # created by `agfs` in CWD
-├── ctl                          # virtual control file (read/write/poll/ioctl)
-├── log                          # virtual log file (read/poll) for debugging
 ├── renames                      # persisted rename log: src\0dst\0 pairs
 ├── staging/                     # staged files + whiteouts (mirrors / tree)
 └── mnt/                         # mount point — agent works here
+                                 #   ioctl on this directory fd for control
     ├── dev/                     # fresh devtmpfs mount
     ├── proc/                    # fresh proc mount
     └── sys/                     # fresh sysfs mount
@@ -306,7 +306,7 @@ agfs_rename(old_dir, old_dentry, new_dir, new_dentry):
 redirected `lower_path`. The rename record stays on disk so commit knows to delete the
 original path after installing the new file.
 
-Commit and abort handling for renames is covered in §3.6.
+Commit and abort handling for renames is covered in §3.7.
 
 ### 3.7 Staging Operations (Userspace)
 
@@ -558,18 +558,18 @@ When a thread accesses a file whose effective permission is `ask`:
      }
   3. Enqueue request on sb->pending_list
   4. wake_up(&sb->request_waitq)
-  5. wait_event_interruptible(              poll() on .agfs/ctl
+  5. wait_event_interruptible(              poll() on dir fd
        req->done,                            returns POLLIN
        req->decision != UNDECIDED            ↓
-     )                                      read() → dequeue request
+     )                                      ioctl(CTL_READ) → dequeue request
      …thread sleeps…                         → struct agfs_ctl_request { id, path, op, ... }
                                              ↓
                                             Daemon shows prompt / applies policy
                                              ↓
-                                             write() → struct agfs_ctl_response {
+                                             ioctl(CTL_WRITE) → struct agfs_ctl_response {
                                                          id: 42, decision: ALLOW_RW }
                                               ↓
-   6. req->decision = ALLOW_RW               ioctl / write handler:
+   6. req->decision = ALLOW_RW               ioctl handler:
    7. complete(&req->done)                     find request by id
      …thread wakes…                           set decision
   8. Proceed with operation                  complete(&req->done)
@@ -605,8 +605,9 @@ struct agfs_sb_info {
 
     // Staging
     struct path             staging_dir;       // .agfs/staging/
-    struct path             renames_file;      // .agfs/renames
+    struct path             renames_path;      // .agfs/renames
     struct rw_semaphore     staging_sem;       // protects staging dir + rename log updates/replay
+    struct list_head        pinned_dentries;   // rename-pinned dentries (agfs_pinned_dentry list)
 
     // Permission gating
     atomic64_t              perm_gen;        // bumped on rule change; invalidates inode caches
@@ -616,9 +617,12 @@ struct agfs_sb_info {
     atomic64_t              next_req_id;
     unsigned int            ask_timeout_s;   // seconds, 0 = infinite
     enum agfs_perm          ask_default;     // fallback on timeout
+    bool                    noperm;          // disable permission gating entirely
+    bool                    nostaging;       // disable staging (passthrough + gating only)
 
-    // Control file
-    struct file_operations  ctl_fops;        // .agfs/ctl file ops
+    // Log
+    struct agfs_log_ring   *log;             // ring buffer for debug log entries
+    unsigned int            log_size;        // configured ring buffer size
 };
 ```
 
@@ -636,15 +640,16 @@ struct agfs_inode_info {
 };
 ```
 
-### 5.3 Control File Protocol (binary)
+### 5.3 Control Protocol (binary, ioctl-based)
 
-Fixed-size structs for the `.agfs/ctl` read/write interface. No parsing —
-just `copy_to_user()` / `copy_from_user()`.
+Fixed-size structs for the ioctl-based control interface on any agfs directory
+fd (typically `.agfs/mnt`). No parsing — just `copy_to_user()` /
+`copy_from_user()`.
 
 ```c
 #define AGFS_PATH_MAX 256
 
-// kernel → userspace: read() returns one of these
+// kernel → userspace: AGFS_IOC_CTL_READ returns one of these
 struct agfs_ctl_request {
     __u64   id;
     __u32   op;                  // AGFS_OP_READ / WRITE / EXEC
@@ -653,7 +658,7 @@ struct agfs_ctl_request {
     char    path[AGFS_PATH_MAX];
 };
 
-// userspace → kernel: write() accepts one of these
+// userspace → kernel: AGFS_IOC_CTL_WRITE accepts one of these
 struct agfs_ctl_response {
     __u64   id;
     __u8    decision;            // enum agfs_perm value
@@ -703,10 +708,48 @@ struct agfs_file_info {
     bool                    needs_cow;      // true until first write copies base→staging
     bool                    is_staging;     // true when lower_file points at a staging file
     const struct vm_operations_struct *lower_vm_ops;
+    struct agfs_ctl_private *ctl;           // non-NULL if this fd is a ctl daemon
 };
 ```
 
-### 5.7 Concurrency
+### 5.7 Ctl Private (per-fd daemon state)
+
+```c
+struct agfs_ctl_private {
+    struct list_head        dispatched;     // requests sent to this fd
+    spinlock_t              lock;
+};
+```
+
+Allocated lazily on first `AGFS_IOC_CTL_READ`. On fd close, any
+dispatched-but-unanswered requests receive the default decision.
+
+### 5.8 Pinned Dentry (for rename tracking)
+
+```c
+struct agfs_pinned_dentry {
+    struct dentry          *dentry;
+    struct list_head        list;
+};
+```
+
+Tracks rename-destination dentries that must remain pinned until
+commit/abort/unmount so the redirected `lower_path` stays valid.
+
+### 5.9 Log Ring Buffer
+
+```c
+struct agfs_log_ring {
+    struct agfs_log_entry  *entries;
+    unsigned int            size;           // number of slots
+    unsigned int            head;           // next write position
+    unsigned int            count;          // entries available to read
+    spinlock_t              lock;
+    wait_queue_head_t       waitq;
+};
+```
+
+### 5.10 Concurrency
 
 | Lock | Protects | Type |
 |---|---|---|
@@ -725,7 +768,7 @@ struct agfs_file_info {
 | Operation       | Behavior                                                        |
 | --------------- | --------------------------------------------------------------- |
 | `alloc_inode`   | Allocate `agfs_inode_info` from slab cache.                     |
-| `destroy_inode` | Free inode info, drop lower inode ref.                          |
+| `free_inode`    | Free inode info via slab cache.                                 |
 | `evict_inode`   | Clear inode, drop lower inode ref.                              |
 | `statfs`        | Delegate to lower FS. Replace `f_type` with `AGFS_SUPER_MAGIC`. |
 | `put_super`     | Free `agfs_sb_info`, deactivate lower super.                    |
@@ -742,7 +785,7 @@ struct agfs_file_info {
 | `mkdir`      | — (dir perm via lower FS)                                    | Create dir in staging.                                                            | `vfs_mkdir()` on staging dir.             |
 | `unlink`     | — (dir perm via lower FS)                                    | Create whiteout (char dev 0/0) in staging. Remove regular staging file if exists. | —                                         |
 | `rmdir`      | — (dir perm via lower FS)                                    | Create whiteout in staging. Remove staging dir if exists.                         | —                                         |
-| `rename` | — (dir perm via lower FS) | See §3.5 Rename Handling. | — |
+| `rename` | — (dir perm via lower FS) | See §3.6 Rename Handling. | — |
 | `symlink`    | — (dir perm via lower FS)                                    | Create symlink in staging.                                                        | `vfs_symlink()`.                          |
 | `permission` | **Gating for regular files (O(1) cached); delegate to lower FS for dirs.** | —                                                                                 | `inode_permission()` on lower inode.      |
 | `setattr`    | Gated (regular files only).                                  | Copy base→staging first, then setattr on staging.                                 | `notify_change()` on lower.               |
@@ -774,42 +817,59 @@ struct agfs_file_info {
 
 ---
 
-## 7. Control File (`.agfs/ctl`)
+## 7. Control Interface (ioctl on directory fd)
 
-A virtual file created by the kernel module at mount time. The daemon and
-CLI tools interact with it via standard file operations.
+The control interface is exposed via ioctl on any agfs directory file
+descriptor (typically `.agfs/mnt`). Directory fds on the agfs mount carry
+both the standard directory operations (`iterate_shared`, `llseek`) and
+the control/rule/ctl ioctl handler.
 
-### 7.1 File Operations
-
-
-| Syscall   | Behavior                                                                                                                                                                    |
-| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `read()`  | Dequeue the oldest pending permission request. Returns one `struct agfs_ctl_request` (fixed-size binary). Blocks if queue is empty (or returns `-EAGAIN` for `O_NONBLOCK`). |
-| `write()` | Submit a decision: one `struct agfs_ctl_response` (fixed-size binary). Wakes the sleeping thread.                                                                           |
-| `poll()`  | Returns `POLLIN` when there are pending requests.                                                                                                                           |
-| `ioctl()` | Rule management and cache invalidation (see below).                                                                                                                         |
-
-
-### 7.2 Ioctl Commands
+### 7.1 Ioctl Commands
 
 ```c
-// Permission management
+// Permission rule management
 #define AGFS_IOC_RULE_ADD        _IOW('A', 10, struct agfs_ioc_rule)
 #define AGFS_IOC_RULE_REMOVE     _IOW('A', 11, struct agfs_ioc_rule)
 #define AGFS_IOC_CACHE_INVAL     _IO('A', 20)
+
+// Control protocol (ask request / response)
+#define AGFS_IOC_CTL_READ        _IOR('A', 30, struct agfs_ctl_request)
+#define AGFS_IOC_CTL_WRITE       _IOW('A', 31, struct agfs_ctl_response)
 ```
+
+### 7.2 Operations
+
+| Ioctl                    | Behavior                                                                                                                                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `AGFS_IOC_CTL_READ`     | Dequeue the oldest pending permission request. Returns one `struct agfs_ctl_request` (fixed-size binary). Blocks if queue is empty (or returns `-EAGAIN` for `O_NONBLOCK`).     |
+| `AGFS_IOC_CTL_WRITE`    | Submit a decision: one `struct agfs_ctl_response` (fixed-size binary). Wakes the sleeping thread.                                                                               |
+| `AGFS_IOC_RULE_ADD`     | Add a permission rule to a dentry. Kernel resolves the path, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps `perm_gen`.                                                |
+| `AGFS_IOC_RULE_REMOVE`  | Remove a rule from a dentry. Kernel sets `perm = NONE`, unpins the dentry, and bumps `perm_gen`.                                                                                |
+| `AGFS_IOC_CACHE_INVAL`  | Bump `perm_gen` to invalidate all cached inode perms. Called by userspace after commit/abort.                                                                                    |
+| `poll()`                 | Returns `POLLIN` when there are pending ask requests.                                                                                                                           |
 
 `AGFS_IOC_CACHE_INVAL` is called by userspace after commit/abort to invalidate
 the kernel's dentry and inode caches so stale redirected rename dentries are
 dropped and the mount reflects the new base state.
 
+On the first `AGFS_IOC_CTL_READ`, a per-fd `agfs_ctl_private` is lazily
+allocated to track dispatched requests. On fd close, any
+dispatched-but-unanswered requests receive the default decision (from
+`ask_default` mount option).
+
 ---
 
-## 8. Log File (`.agfs/log`)
+## 8. Log Ring Buffer
 
-A virtual read-only file for debugging and testing. The kernel writes
-structured binary log entries to a ring buffer; userspace reads them from
-`.agfs/log`.
+The kernel maintains a ring buffer of structured binary log entries for
+debugging and testing. Entries are written by the kernel on permission
+checks, COW, commits, etc.
+
+The log has file operations (`agfs_log_fops`) with `read()` and `poll()`
+that follow the same pattern as other kernel log interfaces, but these are
+**not yet exposed to userspace** as a virtual file. The CLI `agfs log`
+command is also not yet implemented. Future work will wire the log fops
+to a readable interface.
 
 ### 8.1 Log Entry
 
@@ -838,7 +898,7 @@ struct agfs_log_entry {
 #define AGFS_LOG_ABORT       8   // staging aborted
 ```
 
-### 8.2 File Operations
+### 8.2 Ring Buffer Operations
 
 
 | Syscall  | Behavior                                                                                                           |
@@ -850,7 +910,7 @@ struct agfs_log_entry {
 The ring buffer has a fixed size (configurable via mount option
 `log_size=<n>`, default 1024 entries). Old entries are overwritten when full.
 
-### 8.3 Usage
+### 8.3 Usage (planned)
 
 ```bash
 # Tail the log in real-time (userspace tool decodes binary entries)
@@ -860,11 +920,17 @@ agfs log --follow
 agfs log --dump
 ```
 
+> **Note**: `agfs log` is not yet implemented in the CLI. The kernel ring
+> buffer collects entries but no userspace interface is wired up yet.
+
 ---
 
 ## 9. CLI Interface
 
 ```bash
+# Create a default agfs.toml in the current directory:
+$ agfs init
+
 # Full interactive workflow (no subcommand):
 #   mount → start watch daemon → run $SHELL → show diff → commit/abort/stage
 # The watch daemon runs in the background to handle permission ask requests
@@ -898,7 +964,7 @@ Configured via `agfs.toml` or CLI flags:
 | `ask_default` | `deny` | Fallback permission on timeout |
 | `noperm` | false | Disable permission gating entirely |
 | `nostaging` | false | Disable staging (passthrough + gating only) |
-| `log_size` | 1024 | Ring buffer entries for `.agfs/log` |
+| `log_size` | 1024 | Ring buffer entries for the kernel debug log |
 
 Inside the launched shell or command, agfs `chroot`s into `.agfs/mnt` so
 that the mounted view becomes `/`. The working directory remains the
@@ -918,7 +984,6 @@ everything else defaults to `ask`.
 agfs/
 ├── DESIGN.md                  # This file
 ├── kmod/                      # Kernel module
-│   ├── Kbuild
 │   ├── Makefile
 │   ├── agfs.h
 │   ├── super.c
@@ -928,22 +993,24 @@ agfs/
 │   ├── lookup.c
 │   ├── staging.c
 │   ├── perm.c
-│   ├── ctl.c
+│   ├── ioctl.c
 │   └── log.c
 └── cli/                       # Userspace CLI tool (Rust)
-    ├── Cargo.toml             # path = "main.rs"
-    ├── main.rs
-    ├── mount.rs
-    ├── run.rs
-    ├── unmount.rs           # internal helper (called by commit/abort)
-    ├── rule.rs
-    ├── commit.rs
-    ├── abort.rs
-    ├── status.rs
-    ├── diff.rs
-    ├── log.rs
-    ├── watch.rs
-    └── ctl.rs
+    ├── Cargo.toml
+    └── src/
+        ├── main.rs
+        ├── lib.rs
+        ├── config.rs          # agfs.toml management (init, rules, mount options)
+        ├── mount.rs
+        ├── run.rs
+        ├── unmount.rs         # internal helper (called by commit/abort)
+        ├── commit.rs
+        ├── abort.rs
+        ├── status.rs
+        ├── diff.rs
+        ├── log.rs
+        ├── watch.rs
+        └── ioctl.rs             # binary protocol structs + ioctl helpers
 ```
 
 ---
@@ -998,9 +1065,9 @@ $ cat /tmp/secrets
    → kernel: agfs_lookup("secrets") → no rule (NONE)
    → kernel: agfs_open() → walk up: secrets(NONE) → tmp(NONE) → root(ASK)
    → kernel: enqueue request, thread sleeps
-   → daemon: read(.agfs/ctl) → agfs_ctl_request { id:1, path:"/tmp/secrets", ... }
+   → daemon: ioctl(CTL_READ) → agfs_ctl_request { id:1, path:"/tmp/secrets", ... }
    → daemon: decision: allow-ro
-   → daemon: write(.agfs/ctl, agfs_ctl_response { id:1, decision:ALLOW_RO })
+   → daemon: ioctl(CTL_WRITE, agfs_ctl_response { id:1, decision:ALLOW_RO })
    → kernel: wake thread, apply one-shot ALLOW_RO to this open
    → kernel: open base/tmp/secrets read-only, proceed
 
@@ -1011,7 +1078,7 @@ $ echo x >> /etc/hosts
 # 7. Commit all staged changes to the real filesystem (userspace)
 $ agfs commit
    → userspace: walk staging/, rename files to base, unlink whiteouts
-   → userspace: ioctl(AGFS_IOC_CACHE_INVAL) on .agfs/ctl
+   → userspace: ioctl(AGFS_IOC_CACHE_INVAL) on .agfs/mnt
    → kernel: invalidate dentry + inode caches
    → umount .agfs/mnt
 ```

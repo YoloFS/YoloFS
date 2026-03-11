@@ -2,7 +2,7 @@
 //
 // `agfs commit` — apply staged changes to base (§3.6).
 
-use crate::{ctl, status, unmount};
+use crate::{ioctl, status, unmount};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
@@ -18,7 +18,7 @@ fn ensure_parent(path: &Path) -> Result<()> {
 }
 
 pub fn run() -> Result<()> {
-    let agfs = ctl::agfs_dir()?;
+    let agfs = crate::session_dir()?;
     if !agfs.exists() {
         anyhow::bail!("no agfs session found (no .agfs/ directory)");
     }
@@ -98,8 +98,8 @@ pub fn run() -> Result<()> {
     }
 
     // Signal kernel to invalidate caches
-    if let Ok(ctl_file) = ctl::open_ctl(&agfs) {
-        let _ = ctl::ioctl_invalidate_cache(&ctl_file);
+    if let Ok(ctl_file) = ioctl::open(&agfs) {
+        let _ = ioctl::invalidate_cache(&ctl_file);
     }
 
     println!(

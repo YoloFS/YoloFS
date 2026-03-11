@@ -6,13 +6,16 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use std::env;
 use std::fs;
+use std::os::unix;
 use std::path::{Path, PathBuf};
 
 /// Create .agfs/ layout, mount, and apply rules.
 pub fn run() -> Result<()> {
+    let cwd = env::current_dir().context("getting cwd")?;
     let agfs_dir = agfs_dir_path()?;
     setup_agfs_dir(&agfs_dir)?;
     do_mount(&agfs_dir)?;
+    create_cwd_symlink(&agfs_dir, &cwd)?;
     crate::config::apply_rules(&agfs_dir)?;
     Ok(())
 }
@@ -60,5 +63,16 @@ pub fn do_mount(agfs_dir: &Path) -> Result<()> {
     }
 
     eprintln!("{} {}", "agfs: mounted at".green(), mnt.display());
+    Ok(())
+}
+
+/// Create .agfs/cwd symlink pointing to the cwd inside the mount.
+fn create_cwd_symlink(agfs_dir: &Path, cwd: &Path) -> Result<()> {
+    let link = agfs_dir.join("cwd");
+    let target = agfs_dir.join("mnt").join(cwd.strip_prefix("/").unwrap_or(cwd));
+    if link.exists() || link.symlink_metadata().is_ok() {
+        fs::remove_file(&link).context("removing old .agfs/cwd symlink")?;
+    }
+    unix::fs::symlink(&target, &link).context("creating .agfs/cwd symlink")?;
     Ok(())
 }

@@ -2,7 +2,7 @@
 //
 // Manages agfs.toml: init, read, rule add/remove, apply rules on mount.
 
-use crate::ctl::{self, perm_from_str};
+use crate::ioctl::{self, perm_from_str};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::env;
@@ -40,17 +40,21 @@ fn write_config(path: &Path, doc: &toml::Table) -> Result<()> {
 }
 
 fn is_mounted() -> bool {
-    ctl::agfs_dir().is_ok_and(|d| d.join("mnt").exists())
+    crate::session_dir().is_ok_and(|d| d.join("mnt").exists())
 }
 
 /// Resolve a path through the agfs mount for ioctl.
-fn resolve_through_mount(path: &str, mnt: &Path) -> Result<String> {
-    let abs = if path.starts_with('/') {
-        path.to_string()
+fn resolve_to_abs(path: &str) -> Result<String> {
+    if path.starts_with('/') {
+        Ok(path.to_string())
     } else {
         let cwd = env::current_dir().context("getting cwd")?;
-        cwd.join(path).to_string_lossy().to_string()
-    };
+        Ok(cwd.join(path).to_string_lossy().to_string())
+    }
+}
+
+fn resolve_through_mount(path: &str, mnt: &Path) -> Result<String> {
+    let abs = resolve_to_abs(path)?;
     Ok(mnt.join(abs.trim_start_matches('/')).to_string_lossy().to_string())
 }
 
@@ -112,33 +116,32 @@ pub fn apply_rules(agfs_dir: &Path) -> Result<()> {
         _ => return Ok(()),
     };
 
-    let ctl_file = ctl::open_ctl(agfs_dir)?;
+    let ctl_file = ioctl::open(agfs_dir)?;
     let mnt = agfs_dir.join("mnt");
-    let mut count = 0;
+
+    eprintln!("{}", format!("agfs: applying {} rule(s) from agfs.toml", rules.len()).cyan());
 
     for (path, value) in rules {
         let perm_str = match value.as_str() {
             Some(s) => s,
             None => continue,
         };
+        let abs_path = resolve_to_abs(path)?;
         let perm = match perm_from_str(perm_str) {
             Some(p) => p,
             None => {
-                eprintln!("agfs: skipping invalid rule: {} = {}", path, perm_str);
+                eprintln!("  {} {} = {}: invalid permission", "✗".red(), abs_path, perm_str);
                 continue;
             }
         };
         let resolved = resolve_through_mount(path, &mnt)?;
-        if let Err(e) = ctl::ioctl_add_rule(&ctl_file, &resolved, perm) {
-            eprintln!("agfs: rule {} = {}: {}", path, perm_str, e);
+        if let Err(e) = ioctl::add_rule(&ctl_file, &resolved, perm) {
+            eprintln!("  {} {} = {}: {:#}", "✗".red(), abs_path, perm_str, e);
         } else {
-            count += 1;
+            eprintln!("  {} {} = {}", "✓".green(), abs_path, perm_str);
         }
     }
 
-    if count > 0 {
-        eprintln!("{}", format!("agfs: applied {count} rule(s) from agfs.toml").cyan());
-    }
     Ok(())
 }
 
@@ -165,11 +168,11 @@ pub fn add_rule(path: &str, perm_str: &str) -> Result<()> {
 
     // Apply live if mounted
     if is_mounted() {
-        let agfs = ctl::agfs_dir()?;
+        let agfs = crate::session_dir()?;
         let mnt = agfs.join("mnt");
         let resolved = resolve_through_mount(path, &mnt)?;
-        let ctl_file = ctl::open_ctl(&agfs)?;
-        ctl::ioctl_add_rule(&ctl_file, &resolved, perm)?;
+        let ctl_file = ioctl::open(&agfs)?;
+        ioctl::add_rule(&ctl_file, &resolved, perm)?;
         eprintln!("{} {} = {} {}", "rule added:".green().bold(), path, perm_str, "(live)".green());
     } else {
         eprintln!("{} {} = {}", "rule added:".green().bold(), path, perm_str);
@@ -191,11 +194,11 @@ pub fn remove_rule(path: &str) -> Result<()> {
 
     // Apply live if mounted
     if is_mounted() {
-        let agfs = ctl::agfs_dir()?;
+        let agfs = crate::session_dir()?;
         let mnt = agfs.join("mnt");
         let resolved = resolve_through_mount(path, &mnt)?;
-        let ctl_file = ctl::open_ctl(&agfs)?;
-        ctl::ioctl_remove_rule(&ctl_file, &resolved)?;
+        let ctl_file = ioctl::open(&agfs)?;
+        ioctl::remove_rule(&ctl_file, &resolved)?;
         eprintln!("{} {} {}", "rule removed:".yellow().bold(), path, "(live)".yellow());
     } else {
         eprintln!("{} {}", "rule removed:".yellow().bold(), path);
