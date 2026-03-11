@@ -4,6 +4,7 @@
 
 use crate::{ctl, unmount};
 use anyhow::{Context, Result};
+use colored::Colorize;
 use std::fs;
 
 pub fn run() -> Result<()> {
@@ -34,7 +35,7 @@ pub fn run() -> Result<()> {
         let _ = ctl::ioctl_invalidate_cache(&ctl_file);
     }
 
-    println!("staging discarded");
+    println!("{}", "Staging discarded.".yellow().bold());
 
     // Unmount after abort
     unmount::run()?;

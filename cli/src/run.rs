@@ -4,6 +4,7 @@
 // preserving the caller's working directory.
 
 use anyhow::{bail, Context, Result};
+use colored::Colorize;
 use std::env;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -37,7 +38,7 @@ pub fn exec(exec_args: &[String]) -> Result<()> {
 
     let (cmd, args) = if exec_args.is_empty() {
         let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        eprintln!("agfs: entering sandbox (exit to return)");
+        eprintln!("{}", "agfs: entering sandbox (exit to return)".cyan());
         (shell, vec![])
     } else {
         (exec_args[0].clone(), exec_args[1..].to_vec())
@@ -64,7 +65,7 @@ pub fn spawn_and_wait(exec_args: &[String]) -> Result<process::ExitStatus> {
 
     let (cmd, args) = if exec_args.is_empty() {
         let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        eprintln!("agfs: entering sandbox (exit to return)");
+        eprintln!("{}", "agfs: entering sandbox (exit to return)".cyan());
         (shell, vec![])
     } else {
         (exec_args[0].clone(), exec_args[1..].to_vec())

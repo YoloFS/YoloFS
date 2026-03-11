@@ -14,15 +14,11 @@ fn read_file_lossy(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
-fn print_unified_diff(old_path: &str, new_path: &str, old_text: &str, new_text: &str) {
+fn print_unified_diff(old_text: &str, new_text: &str) {
     let diff = TextDiff::from_lines(old_text, new_text);
-
-    println!("{}", format!("--- a/{old_path}").bold());
-    println!("{}", format!("+++ b/{new_path}").bold());
 
     for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
         for change in hunk.iter_changes() {
-            let sign = change.tag().to_string();
             let line = change.to_string_lossy();
             match change.tag() {
                 similar::ChangeTag::Delete => {
@@ -42,7 +38,8 @@ fn print_unified_diff(old_path: &str, new_path: &str, old_text: &str, new_text: 
     }
 }
 
-pub fn run() -> Result<()> {
+/// Returns true if there were staged changes.
+pub fn run() -> Result<bool> {
     let agfs = ctl::agfs_dir()?;
     if !agfs.exists() {
         anyhow::bail!("no agfs session found (no .agfs/ directory)");
@@ -55,50 +52,16 @@ pub fn run() -> Result<()> {
 
     if changes.is_empty() {
         println!("{}", "No changes staged.".yellow());
-        return Ok(());
+        return Ok(false);
     }
-
-    println!(
-        "{}",
-        "Changes detected in the following files:".green().bold()
-    );
-    println!();
-
-    for change in &changes {
-        match change {
-            status::Change::Added(p) => {
-                println!("  {} {}", p, "(added)".green());
-            }
-            status::Change::Modified(p) => {
-                println!("  {} {}", p, "(modified)".yellow());
-            }
-            status::Change::Deleted(p) => {
-                println!("  {} {}", p, "(deleted)".red());
-            }
-            status::Change::Renamed { from, to } => {
-                println!("  {} → {} {}", from, to, "(renamed)".cyan());
-            }
-            status::Change::RenamedModified { from, to } => {
-                println!(
-                    "  {} → {} {}",
-                    from,
-                    to,
-                    "(renamed + modified)".cyan()
-                );
-            }
-        }
-    }
-
-    println!();
 
     for change in &changes {
         match change {
             status::Change::Added(p) => {
                 let staging_file = staging_dir.join(p.trim_start_matches('/'));
                 let new_text = read_file_lossy(&staging_file);
-                println!("{}", format!("diff --agfs a/{p} b/{p}").bold());
-                println!("{}", "new file".green());
-                print_unified_diff("/dev/null", p, "", &new_text);
+                println!("{} {}", p.bold(), "(added)".green());
+                print_unified_diff("", &new_text);
             }
             status::Change::Modified(p) => {
                 let base_file = base.join(p);
@@ -106,27 +69,23 @@ pub fn run() -> Result<()> {
                 let old_text = read_file_lossy(&base_file);
                 let new_text = read_file_lossy(&staging_file);
                 if old_text != new_text {
-                    println!("{}", format!("diff --agfs a/{p} b/{p}").bold());
-                    print_unified_diff(p, p, &old_text, &new_text);
+                    println!("{} {}", p.bold(), "(modified)".yellow());
+                    print_unified_diff(&old_text, &new_text);
                 }
             }
             status::Change::Deleted(p) => {
                 let base_file = base.join(p);
                 let old_text = read_file_lossy(&base_file);
-                println!(
-                    "{}",
-                    format!("diff --agfs a/{p} /dev/null").bold()
-                );
-                println!("{}", "deleted file".red());
-                print_unified_diff(p, "/dev/null", &old_text, "");
+                println!("{} {}", p.bold(), "(deleted)".red());
+                print_unified_diff(&old_text, "");
             }
             status::Change::Renamed { from, to } => {
                 println!(
-                    "{}",
-                    format!("diff --agfs a/{from} b/{to}").bold()
+                    "{} → {} {}",
+                    from.bold(),
+                    to.bold(),
+                    "(renamed)".cyan()
                 );
-                println!("{}", format!("rename from {from}").cyan());
-                println!("{}", format!("rename to {to}").cyan());
             }
             status::Change::RenamedModified { from, to } => {
                 let base_file = base.join(from);
@@ -134,17 +93,18 @@ pub fn run() -> Result<()> {
                 let old_text = read_file_lossy(&base_file);
                 let new_text = read_file_lossy(&staging_file);
                 println!(
-                    "{}",
-                    format!("diff --agfs a/{from} b/{to}").bold()
+                    "{} → {} {}",
+                    from.bold(),
+                    to.bold(),
+                    "(renamed + modified)".cyan()
                 );
-                println!("{}", format!("rename from {from}").cyan());
-                println!("{}", format!("rename to {to}").cyan());
                 if old_text != new_text {
-                    print_unified_diff(from, to, &old_text, &new_text);
+                    print_unified_diff(&old_text, &new_text);
                 }
             }
         }
+        println!();
     }
 
-    Ok(())
+    Ok(true)
 }

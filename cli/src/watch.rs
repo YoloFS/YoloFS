@@ -5,12 +5,14 @@
 
 use crate::ctl::{self, perm_from_str, perm_to_str, AgfsCtlRequest};
 use anyhow::Result;
+use colored::Colorize;
 use std::io::{self, BufRead, Write};
 use std::os::unix::io::AsRawFd;
 
 fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
     eprintln!(
-        "\n\x1b[1;33m[ask]\x1b[0m pid={} comm={} op={} path={}",
+        "\n{} pid={} comm={} op={} path={}",
+        "[ask]".yellow().bold(),
         req.pid,
         req.comm_str(),
         req.op_str(),

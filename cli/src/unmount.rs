@@ -3,6 +3,7 @@
 // Unmount the agfs filesystem and remove the .agfs/ directory.
 
 use anyhow::{Context, Result};
+use colored::Colorize;
 use std::fs;
 
 pub fn run() -> Result<()> {
@@ -15,6 +16,6 @@ pub fn run() -> Result<()> {
     fs::remove_dir_all(&agfs_dir)
         .context("removing .agfs/ directory")?;
 
-    eprintln!("agfs: session cleaned up");
+    eprintln!("{}", "agfs: session cleaned up".cyan());
     Ok(())
 }

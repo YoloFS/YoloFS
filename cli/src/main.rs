@@ -2,6 +2,7 @@
 
 use agfs::{abort, commit, diff, log, mount, rule, run, status, watch};
 use clap::{Parser, Subcommand};
+use colored::Colorize;
 use std::io::{self, BufRead, Write};
 
 #[derive(Parser)]
@@ -74,7 +75,7 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Mount) => mount::run(),
         Some(Command::Run { exec_args }) => run::exec(&exec_args),
         Some(Command::Status) => status::run(),
-        Some(Command::Diff) => diff::run(),
+        Some(Command::Diff) => diff::run().map(|_| ()),
         Some(Command::Commit) => commit::run(),
         Some(Command::Abort) => abort::run(),
         Some(Command::Rule { action }) => match action {
@@ -87,7 +88,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Full workflow: mount → run → diff → ask commit/abort → unmount.
+/// Full workflow: mount → run → diff → ask commit/abort/stage.
 fn interactive_workflow(exec_args: &[String]) -> anyhow::Result<()> {
     // 1. Mount
     mount::run()?;
@@ -97,26 +98,40 @@ fn interactive_workflow(exec_args: &[String]) -> anyhow::Result<()> {
 
     if !exit_status.success() {
         eprintln!(
-            "agfs: command exited with {}",
+            "{} {}",
+            "agfs: command exited with".red(),
             exit_status.code().unwrap_or(-1)
         );
     }
 
     // 3. Show diff
-    eprintln!("\n--- staged changes ---");
-    diff::run()?;
+    eprintln!();
+    let has_changes = diff::run()?;
 
-    // 4. Ask commit or abort
-    eprint!("\nagfs: commit these changes? [y/n] ");
+    if !has_changes {
+        abort::run()?;
+        return Ok(());
+    }
+
+    // 4. Ask commit, abort, or stage
+    eprint!(
+        "\n{} ",
+        "Choose [c]ommit, [a]bort, or [s]tage [default: stage]:".bold()
+    );
     io::stderr().flush().ok();
 
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line)?;
 
-    if line.trim().eq_ignore_ascii_case("y") {
-        commit::run()?;
-    } else {
-        abort::run()?;
+    match line.trim().to_ascii_lowercase().as_str() {
+        "c" | "commit" => commit::run()?,
+        "a" | "abort" => abort::run()?,
+        _ => {
+            eprintln!(
+                "{}",
+                "agfs: changes kept staged — use `agfs commit` or `agfs abort` to finish".cyan()
+            );
+        }
     }
 
     Ok(())

@@ -4,6 +4,7 @@
 
 use crate::{ctl, status, unmount};
 use anyhow::{Context, Result};
+use colored::Colorize;
 use std::fs;
 use std::path::Path;
 
@@ -28,7 +29,7 @@ pub fn run() -> Result<()> {
     let changes = status::staging_walk(&agfs)?;
 
     if changes.is_empty() {
-        println!("nothing to commit");
+        println!("{}", "Nothing to commit.".yellow());
         return Ok(());
     }
 
@@ -101,7 +102,15 @@ pub fn run() -> Result<()> {
         let _ = ctl::ioctl_invalidate_cache(&ctl_file);
     }
 
-    println!("committed {committed} change{}", if committed == 1 { "" } else { "s" });
+    println!(
+        "{}",
+        format!(
+            "Committed {committed} change{}.",
+            if committed == 1 { "" } else { "s" }
+        )
+        .green()
+        .bold()
+    );
 
     // Unmount after commit
     unmount::run()?;

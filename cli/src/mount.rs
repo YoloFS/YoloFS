@@ -3,6 +3,7 @@
 // `agfs mount` — create .agfs/ layout and mount the filesystem.
 
 use anyhow::{Context, Result};
+use colored::Colorize;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -56,6 +57,6 @@ pub fn do_mount(agfs_dir: &Path) -> Result<()> {
     )
     .context("mounting agfs (is the kernel module loaded?)")?;
 
-    eprintln!("agfs: mounted at {}", mnt.display());
+    eprintln!("{} {}", "agfs: mounted at".green(), mnt.display());
     Ok(())
 }

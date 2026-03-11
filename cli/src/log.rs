@@ -4,6 +4,7 @@
 
 use crate::ctl::{self, AgfsLogEntry};
 use anyhow::Result;
+use colored::Colorize;
 use std::io::Read;
 use std::os::unix::io::AsRawFd;
 
@@ -55,7 +56,7 @@ pub fn run(follow: bool, dump: bool) -> Result<()> {
 
     if follow {
         // Blocking read: continuously read and print entries
-        eprintln!("agfs: tailing log (Ctrl-C to stop)");
+        eprintln!("{}", "agfs: tailing log (Ctrl-C to stop)".cyan());
     }
 
     loop {

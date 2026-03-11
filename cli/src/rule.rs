@@ -4,6 +4,7 @@
 
 use crate::ctl::{self, perm_from_str};
 use anyhow::Result;
+use colored::Colorize;
 use std::path::Path;
 
 /// Resolve a path: relative paths are resolved against the session root
@@ -27,7 +28,7 @@ pub fn add(path: &str, perm_str: &str) -> Result<()> {
     let ctl_file = ctl::open_ctl(&agfs)?;
 
     ctl::ioctl_add_rule(&ctl_file, &resolved, perm)?;
-    eprintln!("agfs: rule added: {} = {}", path, perm_str);
+    eprintln!("{} {} = {}", "rule added:".green().bold(), path, perm_str);
 
     // Also persist to config.toml
     let config_path = agfs.join("config.toml");
@@ -52,7 +53,7 @@ pub fn remove(path: &str) -> Result<()> {
     let ctl_file = ctl::open_ctl(&agfs)?;
 
     ctl::ioctl_remove_rule(&ctl_file, &resolved)?;
-    eprintln!("agfs: rule removed: {}", path);
+    eprintln!("{} {}", "rule removed:".yellow().bold(), path);
 
     // Remove from config.toml
     let config_path = agfs.join("config.toml");

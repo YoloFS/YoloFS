@@ -10,100 +10,172 @@
 #include <linux/xattr.h>
 #include <linux/mm.h>
 
-/* ── create ────────────────────────────────────────────────────────── */
+/* ── create — create file in staging directory ─────────────────────── */
 
 static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
 		       struct dentry *dentry, umode_t mode, bool excl)
 {
-	struct dentry *lower_dir_dentry;
-	struct dentry *lower_dentry;
-	struct path lower_dir_path;
+	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
+	char buf[AGFS_PATH_MAX];
+	struct path staging_parent_path;
+	struct dentry *staging_dentry;
+	struct inode *staging_dir;
+	char *parent, *name, *tmp;
 	int err;
 
-	agfs_get_lower_path(dentry->d_parent, &lower_dir_path);
-	lower_dir_dentry = lower_dir_path.dentry;
+	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
+	if (err)
+		return err;
 
-	inode_lock_nested(d_inode(lower_dir_dentry), I_MUTEX_PARENT);
+	/* Create parent directories in staging */
+	err = agfs_create_staging_parents(sbi, buf);
+	if (err)
+		return err;
 
-	lower_dentry = lookup_one_len(dentry->d_name.name,
-				      lower_dir_dentry,
-				      dentry->d_name.len);
-	if (IS_ERR(lower_dentry)) {
-		err = PTR_ERR(lower_dentry);
+	/* Split relpath into parent + name */
+	tmp = kstrdup(buf, GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
+
+	name = strrchr(tmp, '/');
+	if (name) {
+		*name = '\0';
+		name++;
+		parent = tmp;
+	} else {
+		name = tmp;
+		parent = NULL;
+	}
+
+	/* Resolve parent dir in staging */
+	if (parent && *parent)
+		err = agfs_staging_path(sbi, parent, &staging_parent_path);
+	else {
+		staging_parent_path = sbi->staging_dir;
+		path_get(&staging_parent_path);
+		err = 0;
+	}
+	if (err) {
+		kfree(tmp);
+		return err;
+	}
+
+	staging_dir = d_inode(staging_parent_path.dentry);
+	inode_lock_nested(staging_dir, I_MUTEX_PARENT);
+
+	staging_dentry = lookup_one_len(name, staging_parent_path.dentry,
+					strlen(name));
+	if (IS_ERR(staging_dentry)) {
+		err = PTR_ERR(staging_dentry);
 		goto out_unlock;
 	}
 
-	err = vfs_create(mnt_idmap(lower_dir_path.mnt),
-			 d_inode(lower_dir_dentry), lower_dentry, mode, excl);
+	err = vfs_create(mnt_idmap(staging_parent_path.mnt),
+			 staging_dir, staging_dentry, mode, excl);
 	if (err)
 		goto out_dput;
 
 	/* Interpose new inode */
 	{
 		struct path lower_path = {
-			.dentry = lower_dentry,
-			.mnt = lower_dir_path.mnt,
+			.dentry = staging_dentry,
+			.mnt = staging_parent_path.mnt,
 		};
 		err = agfs_interpose(dentry, dir->i_sb, &lower_path);
 	}
 	if (err)
 		goto out_dput;
 
-	/* Update lower path on this dentry */
+	/* Update lower path on this dentry to point at staging */
 	{
 		struct path p = {
-			.dentry = lower_dentry,
-			.mnt = mntget(lower_dir_path.mnt),
+			.dentry = staging_dentry,
+			.mnt = mntget(staging_parent_path.mnt),
 		};
 		agfs_set_lower_path(dentry, &p);
 	}
 
-	fsstack_copy_attr_times(dir, d_inode(lower_dir_dentry));
-	fsstack_copy_inode_size(dir, d_inode(lower_dir_dentry));
+	fsstack_copy_attr_times(dir, staging_dir);
+	fsstack_copy_inode_size(dir, staging_dir);
 
-	/* Success: lower_dentry ownership transferred to dentry_info */
+	/* Success: staging_dentry ownership transferred */
 	goto out_unlock;
 
 out_dput:
-	dput(lower_dentry);
+	dput(staging_dentry);
 out_unlock:
-	inode_unlock(d_inode(lower_dir_dentry));
-	agfs_put_lower_path(dentry->d_parent, &lower_dir_path);
+	inode_unlock(staging_dir);
+	path_put(&staging_parent_path);
+	kfree(tmp);
 	return err;
 }
 
-/* ── mkdir ─────────────────────────────────────────────────────────── */
+/* ── mkdir — create directory in staging ────────────────────────────── */
 
 static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 		      struct dentry *dentry, umode_t mode)
 {
-	struct dentry *lower_dir_dentry;
-	struct dentry *lower_dentry;
-	struct path lower_dir_path;
+	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
+	char buf[AGFS_PATH_MAX];
+	struct path staging_parent_path;
+	struct dentry *staging_dentry;
+	struct inode *staging_dir;
+	char *parent, *name, *tmp;
 	int err;
 
-	agfs_get_lower_path(dentry->d_parent, &lower_dir_path);
-	lower_dir_dentry = lower_dir_path.dentry;
+	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
+	if (err)
+		return err;
 
-	inode_lock_nested(d_inode(lower_dir_dentry), I_MUTEX_PARENT);
+	err = agfs_create_staging_parents(sbi, buf);
+	if (err)
+		return err;
 
-	lower_dentry = lookup_one_len(dentry->d_name.name,
-				      lower_dir_dentry,
-				      dentry->d_name.len);
-	if (IS_ERR(lower_dentry)) {
-		err = PTR_ERR(lower_dentry);
+	tmp = kstrdup(buf, GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
+
+	name = strrchr(tmp, '/');
+	if (name) {
+		*name = '\0';
+		name++;
+		parent = tmp;
+	} else {
+		name = tmp;
+		parent = NULL;
+	}
+
+	if (parent && *parent)
+		err = agfs_staging_path(sbi, parent, &staging_parent_path);
+	else {
+		staging_parent_path = sbi->staging_dir;
+		path_get(&staging_parent_path);
+		err = 0;
+	}
+	if (err) {
+		kfree(tmp);
+		return err;
+	}
+
+	staging_dir = d_inode(staging_parent_path.dentry);
+	inode_lock_nested(staging_dir, I_MUTEX_PARENT);
+
+	staging_dentry = lookup_one_len(name, staging_parent_path.dentry,
+					strlen(name));
+	if (IS_ERR(staging_dentry)) {
+		err = PTR_ERR(staging_dentry);
 		goto out_unlock;
 	}
 
-	err = vfs_mkdir(mnt_idmap(lower_dir_path.mnt),
-			d_inode(lower_dir_dentry), lower_dentry, mode);
+	err = vfs_mkdir(mnt_idmap(staging_parent_path.mnt),
+			staging_dir, staging_dentry, mode);
 	if (err)
 		goto out_dput;
 
 	{
 		struct path lower_path = {
-			.dentry = lower_dentry,
-			.mnt = lower_dir_path.mnt,
+			.dentry = staging_dentry,
+			.mnt = staging_parent_path.mnt,
 		};
 		err = agfs_interpose(dentry, dir->i_sb, &lower_path);
 	}
@@ -112,24 +184,24 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 
 	{
 		struct path p = {
-			.dentry = lower_dentry,
-			.mnt = mntget(lower_dir_path.mnt),
+			.dentry = staging_dentry,
+			.mnt = mntget(staging_parent_path.mnt),
 		};
 		agfs_set_lower_path(dentry, &p);
 	}
 
-	fsstack_copy_attr_times(dir, d_inode(lower_dir_dentry));
-	fsstack_copy_inode_size(dir, d_inode(lower_dir_dentry));
-	set_nlink(dir, d_inode(lower_dir_dentry)->i_nlink);
+	fsstack_copy_attr_times(dir, staging_dir);
+	fsstack_copy_inode_size(dir, staging_dir);
+	set_nlink(dir, staging_dir->i_nlink);
 
-	/* Success: lower_dentry ownership transferred to dentry_info */
 	goto out_unlock;
 
 out_dput:
-	dput(lower_dentry);
+	dput(staging_dentry);
 out_unlock:
-	inode_unlock(d_inode(lower_dir_dentry));
-	agfs_put_lower_path(dentry->d_parent, &lower_dir_path);
+	inode_unlock(staging_dir);
+	path_put(&staging_parent_path);
+	kfree(tmp);
 	return err;
 }
 
@@ -203,33 +275,67 @@ static int agfs_rmdir(struct inode *dir, struct dentry *dentry)
 static int agfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 			struct dentry *dentry, const char *symname)
 {
-	struct dentry *lower_dir_dentry;
-	struct dentry *lower_dentry;
-	struct path lower_dir_path;
+	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
+	char buf[AGFS_PATH_MAX];
+	struct path staging_parent_path;
+	struct dentry *staging_dentry;
+	struct inode *staging_dir;
+	char *parent, *name, *tmp;
 	int err;
 
-	agfs_get_lower_path(dentry->d_parent, &lower_dir_path);
-	lower_dir_dentry = lower_dir_path.dentry;
+	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
+	if (err)
+		return err;
 
-	inode_lock_nested(d_inode(lower_dir_dentry), I_MUTEX_PARENT);
+	err = agfs_create_staging_parents(sbi, buf);
+	if (err)
+		return err;
 
-	lower_dentry = lookup_one_len(dentry->d_name.name,
-				      lower_dir_dentry,
-				      dentry->d_name.len);
-	if (IS_ERR(lower_dentry)) {
-		err = PTR_ERR(lower_dentry);
+	tmp = kstrdup(buf, GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
+
+	name = strrchr(tmp, '/');
+	if (name) {
+		*name = '\0';
+		name++;
+		parent = tmp;
+	} else {
+		name = tmp;
+		parent = NULL;
+	}
+
+	if (parent && *parent)
+		err = agfs_staging_path(sbi, parent, &staging_parent_path);
+	else {
+		staging_parent_path = sbi->staging_dir;
+		path_get(&staging_parent_path);
+		err = 0;
+	}
+	if (err) {
+		kfree(tmp);
+		return err;
+	}
+
+	staging_dir = d_inode(staging_parent_path.dentry);
+	inode_lock_nested(staging_dir, I_MUTEX_PARENT);
+
+	staging_dentry = lookup_one_len(name, staging_parent_path.dentry,
+					strlen(name));
+	if (IS_ERR(staging_dentry)) {
+		err = PTR_ERR(staging_dentry);
 		goto out_unlock;
 	}
 
-	err = vfs_symlink(mnt_idmap(lower_dir_path.mnt),
-			  d_inode(lower_dir_dentry), lower_dentry, symname);
+	err = vfs_symlink(mnt_idmap(staging_parent_path.mnt),
+			  staging_dir, staging_dentry, symname);
 	if (err)
 		goto out_dput;
 
 	{
 		struct path lower_path = {
-			.dentry = lower_dentry,
-			.mnt = lower_dir_path.mnt,
+			.dentry = staging_dentry,
+			.mnt = staging_parent_path.mnt,
 		};
 		err = agfs_interpose(dentry, dir->i_sb, &lower_path);
 	}
@@ -238,22 +344,22 @@ static int agfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 
 	{
 		struct path p = {
-			.dentry = lower_dentry,
-			.mnt = mntget(lower_dir_path.mnt),
+			.dentry = staging_dentry,
+			.mnt = mntget(staging_parent_path.mnt),
 		};
 		agfs_set_lower_path(dentry, &p);
 	}
 
-	fsstack_copy_attr_times(dir, d_inode(lower_dir_dentry));
+	fsstack_copy_attr_times(dir, staging_dir);
 
-	/* Success: lower_dentry ownership transferred to dentry_info */
 	goto out_unlock;
 
 out_dput:
-	dput(lower_dentry);
+	dput(staging_dentry);
 out_unlock:
-	inode_unlock(d_inode(lower_dir_dentry));
-	agfs_put_lower_path(dentry->d_parent, &lower_dir_path);
+	inode_unlock(staging_dir);
+	path_put(&staging_parent_path);
+	kfree(tmp);
 	return err;
 }
 

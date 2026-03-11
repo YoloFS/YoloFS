@@ -213,7 +213,35 @@ agfs_mmap(file, vma):
 - Source files are small (KB–low MB). A full copy is sub-millisecond.
 - Commit is a simple `vfs_rename()` per file — no reassembly.
 
-### 3.5 Rename Handling
+### 3.5 Create / Mkdir / Symlink Path
+
+All inode creation operations go to the staging directory, never to the base
+filesystem. This ensures that `agfs abort` can discard every change cleanly.
+
+```
+agfs_create(dir, dentry, mode):
+    relpath = dentry_relpath(dentry)
+    agfs_create_staging_parents(sbi, relpath)
+    vfs_create() on staging dir
+    interpose new inode pointing at the staging dentry
+
+agfs_mkdir(dir, dentry, mode):
+    relpath = dentry_relpath(dentry)
+    agfs_create_staging_parents(sbi, relpath)
+    vfs_mkdir() on staging dir
+    interpose new inode pointing at the staging dentry
+
+agfs_symlink(dir, dentry, symname):
+    relpath = dentry_relpath(dentry)
+    agfs_create_staging_parents(sbi, relpath)
+    vfs_symlink() on staging dir
+    interpose new inode pointing at the staging dentry
+```
+
+`touch` (create + close, no write) produces an empty file in staging —
+visible in `agfs status` / `agfs diff` and cleanly discarded by abort.
+
+### 3.6 Rename Handling
 
 Renaming a file that only exists in staging is trivial — just `vfs_rename()`
 within the staging directory. The interesting case is renaming a base file
@@ -272,7 +300,7 @@ original path after installing the new file.
 
 Commit and abort handling for renames is covered in §3.6.
 
-### 3.6 Staging Operations (Userspace)
+### 3.7 Staging Operations (Userspace)
 
 Commit and abort are **userspace operations** — the kernel module only handles
 I/O redirection. The `agfs` CLI tool walks the staging
