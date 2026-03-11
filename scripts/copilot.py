@@ -11,7 +11,7 @@ from scripts.records import ToolCall
 
 COPILOT_DIR = Path.home() / ".copilot"
 SESSION_STATE_DIR = COPILOT_DIR / "session-state"
-SHELL_TOOL_NAME = "shell"
+SHELL_TOOL_NAME = "bash"
 
 
 @dataclass(frozen=True)
