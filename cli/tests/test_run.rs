@@ -20,7 +20,7 @@ fn run_failure_exit_code_propagated() {
 fn run_custom_exit_code() {
     let session = AgfsSession::new().expect("session setup");
 
-    let code = session.run_in_sandbox(&["exit 42"]).unwrap();
+    let code = session.run_in_sandbox(&["sh", "-c", "exit 42"]).unwrap();
     assert_eq!(code, 42, "exit 42 should propagate as exit code 42");
 }
 
@@ -38,7 +38,7 @@ fn run_shell_pipe() {
 
     let chroot_path = session.root.join("hello.txt");
     let code = session
-        .run_in_sandbox(&[&format!("cat {} | grep base", chroot_path.display())])
+        .run_in_sandbox(&["sh", "-c", &format!("cat {} | grep base", chroot_path.display())])
         .unwrap();
     assert_eq!(code, 0, "shell pipe should work");
 }
@@ -49,7 +49,7 @@ fn run_shell_quotes() {
 
     let chroot_path = session.root.join("hello.txt");
     let code = session
-        .run_in_sandbox(&[&format!("test \"$(cat {})\" = 'base content'", chroot_path.display())])
+        .run_in_sandbox(&["sh", "-c", &format!("test \"$(cat {})\" = 'base content'", chroot_path.display())])
         .unwrap();
     assert_eq!(code, 0, "shell quotes should be preserved");
 }

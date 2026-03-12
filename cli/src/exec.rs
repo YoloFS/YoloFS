@@ -40,24 +40,21 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         bail!("mount point .agfs/mnt/ does not exist — run `agfs mount` first");
     }
 
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-
     let (cmd, args) = if exec_args.is_empty() {
+        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         eprintln!("{}", "agfs: entering sandbox (exit to return)".cyan());
         (shell, vec![])
     } else {
-        let script = exec_args.join(" ");
-        eprintln!("{} `{}`", "agfs: exec".cyan(), script);
-        (shell, vec!["-c".to_string(), script])
+        let quoted: Vec<_> = exec_args.iter().map(|s| format!("\"{s}\"")).collect();
+        eprintln!("{} [{}]", "agfs: exec".cyan(), quoted.join(", "));
+        (exec_args[0].clone(), exec_args[1..].to_vec())
     };
 
-    let mnt2 = mnt.clone();
-    let cwd2 = cwd.clone();
     let status = unsafe {
         process::Command::new(&cmd)
             .args(&args)
             .env("AGFS_SESSION", agfs_dir.to_string_lossy().as_ref())
-            .pre_exec(move || chroot_pre_exec(&mnt2, &cwd2))
+            .pre_exec(move || chroot_pre_exec(&mnt, &cwd))
             .status()
             .with_context(|| format!("spawning {cmd}"))?
     };
