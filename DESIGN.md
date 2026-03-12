@@ -962,8 +962,9 @@ $ agfs run -- make build # run a specific command inside .agfs/mnt
 # Subcommands (operate on an existing .agfs/ session)
 $ agfs status            # show staged changes
 $ agfs diff              # git-style diff of staged vs base (rename-aware)
-$ agfs commit            # apply staged changes to base, then unmount
-$ agfs abort             # discard staged changes, then unmount
+$ agfs commit            # apply staged changes to base
+$ agfs abort             # discard staged changes
+$ agfs unmount           # tear down session
 $ agfs rule add src allow-rw
 $ agfs rule remove src
 $ agfs log --follow      # tail the debug log
@@ -1019,7 +1020,7 @@ agfs/
         ├── config.rs          # agfs.toml management (init, rules, mount options)
         ├── mount.rs
         ├── run.rs
-        ├── unmount.rs         # internal helper (called by commit/abort)
+        ├── unmount.rs         # `agfs unmount` — tear down session
         ├── commit.rs
         ├── abort.rs
         ├── status.rs
@@ -1041,7 +1042,7 @@ $ agfs
      starts background watch daemon for permission requests, chroots into
      .agfs/mnt, spawns $SHELL with cwd preserved as the caller's original CWD
    → on shell exit: stops watch daemon, runs `agfs diff`, prompts user to
-     commit, abort, or keep staged (commit/abort unmount automatically)
+     commit, abort, or keep staged (user runs `agfs unmount` when done)
 
 # 1b. Or use individual commands for more control:
 $ agfs mount

@@ -549,11 +549,12 @@ static int agfs_permission(struct mnt_idmap *idmap,
 	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
 	enum agfs_perm perm;
 
+	/* noperm: skip all permission gating (including staging-owned dirs) */
+	if (sbi->noperm)
+		return 0;
+
 	/* Directories: delegate to lower FS */
 	if (!S_ISREG(inode->i_mode))
-		return inode_permission(idmap, agfs_lower_inode(inode), mask);
-
-	if (sbi->noperm)
 		return inode_permission(idmap, agfs_lower_inode(inode), mask);
 
 	/* Check generation — re-resolve if stale */

@@ -2,7 +2,7 @@
 //
 // `agfs commit` — apply staged changes to base (§3.6).
 
-use crate::{ioctl, status, unmount};
+use crate::{ioctl, status};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
@@ -112,9 +112,6 @@ pub fn run() -> Result<()> {
         .green()
         .bold()
     );
-
-    // Unmount after commit
-    unmount::run()?;
 
     Ok(())
 }

@@ -35,7 +35,7 @@ kmod: $(KMOD_OUT)
 $(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild)
 	mkdir -p kmod/build
 	cp kmod/Kbuild kmod/build/Kbuild
-	$(MAKE) -C $(KDIR) M=$(CURDIR)/kmod/build modules
+	$(MAKE) -j$(nproc) -C $(KDIR) M=$(CURDIR)/kmod/build modules
 
 insmod: $(KMOD_OUT) rmmod
 	sudo insmod $(KMOD_OUT)

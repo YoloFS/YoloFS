@@ -2,7 +2,7 @@
 //
 // `agfs abort` — discard staged changes (§3.6).
 
-use crate::{ioctl, unmount};
+use crate::ioctl;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
@@ -35,9 +35,6 @@ pub fn run() -> Result<()> {
     ioctl::invalidate_cache(&ctl_file).context("invalidating cache")?;
 
     println!("{}", "Staging discarded.".yellow().bold());
-
-    // Unmount after abort
-    unmount::run()?;
 
     Ok(())
 }
