@@ -1,18 +1,20 @@
 use crate::helpers::AgfsSession;
+use crate::helpers::AGFS_BIN;
 
 #[test]
 fn apply_rules_shows_results() {
-    // Create session with custom rules
-    let root = tempfile::tempdir().unwrap().keep();
-    std::fs::write(root.join("hello.txt"), "test\n").unwrap();
+    let session = AgfsSession::new().expect("session setup");
+
+    // Unmount, write custom rules, remount
+    session.cli(&["unmount"]).unwrap();
     std::fs::write(
-        root.join("agfs.toml"),
+        session.root.join("agfs.toml"),
         "[mount]\nnoperm = true\n\n[rules]\n\"/etc\" = \"allow-ro\"\n\"/usr\" = \"allow-rx\"\n",
     ).unwrap();
 
-    let output = std::process::Command::new(crate::helpers::AGFS_BIN)
+    let output = std::process::Command::new(AGFS_BIN)
         .arg("mount")
-        .current_dir(&root)
+        .current_dir(&session.root)
         .env("NO_COLOR", "1")
         .output()
         .expect("running agfs mount");
@@ -21,49 +23,34 @@ fn apply_rules_shows_results() {
     assert!(stderr.contains("applying 2 rule(s)"), "stderr = {stderr}");
     assert!(stderr.contains("/etc = allow-ro"), "stderr = {stderr}");
     assert!(stderr.contains("/usr = allow-rx"), "stderr = {stderr}");
-
-    // Cleanup
-    let _ = std::process::Command::new(crate::helpers::AGFS_BIN)
-        .arg("unmount")
-        .current_dir(&root)
-        .output();
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn apply_rules_shows_invalid_perm() {
-    let root = tempfile::tempdir().unwrap().keep();
-    std::fs::write(root.join("hello.txt"), "test\n").unwrap();
+    let session = AgfsSession::new().expect("session setup");
+
+    session.cli(&["unmount"]).unwrap();
     std::fs::write(
-        root.join("agfs.toml"),
+        session.root.join("agfs.toml"),
         "[mount]\nnoperm = true\n\n[rules]\n\"/etc\" = \"bogus\"\n",
     ).unwrap();
 
-    let output = std::process::Command::new(crate::helpers::AGFS_BIN)
+    let output = std::process::Command::new(AGFS_BIN)
         .arg("mount")
-        .current_dir(&root)
+        .current_dir(&session.root)
         .env("NO_COLOR", "1")
         .output()
         .expect("running agfs mount");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("invalid permission"), "stderr = {stderr}");
-
-    let _ = std::process::Command::new(crate::helpers::AGFS_BIN)
-        .arg("unmount")
-        .current_dir(&root)
-        .output();
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn rule_add_persists_offline() {
     let session = AgfsSession::new().expect("session setup");
 
-    // Add rule while unmounted — first unmount
     session.cli(&["unmount"]).unwrap();
-
-    // Write a fresh config
     std::fs::write(
         session.root.join("agfs.toml"),
         "[mount]\nnoperm = true\n\n[rules]\n",

@@ -1,8 +1,18 @@
-.PHONY: all build cli kmod install uninstall insmod rmmod clean test test-unit test-integration
+# ── Build ──────────────────────────────────────────────────────────────
+
+.PHONY: all build clean
 
 all: install insmod
 
 build: cli kmod
+
+clean:
+	cargo clean --manifest-path cli/Cargo.toml
+	rm -rf kmod/build
+
+# ── CLI ────────────────────────────────────────────────────────────────
+
+.PHONY: cli install uninstall
 
 cli:
 	cargo build --release --manifest-path cli/Cargo.toml
@@ -13,18 +23,30 @@ install: cli
 uninstall:
 	sudo rm -f /usr/local/bin/agfs
 
-kmod:
-	$(MAKE) -C kmod
+# ── Kernel module ─────────────────────────────────────────────────────
 
-insmod: kmod rmmod
-	sudo insmod kmod/agfs.ko
+.PHONY: kmod insmod rmmod
+
+KDIR ?= /lib/modules/$(shell uname -r)/build
+KMOD_OUT := kmod/build/agfs.ko
+
+kmod: $(KMOD_OUT)
+
+$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild)
+	mkdir -p kmod/build
+	cp kmod/Kbuild kmod/build/Kbuild
+	$(MAKE) -C $(KDIR) M=$(CURDIR)/kmod/build modules
+
+insmod: $(KMOD_OUT) rmmod
+	sudo insmod $(KMOD_OUT)
 
 rmmod:
+	mount | awk '$$3 ~ /\.agfs\/mnt/ {print $$3}' | sort -r | while read mnt; do sudo umount "$$mnt" || true; done
 	sudo rmmod agfs || true
 
-clean:
-	cargo clean --manifest-path cli/Cargo.toml
-	$(MAKE) -C kmod clean
+# ── Test ───────────────────────────────────────────────────────────────
+
+.PHONY: test test-unit test-integration
 
 test: test-unit test-integration
 

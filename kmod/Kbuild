@@ -1,0 +1,6 @@
+src := $(M)/..
+
+obj-m += agfs.o
+agfs-y := $(patsubst $(src)/%.c,%.o,$(wildcard $(src)/*.c))
+
+ccflags-y += -I$(src)

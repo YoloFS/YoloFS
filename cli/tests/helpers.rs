@@ -102,7 +102,7 @@ impl AgfsSession {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Run an agfs CLI subcommand and return (exit_code, stdout, stderr).
+    /// Run an agfs CLI subcommand and return (success, stdout, stderr).
     pub fn cli_output(&self, args: &[&str]) -> Result<(bool, String, String)> {
         let output = Command::new(AGFS_BIN)
             .args(args)
@@ -139,9 +139,8 @@ impl AgfsSession {
 impl Drop for AgfsSession {
     fn drop(&mut self) {
         if self.mounted {
-            // Use CLI abort to cleanly unmount + remove .agfs/
             let _ = Command::new(AGFS_BIN)
-                .arg("abort")
+                .arg("unmount")
                 .current_dir(&self.root)
                 .env("NO_COLOR", "1")
                 .output();
