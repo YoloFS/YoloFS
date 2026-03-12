@@ -7,4 +7,3 @@ ask_timeout = 0
 "/usr/bin" = "allow-rx"
 "/usr/lib" = "allow-rx"
 "/usr/bin/git" = "deny"
-"test.txt" = "ask"

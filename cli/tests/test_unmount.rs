@@ -1,4 +1,5 @@
 use crate::helpers::AgfsSession;
+use std::process::Command;
 
 #[test]
 fn unmount_command_cleans_up() {
@@ -9,6 +10,24 @@ fn unmount_command_cleans_up() {
 
     let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
     assert!(ok, "unmount should succeed: {stderr}");
+    assert!(!agfs_dir.exists(), ".agfs/ should be removed after unmount");
+}
+
+#[test]
+fn unmount_succeeds_when_pseudo_fs_already_unmounted() {
+    let session = AgfsSession::new().expect("session setup");
+    let agfs_dir = session.root.join(".agfs");
+    let mnt = agfs_dir.join("mnt");
+
+    // Manually unmount sys before calling agfs unmount to simulate the
+    // case where a pseudo-fs is not mounted (the EINVAL bug).
+    let sys_target = mnt.join("sys");
+    if sys_target.exists() {
+        let _ = Command::new("umount").arg(&sys_target).output();
+    }
+
+    let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
+    assert!(ok, "unmount should succeed even when sys was already unmounted: {stderr}");
     assert!(!agfs_dir.exists(), ".agfs/ should be removed after unmount");
 }
 
