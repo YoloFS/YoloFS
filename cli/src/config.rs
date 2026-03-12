@@ -206,3 +206,190 @@ pub fn remove_rule(path: &str) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn resolve_to_abs_absolute_path() {
+        let result = resolve_to_abs("/etc/passwd").unwrap();
+        assert_eq!(result, "/etc/passwd");
+    }
+
+    #[test]
+    fn resolve_to_abs_relative_path() {
+        let result = resolve_to_abs("foo.txt").unwrap();
+        let cwd = env::current_dir().unwrap();
+        assert_eq!(result, cwd.join("foo.txt").to_string_lossy());
+    }
+
+    #[test]
+    fn resolve_through_mount_absolute() {
+        let mnt = PathBuf::from("/mnt/agfs");
+        let result = resolve_through_mount("/etc/passwd", &mnt).unwrap();
+        assert_eq!(result, "/mnt/agfs/etc/passwd");
+    }
+
+    #[test]
+    fn resolve_through_mount_relative() {
+        let mnt = PathBuf::from("/mnt/agfs");
+        let result = resolve_through_mount("test.txt", &mnt).unwrap();
+        let cwd = env::current_dir().unwrap();
+        let expected = mnt.join(cwd.strip_prefix("/").unwrap()).join("test.txt");
+        assert_eq!(result, expected.to_string_lossy());
+    }
+
+    #[test]
+    fn mount_options_no_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agfs_dir = tmp.path().join(".agfs");
+        fs::create_dir_all(&agfs_dir).unwrap();
+        let opts = mount_options(&agfs_dir);
+        assert_eq!(opts, format!("storage={}", agfs_dir.to_string_lossy()));
+    }
+
+    #[test]
+    fn mount_options_with_flags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agfs_dir = tmp.path().join(".agfs");
+        fs::create_dir_all(&agfs_dir).unwrap();
+        fs::write(
+            tmp.path().join("agfs.toml"),
+            "[mount]\nnoperm = true\nnostaging = true\nask_timeout = 5\n",
+        ).unwrap();
+        let opts = mount_options(&agfs_dir);
+        assert!(opts.contains("noperm"), "opts = {opts}");
+        assert!(opts.contains("nostaging"), "opts = {opts}");
+        assert!(opts.contains("ask_timeout=5"), "opts = {opts}");
+    }
+
+    #[test]
+    fn mount_options_partial_flags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agfs_dir = tmp.path().join(".agfs");
+        fs::create_dir_all(&agfs_dir).unwrap();
+        fs::write(
+            tmp.path().join("agfs.toml"),
+            "[mount]\nask_timeout = 10\n",
+        ).unwrap();
+        let opts = mount_options(&agfs_dir);
+        assert!(opts.contains("ask_timeout=10"));
+        assert!(!opts.contains("noperm"));
+        assert!(!opts.contains("nostaging"));
+    }
+
+    #[test]
+    fn default_config_is_valid_toml() {
+        let doc: toml::Table = DEFAULT_CONFIG.parse().unwrap();
+        assert!(doc.contains_key("mount"));
+        assert!(doc.contains_key("rules"));
+    }
+
+    #[test]
+    fn read_write_config_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("agfs.toml");
+        fs::write(&path, DEFAULT_CONFIG).unwrap();
+        let doc = read_config(&path).unwrap();
+        write_config(&path, &doc).unwrap();
+        let doc2 = read_config(&path).unwrap();
+        assert_eq!(doc, doc2);
+    }
+
+    #[test]
+    fn read_config_missing_file() {
+        assert!(read_config(Path::new("/nonexistent/agfs.toml")).is_err());
+    }
+
+    #[test]
+    fn read_config_invalid_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("agfs.toml");
+        fs::write(&path, "not valid { toml").unwrap();
+        assert!(read_config(&path).is_err());
+    }
+
+    #[test]
+    fn add_rule_persists_to_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("agfs.toml");
+        fs::write(&path, "[rules]\n").unwrap();
+
+        // Simulate what add_rule does to the TOML
+        let mut doc = read_config(&path).unwrap();
+        let rules = doc
+            .entry("rules")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let toml::Value::Table(t) = rules {
+            t.insert("/tmp".to_string(), toml::Value::String("allow-rw".to_string()));
+        }
+        write_config(&path, &doc).unwrap();
+
+        let doc2 = read_config(&path).unwrap();
+        let rules = doc2["rules"].as_table().unwrap();
+        assert_eq!(rules["/tmp"].as_str().unwrap(), "allow-rw");
+    }
+
+    #[test]
+    fn add_rule_invalid_perm() {
+        assert!(perm_from_str("bogus").is_none());
+    }
+
+    #[test]
+    fn remove_rule_from_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("agfs.toml");
+        fs::write(&path, "[rules]\n\"/tmp\" = \"allow-rw\"\n\"/etc\" = \"allow-ro\"\n").unwrap();
+
+        let mut doc = read_config(&path).unwrap();
+        if let Some(toml::Value::Table(t)) = doc.get_mut("rules") {
+            t.remove("/tmp");
+        }
+        write_config(&path, &doc).unwrap();
+
+        let doc2 = read_config(&path).unwrap();
+        let rules = doc2["rules"].as_table().unwrap();
+        assert!(!rules.contains_key("/tmp"));
+        assert!(rules.contains_key("/etc"));
+    }
+
+    #[test]
+    fn remove_rule_nonexistent_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("agfs.toml");
+        fs::write(&path, "[rules]\n\"/etc\" = \"allow-ro\"\n").unwrap();
+
+        let mut doc = read_config(&path).unwrap();
+        if let Some(toml::Value::Table(t)) = doc.get_mut("rules") {
+            t.remove("/nonexistent"); // no-op
+        }
+        write_config(&path, &doc).unwrap();
+
+        let doc2 = read_config(&path).unwrap();
+        let rules = doc2["rules"].as_table().unwrap();
+        assert!(rules.contains_key("/etc"));
+    }
+
+    #[test]
+    fn add_rule_creates_rules_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("agfs.toml");
+        fs::write(&path, "[mount]\n").unwrap();
+
+        let mut doc = read_config(&path).unwrap();
+        let rules = doc
+            .entry("rules")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let toml::Value::Table(t) = rules {
+            t.insert("/usr".to_string(), toml::Value::String("allow-rx".to_string()));
+        }
+        write_config(&path, &doc).unwrap();
+
+        let doc2 = read_config(&path).unwrap();
+        assert!(doc2.contains_key("mount"));
+        let rules = doc2["rules"].as_table().unwrap();
+        assert_eq!(rules["/usr"].as_str().unwrap(), "allow-rx");
+    }
+}

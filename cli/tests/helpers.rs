@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
+
+/// Uses the `agfs` binary from PATH (installed via `make install`).
+pub const AGFS_BIN: &str = "agfs";
 
 /// A managed agfs session for testing, driven entirely through the CLI.
 ///
@@ -11,12 +14,6 @@ pub struct AgfsSession {
     pub root: PathBuf,
     pub mnt: PathBuf,
     mounted: bool,
-}
-
-/// Locate the agfs CLI binary (release build).
-fn agfs_bin() -> PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest.join("target/release/agfs")
 }
 
 impl AgfsSession {
@@ -50,7 +47,7 @@ impl AgfsSession {
     }
 
     fn mount(&mut self) -> Result<()> {
-        let output = Command::new(agfs_bin())
+        let output = Command::new(AGFS_BIN)
             .arg("mount")
             .current_dir(&self.root)
             .env("NO_COLOR", "1")
@@ -85,7 +82,7 @@ impl AgfsSession {
 
     /// Run an agfs CLI subcommand from the session root, return stdout.
     pub fn cli(&self, args: &[&str]) -> Result<String> {
-        let output = Command::new(agfs_bin())
+        let output = Command::new(AGFS_BIN)
             .args(args)
             .current_dir(&self.root)
             .env("NO_COLOR", "1")
@@ -105,9 +102,9 @@ impl AgfsSession {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Run an agfs CLI subcommand and return (success, stdout, stderr).
+    /// Run an agfs CLI subcommand and return (exit_code, stdout, stderr).
     pub fn cli_output(&self, args: &[&str]) -> Result<(bool, String, String)> {
-        let output = Command::new(agfs_bin())
+        let output = Command::new(AGFS_BIN)
             .args(args)
             .current_dir(&self.root)
             .env("NO_COLOR", "1")
@@ -119,13 +116,31 @@ impl AgfsSession {
             String::from_utf8_lossy(&output.stderr).to_string(),
         ))
     }
+
+    /// Run an agfs CLI subcommand and return the raw exit code.
+    pub fn cli_exit_code(&self, args: &[&str]) -> Result<i32> {
+        let output = Command::new(AGFS_BIN)
+            .args(args)
+            .current_dir(&self.root)
+            .env("NO_COLOR", "1")
+            .output()
+            .context("running agfs CLI")?;
+        Ok(output.status.code().unwrap_or(-1))
+    }
+
+    /// Run a command inside the sandbox via `agfs run --` and return exit code.
+    pub fn run_in_sandbox(&self, cmd: &[&str]) -> Result<i32> {
+        let mut args = vec!["run", "--"];
+        args.extend_from_slice(cmd);
+        self.cli_exit_code(&args)
+    }
 }
 
 impl Drop for AgfsSession {
     fn drop(&mut self) {
         if self.mounted {
             // Use CLI abort to cleanly unmount + remove .agfs/
-            let _ = Command::new(agfs_bin())
+            let _ = Command::new(AGFS_BIN)
                 .arg("abort")
                 .current_dir(&self.root)
                 .env("NO_COLOR", "1")
@@ -134,20 +149,4 @@ impl Drop for AgfsSession {
         }
         let _ = fs::remove_dir_all(&self.root);
     }
-}
-
-/// Skip test if not running as root or module not loaded.
-#[macro_export]
-macro_rules! skip_if_not_root {
-    () => {
-        if nix::unistd::geteuid().as_raw() != 0 {
-            eprintln!("SKIPPED: must run as root");
-            return;
-        }
-        let mods = std::fs::read_to_string("/proc/modules").unwrap_or_default();
-        if !mods.contains("agfs ") {
-            eprintln!("SKIPPED: agfs module not loaded");
-            return;
-        }
-    };
 }

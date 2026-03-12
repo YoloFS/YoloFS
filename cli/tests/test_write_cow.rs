@@ -1,10 +1,8 @@
 use crate::helpers::AgfsSession;
-use crate::skip_if_not_root;
 use std::fs;
 
 #[test]
 fn write_triggers_cow() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write through mount");
@@ -24,7 +22,6 @@ fn write_triggers_cow() {
 
 #[test]
 fn write_nested_file() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("subdir/deep.txt"), "changed\n").expect("write nested");
@@ -39,7 +36,6 @@ fn write_nested_file() {
 
 #[test]
 fn multiple_writes_same_file() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "first\n").unwrap();

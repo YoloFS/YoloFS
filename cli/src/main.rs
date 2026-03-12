@@ -23,6 +23,8 @@ enum Command {
     Init,
     /// Create .agfs/ layout and mount the filesystem
     Mount,
+    /// Unmount and clean up the session
+    Unmount,
     /// Run a command inside the sandbox (requires existing mount)
     Run {
         /// Command to run (after --)
@@ -88,6 +90,7 @@ fn run_cli() -> anyhow::Result<u8> {
         Some(Command::Run { exec_args }) => return run::run(&exec_args),
         Some(Command::Init) => config::init()?,
         Some(Command::Mount) => mount::run()?,
+        Some(Command::Unmount) => unmount::run()?,
         Some(Command::Status) => status::run()?,
         Some(Command::Diff) => { diff::run()?; }
         Some(Command::Commit) => commit::run()?,

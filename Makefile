@@ -1,4 +1,4 @@
-.PHONY: all build cli kmod install uninstall insmod rmmod clean
+.PHONY: all build cli kmod install uninstall insmod rmmod clean test test-unit test-integration
 
 all: install insmod
 
@@ -25,3 +25,11 @@ rmmod:
 clean:
 	cargo clean --manifest-path cli/Cargo.toml
 	$(MAKE) -C kmod clean
+
+test: test-unit test-integration
+
+test-unit:
+	cargo test --lib --manifest-path cli/Cargo.toml
+
+test-integration: install insmod
+	cargo test --manifest-path cli/Cargo.toml --test integration -- --test-threads=1

@@ -31,9 +31,8 @@ pub fn run() -> Result<()> {
     }
 
     // Signal kernel to invalidate caches
-    if let Ok(ctl_file) = ioctl::open(&agfs) {
-        let _ = ioctl::invalidate_cache(&ctl_file);
-    }
+    let ctl_file = ioctl::open(&agfs).context("opening ctl for cache invalidation")?;
+    ioctl::invalidate_cache(&ctl_file).context("invalidating cache")?;
 
     println!("{}", "Staging discarded.".yellow().bold());
 

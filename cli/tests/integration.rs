@@ -21,3 +21,6 @@ mod test_multiple_writes;
 mod test_delete;
 mod test_mkdir;
 mod test_lifecycle;
+mod test_unmount;
+mod test_run;
+mod test_rules;

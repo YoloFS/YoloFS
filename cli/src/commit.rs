@@ -54,24 +54,27 @@ pub fn run() -> Result<()> {
                 ensure_parent(&base_new)?;
                 fs::rename(&staging_file, &base_new)
                     .with_context(|| format!("commit renamed+modified {to}"))?;
-                let _ = if base_old.is_dir() {
+                if base_old.is_dir() {
                     fs::remove_dir_all(&base_old)
                 } else {
                     fs::remove_file(&base_old)
-                }; // best effort
+                }
+                .with_context(|| format!("removing old path {from}"))?;
                 committed += 1;
             }
             status::Change::Deleted(p) => {
                 // Whiteout → delete base file
                 let base_file = base.join(p.trim_start_matches('/'));
                 if base_file.is_dir() {
-                    let _ = fs::remove_dir_all(&base_file);
+                    fs::remove_dir_all(&base_file)
                 } else {
-                    let _ = fs::remove_file(&base_file);
+                    fs::remove_file(&base_file)
                 }
+                .with_context(|| format!("deleting {p}"))?;
                 // Remove the whiteout from staging
                 let staging_wh = staging_dir.join(p.trim_start_matches('/'));
-                let _ = fs::remove_file(&staging_wh);
+                fs::remove_file(&staging_wh)
+                    .with_context(|| format!("removing whiteout for {p}"))?;
                 committed += 1;
             }
             status::Change::Added(p) | status::Change::Modified(p) => {
@@ -88,19 +91,17 @@ pub fn run() -> Result<()> {
 
     // Clean up staging directory and renames file
     if staging_dir.exists() {
-        let _ = fs::remove_dir_all(&staging_dir);
-        fs::create_dir_all(&staging_dir)
-            .context("recreating staging dir")?;
+        fs::remove_dir_all(&staging_dir).context("removing staging dir")?;
+        fs::create_dir_all(&staging_dir).context("recreating staging dir")?;
     }
     let renames_path = agfs.join("renames");
     if renames_path.exists() {
-        let _ = fs::remove_file(&renames_path);
+        fs::remove_file(&renames_path).context("removing renames file")?;
     }
 
     // Signal kernel to invalidate caches
-    if let Ok(ctl_file) = ioctl::open(&agfs) {
-        let _ = ioctl::invalidate_cache(&ctl_file);
-    }
+    let ctl_file = ioctl::open(&agfs).context("opening ctl for cache invalidation")?;
+    ioctl::invalidate_cache(&ctl_file).context("invalidating cache")?;
 
     println!(
         "{}",

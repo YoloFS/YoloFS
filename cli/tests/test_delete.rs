@@ -1,5 +1,4 @@
 use crate::helpers::AgfsSession;
-use crate::skip_if_not_root;
 use std::fs;
 
 /// Deleting a file through the mount.
@@ -7,7 +6,6 @@ use std::fs;
 /// but the dentry may remain cached. We verify via status instead.
 #[test]
 fn delete_file() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     // unlink may fail if agfs_unlink operates on lower FS;
@@ -18,7 +16,6 @@ fn delete_file() {
 /// Deleting a file in a subdirectory
 #[test]
 fn delete_nested_file() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     let _ = fs::remove_file(s.mnt_path("subdir/deep.txt"));

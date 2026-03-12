@@ -1,10 +1,8 @@
 use crate::helpers::AgfsSession;
-use crate::skip_if_not_root;
 use std::fs;
 
 #[test]
 fn create_new_file() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("brandnew.txt"), "new content\n").expect("create new file");
@@ -16,7 +14,6 @@ fn create_new_file() {
 
 #[test]
 fn create_file_in_new_subdir() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     // Create a nested file in a new directory through the mount

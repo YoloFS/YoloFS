@@ -1,10 +1,8 @@
 use crate::helpers::AgfsSession;
-use crate::skip_if_not_root;
 use std::fs;
 
 #[test]
 fn status_empty() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     let output = s.cli(&["status"]).expect("status");
@@ -13,7 +11,6 @@ fn status_empty() {
 
 #[test]
 fn status_modified() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
@@ -26,7 +23,6 @@ fn status_modified() {
 
 #[test]
 fn status_multiple_changes() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();

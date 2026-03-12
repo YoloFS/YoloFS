@@ -1,9 +1,7 @@
 use crate::helpers::AgfsSession;
-use crate::skip_if_not_root;
 
 #[test]
 fn mount_and_unmount() {
-    skip_if_not_root!();
     let session = AgfsSession::new().expect("session setup");
 
     // Verify mount point exists and is accessible
@@ -19,7 +17,6 @@ fn mount_and_unmount() {
 
 #[test]
 fn mount_creates_layout() {
-    skip_if_not_root!();
     let session = AgfsSession::new().expect("session setup");
 
     assert!(session.root.join(".agfs").exists());

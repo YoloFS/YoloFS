@@ -1,12 +1,10 @@
 use crate::helpers::AgfsSession;
-use crate::skip_if_not_root;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::{fs, io::Read};
 
 #[test]
 fn truncating_write() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     // Truncating write (O_TRUNC) via create-new
@@ -25,7 +23,6 @@ fn truncating_write() {
 
 #[test]
 fn append_to_file() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     // Open for append

@@ -1,10 +1,8 @@
 use crate::helpers::AgfsSession;
-use crate::skip_if_not_root;
 use std::fs;
 
 #[test]
 fn mkdir_through_mount() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
@@ -13,7 +11,6 @@ fn mkdir_through_mount() {
 
 #[test]
 fn mkdir_nested() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::create_dir_all(s.mnt_path("a/b/c")).expect("mkdir -p");

@@ -1,10 +1,8 @@
 use crate::helpers::AgfsSession;
-use crate::skip_if_not_root;
 use std::fs;
 
 #[test]
 fn commit_modified_file() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "committed\n").unwrap();
@@ -21,7 +19,6 @@ fn commit_modified_file() {
 
 #[test]
 fn commit_new_file() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("brandnew.txt"), "new\n").unwrap();
@@ -38,7 +35,6 @@ fn commit_new_file() {
 
 #[test]
 fn commit_multiple_changes() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
@@ -59,7 +55,6 @@ fn commit_multiple_changes() {
 
 #[test]
 fn commit_nothing() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     let output = s.cli(&["commit"]).expect("commit");

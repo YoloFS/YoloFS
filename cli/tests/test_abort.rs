@@ -1,10 +1,8 @@
 use crate::helpers::AgfsSession;
-use crate::skip_if_not_root;
 use std::fs;
 
 #[test]
 fn abort_discards_changes() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "will be aborted\n").unwrap();
@@ -26,7 +24,6 @@ fn abort_discards_changes() {
 
 #[test]
 fn abort_when_nothing_staged() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     let output = s.cli(&["abort"]).expect("abort");

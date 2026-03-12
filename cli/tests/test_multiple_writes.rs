@@ -1,12 +1,10 @@
 use crate::helpers::AgfsSession;
-use crate::skip_if_not_root;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 
 #[test]
 fn sequential_writes_to_different_files() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "mod1\n").unwrap();
@@ -25,7 +23,6 @@ fn sequential_writes_to_different_files() {
 
 #[test]
 fn overwrite_then_read() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     // Write, read, overwrite, read — should always see latest
@@ -44,7 +41,6 @@ fn overwrite_then_read() {
 
 #[test]
 fn append_multiple_times() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     for i in 0..5 {

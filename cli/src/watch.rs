@@ -95,7 +95,9 @@ impl WatchHandle {
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
+            if let Err(e) = handle.join() {
+                eprintln!("agfs watch: thread panicked: {e:?}");
+            }
         }
     }
 }
@@ -127,16 +129,24 @@ pub fn run_background() -> Result<WatchHandle> {
             ) {
                 Ok(0) => continue,
                 Ok(_) => {}
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!("agfs watch: poll error: {e}");
+                    continue;
+                }
             }
 
             let req = match ioctl::read_request(&ctl_file) {
                 Ok(r) => r,
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!("agfs watch: read error: {e}");
+                    continue;
+                }
             };
 
             let decision = prompt_decision(&req);
-            let _ = ioctl::write_response(&ctl_file, req.id, decision);
+            if let Err(e) = ioctl::write_response(&ctl_file, req.id, decision) {
+                eprintln!("agfs watch: write error: {e}");
+            }
         }
     });
 

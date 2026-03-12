@@ -1,11 +1,9 @@
 use crate::helpers::AgfsSession;
-use crate::skip_if_not_root;
 use std::fs;
 
 /// Full lifecycle: write → status → diff → commit → verify base
 #[test]
 fn full_write_commit_cycle() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     // 1. Write changes
@@ -33,7 +31,6 @@ fn full_write_commit_cycle() {
 /// Full lifecycle: write → status → abort → verify base unchanged
 #[test]
 fn full_write_abort_cycle() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     // 1. Write changes to existing files only (new file creation
@@ -65,7 +62,6 @@ fn full_write_abort_cycle() {
 /// until cache invalidation. We verify the base FS directly.
 #[test]
 fn double_commit() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     // First round
@@ -77,7 +73,6 @@ fn double_commit() {
 /// Abort, then verify base unchanged.
 #[test]
 fn abort_then_commit() {
-    skip_if_not_root!();
     let s = AgfsSession::new().expect("session setup");
 
     // Aborted round
