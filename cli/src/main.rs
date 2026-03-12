@@ -1,6 +1,6 @@
 // agfs CLI — main.rs
 
-use agfs::{abort, commit, config, diff, log, mount, run, status, unmount, watch};
+use agfs::{abort, commit, config, diff, exec, log, mount, status, unmount, watch};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
@@ -25,8 +25,8 @@ enum Command {
     Mount,
     /// Unmount and clean up the session
     Unmount,
-    /// Run a command inside the sandbox (requires existing mount)
-    Run {
+    /// Execute a command inside the sandbox (requires existing mount)
+    Exec {
         /// Command to run (after --)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         exec_args: Vec<String>,
@@ -87,7 +87,7 @@ fn run_cli() -> anyhow::Result<u8> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Run { exec_args }) => return run::run(&exec_args),
+        Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
         Some(Command::Init) => config::init()?,
         Some(Command::Mount) => mount::run()?,
         Some(Command::Unmount) => unmount::run()?,
@@ -101,14 +101,14 @@ fn run_cli() -> anyhow::Result<u8> {
         },
         Some(Command::Log { follow, dump }) => log::run(follow, dump)?,
         Some(Command::Watch) => watch::run()?,
-        None => return interactive_workflow(&cli.exec_args),
+        None => return run(&cli.exec_args),
     }
 
     Ok(0)
 }
 
-/// Full workflow: mount → background watch → run → diff → commit/abort/stage.
-fn interactive_workflow(exec_args: &[String]) -> anyhow::Result<u8> {
+/// Full workflow: mount → background watch → exec → diff → commit/abort/stage.
+fn run(exec_args: &[String]) -> anyhow::Result<u8> {
     // 1. Mount
     mount::run()?;
 
@@ -116,7 +116,7 @@ fn interactive_workflow(exec_args: &[String]) -> anyhow::Result<u8> {
     let mut watch_handle = watch::run_background()?;
 
     // 3. Run (spawn + wait) — continue to diff even if command fails
-    let cmd_exit_code = run::run(exec_args).unwrap_or(1);
+    let cmd_exit_code = exec::run(exec_args).unwrap_or(1);
 
     // 4. Stop and join watch thread before any unmount
     watch_handle.stop();

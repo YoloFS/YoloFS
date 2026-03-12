@@ -20,7 +20,7 @@ fn run_failure_exit_code_propagated() {
 fn run_custom_exit_code() {
     let session = AgfsSession::new().expect("session setup");
 
-    let code = session.run_in_sandbox(&["sh", "-c", "exit 42"]).unwrap();
+    let code = session.run_in_sandbox(&["exit 42"]).unwrap();
     assert_eq!(code, 42, "exit 42 should propagate as exit code 42");
 }
 
@@ -28,8 +28,30 @@ fn run_custom_exit_code() {
 fn run_command_not_found() {
     let session = AgfsSession::new().expect("session setup");
 
-    let code = session.run_in_sandbox(&["sh", "-c", "nonexistent_cmd_xyz"]).unwrap();
+    let code = session.run_in_sandbox(&["nonexistent_cmd_xyz"]).unwrap();
     assert_ne!(code, 0, "nonexistent command should return non-zero exit code");
+}
+
+#[test]
+fn run_shell_pipe() {
+    let session = AgfsSession::new().expect("session setup");
+
+    let chroot_path = session.root.join("hello.txt");
+    let code = session
+        .run_in_sandbox(&[&format!("cat {} | grep base", chroot_path.display())])
+        .unwrap();
+    assert_eq!(code, 0, "shell pipe should work");
+}
+
+#[test]
+fn run_shell_quotes() {
+    let session = AgfsSession::new().expect("session setup");
+
+    let chroot_path = session.root.join("hello.txt");
+    let code = session
+        .run_in_sandbox(&[&format!("test \"$(cat {})\" = 'base content'", chroot_path.display())])
+        .unwrap();
+    assert_eq!(code, 0, "shell quotes should be preserved");
 }
 
 #[test]

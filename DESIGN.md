@@ -943,35 +943,44 @@ agfs log --dump
 
 ## 9. CLI Interface
 
+### 9.1 Commands
+
+**Setup**
+
 ```bash
-# Create a default agfs.toml in the current directory:
-$ agfs init
+$ agfs init              # create a default agfs.toml in the current directory
+```
 
-# Full interactive workflow (no subcommand):
-#   mount → start watch daemon → run $SHELL → show diff → commit/abort/stage
-# The watch daemon runs in the background to handle permission ask requests
-# automatically, so no separate terminal is needed.
-$ agfs
-$ agfs -- make build     # same but runs a specific command instead of $SHELL
+**Full workflow** — mount, watch, exec, diff, and prompt to commit/abort in one command:
 
-# Individual lifecycle commands
+```bash
+$ agfs                   # launch $SHELL inside the sandbox
+$ agfs -- make build     # run a specific command instead of $SHELL
+```
+
+**Session management** — manual control over each step:
+
+```bash
 $ agfs mount             # create .agfs/ layout and mount the filesystem
-$ agfs run               # run $SHELL inside .agfs/mnt (requires existing mount)
-$ agfs run -- make build # run a specific command inside .agfs/mnt
-
-# Subcommands (operate on an existing .agfs/ session)
+$ agfs exec              # chroot $SHELL into .agfs/mnt (requires existing mount)
+$ agfs exec -- make build
 $ agfs status            # show staged changes
 $ agfs diff              # git-style diff of staged vs base (rename-aware)
 $ agfs commit            # apply staged changes to base
 $ agfs abort             # discard staged changes
 $ agfs unmount           # tear down session
-$ agfs rule add src allow-rw
-$ agfs rule remove src
-$ agfs log --follow      # tail the debug log
-$ agfs watch             # handle ask requests (daemon mode)
 ```
 
-### 9.1 Mount Options
+**Permission rules and diagnostics:**
+
+```bash
+$ agfs rule add src allow-rw
+$ agfs rule remove src
+$ agfs watch             # handle ask requests (daemon mode)
+$ agfs log --follow      # tail the kernel debug log
+```
+
+### 9.2 Mount Options
 
 Configured via `agfs.toml` or CLI flags:
 
@@ -1019,7 +1028,7 @@ agfs/
         ├── lib.rs
         ├── config.rs          # agfs.toml management (init, rules, mount options)
         ├── mount.rs
-        ├── run.rs
+        ├── exec.rs
         ├── unmount.rs         # `agfs unmount` — tear down session
         ├── commit.rs
         ├── abort.rs
@@ -1047,7 +1056,7 @@ $ agfs
 # 1b. Or use individual commands for more control:
 $ agfs mount
 $ agfs watch &           # start daemon in background
-$ agfs run -- make build
+$ agfs exec -- make build
 $ agfs diff
 $ agfs commit
 

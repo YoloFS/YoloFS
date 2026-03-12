@@ -1,6 +1,6 @@
-// agfs CLI — run.rs
+// agfs CLI — exec.rs
 //
-// `agfs run [-- cmd]` — chroot into .agfs/mnt and run a command,
+// `agfs exec [-- cmd]` — chroot into .agfs/mnt and exec a command,
 // preserving the caller's working directory.
 
 use anyhow::{bail, Context, Result};
@@ -40,12 +40,15 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         bail!("mount point .agfs/mnt/ does not exist — run `agfs mount` first");
     }
 
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+
     let (cmd, args) = if exec_args.is_empty() {
-        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         eprintln!("{}", "agfs: entering sandbox (exit to return)".cyan());
         (shell, vec![])
     } else {
-        (exec_args[0].clone(), exec_args[1..].to_vec())
+        let script = exec_args.join(" ");
+        eprintln!("{} `{}`", "agfs: exec".cyan(), script);
+        (shell, vec!["-c".to_string(), script])
     };
 
     let mnt2 = mnt.clone();

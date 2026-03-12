@@ -42,6 +42,6 @@ pub fn run() -> Result<()> {
     fs::remove_dir_all(&agfs_dir)
         .context("removing .agfs/ directory")?;
 
-    eprintln!("{}", "agfs: session cleaned up".cyan());
+    eprintln!("{} {}", "agfs: unmounted".green(), mnt.display());
     Ok(())
 }

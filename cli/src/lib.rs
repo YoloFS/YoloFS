@@ -5,7 +5,7 @@ pub mod ioctl;
 pub mod diff;
 pub mod log;
 pub mod mount;
-pub mod run;
+pub mod exec;
 pub mod status;
 pub mod unmount;
 pub mod watch;
