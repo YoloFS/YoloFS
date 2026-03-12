@@ -481,7 +481,6 @@ const struct file_operations agfs_dir_fops = {
 	.iterate_shared	= agfs_readdir,
 	.llseek		= agfs_llseek,
 	.fsync		= agfs_fsync,
-	.poll		= agfs_ctl_poll,
 	.unlocked_ioctl	= agfs_ioctl,
 	.compat_ioctl	= agfs_ioctl,
 };

@@ -113,15 +113,7 @@ agfs.toml                       # config file in CWD (mount options + rules)
 ├── staging/                     # staged files + whiteouts (mirrors / tree)
 └── mnt/                         # mount point — agent works here
                                  #   ioctl on this directory fd for control
-    ├── dev/                     # fresh devtmpfs mount
-    ├── proc/                    # fresh proc mount
-    └── sys/                     # fresh sysfs mount
 ```
-
-After mounting agfs at `.agfs/mnt/`, the CLI mounts fresh `/dev` (devtmpfs),
-`/proc` (proc), and `/sys` (sysfs) inside the mount point so they bypass agfs
-entirely. This avoids unnecessary staging checks on pseudo-filesystems and
-will integrate naturally with PID/user namespace isolation later.
 
 ### 3.4 Path Resolution
 

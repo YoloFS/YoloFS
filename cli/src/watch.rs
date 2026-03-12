@@ -1,16 +1,12 @@
 // agfs CLI — watch.rs
 //
-// `agfs watch` — daemon mode: poll .agfs/mnt for ask requests,
-// prompt the user (or apply policy), and write decisions back via ioctl.
+// `agfs watch` — daemon mode: read ask requests via blocking ioctl,
+// prompt the user, and write decisions back.
 
 use crate::ioctl::{self, perm_from_str, perm_to_str, AgfsCtlRequest};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
-use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
     eprintln!(
@@ -36,7 +32,7 @@ fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
     }
 }
 
-/// Interactive watch — prompts user for each request.
+/// Interactive watch — blocks on ioctl read for each ask request.
 pub fn run() -> Result<()> {
     let agfs = crate::session_dir()?;
     if !agfs.exists() {
@@ -50,19 +46,6 @@ pub fn run() -> Result<()> {
     );
 
     loop {
-        let fd = ctl_file.as_raw_fd();
-        let mut pollfd = nix::poll::PollFd::new(
-            unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd) },
-            nix::poll::PollFlags::POLLIN,
-        );
-
-        match nix::poll::poll(std::slice::from_mut(&mut pollfd), nix::poll::PollTimeout::NONE) {
-            Ok(0) => continue,
-            Ok(_) => {}
-            Err(nix::errno::Errno::EINTR) => continue,
-            Err(e) => return Err(e.into()),
-        }
-
         let req = match ioctl::read_request(&ctl_file) {
             Ok(r) => r,
             Err(e) => {
@@ -83,72 +66,4 @@ pub fn run() -> Result<()> {
             );
         }
     }
-}
-
-/// Handle for stopping and joining the background watch thread.
-pub struct WatchHandle {
-    stop: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl WatchHandle {
-    pub fn stop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.thread.take() {
-            if let Err(e) = handle.join() {
-                eprintln!("agfs watch: thread panicked: {e:?}");
-            }
-        }
-    }
-}
-
-/// Background watch — prompts for all ask requests.
-/// Returns a handle to stop and join the thread.
-pub fn run_background() -> Result<WatchHandle> {
-    let agfs = crate::session_dir()?;
-    let ctl_file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_DIRECTORY)
-        .open(agfs.join("mnt"))
-        .context("opening .agfs/mnt for background watch")?;
-
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop2 = stop.clone();
-
-    let thread = std::thread::spawn(move || {
-        while !stop2.load(Ordering::Relaxed) {
-            let fd = ctl_file.as_raw_fd();
-            let mut pollfd = nix::poll::PollFd::new(
-                unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd) },
-                nix::poll::PollFlags::POLLIN,
-            );
-
-            match nix::poll::poll(
-                std::slice::from_mut(&mut pollfd),
-                nix::poll::PollTimeout::from(500u16),
-            ) {
-                Ok(0) => continue,
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("agfs watch: poll error: {e}");
-                    continue;
-                }
-            }
-
-            let req = match ioctl::read_request(&ctl_file) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("agfs watch: read error: {e}");
-                    continue;
-                }
-            };
-
-            let decision = prompt_decision(&req);
-            if let Err(e) = ioctl::write_response(&ctl_file, req.id, decision) {
-                eprintln!("agfs watch: write error: {e}");
-            }
-        }
-    });
-
-    Ok(WatchHandle { stop, thread: Some(thread) })
 }

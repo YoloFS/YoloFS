@@ -16,7 +16,8 @@ pub fn run() -> Result<()> {
     let mnt = agfs_dir.join("mnt");
 
     if mnt.exists() && is_mountpoint(&mnt) {
-        anyhow::bail!("agfs is already mounted at {}", mnt.display());
+        eprintln!("{} {}", "agfs: mounted at".green(), mnt.display());
+        return Ok(());
     }
 
     setup_agfs_dir(&agfs_dir)?;
@@ -52,6 +53,8 @@ pub fn do_mount(agfs_dir: &Path) -> Result<()> {
     let mnt = agfs_dir.join("mnt");
     let mount_data = crate::config::mount_options(agfs_dir);
 
+    eprintln!("{} {}", "agfs: mounting".green(), mnt.display());
+
     nix::mount::mount(
         Some("none"),
         &mnt,
@@ -61,22 +64,6 @@ pub fn do_mount(agfs_dir: &Path) -> Result<()> {
     )
     .context("mounting agfs (is the kernel module loaded?)")?;
 
-    // Mount fresh pseudo-filesystems so they bypass agfs
-    for &(dir, fstype) in &[("dev", "devtmpfs"), ("proc", "proc"), ("sys", "sysfs")] {
-        let target = mnt.join(dir);
-        if target.exists() {
-            nix::mount::mount(
-                Some(fstype),
-                &target,
-                Some(fstype),
-                nix::mount::MsFlags::empty(),
-                None::<&str>,
-            )
-            .with_context(|| format!("mounting {fstype} at {dir}"))?;
-        }
-    }
-
-    eprintln!("{} {}", "agfs: mounted at".green(), mnt.display());
     Ok(())
 }
 

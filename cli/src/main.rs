@@ -107,25 +107,18 @@ fn run_cli() -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// Full workflow: mount → background watch → exec → diff → commit/abort/stage.
+/// Full workflow: mount (if needed) → exec → diff → commit/abort/stage.
 fn run(exec_args: &[String]) -> anyhow::Result<u8> {
-    // 1. Mount
+    // 1. Mount if not already mounted
     mount::run()?;
 
-    // 2. Start background watch daemon (prompts for ask requests)
-    let mut watch_handle = watch::run_background()?;
-
-    // 3. Run (spawn + wait) — continue to diff even if command fails
+    // 2. Exec (spawn + wait) — continue to diff even if command fails
     let cmd_exit_code = exec::run(exec_args).unwrap_or(1);
 
-    // 4. Stop and join watch thread before any unmount
-    watch_handle.stop();
-
-    // 5. Show diff
+    // 3. Show diff
     let has_changes = diff::run()?;
 
     if !has_changes {
-        unmount::run()?;
         return Ok(cmd_exit_code);
     }
 

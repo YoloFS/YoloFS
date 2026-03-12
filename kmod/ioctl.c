@@ -5,7 +5,6 @@
  * The permission daemon opens .agfs/mnt (or any dir on the mount) and uses:
  *   ioctl(fd, AGFS_IOC_CTL_READ, &req)   — dequeue pending ask request
  *   ioctl(fd, AGFS_IOC_CTL_WRITE, &resp)  — submit decision
- *   poll(fd, POLLIN)                       — wait for pending requests
  *   ioctl(fd, AGFS_IOC_RULE_ADD, &rule)   — add permission rule
  *   ioctl(fd, AGFS_IOC_RULE_REMOVE, &rule)
  *   ioctl(fd, AGFS_IOC_CACHE_INVAL)
@@ -14,7 +13,6 @@
  */
 
 #include "agfs.h"
-#include <linux/poll.h>
 
 /* ── Lazy-allocate ctl private on first CTL_READ ───────────────────── */
 
@@ -145,24 +143,6 @@ void agfs_ctl_cleanup(struct agfs_sb_info *sbi, struct agfs_ctl_private *priv)
 	}
 	spin_unlock(&priv->lock);
 	kfree(priv);
-}
-
-/* ── Poll for pending requests ─────────────────────────────────────── */
-
-__poll_t agfs_ctl_poll(struct file *file, struct poll_table_struct *wait)
-{
-	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
-	__poll_t mask = 0;
-
-	poll_wait(file, &sbi->request_waitq, wait);
-
-	spin_lock(&sbi->pending_lock);
-	if (!list_empty(&sbi->pending_reqs))
-		mask |= EPOLLIN | EPOLLRDNORM;
-	spin_unlock(&sbi->pending_lock);
-
-	mask |= EPOLLOUT | EPOLLWRNORM;
-	return mask;
 }
 
 /* ── Unified ioctl handler (rules + ctl) ───────────────────────────── */
