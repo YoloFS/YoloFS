@@ -41,9 +41,8 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
     }
 
     let (cmd, args) = if exec_args.is_empty() {
-        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         eprintln!("{}", "agfs: entering sandbox (exit to return)".cyan());
-        (shell, vec![])
+        ("sh".to_string(), vec![])
     } else {
         let quoted: Vec<_> = exec_args.iter().map(|s| format!("\"{s}\"")).collect();
         eprintln!("{} [{}]", "agfs: exec".cyan(), quoted.join(", "));
