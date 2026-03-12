@@ -88,7 +88,23 @@ wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
 | **abort**             | Discards the staging directory. O(1). |
 
 
-### 3.2 Storage Layout
+### 3.2 Credential Override for Staging
+
+The staging directory is created during mount (typically by root) and is owned
+by root. When non-root user processes trigger staging operations through agfs
+(create, mkdir, COW, write, etc.), the VFS permission checks on the staging
+directory would fail because the user lacks write permission on root-owned
+directories.
+
+To solve this, agfs saves the mount-time credentials (`current_cred()`) in
+`agfs_sb_info` during `agfs_fill_super` and uses `override_creds()` /
+`revert_creds()` to temporarily assume them when performing staging directory
+operations. This is the standard pattern used by overlayfs and other stackable
+filesystems. The actual permission model for user access is enforced
+separately by the agfs permission gating layer (§4), not by Unix mode bits on
+the staging directory.
+
+### 3.3 Storage Layout
 
 ```
 agfs.toml                       # config file in CWD (mount options + rules)
@@ -107,7 +123,7 @@ After mounting agfs at `.agfs/mnt/`, the CLI mounts fresh `/dev` (devtmpfs),
 entirely. This avoids unnecessary staging checks on pseudo-filesystems and
 will integrate naturally with PID/user namespace isolation later.
 
-### 3.3 Path Resolution
+### 3.4 Path Resolution
 
 ```
 resolve(dentry):
@@ -135,7 +151,7 @@ mount, agfs replays `.agfs/renames` to reinstall those redirected destination
 dentries; source hiding continues to come from the whiteouts already present in
 `.agfs/staging/`.
 
-### 3.4 Open / Read / Write Path
+### 3.5 Open / Read / Write Path
 
 Staging redirection is decided at `open()` time based on the flags:
 
@@ -221,7 +237,7 @@ agfs_mmap(file, vma):
 - Source files are small (KB–low MB). A full copy is sub-millisecond.
 - Commit is a simple `vfs_rename()` per file — no reassembly.
 
-### 3.5 Create / Mkdir / Symlink Path
+### 3.6 Create / Mkdir / Symlink Path
 
 All inode creation operations go to the staging directory, never to the base
 filesystem. This ensures that `agfs abort` can discard every change cleanly.
@@ -249,7 +265,7 @@ agfs_symlink(dir, dentry, symname):
 `touch` (create + close, no write) produces an empty file in staging —
 visible in `agfs status` / `agfs diff` and cleanly discarded by abort.
 
-### 3.6 Rename Handling
+### 3.7 Rename Handling
 
 Renaming a file that only exists in staging is trivial — just `vfs_rename()`
 within the staging directory. The interesting case is renaming a base file
@@ -306,9 +322,9 @@ agfs_rename(old_dir, old_dentry, new_dir, new_dentry):
 redirected `lower_path`. The rename record stays on disk so commit knows to delete the
 original path after installing the new file.
 
-Commit and abort handling for renames is covered in §3.7.
+Commit and abort handling for renames is covered in §3.8.
 
-### 3.7 Staging Operations (Userspace)
+### 3.8 Staging Operations (Userspace)
 
 Commit and abort are **userspace operations** — the kernel module only handles
 I/O redirection. The `agfs` CLI tool walks the staging
@@ -785,7 +801,7 @@ struct agfs_log_ring {
 | `mkdir`      | — (dir perm via lower FS)                                    | Create dir in staging.                                                            | `vfs_mkdir()` on staging dir.             |
 | `unlink`     | — (dir perm via lower FS)                                    | Create whiteout (char dev 0/0) in staging. Remove regular staging file if exists. | —                                         |
 | `rmdir`      | — (dir perm via lower FS)                                    | Create whiteout in staging. Remove staging dir if exists.                         | —                                         |
-| `rename` | — (dir perm via lower FS) | See §3.6 Rename Handling. | — |
+| `rename` | — (dir perm via lower FS) | See §3.7 Rename Handling. | — |
 | `symlink`    | — (dir perm via lower FS)                                    | Create symlink in staging.                                                        | `vfs_symlink()`.                          |
 | `permission` | **Gating for regular files (O(1) cached); delegate to lower FS for dirs.** | —                                                                                 | `inode_permission()` on lower inode.      |
 | `setattr`    | Gated (regular files only).                                  | Copy base→staging first, then setattr on staging.                                 | `notify_change()` on lower.               |

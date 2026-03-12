@@ -4,6 +4,7 @@
 
 #include <linux/fs.h>
 #include <linux/fs_stack.h>
+#include <linux/cred.h>
 #include <linux/namei.h>
 #include <linux/dcache.h>
 #include <linux/mount.h>
@@ -141,6 +142,7 @@ struct agfs_sb_info {
 	struct super_block	*lower_sb;
 	struct path		base_path;	/* always "/" */
 	struct path		storage_path;	/* ./agfs/ directory */
+	const struct cred	*creator_cred;	/* mount-time credentials */
 
 	/* Staging */
 	struct path		staging_dir;	/* ./agfs/staging/ */

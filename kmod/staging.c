@@ -457,7 +457,7 @@ int agfs_create_staging_empty(struct agfs_sb_info *sbi, const char *relpath,
 	return err;
 }
 
-/* ── Resolve Lower Path (§3.3) ─────────────────────────────────────── */
+/* ── Resolve Lower Path (§3.4) ─────────────────────────────────────── */
 
 int agfs_resolve_lower(struct dentry *dentry, struct path *result)
 {

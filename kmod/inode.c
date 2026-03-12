@@ -16,6 +16,7 @@ static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
 		       struct dentry *dentry, umode_t mode, bool excl)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
+	const struct cred *old_cred;
 	char buf[AGFS_PATH_MAX];
 	struct path staging_parent_path;
 	struct dentry *staging_dentry;
@@ -27,15 +28,19 @@ static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
 	if (err)
 		return err;
 
+	old_cred = override_creds(sbi->creator_cred);
+
 	/* Create parent directories in staging */
 	err = agfs_create_staging_parents(sbi, buf);
 	if (err)
-		return err;
+		goto out_revert;
 
 	/* Split relpath into parent + name */
 	tmp = kstrdup(buf, GFP_KERNEL);
-	if (!tmp)
-		return -ENOMEM;
+	if (!tmp) {
+		err = -ENOMEM;
+		goto out_revert;
+	}
 
 	name = strrchr(tmp, '/');
 	if (name) {
@@ -57,7 +62,7 @@ static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
 	}
 	if (err) {
 		kfree(tmp);
-		return err;
+		goto out_revert;
 	}
 
 	staging_dir = d_inode(staging_parent_path.dentry);
@@ -107,15 +112,16 @@ out_unlock:
 	inode_unlock(staging_dir);
 	path_put(&staging_parent_path);
 	kfree(tmp);
+out_revert:
+	revert_creds(old_cred);
 	return err;
 }
-
-/* ── mkdir — create directory in staging ────────────────────────────── */
 
 static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 		      struct dentry *dentry, umode_t mode)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
+	const struct cred *old_cred;
 	char buf[AGFS_PATH_MAX];
 	struct path staging_parent_path;
 	struct dentry *staging_dentry;
@@ -127,13 +133,17 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	if (err)
 		return err;
 
+	old_cred = override_creds(sbi->creator_cred);
+
 	err = agfs_create_staging_parents(sbi, buf);
 	if (err)
-		return err;
+		goto out_revert;
 
 	tmp = kstrdup(buf, GFP_KERNEL);
-	if (!tmp)
-		return -ENOMEM;
+	if (!tmp) {
+		err = -ENOMEM;
+		goto out_revert;
+	}
 
 	name = strrchr(tmp, '/');
 	if (name) {
@@ -154,7 +164,7 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	}
 	if (err) {
 		kfree(tmp);
-		return err;
+		goto out_revert;
 	}
 
 	staging_dir = d_inode(staging_parent_path.dentry);
@@ -202,6 +212,8 @@ out_unlock:
 	inode_unlock(staging_dir);
 	path_put(&staging_parent_path);
 	kfree(tmp);
+out_revert:
+	revert_creds(old_cred);
 	return err;
 }
 
@@ -210,12 +222,15 @@ out_unlock:
 static int agfs_unlink(struct inode *dir, struct dentry *dentry)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
+	const struct cred *old_cred;
 	char buf[AGFS_PATH_MAX];
 	int err;
 
 	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
 	if (err)
 		return err;
+
+	old_cred = override_creds(sbi->creator_cred);
 
 	/* If a staging file exists, remove it first */
 	if (agfs_staging_has(sbi, buf)) {
@@ -231,12 +246,12 @@ static int agfs_unlink(struct inode *dir, struct dentry *dentry)
 			dput(parent);
 			path_put(&staging);
 			if (err)
-				return err;
+				goto out;
 		} else if (!err) {
 			path_put(&staging);
 			/* Already a whiteout — nothing more to do */
 			d_drop(dentry);
-			return 0;
+			goto out;
 		}
 	}
 
@@ -246,6 +261,8 @@ static int agfs_unlink(struct inode *dir, struct dentry *dentry)
 		d_drop(dentry);
 		fsstack_copy_attr_times(dir, d_inode(dentry->d_parent));
 	}
+out:
+	revert_creds(old_cred);
 	return err;
 }
 
@@ -254,6 +271,7 @@ static int agfs_unlink(struct inode *dir, struct dentry *dentry)
 static int agfs_rmdir(struct inode *dir, struct dentry *dentry)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
+	const struct cred *old_cred;
 	char buf[AGFS_PATH_MAX];
 	int err;
 
@@ -261,12 +279,16 @@ static int agfs_rmdir(struct inode *dir, struct dentry *dentry)
 	if (err)
 		return err;
 
+	old_cred = override_creds(sbi->creator_cred);
+
 	/* Create whiteout (handles removing existing staging dir) */
 	err = agfs_create_whiteout(sbi, buf);
 	if (!err) {
 		d_drop(dentry);
 		fsstack_copy_attr_times(dir, d_inode(dentry->d_parent));
 	}
+
+	revert_creds(old_cred);
 	return err;
 }
 
@@ -276,6 +298,7 @@ static int agfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 			struct dentry *dentry, const char *symname)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
+	const struct cred *old_cred;
 	char buf[AGFS_PATH_MAX];
 	struct path staging_parent_path;
 	struct dentry *staging_dentry;
@@ -287,13 +310,17 @@ static int agfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 	if (err)
 		return err;
 
+	old_cred = override_creds(sbi->creator_cred);
+
 	err = agfs_create_staging_parents(sbi, buf);
 	if (err)
-		return err;
+		goto out_revert;
 
 	tmp = kstrdup(buf, GFP_KERNEL);
-	if (!tmp)
-		return -ENOMEM;
+	if (!tmp) {
+		err = -ENOMEM;
+		goto out_revert;
+	}
 
 	name = strrchr(tmp, '/');
 	if (name) {
@@ -314,7 +341,7 @@ static int agfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 	}
 	if (err) {
 		kfree(tmp);
-		return err;
+		goto out_revert;
 	}
 
 	staging_dir = d_inode(staging_parent_path.dentry);
@@ -360,10 +387,12 @@ out_unlock:
 	inode_unlock(staging_dir);
 	path_put(&staging_parent_path);
 	kfree(tmp);
+out_revert:
+	revert_creds(old_cred);
 	return err;
 }
 
-/* ── rename (§3.5) ─────────────────────────────────────────────────── */
+/* ── rename (§3.7) ─────────────────────────────────────────────────── */
 
 static int agfs_rename(struct mnt_idmap *idmap,
 		       struct inode *old_dir, struct dentry *old_dentry,
@@ -371,6 +400,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		       unsigned int flags)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
+	const struct cred *old_cred;
 	char old_buf[AGFS_PATH_MAX], new_buf[AGFS_PATH_MAX];
 	int err;
 
@@ -384,6 +414,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (err)
 		return err;
 
+	old_cred = override_creds(sbi->creator_cred);
 	down_write(&sbi->staging_sem);
 
 	if (agfs_staging_has(sbi, old_buf)) {
@@ -499,6 +530,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 
 out:
 	up_write(&sbi->staging_sem);
+	revert_creds(old_cred);
 	if (!err) {
 		fsstack_copy_attr_times(old_dir,
 					d_inode(old_dentry->d_parent));

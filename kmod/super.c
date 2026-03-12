@@ -86,6 +86,9 @@ static void agfs_put_super(struct super_block *sb)
 
 	agfs_log_destroy(sbi);
 
+	if (sbi->creator_cred)
+		put_cred(sbi->creator_cred);
+
 	/* Release rename-pinned dentries */
 	list_for_each_entry_safe(pd, tmp, &sbi->pinned_dentries, list) {
 		dput(pd->dentry);
@@ -175,6 +178,9 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sbi->noperm = opts->noperm;
 	sbi->nostaging = opts->nostaging;
 	sbi->log_size = opts->log_size ? opts->log_size : AGFS_LOG_DEFAULT_SIZE;
+
+	/* Save mount-time credentials for staging operations (§3.2) */
+	sbi->creator_cred = get_cred(current_cred());
 
 	/* Initialize perm gating state */
 	atomic64_set(&sbi->perm_gen, 0);

@@ -10,7 +10,7 @@
 #include <linux/file.h>
 #include <linux/mm.h>
 
-/* ── open (§3.4 + §4.3) ───────────────────────────────────────────── */
+/* ── open (§3.5 + §4.3) ───────────────────────────────────────────── */
 
 static int agfs_open(struct inode *inode, struct file *file)
 {
@@ -18,6 +18,7 @@ static int agfs_open(struct inode *inode, struct file *file)
 	struct agfs_file_info *fi;
 	struct dentry *dentry = file->f_path.dentry;
 	struct file *lower_file = NULL;
+	const struct cred *old_cred = NULL;
 	char buf[AGFS_PATH_MAX];
 	int err;
 
@@ -58,6 +59,8 @@ static int agfs_open(struct inode *inode, struct file *file)
 
 	/* ── Staging redirect for regular files ─────────────────────── */
 	if (S_ISREG(inode->i_mode) && !sbi->nostaging) {
+		old_cred = override_creds(sbi->creator_cred);
+
 		err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
 		if (err)
 			goto out_free;
@@ -137,8 +140,11 @@ static int agfs_open(struct inode *inode, struct file *file)
 			if (agfs_staging_has(sbi, buf)) {
 				struct path staging;
 				err = agfs_staging_path(sbi, buf, &staging);
-				if (err)
+				if (err) {
+					revert_creds(old_cred);
+					old_cred = NULL;
 					goto open_lower;
+				}
 				lower_file = dentry_open(&staging,
 							 file->f_flags,
 							 current_cred());
@@ -149,12 +155,16 @@ static int agfs_open(struct inode *inode, struct file *file)
 					goto out_free;
 				}
 			} else {
+				revert_creds(old_cred);
+				old_cred = NULL;
 				goto open_lower;
 			}
 			fi->needs_cow = false;
 			fi->is_staging = true;
 		}
 
+		revert_creds(old_cred);
+		old_cred = NULL;
 		goto done;
 	}
 
@@ -183,6 +193,8 @@ done:
 	return 0;
 
 out_free:
+	if (old_cred)
+		revert_creds(old_cred);
 	kfree(fi);
 	return err;
 }
@@ -211,7 +223,7 @@ static ssize_t agfs_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	return ret;
 }
 
-/* ── write_iter (§3.4) ─────────────────────────────────────────────── */
+/* ── write_iter (§3.5) ─────────────────────────────────────────────── */
 
 static ssize_t agfs_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
@@ -223,6 +235,7 @@ static ssize_t agfs_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 
 	/* Lazy COW: copy base → staging on first write */
 	if (fi->needs_cow) {
+		const struct cred *old_cred;
 		char buf[AGFS_PATH_MAX];
 		struct file *new_file = NULL;
 		int err;
@@ -232,16 +245,19 @@ static ssize_t agfs_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 		if (err)
 			return err;
 
+		old_cred = override_creds(sbi->creator_cred);
 		down_write(&sbi->staging_sem);
 		/* Re-check after acquiring lock (another thread may have COW'd) */
 		if (!fi->needs_cow) {
 			up_write(&sbi->staging_sem);
+			revert_creds(old_cred);
 			goto cow_done;
 		}
 		err = agfs_do_cow(sbi, buf, &new_file,
 				  file->f_flags & ~O_TRUNC);
 		if (err) {
 			up_write(&sbi->staging_sem);
+			revert_creds(old_cred);
 			return err;
 		}
 
@@ -250,6 +266,7 @@ static ssize_t agfs_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 		fi->needs_cow = false;
 		fi->is_staging = true;
 		up_write(&sbi->staging_sem);
+		revert_creds(old_cred);
 	}
 
 cow_done:
@@ -290,6 +307,7 @@ static int agfs_mmap(struct file *file, struct vm_area_struct *vma)
 	if (fi->needs_cow &&
 	    (vma->vm_flags & (VM_WRITE | VM_SHARED)) ==
 	    (VM_WRITE | VM_SHARED)) {
+		const struct cred *old_cred;
 		char buf[AGFS_PATH_MAX];
 		struct file *new_file = NULL;
 
@@ -298,15 +316,18 @@ static int agfs_mmap(struct file *file, struct vm_area_struct *vma)
 		if (err)
 			return err;
 
+		old_cred = override_creds(sbi->creator_cred);
 		down_write(&sbi->staging_sem);
 		if (!fi->needs_cow) {
 			up_write(&sbi->staging_sem);
+			revert_creds(old_cred);
 			goto mmap_ready;
 		}
 		err = agfs_do_cow(sbi, buf, &new_file,
 				  file->f_flags & ~O_TRUNC);
 		if (err) {
 			up_write(&sbi->staging_sem);
+			revert_creds(old_cred);
 			return err;
 		}
 
@@ -315,6 +336,7 @@ static int agfs_mmap(struct file *file, struct vm_area_struct *vma)
 		fi->needs_cow = false;
 		fi->is_staging = true;
 		up_write(&sbi->staging_sem);
+		revert_creds(old_cred);
 	}
 
 mmap_ready:
