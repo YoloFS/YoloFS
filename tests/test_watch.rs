@@ -1,6 +1,7 @@
 use agfs::config::{Config, MountConfig, Perm};
 use crate::helpers::{AgfsSession, AGFS_BIN};
 use std::collections::BTreeMap;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 /// `agfs watch --allow-all` should answer every ask with allow, so
@@ -47,4 +48,40 @@ fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
     );
 
     assert_eq!(code, 0, "touch a should succeed when watch --allow-all is running");
+}
+
+/// Starting a second watch while one is already running should fail
+/// with a clear "already running" message (kernel returns EBUSY).
+#[test]
+fn second_watch_reports_already_running() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::new(),
+    }).expect("session setup");
+
+    // Start first watch in background.
+    let mut watch1 = Command::new(AGFS_BIN)
+        .arg("watch")
+        .current_dir(&s.root)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn first watch");
+
+    // Give it time to register with the kernel (ensure_ctl sets has_daemon).
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Second watch should fail with "already running".
+    let (ok, _, stderr) = s.cli_output(&["watch"]).unwrap();
+    assert!(!ok, "second watch should fail");
+    assert!(
+        stderr.contains("already running"),
+        "error should mention 'already running': {stderr}"
+    );
+
+    // Clean up.
+    let _ = Command::new("kill").arg(watch1.id().to_string()).status();
+    let _ = watch1.wait();
 }

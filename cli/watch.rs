@@ -128,15 +128,17 @@ pub fn run(allow_all: bool) -> Result<()> {
         );
     }
 
-    watch_loop(&ctl_file, allow_all);
-    Ok(())
+    watch_loop(&ctl_file, allow_all)
 }
 
-fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) {
+fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
     loop {
         let req = match ioctl::read_request(ctl_file) {
             Ok(r) => r,
-            Err(_) => break,
+            Err(nix::errno::Errno::EBUSY) => {
+                anyhow::bail!("another agfs watch is already running");
+            }
+            Err(_) => return Ok(()),
         };
 
         let decision = if allow_all {
@@ -171,6 +173,7 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) {
 /// because it blocks on a kernel ioctl).
 pub fn run_background() -> Result<()> {
     let agfs = crate::session_dir()?;
+
     let ctl_file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY)
@@ -178,7 +181,9 @@ pub fn run_background() -> Result<()> {
         .context("opening .agfs/mnt for background watch")?;
 
     std::thread::spawn(move || {
-        watch_loop(&ctl_file, false);
+        if let Err(e) = watch_loop(&ctl_file, false) {
+            eprintln!("{} {e}", "agfs watch:".red());
+        }
     });
 
     Ok(())

@@ -98,7 +98,7 @@ impl AgfsCtlRequest {
 }
 
 /// Read one `AgfsCtlRequest` via ioctl on a directory fd.
-pub fn read_request(fd: &File) -> Result<AgfsCtlRequest> {
+pub fn read_request(fd: &File) -> std::result::Result<AgfsCtlRequest, nix::errno::Errno> {
     let mut req = AgfsCtlRequest {
         id: 0,
         op: 0,
@@ -106,8 +106,7 @@ pub fn read_request(fd: &File) -> Result<AgfsCtlRequest> {
         comm: [0u8; 16],
         path: [0u8; AGFS_PATH_MAX],
     };
-    unsafe { ioctl_get_request(fd.as_raw_fd(), &mut req) }
-        .context("ioctl GET_REQUEST")?;
+    unsafe { ioctl_get_request(fd.as_raw_fd(), &mut req) }?;
     Ok(req)
 }
 
