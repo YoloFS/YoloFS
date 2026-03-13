@@ -162,7 +162,7 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sbi->creator_cred = get_cred(current_cred());
 
 	/* Initialize perm gating state */
-	atomic64_set(&sbi->perm_gen, 0);
+	atomic64_set(&sbi->perm_gen, 1);
 	INIT_LIST_HEAD(&sbi->pending_reqs);
 	spin_lock_init(&sbi->pending_lock);
 	init_waitqueue_head(&sbi->request_waitq);

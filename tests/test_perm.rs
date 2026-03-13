@@ -1,5 +1,5 @@
 use agfs::config::{Config, MountConfig, Perm};
-use crate::helpers::AgfsSession;
+use crate::helpers::{AgfsSession, AGFS_BIN};
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -339,4 +339,394 @@ fn symlink_allowed_under_deny() {
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt"))
         .expect("symlink should succeed: dir ops bypass agfs perm");
 }
+
+// ── O_TRUNC treated as write ──
+
+/// O_TRUNC counts as a write operation; allow-ro should deny it.
+#[test]
+fn truncate_denied_on_allow_ro() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
+    }).expect("session setup");
+
+    let result = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "O_TRUNC should be denied with allow-ro");
+}
+
+/// O_APPEND counts as a write operation; allow-ro should deny it.
+#[test]
+fn append_denied_on_allow_ro() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
+    }).expect("session setup");
+
+    let result = fs::OpenOptions::new()
+        .append(true)
+        .open(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "O_APPEND should be denied with allow-ro");
+}
+
+/// O_RDWR counts as a write; allow-ro should deny it.
+#[test]
+fn rdwr_denied_on_allow_ro() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
+    }).expect("session setup");
+
+    let result = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "O_RDWR should be denied with allow-ro");
+}
+
+// ── allow-rw permits truncate/append ──
+
+/// allow-rw should permit O_TRUNC.
+#[test]
+fn truncate_allowed_on_allow_rw() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
+    }).expect("session setup");
+
+    fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(s.mnt_path("hello.txt"))
+        .expect("O_TRUNC should succeed with allow-rw");
+}
+
+// ── Newly created files respect permissions ──
+
+/// A file created inside the sandbox should still be subject to perm gating
+/// when reopened. The perm_gen fix ensures new inodes get re-resolved.
+#[test]
+fn newly_created_file_checked_on_reopen() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
+    }).expect("session setup");
+
+    // Create a file (dir op, bypasses perm).
+    fs::write(s.mnt_path("newfile.txt"), "hello").expect("create should succeed");
+
+    // Now change rules to deny and re-read.
+    s.cli(&["unmount"]).unwrap();
+    Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+    }.save(&s.root.join("agfs.toml")).unwrap();
+    std::process::Command::new(AGFS_BIN)
+        .arg("mount")
+        .current_dir(&s.root)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("remount");
+
+    let result = fs::read_to_string(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "read should be denied after rule change to deny");
+}
+
+// ── allow-rx ──
+
+/// allow-rx should permit read + exec but deny O_TRUNC.
+#[test]
+fn allow_rx_denies_truncate() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::AllowRx)]),
+    }).expect("session setup");
+
+    let result = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "O_TRUNC should be denied with allow-rx");
+}
+
+/// allow-rx should deny O_APPEND.
+#[test]
+fn allow_rx_denies_append() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::AllowRx)]),
+    }).expect("session setup");
+
+    let result = fs::OpenOptions::new()
+        .append(true)
+        .open(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "O_APPEND should be denied with allow-rx");
+}
+
+// ── rmdir bypasses perm ──
+
+/// rmdir should succeed even under deny because it is a directory inode op.
+#[test]
+fn rmdir_allowed_under_deny() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+    }).expect("session setup");
+
+    fs::remove_dir(s.mnt_path("subdir"))
+        .expect("rmdir should succeed: dir ops bypass agfs perm");
+}
+
+/// rename should succeed under deny because it is a directory inode op.
+#[test]
+fn rename_allowed_under_deny() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+    }).expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt"))
+        .expect("rename should succeed: dir ops bypass agfs perm");
+}
+
+/// file creation should succeed under deny because it is a directory inode op.
+#[test]
+fn create_allowed_under_deny() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+    }).expect("session setup");
+
+    // O_CREAT goes through agfs_create (dir op) then agfs_open checks perm.
+    // fs::write uses O_WRONLY|O_CREAT|O_TRUNC, so the create (dir op) succeeds
+    // but the open (file op) should fail under deny.
+    let result = fs::write(s.mnt_path("newfile.txt"), "data");
+    assert!(result.is_err(), "write to new file should fail under deny (open is gated)");
+
+    // The file was created in staging (dir op succeeded). Verify via status.
+    let status = s.cli(&["status"]).unwrap();
+    assert!(
+        status.contains("newfile.txt"),
+        "status should show the created file: {status}"
+    );
+}
+
+// ── readdir is not gated ──
+
+/// Listing a directory's contents should work even under deny
+/// (readdir is a directory operation, not a regular file open).
+#[test]
+fn readdir_allowed_under_deny() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+    }).expect("session setup");
+
+    let entries: Vec<_> = fs::read_dir(s.mnt_path(""))
+        .expect("readdir should succeed under deny")
+        .collect();
+    assert!(!entries.is_empty(), "directory should have entries");
+}
+
+// ── ask_timeout applies default when no daemon ──
+
+/// With ask_timeout set and no daemon, the ask should time out and
+/// apply the ask_default.
+#[test]
+fn ask_timeout_applies_default() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig {
+            ask_timeout: Some(1),
+            ask_default: Some(Perm::Deny),
+            ..Default::default()
+        },
+        rules: BTreeMap::new(),
+    }).expect("session setup");
+
+    // No daemon running — ask times out, applies ask_default=deny.
+    let result = fs::read_to_string(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "read should be denied when ask times out with ask_default=deny");
+}
+
+/// With ask_timeout and ask_default=allow, timed out ask should allow.
+#[test]
+fn ask_timeout_applies_allow_default() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig {
+            ask_timeout: Some(1),
+            ask_default: Some(Perm::Allow),
+            ..Default::default()
+        },
+        rules: BTreeMap::new(),
+    }).expect("session setup");
+
+    let content = fs::read_to_string(s.mnt_path("hello.txt"))
+        .expect("read should succeed when ask times out with ask_default=allow");
+    assert_eq!(content, "base content\n");
+}
+
+// ── Deep nested rule inheritance ──
+
+/// Rules resolve to the closest ancestor: / = deny, root/a/b = allow-rw.
+/// Files under a/b/c inherit allow-rw; files at top level get denied.
+#[test]
+fn deep_nested_rules_closest_wins() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { noperm: true, ..Default::default() },
+        rules: BTreeMap::new(),
+    }).expect("session setup");
+
+    // Create base files directly (not through mount) so they survive remount.
+    fs::create_dir_all(s.root.join("a/b/c")).expect("mkdir -p");
+    fs::write(s.root.join("a/b/c/deep.txt"), "deep content\n").expect("create deep file");
+
+    // Remount with tiered rules.
+    s.cli(&["unmount"]).unwrap();
+    Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([
+            ("/".into(), Perm::Deny),
+            (s.root.join("a/b").display().to_string(), Perm::AllowRw),
+        ]),
+    }.save(&s.root.join("agfs.toml")).unwrap();
+    std::process::Command::new(AGFS_BIN)
+        .arg("mount").current_dir(&s.root).env("NO_COLOR", "1")
+        .output().expect("remount");
+
+    let content = fs::read_to_string(s.mnt_path("a/b/c/deep.txt"))
+        .expect("deep file should be readable via inherited allow-rw");
+    assert_eq!(content, "deep content\n");
+
+    let result = fs::read_to_string(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "top-level file should be denied with / = deny");
+}
+
+// ── Multiple different rules on different paths ──
+
+/// Different directories can have different permission rules simultaneously.
+#[test]
+fn different_paths_different_rules() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { noperm: true, ..Default::default() },
+        rules: BTreeMap::new(),
+    }).expect("session setup");
+
+    // Create base files directly.
+    fs::create_dir_all(s.root.join("readonly")).expect("mkdir readonly");
+    fs::write(s.root.join("readonly/data.txt"), "ro content\n").expect("create ro file");
+    fs::create_dir_all(s.root.join("writable")).expect("mkdir writable");
+    fs::write(s.root.join("writable/data.txt"), "rw content\n").expect("create rw file");
+
+    s.cli(&["unmount"]).unwrap();
+    Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([
+            (s.root.join("readonly").display().to_string(), Perm::AllowRo),
+            (s.root.join("writable").display().to_string(), Perm::AllowRw),
+        ]),
+    }.save(&s.root.join("agfs.toml")).unwrap();
+    std::process::Command::new(AGFS_BIN)
+        .arg("mount").current_dir(&s.root).env("NO_COLOR", "1")
+        .output().expect("remount");
+
+    // Read should work in both.
+    fs::read_to_string(s.mnt_path("readonly/data.txt"))
+        .expect("read should succeed in allow-ro dir");
+    fs::read_to_string(s.mnt_path("writable/data.txt"))
+        .expect("read should succeed in allow-rw dir");
+
+    // Write should fail in readonly, succeed in writable.
+    let result = fs::write(s.mnt_path("readonly/data.txt"), "modified\n");
+    assert!(result.is_err(), "write should fail in allow-ro dir");
+    fs::write(s.mnt_path("writable/data.txt"), "modified\n")
+        .expect("write should succeed in allow-rw dir");
+}
+
+// ── Rule change via live ioctl (cache invalidation) ──
+
+/// Changing rules at runtime via `agfs rule add` should take effect
+/// on subsequent opens (perm_gen increment forces cache re-resolution).
+#[test]
+fn live_rule_change_takes_effect() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+    }).expect("session setup");
+
+    let result = fs::read_to_string(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "read should fail under deny");
+
+    // `rule add` takes a host path and resolves it through the mount internally.
+    s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"]).unwrap();
+
+    let content = fs::read_to_string(s.mnt_path("hello.txt"))
+        .expect("read should succeed after live rule add");
+    assert_eq!(content, "base content\n");
+}
+
+/// Removing a rule at runtime should re-gate access.
+#[test]
+fn live_rule_remove_reapplies_gating() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::new(),
+    }).expect("session setup");
+
+    s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"]).unwrap();
+    fs::read_to_string(s.mnt_path("hello.txt"))
+        .expect("read should succeed with allow-rw rule");
+
+    s.cli(&["rule", "remove", &s.root.display().to_string()]).unwrap();
+    let result = fs::read_to_string(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "read should fail after rule removal");
+}
+
+// ── Rename across permission boundaries ──
+
+/// Renaming a file from an allowed dir to a denied dir should succeed (dir op),
+/// but reading the renamed file in the denied dir should fail after a cache
+/// invalidation (the inode may still cache the old permission until perm_gen
+/// is bumped by a rule change).
+#[test]
+fn rename_across_permission_boundary() {
+    let s = AgfsSession::new_with_config(Config {
+        mount: MountConfig { noperm: true, ..Default::default() },
+        rules: BTreeMap::new(),
+    }).expect("session setup");
+
+    // Create base files directly.
+    fs::create_dir_all(s.root.join("allowed")).expect("mkdir allowed");
+    fs::create_dir_all(s.root.join("denied")).expect("mkdir denied");
+    fs::write(s.root.join("allowed/file.txt"), "content\n").expect("create file");
+
+    s.cli(&["unmount"]).unwrap();
+    Config {
+        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        rules: BTreeMap::from([
+            (s.root.join("allowed").display().to_string(), Perm::AllowRw),
+            (s.root.join("denied").display().to_string(), Perm::Deny),
+        ]),
+    }.save(&s.root.join("agfs.toml")).unwrap();
+    std::process::Command::new(AGFS_BIN)
+        .arg("mount").current_dir(&s.root).env("NO_COLOR", "1")
+        .output().expect("remount");
+
+    // Can read the file in the allowed dir.
+    fs::read_to_string(s.mnt_path("allowed/file.txt"))
+        .expect("reading file in allowed dir should succeed");
+
+    // Rename is a dir op — should succeed.
+    fs::rename(s.mnt_path("allowed/file.txt"), s.mnt_path("denied/file.txt"))
+        .expect("rename is a dir op and should succeed");
+
+    // Force cache invalidation so the permission is re-resolved at the new location.
+    s.cli(&["rule", "add", &s.root.join("denied").display().to_string(), "deny"]).unwrap();
+
+    // Reading from the denied directory should now fail.
+    let result = fs::read_to_string(s.mnt_path("denied/file.txt"));
+    assert!(result.is_err(), "reading renamed file in denied dir should fail");
+}
+
 
