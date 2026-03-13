@@ -112,27 +112,45 @@ fn prompt_decision(req: &AgfsCtlRequest) -> Perm {
 }
 
 /// Interactive watch — blocks on ioctl read for each ask request.
-pub fn run() -> Result<()> {
+pub fn run(allow_all: bool) -> Result<()> {
     let agfs = crate::session_dir()?;
 
     let ctl_file = ioctl::open(&agfs)?;
-    eprintln!(
-        "{}",
-        "agfs: watching for permission requests (Ctrl-C to stop)".cyan()
-    );
+    if allow_all {
+        eprintln!(
+            "{}",
+            "agfs: watching for permission requests — allowing all (Ctrl-C to stop)".cyan()
+        );
+    } else {
+        eprintln!(
+            "{}",
+            "agfs: watching for permission requests (Ctrl-C to stop)".cyan()
+        );
+    }
 
-    watch_loop(&ctl_file);
+    watch_loop(&ctl_file, allow_all);
     Ok(())
 }
 
-fn watch_loop(ctl_file: &std::fs::File) {
+fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) {
     loop {
         let req = match ioctl::read_request(ctl_file) {
             Ok(r) => r,
             Err(_) => break,
         };
 
-        let decision = prompt_decision(&req);
+        let decision = if allow_all {
+            eprintln!(
+                "{} {} {} {}",
+                "[ask]".yellow().bold(),
+                req.op_str(),
+                req.path_str(),
+                format!("(pid={} {})", req.pid, req.comm_str()).dimmed(),
+            );
+            Perm::Allow
+        } else {
+            prompt_decision(&req)
+        };
 
         if let Err(e) = ioctl::write_response(ctl_file, req.id, decision.to_ioctl()) {
             eprintln!("agfs watch: write error: {e}");
@@ -160,7 +178,7 @@ pub fn run_background() -> Result<()> {
         .context("opening .agfs/mnt for background watch")?;
 
     std::thread::spawn(move || {
-        watch_loop(&ctl_file);
+        watch_loop(&ctl_file, false);
     });
 
     Ok(())
