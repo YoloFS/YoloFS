@@ -132,7 +132,8 @@ fn is_mounted() -> bool {
     crate::session_dir().is_ok_and(|d| d.join("mnt").exists())
 }
 
-/// Expand `$HOME` and `~` prefix, then resolve to an absolute path.
+/// Expand `$HOME`/`~`, then canonicalize (resolves relative paths, symlinks, `..`).
+/// Fails if the path doesn't exist — the kernel can only match rules against existing dentries.
 fn resolve_to_abs(path: &str) -> Result<String> {
     let expanded = if path.starts_with("$HOME") || path.starts_with('~') {
         let home = env::var("HOME").context("$HOME not set")?;
@@ -149,17 +150,13 @@ fn resolve_to_abs(path: &str) -> Result<String> {
         path.to_string()
     };
 
-    if expanded.starts_with('/') {
-        Ok(expanded)
-    } else {
-        let cwd = env::current_dir().context("getting cwd")?;
-        Ok(cwd.join(expanded).to_string_lossy().to_string())
-    }
+    fs::canonicalize(&expanded)
+        .map(|p| p.to_string_lossy().to_string())
+        .with_context(|| format!("rule path does not exist: {expanded}"))
 }
 
-fn resolve_through_mount(path: &str, mnt: &Path) -> Result<String> {
-    let abs = resolve_to_abs(path)?;
-    Ok(mnt.join(abs.trim_start_matches('/')).to_string_lossy().to_string())
+fn resolve_through_mount(abs_path: &str, mnt: &Path) -> String {
+    mnt.join(abs_path.trim_start_matches('/')).to_string_lossy().to_string()
 }
 
 // ── Mount options ─────────────────────────────────────────────────────
@@ -214,8 +211,14 @@ pub fn apply_rules(agfs_dir: &Path) -> Result<()> {
     eprintln!("{}", format!("agfs: applying {} rule(s) from agfs.toml", config.rules.len()).cyan());
 
     for (path, perm) in &config.rules {
-        let abs_path = resolve_to_abs(path)?;
-        let resolved = resolve_through_mount(path, &mnt)?;
+        let abs_path = match resolve_to_abs(path) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("  {} {} = {}: {:#}", "✗".red(), path, perm, e);
+                continue;
+            }
+        };
+        let resolved = resolve_through_mount(&abs_path, &mnt);
         if let Err(e) = ioctl::add_rule(&ctl_file, &resolved, perm.to_ioctl()) {
             eprintln!("  {} {} = {}: {:#}", "✗".red(), abs_path, perm, e);
         } else {
@@ -245,7 +248,8 @@ pub fn add_rule(path: &str, perm_str: &str) -> Result<()> {
     if is_mounted() {
         let agfs = crate::session_dir()?;
         let mnt = agfs.join("mnt");
-        let resolved = resolve_through_mount(path, &mnt)?;
+        let abs_path = resolve_to_abs(path)?;
+        let resolved = resolve_through_mount(&abs_path, &mnt);
         let ctl_file = ioctl::open(&agfs)?;
         ioctl::add_rule(&ctl_file, &resolved, perm.to_ioctl())?;
         eprintln!("{} {} = {} {}", "rule added:".green().bold(), path, perm, "(live)".green());
@@ -269,7 +273,8 @@ pub fn remove_rule(path: &str) -> Result<()> {
     if is_mounted() {
         let agfs = crate::session_dir()?;
         let mnt = agfs.join("mnt");
-        let resolved = resolve_through_mount(path, &mnt)?;
+        let abs_path = resolve_to_abs(path)?;
+        let resolved = resolve_through_mount(&abs_path, &mnt);
         let ctl_file = ioctl::open(&agfs)?;
         ioctl::remove_rule(&ctl_file, &resolved)?;
         eprintln!("{} {} {}", "rule removed:".yellow().bold(), path, "(live)".yellow());
@@ -312,45 +317,39 @@ mod tests {
 
     #[test]
     fn resolve_to_abs_absolute_path() {
-        let result = resolve_to_abs("/etc/passwd").unwrap();
-        assert_eq!(result, "/etc/passwd");
+        let result = resolve_to_abs("/etc").unwrap();
+        assert_eq!(result, "/etc");
     }
 
     #[test]
-    fn resolve_to_abs_relative_path() {
-        let result = resolve_to_abs("foo.txt").unwrap();
-        let cwd = env::current_dir().unwrap();
-        assert_eq!(result, cwd.join("foo.txt").to_string_lossy());
+    fn resolve_to_abs_nonexistent_fails() {
+        assert!(resolve_to_abs("/nonexistent_agfs_test_path").is_err());
     }
 
     #[test]
     fn resolve_to_abs_home_var() {
         let home = env::var("HOME").unwrap();
         assert_eq!(resolve_to_abs("$HOME").unwrap(), home);
-        assert_eq!(resolve_to_abs("$HOME/.config").unwrap(), format!("{home}/.config"));
     }
 
     #[test]
     fn resolve_to_abs_tilde() {
         let home = env::var("HOME").unwrap();
         assert_eq!(resolve_to_abs("~").unwrap(), home);
-        assert_eq!(resolve_to_abs("~/.config").unwrap(), format!("{home}/.config"));
     }
 
     #[test]
     fn resolve_through_mount_absolute() {
         let mnt = PathBuf::from("/mnt/agfs");
-        let result = resolve_through_mount("/etc/passwd", &mnt).unwrap();
+        let result = resolve_through_mount("/etc/passwd", &mnt);
         assert_eq!(result, "/mnt/agfs/etc/passwd");
     }
 
     #[test]
-    fn resolve_through_mount_relative() {
+    fn resolve_through_mount_strips_leading_slash() {
         let mnt = PathBuf::from("/mnt/agfs");
-        let result = resolve_through_mount("test.txt", &mnt).unwrap();
-        let cwd = env::current_dir().unwrap();
-        let expected = mnt.join(cwd.strip_prefix("/").unwrap()).join("test.txt");
-        assert_eq!(result, expected.to_string_lossy());
+        let result = resolve_through_mount("/usr/bin", &mnt);
+        assert_eq!(result, "/mnt/agfs/usr/bin");
     }
 
     #[test]
