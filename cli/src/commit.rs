@@ -89,14 +89,14 @@ pub fn run() -> Result<()> {
         }
     }
 
-    // Clean up staging directory and renames file
+    // Clean up staging directory and journal file
     if staging_dir.exists() {
         fs::remove_dir_all(&staging_dir).context("removing staging dir")?;
         fs::create_dir_all(&staging_dir).context("recreating staging dir")?;
     }
-    let renames_path = agfs.join("renames");
-    if renames_path.exists() {
-        fs::remove_file(&renames_path).context("removing renames file")?;
+    let journal_path = agfs.join("journal");
+    if journal_path.exists() {
+        fs::remove_file(&journal_path).context("removing journal file")?;
     }
 
     // Signal kernel to invalidate caches

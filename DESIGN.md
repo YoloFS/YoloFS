@@ -108,7 +108,7 @@ the staging directory.
 ```
 agfs.toml                       # config file in CWD (mount options + rules)
 .agfs/                          # created by `agfs` in CWD
-├── renames                      # persisted rename log: src\0dst\0 pairs
+├── journal                      # persisted rename log: src\0dst\0 pairs
 ├── staging/                     # staged files + whiteouts (mirrors / tree)
 └── mnt/                         # mount point — agent works here
                                  #   ioctl on this directory fd for control
@@ -135,10 +135,10 @@ resolve(dentry):
 
 A whiteout is a char device with major/minor 0/0 (`mknod(path, S_IFCHR, 0)`).
 Staging files take priority over base. Whiteouts in the staging dir shadow the base.
-`.agfs/renames` is not consulted on the hot path. Runtime rename state lives
+`.agfs/journal` is not consulted on the hot path. Runtime rename state lives
 in dentries: a renamed destination dentry has `lower_path` redirected to the
 original base object, and the old path is hidden by a staging whiteout. On
-mount, agfs replays `.agfs/renames` to reinstall those redirected destination
+mount, agfs replays `.agfs/journal` to reinstall those redirected destination
 dentries; source hiding continues to come from the whiteouts already present in
 `.agfs/staging/`.
 
@@ -266,13 +266,13 @@ that has not been modified.
 just to move it. For large files this is wasteful — the content hasn't
 changed, only the path.
 
-**Solution**: append the rename to `.agfs/renames`, redirect the destination
+**Solution**: append the rename to `.agfs/journal`, redirect the destination
 dentry's `lower_path` to the original base object, pin that dentry until
 commit/abort, and create a whiteout at the old path. The on-disk file is only
 persisted recovery/commit data; kernel path resolution uses dentry state. No
 data copy is needed for a pure rename.
 
-`.agfs/renames` is a sequence of `old_path\0new_path\0` pairs. Each path is
+`.agfs/journal` is a sequence of `old_path\0new_path\0` pairs. Each path is
 absolute and NUL-terminated.
 
 On mount, agfs replays this file and reinstalls the redirected destination
@@ -296,7 +296,7 @@ agfs_rename(old_dir, old_dentry, new_dir, new_dentry):
         // File only in base. Record the move; no copy yet.
         new_info->lower_path = old_info->lower_path
         dget(new_dentry)   // pin until commit/abort
-        append(renames_file, old_path, new_path)
+        append(journal_file, old_path, new_path)
 
     // Hide the old path.
     create_whiteout(staging/old_path)
@@ -323,7 +323,7 @@ directory and applies changes to the base.
 
 All staging operations except abort share a common **staging walk**:
 
-1. Read `.agfs/renames` and build `old→new` / `new→old` lookup tables.
+1. Read `.agfs/journal` and build `old→new` / `new→old` lookup tables.
 2. Process rename records: for each entry, check whether a staged file
    exists at `new_path` (rename + modification) or not (pure rename).
 3. Walk `.agfs/staging/` recursively.
@@ -342,12 +342,12 @@ All staging operations except abort share a common **staging walk**:
    corresponding base path.
 3. For each remaining regular file: `rename()` from `staging/<path>` →
    `base/<path>`, creating parent directories as needed.
-4. Remove the `staging/` directory and `renames` file.
+4. Remove the `staging/` directory and `journal` file.
 5. Signal the kernel module to invalidate caches and drop pinned rename dentries.
 
 **Abort** (`agfs abort`):
 
-1. `rm -rf .agfs/staging/` and `rm .agfs/renames`.
+1. `rm -rf .agfs/staging/` and `rm .agfs/journal`.
 2. Signal the kernel module to invalidate caches and drop pinned rename dentries.
 
 **Status** (`agfs status`):
@@ -612,7 +612,7 @@ struct agfs_sb_info {
 
     // Staging
     struct path             staging_dir;       // .agfs/staging/
-    struct path             renames_path;      // .agfs/renames
+    struct path             journal_path;      // .agfs/journal
     struct rw_semaphore     staging_sem;       // protects staging dir + rename log updates/replay
     struct list_head        pinned_dentries;   // rename-pinned dentries (agfs_pinned_dentry list)
 
@@ -743,7 +743,7 @@ commit/abort/unmount so the redirected `lower_path` stays valid.
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Staging directory + `.agfs/renames` updates/replay | `rw_semaphore` (read for path resolution, write for rename/commit/abort) |
+| `sb->staging_sem` | Staging directory + `.agfs/journal` updates/replay | `rw_semaphore` (read for path resolution, write for rename/commit/abort) |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
 | `dentry_info->lock` | Lower path in dentry | `spinlock` |
 
@@ -1088,7 +1088,7 @@ architecture and purpose.
 layer *is* the persistent state. There is no commit or abort. A renamed
 file is copied up to upper with `RENAME_WHITEOUT` and stays there forever.
 agfs treats staging as a scratch area that is explicitly committed or
-discarded. The `.renames` file tracks rename origins so commit can do
+discarded. The `.journal` file tracks rename origins so commit can do
 `rename(base/old, base/new)` with no data copy — something overlayfs
 never needs because it never merges back to lower.
 
@@ -1105,7 +1105,7 @@ adds the progressive gating layer (ask/allow/deny) with the ask protocol
 for interactive approval.
 
 **Portability**: overlayfs's `RENAME_WHITEOUT` requires filesystem support
-(ext4, xfs). agfs uses a `.renames` sidecar file and standard `mknod()`
+(ext4, xfs). agfs uses a `.journal` sidecar file and standard `mknod()`
 whiteouts, working on any lower FS.
 
 ---

@@ -112,7 +112,7 @@ struct agfs_sb_info {
 
 	/* Staging */
 	struct path		staging_dir;	/* ./agfs/staging/ */
-	struct path		renames_path;	/* ./agfs/renames */
+	struct path		journal_path;	/* ./agfs/journal */
 	struct rw_semaphore	staging_sem;
 	struct list_head	pinned_dentries;/* rename-pinned dentries */
 

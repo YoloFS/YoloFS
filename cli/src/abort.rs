@@ -14,7 +14,7 @@ pub fn run() -> Result<()> {
     }
 
     let staging_dir = agfs.join("staging");
-    let renames_path = agfs.join("renames");
+    let journal_path = agfs.join("journal");
 
     // rm -rf staging/
     if staging_dir.exists() {
@@ -24,10 +24,10 @@ pub fn run() -> Result<()> {
             .context("recreating staging directory")?;
     }
 
-    // rm renames
-    if renames_path.exists() {
-        fs::remove_file(&renames_path)
-            .context("removing renames file")?;
+    // rm journal
+    if journal_path.exists() {
+        fs::remove_file(&journal_path)
+            .context("removing journal file")?;
     }
 
     // Signal kernel to invalidate caches

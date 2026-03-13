@@ -93,8 +93,8 @@ static void agfs_put_super(struct super_block *sb)
 
 	if (sbi->staging_dir.dentry)
 		path_put(&sbi->staging_dir);
-	if (sbi->renames_path.dentry)
-		path_put(&sbi->renames_path);
+	if (sbi->journal_path.dentry)
+		path_put(&sbi->journal_path);
 	if (sbi->storage_path.dentry)
 		path_put(&sbi->storage_path);
 	if (sbi->base_path.dentry)
@@ -218,14 +218,14 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 			/* staging may not exist yet — that's ok */
 		}
 
-		/* Resolve renames file */
+		/* Resolve journal file */
 		{
 			struct path renames;
 			err = vfs_path_lookup(sbi->storage_path.dentry,
 					      sbi->storage_path.mnt,
-					      "renames", 0, &renames);
+					      "journal", 0, &renames);
 			if (!err)
-				sbi->renames_path = renames;
+				sbi->journal_path = renames;
 		}
 		err = 0;
 	}

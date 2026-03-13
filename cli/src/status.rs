@@ -18,13 +18,13 @@ pub enum Change {
     RenamedModified { from: String, to: String },
 }
 
-/// Read the renames file: sequence of old_path\0new_path\0 pairs.
-fn read_renames(agfs_dir: &Path) -> Result<Vec<(String, String)>> {
-    let renames_path = agfs_dir.join("renames");
-    if !renames_path.exists() {
+/// Read the journal file: sequence of old_path\0new_path\0 pairs.
+fn read_journal(agfs_dir: &Path) -> Result<Vec<(String, String)>> {
+    let journal_path = agfs_dir.join("journal");
+    if !journal_path.exists() {
         return Ok(Vec::new());
     }
-    let data = fs::read(&renames_path).context("reading renames file")?;
+    let data = fs::read(&journal_path).context("reading journal file")?;
     let mut result = Vec::new();
     let mut parts: Vec<&[u8]> = data.split(|&b| b == 0).collect();
     // Remove trailing empty entry if present
@@ -82,13 +82,13 @@ pub fn staging_walk(agfs_dir: &Path) -> Result<Vec<Change>> {
     let staging_dir = agfs_dir.join("staging");
     let base = Path::new("/");
 
-    // Step 1: Read renames
-    let renames = read_renames(agfs_dir)?;
-    let rename_old_set: HashMap<String, String> = renames
+    // Step 1: Read journal
+    let journal = read_journal(agfs_dir)?;
+    let journal_old_set: HashMap<String, String> = journal
         .iter()
         .map(|(old, new)| (old.clone(), new.clone()))
         .collect();
-    let rename_new_set: HashMap<String, String> = renames
+    let journal_new_set: HashMap<String, String> = journal
         .iter()
         .map(|(old, new)| (new.clone(), old.clone()))
         .collect();
@@ -97,42 +97,42 @@ pub fn staging_walk(agfs_dir: &Path) -> Result<Vec<Change>> {
     let staging_entries = walk_staging(&staging_dir, "")?;
 
     let mut changes = Vec::new();
-    let mut consumed_renames: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut consumed_journal: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Step 3: Process rename records
-    for (old_path, new_path) in &renames {
+    for (old_path, new_path) in &journal {
         let staging_new = staging_dir.join(new_path.trim_start_matches('/'));
         if staging_new.exists() && !is_whiteout(&staging_new) {
             changes.push(Change::RenamedModified {
                 from: old_path.clone(),
                 to: new_path.clone(),
             });
-            consumed_renames.insert(new_path.trim_start_matches('/').to_string());
+            consumed_journal.insert(new_path.trim_start_matches('/').to_string());
         } else {
             changes.push(Change::Renamed {
                 from: old_path.clone(),
                 to: new_path.clone(),
             });
         }
-        consumed_renames.insert(old_path.trim_start_matches('/').to_string());
+        consumed_journal.insert(old_path.trim_start_matches('/').to_string());
     }
 
     // Step 4: Classify remaining entries
     for (relpath, full_path) in staging_entries {
         let normalized = relpath.trim_start_matches('/').to_string();
-        // Skip entries already explained by renames
-        if consumed_renames.contains(&normalized) {
+        // Skip entries already explained by journal
+        if consumed_journal.contains(&normalized) {
             continue;
         }
         // Also skip whiteouts at old_path of a rename
-        if rename_old_set.contains_key(&relpath)
-            || rename_old_set.contains_key(&format!("/{relpath}"))
+        if journal_old_set.contains_key(&relpath)
+            || journal_old_set.contains_key(&format!("/{relpath}"))
         {
             continue;
         }
         // Skip staged files at new_path of a rename
-        if rename_new_set.contains_key(&relpath)
-            || rename_new_set.contains_key(&format!("/{relpath}"))
+        if journal_new_set.contains_key(&relpath)
+            || journal_new_set.contains_key(&format!("/{relpath}"))
         {
             continue;
         }
@@ -236,33 +236,33 @@ mod tests {
     }
 
     #[test]
-    fn read_renames_empty() {
+    fn read_journal_empty() {
         let dir = setup_test_dir();
-        let renames = read_renames(dir.path()).unwrap();
-        assert!(renames.is_empty());
+        let journal = read_journal(dir.path()).unwrap();
+        assert!(journal.is_empty());
     }
 
     #[test]
-    fn read_renames_file() {
+    fn read_journal_file() {
         let dir = setup_test_dir();
-        // Write a renames file: old\0new\0
+        // Write a journal file: old\0new\0
         let data = b"/old/path\0/new/path\0";
-        fs::write(dir.path().join("renames"), data).unwrap();
+        fs::write(dir.path().join("journal"), data).unwrap();
 
-        let renames = read_renames(dir.path()).unwrap();
-        assert_eq!(renames.len(), 1);
-        assert_eq!(renames[0], ("/old/path".to_string(), "/new/path".to_string()));
+        let journal = read_journal(dir.path()).unwrap();
+        assert_eq!(journal.len(), 1);
+        assert_eq!(journal[0], ("/old/path".to_string(), "/new/path".to_string()));
     }
 
     #[test]
-    fn read_renames_multiple() {
+    fn read_journal_multiple() {
         let dir = setup_test_dir();
         let data = b"/a\0/b\0/c\0/d\0";
-        fs::write(dir.path().join("renames"), data).unwrap();
+        fs::write(dir.path().join("journal"), data).unwrap();
 
-        let renames = read_renames(dir.path()).unwrap();
-        assert_eq!(renames.len(), 2);
-        assert_eq!(renames[0], ("/a".to_string(), "/b".to_string()));
-        assert_eq!(renames[1], ("/c".to_string(), "/d".to_string()));
+        let journal = read_journal(dir.path()).unwrap();
+        assert_eq!(journal.len(), 2);
+        assert_eq!(journal[0], ("/a".to_string(), "/b".to_string()));
+        assert_eq!(journal[1], ("/c".to_string(), "/d".to_string()));
     }
 }
