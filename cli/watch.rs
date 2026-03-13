@@ -10,7 +10,8 @@
 // claim the terminal (tcsetpgrp) so our stdin read succeeds, then hand
 // it back to the previous foreground group.
 
-use crate::ioctl::{self, perm_to_str, AgfsCtlRequest};
+use crate::config::Perm;
+use crate::ioctl::{self, AgfsCtlRequest};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use nix::sys::signal::{signal, SigHandler, Signal};
@@ -68,7 +69,7 @@ fn release_tty(prev: Option<Pid>) {
     }
 }
 
-fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
+fn prompt_decision(req: &AgfsCtlRequest) -> Perm {
     let _guard = claim_tty();
 
     eprintln!(
@@ -92,18 +93,18 @@ fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
     let decision = if io::stdin().lock().read_line(&mut line).is_ok() {
         let trimmed = line.trim();
         match trimmed {
-            "" | "d" | "deny" => ioctl::AGFS_PERM_DENY,
-            "a" | "allow" => ioctl::AGFS_PERM_ALLOW,
-            "rw" | "allow-rw" => ioctl::AGFS_PERM_ALLOW_RW,
-            "ro" | "allow-ro" => ioctl::AGFS_PERM_ALLOW_RO,
-            "rx" | "allow-rx" => ioctl::AGFS_PERM_ALLOW_RX,
+            "" | "d" | "deny" => Perm::Deny,
+            "a" | "allow" => Perm::Allow,
+            "rw" | "allow-rw" => Perm::AllowRw,
+            "ro" | "allow-ro" => Perm::AllowRo,
+            "rx" | "allow-rx" => Perm::AllowRx,
             _ => {
                 eprintln!("  unknown: {trimmed}, denying");
-                ioctl::AGFS_PERM_DENY
+                Perm::Deny
             }
         }
     } else {
-        ioctl::AGFS_PERM_DENY
+        Perm::Deny
     };
 
     // TTY is released automatically when _guard is dropped.
@@ -133,14 +134,14 @@ fn watch_loop(ctl_file: &std::fs::File) {
 
         let decision = prompt_decision(&req);
 
-        if let Err(e) = ioctl::write_response(ctl_file, req.id, decision) {
+        if let Err(e) = ioctl::write_response(ctl_file, req.id, decision.to_ioctl()) {
             eprintln!("agfs watch: write error: {e}");
         } else {
             // claim_tty/release_tty is not needed here because TOSTOP
             // is normally unset, so background stderr writes succeed.
             eprintln!(
                 "  → {} (req #{})",
-                perm_to_str(decision),
+                decision,
                 req.id
             );
         }

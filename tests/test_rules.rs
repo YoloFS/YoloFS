@@ -1,5 +1,7 @@
+use agfs::config::{Config, MountConfig, Perm};
 use crate::helpers::AgfsSession;
 use crate::helpers::AGFS_BIN;
+use std::collections::BTreeMap;
 
 #[test]
 fn apply_rules_shows_results() {
@@ -7,10 +9,13 @@ fn apply_rules_shows_results() {
 
     // Unmount, write custom rules, remount
     session.cli(&["unmount"]).unwrap();
-    std::fs::write(
-        session.root.join("agfs.toml"),
-        "[mount]\nnoperm = true\n\n[rules]\n\"/etc\" = \"allow-ro\"\n\"/usr\" = \"allow-rx\"\n",
-    ).unwrap();
+    Config {
+        mount: MountConfig { noperm: true, ..Default::default() },
+        rules: BTreeMap::from([
+            ("/etc".into(), Perm::AllowRo),
+            ("/usr".into(), Perm::AllowRx),
+        ]),
+    }.save(&session.root.join("agfs.toml")).unwrap();
 
     let output = std::process::Command::new(AGFS_BIN)
         .arg("mount")
@@ -26,10 +31,11 @@ fn apply_rules_shows_results() {
 }
 
 #[test]
-fn apply_rules_shows_invalid_perm() {
+fn apply_rules_rejects_invalid_toml() {
     let session = AgfsSession::new().expect("session setup");
 
     session.cli(&["unmount"]).unwrap();
+    // Write raw TOML with an invalid perm — typed Config can't represent this
     std::fs::write(
         session.root.join("agfs.toml"),
         "[mount]\nnoperm = true\n\n[rules]\n\"/etc\" = \"bogus\"\n",
@@ -42,8 +48,7 @@ fn apply_rules_shows_invalid_perm() {
         .output()
         .expect("running agfs mount");
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("invalid permission"), "stderr = {stderr}");
+    assert!(!output.status.success(), "mount should fail with invalid perm in config");
 }
 
 #[test]
@@ -51,10 +56,10 @@ fn rule_add_persists_offline() {
     let session = AgfsSession::new().expect("session setup");
 
     session.cli(&["unmount"]).unwrap();
-    std::fs::write(
-        session.root.join("agfs.toml"),
-        "[mount]\nnoperm = true\n\n[rules]\n",
-    ).unwrap();
+    Config {
+        mount: MountConfig { noperm: true, ..Default::default() },
+        rules: BTreeMap::new(),
+    }.save(&session.root.join("agfs.toml")).unwrap();
 
     let (ok, _, stderr) = session.cli_output(&["rule", "add", "/tmp", "allow-rw"]).unwrap();
     assert!(ok, "rule add should succeed: {stderr}");

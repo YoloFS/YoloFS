@@ -97,31 +97,6 @@ impl AgfsCtlRequest {
     }
 }
 
-pub fn perm_to_str(perm: u8) -> &'static str {
-    match perm {
-        AGFS_PERM_NONE => "none",
-        AGFS_PERM_ASK => "ask",
-        AGFS_PERM_ALLOW => "allow",
-        AGFS_PERM_ALLOW_RW => "allow-rw",
-        AGFS_PERM_ALLOW_RO => "allow-ro",
-        AGFS_PERM_ALLOW_RX => "allow-rx",
-        AGFS_PERM_DENY => "deny",
-        _ => "unknown",
-    }
-}
-
-pub fn perm_from_str(s: &str) -> Option<u8> {
-    match s {
-        "ask" => Some(AGFS_PERM_ASK),
-        "allow" => Some(AGFS_PERM_ALLOW),
-        "allow-rw" => Some(AGFS_PERM_ALLOW_RW),
-        "allow-ro" => Some(AGFS_PERM_ALLOW_RO),
-        "allow-rx" => Some(AGFS_PERM_ALLOW_RX),
-        "deny" => Some(AGFS_PERM_DENY),
-        _ => None,
-    }
-}
-
 /// Read one `AgfsCtlRequest` via ioctl on a directory fd.
 pub fn read_request(fd: &File) -> Result<AgfsCtlRequest> {
     let mut req = AgfsCtlRequest {
@@ -183,32 +158,6 @@ pub fn invalidate_cache(fd: &File) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn perm_roundtrip() {
-        for (s, v) in [
-            ("ask", AGFS_PERM_ASK),
-            ("allow", AGFS_PERM_ALLOW),
-            ("allow-rw", AGFS_PERM_ALLOW_RW),
-            ("allow-ro", AGFS_PERM_ALLOW_RO),
-            ("allow-rx", AGFS_PERM_ALLOW_RX),
-            ("deny", AGFS_PERM_DENY),
-        ] {
-            assert_eq!(perm_from_str(s), Some(v));
-            assert_eq!(perm_to_str(v), s);
-        }
-    }
-
-    #[test]
-    fn perm_from_str_unknown() {
-        assert_eq!(perm_from_str("bogus"), None);
-        assert_eq!(perm_from_str(""), None);
-    }
-
-    #[test]
-    fn perm_to_str_unknown() {
-        assert_eq!(perm_to_str(255), "unknown");
-    }
 
     #[test]
     fn ioc_rule_new_basic() {

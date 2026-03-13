@@ -1,4 +1,6 @@
+use agfs::config::{Config, MountConfig};
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -19,7 +21,7 @@ pub struct AgfsSession {
 
 impl AgfsSession {
     /// Create a new test session with a custom agfs.toml config.
-    pub fn new_with_config(config: &str) -> Result<Self> {
+    pub fn new_with_config(config: Config) -> Result<Self> {
         let root = tempfile::tempdir()
             .context("creating temp dir")?
             .keep();
@@ -37,7 +39,7 @@ impl AgfsSession {
             fs::Permissions::from_mode(0o755),
         )?;
 
-        fs::write(root.join("agfs.toml"), config)?;
+        config.save(&root.join("agfs.toml"))?;
 
         let mnt = root.join(".agfs/mnt");
 
@@ -52,7 +54,10 @@ impl AgfsSession {
 
     /// Create a new test session: seed files, write agfs.toml, `agfs mount`.
     pub fn new() -> Result<Self> {
-        Self::new_with_config("[mount]\nnoperm = true\n\n[rules]\n")
+        Self::new_with_config(Config {
+            mount: MountConfig { noperm: true, ..Default::default() },
+            rules: BTreeMap::new(),
+        })
     }
 
     fn mount(&mut self) -> Result<()> {
