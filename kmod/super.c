@@ -16,7 +16,6 @@ enum agfs_param {
 	Opt_nostaging,
 	Opt_ask_timeout,
 	Opt_ask_default,
-	Opt_storage,
 };
 
 static const struct fs_parameter_spec agfs_fs_parameters[] = {
@@ -24,7 +23,6 @@ static const struct fs_parameter_spec agfs_fs_parameters[] = {
 	fsparam_flag("nostaging",	Opt_nostaging),
 	fsparam_u32("ask_timeout",	Opt_ask_timeout),
 	fsparam_u32("ask_default",	Opt_ask_default),
-	fsparam_string("storage",	Opt_storage),
 	{}
 };
 
@@ -33,7 +31,6 @@ struct agfs_fs_opts {
 	bool		nostaging;
 	unsigned int	ask_timeout_s;
 	unsigned int	ask_default;
-	char		*storage;
 };
 
 /* ── Inode Slab Cache ──────────────────────────────────────────────── */
@@ -199,36 +196,40 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		goto out_put_base;
 	}
 
-	/* Resolve storage path if provided */
-	if (opts->storage) {
-		err = kern_path(opts->storage, LOOKUP_FOLLOW | LOOKUP_DIRECTORY,
-				&sbi->storage_path);
-		if (err)
-			goto out_put_base;
-
-		/* Resolve staging dir */
-		{
-			struct path staging;
-			err = vfs_path_lookup(sbi->storage_path.dentry,
-					      sbi->storage_path.mnt,
-					      "staging", LOOKUP_DIRECTORY,
-					      &staging);
-			if (!err)
-				sbi->staging_dir = staging;
-			/* staging may not exist yet — that's ok */
-		}
-
-		/* Resolve journal file */
-		{
-			struct path renames;
-			err = vfs_path_lookup(sbi->storage_path.dentry,
-					      sbi->storage_path.mnt,
-					      "journal", 0, &renames);
-			if (!err)
-				sbi->journal_path = renames;
-		}
-		err = 0;
+	/* Resolve storage path from mount source (required) */
+	if (!fc->source || !fc->source[0]) {
+		pr_err("agfs: source path is required\n");
+		err = -EINVAL;
+		goto out_put_base;
 	}
+
+	err = kern_path(fc->source, LOOKUP_FOLLOW | LOOKUP_DIRECTORY,
+			&sbi->storage_path);
+	if (err)
+		goto out_put_base;
+
+	/* Resolve staging dir */
+	{
+		struct path staging;
+		err = vfs_path_lookup(sbi->storage_path.dentry,
+				      sbi->storage_path.mnt,
+				      "staging", LOOKUP_DIRECTORY,
+				      &staging);
+		if (!err)
+			sbi->staging_dir = staging;
+		/* staging may not exist yet — that's ok */
+	}
+
+	/* Resolve journal file */
+	{
+		struct path journal_path;
+		err = vfs_path_lookup(sbi->storage_path.dentry,
+				      sbi->storage_path.mnt,
+				      "journal", 0, &journal_path);
+		if (!err)
+			sbi->journal_path = journal_path;
+	}
+	err = 0;
 
 	/* Create root inode from lower root */
 	inode = agfs_iget(sb, d_inode(base_path.dentry));
@@ -294,12 +295,6 @@ static int agfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	case Opt_ask_default:
 		opts->ask_default = result.uint_32;
 		break;
-	case Opt_storage:
-		kfree(opts->storage);
-		opts->storage = kstrdup(param->string, GFP_KERNEL);
-		if (!opts->storage)
-			return -ENOMEM;
-		break;
 	default:
 		return -EINVAL;
 	}
@@ -315,10 +310,8 @@ static void agfs_free_fc(struct fs_context *fc)
 {
 	struct agfs_fs_opts *opts = fc->fs_private;
 
-	if (opts) {
-		kfree(opts->storage);
+	if (opts)
 		kfree(opts);
-	}
 }
 
 static const struct fs_context_operations agfs_context_ops = {

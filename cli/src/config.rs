@@ -74,8 +74,7 @@ pub fn init() -> Result<()> {
 
 /// Build kernel mount option string from agfs.toml [mount] section.
 pub fn mount_options(agfs_dir: &Path) -> String {
-    let storage = agfs_dir.to_string_lossy();
-    let mut opts = vec![format!("storage={storage}")];
+    let mut opts = Vec::new();
 
     let cwd = agfs_dir.parent().unwrap_or(Path::new("."));
     let config_path = cwd.join("agfs.toml");
@@ -250,7 +249,7 @@ mod tests {
         let agfs_dir = tmp.path().join(".agfs");
         fs::create_dir_all(&agfs_dir).unwrap();
         let opts = mount_options(&agfs_dir);
-        assert_eq!(opts, format!("storage={}", agfs_dir.to_string_lossy()));
+        assert_eq!(opts, "");
     }
 
     #[test]
@@ -266,6 +265,7 @@ mod tests {
         assert!(opts.contains("noperm"), "opts = {opts}");
         assert!(opts.contains("nostaging"), "opts = {opts}");
         assert!(opts.contains("ask_timeout=5"), "opts = {opts}");
+        assert!(!opts.contains("storage"), "opts = {opts}");
     }
 
     #[test]

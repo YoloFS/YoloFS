@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-nix = { version = "0.29", features = ["fs", "mount", "sched", "process", "ioctl", "poll", "dir", "user"] }
+nix = { version = "0.29", features = ["fs", "mount", "sched", "process", "signal", "term", "ioctl", "poll", "dir", "user"] }
 anyhow = "1"
 colored = "2"
 libc = "0.2"

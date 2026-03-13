@@ -909,6 +909,27 @@ agfs mount. That is why runtime examples use absolute paths like `/src` and
 session root. Files under that session root are typically ruled `allow-rw`;
 everything else defaults to `ask`.
 
+### TTY / terminal ownership
+
+When agfs runs the default workflow (`agfs` with no subcommand), a
+background watch thread handles interactive permission prompts by reading
+from the terminal. While the child shell is running, its process group
+typically becomes the terminal foreground group. Without special handling
+the parent's watch thread would receive `SIGTTIN` when it tries to read
+from the terminal, stopping the entire process.
+
+To avoid this, `watch.rs` temporarily claims terminal ownership around each
+permission prompt:
+
+1. Save the current foreground process group (`tcgetpgrp`).
+2. Ignore `SIGTTIN`/`SIGTTOU` so `tcsetpgrp` won't be stopped.
+3. Call `tcsetpgrp` to make the watch thread's process group the
+   foreground group.
+4. Restore `SIGTTIN`/`SIGTTOU` to default — we are now the foreground
+   group so they won't fire.
+5. Print the prompt and read the user's answer from stdin.
+6. Give the terminal back to the saved foreground group.
+
 ---
 
 ## 9. Source File Layout
@@ -940,7 +961,7 @@ agfs/
         ├── abort.rs
         ├── status.rs
         ├── diff.rs
-        ├── watch.rs
+        ├── watch.rs           # permission prompt daemon (handles TTY ownership)
         └── ioctl.rs             # binary protocol structs + ioctl helpers
 ```
 

@@ -52,11 +52,12 @@ pub fn setup_agfs_dir(agfs_dir: &Path) -> Result<()> {
 pub fn do_mount(agfs_dir: &Path) -> Result<()> {
     let mnt = agfs_dir.join("mnt");
     let mount_data = crate::config::mount_options(agfs_dir);
+    let source = agfs_dir.to_string_lossy();
 
     eprintln!("{} {}", "agfs: mounting".green(), mnt.display());
 
     nix::mount::mount(
-        Some("none"),
+        Some(source.as_ref()),
         &mnt,
         Some("agfs"),
         nix::mount::MsFlags::empty(),

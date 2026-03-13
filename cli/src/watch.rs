@@ -4,14 +4,64 @@
 // prompt the user, and write decisions back.
 //
 // `run_background()` — spawns a watch thread for the default workflow.
+//
+// When running as a background thread alongside `exec`, the child shell
+// owns the terminal foreground group.  Before each prompt we temporarily
+// claim the terminal (tcsetpgrp) so our stdin read succeeds, then hand
+// it back to the previous foreground group.
 
 use crate::ioctl::{self, perm_to_str, AgfsCtlRequest};
 use anyhow::{Context, Result};
 use colored::Colorize;
+use nix::sys::signal::{signal, SigHandler, Signal};
+use nix::unistd::{getpgrp, tcgetpgrp, tcsetpgrp, Pid};
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::OpenOptionsExt;
 
+/// Temporarily make our process group the terminal foreground group so we
+/// can read from stdin.  Returns the previous foreground group (if any) so
+/// the caller can restore it with `release_tty`.
+fn claim_tty() -> Option<Pid> {
+    let stdin = io::stdin();
+    let saved = tcgetpgrp(&stdin).ok();
+
+    // Ignore SIGTTIN/SIGTTOU while we call tcsetpgrp — we may be a
+    // background group right now.
+    unsafe {
+        signal(Signal::SIGTTIN, SigHandler::SigIgn).ok();
+        signal(Signal::SIGTTOU, SigHandler::SigIgn).ok();
+    }
+    let pgid = getpgrp();
+    tcsetpgrp(&stdin, pgid).ok();
+    // Restore default handlers — we are now the foreground group so they
+    // won't fire.
+    unsafe {
+        signal(Signal::SIGTTIN, SigHandler::SigDfl).ok();
+        signal(Signal::SIGTTOU, SigHandler::SigDfl).ok();
+    }
+    saved
+}
+
+/// Give the terminal back to `prev` (the process group that owned it
+/// before `claim_tty`).
+fn release_tty(prev: Option<Pid>) {
+    let Some(prev) = prev else { return };
+    if prev == getpgrp() {
+        return;
+    }
+    let stdin = io::stdin();
+    unsafe {
+        signal(Signal::SIGTTOU, SigHandler::SigIgn).ok();
+    }
+    tcsetpgrp(&stdin, prev).ok();
+    unsafe {
+        signal(Signal::SIGTTOU, SigHandler::SigDfl).ok();
+    }
+}
+
 fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
+    let saved = claim_tty();
+
     eprintln!(
         "{} {} {} {}",
         "[ask]".yellow().bold(),
@@ -30,7 +80,7 @@ fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
     io::stderr().flush().ok();
 
     let mut line = String::new();
-    if io::stdin().lock().read_line(&mut line).is_ok() {
+    let decision = if io::stdin().lock().read_line(&mut line).is_ok() {
         let trimmed = line.trim();
         match trimmed {
             "" | "d" | "deny" => ioctl::AGFS_PERM_DENY,
@@ -45,7 +95,10 @@ fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
         }
     } else {
         ioctl::AGFS_PERM_DENY
-    }
+    };
+
+    release_tty(saved);
+    decision
 }
 
 /// Interactive watch — blocks on ioctl read for each ask request.
@@ -77,6 +130,8 @@ fn watch_loop(ctl_file: &std::fs::File) {
         if let Err(e) = ioctl::write_response(ctl_file, req.id, decision) {
             eprintln!("agfs watch: write error: {e}");
         } else {
+            // claim_tty/release_tty is not needed here because TOSTOP
+            // is normally unset, so background stderr writes succeed.
             eprintln!(
                 "  → {} (req #{})",
                 perm_to_str(decision),
