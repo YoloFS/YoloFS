@@ -95,11 +95,12 @@ fn find_agfs_dirs() -> Vec<String> {
 }
 
 /// Unmount all active agfs sessions.
-fn unmount_all() {
+fn unmount_all() -> Result<()> {
     for agfs_dir in find_agfs_dirs() {
         eprintln!("{} {}", "agfs: unmounting".green(), agfs_dir);
-        crate::mount::unmount_at(Path::new(&agfs_dir));
+        crate::mount::unmount_at(Path::new(&agfs_dir))?;
     }
+    Ok(())
 }
 
 /// Create agfs.toml and load the kernel module.
@@ -127,7 +128,7 @@ pub fn reinit() -> Result<()> {
 
 /// Unmount all agfs mounts and unload the kernel module.
 pub fn deinit() -> Result<()> {
-    unmount_all();
+    unmount_all()?;
     unload_kmod()
 }
 

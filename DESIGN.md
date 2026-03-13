@@ -1057,8 +1057,8 @@ agfs/
 │   ├── main.rs
 │   ├── lib.rs
 │   ├── config.rs              # agfs.toml management (rules, mount options)
-│   ├── init.rs                # `agfs init` — create agfs.toml + insmod kernel module
-│   ├── mount.rs               # mount, unmount, remount
+│   ├── init.rs                # `agfs init/deinit/reinit` — kmod load/unload, teardown
+│   ├── mount.rs               # mount, unmount, remount (prompts to kill blocking procs)
 │   ├── exec.rs
 │   ├── commit.rs
 │   ├── abort.rs

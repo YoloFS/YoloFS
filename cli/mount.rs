@@ -8,11 +8,102 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use std::env;
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::os::unix;
 use std::path::Path;
 
 /// Bind-mount host pseudo filesystems into the agfs mount so they're visible inside the chroot.
 const BIND_MOUNTS: &[&str] = &["/proc", "/sys", "/dev"];
+
+/// Try to unmount a path. If busy, show blocking processes and offer to kill them.
+fn umount_or_prompt(target: &Path) -> Result<()> {
+    use nix::errno::Errno;
+
+    match nix::mount::umount(target) {
+        Ok(()) => return Ok(()),
+        Err(Errno::EBUSY) => {}
+        Err(e) => anyhow::bail!("umount {}: {e}", target.display()),
+    }
+
+    // Unmount failed with EBUSY — find who's blocking it.
+    let pids = get_blocking_pids(target);
+    if pids.is_empty() {
+        anyhow::bail!("{} is busy (could not identify blocking processes)", target.display());
+    }
+
+    eprintln!(
+        "{} {} is busy, blocked by:",
+        "agfs:".red(),
+        target.display()
+    );
+    for &pid in &pids {
+        let comm = fs::read_to_string(format!("/proc/{pid}/comm"))
+            .unwrap_or_default();
+        eprintln!("  PID {pid}  {}", comm.trim());
+    }
+
+    eprint!("Kill these processes? [y/N] ");
+    io::stderr().flush().ok();
+    let mut input = String::new();
+    io::stdin().lock().read_line(&mut input).ok();
+
+    if !input.trim().eq_ignore_ascii_case("y") {
+        anyhow::bail!("{} is busy (user declined to kill blocking processes)", target.display());
+    }
+
+    for &pid in &pids {
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid as i32),
+            nix::sys::signal::Signal::SIGTERM,
+        );
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    nix::mount::umount(target)
+        .with_context(|| format!("umount {} after killing blocking processes", target.display()))
+}
+
+/// Get PIDs of processes with open file descriptors on the same device as `mount_path`.
+/// This is equivalent to `fuser -m` — walks /proc/<pid>/fd/ and compares device IDs.
+fn get_blocking_pids(mount_path: &Path) -> Vec<u32> {
+    use std::os::unix::fs::MetadataExt;
+
+    let Ok(mount_meta) = fs::metadata(mount_path) else {
+        return Vec::new();
+    };
+    let mount_dev = mount_meta.dev();
+    let self_pid = std::process::id();
+
+    let Ok(proc_entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+
+    let mut pids = Vec::new();
+    for entry in proc_entries.flatten() {
+        let pid: u32 = match entry.file_name().to_str().and_then(|s| s.parse().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+        if pid == self_pid {
+            continue;
+        }
+
+        let fd_dir = entry.path().join("fd");
+        let Ok(fds) = fs::read_dir(&fd_dir) else {
+            continue;
+        };
+        let uses_mount = fds.flatten().any(|fd| {
+            fs::metadata(fd.path())
+                .map(|m| m.dev() == mount_dev)
+                .unwrap_or(false)
+        });
+        if uses_mount {
+            pids.push(pid);
+        }
+    }
+
+    pids
+}
 
 fn bind_mount_pseudofs(mnt: &Path) -> Result<()> {
     for source in BIND_MOUNTS {
@@ -40,29 +131,35 @@ fn bind_mount_pseudofs(mnt: &Path) -> Result<()> {
     Ok(())
 }
 
-fn unbind_mount_pseudofs(mnt: &Path) {
+fn unbind_mount_pseudofs(mnt: &Path) -> Result<()> {
     for source in BIND_MOUNTS.iter().rev() {
         let target = mnt.join(source.trim_start_matches('/'));
         if target.exists() && is_mountpoint(&target) {
             eprintln!("{} {}", "agfs: unbinding".green(), source);
-            let _ = nix::mount::umount(&target);
+            umount_or_prompt(&target)
+                .with_context(|| format!("unbinding {source}"))?;
         }
     }
+    Ok(())
 }
 
 /// Full teardown of an agfs session directory: unbind pseudofs, unmount, remove symlinks, clean up.
-pub fn unmount_at(agfs_dir: &Path) {
+pub fn unmount_at(agfs_dir: &Path) -> Result<()> {
     let mnt = agfs_dir.join("mnt");
 
     // Remove symlinks first (they point into the mount)
     let _ = fs::remove_file(agfs_dir.join("cwd"));
 
     // Unbind pseudo filesystems, then unmount agfs
-    unbind_mount_pseudofs(&mnt);
-    let _ = nix::mount::umount(&mnt);
+    unbind_mount_pseudofs(&mnt)?;
+    if mnt.exists() && is_mountpoint(&mnt) {
+        umount_or_prompt(&mnt)
+            .with_context(|| format!("unmounting {}", mnt.display()))?;
+    }
 
     // Remove the .agfs/ directory
     let _ = fs::remove_dir_all(agfs_dir);
+    Ok(())
 }
 
 /// Create .agfs/ layout, mount, and apply rules.
@@ -88,7 +185,7 @@ pub fn mount() -> Result<()> {
 /// Unmount the agfs filesystem and remove the .agfs/ directory.
 pub fn unmount() -> Result<()> {
     let agfs_dir = crate::session_dir()?;
-    unmount_at(&agfs_dir);
+    unmount_at(&agfs_dir)?;
     eprintln!("{} {}", "agfs: unmounted".green(), agfs_dir.join("mnt").display());
     Ok(())
 }
@@ -185,6 +282,56 @@ mod tests {
         setup_agfs_dir(&agfs).unwrap();
         setup_agfs_dir(&agfs).unwrap(); // second call should not fail
         assert!(agfs.join("staging").is_dir());
+    }
+
+    #[test]
+    fn get_blocking_pids_finds_child_with_open_fd() {
+        use std::process::{Command, Stdio};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("held_open");
+        fs::write(&file_path, "data").unwrap();
+
+        // Spawn a child that holds the file open and sleeps.
+        let child = Command::new("bash")
+            .args(["-c", &format!("exec 3<'{}'; sleep 60", file_path.display())])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let child_pid = child.id();
+
+        // Give the child a moment to open the fd.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let pids = get_blocking_pids(tmp.path());
+        assert!(
+            pids.contains(&child_pid),
+            "expected PID {child_pid} in blocking list, got {pids:?}"
+        );
+
+        // Clean up.
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(child_pid as i32),
+            nix::sys::signal::Signal::SIGTERM,
+        );
+    }
+
+    #[test]
+    fn get_blocking_pids_excludes_self() {
+        // Our own PID should never appear even though we can stat files on the same device.
+        let pids = get_blocking_pids(Path::new("/tmp"));
+        let self_pid = std::process::id();
+        assert!(
+            !pids.contains(&self_pid),
+            "self PID {self_pid} should be excluded, got {pids:?}"
+        );
+    }
+
+    #[test]
+    fn get_blocking_pids_returns_empty_for_nonexistent() {
+        let pids = get_blocking_pids(Path::new("/nonexistent_agfs_test_path"));
+        assert!(pids.is_empty());
     }
 
     #[test]
