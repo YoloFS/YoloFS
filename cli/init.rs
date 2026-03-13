@@ -80,42 +80,26 @@ fn unload_kmod() -> Result<()> {
     Ok(())
 }
 
-/// Find all active agfs mounts by reading /proc/mounts.
-fn find_agfs_mounts() -> Vec<String> {
+/// Find all active agfs session directories by reading /proc/mounts.
+/// The source (first column) is the .agfs/ directory.
+fn find_agfs_dirs() -> Vec<String> {
     let Ok(content) = std::fs::read_to_string("/proc/mounts") else {
         return Vec::new();
     };
     content
         .lines()
         .filter(|line| line.contains(" agfs "))
-        .filter_map(|line| line.split_whitespace().nth(1))
+        .filter_map(|line| line.split_whitespace().next())
         .map(String::from)
         .collect()
 }
 
-/// Unmount all active agfs mounts.
-fn unmount_all() -> Result<()> {
-    let mut mounts = find_agfs_mounts();
-    if mounts.is_empty() {
-        return Ok(());
+/// Unmount all active agfs sessions.
+fn unmount_all() {
+    for agfs_dir in find_agfs_dirs() {
+        eprintln!("{} {}", "agfs: unmounting".green(), agfs_dir);
+        crate::mount::unmount_at(Path::new(&agfs_dir));
     }
-
-    // Unmount deepest paths first to avoid busy errors
-    mounts.sort_by(|a, b| b.len().cmp(&a.len()));
-
-    for mnt in &mounts {
-        eprintln!("{} {}", "agfs: unmounting".green(), mnt);
-        let output = Command::new("sudo")
-            .args(["umount", mnt])
-            .output()
-            .context("running sudo umount")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("{} {}: {}", "agfs: unmount failed".red(), mnt, stderr.trim());
-        }
-    }
-
-    Ok(())
 }
 
 /// Create agfs.toml and load the kernel module.
@@ -143,7 +127,7 @@ pub fn reinit() -> Result<()> {
 
 /// Unmount all agfs mounts and unload the kernel module.
 pub fn deinit() -> Result<()> {
-    unmount_all()?;
+    unmount_all();
     unload_kmod()
 }
 

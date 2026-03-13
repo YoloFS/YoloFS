@@ -9,13 +9,67 @@ use colored::Colorize;
 use std::env;
 use std::fs;
 use std::os::unix;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+/// Bind-mount host pseudo filesystems into the agfs mount so they're visible inside the chroot.
+const BIND_MOUNTS: &[&str] = &["/proc", "/sys", "/dev"];
+
+fn bind_mount_pseudofs(mnt: &Path) -> Result<()> {
+    for source in BIND_MOUNTS {
+        let source_path = Path::new(source);
+        if !source_path.exists() {
+            continue;
+        }
+        let target = mnt.join(source.trim_start_matches('/'));
+        if !target.exists() {
+            continue;
+        }
+        if is_mountpoint(&target) {
+            continue;
+        }
+        eprintln!("{} {}", "agfs: bind-mounting".green(), source);
+        nix::mount::mount(
+            Some(*source),
+            &target,
+            None::<&str>,
+            nix::mount::MsFlags::MS_BIND,
+            None::<&str>,
+        )
+        .with_context(|| format!("bind-mounting {source}"))?;
+    }
+    Ok(())
+}
+
+fn unbind_mount_pseudofs(mnt: &Path) {
+    for source in BIND_MOUNTS.iter().rev() {
+        let target = mnt.join(source.trim_start_matches('/'));
+        if target.exists() && is_mountpoint(&target) {
+            eprintln!("{} {}", "agfs: unbinding".green(), source);
+            let _ = nix::mount::umount(&target);
+        }
+    }
+}
+
+/// Full teardown of an agfs session directory: unbind pseudofs, unmount, remove symlinks, clean up.
+pub fn unmount_at(agfs_dir: &Path) {
+    let mnt = agfs_dir.join("mnt");
+
+    // Remove symlinks first (they point into the mount)
+    let _ = fs::remove_file(agfs_dir.join("cwd"));
+
+    // Unbind pseudo filesystems, then unmount agfs
+    unbind_mount_pseudofs(&mnt);
+    let _ = nix::mount::umount(&mnt);
+
+    // Remove the .agfs/ directory
+    let _ = fs::remove_dir_all(agfs_dir);
+}
 
 /// Create .agfs/ layout, mount, and apply rules.
 /// If already mounted, re-applies rules from agfs.toml.
 pub fn mount() -> Result<()> {
     let cwd = env::current_dir().context("getting cwd")?;
-    let agfs_dir = agfs_dir_path()?;
+    let agfs_dir = cwd.join(".agfs");
     let mnt = agfs_dir.join("mnt");
 
     if mnt.exists() && is_mountpoint(&mnt) {
@@ -25,6 +79,7 @@ pub fn mount() -> Result<()> {
 
     setup_agfs_dir(&agfs_dir)?;
     do_mount(&agfs_dir)?;
+    bind_mount_pseudofs(&mnt)?;
     create_cwd_symlink(&agfs_dir, &cwd)?;
     crate::config::apply_rules(&agfs_dir)?;
     Ok(())
@@ -33,25 +88,8 @@ pub fn mount() -> Result<()> {
 /// Unmount the agfs filesystem and remove the .agfs/ directory.
 pub fn unmount() -> Result<()> {
     let agfs_dir = crate::session_dir()?;
-    let mnt = agfs_dir.join("mnt");
-
-    // Remove symlinks first (they point into the mount)
-    let cwd_link = agfs_dir.join("cwd");
-    if cwd_link.symlink_metadata().is_ok() {
-        fs::remove_file(&cwd_link).context("removing cwd symlink")?;
-    }
-
-    // Unmount agfs (ignore EINVAL — means it wasn't mounted)
-    match nix::mount::umount(&mnt) {
-        Ok(()) => {}
-        Err(nix::errno::Errno::EINVAL) => {}
-        Err(e) => return Err(e).context("unmounting .agfs/mnt"),
-    }
-
-    fs::remove_dir_all(&agfs_dir)
-        .context("removing .agfs/ directory")?;
-
-    eprintln!("{} {}", "agfs: unmounted".green(), mnt.display());
+    unmount_at(&agfs_dir);
+    eprintln!("{} {}", "agfs: unmounted".green(), agfs_dir.join("mnt").display());
     Ok(())
 }
 
@@ -59,12 +97,6 @@ pub fn unmount() -> Result<()> {
 pub fn remount() -> Result<()> {
     unmount()?;
     mount()
-}
-
-/// Return the .agfs/ path for the current directory.
-pub fn agfs_dir_path() -> Result<PathBuf> {
-    let cwd = env::current_dir().context("getting cwd")?;
-    Ok(cwd.join(".agfs"))
 }
 
 /// Check if a path is a mount point by comparing device IDs with its parent.
@@ -116,6 +148,7 @@ fn create_cwd_symlink(agfs_dir: &Path, cwd: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn is_mountpoint_returns_false_for_regular_dir() {

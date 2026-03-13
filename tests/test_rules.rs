@@ -68,3 +68,49 @@ fn rule_add_persists_offline() {
     assert!(content.contains("allow-rw"), "rule should be in agfs.toml: {content}");
 }
 
+#[test]
+fn tilde_rule_resolves_to_home() {
+    let session = AgfsSession::new().expect("session setup");
+
+    // Unmount, write config with ~ rule, remount
+    session.cli(&["unmount"]).unwrap();
+    std::fs::write(
+        session.root.join("agfs.toml"),
+        "[mount]\nnoperm = true\n\n[rules]\n\"~\" = \"allow-rw\"\n",
+    ).unwrap();
+
+    let output = std::process::Command::new(AGFS_BIN)
+        .arg("mount")
+        .current_dir(&session.root)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("running agfs mount");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let home = std::env::var("HOME").unwrap();
+    assert!(output.status.success(), "mount should succeed: {stderr}");
+    assert!(stderr.contains(&home), "~ should resolve to {home}: {stderr}");
+}
+
+#[test]
+fn nonexistent_rule_path_warns() {
+    let session = AgfsSession::new().expect("session setup");
+
+    session.cli(&["unmount"]).unwrap();
+    std::fs::write(
+        session.root.join("agfs.toml"),
+        "[mount]\nnoperm = true\n\n[rules]\n\"/nonexistent_agfs_xyz\" = \"allow-rw\"\n",
+    ).unwrap();
+
+    let output = std::process::Command::new(AGFS_BIN)
+        .arg("mount")
+        .current_dir(&session.root)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("running agfs mount");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "mount should still succeed: {stderr}");
+    assert!(stderr.contains("does not exist"), "should warn about nonexistent path: {stderr}");
+}
+

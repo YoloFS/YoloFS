@@ -37,3 +37,32 @@ fn cwd_symlink_created() {
         "symlink target {target:?} should end with {expected_suffix:?}"
     );
 }
+
+#[test]
+fn pseudofs_bind_mounted() {
+    let session = AgfsSession::new().expect("session setup");
+
+    // /proc, /sys, /dev should be visible inside the mount
+    for name in &["proc", "sys", "dev"] {
+        let path = session.mnt.join(name);
+        assert!(path.exists(), "{name} should exist in mount");
+        assert!(path.is_dir(), "{name} should be a directory");
+    }
+
+    // /proc/self should be accessible (confirms it's a real procfs, not empty dir)
+    let proc_self = session.mnt.join("proc/self");
+    assert!(proc_self.exists(), "/proc/self should be accessible via bind-mount");
+}
+
+#[test]
+fn unmount_cleans_up_pseudofs() {
+    let session = AgfsSession::new().expect("session setup");
+    let mnt = session.root.join(".agfs/mnt");
+
+    // Verify bind-mounts are present
+    assert!(mnt.join("proc/self").exists(), "proc should be bind-mounted");
+
+    let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
+    assert!(ok, "unmount should succeed with bind-mounts: {stderr}");
+    assert!(!session.root.join(".agfs").exists(), ".agfs/ should be removed");
+}
