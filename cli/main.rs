@@ -50,7 +50,11 @@ enum Command {
         action: RuleAction,
     },
     /// Handle ask requests (daemon mode)
-    Watch,
+    Watch {
+        /// Automatically allow all requests without prompting
+        #[arg(long)]
+        allow_all: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -99,7 +103,7 @@ fn run_cli() -> anyhow::Result<u8> {
             RuleAction::Add { path, perm } => config::add_rule(&path, &perm)?,
             RuleAction::Remove { path } => config::remove_rule(&path)?,
         },
-        Some(Command::Watch) => watch::run()?,
+        Some(Command::Watch { allow_all }) => watch::run(allow_all)?,
         None => {
             let has_separator = std::env::args().any(|a| a == "--");
             if !cli.exec_args.is_empty() && !has_separator {
