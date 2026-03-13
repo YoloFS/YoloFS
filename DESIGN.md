@@ -1051,21 +1051,22 @@ agfs/
 │   ├── staging.c
 │   ├── perm.c
 │   └── ioctl.c
-└── cli/                       # Userspace CLI tool (Rust)
-    ├── Cargo.toml
-    └── src/
-        ├── main.rs
-        ├── lib.rs
-        ├── config.rs          # agfs.toml management (init, rules, mount options)
-        ├── mount.rs
-        ├── exec.rs
-        ├── unmount.rs         # `agfs unmount` — tear down session
-        ├── commit.rs
-        ├── abort.rs
-        ├── status.rs
-        ├── diff.rs
-        ├── watch.rs           # permission prompt daemon (handles TTY ownership)
-        └── ioctl.rs             # binary protocol structs + ioctl helpers
+├── Cargo.toml
+├── Cargo.lock
+├── cli/                       # Userspace CLI source (Rust)
+│   ├── main.rs
+│   ├── lib.rs
+│   ├── config.rs              # agfs.toml management (init, rules, mount options)
+│   ├── mount.rs
+│   ├── exec.rs
+│   ├── unmount.rs             # `agfs unmount` — tear down session
+│   ├── commit.rs
+│   ├── abort.rs
+│   ├── status.rs
+│   ├── diff.rs
+│   ├── watch.rs               # permission prompt daemon (handles TTY ownership)
+│   └── ioctl.rs               # binary protocol structs + ioctl helpers
+└── tests/                     # Integration tests
 ```
 
 ---

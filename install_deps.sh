@@ -5,7 +5,7 @@
 #
 # Installs:
 #   - Linux kernel headers + build tools (for kmod/)
-#   - Rust toolchain (for cli/)
+#   - Rust toolchain (for cli/ source)
 #   - uv (Python package manager, for scripts/)
 
 set -euo pipefail

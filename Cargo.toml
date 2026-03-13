@@ -5,7 +5,10 @@ edition = "2024"
 
 [[bin]]
 name = "agfs"
-path = "src/main.rs"
+path = "cli/main.rs"
+
+[lib]
+path = "cli/lib.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

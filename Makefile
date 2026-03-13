@@ -7,7 +7,7 @@ all: install insmod
 build: cli kmod
 
 clean:
-	cargo clean --manifest-path cli/Cargo.toml
+	cargo clean
 	rm -rf kmod/build
 
 # ── CLI ────────────────────────────────────────────────────────────────
@@ -15,10 +15,10 @@ clean:
 .PHONY: cli install uninstall
 
 cli:
-	cargo build --release --manifest-path cli/Cargo.toml
+	cargo build --release
 
 install: cli
-	sudo install -m 4755 -o root cli/target/release/agfs /usr/local/bin/agfs
+	sudo install -m 4755 -o root target/release/agfs /usr/local/bin/agfs
 
 uninstall:
 	sudo rm -f /usr/local/bin/agfs
@@ -51,7 +51,7 @@ rmmod:
 test: test-unit test-integration
 
 test-unit:
-	cargo test --lib --manifest-path cli/Cargo.toml
+	cargo test --lib
 
 test-integration: install insmod
-	cargo test --manifest-path cli/Cargo.toml --test integration -- --test-threads=1
+	cargo test --test integration -- --test-threads=1
