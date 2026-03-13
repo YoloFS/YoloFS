@@ -481,9 +481,9 @@ Operations passed in ask requests:
 
 ```c
 enum agfs_op {
-    AGFS_OP_READ,          // File opened for reading.
-    AGFS_OP_WRITE,         // File opened for writing (includes append/truncate).
-    AGFS_OP_EXEC,          // File opened for execution.
+    AGFS_OP_READ  = 1,    // File opened for reading.
+    AGFS_OP_WRITE = 2,    // File opened for writing (includes append/truncate).
+    AGFS_OP_EXEC  = 3,    // File opened for execution.
 };
 ```
 
@@ -789,9 +789,10 @@ fails with `-ENAMETOOLONG` and no ask request is enqueued.
 
 ```c
 struct agfs_perm_request {
+    struct kref             ref;            // refcounted lifetime
     u64                     id;
     char                    path[AGFS_PATH_MAX];
-    unsigned int            op;
+    enum agfs_op            op;
     pid_t                   pid;
     char                    comm[TASK_COMM_LEN];
 
@@ -843,7 +844,7 @@ dispatched-but-unanswered requests receive the default decision.
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Publishing staging mutations and `.agfs/journal` appends | `rw_semaphore` (write for create/unlink/rename/COW/truncate publication) |
+| `sb->staging_sem` | Publishing staging mutations atomically (override + journal + dentry swap) | `rw_semaphore` (write for rename/COW/truncate-open). Create/mkdir/symlink/unlink/rmdir are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
 | `dentry_info->lock` | Per-directory override list + cached lower path | `spinlock` |
 
@@ -1049,6 +1050,7 @@ agfs/
 │   ├── dentry.c
 │   ├── lookup.c
 │   ├── staging.c
+│   ├── journal.c
 │   ├── perm.c
 │   └── ioctl.c
 ├── Cargo.toml
@@ -1064,6 +1066,7 @@ agfs/
 │   ├── abort.rs
 │   ├── status.rs
 │   ├── diff.rs
+│   ├── journal.rs             # journal parsing + resolution (commit/status/diff)
 │   ├── watch.rs               # permission prompt daemon (handles TTY ownership)
 │   └── ioctl.rs               # binary protocol structs + ioctl helpers
 └── tests/                     # Integration tests

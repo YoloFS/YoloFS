@@ -89,10 +89,14 @@ static int agfs_open(struct inode *inode, struct file *file)
 			struct path blob_path;
 			u64 id;
 
+			down_write(&sbi->staging_sem);
+
 			err = agfs_staging_alloc(sbi, &id, &blob_path,
 						 0644, NULL);
-			if (err)
+			if (err) {
+				up_write(&sbi->staging_sem);
 				goto out_free;
+			}
 
 			lower_file = dentry_open(&blob_path,
 						 file->f_flags & ~O_TRUNC,
@@ -101,6 +105,7 @@ static int agfs_open(struct inode *inode, struct file *file)
 				err = PTR_ERR(lower_file);
 				lower_file = NULL;
 				path_put(&blob_path);
+				up_write(&sbi->staging_sem);
 				goto out_free;
 			}
 
@@ -110,6 +115,8 @@ static int agfs_open(struct inode *inode, struct file *file)
 					  dentry->d_name.len, id, NULL);
 			agfs_set_lower_path(dentry, &blob_path);
 			agfs_journal_append_a(sbi, buf, id);
+
+			up_write(&sbi->staging_sem);
 
 			fi->needs_cow = false;
 			fi->is_staging = true;
