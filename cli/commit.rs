@@ -72,8 +72,8 @@ pub fn run() -> Result<()> {
 
     let mut committed = 0;
 
-    // Journal is already resolved — each change targets a distinct path,
-    // so no ordering between types is required.
+    // Journal is resolved and sorted: adds/modifies (parents before children),
+    // then deletes (children before parents).
     for change in &changes {
         match change {
             Change::Renamed { from, to } => {

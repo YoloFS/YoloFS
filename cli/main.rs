@@ -1,6 +1,6 @@
 // agfs CLI — main.rs
 
-use agfs::{abort, commit, config, diff, exec, mount, status, watch};
+use agfs::{abort, commit, config, diff, exec, init, mount, status, watch};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
@@ -18,8 +18,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create agfs.toml in the current directory
+    /// Create agfs.toml and load the kernel module
     Init,
+    /// Unload then reload the kernel module
+    Reinit,
+    /// Unload the kernel module
+    Deinit,
     /// Create .agfs/ layout and mount the filesystem
     Mount,
     /// Unmount and clean up the session
@@ -81,7 +85,9 @@ fn run_cli() -> anyhow::Result<u8> {
 
     match cli.command {
         Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
-        Some(Command::Init) => config::init()?,
+        Some(Command::Init) => init::init()?,
+        Some(Command::Reinit) => init::reinit()?,
+        Some(Command::Deinit) => init::deinit()?,
         Some(Command::Mount) => mount::mount()?,
         Some(Command::Unmount) => mount::unmount()?,
         Some(Command::Remount) => mount::remount()?,
@@ -94,7 +100,14 @@ fn run_cli() -> anyhow::Result<u8> {
             RuleAction::Remove { path } => config::remove_rule(&path)?,
         },
         Some(Command::Watch) => watch::run()?,
-        None => return run(&cli.exec_args),
+        None => {
+            let has_separator = std::env::args().any(|a| a == "--");
+            if !cli.exec_args.is_empty() && !has_separator {
+                Cli::parse_from(["agfs", "--help"]);
+                unreachable!();
+            }
+            return run(&cli.exec_args);
+        }
     }
 
     Ok(0)

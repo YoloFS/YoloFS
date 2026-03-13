@@ -8,7 +8,7 @@
 //   R\0<old>\0<new>\n    — rename
 
 use anyhow::{Context, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -83,13 +83,13 @@ pub fn resolve(agfs_dir: &Path) -> Result<Vec<Change>> {
     let records = read(agfs_dir)?;
 
     // path → blob_id for paths that exist in staging
-    let mut staging: HashMap<String, u64> = HashMap::new();
+    let mut staging: BTreeMap<String, u64> = BTreeMap::new();
     // Final resolved operations (in order of first appearance)
     let mut resolved_renames: Vec<(String, String)> = Vec::new();
-    let mut resolved_adds: HashMap<String, u64> = HashMap::new();
-    let mut resolved_deletes: HashSet<String> = HashSet::new();
+    let mut resolved_adds: BTreeMap<String, u64> = BTreeMap::new();
+    let mut resolved_deletes: BTreeSet<String> = BTreeSet::new();
     // Track which base path a rename destination traces back to
-    let mut rename_origin: HashMap<String, String> = HashMap::new();
+    let mut rename_origin: BTreeMap<String, String> = BTreeMap::new();
 
     for record in &records {
         match record {
@@ -136,8 +136,8 @@ pub fn resolve(agfs_dir: &Path) -> Result<Vec<Change>> {
     }
 
     let mut changes = Vec::new();
-    let rename_srcs: HashSet<&String> = resolved_renames.iter().map(|(src, _)| src).collect();
-    let rename_dsts: HashSet<&String> = resolved_renames.iter().map(|(_, dst)| dst).collect();
+    let rename_srcs: BTreeSet<&String> = resolved_renames.iter().map(|(src, _)| src).collect();
+    let rename_dsts: BTreeSet<&String> = resolved_renames.iter().map(|(_, dst)| dst).collect();
 
     for (old_path, new_path) in &resolved_renames {
         if let Some(&blob_id) = resolved_adds.get(new_path) {
@@ -172,7 +172,8 @@ pub fn resolve(agfs_dir: &Path) -> Result<Vec<Change>> {
         }
     }
 
-    for path in &resolved_deletes {
+    // Deletes: reverse order (children before parents)
+    for path in resolved_deletes.iter().rev() {
         if rename_srcs.contains(path) {
             continue;
         }

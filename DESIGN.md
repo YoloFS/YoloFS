@@ -1056,7 +1056,8 @@ agfs/
 ├── cli/                       # Userspace CLI source (Rust)
 │   ├── main.rs
 │   ├── lib.rs
-│   ├── config.rs              # agfs.toml management (init, rules, mount options)
+│   ├── config.rs              # agfs.toml management (rules, mount options)
+│   ├── init.rs                # `agfs init` — create agfs.toml + insmod kernel module
 │   ├── mount.rs               # mount, unmount, remount
 │   ├── exec.rs
 │   ├── commit.rs

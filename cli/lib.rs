@@ -3,6 +3,7 @@ pub mod commit;
 pub mod config;
 pub mod ioctl;
 pub mod diff;
+pub mod init;
 pub mod journal;
 pub mod mount;
 pub mod exec;

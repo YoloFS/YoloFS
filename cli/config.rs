@@ -1,6 +1,6 @@
 // agfs CLI — config.rs
 //
-// Manages agfs.toml: init, read, rule add/remove, apply rules on mount.
+// Manages agfs.toml: read, rule add/remove, apply rules on mount.
 
 use crate::ioctl;
 use anyhow::{Context, Result};
@@ -145,19 +145,6 @@ fn resolve_to_abs(path: &str) -> Result<String> {
 fn resolve_through_mount(path: &str, mnt: &Path) -> Result<String> {
     let abs = resolve_to_abs(path)?;
     Ok(mnt.join(abs.trim_start_matches('/')).to_string_lossy().to_string())
-}
-
-// ── Init ──────────────────────────────────────────────────────────────
-
-pub fn init() -> Result<()> {
-    let cp = config_path()?;
-    if cp.exists() {
-        eprintln!("{}", "agfs.toml already exists".yellow());
-        return Ok(());
-    }
-    Config::default().save(&cp)?;
-    eprintln!("{} {}", "created".green().bold(), cp.display());
-    Ok(())
 }
 
 // ── Mount options ─────────────────────────────────────────────────────
