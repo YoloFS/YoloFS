@@ -29,3 +29,4 @@ mod test_perm;
 mod test_symlink;
 mod test_rmdir;
 mod test_inode;
+mod test_watch;
