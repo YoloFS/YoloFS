@@ -25,3 +25,4 @@ mod test_unmount;
 mod test_run;
 mod test_rules;
 mod test_rename;
+mod test_perm;

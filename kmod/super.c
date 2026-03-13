@@ -188,6 +188,7 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	spin_lock_init(&sbi->pending_lock);
 	init_waitqueue_head(&sbi->request_waitq);
 	atomic64_set(&sbi->next_req_id, 1);
+	atomic_set(&sbi->has_daemon, 0);
 
 	/* Initialize staging semaphore */
 	init_rwsem(&sbi->staging_sem);

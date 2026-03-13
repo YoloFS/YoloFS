@@ -6,4 +6,4 @@ ask_timeout = 0
 "/etc" = "allow-ro"
 "/usr/bin" = "allow-rx"
 "/usr/lib" = "allow-rx"
-"/usr/bin/git" = "deny"
+"/usr/bin/git" = "ask"

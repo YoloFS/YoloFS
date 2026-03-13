@@ -2,31 +2,47 @@
 //
 // `agfs watch` — daemon mode: read ask requests via blocking ioctl,
 // prompt the user, and write decisions back.
+//
+// `run_background()` — spawns a watch thread for the default workflow.
 
-use crate::ioctl::{self, perm_from_str, perm_to_str, AgfsCtlRequest};
-use anyhow::Result;
+use crate::ioctl::{self, perm_to_str, AgfsCtlRequest};
+use anyhow::{Context, Result};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
+use std::os::unix::fs::OpenOptionsExt;
 
 fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
     eprintln!(
-        "\n{} pid={} comm={} op={} path={}",
+        "{} {} {} {}",
         "[ask]".yellow().bold(),
-        req.pid,
-        req.comm_str(),
         req.op_str(),
         req.path_str(),
+        format!("(pid={} {})", req.pid, req.comm_str()).dimmed(),
     );
-    eprint!("  decision (allow/allow-rw/allow-ro/allow-rx/deny) [deny]: ");
+    eprint!(
+        "  [{}]llow allow-[{}] allow-[{}] allow-[{}] [{}]eny (enter = deny): ",
+        "a".blue().bold(),
+        "rw".blue().bold(),
+        "ro".blue().bold(),
+        "rx".blue().bold(),
+        "d".blue().bold(),
+    );
     io::stderr().flush().ok();
 
     let mut line = String::new();
     if io::stdin().lock().read_line(&mut line).is_ok() {
         let trimmed = line.trim();
-        if trimmed.is_empty() {
-            return ioctl::AGFS_PERM_DENY;
+        match trimmed {
+            "" | "d" | "deny" => ioctl::AGFS_PERM_DENY,
+            "a" | "allow" => ioctl::AGFS_PERM_ALLOW,
+            "rw" | "allow-rw" => ioctl::AGFS_PERM_ALLOW_RW,
+            "ro" | "allow-ro" => ioctl::AGFS_PERM_ALLOW_RO,
+            "rx" | "allow-rx" => ioctl::AGFS_PERM_ALLOW_RX,
+            _ => {
+                eprintln!("  unknown: {trimmed}, denying");
+                ioctl::AGFS_PERM_DENY
+            }
         }
-        perm_from_str(trimmed).unwrap_or(ioctl::AGFS_PERM_DENY)
     } else {
         ioctl::AGFS_PERM_DENY
     }
@@ -45,18 +61,20 @@ pub fn run() -> Result<()> {
         "agfs: watching for permission requests (Ctrl-C to stop)".cyan()
     );
 
+    watch_loop(&ctl_file);
+    Ok(())
+}
+
+fn watch_loop(ctl_file: &std::fs::File) {
     loop {
-        let req = match ioctl::read_request(&ctl_file) {
+        let req = match ioctl::read_request(ctl_file) {
             Ok(r) => r,
-            Err(e) => {
-                eprintln!("agfs watch: read error: {e}");
-                continue;
-            }
+            Err(_) => break,
         };
 
         let decision = prompt_decision(&req);
 
-        if let Err(e) = ioctl::write_response(&ctl_file, req.id, decision) {
+        if let Err(e) = ioctl::write_response(ctl_file, req.id, decision) {
             eprintln!("agfs watch: write error: {e}");
         } else {
             eprintln!(
@@ -66,4 +84,22 @@ pub fn run() -> Result<()> {
             );
         }
     }
+}
+
+/// Spawn a background watch daemon thread that prompts for ask requests.
+/// The thread runs until the process exits (it cannot be stopped early
+/// because it blocks on a kernel ioctl).
+pub fn run_background() -> Result<()> {
+    let agfs = crate::session_dir()?;
+    let ctl_file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY)
+        .open(agfs.join("mnt"))
+        .context("opening .agfs/mnt for background watch")?;
+
+    std::thread::spawn(move || {
+        watch_loop(&ctl_file);
+    });
+
+    Ok(())
 }

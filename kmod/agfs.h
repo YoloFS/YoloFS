@@ -156,6 +156,7 @@ struct agfs_sb_info {
 	spinlock_t		pending_lock;
 	wait_queue_head_t	request_waitq;
 	atomic64_t		next_req_id;
+	atomic_t		has_daemon;	/* 1 if a watch daemon is connected */
 	unsigned int		ask_timeout_s;
 	enum agfs_perm		ask_default;
 	bool			noperm;
@@ -344,7 +345,7 @@ enum agfs_perm agfs_resolve_perm(struct dentry *dentry);
 void agfs_cache_perm(struct inode *inode, struct dentry *dentry);
 int agfs_check_perm(enum agfs_perm perm, int f_flags);
 int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
-		       const char *relpath, int f_flags,
+		       const char *relpath, unsigned int op,
 		       enum agfs_perm *result);
 
 /* ioctl.c */

@@ -40,11 +40,18 @@ static int agfs_open(struct inode *inode, struct file *file)
 		}
 
 		if (perm == AGFS_PERM_ASK) {
+			unsigned int op;
+			if (file->f_mode & FMODE_EXEC)
+				op = AGFS_OP_EXEC;
+			else if (file->f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC))
+				op = AGFS_OP_WRITE;
+			else
+				op = AGFS_OP_READ;
+
 			err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
 			if (err)
 				goto out_free;
-			err = agfs_ask_userspace(sbi, dentry, buf,
-						 file->f_flags, &perm);
+			err = agfs_ask_userspace(sbi, dentry, buf, op, &perm);
 			if (err)
 				goto out_free;
 		}

@@ -4,7 +4,6 @@ use agfs::{abort, commit, config, diff, exec, log, mount, status, unmount, watch
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
-use std::process::ExitCode;
 
 #[derive(Parser)]
 #[command(name = "agfs", about = "Agentic filesystem — staging-commit + permission gating")]
@@ -73,14 +72,15 @@ enum RuleAction {
     },
 }
 
-fn main() -> ExitCode {
-    match run_cli() {
-        Ok(code) => ExitCode::from(code),
+fn main() -> ! {
+    let code = match run_cli() {
+        Ok(code) => code,
         Err(e) => {
             eprintln!("Error: {e:?}");
-            ExitCode::from(1)
+            1
         }
-    }
+    };
+    std::process::exit(code as i32);
 }
 
 fn run_cli() -> anyhow::Result<u8> {
@@ -107,22 +107,25 @@ fn run_cli() -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// Full workflow: mount (if needed) → exec → diff → commit/abort/stage.
+/// Full workflow: mount (if needed) → watch → exec → diff → commit/abort/stage.
 fn run(exec_args: &[String]) -> anyhow::Result<u8> {
     // 1. Mount if not already mounted
     mount::run()?;
 
-    // 2. Exec (spawn + wait) — continue to diff even if command fails
+    // 2. Start background watch daemon (prompts for permission asks)
+    watch::run_background()?;
+
+    // 3. Exec (spawn + wait) — continue to diff even if command fails
     let cmd_exit_code = exec::run(exec_args).unwrap_or(1);
 
-    // 3. Show diff
+    // 4. Show diff
     let has_changes = diff::run()?;
 
     if !has_changes {
         return Ok(cmd_exit_code);
     }
 
-    // 6. Ask commit, abort, or stage
+    // 5. Ask commit, abort, or stage
     eprint!(
         "\n{} ",
         "Choose [c]ommit, [a]bort, or [s]tage [default: stage]:".bold()

@@ -10,7 +10,6 @@ use std::fs;
 use std::path::Path;
 
 pub const DEFAULT_CONFIG: &str = r#"[mount]
-ask_timeout = 0
 ask_default = "deny"
 
 [rules]
@@ -80,19 +79,23 @@ pub fn mount_options(agfs_dir: &Path) -> String {
 
     let cwd = agfs_dir.parent().unwrap_or(Path::new("."));
     let config_path = cwd.join("agfs.toml");
-    if let Ok(doc) = config_path.exists().then(|| read_config(&config_path)).unwrap_or(Err(anyhow::anyhow!(""))) {
-        if let Some(toml::Value::Table(m)) = doc.get("mount") {
-            if m.get("noperm").and_then(|v| v.as_bool()) == Some(true) {
-                opts.push("noperm".to_string());
-            }
-            if m.get("nostaging").and_then(|v| v.as_bool()) == Some(true) {
-                opts.push("nostaging".to_string());
-            }
-            if let Some(v) = m.get("ask_timeout").and_then(|v| v.as_integer()) {
-                opts.push(format!("ask_timeout={v}"));
-            }
-            if let Some(v) = m.get("ask_default").and_then(|v| v.as_integer()) {
-                opts.push(format!("ask_default={v}"));
+    if config_path.exists() {
+        if let Ok(doc) = read_config(&config_path) {
+            if let Some(toml::Value::Table(m)) = doc.get("mount") {
+                if m.get("noperm").and_then(|v| v.as_bool()) == Some(true) {
+                    opts.push("noperm".to_string());
+                }
+                if m.get("nostaging").and_then(|v| v.as_bool()) == Some(true) {
+                    opts.push("nostaging".to_string());
+                }
+                if let Some(v) = m.get("ask_timeout").and_then(|v| v.as_integer()) {
+                    opts.push(format!("ask_timeout={v}"));
+                }
+                if let Some(s) = m.get("ask_default").and_then(|v| v.as_str()) {
+                    if let Some(v) = perm_from_str(s) {
+                        opts.push(format!("ask_default={v}"));
+                    }
+                }
             }
         }
     }

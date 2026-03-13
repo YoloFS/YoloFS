@@ -19,13 +19,20 @@
 static struct agfs_ctl_private *ensure_ctl(struct file *file)
 {
 	struct agfs_file_info *fi = AGFS_F(file);
+	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
 
 	if (fi->ctl)
 		return fi->ctl;
 
+	/* Only one daemon allowed at a time */
+	if (atomic_cmpxchg(&sbi->has_daemon, 0, 1) != 0)
+		return ERR_PTR(-EBUSY);
+
 	fi->ctl = kzalloc(sizeof(*fi->ctl), GFP_KERNEL);
-	if (!fi->ctl)
+	if (!fi->ctl) {
+		atomic_set(&sbi->has_daemon, 0);
 		return ERR_PTR(-ENOMEM);
+	}
 	INIT_LIST_HEAD(&fi->ctl->dispatched);
 	spin_lock_init(&fi->ctl->lock);
 	return fi->ctl;
@@ -143,6 +150,7 @@ void agfs_ctl_cleanup(struct agfs_sb_info *sbi, struct agfs_ctl_private *priv)
 	}
 	spin_unlock(&priv->lock);
 	kfree(priv);
+	atomic_set(&sbi->has_daemon, 0);
 }
 
 /* ── Unified ioctl handler (rules + ctl) ───────────────────────────── */

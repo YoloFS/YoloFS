@@ -17,8 +17,8 @@ pub struct AgfsSession {
 }
 
 impl AgfsSession {
-    /// Create a new test session: seed files, write agfs.toml, `agfs mount`.
-    pub fn new() -> Result<Self> {
+    /// Create a new test session with a custom agfs.toml config.
+    pub fn new_with_config(config: &str) -> Result<Self> {
         let root = tempfile::tempdir()
             .context("creating temp dir")?
             .keep();
@@ -29,11 +29,7 @@ impl AgfsSession {
         fs::create_dir_all(root.join("subdir"))?;
         fs::write(root.join("subdir/deep.txt"), "nested\n")?;
 
-        // Write agfs.toml with noperm for testing
-        fs::write(
-            root.join("agfs.toml"),
-            "[mount]\nnoperm = true\n\n[rules]\n",
-        )?;
+        fs::write(root.join("agfs.toml"), config)?;
 
         let mnt = root.join(".agfs/mnt");
 
@@ -44,6 +40,11 @@ impl AgfsSession {
         };
         session.mount()?;
         Ok(session)
+    }
+
+    /// Create a new test session: seed files, write agfs.toml, `agfs mount`.
+    pub fn new() -> Result<Self> {
+        Self::new_with_config("[mount]\nnoperm = true\n\n[rules]\n")
     }
 
     fn mount(&mut self) -> Result<()> {

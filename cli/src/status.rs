@@ -80,8 +80,6 @@ fn walk_staging(staging_dir: &Path, prefix: &str) -> Result<Vec<(String, PathBuf
 
 pub fn staging_walk(agfs_dir: &Path) -> Result<Vec<Change>> {
     let staging_dir = agfs_dir.join("staging");
-    let session_root = agfs_dir.parent().unwrap_or(Path::new("."));
-    let _ = &session_root; // used in future for relative path resolution
     let base = Path::new("/");
 
     // Step 1: Read renames

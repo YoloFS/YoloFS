@@ -65,11 +65,10 @@ int agfs_check_perm(enum agfs_perm perm, int f_flags)
 /* ── Ask Protocol (§4.3) ──────────────────────────────────────────── */
 
 int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
-		       const char *relpath, int f_flags,
+		       const char *relpath, unsigned int op,
 		       enum agfs_perm *result)
 {
 	struct agfs_perm_request *req;
-	unsigned int op;
 	long timeout;
 	int err = 0;
 
@@ -78,11 +77,13 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 		return 0;
 	}
 
-	/* Determine operation type */
-	if (f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC))
-		op = AGFS_OP_WRITE;
-	else
-		op = AGFS_OP_READ;
+	/* No daemon connected — apply default immediately */
+	if (!atomic_read(&sbi->has_daemon)) {
+		*result = sbi->ask_default;
+		agfs_log_emit(sbi, AGFS_LOG_DENY, sbi->ask_default,
+			      op, relpath, 0);
+		return 0;
+	}
 
 	req = kzalloc(sizeof(*req), GFP_KERNEL);
 	if (!req)
