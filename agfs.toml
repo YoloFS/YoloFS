@@ -1,6 +1,6 @@
 [mount]
 ask_default = "deny"
-ask_timeout = 0
+ask_timeout = 30
 
 [rules]
 "/etc" = "allow-ro"

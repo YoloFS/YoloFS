@@ -1,6 +1,6 @@
 // agfs CLI — main.rs
 
-use agfs::{abort, commit, config, diff, exec, mount, status, unmount, watch};
+use agfs::{abort, commit, config, diff, exec, mount, status, watch};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
@@ -24,6 +24,8 @@ enum Command {
     Mount,
     /// Unmount and clean up the session
     Unmount,
+    /// Unmount then remount (picks up new agfs.toml mount options)
+    Remount,
     /// Execute a command inside the sandbox (requires existing mount)
     Exec {
         /// Command to run (after --)
@@ -80,8 +82,9 @@ fn run_cli() -> anyhow::Result<u8> {
     match cli.command {
         Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
         Some(Command::Init) => config::init()?,
-        Some(Command::Mount) => mount::run()?,
-        Some(Command::Unmount) => unmount::run()?,
+        Some(Command::Mount) => mount::mount()?,
+        Some(Command::Unmount) => mount::unmount()?,
+        Some(Command::Remount) => mount::remount()?,
         Some(Command::Status) => status::run()?,
         Some(Command::Diff) => { diff::run()?; }
         Some(Command::Commit) => commit::run()?,
@@ -100,7 +103,7 @@ fn run_cli() -> anyhow::Result<u8> {
 /// Full workflow: mount (if needed) → watch → exec → diff → commit/abort/stage.
 fn run(exec_args: &[String]) -> anyhow::Result<u8> {
     // 1. Mount if not already mounted
-    mount::run()?;
+    mount::mount()?;
 
     // 2. Start background watch daemon (prompts for permission asks)
     watch::run_background()?;

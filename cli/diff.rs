@@ -37,7 +37,7 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
     }
 }
 
-/// Returns true if there were staged changes.
+/// Print staged diff. Returns true if there were staged changes.
 pub fn run() -> Result<bool> {
     let agfs = crate::session_dir()?;
     if !agfs.exists() {

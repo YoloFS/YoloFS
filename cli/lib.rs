@@ -7,7 +7,6 @@ pub mod journal;
 pub mod mount;
 pub mod exec;
 pub mod status;
-pub mod unmount;
 pub mod watch;
 
 use anyhow::{Context, Result};

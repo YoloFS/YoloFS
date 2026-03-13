@@ -1,6 +1,8 @@
 // agfs CLI — mount.rs
 //
-// `agfs mount` — create .agfs/ layout and mount the filesystem.
+// `agfs mount`    — create .agfs/ layout and mount the filesystem.
+// `agfs unmount`  — unmount and clean up .agfs/.
+// `agfs remount`  — unmount then mount again (picks up new agfs.toml options).
 
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -10,13 +12,15 @@ use std::os::unix;
 use std::path::{Path, PathBuf};
 
 /// Create .agfs/ layout, mount, and apply rules.
-pub fn run() -> Result<()> {
+/// If already mounted, re-applies rules from agfs.toml.
+pub fn mount() -> Result<()> {
     let cwd = env::current_dir().context("getting cwd")?;
     let agfs_dir = agfs_dir_path()?;
     let mnt = agfs_dir.join("mnt");
 
     if mnt.exists() && is_mountpoint(&mnt) {
         eprintln!("{} {}", "agfs: mounted at".green(), mnt.display());
+        crate::config::apply_rules(&agfs_dir)?;
         return Ok(());
     }
 
@@ -25,6 +29,37 @@ pub fn run() -> Result<()> {
     create_cwd_symlink(&agfs_dir, &cwd)?;
     crate::config::apply_rules(&agfs_dir)?;
     Ok(())
+}
+
+/// Unmount the agfs filesystem and remove the .agfs/ directory.
+pub fn unmount() -> Result<()> {
+    let agfs_dir = crate::session_dir()?;
+    let mnt = agfs_dir.join("mnt");
+
+    // Remove symlinks first (they point into the mount)
+    let cwd_link = agfs_dir.join("cwd");
+    if cwd_link.symlink_metadata().is_ok() {
+        fs::remove_file(&cwd_link).context("removing cwd symlink")?;
+    }
+
+    // Unmount agfs (ignore EINVAL — means it wasn't mounted)
+    match nix::mount::umount(&mnt) {
+        Ok(()) => {}
+        Err(nix::errno::Errno::EINVAL) => {}
+        Err(e) => return Err(e).context("unmounting .agfs/mnt"),
+    }
+
+    fs::remove_dir_all(&agfs_dir)
+        .context("removing .agfs/ directory")?;
+
+    eprintln!("{} {}", "agfs: unmounted".green(), mnt.display());
+    Ok(())
+}
+
+/// Unmount then mount again. Picks up new mount options from agfs.toml.
+pub fn remount() -> Result<()> {
+    unmount()?;
+    mount()
 }
 
 /// Return the .agfs/ path for the current directory.

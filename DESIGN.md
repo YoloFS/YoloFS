@@ -1057,9 +1057,8 @@ agfs/
 │   ├── main.rs
 │   ├── lib.rs
 │   ├── config.rs              # agfs.toml management (init, rules, mount options)
-│   ├── mount.rs
+│   ├── mount.rs               # mount, unmount, remount
 │   ├── exec.rs
-│   ├── unmount.rs             # `agfs unmount` — tear down session
 │   ├── commit.rs
 │   ├── abort.rs
 │   ├── status.rs
