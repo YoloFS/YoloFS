@@ -54,3 +54,119 @@ fn readdir() {
     assert!(entries.contains(&"multi.txt".to_string()));
     assert!(entries.contains(&"subdir".to_string()));
 }
+
+// ── readdir with staging changes (file.c: agfs_readdir) ──
+
+/// Newly created files should appear in readdir.
+#[test]
+fn readdir_shows_created_file() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("newfile.txt"), "new\n").expect("create");
+
+    let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
+        .expect("readdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
+
+    assert!(
+        entries.contains(&"newfile.txt".to_string()),
+        "readdir should include newly created file, got: {entries:?}"
+    );
+    // Base files should still be listed
+    assert!(entries.contains(&"hello.txt".to_string()));
+}
+
+/// Deleted files should be hidden from readdir.
+#[test]
+fn readdir_hides_deleted_file() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
+
+    let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
+        .expect("readdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
+
+    assert!(
+        !entries.contains(&"hello.txt".to_string()),
+        "readdir should not include deleted file, got: {entries:?}"
+    );
+    // Other files still listed
+    assert!(entries.contains(&"multi.txt".to_string()));
+}
+
+/// After rename, readdir shows new name but not old name.
+#[test]
+fn readdir_after_rename() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt")).expect("rename");
+
+    let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
+        .expect("readdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
+
+    assert!(
+        entries.contains(&"renamed.txt".to_string()),
+        "readdir should include renamed file, got: {entries:?}"
+    );
+    assert!(
+        !entries.contains(&"hello.txt".to_string()),
+        "readdir should not include old name after rename, got: {entries:?}"
+    );
+}
+
+/// Newly created directories appear in readdir.
+#[test]
+fn readdir_shows_created_dir() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
+
+    let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
+        .expect("readdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
+
+    assert!(
+        entries.contains(&"newdir".to_string()),
+        "readdir should include new directory, got: {entries:?}"
+    );
+}
+
+/// readdir on a subdirectory lists its contents.
+#[test]
+fn readdir_subdir() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let entries: Vec<String> = fs::read_dir(s.mnt_path("subdir"))
+        .expect("readdir subdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
+
+    assert!(
+        entries.contains(&"deep.txt".to_string()),
+        "readdir on subdir should list deep.txt, got: {entries:?}"
+    );
+}
+
+/// readdir on a newly created dir with files inside it.
+#[test]
+fn readdir_new_dir_with_files() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
+    fs::write(s.mnt_path("newdir/a.txt"), "a\n").expect("write a");
+    fs::write(s.mnt_path("newdir/b.txt"), "b\n").expect("write b");
+
+    let entries: Vec<String> = fs::read_dir(s.mnt_path("newdir"))
+        .expect("readdir newdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
+
+    assert!(entries.contains(&"a.txt".to_string()), "got: {entries:?}");
+    assert!(entries.contains(&"b.txt".to_string()), "got: {entries:?}");
+}

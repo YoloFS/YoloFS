@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -28,6 +29,13 @@ impl AgfsSession {
         fs::write(root.join("multi.txt"), "line1\nline2\n")?;
         fs::create_dir_all(root.join("subdir"))?;
         fs::write(root.join("subdir/deep.txt"), "nested\n")?;
+
+        // Seed an executable script for permission tests
+        fs::write(root.join("test.sh"), "#!/bin/sh\necho ok\n")?;
+        fs::set_permissions(
+            root.join("test.sh"),
+            fs::Permissions::from_mode(0o755),
+        )?;
 
         fs::write(root.join("agfs.toml"), config)?;
 

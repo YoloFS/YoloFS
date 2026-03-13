@@ -26,3 +26,6 @@ mod test_run;
 mod test_rules;
 mod test_rename;
 mod test_perm;
+mod test_symlink;
+mod test_rmdir;
+mod test_inode;

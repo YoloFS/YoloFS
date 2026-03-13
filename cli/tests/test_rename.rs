@@ -81,3 +81,43 @@ fn rename_nested_file() {
         "old nested path should not exist"
     );
 }
+
+// ── Pure rename commit + abort (inode.c: agfs_rename, staging.c: journal) ──
+
+/// Pure rename (no modify) + commit: old path gone, new path has content.
+#[test]
+fn rename_pure_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
+    s.cli(&["commit"]).expect("commit");
+
+    assert_eq!(
+        fs::read_to_string(s.base_path("moved.txt")).unwrap(),
+        "base content\n",
+        "renamed file should be at new path in base"
+    );
+    assert!(
+        !s.base_path("hello.txt").exists(),
+        "old path should be gone from base after commit"
+    );
+}
+
+/// Abort after rename: base is untouched.
+#[test]
+fn rename_abort_preserves_base() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
+    s.cli(&["abort"]).expect("abort");
+
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        "base content\n",
+        "base should be intact after abort"
+    );
+    assert!(
+        !s.base_path("moved.txt").exists(),
+        "renamed path should not exist in base after abort"
+    );
+}
