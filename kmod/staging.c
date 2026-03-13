@@ -361,8 +361,6 @@ int agfs_do_cow(struct agfs_sb_info *sbi, const char *relpath,
 		}
 	}
 
-	agfs_log_emit(sbi, AGFS_LOG_COW, 0, 0, relpath, 0);
-
 	if (new_file) {
 		fput(dst);
 		/* Reopen with requested flags */

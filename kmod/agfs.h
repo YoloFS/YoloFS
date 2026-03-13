@@ -27,24 +27,15 @@
 
 #define AGFS_SUPER_MAGIC	0xA6F5
 #define AGFS_PATH_MAX		256
-#define AGFS_LOG_DEFAULT_SIZE	1024
 
-/* Operations passed in ask requests / log entries */
-#define AGFS_OP_READ		1
-#define AGFS_OP_WRITE		2
-#define AGFS_OP_EXEC		3
-#define AGFS_OP_OPEN		4
-#define AGFS_OP_LOOKUP		5
-
-/* Log event types */
-#define AGFS_LOG_OPEN		1
-#define AGFS_LOG_ASK		2
-#define AGFS_LOG_DECISION	3
-#define AGFS_LOG_DENY		4
-#define AGFS_LOG_COW		5
-#define AGFS_LOG_RULE		6
-#define AGFS_LOG_COMMIT		7
-#define AGFS_LOG_ABORT		8
+/* Operations passed in ask requests */
+enum agfs_op {
+	AGFS_OP_READ		= 1,
+	AGFS_OP_WRITE		= 2,
+	AGFS_OP_EXEC		= 3,
+	AGFS_OP_OPEN		= 4,
+	AGFS_OP_LOOKUP		= 5,
+};
 
 /* ── Permission Enum ───────────────────────────────────────────────── */
 
@@ -69,8 +60,8 @@ struct agfs_ioc_rule {
 #define AGFS_IOC_RULE_ADD	_IOW('A', 10, struct agfs_ioc_rule)
 #define AGFS_IOC_RULE_REMOVE	_IOW('A', 11, struct agfs_ioc_rule)
 #define AGFS_IOC_CACHE_INVAL	_IO('A', 20)
-#define AGFS_IOC_CTL_READ	_IOR('A', 30, struct agfs_ctl_request)
-#define AGFS_IOC_CTL_WRITE	_IOW('A', 31, struct agfs_ctl_response)
+#define AGFS_IOC_GET_REQUEST	_IOR('A', 30, struct agfs_ctl_request)
+#define AGFS_IOC_PUT_RESPONSE	_IOW('A', 31, struct agfs_ctl_response)
 
 /* ── Control-File Protocol (binary, fixed-size) ────────────────────── */
 
@@ -90,43 +81,18 @@ struct agfs_ctl_response {
 	__u8	_pad[7];
 };
 
-/* ── Log Entry ─────────────────────────────────────────────────────── */
-
-struct agfs_log_entry {
-	__u64	timestamp_ns;
-	__u64	req_id;
-	__u32	op;
-	__u32	pid;
-	__u8	event;			/* AGFS_LOG_* */
-	__u8	perm;			/* enum agfs_perm result */
-	__u16	_pad;
-	char	comm[16];
-	char	path[AGFS_PATH_MAX];
-};
-
 /* ── Internal: Pending Permission Request ──────────────────────────── */
 
 struct agfs_perm_request {
 	u64			id;
 	char			path[AGFS_PATH_MAX];
-	unsigned int		op;
+	enum agfs_op		op;
 	pid_t			pid;
 	char			comm[TASK_COMM_LEN];
 
 	enum agfs_perm		decision;
 	struct completion	done;
 	struct list_head	list;
-};
-
-/* ── Log Ring Buffer ───────────────────────────────────────────────── */
-
-struct agfs_log_ring {
-	struct agfs_log_entry	*entries;
-	unsigned int		size;		/* number of slots */
-	unsigned int		head;		/* next write position */
-	unsigned int		count;		/* entries available to read */
-	spinlock_t		lock;
-	wait_queue_head_t	waitq;
 };
 
 /* ── Pinned Dentry (for rename tracking) ────────────────────────────── */
@@ -161,10 +127,6 @@ struct agfs_sb_info {
 	enum agfs_perm		ask_default;
 	bool			noperm;
 	bool			nostaging;
-
-	/* Log */
-	struct agfs_log_ring	*log;
-	unsigned int		log_size;
 };
 
 /* ── Per-Inode Info ────────────────────────────────────────────────── */
@@ -345,18 +307,11 @@ enum agfs_perm agfs_resolve_perm(struct dentry *dentry);
 void agfs_cache_perm(struct inode *inode, struct dentry *dentry);
 int agfs_check_perm(enum agfs_perm perm, int f_flags);
 int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
-		       const char *relpath, unsigned int op,
+		       const char *relpath, enum agfs_op op,
 		       enum agfs_perm *result);
 
 /* ioctl.c */
 long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 void agfs_ctl_cleanup(struct agfs_sb_info *sbi, struct agfs_ctl_private *priv);
-
-/* log.c */
-extern const struct file_operations agfs_log_fops;
-int agfs_log_init(struct agfs_sb_info *sbi);
-void agfs_log_destroy(struct agfs_sb_info *sbi);
-void agfs_log_emit(struct agfs_sb_info *sbi, u8 event, u8 perm,
-		   u32 op, const char *path, u64 req_id);
 
 #endif /* _AGFS_H_ */

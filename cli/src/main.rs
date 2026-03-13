@@ -1,6 +1,6 @@
 // agfs CLI — main.rs
 
-use agfs::{abort, commit, config, diff, exec, log, mount, status, unmount, watch};
+use agfs::{abort, commit, config, diff, exec, mount, status, unmount, watch};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
@@ -42,15 +42,6 @@ enum Command {
     Rule {
         #[command(subcommand)]
         action: RuleAction,
-    },
-    /// Tail the debug log
-    Log {
-        /// Follow mode (like tail -f)
-        #[arg(long)]
-        follow: bool,
-        /// Dump all buffered entries and exit
-        #[arg(long)]
-        dump: bool,
     },
     /// Handle ask requests (daemon mode)
     Watch,
@@ -99,7 +90,6 @@ fn run_cli() -> anyhow::Result<u8> {
             RuleAction::Add { path, perm } => config::add_rule(&path, &perm)?,
             RuleAction::Remove { path } => config::remove_rule(&path)?,
         },
-        Some(Command::Log { follow, dump }) => log::run(follow, dump)?,
         Some(Command::Watch) => watch::run()?,
         None => return run(&cli.exec_args),
     }

@@ -3,8 +3,8 @@
  * agfs — control interface via ioctl on any agfs directory fd.
  *
  * The permission daemon opens .agfs/mnt (or any dir on the mount) and uses:
- *   ioctl(fd, AGFS_IOC_CTL_READ, &req)   — dequeue pending ask request
- *   ioctl(fd, AGFS_IOC_CTL_WRITE, &resp)  — submit decision
+ *   ioctl(fd, AGFS_IOC_GET_REQUEST, &req)  — dequeue pending ask request
+ *   ioctl(fd, AGFS_IOC_PUT_RESPONSE, &resp) — submit decision
  *   ioctl(fd, AGFS_IOC_RULE_ADD, &rule)   — add permission rule
  *   ioctl(fd, AGFS_IOC_RULE_REMOVE, &rule)
  *   ioctl(fd, AGFS_IOC_CACHE_INVAL)
@@ -14,7 +14,7 @@
 
 #include "agfs.h"
 
-/* ── Lazy-allocate ctl private on first CTL_READ ───────────────────── */
+/* ── Lazy-allocate ctl private on first GET_REQUEST ─────────────────── */
 
 static struct agfs_ctl_private *ensure_ctl(struct file *file)
 {
@@ -38,9 +38,9 @@ static struct agfs_ctl_private *ensure_ctl(struct file *file)
 	return fi->ctl;
 }
 
-/* ── CTL_READ: dequeue pending request ─────────────────────────────── */
+/* ── GET_REQUEST: dequeue pending request ──────────────────────────── */
 
-static long agfs_ctl_read_ioctl(struct file *file, unsigned long arg)
+static long agfs_get_request_ioctl(struct file *file, unsigned long arg)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
 	struct agfs_ctl_private *priv;
@@ -102,9 +102,9 @@ static long agfs_ctl_read_ioctl(struct file *file, unsigned long arg)
 	return 0;
 }
 
-/* ── CTL_WRITE: submit decision ────────────────────────────────────── */
+/* ── PUT_RESPONSE: submit decision ─────────────────────────────────── */
 
-static long agfs_ctl_write_ioctl(struct file *file, unsigned long arg)
+static long agfs_put_response_ioctl(struct file *file, unsigned long arg)
 {
 	struct agfs_file_info *fi = AGFS_F(file);
 	struct agfs_ctl_private *priv = fi->ctl;
@@ -160,11 +160,11 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
 
 	switch (cmd) {
-	case AGFS_IOC_CTL_READ:
-		return agfs_ctl_read_ioctl(file, arg);
+	case AGFS_IOC_GET_REQUEST:
+		return agfs_get_request_ioctl(file, arg);
 
-	case AGFS_IOC_CTL_WRITE:
-		return agfs_ctl_write_ioctl(file, arg);
+	case AGFS_IOC_PUT_RESPONSE:
+		return agfs_put_response_ioctl(file, arg);
 
 	case AGFS_IOC_RULE_ADD: {
 		struct agfs_ioc_rule rule;
@@ -199,9 +199,6 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		dget(rule_path.dentry);
 		atomic64_inc(&sbi->perm_gen);
 		path_put(&rule_path);
-
-		agfs_log_emit(sbi, AGFS_LOG_RULE, rule.perm, 0,
-			      rule.path, 0);
 		return 0;
 	}
 
@@ -246,7 +243,6 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case AGFS_IOC_CACHE_INVAL:
 		atomic64_inc(&sbi->perm_gen);
-		agfs_log_emit(sbi, AGFS_LOG_COMMIT, 0, 0, "", 0);
 		return 0;
 
 	default:

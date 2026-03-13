@@ -49,11 +49,10 @@ either can be disabled at mount time.
 
  ┌──────────────────────────────────────────────────┐
  │  ioctl on any agfs directory fd (.agfs/mnt)      │
- │    ← AGFS_IOC_CTL_READ:  dequeue perm request   │
- │    → AGFS_IOC_CTL_WRITE: post decision           │
+ │    ← AGFS_IOC_GET_REQUEST:  dequeue perm request   │
+ │    → AGFS_IOC_PUT_RESPONSE: post decision           │
  │    → AGFS_IOC_RULE_ADD/REMOVE: manage rules      │
  │    → AGFS_IOC_CACHE_INVAL: invalidate caches     │
- │    ← poll():  POLLIN when requests are pending   │
  └──────────────────────────────────────────────────┘
 ```
 
@@ -566,15 +565,15 @@ When a thread accesses a file whose effective permission is `ask`:
      }
   3. Enqueue request on sb->pending_list
   4. wake_up(&sb->request_waitq)
-  5. wait_event_interruptible(              poll() on dir fd
-       req->done,                            returns POLLIN
+  5. wait_event_interruptible(              ioctl(GET_REQUEST) blocks
+       req->done,                            until request is available
        req->decision != UNDECIDED            ↓
-     )                                      ioctl(CTL_READ) → dequeue request
+     )                                      dequeue request
      …thread sleeps…                         → struct agfs_ctl_request { id, path, op, ... }
                                              ↓
                                             Daemon shows prompt / applies policy
                                              ↓
-                                             ioctl(CTL_WRITE) → struct agfs_ctl_response {
+                                             ioctl(PUT_RESPONSE) → struct agfs_ctl_response {
                                                          id: 42, decision: ALLOW_RW }
                                               ↓
    6. req->decision = ALLOW_RW               ioctl handler:
@@ -627,10 +626,6 @@ struct agfs_sb_info {
     enum agfs_perm          ask_default;     // fallback on timeout
     bool                    noperm;          // disable permission gating entirely
     bool                    nostaging;       // disable staging (passthrough + gating only)
-
-    // Log
-    struct agfs_log_ring   *log;             // ring buffer for debug log entries
-    unsigned int            log_size;        // configured ring buffer size
 };
 ```
 
@@ -657,7 +652,7 @@ fd (typically `.agfs/mnt`). No parsing — just `copy_to_user()` /
 ```c
 #define AGFS_PATH_MAX 256
 
-// kernel → userspace: AGFS_IOC_CTL_READ returns one of these
+// kernel → userspace: AGFS_IOC_GET_REQUEST returns one of these
 struct agfs_ctl_request {
     __u64   id;
     __u32   op;                  // AGFS_OP_READ / WRITE / EXEC
@@ -666,7 +661,7 @@ struct agfs_ctl_request {
     char    path[AGFS_PATH_MAX];
 };
 
-// userspace → kernel: AGFS_IOC_CTL_WRITE accepts one of these
+// userspace → kernel: AGFS_IOC_PUT_RESPONSE accepts one of these
 struct agfs_ctl_response {
     __u64   id;
     __u8    decision;            // enum agfs_perm value
@@ -729,7 +724,7 @@ struct agfs_ctl_private {
 };
 ```
 
-Allocated lazily on first `AGFS_IOC_CTL_READ`. On fd close, any
+Allocated lazily on first `AGFS_IOC_GET_REQUEST`. On fd close, any
 dispatched-but-unanswered requests receive the default decision.
 
 ### 5.8 Pinned Dentry (for rename tracking)
@@ -744,20 +739,7 @@ struct agfs_pinned_dentry {
 Tracks rename-destination dentries that must remain pinned until
 commit/abort/unmount so the redirected `lower_path` stays valid.
 
-### 5.9 Log Ring Buffer
-
-```c
-struct agfs_log_ring {
-    struct agfs_log_entry  *entries;
-    unsigned int            size;           // number of slots
-    unsigned int            head;           // next write position
-    unsigned int            count;          // entries available to read
-    spinlock_t              lock;
-    wait_queue_head_t       waitq;
-};
-```
-
-### 5.10 Concurrency
+### 5.9 Concurrency
 
 | Lock | Protects | Type |
 |---|---|---|
@@ -841,99 +823,34 @@ the control/rule/ctl ioctl handler.
 #define AGFS_IOC_CACHE_INVAL     _IO('A', 20)
 
 // Control protocol (ask request / response)
-#define AGFS_IOC_CTL_READ        _IOR('A', 30, struct agfs_ctl_request)
-#define AGFS_IOC_CTL_WRITE       _IOW('A', 31, struct agfs_ctl_response)
+#define AGFS_IOC_GET_REQUEST        _IOR('A', 30, struct agfs_ctl_request)
+#define AGFS_IOC_PUT_RESPONSE       _IOW('A', 31, struct agfs_ctl_response)
 ```
 
 ### 7.2 Operations
 
 | Ioctl                    | Behavior                                                                                                                                                                       |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `AGFS_IOC_CTL_READ`     | Dequeue the oldest pending permission request. Returns one `struct agfs_ctl_request` (fixed-size binary). Blocks if queue is empty (or returns `-EAGAIN` for `O_NONBLOCK`).     |
-| `AGFS_IOC_CTL_WRITE`    | Submit a decision: one `struct agfs_ctl_response` (fixed-size binary). Wakes the sleeping thread.                                                                               |
+| `AGFS_IOC_GET_REQUEST`     | Dequeue the oldest pending permission request. Returns one `struct agfs_ctl_request` (fixed-size binary). Blocks if queue is empty (or returns `-EAGAIN` for `O_NONBLOCK`).     |
+| `AGFS_IOC_PUT_RESPONSE`    | Submit a decision: one `struct agfs_ctl_response` (fixed-size binary). Wakes the sleeping thread.                                                                               |
 | `AGFS_IOC_RULE_ADD`     | Add a permission rule to a dentry. Kernel resolves the path, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps `perm_gen`.                                                |
 | `AGFS_IOC_RULE_REMOVE`  | Remove a rule from a dentry. Kernel sets `perm = NONE`, unpins the dentry, and bumps `perm_gen`.                                                                                |
 | `AGFS_IOC_CACHE_INVAL`  | Bump `perm_gen` to invalidate all cached inode perms. Called by userspace after commit/abort.                                                                                    |
-| `poll()`                 | Returns `POLLIN` when there are pending ask requests.                                                                                                                           |
 
 `AGFS_IOC_CACHE_INVAL` is called by userspace after commit/abort to invalidate
 the kernel's dentry and inode caches so stale redirected rename dentries are
 dropped and the mount reflects the new base state.
 
-On the first `AGFS_IOC_CTL_READ`, a per-fd `agfs_ctl_private` is lazily
-allocated to track dispatched requests. On fd close, any
+On the first `AGFS_IOC_GET_REQUEST`, a per-fd `agfs_ctl_private` is lazily
+allocated to track dispatched requests. Only one daemon is allowed at a time;
+a second `GET_REQUEST` from a different fd returns `EBUSY`. On fd close, any
 dispatched-but-unanswered requests receive the default decision (from
-`ask_default` mount option).
+`ask_default` mount option). If no daemon is connected, ask requests are
+resolved immediately using `ask_default`.
 
 ---
 
-## 8. Log Ring Buffer
-
-The kernel maintains a ring buffer of structured binary log entries for
-debugging and testing. Entries are written by the kernel on permission
-checks, COW, commits, etc.
-
-The log has file operations (`agfs_log_fops`) with `read()` and `poll()`
-that follow the same pattern as other kernel log interfaces, but these are
-**not yet exposed to userspace** as a virtual file. The CLI `agfs log`
-command is also not yet implemented. Future work will wire the log fops
-to a readable interface.
-
-### 8.1 Log Entry
-
-```c
-// Fixed size. `path` must be NUL-terminated; unused tail bytes are zeroed.
-struct agfs_log_entry {
-    __u64   timestamp_ns;        // ktime_get_real_ns()
-    __u64   req_id;              // perm request id (0 if not applicable)
-    __u32   op;                  // AGFS_OP_READ / WRITE / OPEN / LOOKUP / ...
-    __u32   pid;
-    __u8    event;               // AGFS_LOG_* (see below)
-    __u8    perm;                // enum agfs_perm (result)
-    __u16   _pad;
-    char    comm[16];            // process name (TASK_COMM_LEN)
-    char    path[AGFS_PATH_MAX];
-};
-
-// Event types
-#define AGFS_LOG_OPEN        1   // file opened (path, perm result)
-#define AGFS_LOG_ASK         2   // ask request sent to daemon
-#define AGFS_LOG_DECISION    3   // daemon responded (decision)
-#define AGFS_LOG_DENY        4   // access denied
-#define AGFS_LOG_COW         5   // base→staging copy triggered
-#define AGFS_LOG_RULE        6   // rule added/changed
-#define AGFS_LOG_COMMIT      7   // staging committed
-#define AGFS_LOG_ABORT       8   // staging aborted
-```
-
-### 8.2 Ring Buffer Operations
-
-
-| Syscall  | Behavior                                                                                                           |
-| -------- | ------------------------------------------------------------------------------------------------------------------ |
-| `read()` | Returns one or more `struct agfs_log_entry` from the ring buffer. Blocks if empty (or `-EAGAIN` for `O_NONBLOCK`). |
-| `poll()` | Returns `POLLIN` when log entries are available.                                                                   |
-
-
-The ring buffer has a fixed size (configurable via mount option
-`log_size=<n>`, default 1024 entries). Old entries are overwritten when full.
-
-### 8.3 Usage (planned)
-
-```bash
-# Tail the log in real-time (userspace tool decodes binary entries)
-agfs log --follow
-
-# Dump all buffered entries
-agfs log --dump
-```
-
-> **Note**: `agfs log` is not yet implemented in the CLI. The kernel ring
-> buffer collects entries but no userspace interface is wired up yet.
-
----
-
-## 9. CLI Interface
+## 8. CLI Interface
 
 ### 9.1 Commands
 
@@ -946,8 +863,8 @@ $ agfs init              # create a default agfs.toml in the current directory
 **Full workflow** — mount, watch, exec, diff, and prompt to commit/abort in one command:
 
 ```bash
-$ agfs                   # launch $SHELL inside the sandbox
-$ agfs -- make build     # run a specific command instead of $SHELL
+$ agfs                   # launch sh inside the sandbox
+$ agfs -- make build     # run a specific command instead of sh
 ```
 
 **Session management** — manual control over each step:
@@ -969,7 +886,6 @@ $ agfs unmount           # tear down session
 $ agfs rule add src allow-rw
 $ agfs rule remove src
 $ agfs watch             # handle ask requests (daemon mode)
-$ agfs log --follow      # tail the kernel debug log
 ```
 
 ### 9.2 Mount Options
@@ -979,10 +895,9 @@ Configured via `agfs.toml` or CLI flags:
 | Option | Default | Description |
 |---|---|---|
 | `ask_timeout` | 0 (infinite) | Seconds before ask request times out |
-| `ask_default` | `deny` | Fallback permission on timeout |
+| `ask_default` | `deny` | Fallback when no daemon is connected or on timeout |
 | `noperm` | false | Disable permission gating entirely |
 | `nostaging` | false | Disable staging (passthrough + gating only) |
-| `log_size` | 1024 | Ring buffer entries for the kernel debug log |
 
 Inside the launched shell or command, agfs `chroot`s into `.agfs/mnt` so
 that the mounted view becomes `/`. The working directory remains the
@@ -996,7 +911,7 @@ everything else defaults to `ask`.
 
 ---
 
-## 10. Source File Layout
+## 9. Source File Layout
 
 ```
 agfs/
@@ -1011,8 +926,7 @@ agfs/
 │   ├── lookup.c
 │   ├── staging.c
 │   ├── perm.c
-│   ├── ioctl.c
-│   └── log.c
+│   └── ioctl.c
 └── cli/                       # Userspace CLI tool (Rust)
     ├── Cargo.toml
     └── src/
@@ -1026,14 +940,13 @@ agfs/
         ├── abort.rs
         ├── status.rs
         ├── diff.rs
-        ├── log.rs
         ├── watch.rs
         └── ioctl.rs             # binary protocol structs + ioctl helpers
 ```
 
 ---
 
-## 11. Lifecycle Example
+## 10. Lifecycle Example
 
 ```
 # 1. Full interactive workflow (mount → watch + run → diff → commit/abort)
@@ -1083,9 +996,9 @@ $ cat /tmp/secrets
    → kernel: agfs_lookup("secrets") → no rule (NONE)
    → kernel: agfs_open() → walk up: secrets(NONE) → tmp(NONE) → root(ASK)
    → kernel: enqueue request, thread sleeps
-   → daemon: ioctl(CTL_READ) → agfs_ctl_request { id:1, path:"/tmp/secrets", ... }
+   → daemon: ioctl(GET_REQUEST) → agfs_ctl_request { id:1, path:"/tmp/secrets", ... }
    → daemon: decision: allow-ro
-   → daemon: ioctl(CTL_WRITE, agfs_ctl_response { id:1, decision:ALLOW_RO })
+   → daemon: ioctl(PUT_RESPONSE, agfs_ctl_response { id:1, decision:ALLOW_RO })
    → kernel: wake thread, apply one-shot ALLOW_RO to this open
    → kernel: open base/tmp/secrets read-only, proceed
 
@@ -1103,7 +1016,7 @@ $ agfs commit
 
 ---
 
-## 12. Key Design Decisions
+## 11. Key Design Decisions
 
 ### Why dentry walk-up instead of other rule engines?
 
@@ -1166,7 +1079,7 @@ sufficient.
 
 ---
 
-## 13. Comparison with overlayfs
+## 12. Comparison with overlayfs
 
 agfs borrows the whiteout convention from overlayfs but differs in
 architecture and purpose.
@@ -1197,7 +1110,7 @@ whiteouts, working on any lower FS.
 
 ---
 
-## 14. Comparison with Landlock
+## 13. Comparison with Landlock
 
 Landlock is a Linux Security Module (LSM) for unprivileged process
 sandboxing. It shares the goal of path-based access control but differs

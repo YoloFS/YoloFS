@@ -16,7 +16,6 @@ enum agfs_param {
 	Opt_nostaging,
 	Opt_ask_timeout,
 	Opt_ask_default,
-	Opt_log_size,
 	Opt_storage,
 };
 
@@ -25,7 +24,6 @@ static const struct fs_parameter_spec agfs_fs_parameters[] = {
 	fsparam_flag("nostaging",	Opt_nostaging),
 	fsparam_u32("ask_timeout",	Opt_ask_timeout),
 	fsparam_u32("ask_default",	Opt_ask_default),
-	fsparam_u32("log_size",		Opt_log_size),
 	fsparam_string("storage",	Opt_storage),
 	{}
 };
@@ -35,7 +33,6 @@ struct agfs_fs_opts {
 	bool		nostaging;
 	unsigned int	ask_timeout_s;
 	unsigned int	ask_default;
-	unsigned int	log_size;
 	char		*storage;
 };
 
@@ -83,8 +80,6 @@ static void agfs_put_super(struct super_block *sb)
 
 	if (!sbi)
 		return;
-
-	agfs_log_destroy(sbi);
 
 	if (sbi->creator_cred)
 		put_cred(sbi->creator_cred);
@@ -137,8 +132,6 @@ static int agfs_show_options(struct seq_file *m, struct dentry *root)
 		seq_puts(m, ",noperm");
 	if (sbi->nostaging)
 		seq_puts(m, ",nostaging");
-	if (sbi->log_size != AGFS_LOG_DEFAULT_SIZE)
-		seq_printf(m, ",log_size=%u", sbi->log_size);
 	return 0;
 }
 
@@ -177,9 +170,6 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sbi->ask_default = opts->ask_default ? opts->ask_default : AGFS_PERM_DENY;
 	sbi->noperm = opts->noperm;
 	sbi->nostaging = opts->nostaging;
-	sbi->log_size = opts->log_size ? opts->log_size : AGFS_LOG_DEFAULT_SIZE;
-
-	/* Save mount-time credentials for staging operations (§3.2) */
 	sbi->creator_cred = get_cred(current_cred());
 
 	/* Initialize perm gating state */
@@ -209,17 +199,12 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		goto out_put_base;
 	}
 
-	/* Initialize log */
-	err = agfs_log_init(sbi);
-	if (err)
-		goto out_put_base;
-
 	/* Resolve storage path if provided */
 	if (opts->storage) {
 		err = kern_path(opts->storage, LOOKUP_FOLLOW | LOOKUP_DIRECTORY,
 				&sbi->storage_path);
 		if (err)
-			goto out_log;
+			goto out_put_base;
 
 		/* Resolve staging dir */
 		{
@@ -249,13 +234,13 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	inode = agfs_iget(sb, d_inode(base_path.dentry));
 	if (IS_ERR(inode)) {
 		err = PTR_ERR(inode);
-		goto out_log;
+		goto out_put_base;
 	}
 
 	sb->s_root = d_make_root(inode);
 	if (!sb->s_root) {
 		err = -ENOMEM;
-		goto out_log;
+		goto out_put_base;
 	}
 
 	/* Set up root dentry private data */
@@ -275,8 +260,6 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 out_root:
 	dput(sb->s_root);
 	sb->s_root = NULL;
-out_log:
-	agfs_log_destroy(sbi);
 out_put_base:
 	path_put(&base_path);
 	atomic_dec(&sbi->lower_sb->s_active);
@@ -310,9 +293,6 @@ static int agfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		break;
 	case Opt_ask_default:
 		opts->ask_default = result.uint_32;
-		break;
-	case Opt_log_size:
-		opts->log_size = result.uint_32;
 		break;
 	case Opt_storage:
 		kfree(opts->storage);

@@ -80,8 +80,6 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 	/* No daemon connected — apply default immediately */
 	if (!atomic_read(&sbi->has_daemon)) {
 		*result = sbi->ask_default;
-		agfs_log_emit(sbi, AGFS_LOG_DENY, sbi->ask_default,
-			      op, relpath, 0);
 		return 0;
 	}
 
@@ -97,9 +95,6 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 	req->decision = AGFS_PERM_NONE; /* undecided */
 	init_completion(&req->done);
 	INIT_LIST_HEAD(&req->list);
-
-	/* Log the ask event */
-	agfs_log_emit(sbi, AGFS_LOG_ASK, AGFS_PERM_ASK, op, relpath, req->id);
 
 	/* Enqueue */
 	spin_lock(&sbi->pending_lock);
@@ -135,11 +130,8 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 		req->decision = AGFS_PERM_DENY;
 	}
 
-	if (!err) {
+	if (!err)
 		*result = req->decision;
-		agfs_log_emit(sbi, AGFS_LOG_DECISION, req->decision,
-			      op, relpath, req->id);
-	}
 
 	kfree(req);
 	return err;

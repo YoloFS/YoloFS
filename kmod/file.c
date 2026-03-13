@@ -57,11 +57,8 @@ static int agfs_open(struct inode *inode, struct file *file)
 		}
 
 		err = agfs_check_perm(perm, file->f_flags);
-		if (err) {
-			agfs_log_emit(sbi, AGFS_LOG_DENY, perm, 0,
-				      dentry->d_name.name, 0);
+		if (err)
 			goto out_free;
-		}
 	}
 
 	/* ── Staging redirect for regular files ─────────────────────── */
@@ -194,9 +191,6 @@ open_lower:
 done:
 	fi->lower_file = lower_file;
 	file->private_data = fi;
-
-	agfs_log_emit(sbi, AGFS_LOG_OPEN, AGFS_I(inode)->cached_perm,
-		      AGFS_OP_OPEN, dentry->d_name.name, 0);
 	return 0;
 
 out_free:
