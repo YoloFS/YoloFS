@@ -20,7 +20,6 @@ pub fn mount() -> Result<()> {
 
     if mnt.exists() && is_mountpoint(&mnt) {
         eprintln!("{} {}", "agfs: mounted at".green(), mnt.display());
-        crate::config::apply_rules(&agfs_dir)?;
         return Ok(());
     }
 
