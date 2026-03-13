@@ -132,13 +132,28 @@ fn is_mounted() -> bool {
     crate::session_dir().is_ok_and(|d| d.join("mnt").exists())
 }
 
-/// Resolve a path through the agfs mount for ioctl.
+/// Expand `$HOME` and `~` prefix, then resolve to an absolute path.
 fn resolve_to_abs(path: &str) -> Result<String> {
-    if path.starts_with('/') {
-        Ok(path.to_string())
+    let expanded = if path.starts_with("$HOME") || path.starts_with('~') {
+        let home = env::var("HOME").context("$HOME not set")?;
+        if path == "~" || path == "$HOME" {
+            home
+        } else if let Some(rest) = path.strip_prefix("~/") {
+            format!("{home}/{rest}")
+        } else if let Some(rest) = path.strip_prefix("$HOME/") {
+            format!("{home}/{rest}")
+        } else {
+            path.to_string()
+        }
+    } else {
+        path.to_string()
+    };
+
+    if expanded.starts_with('/') {
+        Ok(expanded)
     } else {
         let cwd = env::current_dir().context("getting cwd")?;
-        Ok(cwd.join(path).to_string_lossy().to_string())
+        Ok(cwd.join(expanded).to_string_lossy().to_string())
     }
 }
 
@@ -306,6 +321,20 @@ mod tests {
         let result = resolve_to_abs("foo.txt").unwrap();
         let cwd = env::current_dir().unwrap();
         assert_eq!(result, cwd.join("foo.txt").to_string_lossy());
+    }
+
+    #[test]
+    fn resolve_to_abs_home_var() {
+        let home = env::var("HOME").unwrap();
+        assert_eq!(resolve_to_abs("$HOME").unwrap(), home);
+        assert_eq!(resolve_to_abs("$HOME/.config").unwrap(), format!("{home}/.config"));
+    }
+
+    #[test]
+    fn resolve_to_abs_tilde() {
+        let home = env::var("HOME").unwrap();
+        assert_eq!(resolve_to_abs("~").unwrap(), home);
+        assert_eq!(resolve_to_abs("~/.config").unwrap(), format!("{home}/.config"));
     }
 
     #[test]

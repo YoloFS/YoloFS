@@ -8,4 +8,5 @@ ask_timeout = 30
 "/usr/lib" = "allow-rx"
 "/usr/share" = "allow-ro"
 "/usr/bin/git" = "ask"
-"../.bash_history" = "allow-rw"
+"$HOME/.bash_history" = "allow-rw"
+"." = "allow-rw"
