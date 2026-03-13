@@ -68,11 +68,7 @@ fn getattr_staged_file() {
     // Write shorter content — triggers COW
     fs::write(s.mnt_path("hello.txt"), "x\n").expect("write");
 
-    // The staging file has the new content
-    let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
-    assert_eq!(content, "x\n", "read should return staging content");
-
-    // Staging file has the correct content
-    let staging = fs::read_to_string(s.staging_path("hello.txt")).unwrap();
-    assert_eq!(staging, "x\n", "staging file should have new content");
+    // The staging file has the new content (via blob)
+    let content_via_mount = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
+    assert_eq!(content_via_mount, "x\n", "read should return staging content");
 }

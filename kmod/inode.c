@@ -10,7 +10,7 @@
 #include <linux/xattr.h>
 #include <linux/mm.h>
 
-/* ── create — create file in staging directory ─────────────────────── */
+/* ── create — allocate staging blob + override ─────────────────────── */
 
 static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
 		       struct dentry *dentry, umode_t mode, bool excl)
@@ -18,10 +18,8 @@ static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
 	const struct cred *old_cred;
 	char buf[AGFS_PATH_MAX];
-	struct path staging_parent_path;
-	struct dentry *staging_dentry;
-	struct inode *staging_dir;
-	char *parent, *name, *tmp;
+	struct path blob_path;
+	u64 id;
 	int err;
 
 	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
@@ -30,88 +28,24 @@ static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
 
 	old_cred = override_creds(sbi->creator_cred);
 
-	/* Create parent directories in staging */
-	err = agfs_create_staging_parents(sbi, buf);
+	err = agfs_staging_alloc(sbi, &id, &blob_path, mode, NULL);
 	if (err)
 		goto out_revert;
 
-	/* Split relpath into parent + name */
-	tmp = kstrdup(buf, GFP_KERNEL);
-	if (!tmp) {
-		err = -ENOMEM;
-		goto out_revert;
-	}
-
-	name = strrchr(tmp, '/');
-	if (name) {
-		*name = '\0';
-		name++;
-		parent = tmp;
-	} else {
-		name = tmp;
-		parent = NULL;
-	}
-
-	/* Resolve parent dir in staging */
-	if (parent && *parent)
-		err = agfs_staging_path(sbi, parent, &staging_parent_path);
-	else {
-		staging_parent_path = sbi->staging_dir;
-		path_get(&staging_parent_path);
-		err = 0;
-	}
+	err = agfs_interpose(dentry, dir->i_sb, &blob_path);
 	if (err) {
-		kfree(tmp);
+		path_put(&blob_path);
 		goto out_revert;
 	}
 
-	staging_dir = d_inode(staging_parent_path.dentry);
-	inode_lock_nested(staging_dir, I_MUTEX_PARENT);
+	agfs_set_lower_path(dentry, &blob_path);
+	agfs_add_override(dentry->d_parent, dentry->d_name.name,
+			  dentry->d_name.len, id, NULL);
+	agfs_journal_append_a(sbi, buf, id);
 
-	staging_dentry = lookup_one_len(name, staging_parent_path.dentry,
-					strlen(name));
-	if (IS_ERR(staging_dentry)) {
-		err = PTR_ERR(staging_dentry);
-		goto out_unlock;
-	}
+	revert_creds(old_cred);
+	return 0;
 
-	err = vfs_create(mnt_idmap(staging_parent_path.mnt),
-			 staging_dir, staging_dentry, mode, excl);
-	if (err)
-		goto out_dput;
-
-	/* Interpose new inode */
-	{
-		struct path lower_path = {
-			.dentry = staging_dentry,
-			.mnt = staging_parent_path.mnt,
-		};
-		err = agfs_interpose(dentry, dir->i_sb, &lower_path);
-	}
-	if (err)
-		goto out_dput;
-
-	/* Update lower path on this dentry to point at staging */
-	{
-		struct path p = {
-			.dentry = staging_dentry,
-			.mnt = mntget(staging_parent_path.mnt),
-		};
-		agfs_set_lower_path(dentry, &p);
-	}
-
-	fsstack_copy_attr_times(dir, staging_dir);
-	fsstack_copy_inode_size(dir, staging_dir);
-
-	/* Success: staging_dentry ownership transferred */
-	goto out_unlock;
-
-out_dput:
-	dput(staging_dentry);
-out_unlock:
-	inode_unlock(staging_dir);
-	path_put(&staging_parent_path);
-	kfree(tmp);
 out_revert:
 	revert_creds(old_cred);
 	return err;
@@ -123,10 +57,8 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
 	const struct cred *old_cred;
 	char buf[AGFS_PATH_MAX];
-	struct path staging_parent_path;
-	struct dentry *staging_dentry;
-	struct inode *staging_dir;
-	char *parent, *name, *tmp;
+	struct path blob_path;
+	u64 id;
 	int err;
 
 	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
@@ -135,89 +67,30 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 
 	old_cred = override_creds(sbi->creator_cred);
 
-	err = agfs_create_staging_parents(sbi, buf);
+	err = agfs_staging_alloc(sbi, &id, &blob_path, S_IFDIR | mode, NULL);
 	if (err)
 		goto out_revert;
 
-	tmp = kstrdup(buf, GFP_KERNEL);
-	if (!tmp) {
-		err = -ENOMEM;
-		goto out_revert;
-	}
-
-	name = strrchr(tmp, '/');
-	if (name) {
-		*name = '\0';
-		name++;
-		parent = tmp;
-	} else {
-		name = tmp;
-		parent = NULL;
-	}
-
-	if (parent && *parent)
-		err = agfs_staging_path(sbi, parent, &staging_parent_path);
-	else {
-		staging_parent_path = sbi->staging_dir;
-		path_get(&staging_parent_path);
-		err = 0;
-	}
+	err = agfs_interpose(dentry, dir->i_sb, &blob_path);
 	if (err) {
-		kfree(tmp);
+		path_put(&blob_path);
 		goto out_revert;
 	}
 
-	staging_dir = d_inode(staging_parent_path.dentry);
-	inode_lock_nested(staging_dir, I_MUTEX_PARENT);
+	agfs_set_lower_path(dentry, &blob_path);
+	agfs_add_override(dentry->d_parent, dentry->d_name.name,
+			  dentry->d_name.len, id, NULL);
+	agfs_journal_append_a(sbi, buf, id);
 
-	staging_dentry = lookup_one_len(name, staging_parent_path.dentry,
-					strlen(name));
-	if (IS_ERR(staging_dentry)) {
-		err = PTR_ERR(staging_dentry);
-		goto out_unlock;
-	}
+	revert_creds(old_cred);
+	return 0;
 
-	err = vfs_mkdir(mnt_idmap(staging_parent_path.mnt),
-			staging_dir, staging_dentry, mode);
-	if (err)
-		goto out_dput;
-
-	{
-		struct path lower_path = {
-			.dentry = staging_dentry,
-			.mnt = staging_parent_path.mnt,
-		};
-		err = agfs_interpose(dentry, dir->i_sb, &lower_path);
-	}
-	if (err)
-		goto out_dput;
-
-	{
-		struct path p = {
-			.dentry = staging_dentry,
-			.mnt = mntget(staging_parent_path.mnt),
-		};
-		agfs_set_lower_path(dentry, &p);
-	}
-
-	fsstack_copy_attr_times(dir, staging_dir);
-	fsstack_copy_inode_size(dir, staging_dir);
-	set_nlink(dir, staging_dir->i_nlink);
-
-	goto out_unlock;
-
-out_dput:
-	dput(staging_dentry);
-out_unlock:
-	inode_unlock(staging_dir);
-	path_put(&staging_parent_path);
-	kfree(tmp);
 out_revert:
 	revert_creds(old_cred);
 	return err;
 }
 
-/* ── unlink — create whiteout in staging ───────────────────────────── */
+/* ── unlink — add DELETED override ──────────────────────────────────── */
 
 static int agfs_unlink(struct inode *dir, struct dentry *dentry)
 {
@@ -232,41 +105,23 @@ static int agfs_unlink(struct inode *dir, struct dentry *dentry)
 
 	old_cred = override_creds(sbi->creator_cred);
 
-	/* If a staging file exists, remove it first */
-	if (agfs_staging_has(sbi, buf)) {
-		struct path staging;
-		err = agfs_staging_path(sbi, buf, &staging);
-		if (!err && !agfs_is_whiteout(staging.dentry)) {
-			struct dentry *parent = dget_parent(staging.dentry);
-			inode_lock(d_inode(parent));
-			err = vfs_unlink(mnt_idmap(staging.mnt),
-					 d_inode(parent),
-					 staging.dentry, NULL);
-			inode_unlock(d_inode(parent));
-			dput(parent);
-			path_put(&staging);
-			if (err)
-				goto out;
-		} else if (!err) {
-			path_put(&staging);
-			/* Already a whiteout — nothing more to do */
-			d_drop(dentry);
-			goto out;
-		}
-	}
+	/* Add deleted override (staging_id=0, base_path=NULL) */
+	err = agfs_add_override(dentry->d_parent,
+				dentry->d_name.name,
+				dentry->d_name.len, 0, NULL);
+	if (err)
+		goto out;
 
-	/* Create whiteout */
-	err = agfs_create_whiteout(sbi, buf);
-	if (!err) {
+	/* Append journal record */
+	err = agfs_journal_append_d(sbi, buf);
+	if (!err)
 		d_drop(dentry);
-		fsstack_copy_attr_times(dir, d_inode(dentry->d_parent));
-	}
 out:
 	revert_creds(old_cred);
 	return err;
 }
 
-/* ── rmdir — create whiteout in staging ────────────────────────────── */
+/* ── rmdir — add DELETED override ──────────────────────────────────── */
 
 static int agfs_rmdir(struct inode *dir, struct dentry *dentry)
 {
@@ -281,13 +136,16 @@ static int agfs_rmdir(struct inode *dir, struct dentry *dentry)
 
 	old_cred = override_creds(sbi->creator_cred);
 
-	/* Create whiteout (handles removing existing staging dir) */
-	err = agfs_create_whiteout(sbi, buf);
-	if (!err) {
-		d_drop(dentry);
-		fsstack_copy_attr_times(dir, d_inode(dentry->d_parent));
-	}
+	err = agfs_add_override(dentry->d_parent,
+				dentry->d_name.name,
+				dentry->d_name.len, 0, NULL);
+	if (err)
+		goto out;
 
+	err = agfs_journal_append_d(sbi, buf);
+	if (!err)
+		d_drop(dentry);
+out:
 	revert_creds(old_cred);
 	return err;
 }
@@ -300,10 +158,8 @@ static int agfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
 	const struct cred *old_cred;
 	char buf[AGFS_PATH_MAX];
-	struct path staging_parent_path;
-	struct dentry *staging_dentry;
-	struct inode *staging_dir;
-	char *parent, *name, *tmp;
+	struct path blob_path;
+	u64 id;
 	int err;
 
 	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
@@ -312,81 +168,24 @@ static int agfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 
 	old_cred = override_creds(sbi->creator_cred);
 
-	err = agfs_create_staging_parents(sbi, buf);
+	err = agfs_staging_alloc(sbi, &id, &blob_path, S_IFLNK, symname);
 	if (err)
 		goto out_revert;
 
-	tmp = kstrdup(buf, GFP_KERNEL);
-	if (!tmp) {
-		err = -ENOMEM;
-		goto out_revert;
-	}
-
-	name = strrchr(tmp, '/');
-	if (name) {
-		*name = '\0';
-		name++;
-		parent = tmp;
-	} else {
-		name = tmp;
-		parent = NULL;
-	}
-
-	if (parent && *parent)
-		err = agfs_staging_path(sbi, parent, &staging_parent_path);
-	else {
-		staging_parent_path = sbi->staging_dir;
-		path_get(&staging_parent_path);
-		err = 0;
-	}
+	err = agfs_interpose(dentry, dir->i_sb, &blob_path);
 	if (err) {
-		kfree(tmp);
+		path_put(&blob_path);
 		goto out_revert;
 	}
 
-	staging_dir = d_inode(staging_parent_path.dentry);
-	inode_lock_nested(staging_dir, I_MUTEX_PARENT);
+	agfs_set_lower_path(dentry, &blob_path);
+	agfs_add_override(dentry->d_parent, dentry->d_name.name,
+			  dentry->d_name.len, id, NULL);
+	agfs_journal_append_a(sbi, buf, id);
 
-	staging_dentry = lookup_one_len(name, staging_parent_path.dentry,
-					strlen(name));
-	if (IS_ERR(staging_dentry)) {
-		err = PTR_ERR(staging_dentry);
-		goto out_unlock;
-	}
+	revert_creds(old_cred);
+	return 0;
 
-	err = vfs_symlink(mnt_idmap(staging_parent_path.mnt),
-			  staging_dir, staging_dentry, symname);
-	if (err)
-		goto out_dput;
-
-	{
-		struct path lower_path = {
-			.dentry = staging_dentry,
-			.mnt = staging_parent_path.mnt,
-		};
-		err = agfs_interpose(dentry, dir->i_sb, &lower_path);
-	}
-	if (err)
-		goto out_dput;
-
-	{
-		struct path p = {
-			.dentry = staging_dentry,
-			.mnt = mntget(staging_parent_path.mnt),
-		};
-		agfs_set_lower_path(dentry, &p);
-	}
-
-	fsstack_copy_attr_times(dir, staging_dir);
-
-	goto out_unlock;
-
-out_dput:
-	dput(staging_dentry);
-out_unlock:
-	inode_unlock(staging_dir);
-	path_put(&staging_parent_path);
-	kfree(tmp);
 out_revert:
 	revert_creds(old_cred);
 	return err;
@@ -400,8 +199,12 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		       unsigned int flags)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
+	struct agfs_dentry_info *old_parent_di;
 	const struct cred *old_cred;
 	char old_buf[AGFS_PATH_MAX], new_buf[AGFS_PATH_MAX];
+	struct agfs_override *old_ovr = NULL;
+	u64 old_sid = 0;
+	char *old_bp = NULL;
 	int err;
 
 	if (flags)
@@ -417,126 +220,73 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	old_cred = override_creds(sbi->creator_cred);
 	down_write(&sbi->staging_sem);
 
-	if (agfs_staging_has(sbi, old_buf)) {
-		/* Already staged — rename within staging dir */
-		struct path old_staging, new_parent_path;
-		struct dentry *new_staging;
-		char *parent, *name, *buf2;
-
-		err = agfs_staging_path(sbi, old_buf, &old_staging);
-		if (err)
-			goto out;
-
-		/* Create parent dirs for destination */
-		err = agfs_create_staging_parents(sbi, new_buf);
-		if (err) {
-			path_put(&old_staging);
-			goto out;
-		}
-
-		/* Resolve new parent + name */
-		buf2 = kstrdup(new_buf, GFP_KERNEL);
-		if (!buf2) {
-			path_put(&old_staging);
-			err = -ENOMEM;
-			goto out;
-		}
-		name = strrchr(buf2, '/');
-		if (name) {
-			*name = '\0';
-			name++;
-			parent = buf2;
-		} else {
-			name = buf2;
-			parent = NULL;
-		}
-
-		if (parent && *parent)
-			err = agfs_staging_path(sbi, parent, &new_parent_path);
-		else {
-			new_parent_path = sbi->staging_dir;
-			path_get(&new_parent_path);
-			err = 0;
-		}
-		if (err) {
-			kfree(buf2);
-			path_put(&old_staging);
-			goto out;
-		}
-
-		{
-			struct renamedata rd = {
-				.old_mnt_idmap = mnt_idmap(old_staging.mnt),
-				.old_dir = d_inode(old_staging.dentry->d_parent),
-				.old_dentry = old_staging.dentry,
-				.new_mnt_idmap = mnt_idmap(new_parent_path.mnt),
-				.new_dir = d_inode(new_parent_path.dentry),
-			};
-
-			inode_lock(rd.old_dir);
-			if (rd.old_dir != rd.new_dir)
-				inode_lock_nested(rd.new_dir, I_MUTEX_CHILD);
-
-			new_staging = lookup_one_len(name,
-						     new_parent_path.dentry,
-						     strlen(name));
-			if (IS_ERR(new_staging)) {
-				err = PTR_ERR(new_staging);
-			} else {
-				rd.new_dentry = new_staging;
-				err = vfs_rename(&rd);
-				dput(new_staging);
+	/* Check current override state on old name.
+	 * Snapshot base_path while holding the lock (§3.4). */
+	old_parent_di = AGFS_D(old_dentry->d_parent);
+	if (old_parent_di) {
+		spin_lock(&old_parent_di->lock);
+		old_ovr = agfs_find_override(old_dentry->d_parent,
+					     old_dentry->d_name.name,
+					     old_dentry->d_name.len);
+		if (old_ovr) {
+			old_sid = old_ovr->staging_id;
+			if (old_ovr->base_path) {
+				old_bp = kstrdup(old_ovr->base_path,
+						 GFP_ATOMIC);
+				if (!old_bp) {
+					spin_unlock(&old_parent_di->lock);
+					err = -ENOMEM;
+					goto out;
+				}
 			}
-
-			if (rd.old_dir != rd.new_dir)
-				inode_unlock(rd.new_dir);
-			inode_unlock(rd.old_dir);
 		}
-
-		kfree(buf2);
-		path_put(&new_parent_path);
-		path_put(&old_staging);
-	} else {
-		/* File only in base — redirect dentry + whiteout */
-		struct agfs_dentry_info *old_di = AGFS_D(old_dentry);
-		struct agfs_dentry_info *new_di = AGFS_D(new_dentry);
-
-		if (new_di && old_di) {
-			struct agfs_pinned_dentry *pd;
-
-			pd = kzalloc(sizeof(*pd), GFP_KERNEL);
-			if (!pd) {
-				err = -ENOMEM;
-				goto out;
-			}
-
-			spin_lock(&new_di->lock);
-			new_di->lower_path = old_di->lower_path;
-			path_get(&new_di->lower_path);
-			spin_unlock(&new_di->lock);
-
-			/* Pin dentry and track for cleanup on commit/abort/unmount */
-			pd->dentry = dget(new_dentry);
-			list_add(&pd->list, &sbi->pinned_dentries);
-
-			/* Persist rename record for userspace */
-			err = agfs_append_rename(sbi, old_buf, new_buf);
-		}
+		spin_unlock(&old_parent_di->lock);
 	}
 
-	/* Hide old path with whiteout — only on success */
-	if (!err)
-		err = agfs_create_whiteout(sbi, old_buf);
+	if (old_ovr && !old_sid && !old_bp) {
+		/* Source is deleted — cannot rename */
+		err = -ENOENT;
+		goto out;
+	} else if (old_sid) {
+		/* File is in a staging blob — move the override */
+		err = agfs_add_override(new_dentry->d_parent,
+					new_dentry->d_name.name,
+					new_dentry->d_name.len,
+					old_sid, NULL);
+	} else if (old_bp) {
+		/* Already redirected (chained rename) — follow the chain */
+		err = agfs_add_override(new_dentry->d_parent,
+					new_dentry->d_name.name,
+					new_dentry->d_name.len,
+					0, old_bp);
+	} else {
+		/* File only in base — redirect without copying */
+		err = agfs_add_override(new_dentry->d_parent,
+					new_dentry->d_name.name,
+					new_dentry->d_name.len,
+					0, old_buf);
+	}
+	if (err)
+		goto out;
+
+	/* Hide the old name (deleted override) */
+	err = agfs_add_override(old_dentry->d_parent,
+				old_dentry->d_name.name,
+				old_dentry->d_name.len, 0, NULL);
+	if (err)
+		goto out;
+
+	/* Journal rename */
+	err = agfs_journal_append_r(sbi, old_buf, new_buf);
+
+	/* Invalidate dcache for both names so next lookup uses overrides */
+	d_drop(old_dentry);
+	d_drop(new_dentry);
 
 out:
+	kfree(old_bp);
 	up_write(&sbi->staging_sem);
 	revert_creds(old_cred);
-	if (!err) {
-		fsstack_copy_attr_times(old_dir,
-					d_inode(old_dentry->d_parent));
-		fsstack_copy_attr_times(new_dir,
-					d_inode(new_dentry->d_parent));
-	}
 	return err;
 }
 

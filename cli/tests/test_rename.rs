@@ -121,3 +121,67 @@ fn rename_abort_preserves_base() {
         "renamed path should not exist in base after abort"
     );
 }
+
+/// Rename a file then create a new file with the old name.
+/// The new file should be accessible (not blocked by the rename record).
+#[test]
+fn rename_then_recreate_old_name() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
+
+    // Old name is gone
+    assert!(fs::read_to_string(s.mnt_path("hello.txt")).is_err());
+
+    // Create a new file with the old name
+    fs::write(s.mnt_path("hello.txt"), "new file\n").expect("recreate");
+
+    // New file should be readable
+    let content = fs::read_to_string(s.mnt_path("hello.txt"))
+        .expect("new hello.txt should be readable");
+    assert_eq!(content, "new file\n");
+
+    // Renamed file still accessible at new path
+    let moved = fs::read_to_string(s.mnt_path("moved.txt"))
+        .expect("moved.txt should be readable");
+    assert_eq!(moved, "base content\n");
+}
+
+/// Rename + recreate old name + commit: both files should be in base.
+#[test]
+fn rename_recreate_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
+    fs::write(s.mnt_path("hello.txt"), "replacement\n").expect("recreate");
+
+    s.cli(&["commit"]).expect("commit");
+
+    // New name has the original content
+    assert_eq!(
+        fs::read_to_string(s.base_path("moved.txt")).unwrap(),
+        "base content\n",
+        "renamed file should be at new path in base"
+    );
+
+    // Old name now has the replacement content
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        "replacement\n",
+        "recreated file should be committed to base"
+    );
+}
+
+/// Deleting a file then renaming it should fail.
+#[test]
+fn rename_deleted_file_fails() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
+
+    let result = fs::rename(s.mnt_path("hello.txt"), s.mnt_path("gone.txt"));
+    assert!(
+        result.is_err(),
+        "renaming a deleted file should fail, got Ok"
+    );
+}

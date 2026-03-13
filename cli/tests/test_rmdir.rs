@@ -1,7 +1,7 @@
 use crate::helpers::AgfsSession;
 use std::fs;
 
-// ── inode.c: agfs_rmdir + staging.c: agfs_create_whiteout ──
+// ── inode.c: agfs_rmdir — adds DELETED override ──
 
 /// rmdir a directory that was created through the mount (staging dir).
 #[test]
@@ -21,15 +21,14 @@ fn rmdir_staging_dir() {
     );
 }
 
-/// rmdir a base directory creates a whiteout, but the directory may
-/// still be visible through lookup (agfs_lookup doesn't check whiteouts).
+/// rmdir a base directory adds a DELETED override.
 /// This test documents the current behavior.
 #[test]
-fn rmdir_base_dir_creates_whiteout() {
+fn rmdir_base_dir_adds_override() {
     let s = AgfsSession::new().expect("session setup");
 
     // subdir/ exists in base with files inside.
-    // agfs_rmdir creates a whiteout unconditionally.
+    // agfs_rmdir adds a DELETED override.
     let result = fs::remove_dir(s.mnt_path("subdir"));
     if result.is_ok() {
         // Base should be untouched

@@ -81,12 +81,14 @@ impl AgfsSession {
         self.root.join(rel)
     }
 
-    /// Resolve a staging path.
-    pub fn staging_path(&self, rel: &str) -> PathBuf {
-        self.root
-            .join(".agfs/staging")
-            .join(self.root.strip_prefix("/").unwrap())
-            .join(rel)
+    /// Get the staging directory path.
+    pub fn staging_dir(&self) -> PathBuf {
+        self.root.join(".agfs/staging")
+    }
+
+    /// Get the journal file path.
+    pub fn journal_path(&self) -> PathBuf {
+        self.root.join(".agfs/journal")
     }
 
     /// Run an agfs CLI subcommand from the session root, return stdout.

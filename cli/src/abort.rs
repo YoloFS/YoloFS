@@ -9,9 +9,6 @@ use std::fs;
 
 pub fn run() -> Result<()> {
     let agfs = crate::session_dir()?;
-    if !agfs.exists() {
-        anyhow::bail!("no agfs session found (no .agfs/ directory)");
-    }
 
     let staging_dir = agfs.join("staging");
     let journal_path = agfs.join("journal");

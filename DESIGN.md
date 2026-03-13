@@ -63,9 +63,9 @@ The two layers execute in order for every VFS operation:
    (controlled by standard Unix permissions on the lower FS).
    If `ask`, sleeps the calling thread. If `deny`, returns `-EACCES`.
    If `allow-*`, falls through.
-2. **Staging Layer** — routes reads to the staging dir if the file has been
-   modified, otherwise to the base. Ensures writes go to the staging directory.
-   Handles whiteouts for deletions.
+2. **Staging Layer** — routes reads to the staging blob if the file has been
+   modified, otherwise to the base. Ensures writes go to staging blobs.
+   Uses per-directory override lists for deletions and renames.
 
 All I/O is ultimately delegated to the lower filesystem via the standard
 wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
@@ -80,11 +80,12 @@ wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
 | Term                  | Meaning |
 | --------------------- | ------- |
 | **base**              | Always `/` — the entire root filesystem, read-only from agfs's perspective until commit. |
-| **staging directory** | `.agfs/staging/` — stores modified files, mirroring the base tree structure. Each staging file is always a **complete copy** — no partial/block-level tracking. |
-| **whiteout**          | A character device node with major/minor 0/0 in the staging directory, indicating that the corresponding base file has been deleted. Same convention as overlayfs. |
-| **mount point**       | `.agfs/mnt/` — the agent's view of the filesystem. Shows the merged base + staging with permission gating applied. |
-| **commit**            | Applies all staged files and whiteouts to the base filesystem. |
-| **abort**             | Discards the staging directory. O(1). |
+| **staging directory** | `.agfs/staging/` — a flat blob store. Each entry is identified by a numeric ID (`staging/1`, `staging/2`, …). Files and symlinks are stored as blobs; directories created by `mkdir` are empty directories (children live in their own blobs). No mirrored directory tree. |
+| **override list**     | Per-directory in-memory list of overrides. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
+| **journal**           | `.agfs/journal` — append-only log of all mutations. Written by the kernel, read by the CLI for commit/abort/status/diff. The kernel never reads it back. |
+| **mount point**       | `.agfs/mnt/` — the agent's view of the filesystem. Shows the merged base + staged changes with permission gating applied. |
+| **commit**            | CLI reads the journal and applies all operations to the base filesystem. |
+| **abort**             | CLI deletes journal + staging directory. O(1). |
 
 
 ### 3.2 Credential Override for Staging
@@ -108,97 +109,162 @@ the staging directory.
 ```
 agfs.toml                       # config file in CWD (mount options + rules)
 .agfs/                          # created by `agfs` in CWD
-├── journal                      # persisted rename log: src\0dst\0 pairs
-├── staging/                     # staged files + whiteouts (mirrors / tree)
+├── journal                      # append-only mutation log (all ops)
+├── staging/                     # flat blob store (staging/1, staging/2, ...)
+│   ├── 1                        # blob: content of some file
+│   ├── 2                        # blob: content of another file
+│   └── ...
 └── mnt/                         # mount point — agent works here
                                  #   ioctl on this directory fd for control
 ```
 
 ### 3.4 Path Resolution
 
-```
-resolve(dentry):
-    relpath = dentry_relpath(dentry)
+Each directory dentry holds an **override list** of child overrides. Each
+override records the current state of a child name:
 
-    if staging_has(relpath):
-        if is_whiteout(staging_path(relpath)):  return -ENOENT
-        return staging_path(relpath)
-
-    if AGFS_D(dentry)->lower_path is set:
-        return AGFS_D(dentry)->lower_path
-
-    if base_has(relpath):
-        return base_path(relpath)
-
-    return -ENOENT
+```c
+struct agfs_override {
+    struct list_head  list;
+    u64               staging_id;  /* >0 = content/dir in staging/<id> */
+    char              *base_path;  /* non-NULL = content at this base path */
+    unsigned int      name_len;
+    char              name[];
+};
 ```
 
-A whiteout is a char device with major/minor 0/0 (`mknod(path, S_IFCHR, 0)`).
-Staging files take priority over base. Whiteouts in the staging dir shadow the base.
-`.agfs/journal` is not consulted on the hot path. Runtime rename state lives
-in dentries: a renamed destination dentry has `lower_path` redirected to the
-original base object, and the old path is hidden by a staging whiteout. On
-mount, agfs replays `.agfs/journal` to reinstall those redirected destination
-dentries; source hiding continues to come from the whiteouts already present in
-`.agfs/staging/`.
+Interpretation:
+- `staging_id > 0` → file, symlink, or directory in `staging/<id>`
+- `base_path != NULL` → file with content at this mirrored absolute base path
+  (same namespace used in the journal)
+- all zero/NULL → deleted (lookup returns negative dentry)
+- no entry at all → fall through to base filesystem
+
+**`find_override`** — linear scan of the parent directory's override list:
+
+```
+find_override(dir, name):
+    for ovr in dir.overrides:
+        if ovr.name == name:  return ovr
+    return NULL
+```
+
+`base_path` is always owned by the override entry. Readers must snapshot or
+duplicate it while holding the directory spinlock before resolving it, because
+writers are free to replace the string in place when publishing a new override.
+
+**`add_override`** — upsert: update existing override or append new one:
+
+```
+add_override(dir, name, staging_id=0, base_path=NULL):
+    ovr = find_override(dir, name)
+    if ovr:
+        ovr.staging_id = staging_id
+        ovr.base_path = strdup(base_path)   # replace owned copy
+    else:
+        ovr = alloc_override(name)
+        ovr.staging_id = staging_id
+        ovr.base_path = strdup(base_path)
+        dir.overrides.append(ovr)
+```
+
+An override is **deleted** when `staging_id == 0 && base_path == NULL`
+(i.e. `add_override(dir, name)` with no other arguments).
+
+**Lookup** (`agfs_lookup`) — called by the VFS when a name is first
+accessed in a directory:
+
+```
+agfs_lookup(dir, name):
+    ovr = find_override(dir, name)
+    if ovr:
+        sid, base_path = snapshot(ovr)   # copy under dir lock
+        if sid:            return inode for staging/<id>
+        if base_path:      return inode for base/<path>
+        return negative dentry  # deleted
+    return base_lookup(dir, name)   # fall through to base
+```
+
+**Readdir** merges the override list with the base directory:
+
+```
+agfs_readdir(dir):
+    for ovr in dir.overrides:
+        if not ovr.is_deleted:  dir_emit(ovr.name)
+    for entry in base_readdir(dir):
+        if not find_override(dir, entry.name):  dir_emit(entry.name)
+```
+
+The override list is the kernel's in-memory source of truth. The journal
+persists it on disk for the CLI. The kernel never reads the journal back.
 
 ### 3.5 Open / Read / Write Path
 
-Staging redirection is decided at `open()` time based on the flags:
+The backing file (staging blob or base file) is determined at **lookup**
+time via the override list. `open()` receives a dentry already pointing at
+the right lower inode.
+
+All staging publications (installing an override, updating the dentry's lower
+path, and appending the journal record) are serialized under `staging_sem` and
+must succeed as a unit. If the journal append fails, the write/open fails and
+the previous mapping remains authoritative.
 
 ```
 agfs_open(inode, file):
     if file->f_flags & O_TRUNC:
-        // Truncating write (echo >, cat >, editors): create empty staging file
-        // directly. No need to copy the base file.
-        file_info->lower_file = create_and_open(staging_path, file->f_flags)
+        // Truncating write: allocate new staging blob, publish atomically.
+        id = next_staging_id++
+        file_info->lower_file = create_and_open(staging/<id>)
+        down_write(staging_sem)
+        add_override(parent, name, staging_id=id)
+        journal(A, path, id)
+        swap dentry lower path to staging/<id>
+        up_write(staging_sem)
         file_info->needs_cow = false
 
     elif file->f_flags & (O_WRONLY | O_RDWR):
-        if staging_has(inode):
+        ovr = find_override(parent, name)
+        if ovr and ovr.staging_id:
             // Already in staging from a prior write.
-            file_info->lower_file = open(staging_path, file->f_flags)
+            file_info->lower_file = open(staging/<id>, file->f_flags)
             file_info->needs_cow = false
         else:
-            // In-place write without truncate. Open base read-only for
-            // now; first actual write will copy base → staging.
-            file_info->lower_file = open(base_path, O_RDONLY)
+            // Base file. Open read-only; first write triggers COW.
+            file_info->lower_file = open(base_file, O_RDONLY)
             file_info->needs_cow = true
     else:
-        // Read-only open: prefer staging, fall back to base.
-        file_info->lower_file = open(resolve(file->f_path.dentry), O_RDONLY)
+        // Read-only: open the lower file the dentry points to.
+        file_info->lower_file = open(lower_file, O_RDONLY)
         file_info->needs_cow = false
-
-agfs_read_iter(kiocb, iov_iter):
-    lower_file = file_info->lower_file
-    kiocb->ki_filp = lower_file
-    ret = lower_file->f_op->read_iter(kiocb, iov_iter)
-    kiocb->ki_filp = file   // restore
-    return ret
 
 agfs_write_iter(kiocb, iov_iter):
     if file_info->needs_cow:
-        // First write on a non-truncating open: copy base → staging.
-        vfs_copy_file_range(base_file, staging_file, ...)
+        // First write: copy base → new staging blob, publish atomically.
+        id = next_staging_id++
+        copy base_content → staging/<id>
+        down_write(staging_sem)
+        add_override(parent, name, staging_id=id)
+        journal(A, path, id)
         fput(file_info->lower_file)
-        file_info->lower_file = open(staging_path, file->f_flags)
+        file_info->lower_file = open(staging/<id>, file->f_flags)
+        up_write(staging_sem)
         file_info->needs_cow = false
 
-    lower_file = file_info->lower_file
-    kiocb->ki_filp = lower_file
-    ret = lower_file->f_op->write_iter(kiocb, iov_iter)
-    kiocb->ki_filp = file   // restore
-    fsstack_copy_inode_size(inode, file_inode(lower_file))
-    return ret
+    // Write to staging blob.
+    lower_file->f_op->write_iter(...)
 
 agfs_mmap(file, vma):
     if file_info->needs_cow and (vma->vm_flags & (VM_WRITE | VM_SHARED)):
-        // Writable shared mapping on a file opened O_RDWR whose lower
-        // file is still read-only (COW not yet triggered).  Perform COW
-        // now so the lower file is writable before we delegate mmap.
-        do_cow(...)
+        // Writable shared mapping but lower file is still read-only.
+        // Trigger COW now so the lower file is writable before mmap.
+        id = next_staging_id++
+        copy base_content → staging/<id>
+        down_write(staging_sem)
+        add_override(parent, name, staging_id=id)
+        journal(A, path, id)
         fput(file_info->lower_file)
-        file_info->lower_file = open(staging_path, file->f_flags)
+        file_info->lower_file = open(staging/<id>, file->f_flags)
+        up_write(staging_sem)
         file_info->needs_cow = false
 
     lower_file = file_info->lower_file
@@ -213,161 +279,185 @@ agfs_mmap(file, vma):
 
 **Three cases, in order of likelihood for agent workloads:**
 
-1. `O_TRUNC` (most common: `>`, editors, code generators) → zero-copy,
-  create empty staging file directly.
-2. `O_RDONLY` → no staging file involvement unless file was previously written.
+1. `O_TRUNC` (most common: `>`, editors, code generators) → allocate
+   staging blob directly, no copy.
+2. `O_RDONLY` → open the resolved lower file (staging blob or base).
 3. `O_RDWR`/`O_WRONLY` without truncate (rare: `sed -i`, `dd`, append) →
-  copy base→staging on first write.
-
-**Why copy the whole file for case 3 (not partial/block-level)?**
-
-- agfs is a VFS shim — it doesn't have access to block-level structures.
-  Tracking byte-range dirtiness would mean reimplementing a block layer
-  on top of files (bitmaps, split reads, range merging).
-- In-place partial writes to large files are not the target use case.
-- Source files are small (KB–low MB). A full copy is sub-millisecond.
-- Commit is a simple `vfs_rename()` per file — no reassembly.
+   copy base→staging blob on first write.
 
 ### 3.6 Create / Mkdir / Symlink Path
 
-All inode creation operations go to the staging directory, never to the base
-filesystem. This ensures that `agfs abort` can discard every change cleanly.
+All creation operations allocate a staging blob and add an override:
 
 ```
-agfs_create(dir, dentry, mode):
-    relpath = dentry_relpath(dentry)
-    agfs_create_staging_parents(sbi, relpath)
-    vfs_create() on staging dir
-    interpose new inode pointing at the staging dentry
+agfs_create(dir, name, mode):
+    id = next_staging_id++
+    create file staging/<id>
+    add_override(dir, name, staging_id=id)
+    journal(A, abs_path, id)
 
-agfs_mkdir(dir, dentry, mode):
-    relpath = dentry_relpath(dentry)
-    agfs_create_staging_parents(sbi, relpath)
-    vfs_mkdir() on staging dir
-    interpose new inode pointing at the staging dentry
+agfs_mkdir(dir, name, mode):
+    id = next_staging_id++
+    create dir staging/<id>/
+    add_override(dir, name, staging_id=id)
+    journal(A, abs_path, id)
 
-agfs_symlink(dir, dentry, symname):
-    relpath = dentry_relpath(dentry)
-    agfs_create_staging_parents(sbi, relpath)
-    vfs_symlink() on staging dir
-    interpose new inode pointing at the staging dentry
+agfs_symlink(dir, name, target):
+    id = next_staging_id++
+    create symlink staging/<id> → target
+    add_override(dir, name, staging_id=id)
+    journal(A, abs_path, id)
 ```
 
-`touch` (create + close, no write) produces an empty file in staging —
+`touch` (create + close, no write) produces an empty blob in staging —
 visible in `agfs status` / `agfs diff` and cleanly discarded by abort.
+
+### 3.6b Delete / Rmdir Path
+
+Delete adds a "deleted" override (all fields zero/NULL) and appends
+to the journal:
+
+```
+agfs_unlink(dir, name):
+    add_override(dir, name)   # all zero = deleted
+    journal(D, abs_path)
+
+agfs_rmdir(dir, name):
+    add_override(dir, name)   # all zero = deleted
+    journal(D, abs_path)
+```
+
+Subsequent lookup of the name finds the override and returns a negative
+dentry. The base file is untouched until commit.
 
 ### 3.7 Rename Handling
 
-Renaming a file that only exists in staging is trivial — just `vfs_rename()`
-within the staging directory. The interesting case is renaming a base file
-that has not been modified.
-
-**Problem**: a naïve approach would copy the entire base file into staging
-just to move it. For large files this is wasteful — the content hasn't
-changed, only the path.
-
-**Solution**: append the rename to `.agfs/journal`, redirect the destination
-dentry's `lower_path` to the original base object, pin that dentry until
-commit/abort, and create a whiteout at the old path. The on-disk file is only
-persisted recovery/commit data; kernel path resolution uses dentry state. No
-data copy is needed for a pure rename.
-
-`.agfs/journal` is a sequence of `old_path\0new_path\0` pairs. Each path is
-absolute and NUL-terminated.
-
-On mount, agfs replays this file and reinstalls the redirected destination
-dentries. Each runtime rename appends one record to the file.
-
-Each record means:
-
-- hide `old_path` from the merged view, and
-- resolve `new_path` to the base file currently stored at `old_path`
-  until a staged copy exists at `new_path`.
+Rename is decomposed into a delete of the old name + creation at the new
+name. No file content is copied — only override metadata changes.
 
 ```
-agfs_rename(old_dir, old_dentry, new_dir, new_dentry):
-    old_info = AGFS_D(old_dentry)
-    new_info = AGFS_D(new_dentry)
+agfs_rename(old_parent, old_name, new_parent, new_name):
+    old_ovr = find_override(old_parent, old_name)
 
-    if file is in staging:
-        // Already staged — just rename within staging dir.
-        vfs_rename(staging/old_path, staging/new_path)
+    if old_ovr and old_ovr.staging_id:
+        # File is in a staging blob — move the override, keep same blob.
+        add_override(new_parent, new_name, staging_id=old_ovr.staging_id)
+    elif old_ovr and old_ovr.base_path:
+        # Already redirected (chained rename) — follow the chain.
+        add_override(new_parent, new_name, base_path=old_ovr.base_path)
     else:
-        // File only in base. Record the move; no copy yet.
-        new_info->lower_path = old_info->lower_path
-        dget(new_dentry)   // pin until commit/abort
-        append(journal_file, old_path, new_path)
+        # File only in base — redirect without copying.
+        add_override(new_parent, new_name,
+                     base_path=abs_base_path(old_parent, old_name))
 
-    // Hide the old path.
-    create_whiteout(staging/old_path)
+    # Hide the old name (all fields zero/NULL = deleted).
+    add_override(old_parent, old_name)
+    journal(R, old_abs_path, new_abs_path)
 ```
 
-**Read after rename**: `resolve(new_dentry)` follows
-`AGFS_D(new_dentry)->lower_path` and returns `base/old_path` until
-`staging/new_path` exists. A lookup of `old_path` sees the whiteout and returns
-`-ENOENT`.
+**Rename chains** (`mv a→b`, then `mv b→c`) work naturally: the second
+rename finds the REDIRECTED override on `b`, follows its `base_path` to
+the original base file, and creates a new REDIRECTED override on `c`.
 
-**Write after rename**: triggers lazy COW as usual. The base file at
-`old_path` is copied into `staging/new_path`; from that point on,
-`resolve(new_dentry)` returns the staged file because staging wins over the
-redirected `lower_path`. The rename record stays on disk so commit knows to delete the
-original path after installing the new file.
+**Rename + recreate** (`mv a→b`, then `touch a`) works because the new
+`touch a` adds an ADDED override that supersedes the DELETED override.
 
-Commit and abort handling for renames is covered in §3.8.
+**Read after rename**: lookup of the new name finds the override →
+opens the base file at the redirected path (or the staging blob).
+Lookup of the old name finds the DELETED override → returns `-ENOENT`.
 
-### 3.8 Staging Operations (Userspace)
+**Write after rename**: triggers lazy COW as usual. The base file is
+copied into a new staging blob; the override changes from
+`base_path=...` to `staging_id=N`.
+
+Commit and abort handling is covered in §3.9.
+
+### 3.8 Readdir (Merged Directory Listing)
+
+`readdir` (`iterate_shared`) presents a merged view: overrides first,
+then base entries that aren't overridden.
+
+```
+agfs_readdir(dir, ctx):
+    # 1. Emit non-deleted overrides.
+    for ovr in dir.overrides:
+        if not ovr.is_deleted:
+            dir_emit(ctx, ovr.name)
+
+    # 2. Emit base entries not overridden by overrides.
+    for entry in base_readdir(dir):
+        if not find_override(dir, entry.name):
+            dir_emit(ctx, entry.name)
+```
+
+The merged list is built fresh on every `readdir` call — no caching.
+This ensures creates, deletes, and renames between `getdents64` calls
+are always visible. Override lists are small, so the cost is negligible.
+
+### 3.9 Journal Format
+
+The journal is an append-only file at `.agfs/journal`. Each record is a
+sequence of NUL-terminated fields, covering ALL mutations (not just
+renames). Fields within a record are separated by `\0`; records are
+separated by `\n` (newline after the last `\0`).
+
+```
+A\0<path>\0<id>\n          # content/dir in staging/<id>
+D\0<path>\n                # deleted
+R\0<old_path>\0<new_path>\n   # rename
+```
+
+`A` covers creates, modifies, symlinks, and mkdirs. The CLI determines
+the type by stat'ing `staging/<id>` (regular file, symlink, or directory).
+`D` records a deletion of a file or directory.
+`R` records a rename from `old_path` to `new_path`.
+
+Written by the kernel (`kernel_write()` per mutation). Read by the CLI
+for commit/abort/status/diff. Never read by the kernel.
+
+### 3.10 Staging Operations (Userspace)
 
 Commit and abort are **userspace operations** — the kernel module only handles
-I/O redirection. The `agfs` CLI tool walks the staging
-directory and applies changes to the base.
-
-All staging operations except abort share a common **staging walk**:
-
-1. Read `.agfs/journal` and build `old→new` / `new→old` lookup tables.
-2. Process rename records: for each entry, check whether a staged file
-   exists at `new_path` (rename + modification) or not (pure rename).
-3. Walk `.agfs/staging/` recursively.
-4. Skip entries already explained by rename records:
-   - whiteouts at `old_path` for renamed files,
-   - staged files at `new_path` already consumed by step 2.
-5. Classify remaining entries (regular files, whiteouts) per operation.
+I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 
 **Commit** (`agfs commit`):
 
-1. Staging walk (above). In step 2, apply renames:
-   - Staged file at `new_path`: `rename(staging/new_path, base/new_path)`,
-     then `unlink(base/old_path)`.
-   - No staged file: `rename(base/old_path, base/new_path)`.
-2. For each remaining whiteout (char dev 0/0): `unlink()` / `rmdir()` the
-   corresponding base path.
-3. For each remaining regular file: `rename()` from `staging/<path>` →
-   `base/<path>`, creating parent directories as needed.
-4. Remove the `staging/` directory and `journal` file.
-5. Signal the kernel module to invalidate caches and drop pinned rename dentries.
+1. Replay journal in order to build a resolved operation list. Each path
+   is tracked through its lifetime of mutations so that intermediate
+   operations collapse into their final effect:
+   - `A(x) → R(x,y)` collapses to `Add(y)` (staging file, no base rename).
+   - `R(a,b) → R(b,c)` collapses to `Rename(a,c)`.
+   - `A(x) → D(x)` cancels out (path never existed in base).
+   - `R(a,b) → A(a)` produces `Rename(a,b) + Add(a)`.
+2. Apply resolved changes sequentially. For each change:
+   - **Rename**: `rename(base/old, base/new)`.
+   - **Delete**: `rm base/path`.
+   - **Add/Modify**: move `staging/<id> → base/path` (stat blob to
+     determine type: regular file → copy/rename, symlink → recreate,
+     directory → mkdir), creating parent dirs as needed.
+3. Clean up: remove journal + staging directory.
+4. Signal kernel to invalidate caches (`AGFS_IOC_CACHE_INVAL`).
+
+Since step 1 resolves all cross-dependencies, no particular ordering
+between renames, deletes, and adds is required — each resolved
+operation targets a distinct path.
 
 **Abort** (`agfs abort`):
 
 1. `rm -rf .agfs/staging/` and `rm .agfs/journal`.
-2. Signal the kernel module to invalidate caches and drop pinned rename dentries.
+2. Signal kernel to invalidate caches.
 
 **Status** (`agfs status`):
 
-1. Staging walk (above). In step 2, collect renames:
-   - No staged file at `new_path`: pure rename (`old_path -> new_path`).
-   - Staged file at `new_path`: rename + modified.
-2. Classify remaining entries as added, modified, or deleted.
+1. Replay journal in order (same as commit step 1) and classify:
+   renames, deletes, adds, modifies.
 
 **Diff** (`agfs diff`):
 
-1. Staging walk (above). In step 2, diff renames:
-   - No staged file at `new_path`: emit rename-only record.
-   - Staged file at `new_path`: diff `base/old_path` against
-     `staging/new_path`, label as rename + modification.
-2. For each remaining regular file: unified diff against the corresponding
-   base file. Added files shown as entirely new; modified files show the delta.
-3. For each remaining whiteout: show as a deleted file.
-4. Output in git-style unified diff format. Pure renames are represented as
-   rename metadata and are not plain POSIX `patch` input.
+1. Read journal. For modified/added files, diff `staging/<id>` vs base.
+   For renames, show rename metadata (and diff if also modified).
+   For deletes, show as deleted file.
+2. Output in git-style unified diff format.
 
 ---
 
@@ -384,6 +474,16 @@ enum agfs_perm {
     AGFS_PERM_ALLOW_RO,    // Read only. No write, no execute.
     AGFS_PERM_ALLOW_RX,    // Read + execute. No write.
     AGFS_PERM_DENY,        // All access returns -EACCES.
+};
+```
+
+Operations passed in ask requests:
+
+```c
+enum agfs_op {
+    AGFS_OP_READ,          // File opened for reading.
+    AGFS_OP_WRITE,         // File opened for writing (includes append/truncate).
+    AGFS_OP_EXEC,          // File opened for execution.
 };
 ```
 
@@ -524,7 +624,17 @@ static int agfs_open(struct inode *inode, struct file *file)
         char *relpath = dentry_path_raw(dentry, buf, AGFS_PATH_MAX);
         if (IS_ERR(relpath))
             return PTR_ERR(relpath);   // -ENAMETOOLONG if path won't fit
-        err = agfs_ask_userspace(dentry, relpath, file->f_flags, &perm);
+
+        unsigned int op;
+        if (file->f_mode & FMODE_EXEC)
+            op = AGFS_OP_EXEC;
+        else if (file->f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC))
+            op = AGFS_OP_WRITE;
+        else
+            op = AGFS_OP_READ;
+
+        err = agfs_ask_userspace(AGFS_SB(inode->i_sb), dentry,
+                                 relpath, op, &perm);
         if (err)
             return err;
     }
@@ -563,7 +673,7 @@ When a thread accesses a file whose effective permission is `ask`:
   2. Allocate agfs_perm_request {
        id, path, op, pid, comm
      }
-  3. Enqueue request on sb->pending_list
+  3. Enqueue request on sb->pending_reqs
   4. wake_up(&sb->request_waitq)
   5. wait_event_interruptible(              ioctl(GET_REQUEST) blocks
        req->done,                            until request is available
@@ -609,12 +719,13 @@ struct agfs_sb_info {
     struct super_block     *lower_sb;
     struct path             base_path;       // always "/"
     struct path             storage_path;    // .agfs/ directory
+    const struct cred      *creator_cred;    // mount-time credentials (§3.2)
 
     // Staging
-    struct path             staging_dir;       // .agfs/staging/
-    struct path             journal_path;      // .agfs/journal
-    struct rw_semaphore     staging_sem;       // protects staging dir + rename log updates/replay
-    struct list_head        pinned_dentries;   // rename-pinned dentries (agfs_pinned_dentry list)
+    struct path             staging_dir;       // .agfs/staging/ (flat blob store)
+    struct file            *journal_file;      // .agfs/journal (opened at mount, append-only)
+    struct rw_semaphore     staging_sem;       // protects staging + journal writes
+    atomic64_t              next_staging_id;   // counter for staging blob IDs
 
     // Permission gating
     atomic64_t              perm_gen;        // bumped on rule change; invalidates inode caches
@@ -622,6 +733,7 @@ struct agfs_sb_info {
     spinlock_t              pending_lock;
     wait_queue_head_t       request_waitq;   // daemon blocks here
     atomic64_t              next_req_id;
+    atomic_t                has_daemon;      // 1 if a watch daemon is connected
     unsigned int            ask_timeout_s;   // seconds, 0 = infinite
     enum agfs_perm          ask_default;     // fallback on timeout
     bool                    noperm;          // disable permission gating entirely
@@ -694,14 +806,14 @@ struct agfs_perm_request {
 ```c
 struct agfs_dentry_info {
     spinlock_t              lock;
-    struct path             lower_path;      // resolved lower path (staging, base, or redirected base after rename)
+    struct path             lower_path;      // resolved lower path (staging blob or base)
     enum agfs_perm          perm;            // AGFS_PERM_NONE unless this dentry has a rule
+    struct list_head        overrides;       // agfs_override list (for directories)
 };
 ```
 
-For pure renamed destinations, `lower_path` points at the original base object
-until the first write copies it into staging. Such destination dentries are
-pinned until commit/abort so the redirect remains the runtime source of truth.
+Each directory dentry holds an override list of child overrides that
+differ from the base filesystem. See §3.4 for the `agfs_override` struct.
 
 ### 5.6 File Info
 
@@ -727,25 +839,13 @@ struct agfs_ctl_private {
 Allocated lazily on first `AGFS_IOC_GET_REQUEST`. On fd close, any
 dispatched-but-unanswered requests receive the default decision.
 
-### 5.8 Pinned Dentry (for rename tracking)
-
-```c
-struct agfs_pinned_dentry {
-    struct dentry          *dentry;
-    struct list_head        list;
-};
-```
-
-Tracks rename-destination dentries that must remain pinned until
-commit/abort/unmount so the redirected `lower_path` stays valid.
-
-### 5.9 Concurrency
+### 5.8 Concurrency
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Staging directory + `.agfs/journal` updates/replay | `rw_semaphore` (read for path resolution, write for rename/commit/abort) |
+| `sb->staging_sem` | Publishing staging mutations and `.agfs/journal` appends | `rw_semaphore` (write for create/unlink/rename/COW/truncate publication) |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
-| `dentry_info->lock` | Lower path in dentry | `spinlock` |
+| `dentry_info->lock` | Per-directory override list + cached lower path | `spinlock` |
 
 **Lock ordering**: `staging_sem` → `pending_lock` → `dentry_info->lock`
 ---
@@ -770,13 +870,13 @@ commit/abort/unmount so the redirected `lower_path` stays valid.
 
 | Operation    | Perm check                                                   | Staging layer                                                                     | Passthrough                               |
 | ------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------- |
-| `lookup`     | —                                                            | Resolve: check staging first; otherwise use redirected `dentry->lower_path` when present; otherwise use base (whiteout → ENOENT). | `lookup_one_len()` on resolved lower dir. |
-| `create`     | — (dir perm via lower FS)                                    | Create file in staging directory.                                                 | `vfs_create()` on staging dir.            |
-| `mkdir`      | — (dir perm via lower FS)                                    | Create dir in staging.                                                            | `vfs_mkdir()` on staging dir.             |
-| `unlink`     | — (dir perm via lower FS)                                    | Create whiteout (char dev 0/0) in staging. Remove regular staging file if exists. | —                                         |
-| `rmdir`      | — (dir perm via lower FS)                                    | Create whiteout in staging. Remove staging dir if exists.                         | —                                         |
+| `lookup`     | —                                                            | Check override list first (deleted → ENOENT, staging_id → blob, base_path → redirect); fall back to base. | `lookup_one_len()` on base dir. |
+| `create`     | — (dir perm via lower FS)                                    | Allocate staging blob, add override + journal append.                           | `vfs_create()` on staging blob. |
+| `mkdir`      | — (dir perm via lower FS)                                    | Allocate staging dir, add override + journal append.                            | —                               |
+| `unlink`     | — (dir perm via lower FS)                                    | Add DELETED override, journal append.                                           | —                                         |
+| `rmdir`      | — (dir perm via lower FS)                                    | Add DELETED override, journal append.                                           | —                                         |
 | `rename` | — (dir perm via lower FS) | See §3.7 Rename Handling. | — |
-| `symlink`    | — (dir perm via lower FS)                                    | Create symlink in staging.                                                        | `vfs_symlink()`.                          |
+| `symlink`    | — (dir perm via lower FS)                                    | Allocate staging blob (symlink), add override + journal append.                 | `vfs_symlink()`.                          |
 | `permission` | **Gating for regular files (O(1) cached); delegate to lower FS for dirs.** | —                                                                                 | `inode_permission()` on lower inode.      |
 | `setattr`    | Gated (regular files only).                                  | Copy base→staging first, then setattr on staging.                                 | `notify_change()` on lower.               |
 | `getattr`    | Gated (regular files only).                                  | Stat from resolved path (staging or base).                                        | `vfs_getattr()` on lower.                 |
@@ -835,11 +935,14 @@ the control/rule/ctl ioctl handler.
 | `AGFS_IOC_PUT_RESPONSE`    | Submit a decision: one `struct agfs_ctl_response` (fixed-size binary). Wakes the sleeping thread.                                                                               |
 | `AGFS_IOC_RULE_ADD`     | Add a permission rule to a dentry. Kernel resolves the path, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps `perm_gen`.                                                |
 | `AGFS_IOC_RULE_REMOVE`  | Remove a rule from a dentry. Kernel sets `perm = NONE`, unpins the dentry, and bumps `perm_gen`.                                                                                |
-| `AGFS_IOC_CACHE_INVAL`  | Bump `perm_gen` to invalidate all cached inode perms. Called by userspace after commit/abort.                                                                                    |
+| `AGFS_IOC_CACHE_INVAL`  | Bump `perm_gen`, shrink dentry/inode caches, and reopen the journal file. Called by userspace after commit/abort.                                                           |
 
-`AGFS_IOC_CACHE_INVAL` is called by userspace after commit/abort to invalidate
-the kernel's dentry and inode caches so stale redirected rename dentries are
-dropped and the mount reflects the new base state.
+`AGFS_IOC_CACHE_INVAL` is called by userspace after commit/abort. It:
+1. Bumps `perm_gen` to invalidate all cached inode permissions.
+2. Calls `shrink_dcache_sb()` to drop stale dentry caches so the mount
+   reflects the new base state.
+3. Closes and reopens the journal file (the CLI deletes it on
+   commit/abort, so the old fd is stale).
 
 On the first `AGFS_IOC_GET_REQUEST`, a per-fd `agfs_ctl_private` is lazily
 allocated to track dispatched requests. Only one daemon is allowed at a time;
@@ -852,7 +955,7 @@ resolved immediately using `ask_default`.
 
 ## 8. CLI Interface
 
-### 9.1 Commands
+### 8.1 Commands
 
 **Setup**
 
@@ -888,7 +991,7 @@ $ agfs rule remove src
 $ agfs watch             # handle ask requests (daemon mode)
 ```
 
-### 9.2 Mount Options
+### 8.2 Mount Options
 
 Configured via `agfs.toml` or CLI flags:
 
@@ -938,7 +1041,7 @@ permission prompt:
 agfs/
 ├── DESIGN.md                  # This file
 ├── kmod/                      # Kernel module
-│   ├── Makefile
+│   ├── Kbuild
 │   ├── agfs.h
 │   ├── super.c
 │   ├── inode.c
@@ -1029,7 +1132,7 @@ $ echo x >> /etc/hosts
 
 # 7. Commit all staged changes to the real filesystem (userspace)
 $ agfs commit
-   → userspace: walk staging/, rename files to base, unlink whiteouts
+   → userspace: replay journal — apply renames, deletes, copy blobs to base
    → userspace: ioctl(AGFS_IOC_CACHE_INVAL) on .agfs/mnt
    → kernel: invalidate dentry + inode caches
    → umount .agfs/mnt
@@ -1081,8 +1184,8 @@ longest-prefix-match for free. This satisfies all three principles:
 - On rule add/remove: `atomic_inc(&sb->perm_gen)`. All inode caches go
   stale; next `permission()` call re-resolves lazily via `d_find_alias()` +
   walk up. O(1) invalidation.
-- On `AGFS_IOC_CACHE_INVAL` (after userspace commit/abort): bumps perm_gen
-  and invalidates staging-related dentry caches, including pinned rename dentries.
+- On `AGFS_IOC_CACHE_INVAL` (after userspace commit/abort): bumps perm_gen,
+  shrinks the dentry cache, and reopens the journal file.
 - On `rename`: pure renames do **not** bump `perm_gen`. The inode keeps its
   `cached_perm` until some later invalidation event (rule add/remove or
   `AGFS_IOC_CACHE_INVAL`). This is intentional: rename is treated as a path
@@ -1102,32 +1205,35 @@ sufficient.
 
 ## 12. Comparison with overlayfs
 
-agfs borrows the whiteout convention from overlayfs but differs in
-architecture and purpose.
+agfs uses a fundamentally different staging model from overlayfs.
 
 **Staging vs live union**: overlayfs is a live union filesystem — the upper
 layer *is* the persistent state. There is no commit or abort. A renamed
 file is copied up to upper with `RENAME_WHITEOUT` and stays there forever.
-agfs treats staging as a scratch area that is explicitly committed or
-discarded. The `.journal` file tracks rename origins so commit can do
-`rename(base/old, base/new)` with no data copy — something overlayfs
-never needs because it never merges back to lower.
+agfs treats staging as a flat blob store with in-memory override lists that
+are explicitly committed or discarded via the journal.
 
 **Copy-up**: overlayfs always does a full copy-up on first write, even for
 truncating writes (`echo "x" > file` copies the entire file, then
-truncates). agfs detects `O_TRUNC` and creates an empty staging file
+truncates). agfs detects `O_TRUNC` and creates an empty staging blob
 directly — zero copy for the most common agent write pattern.
 
+**Rename**: overlayfs does a real `vfs_rename()` in the upper directory,
+which requires copy-up. agfs does zero-copy renames by adding overrides
+(DELETED on old parent, REDIRECTED on new parent). Rename chains
+resolve naturally through the override list.
+
 **Lookup**: overlayfs does two lookups per component (upper + lower) and
-merges the results. agfs does one (check staging, fall back to base).
+merges the results. agfs checks the parent's override list first, then
+falls back to base — one lookup.
 
 **Permission model**: overlayfs uses standard Unix permissions only. agfs
 adds the progressive gating layer (ask/allow/deny) with the ask protocol
 for interactive approval.
 
-**Portability**: overlayfs's `RENAME_WHITEOUT` requires filesystem support
-(ext4, xfs). agfs uses a `.journal` sidecar file and standard `mknod()`
-whiteouts, working on any lower FS.
+**On-disk format**: overlayfs requires filesystem support for whiteouts
+(`RENAME_WHITEOUT`, ext4/xfs). agfs uses a flat blob store + append-only
+journal, working on any lower FS.
 
 ---
 

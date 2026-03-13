@@ -73,7 +73,6 @@ static void agfs_evict_inode(struct inode *inode)
 static void agfs_put_super(struct super_block *sb)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(sb);
-	struct agfs_pinned_dentry *pd, *tmp;
 
 	if (!sbi)
 		return;
@@ -81,17 +80,10 @@ static void agfs_put_super(struct super_block *sb)
 	if (sbi->creator_cred)
 		put_cred(sbi->creator_cred);
 
-	/* Release rename-pinned dentries */
-	list_for_each_entry_safe(pd, tmp, &sbi->pinned_dentries, list) {
-		dput(pd->dentry);
-		list_del(&pd->list);
-		kfree(pd);
-	}
-
 	if (sbi->staging_dir.dentry)
 		path_put(&sbi->staging_dir);
-	if (sbi->journal_path.dentry)
-		path_put(&sbi->journal_path);
+	if (sbi->journal_file)
+		fput(sbi->journal_file);
 	if (sbi->storage_path.dentry)
 		path_put(&sbi->storage_path);
 	if (sbi->base_path.dentry)
@@ -177,9 +169,9 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	atomic64_set(&sbi->next_req_id, 1);
 	atomic_set(&sbi->has_daemon, 0);
 
-	/* Initialize staging semaphore */
+	/* Initialize staging semaphore and blob counter */
 	init_rwsem(&sbi->staging_sem);
-	INIT_LIST_HEAD(&sbi->pinned_dentries);
+	atomic64_set(&sbi->next_staging_id, 0);
 
 	/* Resolve base path ("/") */
 	err = kern_path("/", LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &base_path);
@@ -220,16 +212,10 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		/* staging may not exist yet — that's ok */
 	}
 
-	/* Resolve journal file */
-	{
-		struct path journal_path;
-		err = vfs_path_lookup(sbi->storage_path.dentry,
-				      sbi->storage_path.mnt,
-				      "journal", 0, &journal_path);
-		if (!err)
-			sbi->journal_path = journal_path;
-	}
-	err = 0;
+	/* Open (or create) the journal file */
+	err = agfs_journal_open(sbi);
+	if (err)
+		goto out_put_base;
 
 	/* Create root inode from lower root */
 	inode = agfs_iget(sb, d_inode(base_path.dentry));

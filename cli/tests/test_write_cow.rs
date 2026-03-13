@@ -15,9 +15,21 @@ fn write_triggers_cow() {
     let base = fs::read_to_string(s.base_path("hello.txt")).expect("read base");
     assert_eq!(base, "base content\n");
 
-    // Staging has the COW copy
-    let staging = fs::read_to_string(s.staging_path("hello.txt")).expect("read staging");
-    assert_eq!(staging, "modified\n");
+    // Staging has a blob with the COW copy
+    let staging = s.staging_dir();
+    let blob_content: Vec<String> = fs::read_dir(&staging)
+        .unwrap()
+        .filter_map(|e| {
+            let e = e.ok()?;
+            let name = e.file_name().to_string_lossy().to_string();
+            name.parse::<u64>().ok()?;
+            fs::read_to_string(e.path()).ok()
+        })
+        .collect();
+    assert!(
+        blob_content.iter().any(|c| c == "modified\n"),
+        "staging should contain a blob with the modified content"
+    );
 }
 
 #[test]

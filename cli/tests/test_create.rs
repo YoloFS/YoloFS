@@ -33,11 +33,12 @@ fn create_lands_in_staging() {
 
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
 
-    // Staging has the file
-    assert!(
-        s.staging_path("brandnew.txt").exists(),
-        "new file should appear in staging"
-    );
+    // Staging directory should have a blob (numeric entry)
+    let staging = s.staging_dir();
+    let has_blob = fs::read_dir(&staging)
+        .unwrap()
+        .any(|e| e.unwrap().file_name().to_string_lossy().parse::<u64>().is_ok());
+    assert!(has_blob, "new file should create a blob in staging");
 
     // Base does NOT have the file
     assert!(

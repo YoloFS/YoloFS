@@ -18,6 +18,7 @@
 #include <linux/list.h>
 #include <linux/poll.h>
 #include <linux/ioctl.h>
+#include <linux/kref.h>
 #include <linux/ktime.h>
 #include <linux/uaccess.h>
 #include <linux/magic.h>
@@ -33,8 +34,6 @@ enum agfs_op {
 	AGFS_OP_READ		= 1,
 	AGFS_OP_WRITE		= 2,
 	AGFS_OP_EXEC		= 3,
-	AGFS_OP_OPEN		= 4,
-	AGFS_OP_LOOKUP		= 5,
 };
 
 /* ── Permission Enum ───────────────────────────────────────────────── */
@@ -84,6 +83,7 @@ struct agfs_ctl_response {
 /* ── Internal: Pending Permission Request ──────────────────────────── */
 
 struct agfs_perm_request {
+	struct kref		ref;
 	u64			id;
 	char			path[AGFS_PATH_MAX];
 	enum agfs_op		op;
@@ -95,11 +95,14 @@ struct agfs_perm_request {
 	struct list_head	list;
 };
 
-/* ── Pinned Dentry (for rename tracking) ────────────────────────────── */
+/* ── Per-directory override entry (§3.4) ────────────────────────────── */
 
-struct agfs_pinned_dentry {
-	struct dentry		*dentry;
+struct agfs_override {
 	struct list_head	list;
+	u64			staging_id;	/* >0 = content in staging/<id> */
+	char			*base_path;	/* non-NULL = content at base path */
+	unsigned int		name_len;
+	char			name[];
 };
 
 /* ── Per-Superblock Info ───────────────────────────────────────────── */
@@ -111,10 +114,10 @@ struct agfs_sb_info {
 	const struct cred	*creator_cred;	/* mount-time credentials */
 
 	/* Staging */
-	struct path		staging_dir;	/* ./agfs/staging/ */
-	struct path		journal_path;	/* ./agfs/journal */
-	struct rw_semaphore	staging_sem;
-	struct list_head	pinned_dentries;/* rename-pinned dentries */
+	struct path		staging_dir;	/* ./agfs/staging/ (flat blob store) */
+	struct file		*journal_file;	/* ./agfs/journal (append-only, opened lazily) */
+	struct rw_semaphore	staging_sem;	/* protects staging + journal writes */
+	atomic64_t		next_staging_id;/* counter for staging blob IDs */
 
 	/* Permission gating */
 	atomic64_t		perm_gen;
@@ -142,8 +145,9 @@ struct agfs_inode_info {
 
 struct agfs_dentry_info {
 	spinlock_t		lock;
-	struct path		lower_path;
+	struct path		lower_path;	/* resolved lower path (staging blob or base) */
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
+	struct list_head	overrides;	/* agfs_override list (for directories) */
 };
 
 /* ── Per-File Ctl State (for permission daemon fds) ─────────────────── */
@@ -285,24 +289,35 @@ int agfs_interpose(struct dentry *dentry, struct super_block *sb,
 		   struct path *lower_path);
 
 /* staging.c */
-int agfs_staging_path(struct agfs_sb_info *sbi, const char *relpath,
-		      struct path *result);
+int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen);
 int agfs_base_path(struct agfs_sb_info *sbi, const char *relpath,
 		   struct path *result);
-int agfs_resolve_lower(struct dentry *dentry, struct path *result);
-bool agfs_staging_has(struct agfs_sb_info *sbi, const char *relpath);
-bool agfs_is_whiteout(struct dentry *dentry);
-int agfs_create_whiteout(struct agfs_sb_info *sbi, const char *relpath);
-int agfs_do_cow(struct agfs_sb_info *sbi, const char *relpath,
-		struct file **new_file, int flags);
-int agfs_create_staging_empty(struct agfs_sb_info *sbi, const char *relpath,
-			      struct file **new_file, int flags);
-int agfs_create_staging_parents(struct agfs_sb_info *sbi, const char *relpath);
-int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen);
-int agfs_append_rename(struct agfs_sb_info *sbi,
-		       const char *old_path, const char *new_path);
+int agfs_staging_blob_path(struct agfs_sb_info *sbi, u64 id,
+			   struct path *result);
+struct agfs_override *agfs_find_override(struct dentry *dir_dentry,
+					 const char *name,
+					 unsigned int namelen);
+int agfs_add_override(struct dentry *dir_dentry, const char *name,
+		      unsigned int namelen, u64 staging_id,
+		      const char *base_path);
+int agfs_staging_alloc(struct agfs_sb_info *sbi, u64 *out_id,
+		      struct path *blob_path, umode_t mode,
+		      const char *symname);
+int agfs_do_cow_blob(struct agfs_sb_info *sbi, struct dentry *dentry,
+		     struct file **new_file, int flags);
+
+/* journal.c */
+int agfs_journal_open(struct agfs_sb_info *sbi);
+int agfs_journal_append_a(struct agfs_sb_info *sbi, const char *path, u64 id);
+int agfs_journal_append_d(struct agfs_sb_info *sbi, const char *path);
+int agfs_journal_append_r(struct agfs_sb_info *sbi, const char *old_path,
+			  const char *new_path);
 
 /* perm.c */
+static inline void agfs_perm_request_release(struct kref *kref)
+{
+	kfree(container_of(kref, struct agfs_perm_request, ref));
+}
 enum agfs_perm agfs_resolve_perm(struct dentry *dentry);
 void agfs_cache_perm(struct inode *inode, struct dentry *dentry);
 int agfs_check_perm(enum agfs_perm perm, int f_flags);

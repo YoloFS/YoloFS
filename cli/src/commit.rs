@@ -1,8 +1,10 @@
 // agfs CLI — commit.rs
 //
-// `agfs commit` — apply staged changes to base (§3.6).
+// `agfs commit` — apply staged changes to base (§3.10).
+// Journal is resolved first, then changes are applied sequentially.
 
-use crate::{ioctl, status};
+use crate::ioctl;
+use crate::journal::{self, Change};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
@@ -17,16 +19,51 @@ fn ensure_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Apply a staging blob to base. Stats the blob to determine type.
+fn apply_blob(agfs_dir: &Path, blob_id: u64, base_path: &Path) -> Result<()> {
+    let blob = journal::blob_path(agfs_dir, blob_id);
+    let meta = fs::symlink_metadata(&blob)
+        .with_context(|| format!("stat staging blob {}", blob.display()))?;
+
+    ensure_parent(base_path)?;
+
+    // Remove whatever exists at the target path
+    if let Ok(existing) = base_path.symlink_metadata() {
+        if existing.is_dir() && !existing.file_type().is_symlink() {
+            fs::remove_dir_all(base_path)
+                .with_context(|| format!("removing existing dir {}", base_path.display()))?;
+        } else {
+            fs::remove_file(base_path)
+                .with_context(|| format!("removing existing file {}", base_path.display()))?;
+        }
+    }
+
+    if meta.file_type().is_symlink() {
+        let target = fs::read_link(&blob)?;
+        std::os::unix::fs::symlink(&target, base_path)
+            .with_context(|| format!("creating symlink at {}", base_path.display()))?;
+    } else if meta.is_dir() {
+        fs::create_dir_all(base_path)
+            .with_context(|| format!("mkdir {}", base_path.display()))?;
+    } else {
+        fs::rename(&blob, base_path)
+            .or_else(|_| {
+                fs::copy(&blob, base_path)?;
+                fs::remove_file(&blob)?;
+                Ok::<_, std::io::Error>(())
+            })
+            .with_context(|| format!("moving blob to {}", base_path.display()))?;
+    }
+    Ok(())
+}
+
 pub fn run() -> Result<()> {
     let agfs = crate::session_dir()?;
-    if !agfs.exists() {
-        anyhow::bail!("no agfs session found (no .agfs/ directory)");
-    }
 
     let staging_dir = agfs.join("staging");
     let base = Path::new("/");
 
-    let changes = status::staging_walk(&agfs)?;
+    let changes = journal::resolve(&agfs)?;
 
     if changes.is_empty() {
         println!("{}", "Nothing to commit.".yellow());
@@ -35,58 +72,45 @@ pub fn run() -> Result<()> {
 
     let mut committed = 0;
 
+    // Journal is already resolved — each change targets a distinct path,
+    // so no ordering between types is required.
     for change in &changes {
         match change {
-            status::Change::Renamed { from, to } => {
-                // Pure rename: rename(base/old, base/new)
+            Change::Renamed { from, to } => {
                 let base_old = base.join(from.trim_start_matches('/'));
                 let base_new = base.join(to.trim_start_matches('/'));
                 ensure_parent(&base_new)?;
                 fs::rename(&base_old, &base_new)
                     .with_context(|| format!("rename {from} → {to}"))?;
-                committed += 1;
             }
-            status::Change::RenamedModified { from, to } => {
-                // Staged file at new_path: rename staging→base, then unlink old
-                let staging_file = staging_dir.join(to.trim_start_matches('/'));
-                let base_new = base.join(to.trim_start_matches('/'));
+            Change::RenamedModified { from, to, blob_id } => {
                 let base_old = base.join(from.trim_start_matches('/'));
+                let base_new = base.join(to.trim_start_matches('/'));
                 ensure_parent(&base_new)?;
-                fs::rename(&staging_file, &base_new)
-                    .with_context(|| format!("commit renamed+modified {to}"))?;
-                if base_old.is_dir() {
-                    fs::remove_dir_all(&base_old)
-                } else {
-                    fs::remove_file(&base_old)
+                if base_old.exists() {
+                    fs::rename(&base_old, &base_new)
+                        .with_context(|| format!("rename {from} → {to}"))?;
                 }
-                .with_context(|| format!("removing old path {from}"))?;
-                committed += 1;
+                apply_blob(&agfs, *blob_id, &base_new)?;
             }
-            status::Change::Deleted(p) => {
-                // Whiteout → delete base file
+            Change::Deleted(p) => {
                 let base_file = base.join(p.trim_start_matches('/'));
-                if base_file.is_dir() {
-                    fs::remove_dir_all(&base_file)
-                } else {
-                    fs::remove_file(&base_file)
+                if base_file.exists() {
+                    if base_file.is_dir() {
+                        fs::remove_dir_all(&base_file)
+                    } else {
+                        fs::remove_file(&base_file)
+                    }
+                    .with_context(|| format!("deleting {p}"))?;
                 }
-                .with_context(|| format!("deleting {p}"))?;
-                // Remove the whiteout from staging
-                let staging_wh = staging_dir.join(p.trim_start_matches('/'));
-                fs::remove_file(&staging_wh)
-                    .with_context(|| format!("removing whiteout for {p}"))?;
-                committed += 1;
             }
-            status::Change::Added(p) | status::Change::Modified(p) => {
-                // rename staging/<path> → base/<path>
-                let staging_file = staging_dir.join(p.trim_start_matches('/'));
-                let base_file = base.join(p.trim_start_matches('/'));
-                ensure_parent(&base_file)?;
-                fs::rename(&staging_file, &base_file)
-                    .with_context(|| format!("commit {p}"))?;
-                committed += 1;
+            Change::Added { path, blob_id }
+            | Change::Modified { path, blob_id } => {
+                let base_file = base.join(path.trim_start_matches('/'));
+                apply_blob(&agfs, *blob_id, &base_file)?;
             }
         }
+        committed += 1;
     }
 
     // Clean up staging directory and journal file

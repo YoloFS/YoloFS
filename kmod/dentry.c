@@ -17,13 +17,22 @@ int agfs_new_dentry_private_data(struct dentry *dentry)
 
 	spin_lock_init(&info->lock);
 	info->perm = AGFS_PERM_NONE;
+	INIT_LIST_HEAD(&info->overrides);
 	dentry->d_fsdata = info;
 	return 0;
 }
 
 void agfs_free_dentry_private_data(struct dentry *dentry)
 {
-	kmem_cache_free(agfs_dentry_cachep, dentry->d_fsdata);
+	struct agfs_dentry_info *info = AGFS_D(dentry);
+	struct agfs_override *ovr, *tmp;
+
+	list_for_each_entry_safe(ovr, tmp, &info->overrides, list) {
+		list_del(&ovr->list);
+		kfree(ovr->base_path);
+		kfree(ovr);
+	}
+	kmem_cache_free(agfs_dentry_cachep, info);
 	dentry->d_fsdata = NULL;
 }
 

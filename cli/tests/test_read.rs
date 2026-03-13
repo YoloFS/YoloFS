@@ -97,7 +97,9 @@ fn readdir_hides_deleted_file() {
     assert!(entries.contains(&"multi.txt".to_string()));
 }
 
-/// After rename, readdir shows new name but not old name.
+/// After rename, readdir shows new name and hides old name.
+/// The kernel creates a staging stub at the new path so readdir
+/// discovers it when merging staging + base.
 #[test]
 fn readdir_after_rename() {
     let s = AgfsSession::new().expect("session setup");
@@ -109,14 +111,22 @@ fn readdir_after_rename() {
         .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
         .collect();
 
-    assert!(
-        entries.contains(&"renamed.txt".to_string()),
-        "readdir should include renamed file, got: {entries:?}"
-    );
+    // Old name should be hidden (via renamed_children on parent)
     assert!(
         !entries.contains(&"hello.txt".to_string()),
         "readdir should not include old name after rename, got: {entries:?}"
     );
+
+    // New name should appear (staging stub)
+    assert!(
+        entries.contains(&"renamed.txt".to_string()),
+        "readdir should include renamed file, got: {entries:?}"
+    );
+
+    // Content still accessible via the new name
+    let content = fs::read_to_string(s.mnt_path("renamed.txt"))
+        .expect("renamed file should be readable");
+    assert_eq!(content, "base content\n");
 }
 
 /// Newly created directories appear in readdir.

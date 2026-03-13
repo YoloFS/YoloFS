@@ -65,7 +65,7 @@ int agfs_check_perm(enum agfs_perm perm, int f_flags)
 /* ── Ask Protocol (§4.3) ──────────────────────────────────────────── */
 
 int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
-		       const char *relpath, unsigned int op,
+		       const char *relpath, enum agfs_op op,
 		       enum agfs_perm *result)
 {
 	struct agfs_perm_request *req;
@@ -87,6 +87,7 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 	if (!req)
 		return -ENOMEM;
 
+	kref_init(&req->ref);
 	req->id = atomic64_inc_return(&sbi->next_req_id);
 	strscpy(req->path, relpath, AGFS_PATH_MAX);
 	req->op = op;
@@ -119,10 +120,10 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 		err = wait_for_completion_interruptible(&req->done);
 	}
 
-	/* Remove from list if still there */
+	/* Remove from pending list if the daemon hasn't dequeued it yet */
 	spin_lock(&sbi->pending_lock);
 	if (!list_empty(&req->list))
-		list_del(&req->list);
+		list_del_init(&req->list);
 	spin_unlock(&sbi->pending_lock);
 
 	if (!err && req->decision == AGFS_PERM_NONE) {
@@ -133,6 +134,6 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 	if (!err)
 		*result = req->decision;
 
-	kfree(req);
+	kref_put(&req->ref, agfs_perm_request_release);
 	return err;
 }

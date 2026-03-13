@@ -1,8 +1,8 @@
 // agfs CLI — diff.rs
 //
-// `agfs diff` — git-style unified diff of staged vs base (§3.6).
+// `agfs diff` — git-style unified diff of staged vs base (§3.10).
 
-use crate::status;
+use crate::journal::{self, Change};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -44,10 +44,9 @@ pub fn run() -> Result<bool> {
         anyhow::bail!("no agfs session found (no .agfs/ directory)");
     }
 
-    let staging_dir = agfs.join("staging");
     let base = Path::new("/");
 
-    let changes = status::staging_walk(&agfs)?;
+    let changes = journal::resolve(&agfs)?;
 
     if changes.is_empty() {
         println!("{}", "No changes staged.".yellow());
@@ -56,29 +55,29 @@ pub fn run() -> Result<bool> {
 
     for change in &changes {
         match change {
-            status::Change::Added(p) => {
-                let staging_file = staging_dir.join(p.trim_start_matches('/'));
-                let new_text = read_file_lossy(&staging_file);
-                println!("{} {}", p.bold(), "(added)".green());
+            Change::Added { path, blob_id } => {
+                let blob = journal::blob_path(&agfs, *blob_id);
+                let new_text = read_file_lossy(&blob);
+                println!("{} {}", path.bold(), "(added)".green());
                 print_unified_diff("", &new_text);
             }
-            status::Change::Modified(p) => {
-                let base_file = base.join(p);
-                let staging_file = staging_dir.join(p.trim_start_matches('/'));
+            Change::Modified { path, blob_id } => {
+                let base_file = base.join(path.trim_start_matches('/'));
+                let blob = journal::blob_path(&agfs, *blob_id);
                 let old_text = read_file_lossy(&base_file);
-                let new_text = read_file_lossy(&staging_file);
+                let new_text = read_file_lossy(&blob);
                 if old_text != new_text {
-                    println!("{} {}", p.bold(), "(modified)".yellow());
+                    println!("{} {}", path.bold(), "(modified)".yellow());
                     print_unified_diff(&old_text, &new_text);
                 }
             }
-            status::Change::Deleted(p) => {
-                let base_file = base.join(p);
+            Change::Deleted(p) => {
+                let base_file = base.join(p.trim_start_matches('/'));
                 let old_text = read_file_lossy(&base_file);
                 println!("{} {}", p.bold(), "(deleted)".red());
                 print_unified_diff(&old_text, "");
             }
-            status::Change::Renamed { from, to } => {
+            Change::Renamed { from, to } => {
                 println!(
                     "{} → {} {}",
                     from.bold(),
@@ -86,11 +85,11 @@ pub fn run() -> Result<bool> {
                     "(renamed)".cyan()
                 );
             }
-            status::Change::RenamedModified { from, to } => {
-                let base_file = base.join(from);
-                let staging_file = staging_dir.join(to.trim_start_matches('/'));
+            Change::RenamedModified { from, to, blob_id } => {
+                let base_file = base.join(from.trim_start_matches('/'));
+                let blob = journal::blob_path(&agfs, *blob_id);
                 let old_text = read_file_lossy(&base_file);
-                let new_text = read_file_lossy(&staging_file);
+                let new_text = read_file_lossy(&blob);
                 println!(
                     "{} → {} {}",
                     from.bold(),

@@ -13,6 +13,7 @@
  */
 
 #include "agfs.h"
+#include <linux/file.h>
 
 /* ── Lazy-allocate ctl private on first GET_REQUEST ─────────────────── */
 
@@ -74,6 +75,7 @@ static long agfs_get_request_ioctl(struct file *file, unsigned long arg)
 	req = list_first_entry(&sbi->pending_reqs,
 			       struct agfs_perm_request, list);
 	list_del_init(&req->list);
+	kref_get(&req->ref); /* daemon takes a reference */
 	spin_unlock(&sbi->pending_lock);
 
 	memset(&out, 0, sizeof(out));
@@ -96,6 +98,7 @@ static long agfs_get_request_ioctl(struct file *file, unsigned long arg)
 		list_add(&req->list, &sbi->pending_reqs);
 		spin_unlock(&sbi->pending_lock);
 		wake_up_interruptible(&sbi->request_waitq);
+		kref_put(&req->ref, agfs_perm_request_release);
 		return -EFAULT;
 	}
 
@@ -118,6 +121,9 @@ static long agfs_put_response_ioctl(struct file *file, unsigned long arg)
 	if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
 		return -EFAULT;
 
+	if (in.decision > AGFS_PERM_DENY)
+		return -EINVAL;
+
 	spin_lock(&priv->lock);
 	list_for_each_entry_safe(req, tmp, &priv->dispatched, list) {
 		if (req->id == in.id) {
@@ -133,6 +139,7 @@ static long agfs_put_response_ioctl(struct file *file, unsigned long arg)
 		return -ENOENT;
 
 	complete(&req->done);
+	kref_put(&req->ref, agfs_perm_request_release);
 	return 0;
 }
 
@@ -147,6 +154,7 @@ void agfs_ctl_cleanup(struct agfs_sb_info *sbi, struct agfs_ctl_private *priv)
 		req->decision = sbi->ask_default;
 		list_del_init(&req->list);
 		complete(&req->done);
+		kref_put(&req->ref, agfs_perm_request_release);
 	}
 	spin_unlock(&priv->lock);
 	kfree(priv);
@@ -177,6 +185,9 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 		rule.path[AGFS_PATH_MAX - 1] = '\0';
 
+		if (rule.perm > AGFS_PERM_DENY)
+			return -EINVAL;
+
 		err = kern_path(rule.path, LOOKUP_FOLLOW, &rule_path);
 		if (err)
 			return err;
@@ -193,10 +204,10 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		}
 
 		spin_lock(&di->lock);
+		if (di->perm == AGFS_PERM_NONE)
+			dget(rule_path.dentry);
 		di->perm = (enum agfs_perm)rule.perm;
 		spin_unlock(&di->lock);
-
-		dget(rule_path.dentry);
 		atomic64_inc(&sbi->perm_gen);
 		path_put(&rule_path);
 		return 0;
@@ -243,6 +254,13 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case AGFS_IOC_CACHE_INVAL:
 		atomic64_inc(&sbi->perm_gen);
+		shrink_dcache_sb(file_inode(file)->i_sb);
+		/* Reopen journal — CLI deletes it on commit/abort */
+		if (sbi->journal_file) {
+			fput(sbi->journal_file);
+			sbi->journal_file = NULL;
+		}
+		agfs_journal_open(sbi);
 		return 0;
 
 	default:

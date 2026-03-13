@@ -18,10 +18,19 @@ use nix::unistd::{getpgrp, tcgetpgrp, tcsetpgrp, Pid};
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::OpenOptionsExt;
 
+/// RAII guard that restores the terminal foreground group on drop.
+struct TtyGuard(Option<Pid>);
+
+impl Drop for TtyGuard {
+    fn drop(&mut self) {
+        release_tty(self.0);
+    }
+}
+
 /// Temporarily make our process group the terminal foreground group so we
-/// can read from stdin.  Returns the previous foreground group (if any) so
-/// the caller can restore it with `release_tty`.
-fn claim_tty() -> Option<Pid> {
+/// can read from stdin.  Returns a guard that restores the previous
+/// foreground group when dropped.
+fn claim_tty() -> TtyGuard {
     let stdin = io::stdin();
     let saved = tcgetpgrp(&stdin).ok();
 
@@ -39,7 +48,7 @@ fn claim_tty() -> Option<Pid> {
         signal(Signal::SIGTTIN, SigHandler::SigDfl).ok();
         signal(Signal::SIGTTOU, SigHandler::SigDfl).ok();
     }
-    saved
+    TtyGuard(saved)
 }
 
 /// Give the terminal back to `prev` (the process group that owned it
@@ -60,7 +69,7 @@ fn release_tty(prev: Option<Pid>) {
 }
 
 fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
-    let saved = claim_tty();
+    let _guard = claim_tty();
 
     eprintln!(
         "{} {} {} {}",
@@ -97,16 +106,13 @@ fn prompt_decision(req: &AgfsCtlRequest) -> u8 {
         ioctl::AGFS_PERM_DENY
     };
 
-    release_tty(saved);
+    // TTY is released automatically when _guard is dropped.
     decision
 }
 
 /// Interactive watch — blocks on ioctl read for each ask request.
 pub fn run() -> Result<()> {
     let agfs = crate::session_dir()?;
-    if !agfs.exists() {
-        anyhow::bail!("no agfs session found (no .agfs/ directory)");
-    }
 
     let ctl_file = ioctl::open(&agfs)?;
     eprintln!(

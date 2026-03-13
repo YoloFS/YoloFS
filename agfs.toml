@@ -6,4 +6,6 @@ ask_timeout = 0
 "/etc" = "allow-ro"
 "/usr/bin" = "allow-rx"
 "/usr/lib" = "allow-rx"
+"/usr/share" = "allow-ro"
 "/usr/bin/git" = "ask"
+"../.bash_history" = "allow-rw"

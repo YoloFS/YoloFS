@@ -316,7 +316,7 @@ fn unlink_allowed_under_allow_ro() {
         "/"
     )).expect("session setup");
 
-    // unlink goes through agfs_unlink which creates a whiteout
+    // unlink goes through agfs_unlink which adds a DELETED override
     fs::remove_file(s.mnt_path("hello.txt"))
         .expect("unlink should succeed: it is a dir op on the parent");
 }

@@ -1,8 +1,7 @@
 use crate::helpers::AgfsSession;
 use std::fs;
-use std::os::unix::fs::FileTypeExt;
 
-// ── inode.c: agfs_unlink + staging.c: agfs_create_whiteout ──
+// ── inode.c: agfs_unlink — adds DELETED override ──
 
 /// Deleting a file through the mount hides it from the mount view.
 #[test]
@@ -31,22 +30,21 @@ fn delete_preserves_base() {
     );
 }
 
-/// Deleting creates a whiteout (char device 0,0) in the staging area.
+/// Deleting creates a journal D record (no whiteout in new model).
 #[test]
-fn delete_creates_whiteout() {
+fn delete_creates_journal_record() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
-    let staging = s.staging_path("hello.txt");
-    assert!(staging.exists(), "whiteout should exist in staging");
-
-    let meta = fs::symlink_metadata(&staging).expect("stat whiteout");
-    // Whiteouts are char devices with major=0, minor=0
+    // Journal should have a D record
+    let journal = s.journal_path();
+    assert!(journal.exists(), "journal should exist after delete");
+    let data = fs::read(&journal).unwrap();
+    // Check for D\0 prefix
     assert!(
-        meta.file_type().is_char_device(),
-        "whiteout should be a char device, got {:?}",
-        meta.file_type()
+        data.windows(2).any(|w| w == b"D\0"),
+        "journal should contain a D record"
     );
 }
 
@@ -80,7 +78,7 @@ fn delete_abort_restores_file() {
     );
 }
 
-/// Deleting a nested file creates a whiteout at the correct path.
+/// Deleting a nested file hides it from the mount.
 #[test]
 fn delete_nested_file() {
     let s = AgfsSession::new().expect("session setup");
