@@ -1,6 +1,6 @@
 use crate::helpers::AGFS_BIN;
 use crate::helpers::AgfsSession;
-use agfs::config::{Config, MountConfig, Perm};
+use agfs::config::{Config, Perm};
 use std::collections::BTreeMap;
 
 #[test]
@@ -10,10 +10,7 @@ fn apply_rules_shows_results() {
     // Unmount, write custom rules, remount
     session.cli(&["unmount"]).unwrap();
     Config {
-        mount: MountConfig {
-            noperm: true,
-            ..Default::default()
-        },
+        permission: false,
         rules: BTreeMap::from([
             ("/etc".into(), Perm::AllowRo),
             ("/usr".into(), Perm::AllowRx),
@@ -44,7 +41,7 @@ fn apply_rules_rejects_invalid_toml() {
     // Write raw TOML with an invalid perm — typed Config can't represent this
     std::fs::write(
         session.root.join("agfs.toml"),
-        "[mount]\nnoperm = true\n\n[rules]\n\"/etc\" = \"bogus\"\n",
+        "permission = false\n\n[rules]\n\"/etc\" = \"bogus\"\n",
     )
     .unwrap();
 
@@ -67,10 +64,7 @@ fn rule_add_persists_offline() {
 
     session.cli(&["unmount"]).unwrap();
     Config {
-        mount: MountConfig {
-            noperm: true,
-            ..Default::default()
-        },
+        permission: false,
         rules: BTreeMap::new(),
         ..Default::default()
     }
@@ -97,7 +91,7 @@ fn tilde_rule_resolves_to_home() {
     session.cli(&["unmount"]).unwrap();
     std::fs::write(
         session.root.join("agfs.toml"),
-        "[mount]\nnoperm = true\n\n[rules]\n\"~\" = \"allow-rw\"\n",
+        "permission = false\n\n[rules]\n\"~\" = \"allow-rw\"\n",
     )
     .unwrap();
 
@@ -124,7 +118,7 @@ fn nonexistent_rule_path_warns() {
     session.cli(&["unmount"]).unwrap();
     std::fs::write(
         session.root.join("agfs.toml"),
-        "[mount]\nnoperm = true\n\n[rules]\n\"/nonexistent_agfs_xyz\" = \"allow-rw\"\n",
+        "permission = false\n\n[rules]\n\"/nonexistent_agfs_xyz\" = \"allow-rw\"\n",
     )
     .unwrap();
 

@@ -1,6 +1,8 @@
-[mount]
+permission = true
+staging = true
 ask_default = "deny"
 ask_timeout = 30
+snapshot = true
 
 [rules]
 "/etc" = "allow-ro"
@@ -9,4 +11,4 @@ ask_timeout = 30
 "/usr/share" = "allow-ro"
 "/usr/bin/git" = "ask"
 "$HOME/.bash_history" = "allow-rw"
-# "." = "allow-rw"
+"." = "allow-rw"

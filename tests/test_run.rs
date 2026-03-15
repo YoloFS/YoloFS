@@ -80,3 +80,34 @@ fn run_reads_file_through_mount() {
         "cat should succeed reading a file inside the sandbox"
     );
 }
+
+/// Writing to a file via absolute path inside the sandbox should succeed.
+#[test]
+fn run_write_file_absolute_path() {
+    let session = AgfsSession::new().expect("session setup");
+
+    let target = session.root.join("exec_output.txt");
+    let code = session
+        .run_in_sandbox(&[
+            "sh",
+            "-c",
+            &format!("echo hello > {}", target.display()),
+        ])
+        .unwrap();
+    assert_eq!(code, 0, "writing to absolute path should succeed");
+}
+
+/// Writing to a file via relative path inside the sandbox should succeed.
+/// The cwd after chroot+chdir is the session root directory.
+#[test]
+fn run_write_file_relative_path() {
+    let session = AgfsSession::new().expect("session setup");
+
+    let code = session
+        .run_in_sandbox(&["sh", "-c", "echo hello > relative_test.txt"])
+        .unwrap();
+    assert_eq!(
+        code, 0,
+        "writing to a relative path inside the sandbox should succeed"
+    );
+}

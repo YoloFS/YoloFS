@@ -1,5 +1,5 @@
 use crate::helpers::{AGFS_BIN, AgfsSession};
-use agfs::config::{Config, MountConfig, Perm};
+use agfs::config::{Config, Perm};
 use std::collections::BTreeMap;
 
 #[test]
@@ -34,10 +34,7 @@ fn mount_creates_layout() {
 #[test]
 fn remount_picks_up_new_rules() {
     let session = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            noperm: true,
-            ..Default::default()
-        },
+        permission: false,
         ..Default::default()
     })
     .expect("session setup");
@@ -48,10 +45,7 @@ fn remount_picks_up_new_rules() {
 
     // Write config with rules, remount
     Config {
-        mount: MountConfig {
-            noperm: true,
-            ..Default::default()
-        },
+        permission: false,
         rules: BTreeMap::from([("/etc".into(), Perm::AllowRo)]),
         ..Default::default()
     }

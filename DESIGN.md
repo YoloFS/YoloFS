@@ -454,6 +454,9 @@ operation targets a distinct path.
 1. Replay journal in order (same as commit step 1) and classify:
    renames, deletes, adds, modifies. Optionally stop at a snapshot marker
    with `--at <name>`.
+2. When snapshots exist, group changes under snapshot headers showing
+   which changes belong to each snapshot section (and any trailing
+   unsaved changes).
 
 **Diff** (`agfs diff`):
 
@@ -461,7 +464,8 @@ operation targets a distinct path.
    For renames, show rename metadata (and diff if also modified).
    For deletes, show as deleted file.
 2. Output in git-style unified diff format.
-3. With `--from <name>`, diff changes since the named snapshot
+3. When snapshots exist, group diffs under snapshot headers.
+4. With `--from <name>`, diff changes since the named snapshot
    (resolve at snapshot vs resolve at current, then diff the two states).
 
 ### 3.11 Snapshot Mechanism
@@ -483,7 +487,7 @@ This is the re-COW mechanism.
 
 `agfs snapshot [name]` calls `ioctl(AGFS_IOC_SNAPSHOT)`. The kernel:
 
-1. Returns `-ENOTSUP` if `nostaging` is set (snapshots require staging).
+1. Returns `-ENOTSUP` if `staging` is disabled (snapshots require staging).
 2. Increments `sbi->snapshot_gen` (atomic counter).
 3. Appends `S\0<id>\0<name>\n` to the journal.
 4. Returns the snapshot ID to userspace.
@@ -619,7 +623,6 @@ Two levels:
 
 1. Write the rule to `agfs.toml` (source of truth on disk):
   ```toml
-   [mount]
    ask_timeout = 30
    ask_default = "deny"
 
@@ -854,8 +857,8 @@ struct agfs_sb_info {
     atomic_t                has_daemon;      // 1 if a watch daemon is connected
     unsigned int            ask_timeout_s;   // seconds, 0 = infinite
     enum agfs_perm          ask_default;     // fallback on timeout
-    bool                    noperm;          // disable permission gating entirely
-    bool                    nostaging;       // disable staging (passthrough + gating only)
+    bool                    perm;            // enable permission gating
+    bool                    staging;         // enable staging area
 };
 ```
 
@@ -1104,7 +1107,7 @@ $ agfs init              # create a default agfs.toml in the current directory
 ```bash
 $ agfs                   # launch sh inside the sandbox
 $ agfs -- make build     # run a specific command instead of sh
-$ agfs --snapshot -- make build  # snapshot before exec (or set auto_snapshot=true in agfs.toml)
+$ agfs --snapshot -- make build  # snapshot before exec (or set snapshot=true in agfs.toml)
 ```
 
 **Session management** — manual control over each step:
@@ -1140,24 +1143,17 @@ $ agfs rule remove src
 $ agfs watch             # handle ask requests (daemon mode)
 ```
 
-### 8.2 Mount Options
+### 8.2 Options
 
-Configured via `agfs.toml` `[mount]` section:
+Configured via top-level keys in `agfs.toml`:
 
 | Option | Default | Description |
 |---|---|---|
 | `ask_timeout` | 0 (infinite) | Seconds before ask request times out |
 | `ask_default` | `deny` | Fallback when no daemon is connected or on timeout |
-| `noperm` | false | Disable permission gating entirely |
-| `nostaging` | false | Disable staging (passthrough + gating only) |
-
-### 8.3 Exec Options
-
-Configured via `agfs.toml` `[exec]` section:
-
-| Option | Default | Description |
-|---|---|---|
-| `auto_snapshot` | false | Auto-snapshot before each `agfs exec` invocation |
+| `permission` | true | Enable permission gating |
+| `staging` | true | Enable staging area |
+| `snapshot` | false | Auto-snapshot before each `agfs exec` invocation |
 
 Inside the launched shell or command, agfs `chroot`s into `.agfs/mnt` so
 that the mounted view becomes `/`. The working directory remains the

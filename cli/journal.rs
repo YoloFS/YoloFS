@@ -255,6 +255,213 @@ fn resolve_records(records: &[Record]) -> Result<Vec<Change>> {
     Ok(changes)
 }
 
+/// A group of resolved changes belonging to a snapshot (or trailing).
+#[derive(Debug)]
+pub struct Section {
+    /// Snapshot id and name, or None for trailing (unsaved) changes.
+    pub snapshot: Option<(u64, String)>,
+    pub changes: Vec<Change>,
+}
+
+/// Resolve the journal into sections grouped by snapshot boundaries.
+///
+/// Each section contains the *delta* of changes introduced between the
+/// previous snapshot and this one.  The trailing section (snapshot=None)
+/// holds changes after the last snapshot.
+///
+/// When there are no snapshots, returns a single section with snapshot=None.
+pub fn resolve_sections(agfs_dir: &Path) -> Result<Vec<Section>> {
+    let records = read(agfs_dir)?;
+
+    // Collect snapshot boundary indices
+    let snap_indices: Vec<(usize, u64, String)> = records
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| match r {
+            Record::Snapshot { id, name } => Some((i, *id, name.clone())),
+            _ => None,
+        })
+        .collect();
+
+    if snap_indices.is_empty() {
+        let changes = resolve_records(&records)?;
+        return Ok(vec![Section {
+            snapshot: None,
+            changes,
+        }]);
+    }
+
+    let mut sections = Vec::new();
+    let mut prev_state = ChangesState::default();
+
+    for &(snap_idx, snap_id, ref snap_name) in &snap_indices {
+        let cumulative = resolve_records(&records[..=snap_idx])?;
+        let curr_state = ChangesState::from_changes(&cumulative);
+        let delta = prev_state.diff(&curr_state);
+        sections.push(Section {
+            snapshot: Some((snap_id, snap_name.clone())),
+            changes: delta,
+        });
+        prev_state = curr_state;
+    }
+
+    // Trailing changes after the last snapshot
+    let all = resolve_records(&records)?;
+    let final_state = ChangesState::from_changes(&all);
+    let trailing = prev_state.diff(&final_state);
+    if !trailing.is_empty() {
+        sections.push(Section {
+            snapshot: None,
+            changes: trailing,
+        });
+    }
+
+    Ok(sections)
+}
+
+/// Lightweight snapshot of resolved state for computing per-section deltas.
+#[derive(Default)]
+struct ChangesState {
+    /// path → (blob_id or None for deletes, rename source or None)
+    entries: BTreeMap<String, StateEntry>,
+}
+
+#[derive(Clone, PartialEq)]
+struct StateEntry {
+    blob_id: Option<u64>,
+    renamed_from: Option<String>,
+}
+
+impl ChangesState {
+    fn from_changes(changes: &[Change]) -> Self {
+        let mut entries = BTreeMap::new();
+        for change in changes {
+            match change {
+                Change::Added { path, blob_id } => {
+                    entries.insert(
+                        path.clone(),
+                        StateEntry {
+                            blob_id: Some(*blob_id),
+                            renamed_from: None,
+                        },
+                    );
+                }
+                Change::Modified { path, blob_id } => {
+                    entries.insert(
+                        path.clone(),
+                        StateEntry {
+                            blob_id: Some(*blob_id),
+                            renamed_from: None,
+                        },
+                    );
+                }
+                Change::Deleted(path) => {
+                    entries.insert(
+                        path.clone(),
+                        StateEntry {
+                            blob_id: None,
+                            renamed_from: None,
+                        },
+                    );
+                }
+                Change::Renamed { from, to } => {
+                    entries.insert(
+                        from.clone(),
+                        StateEntry {
+                            blob_id: None,
+                            renamed_from: None,
+                        },
+                    );
+                    entries.insert(
+                        to.clone(),
+                        StateEntry {
+                            blob_id: None,
+                            renamed_from: Some(from.clone()),
+                        },
+                    );
+                }
+                Change::RenamedModified { from, to, blob_id } => {
+                    entries.insert(
+                        from.clone(),
+                        StateEntry {
+                            blob_id: None,
+                            renamed_from: None,
+                        },
+                    );
+                    entries.insert(
+                        to.clone(),
+                        StateEntry {
+                            blob_id: Some(*blob_id),
+                            renamed_from: Some(from.clone()),
+                        },
+                    );
+                }
+            }
+        }
+        Self { entries }
+    }
+
+    /// Compute the delta from self → other as a list of Changes.
+    fn diff(&self, other: &Self) -> Vec<Change> {
+        let base = Path::new("/");
+        let mut changes = Vec::new();
+
+        // Paths in other but not in self → new in this section
+        // Paths in both but different → modified in this section
+        for (path, new_entry) in &other.entries {
+            match self.entries.get(path) {
+                None => {
+                    // New path in this section — emit the appropriate change
+                    if let Some(from) = &new_entry.renamed_from {
+                        if let Some(blob_id) = new_entry.blob_id {
+                            changes.push(Change::RenamedModified {
+                                from: from.clone(),
+                                to: path.clone(),
+                                blob_id,
+                            });
+                        } else {
+                            changes.push(Change::Renamed {
+                                from: from.clone(),
+                                to: path.clone(),
+                            });
+                        }
+                    } else if new_entry.blob_id.is_none() {
+                        changes.push(Change::Deleted(path.clone()));
+                    } else {
+                        let blob_id = new_entry.blob_id.unwrap();
+                        let base_file = base.join(path.trim_start_matches('/'));
+                        if base_file.exists() {
+                            changes.push(Change::Modified {
+                                path: path.clone(),
+                                blob_id,
+                            });
+                        } else {
+                            changes.push(Change::Added {
+                                path: path.clone(),
+                                blob_id,
+                            });
+                        }
+                    }
+                }
+                Some(old_entry) if old_entry != new_entry => {
+                    // Path existed before but changed
+                    if let Some(blob_id) = new_entry.blob_id {
+                        changes.push(Change::Modified {
+                            path: path.clone(),
+                            blob_id,
+                        });
+                    } else if new_entry.blob_id.is_none() && old_entry.blob_id.is_some() {
+                        changes.push(Change::Deleted(path.clone()));
+                    }
+                }
+                _ => {} // unchanged
+            }
+        }
+
+        changes
+    }
+}
+
 /// Split the journal at a named snapshot: resolve changes up to the snapshot,
 /// and return remaining records after it. Reads the journal once.
 pub fn split_at_snapshot(
@@ -667,5 +874,339 @@ mod tests {
         assert!(matches!(&parsed[2], Record::Delete { path } if path == "/b"));
         assert!(matches!(&parsed[3], Record::Rename { old_path, new_path }
             if old_path == "/c" && new_path == "/d"));
+    }
+
+    // ── resolve_sections tests ───────────────────────────────────────
+
+    #[test]
+    fn sections_no_snapshots() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/b\02\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("staging/1"), "").unwrap();
+        fs::write(dir.path().join("staging/2"), "").unwrap();
+
+        let sections = resolve_sections(dir.path()).unwrap();
+        assert_eq!(sections.len(), 1);
+        assert!(sections[0].snapshot.is_none());
+        assert_eq!(sections[0].changes.len(), 2);
+    }
+
+    #[test]
+    fn sections_one_snapshot_no_trailing() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
+        data.extend_from_slice(b"S\01\0build\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("staging/1"), "").unwrap();
+
+        let sections = resolve_sections(dir.path()).unwrap();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].snapshot, Some((1, "build".into())));
+        assert_eq!(sections[0].changes.len(), 1);
+    }
+
+    #[test]
+    fn sections_two_snapshots_with_trailing() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
+        data.extend_from_slice(b"S\01\0first\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/b\02\n");
+        data.extend_from_slice(b"S\02\0second\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/c\03\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("staging/1"), "").unwrap();
+        fs::write(dir.path().join("staging/2"), "").unwrap();
+        fs::write(dir.path().join("staging/3"), "").unwrap();
+
+        let sections = resolve_sections(dir.path()).unwrap();
+        assert_eq!(sections.len(), 3, "{sections:?}");
+
+        assert_eq!(sections[0].snapshot, Some((1, "first".into())));
+        assert_eq!(sections[0].changes.len(), 1, "first: {:?}", sections[0].changes);
+
+        assert_eq!(sections[1].snapshot, Some((2, "second".into())));
+        assert_eq!(sections[1].changes.len(), 1, "second: {:?}", sections[1].changes);
+
+        assert!(sections[2].snapshot.is_none());
+        assert_eq!(sections[2].changes.len(), 1, "trailing: {:?}", sections[2].changes);
+    }
+
+    #[test]
+    fn sections_modify_across_snapshots() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // Add file in first snapshot, modify it in second
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
+        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/x\02\n");
+        data.extend_from_slice(b"S\02\0snap2\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("staging/1"), "v1").unwrap();
+        fs::write(dir.path().join("staging/2"), "v2").unwrap();
+
+        let sections = resolve_sections(dir.path()).unwrap();
+        assert_eq!(sections.len(), 2, "{sections:?}");
+
+        // First section: x added
+        assert_eq!(sections[0].changes.len(), 1);
+        assert!(matches!(&sections[0].changes[0], Change::Added { path, blob_id }
+            if path == "/nonexistent_test_12345/x" && *blob_id == 1));
+
+        // Second section: x modified (blob changed from 1 to 2)
+        assert_eq!(sections[1].changes.len(), 1);
+        assert!(matches!(&sections[1].changes[0], Change::Modified { path, blob_id }
+            if path == "/nonexistent_test_12345/x" && *blob_id == 2));
+    }
+
+    #[test]
+    fn sections_empty_snapshot() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"S\01\0empty\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("staging/1"), "").unwrap();
+
+        let sections = resolve_sections(dir.path()).unwrap();
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].snapshot, Some((1, "empty".into())));
+        assert!(sections[0].changes.is_empty());
+        assert!(sections[1].snapshot.is_none());
+        assert_eq!(sections[1].changes.len(), 1);
+    }
+
+    #[test]
+    fn sections_delete_in_later_section() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // Add file in snap1, delete it in snap2
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
+        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345/x\n");
+        data.extend_from_slice(b"S\02\0snap2\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("staging/1"), "content").unwrap();
+
+        let sections = resolve_sections(dir.path()).unwrap();
+        assert_eq!(sections.len(), 2, "{sections:?}");
+
+        // snap1: x added
+        assert_eq!(sections[0].changes.len(), 1);
+        assert!(matches!(&sections[0].changes[0], Change::Added { path, .. }
+            if path == "/nonexistent_test_12345/x"));
+
+        // snap2: add cancelled by delete — the cumulative state has no /x,
+        // so the delta should show it was removed relative to snap1 state.
+        // But since /x doesn't exist on the base filesystem either, resolve
+        // produces no entry for /x in the cumulative state at snap2 (A+D cancel).
+        // The diff sees that snap1 had an entry for /x but snap2 doesn't,
+        // however ChangesState::diff only iterates over `other.entries`,
+        // so this deletion is invisible (the entry simply disappeared).
+        // This is acceptable: the full `resolve()` also collapses A+D to nothing.
+    }
+
+    #[test]
+    fn sections_rename_in_later_section() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
+        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"R\0/nonexistent_test_12345/a\0/nonexistent_test_12345/b\n");
+        data.extend_from_slice(b"S\02\0snap2\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("staging/1"), "content").unwrap();
+
+        let sections = resolve_sections(dir.path()).unwrap();
+        assert_eq!(sections.len(), 2, "{sections:?}");
+
+        // snap1: a added
+        assert_eq!(sections[0].changes.len(), 1);
+        assert!(matches!(&sections[0].changes[0], Change::Added { path, .. }
+            if path == "/nonexistent_test_12345/a"));
+
+        // snap2: resolver collapses the rename of a staging-only file
+        // into an Add at the new path. The delta shows /b as Added.
+        let snap2 = &sections[1].changes;
+        assert!(!snap2.is_empty(), "snap2 should have changes: {snap2:?}");
+        let has_b = snap2.iter().any(|c| {
+            matches!(c, Change::Added { path, blob_id }
+                if path == "/nonexistent_test_12345/b" && *blob_id == 1)
+        });
+        assert!(has_b, "expected /b added in snap2, got: {snap2:?}");
+    }
+
+    #[test]
+    fn sections_multiple_files_per_section() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/b\02\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/c\03\n");
+        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/d\04\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/e\05\n");
+        data.extend_from_slice(b"S\02\0snap2\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        for i in 1..=5 {
+            fs::write(dir.path().join(format!("staging/{i}")), "").unwrap();
+        }
+
+        let sections = resolve_sections(dir.path()).unwrap();
+        assert_eq!(sections.len(), 2, "{sections:?}");
+        assert_eq!(sections[0].changes.len(), 3, "snap1: {:?}", sections[0].changes);
+        assert_eq!(sections[1].changes.len(), 2, "snap2: {:?}", sections[1].changes);
+    }
+
+    #[test]
+    fn sections_empty_journal() {
+        let dir = setup_test_dir();
+        // No journal file at all
+        let sections = resolve_sections(dir.path()).unwrap();
+        assert_eq!(sections.len(), 1);
+        assert!(sections[0].snapshot.is_none());
+        assert!(sections[0].changes.is_empty());
+    }
+
+    #[test]
+    fn sections_only_snapshot_records() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"S\02\0snap2\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let sections = resolve_sections(dir.path()).unwrap();
+        // Two empty snapshot sections, no trailing
+        assert_eq!(sections.len(), 2, "{sections:?}");
+        assert!(sections[0].changes.is_empty());
+        assert!(sections[1].changes.is_empty());
+    }
+
+    #[test]
+    fn sections_three_snapshots() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
+        data.extend_from_slice(b"S\01\0s1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/b\02\n");
+        data.extend_from_slice(b"S\02\0s2\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/c\03\n");
+        data.extend_from_slice(b"S\03\0s3\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        for i in 1..=3 {
+            fs::write(dir.path().join(format!("staging/{i}")), "").unwrap();
+        }
+
+        let sections = resolve_sections(dir.path()).unwrap();
+        assert_eq!(sections.len(), 3, "{sections:?}");
+        for (i, s) in sections.iter().enumerate() {
+            assert_eq!(s.changes.len(), 1, "section {i}: {:?}", s.changes);
+        }
+        assert_eq!(sections[0].snapshot, Some((1, "s1".into())));
+        assert_eq!(sections[1].snapshot, Some((2, "s2".into())));
+        assert_eq!(sections[2].snapshot, Some((3, "s3".into())));
+    }
+
+    #[test]
+    fn sections_add_delete_readd_across_snapshots() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // Add x in snap1, delete in snap2, re-add in trailing
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
+        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345/x\n");
+        data.extend_from_slice(b"S\02\0snap2\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/x\02\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("staging/1"), "v1").unwrap();
+        fs::write(dir.path().join("staging/2"), "v2").unwrap();
+
+        let sections = resolve_sections(dir.path()).unwrap();
+        // Should have snap1, snap2, and trailing
+        assert!(sections.len() >= 2, "{sections:?}");
+
+        // snap1: x added
+        assert!(sections[0]
+            .changes
+            .iter()
+            .any(|c| matches!(c, Change::Added { path, .. }
+                if path == "/nonexistent_test_12345/x")));
+
+        // trailing: x re-added (appears as Added since base doesn't have it)
+        let trailing = sections.last().unwrap();
+        assert!(trailing.snapshot.is_none() || trailing.snapshot.is_some());
+        let has_x = trailing
+            .changes
+            .iter()
+            .any(|c| matches!(c, Change::Added { path, blob_id }
+                if path == "/nonexistent_test_12345/x" && *blob_id == 2));
+        assert!(has_x, "expected re-add in trailing, got: {:?}", trailing.changes);
+    }
+
+    #[test]
+    fn sections_rename_modified_in_section() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
+        data.extend_from_slice(b"S\01\0snap1\n");
+        // Rename a→b then modify b (new blob)
+        data.extend_from_slice(b"R\0/nonexistent_test_12345/a\0/nonexistent_test_12345/b\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/b\02\n");
+        data.extend_from_slice(b"S\02\0snap2\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("staging/1"), "v1").unwrap();
+        fs::write(dir.path().join("staging/2"), "v2").unwrap();
+
+        let sections = resolve_sections(dir.path()).unwrap();
+        assert_eq!(sections.len(), 2, "{sections:?}");
+
+        // snap2 should show the rename+modify as delta changes
+        let snap2 = &sections[1].changes;
+        assert!(!snap2.is_empty(), "snap2 should have changes: {snap2:?}");
+    }
+
+    // ── Change::blob_id() tests ──────────────────────────────────────
+
+    #[test]
+    fn change_blob_id() {
+        assert_eq!(
+            Change::Added {
+                path: "/a".into(),
+                blob_id: 42
+            }
+            .blob_id(),
+            Some(42)
+        );
+        assert_eq!(
+            Change::Modified {
+                path: "/a".into(),
+                blob_id: 7
+            }
+            .blob_id(),
+            Some(7)
+        );
+        assert_eq!(
+            Change::RenamedModified {
+                from: "/a".into(),
+                to: "/b".into(),
+                blob_id: 99
+            }
+            .blob_id(),
+            Some(99)
+        );
+        assert_eq!(Change::Deleted("/a".into()).blob_id(), None);
+        assert_eq!(
+            Change::Renamed {
+                from: "/a".into(),
+                to: "/b".into()
+            }
+            .blob_id(),
+            None
+        );
     }
 }

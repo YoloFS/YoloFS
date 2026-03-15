@@ -1,5 +1,5 @@
 use crate::helpers::{AGFS_BIN, AgfsSession};
-use agfs::config::{Config, MountConfig, Perm};
+use agfs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -12,12 +12,9 @@ use std::time::Duration;
 #[test]
 fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Ask),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Ask),
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -62,12 +59,9 @@ fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
 #[test]
 fn second_watch_reports_already_running() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 

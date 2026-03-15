@@ -177,7 +177,13 @@ pub fn mount() -> Result<()> {
     let mnt = agfs_dir.join("mnt");
 
     if mnt.exists() && is_mountpoint(&mnt) {
-        eprintln!("{} {}", "agfs: mounted at".green(), mnt.display());
+        let opts = crate::config::mount_options(&agfs_dir);
+        eprintln!(
+            "{} {} ({})",
+            "agfs: mounted at".green(),
+            mnt.display(),
+            opts
+        );
         return Ok(());
     }
 
@@ -230,7 +236,12 @@ pub fn do_mount(agfs_dir: &Path) -> Result<()> {
     let mount_data = crate::config::mount_options(agfs_dir);
     let source = agfs_dir.to_string_lossy();
 
-    eprintln!("{} {}", "agfs: mounting".green(), mnt.display());
+    eprintln!(
+        "{} {} ({})",
+        "agfs: mounting".green(),
+        mnt.display(),
+        mount_data
+    );
 
     nix::mount::mount(
         Some(source.as_ref()),

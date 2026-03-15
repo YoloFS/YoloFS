@@ -12,23 +12,23 @@
 /* ── Mount Options ─────────────────────────────────────────────────── */
 
 enum agfs_param {
-	Opt_noperm,
-	Opt_nostaging,
+	Opt_permission,
+	Opt_staging,
 	Opt_ask_timeout,
 	Opt_ask_default,
 };
 
 static const struct fs_parameter_spec agfs_fs_parameters[] = {
-	fsparam_flag("noperm",	Opt_noperm),
-	fsparam_flag("nostaging",	Opt_nostaging),
+	fsparam_bool("permission",	Opt_permission),
+	fsparam_bool("staging",		Opt_staging),
 	fsparam_u32("ask_timeout",	Opt_ask_timeout),
 	fsparam_u32("ask_default",	Opt_ask_default),
 	{}
 };
 
 struct agfs_fs_opts {
-	bool		noperm;
-	bool		nostaging;
+	bool		permission;
+	bool		staging;
 	unsigned int	ask_timeout_s;
 	unsigned int	ask_default;
 };
@@ -114,14 +114,10 @@ static int agfs_show_options(struct seq_file *m, struct dentry *root)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(root->d_sb);
 
-	if (sbi->ask_timeout_s)
-		seq_printf(m, ",ask_timeout=%u", sbi->ask_timeout_s);
-	if (sbi->ask_default != AGFS_PERM_DENY)
-		seq_printf(m, ",ask_default=%d", sbi->ask_default);
-	if (sbi->noperm)
-		seq_puts(m, ",noperm");
-	if (sbi->nostaging)
-		seq_puts(m, ",nostaging");
+	seq_printf(m, ",permission=%d", !sbi->noperm);
+	seq_printf(m, ",staging=%d", !sbi->nostaging);
+	seq_printf(m, ",ask_timeout=%u", sbi->ask_timeout_s);
+	seq_printf(m, ",ask_default=%d", sbi->ask_default);
 	return 0;
 }
 
@@ -158,8 +154,8 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	/* Apply mount options */
 	sbi->ask_timeout_s = opts->ask_timeout_s;
 	sbi->ask_default = opts->ask_default ? opts->ask_default : AGFS_PERM_DENY;
-	sbi->noperm = opts->noperm;
-	sbi->nostaging = opts->nostaging;
+	sbi->noperm = !opts->permission;
+	sbi->nostaging = !opts->staging;
 	sbi->creator_cred = get_cred(current_cred());
 
 	/* Initialize perm gating state */
@@ -271,11 +267,11 @@ static int agfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		return opt;
 
 	switch (opt) {
-	case Opt_noperm:
-		opts->noperm = true;
+	case Opt_permission:
+		opts->permission = result.boolean;
 		break;
-	case Opt_nostaging:
-		opts->nostaging = true;
+	case Opt_staging:
+		opts->staging = result.boolean;
 		break;
 	case Opt_ask_timeout:
 		opts->ask_timeout_s = result.uint_32;

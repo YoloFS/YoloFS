@@ -1,5 +1,5 @@
 use crate::helpers::{AGFS_BIN, AgfsSession};
-use agfs::config::{Config, MountConfig, Perm};
+use agfs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -7,12 +7,9 @@ use std::fs;
 #[test]
 fn no_daemon_denies_by_default() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -27,12 +24,9 @@ fn no_daemon_denies_by_default() {
 #[test]
 fn no_daemon_allows_when_configured() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Allow),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Allow),
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -45,12 +39,9 @@ fn no_daemon_allows_when_configured() {
 #[test]
 fn explicit_rule_bypasses_ask() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -59,16 +50,13 @@ fn explicit_rule_bypasses_ask() {
     assert_eq!(content, "base content\n");
 }
 
-/// An explicit deny rule should block access even with noperm=false.
+/// An explicit deny rule should block access even with permission=true.
 #[test]
 fn deny_rule_blocks_access() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Allow),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Allow),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -79,21 +67,18 @@ fn deny_rule_blocks_access() {
     );
 }
 
-/// With noperm=true, everything is allowed regardless of rules.
+/// With permission=false, everything is allowed regardless of rules.
 #[test]
-fn noperm_allows_everything() {
+fn permission_disabled_allows_everything() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            noperm: true,
-            ..Default::default()
-        },
-        exec: Default::default(),
+        permission: false,
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
     })
     .expect("session setup");
 
     let content = fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("read should succeed with noperm=true even with deny rule");
+        .expect("read should succeed with permission=false even with deny rule");
     assert_eq!(content, "base content\n");
 }
 
@@ -101,12 +86,9 @@ fn noperm_allows_everything() {
 #[test]
 fn allow_ro_permits_read_denies_write() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -126,12 +108,9 @@ fn allow_ro_permits_read_denies_write() {
 #[test]
 fn allow_rw_permits_read() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -144,12 +123,9 @@ fn allow_rw_permits_read() {
 #[test]
 fn allow_rw_permits_write() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -160,12 +136,9 @@ fn allow_rw_permits_write() {
 #[test]
 fn allow_rw_denies_exec() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -183,12 +156,9 @@ fn allow_rw_denies_exec() {
 #[test]
 fn allow_rx_permits_read() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRx)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -201,12 +171,9 @@ fn allow_rx_permits_read() {
 #[test]
 fn allow_rx_denies_write() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRx)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -218,12 +185,9 @@ fn allow_rx_denies_write() {
 #[test]
 fn allow_rx_permits_exec() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRx)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -239,12 +203,9 @@ fn allow_rx_permits_exec() {
 #[test]
 fn allow_permits_exec() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -260,12 +221,9 @@ fn allow_permits_exec() {
 #[test]
 fn deny_blocks_write() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Allow),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Allow),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -277,12 +235,9 @@ fn deny_blocks_write() {
 #[test]
 fn deny_blocks_exec() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Allow),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Allow),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -300,12 +255,9 @@ fn deny_blocks_exec() {
 #[test]
 fn child_rule_overrides_parent() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            noperm: true,
-            ..Default::default()
-        },
-        exec: Default::default(),
+        permission: false,
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -313,12 +265,9 @@ fn child_rule_overrides_parent() {
     s.cli(&["unmount"]).unwrap();
     let root_path = s.root.display().to_string();
     Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny), (root_path, Perm::AllowRw)]),
+        ..Default::default()
     }
     .save(&s.root.join("agfs.toml"))
     .unwrap();
@@ -340,12 +289,9 @@ fn child_rule_overrides_parent() {
 #[test]
 fn ask_default_allow_ro() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::AllowRo),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::AllowRo),
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -364,12 +310,9 @@ fn ask_default_allow_ro() {
 #[test]
 fn ask_default_allow_rw() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::AllowRw),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::AllowRw),
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -385,12 +328,9 @@ fn ask_default_allow_rw() {
 #[test]
 fn ask_default_allow_rx() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::AllowRx),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::AllowRx),
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -413,12 +353,9 @@ fn ask_default_allow_rx() {
 #[test]
 fn mkdir_allowed_under_deny() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -430,12 +367,9 @@ fn mkdir_allowed_under_deny() {
 #[test]
 fn unlink_allowed_under_allow_ro() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -449,12 +383,9 @@ fn unlink_allowed_under_allow_ro() {
 #[test]
 fn symlink_allowed_under_deny() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -468,12 +399,9 @@ fn symlink_allowed_under_deny() {
 #[test]
 fn truncate_denied_on_allow_ro() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -488,12 +416,9 @@ fn truncate_denied_on_allow_ro() {
 #[test]
 fn append_denied_on_allow_ro() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -507,12 +432,9 @@ fn append_denied_on_allow_ro() {
 #[test]
 fn rdwr_denied_on_allow_ro() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -529,12 +451,9 @@ fn rdwr_denied_on_allow_ro() {
 #[test]
 fn truncate_allowed_on_allow_rw() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -552,12 +471,9 @@ fn truncate_allowed_on_allow_rw() {
 #[test]
 fn newly_created_file_checked_on_reopen() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -567,12 +483,9 @@ fn newly_created_file_checked_on_reopen() {
     // Now change rules to deny and re-read.
     s.cli(&["unmount"]).unwrap();
     Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
     }
     .save(&s.root.join("agfs.toml"))
     .unwrap();
@@ -596,12 +509,9 @@ fn newly_created_file_checked_on_reopen() {
 #[test]
 fn allow_rx_denies_truncate() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRx)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -616,12 +526,9 @@ fn allow_rx_denies_truncate() {
 #[test]
 fn allow_rx_denies_append() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRx)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -637,12 +544,9 @@ fn allow_rx_denies_append() {
 #[test]
 fn rmdir_allowed_under_deny() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -653,12 +557,9 @@ fn rmdir_allowed_under_deny() {
 #[test]
 fn rename_allowed_under_deny() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -670,12 +571,9 @@ fn rename_allowed_under_deny() {
 #[test]
 fn create_allowed_under_deny() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -703,12 +601,9 @@ fn create_allowed_under_deny() {
 #[test]
 fn readdir_allowed_under_deny() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -725,13 +620,10 @@ fn readdir_allowed_under_deny() {
 #[test]
 fn ask_timeout_applies_default() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_timeout: Some(1),
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_timeout: Some(1),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -747,13 +639,10 @@ fn ask_timeout_applies_default() {
 #[test]
 fn ask_timeout_applies_allow_default() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_timeout: Some(1),
-            ask_default: Some(Perm::Allow),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_timeout: Some(1),
+        ask_default: Some(Perm::Allow),
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -769,12 +658,9 @@ fn ask_timeout_applies_allow_default() {
 #[test]
 fn deep_nested_rules_closest_wins() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            noperm: true,
-            ..Default::default()
-        },
-        exec: Default::default(),
+        permission: false,
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -785,15 +671,12 @@ fn deep_nested_rules_closest_wins() {
     // Remount with tiered rules.
     s.cli(&["unmount"]).unwrap();
     Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([
             ("/".into(), Perm::Deny),
             (s.root.join("a/b").display().to_string(), Perm::AllowRw),
         ]),
+        ..Default::default()
     }
     .save(&s.root.join("agfs.toml"))
     .unwrap();
@@ -821,12 +704,9 @@ fn deep_nested_rules_closest_wins() {
 #[test]
 fn different_paths_different_rules() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            noperm: true,
-            ..Default::default()
-        },
-        exec: Default::default(),
+        permission: false,
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -838,15 +718,12 @@ fn different_paths_different_rules() {
 
     s.cli(&["unmount"]).unwrap();
     Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([
             (s.root.join("readonly").display().to_string(), Perm::AllowRo),
             (s.root.join("writable").display().to_string(), Perm::AllowRw),
         ]),
+        ..Default::default()
     }
     .save(&s.root.join("agfs.toml"))
     .unwrap();
@@ -877,12 +754,9 @@ fn different_paths_different_rules() {
 #[test]
 fn live_rule_change_takes_effect() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -902,12 +776,9 @@ fn live_rule_change_takes_effect() {
 #[test]
 fn live_rule_remove_reapplies_gating() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -930,12 +801,9 @@ fn live_rule_remove_reapplies_gating() {
 #[test]
 fn rename_across_permission_boundary() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig {
-            noperm: true,
-            ..Default::default()
-        },
-        exec: Default::default(),
+        permission: false,
         rules: BTreeMap::new(),
+        ..Default::default()
     })
     .expect("session setup");
 
@@ -946,15 +814,12 @@ fn rename_across_permission_boundary() {
 
     s.cli(&["unmount"]).unwrap();
     Config {
-        mount: MountConfig {
-            ask_default: Some(Perm::Deny),
-            ..Default::default()
-        },
-        exec: Default::default(),
+        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([
             (s.root.join("allowed").display().to_string(), Perm::AllowRw),
             (s.root.join("denied").display().to_string(), Perm::Deny),
         ]),
+        ..Default::default()
     }
     .save(&s.root.join("agfs.toml"))
     .unwrap();

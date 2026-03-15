@@ -1,4 +1,4 @@
-use agfs::config::{Config, MountConfig};
+use agfs::config::Config;
 use agfs::klog;
 use anyhow::{Context, Result};
 use std::fs;
@@ -52,10 +52,7 @@ impl AgfsSession {
     /// Create a new test session: seed files, write agfs.toml, `agfs mount`.
     pub fn new() -> Result<Self> {
         Self::new_with_config(Config {
-            mount: MountConfig {
-                noperm: true,
-                ..Default::default()
-            },
+            permission: false,
             ..Default::default()
         })
     }

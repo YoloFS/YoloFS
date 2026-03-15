@@ -69,32 +69,22 @@ impl FromStr for Perm {
 
 // ── Typed config ─────────────────────────────────────────────────────
 
+fn default_true() -> bool { true }
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default)]
-    pub mount: MountConfig,
-    #[serde(default)]
-    pub exec: ExecConfig,
-    #[serde(default)]
-    pub rules: BTreeMap<String, Perm>,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct MountConfig {
-    #[serde(default)]
-    pub noperm: bool,
-    #[serde(default)]
-    pub nostaging: bool,
+    #[serde(default = "default_true")]
+    pub permission: bool,
+    #[serde(default = "default_true")]
+    pub staging: bool,
     #[serde(default)]
     pub ask_timeout: Option<u64>,
     #[serde(default)]
     pub ask_default: Option<Perm>,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct ExecConfig {
     #[serde(default)]
-    pub auto_snapshot: bool,
+    pub snapshot: bool,
+    #[serde(default)]
+    pub rules: BTreeMap<String, Perm>,
 }
 
 impl Default for Config {
@@ -108,11 +98,11 @@ impl Default for Config {
             ("/sbin".into(), Perm::AllowRx),
         ]);
         Config {
-            mount: MountConfig {
-                ask_default: Some(Perm::Deny),
-                ..Default::default()
-            },
-            exec: ExecConfig::default(),
+            ask_default: Some(Perm::Deny),
+            permission: true,
+            staging: true,
+            ask_timeout: None,
+            snapshot: false,
             rules,
         }
     }
@@ -172,29 +162,21 @@ fn resolve_through_mount(abs_path: &str, mnt: &Path) -> String {
 
 // ── Mount options ─────────────────────────────────────────────────────
 
-/// Build kernel mount option string from agfs.toml [mount] section.
+/// Build kernel mount option string from agfs.toml.
 pub fn mount_options(agfs_dir: &Path) -> String {
     let cwd = agfs_dir.parent().unwrap_or(Path::new("."));
     let config_path = cwd.join("agfs.toml");
+    let config = Config::load(&config_path).unwrap_or_default();
 
-    let config = match Config::load(&config_path) {
-        Ok(c) => c,
-        Err(_) => return String::new(),
-    };
+    let mut opts = vec![
+        format!("permission={}", config.permission as u8),
+        format!("staging={}", config.staging as u8),
+    ];
 
-    let mut opts = Vec::new();
-    let m = &config.mount;
-
-    if m.noperm {
-        opts.push("noperm".to_string());
-    }
-    if m.nostaging {
-        opts.push("nostaging".to_string());
-    }
-    if let Some(v) = m.ask_timeout {
+    if let Some(v) = config.ask_timeout {
         opts.push(format!("ask_timeout={v}"));
     }
-    if let Some(p) = m.ask_default {
+    if let Some(p) = config.ask_default {
         opts.push(format!("ask_default={}", p.to_ioctl()));
     }
 
@@ -203,15 +185,15 @@ pub fn mount_options(agfs_dir: &Path) -> String {
 
 // ── Apply rules from config ───────────────────────────────────────────
 
-/// Load the exec config section from agfs.toml (if present).
-pub fn load_exec_config() -> ExecConfig {
+/// Read config from agfs.toml (if present).
+pub fn load_config() -> Config {
     let cp = match config_path() {
         Ok(p) => p,
-        Err(_) => return ExecConfig::default(),
+        Err(_) => return Config::default(),
     };
     match Config::load(&cp) {
-        Ok(c) => c.exec,
-        Err(_) => ExecConfig::default(),
+        Ok(c) => c,
+        Err(_) => Config::default(),
     }
 }
 
@@ -405,7 +387,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.rules["/usr"], Perm::AllowRx);
         assert_eq!(config.rules["/etc"], Perm::AllowRo);
-        assert_eq!(config.mount.ask_default, Some(Perm::Deny));
+        assert_eq!(config.ask_default, Some(Perm::Deny));
     }
 
     #[test]
@@ -415,7 +397,7 @@ mod tests {
         let config = Config::default();
         config.save(&path).unwrap();
         let loaded = Config::load(&path).unwrap();
-        assert_eq!(loaded.mount.ask_default, config.mount.ask_default);
+        assert_eq!(loaded.ask_default, config.ask_default);
         assert_eq!(loaded.rules.len(), config.rules.len());
     }
 
@@ -436,10 +418,10 @@ mod tests {
     fn config_load_empty_sections() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("agfs.toml");
-        fs::write(&path, "[mount]\n[rules]\n").unwrap();
+        fs::write(&path, "[rules]\n").unwrap();
         let config = Config::load(&path).unwrap();
         assert!(config.rules.is_empty());
-        assert!(!config.mount.noperm);
+        assert!(config.permission);
     }
 
     #[test]
@@ -448,7 +430,9 @@ mod tests {
         let agfs_dir = tmp.path().join(".agfs");
         fs::create_dir_all(&agfs_dir).unwrap();
         let opts = mount_options(&agfs_dir);
-        assert_eq!(opts, "");
+        // Falls back to defaults: permission=1,staging=1,ask_default=...
+        assert!(opts.contains("permission=1"), "opts = {opts}");
+        assert!(opts.contains("staging=1"), "opts = {opts}");
     }
 
     #[test]
@@ -457,19 +441,15 @@ mod tests {
         let agfs_dir = tmp.path().join(".agfs");
         fs::create_dir_all(&agfs_dir).unwrap();
         let config = Config {
-            mount: MountConfig {
-                noperm: true,
-                nostaging: true,
-                ask_timeout: Some(5),
-                ..Default::default()
-            },
-            exec: Default::default(),
-            rules: BTreeMap::new(),
+            permission: false,
+            staging: false,
+            ask_timeout: Some(5),
+            ..Default::default()
         };
         config.save(&tmp.path().join("agfs.toml")).unwrap();
         let opts = mount_options(&agfs_dir);
-        assert!(opts.contains("noperm"), "opts = {opts}");
-        assert!(opts.contains("nostaging"), "opts = {opts}");
+        assert!(opts.contains("permission=0"), "opts = {opts}");
+        assert!(opts.contains("staging=0"), "opts = {opts}");
         assert!(opts.contains("ask_timeout=5"), "opts = {opts}");
     }
 
@@ -479,18 +459,14 @@ mod tests {
         let agfs_dir = tmp.path().join(".agfs");
         fs::create_dir_all(&agfs_dir).unwrap();
         let config = Config {
-            mount: MountConfig {
-                ask_timeout: Some(10),
-                ..Default::default()
-            },
-            exec: Default::default(),
-            rules: BTreeMap::new(),
+            ask_timeout: Some(10),
+            ..Default::default()
         };
         config.save(&tmp.path().join("agfs.toml")).unwrap();
         let opts = mount_options(&agfs_dir);
         assert!(opts.contains("ask_timeout=10"));
-        assert!(!opts.contains("noperm"));
-        assert!(!opts.contains("nostaging"));
+        assert!(opts.contains("permission=1"), "opts = {opts}");
+        assert!(opts.contains("staging=1"), "opts = {opts}");
     }
 
     #[test]
@@ -498,9 +474,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("agfs.toml");
         Config {
-            mount: Default::default(),
-            exec: Default::default(),
             rules: BTreeMap::new(),
+            ..Default::default()
         }
         .save(&path)
         .unwrap();
@@ -518,9 +493,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("agfs.toml");
         let mut config = Config {
-            mount: Default::default(),
-            exec: Default::default(),
             rules: BTreeMap::new(),
+            ..Default::default()
         };
         config.rules.insert("/tmp".to_string(), Perm::AllowRw);
         config.rules.insert("/etc".to_string(), Perm::AllowRo);

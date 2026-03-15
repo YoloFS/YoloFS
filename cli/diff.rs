@@ -83,24 +83,54 @@ pub fn run(from: Option<&str>) -> Result<bool> {
         return run_from_snapshot(&agfs, snap_name);
     }
 
-    let base = Path::new("/");
-    let changes = journal::resolve(&agfs)?;
+    let sections = journal::resolve_sections(&agfs)?;
+    let total: usize = sections.iter().map(|s| s.changes.len()).sum();
 
-    if changes.is_empty() {
+    if total == 0 {
         println!("{}", "No changes staged.".yellow());
         return Ok(false);
     }
 
-    for change in &changes {
+    let has_snapshots = sections.iter().any(|s| s.snapshot.is_some());
+    let base = Path::new("/");
+
+    for section in &sections {
+        if has_snapshots {
+            match &section.snapshot {
+                Some((id, name)) => {
+                    println!(
+                        "{}",
+                        format!("── snapshot \"{name}\" (id {id}) ──").cyan().bold()
+                    );
+                }
+                None => {
+                    println!("{}", "── (unsaved changes) ──".dimmed());
+                }
+            }
+            if section.changes.is_empty() {
+                println!("  {}", "(no changes)".dimmed());
+                println!();
+                continue;
+            }
+        }
+
+        print_section_diff(&agfs, base, &section.changes);
+    }
+
+    Ok(true)
+}
+
+fn print_section_diff(agfs: &Path, base: &Path, changes: &[Change]) {
+    for change in changes {
         match change {
             Change::Added { path, blob_id } => {
-                let new_text = read_blob(&agfs, *blob_id);
+                let new_text = read_blob(agfs, *blob_id);
                 println!("{} {}", path.bold(), "(added)".green());
                 print_unified_diff("", &new_text);
             }
             Change::Modified { path, blob_id } => {
                 let old_text = read_base(base, path);
-                let new_text = read_blob(&agfs, *blob_id);
+                let new_text = read_blob(agfs, *blob_id);
                 if old_text != new_text {
                     println!("{} {}", path.bold(), "(modified)".yellow());
                     print_unified_diff(&old_text, &new_text);
@@ -116,7 +146,7 @@ pub fn run(from: Option<&str>) -> Result<bool> {
             }
             Change::RenamedModified { from, to, blob_id } => {
                 let old_text = read_base(base, from);
-                let new_text = read_blob(&agfs, *blob_id);
+                let new_text = read_blob(agfs, *blob_id);
                 println!(
                     "{} → {} {}",
                     from.bold(),
@@ -130,8 +160,6 @@ pub fn run(from: Option<&str>) -> Result<bool> {
         }
         println!();
     }
-
-    Ok(true)
 }
 
 /// Diff between snapshot state and current state.

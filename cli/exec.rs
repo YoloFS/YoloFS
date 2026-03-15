@@ -42,7 +42,7 @@ pub fn run(exec_args: &[String], do_snapshot: bool) -> Result<u8> {
     }
 
     // Auto-snapshot if requested via flag or config
-    let should_snapshot = do_snapshot || config::load_exec_config().auto_snapshot;
+    let should_snapshot = do_snapshot || config::load_config().snapshot;
     if should_snapshot {
         let snap_name = if exec_args.is_empty() {
             "sh".to_string()
