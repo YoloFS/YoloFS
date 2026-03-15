@@ -1,24 +1,22 @@
 #!/usr/bin/env bash
 # install_deps.sh — Install dependencies for agfs.
-#
-# Usage:
-#   ./install_deps.sh host  — Host dependencies (QEMU only)
-#   ./install_deps.sh vm    — VM dependencies (build tools, Rust, etc.)
 
 set -euo pipefail
 
 info() { echo -e "\033[1;34m==>\033[0m $*"; }
 
+is_vm() { systemd-detect-virt -q 2>/dev/null; }
+
 # ── Package lists ─────────────────────────────────────────────────────
 
-HOST_PKGS=(
+QEMU_PKGS=(
     qemu-system-x86
     qemu-utils
     cloud-image-utils
     wget
 )
 
-VM_PKGS=(
+BUILD_PKGS=(
     build-essential
     "linux-headers-$(uname -r)"
     bc
@@ -41,35 +39,21 @@ install_rust() {
         info "Rust already installed: $(rustc --version)"
     else
         info "Installing Rust via rustup"
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        # shellcheck source=/dev/null
-        source "$HOME/.cargo/env"
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q
+        . "$HOME/.cargo/env"
     fi
 }
 
-# ── Subcommands ───────────────────────────────────────────────────────
+# ── Main ─────────────────────────────────────────────────────────────
 
-install_host() {
-    info "Installing host dependencies"
-    install_apt "${HOST_PKGS[@]}"
-}
+pkgs=("${BUILD_PKGS[@]}")
 
-install_vm() {
-    info "Installing VM guest dependencies"
-    install_apt "${VM_PKGS[@]}"
-    install_rust
-}
+if is_vm; then
+    info "Detected VM environment, skipping QEMU packages"
+else
+    info "Detected host environment, including QEMU packages"
+    pkgs+=("${QEMU_PKGS[@]}")
+fi
 
-usage() {
-    echo "Usage: $0 {host|vm}"
-    echo ""
-    echo "  host  Host dependencies (QEMU only)"
-    echo "  vm    VM dependencies (build tools, Rust, etc.)"
-    exit 1
-}
-
-case "${1:-}" in
-    host) install_host ;;
-    vm)   install_vm ;;
-    *)    usage ;;
-esac
+install_apt "${pkgs[@]}"
+install_rust

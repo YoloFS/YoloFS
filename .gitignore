@@ -3,5 +3,5 @@
 __pycache__
 target
 third_party/linux*
-kmod/build/
+kmod/build
 .agfs

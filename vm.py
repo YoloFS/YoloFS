@@ -20,6 +20,9 @@ DEFAULT_CPUS = os.cpu_count()
 DEFAULT_SSH_PORT = 2222
 DEFAULT_USER = "ubuntu"
 DEFAULT_PASSWORD = "ubuntu"
+# Build artifact directories (gitignored) to symlink to VM-local storage
+# so they don't write through to the host via 9p.
+LOCAL_DIRS = ["kmod/build", "target"]
 
 
 def download_image():
@@ -80,7 +83,9 @@ def _read_ssh_pubkeys():
     return keys
 
 
-def create_seed_iso(user: str, password: str, force: bool = False):
+
+
+def create_seed_iso(user: str, password: str, host_cwd: Path, force: bool = False):
     seed_path = DATA_DIR / SEED_NAME
     if seed_path.exists() and not force:
         print(f"Seed ISO already exists: {seed_path}")
@@ -92,6 +97,26 @@ def create_seed_iso(user: str, password: str, force: bool = False):
         keys_yaml = f"ssh_authorized_keys:\n{keys_lines}"
     else:
         keys_yaml = "ssh_authorized_keys: []"
+
+    # Build symlink commands for artifact directories
+    vm_workspace = str(host_cwd)
+    vm_local = f"{vm_workspace}-local"
+    symlink_cmds = []
+    for d in LOCAL_DIRS:
+        local_dir = f"{vm_local}/{d}"
+        mount_dir = f"{vm_workspace}/{d}"
+        symlink_cmds.append(f"mkdir -p {local_dir}")
+        symlink_cmds.append(f"rm -rf {mount_dir}")
+        symlink_cmds.append(f"ln -s {local_dir} {mount_dir}")
+
+    mount_cmds = [
+        f"mkdir -p {vm_workspace}",
+        f"mount -t 9p -o trans=virtio,version=9p2000.L,rw hostcwd {vm_workspace}",
+        *symlink_cmds,
+        f"chown -R {user}:{user} {vm_local}",
+        f'echo "cd {vm_workspace}" >> /home/{user}/.bashrc',
+    ]
+    runcmd_yaml = "runcmd:\n" + "\n".join(f"  - {cmd}" for cmd in mount_cmds)
 
     user_data = (
         "#cloud-config\n"
@@ -105,6 +130,7 @@ def create_seed_iso(user: str, password: str, force: bool = False):
         f'    plain_text_passwd: "{password}"\n'
         f"    {keys_yaml}\n"
         "ssh_pwauth: true\n"
+        f"{runcmd_yaml}\n"
     )
 
     meta_data = textwrap.dedent(f"""\
@@ -161,6 +187,7 @@ def run_vm(
         "-drive", f"file={seed_path},format=raw,if=virtio",
         "-net", "nic,model=virtio",
         "-net", f"user,hostfwd=tcp::{ssh_port}-:22",
+        "-virtfs", f"local,path={Path.cwd()},mount_tag=hostcwd,security_model=none",
         "-nographic",
     ]
     if daemonize:
@@ -190,6 +217,7 @@ def stop_vm():
 
 
 def ssh_vm(ssh_port: int, user: str, ssh_args: list[str]):
+    host_cwd = str(Path.cwd())
     cmd = [
         "ssh",
         "-o", "StrictHostKeyChecking=no",
@@ -200,9 +228,9 @@ def ssh_vm(ssh_port: int, user: str, ssh_args: list[str]):
         f"{user}@localhost",
     ]
     if ssh_args:
-        cmd += [f"source ~/.profile 2>/dev/null &&"] + ssh_args
+        cmd += [f"cd {host_cwd} && source ~/.profile 2>/dev/null &&"] + ssh_args
     else:
-        cmd += ["-t", "exec $SHELL -l"]
+        cmd += ["-t", f"cd {host_cwd} && exec $SHELL -l"]
     os.execvp(cmd[0], cmd)
 
 
@@ -243,7 +271,7 @@ def main():
     elif args.command == "start":
         image_path = download_image()
         disk_path = create_disk(image_path, args.disk_size, force=args.force)
-        seed_path = create_seed_iso(args.user, args.password, force=args.force)
+        seed_path = create_seed_iso(args.user, args.password, Path.cwd(), force=args.force)
         run_vm(disk_path, seed_path, args.ram, args.cpus, args.ssh_port, args.extra, args.daemonize)
     elif args.command == "stop":
         stop_vm()

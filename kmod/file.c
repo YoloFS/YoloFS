@@ -407,8 +407,12 @@ static unsigned int agfs_name_hash(const char *name, unsigned int len,
 static bool agfs_nameset_has(struct agfs_nameset *ns,
 			     const char *name, unsigned int len)
 {
-	unsigned int idx = agfs_name_hash(name, len, ns->shift);
 	struct agfs_nameset_entry *e;
+	unsigned int idx;
+
+	if (!ns)
+		return false;
+	idx = agfs_name_hash(name, len, ns->shift);
 
 	hlist_for_each_entry(e, &ns->buckets[idx], node) {
 		if (e->len == len && !memcmp(e->name, name, len))
@@ -421,8 +425,12 @@ static int agfs_nameset_add(struct agfs_nameset *ns,
 			    const char *name, unsigned int len,
 			    bool is_deleted)
 {
-	unsigned int idx = agfs_name_hash(name, len, ns->shift);
 	struct agfs_nameset_entry *e;
+	unsigned int idx;
+
+	if (!ns)
+		return -EINVAL;
+	idx = agfs_name_hash(name, len, ns->shift);
 
 	e = kmalloc(offsetof(struct agfs_nameset_entry, name) + len + 1,
 		    GFP_ATOMIC);
@@ -454,7 +462,7 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 	struct agfs_readdir_data *rdd =
 		container_of(ctx, struct agfs_readdir_data, ctx);
 
-	if (rdd->ns && agfs_nameset_has(rdd->ns, name, namelen))
+	if (agfs_nameset_has(rdd->ns, name, namelen))
 		return true;
 
 	if (*rdd->off < rdd->caller_ctx->pos) {

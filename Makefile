@@ -18,7 +18,7 @@ kmod: $(KMOD_OUT)
 $(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild)
 	mkdir -p kmod/build
 	cp kmod/Kbuild kmod/build/Kbuild
-	$(MAKE) -j$(nproc) -C $(KDIR) M=$(CURDIR)/kmod/build modules
+	$(MAKE) -j$(nproc) -C $(KDIR) M=$(realpath kmod/build) KBUILD_KMOD_SRC=$(CURDIR)/kmod modules
 
 clean:
 	cargo clean

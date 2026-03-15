@@ -1,4 +1,4 @@
-src := $(M)/..
+src := $(KBUILD_KMOD_SRC)
 
 obj-m += agfs.o
 agfs-y := $(patsubst $(src)/%.c,%.o,$(wildcard $(src)/*.c))
