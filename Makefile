@@ -66,7 +66,7 @@ unload-kmod:
 
 .PHONY: bench
 
-bench: install
+bench: load-kmod install
 	cargo build --release --bin agfs-bench
 	./target/release/agfs-bench
 
