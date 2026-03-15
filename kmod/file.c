@@ -495,13 +495,15 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	di = AGFS_D(file->f_path.dentry);
 
 	/* Phase 1: snapshot override names into hash set, emit non-deleted */
-	if (di) {
+	if (di && di->ovr_buckets) {
 		struct agfs_override *ovr;
 		unsigned int count = 0;
+		unsigned int bi;
 
 		spin_lock(&di->lock);
-		list_for_each_entry(ovr, &di->overrides, list)
-			count++;
+		for (bi = 0; bi < AGFS_OVR_BUCKETS; bi++)
+			hlist_for_each_entry(ovr, &di->ovr_buckets[bi], node)
+				count++;
 
 		ns = agfs_nameset_alloc(count);
 		if (!ns) {
@@ -509,14 +511,16 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 			return -ENOMEM;
 		}
 
-		list_for_each_entry(ovr, &di->overrides, list) {
-			bool deleted = !ovr->staging_id && !ovr->base_path;
+		for (bi = 0; bi < AGFS_OVR_BUCKETS; bi++) {
+			hlist_for_each_entry(ovr, &di->ovr_buckets[bi], node) {
+				bool deleted = !ovr->staging_id && !ovr->base_path;
 
-			err = agfs_nameset_add(ns, ovr->name, ovr->name_len,
-					       deleted);
-			if (err) {
-				spin_unlock(&di->lock);
-				goto out;
+				err = agfs_nameset_add(ns, ovr->name,
+						       ovr->name_len, deleted);
+				if (err) {
+					spin_unlock(&di->lock);
+					goto out;
+				}
 			}
 		}
 		spin_unlock(&di->lock);

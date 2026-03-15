@@ -9,25 +9,34 @@ use crate::journal::{self, Change};
 use crate::utils::to_base_path;
 use anyhow::{Context, Result};
 use colored::Colorize;
+use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// Create parent directories for a path.
-fn ensure_parent(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
+/// Create parent directories for a path, skipping if already ensured.
+fn ensure_parent(path: &Path, cache: &mut HashSet<PathBuf>) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !cache.contains(parent)
+    {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating parent dirs for {}", path.display()))?;
+        cache.insert(parent.to_path_buf());
     }
     Ok(())
 }
 
 /// Apply a staging blob to base. Stats the blob to determine type.
-fn apply_blob(agfs_dir: &Path, blob_id: u64, base_path: &Path) -> Result<()> {
+fn apply_blob(
+    agfs_dir: &Path,
+    blob_id: u64,
+    base_path: &Path,
+    ensured: &mut HashSet<PathBuf>,
+) -> Result<()> {
     let blob = journal::blob_path(agfs_dir, blob_id);
     let meta = fs::symlink_metadata(&blob)
         .with_context(|| format!("stat staging blob {}", blob.display()))?;
 
-    ensure_parent(base_path)?;
+    ensure_parent(base_path, ensured)?;
 
     // Remove whatever exists at the target path
     if let Ok(existing) = base_path.symlink_metadata() {
@@ -60,25 +69,26 @@ fn apply_blob(agfs_dir: &Path, blob_id: u64, base_path: &Path) -> Result<()> {
 
 fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<usize> {
     let mut committed = 0;
+    let mut ensured: HashSet<PathBuf> = HashSet::new();
 
     for change in changes {
         match change {
             Change::Renamed { from, to } => {
                 let base_old = to_base_path(from);
                 let base_new = to_base_path(to);
-                ensure_parent(&base_new)?;
+                ensure_parent(&base_new, &mut ensured)?;
                 fs::rename(&base_old, &base_new)
                     .with_context(|| format!("rename {from} → {to}"))?;
             }
             Change::RenamedModified { from, to, blob_id } => {
                 let base_old = to_base_path(from);
                 let base_new = to_base_path(to);
-                ensure_parent(&base_new)?;
+                ensure_parent(&base_new, &mut ensured)?;
                 if base_old.exists() {
                     fs::rename(&base_old, &base_new)
                         .with_context(|| format!("rename {from} → {to}"))?;
                 }
-                apply_blob(agfs, *blob_id, &base_new)?;
+                apply_blob(agfs, *blob_id, &base_new, &mut ensured)?;
             }
             Change::Deleted(p) => {
                 let base_file = to_base_path(p);
@@ -93,7 +103,7 @@ fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<usize> {
             }
             Change::Added { path, blob_id } | Change::Modified { path, blob_id } => {
                 let base_file = to_base_path(path);
-                apply_blob(agfs, *blob_id, &base_file)?;
+                apply_blob(agfs, *blob_id, &base_file, &mut ensured)?;
             }
         }
         committed += 1;

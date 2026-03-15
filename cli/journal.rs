@@ -169,105 +169,133 @@ pub fn resolve_from(agfs_dir: &Path, snapshot_name: &str) -> Result<(Vec<Change>
     Ok((at_snap, current))
 }
 
-/// Resolve a slice of records into changes. Internal helper factored
-/// out of `resolve()` so snapshot-aware variants can reuse it.
-fn resolve_records(records: &[Record]) -> Result<Vec<Change>> {
-    let base = Path::new("/");
+/// Incremental resolution state — processes records one at a time and can
+/// emit the resolved change list at any point. Used by both `resolve_records`
+/// (batch) and `resolve_sections` (incremental snapshots) so the journal is
+/// traversed only once.
+struct ResolveState {
+    staging: BTreeMap<String, u64>,
+    resolved_renames: BTreeMap<String, String>,
+    resolved_adds: BTreeMap<String, u64>,
+    resolved_deletes: BTreeSet<String>,
+    rename_origin: BTreeMap<String, String>,
+}
 
-    let mut staging: BTreeMap<String, u64> = BTreeMap::new();
-    let mut resolved_renames: Vec<(String, String)> = Vec::new();
-    let mut resolved_adds: BTreeMap<String, u64> = BTreeMap::new();
-    let mut resolved_deletes: BTreeSet<String> = BTreeSet::new();
-    let mut rename_origin: BTreeMap<String, String> = BTreeMap::new();
+impl ResolveState {
+    fn new() -> Self {
+        Self {
+            staging: BTreeMap::new(),
+            resolved_renames: BTreeMap::new(),
+            resolved_adds: BTreeMap::new(),
+            resolved_deletes: BTreeSet::new(),
+            rename_origin: BTreeMap::new(),
+        }
+    }
 
-    for record in records {
+    fn process(&mut self, record: &Record) {
+        let base = Path::new("/");
         match record {
             Record::Add { path, id } => {
-                staging.insert(path.clone(), *id);
-                resolved_adds.insert(path.clone(), *id);
-                resolved_deletes.remove(path);
+                self.staging.insert(path.clone(), *id);
+                self.resolved_adds.insert(path.clone(), *id);
+                self.resolved_deletes.remove(path);
             }
             Record::Delete { path } => {
-                if staging.remove(path).is_some() {
-                    resolved_adds.remove(path);
+                if self.staging.remove(path).is_some() {
+                    self.resolved_adds.remove(path);
                     let base_file = base.join(path.trim_start_matches('/'));
                     if base_file.exists() {
-                        resolved_deletes.insert(path.clone());
+                        self.resolved_deletes.insert(path.clone());
                     }
-                } else if let Some(origin) = rename_origin.remove(path) {
-                    resolved_renames.retain(|(src, _)| *src != origin);
-                    resolved_deletes.insert(origin);
+                } else if let Some(origin) = self.rename_origin.remove(path) {
+                    self.resolved_renames.remove(&origin);
+                    self.resolved_deletes.insert(origin);
                 } else {
-                    resolved_deletes.insert(path.clone());
+                    self.resolved_deletes.insert(path.clone());
                 }
             }
             Record::Rename { old_path, new_path } => {
-                if let Some(blob_id) = staging.remove(old_path) {
-                    resolved_adds.remove(old_path);
-                    resolved_adds.insert(new_path.clone(), blob_id);
-                    staging.insert(new_path.clone(), blob_id);
+                if let Some(blob_id) = self.staging.remove(old_path) {
+                    self.resolved_adds.remove(old_path);
+                    self.resolved_adds.insert(new_path.clone(), blob_id);
+                    self.staging.insert(new_path.clone(), blob_id);
                     let base_file = base.join(old_path.trim_start_matches('/'));
                     if base_file.exists() {
-                        resolved_deletes.insert(old_path.clone());
+                        self.resolved_deletes.insert(old_path.clone());
                     }
-                } else if let Some(origin) = rename_origin.remove(old_path) {
-                    resolved_renames.retain(|(src, _)| *src != origin);
-                    resolved_renames.push((origin.clone(), new_path.clone()));
-                    rename_origin.insert(new_path.clone(), origin);
+                } else if let Some(origin) = self.rename_origin.remove(old_path) {
+                    self.resolved_renames
+                        .insert(origin.clone(), new_path.clone());
+                    self.rename_origin.insert(new_path.clone(), origin);
                 } else {
-                    resolved_renames.push((old_path.clone(), new_path.clone()));
-                    rename_origin.insert(new_path.clone(), old_path.clone());
+                    self.resolved_renames
+                        .insert(old_path.clone(), new_path.clone());
+                    self.rename_origin
+                        .insert(new_path.clone(), old_path.clone());
                 }
             }
             Record::Snapshot { .. } => {}
         }
     }
 
-    let mut changes = Vec::new();
-    let rename_srcs: BTreeSet<&String> = resolved_renames.iter().map(|(src, _)| src).collect();
-    let rename_dsts: BTreeSet<&String> = resolved_renames.iter().map(|(_, dst)| dst).collect();
+    fn emit_changes(&self) -> Vec<Change> {
+        let base = Path::new("/");
+        let mut changes = Vec::new();
+        let rename_srcs: BTreeSet<&String> = self.resolved_renames.keys().collect();
+        let rename_dsts: BTreeSet<&String> = self.resolved_renames.values().collect();
 
-    for (old_path, new_path) in &resolved_renames {
-        if let Some(&blob_id) = resolved_adds.get(new_path) {
-            changes.push(Change::RenamedModified {
-                from: old_path.clone(),
-                to: new_path.clone(),
-                blob_id,
-            });
-        } else {
-            changes.push(Change::Renamed {
-                from: old_path.clone(),
-                to: new_path.clone(),
-            });
+        for (old_path, new_path) in &self.resolved_renames {
+            if let Some(&blob_id) = self.resolved_adds.get(new_path) {
+                changes.push(Change::RenamedModified {
+                    from: old_path.clone(),
+                    to: new_path.clone(),
+                    blob_id,
+                });
+            } else {
+                changes.push(Change::Renamed {
+                    from: old_path.clone(),
+                    to: new_path.clone(),
+                });
+            }
         }
+
+        for (path, blob_id) in &self.resolved_adds {
+            if rename_dsts.contains(path) {
+                continue;
+            }
+            let base_file = base.join(path.trim_start_matches('/'));
+            if base_file.exists() {
+                changes.push(Change::Modified {
+                    path: path.clone(),
+                    blob_id: *blob_id,
+                });
+            } else {
+                changes.push(Change::Added {
+                    path: path.clone(),
+                    blob_id: *blob_id,
+                });
+            }
+        }
+
+        for path in self.resolved_deletes.iter().rev() {
+            if rename_srcs.contains(path) {
+                continue;
+            }
+            changes.push(Change::Deleted(path.clone()));
+        }
+
+        changes
     }
+}
 
-    for (path, blob_id) in &resolved_adds {
-        if rename_dsts.contains(path) {
-            continue;
-        }
-        let base_file = base.join(path.trim_start_matches('/'));
-        if base_file.exists() {
-            changes.push(Change::Modified {
-                path: path.clone(),
-                blob_id: *blob_id,
-            });
-        } else {
-            changes.push(Change::Added {
-                path: path.clone(),
-                blob_id: *blob_id,
-            });
-        }
+/// Resolve a slice of records into changes. Internal helper factored
+/// out of `resolve()` so snapshot-aware variants can reuse it.
+fn resolve_records(records: &[Record]) -> Result<Vec<Change>> {
+    let mut state = ResolveState::new();
+    for record in records {
+        state.process(record);
     }
-
-    for path in resolved_deletes.iter().rev() {
-        if rename_srcs.contains(path) {
-            continue;
-        }
-        changes.push(Change::Deleted(path.clone()));
-    }
-
-    Ok(changes)
+    Ok(state.emit_changes())
 }
 
 /// A group of resolved changes belonging to a snapshot (or trailing).
@@ -306,24 +334,34 @@ pub fn resolve_sections(agfs_dir: &Path) -> Result<Vec<Section>> {
         }]);
     }
 
+    // Process records incrementally through a single ResolveState,
+    // snapshotting at each boundary — O(N) total instead of O(N*S).
     let mut sections = Vec::new();
-    let mut prev_state = ChangesState::default();
+    let mut state = ResolveState::new();
+    let mut prev_cs = ChangesState::default();
+    let mut record_idx = 0;
 
     for &(snap_idx, snap_id, ref snap_name) in &snap_indices {
-        let cumulative = resolve_records(&records[..=snap_idx])?;
-        let curr_state = ChangesState::from_changes(&cumulative);
-        let delta = prev_state.diff(&curr_state);
+        while record_idx <= snap_idx {
+            state.process(&records[record_idx]);
+            record_idx += 1;
+        }
+        let curr_cs = ChangesState::from_changes(&state.emit_changes());
+        let delta = prev_cs.diff(&curr_cs);
         sections.push(Section {
             snapshot: Some((snap_id, snap_name.clone())),
             changes: delta,
         });
-        prev_state = curr_state;
+        prev_cs = curr_cs;
     }
 
     // Trailing changes after the last snapshot
-    let all = resolve_records(&records)?;
-    let final_state = ChangesState::from_changes(&all);
-    let trailing = prev_state.diff(&final_state);
+    while record_idx < records.len() {
+        state.process(&records[record_idx]);
+        record_idx += 1;
+    }
+    let final_cs = ChangesState::from_changes(&state.emit_changes());
+    let trailing = prev_cs.diff(&final_cs);
     if !trailing.is_empty() {
         sections.push(Section {
             snapshot: None,
@@ -431,7 +469,6 @@ impl ChangesState {
                                 to: path.clone(),
                             });
                         }
-
                     } else if let Some(blob_id) = new_entry.blob_id {
                         let base_file = base.join(path.trim_start_matches('/'));
                         if base_file.exists() {

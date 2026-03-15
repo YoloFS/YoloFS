@@ -12,7 +12,7 @@
 - Always update documentation (DESIGN.md) before implementation.
 - Always run `cargo test --lib` to verify changes.
 - To fix a bug, first write a failing test, then fix it.
-- Do not modify existing tests when fixing a bug.
+- Unless the test is wrong, do not modify existing tests when fixing a bug.
 
 ## Project Structure
 

@@ -66,7 +66,7 @@ The two layers execute in order for every VFS operation:
    If `allow-*`, falls through.
 2. **Staging Layer** — routes reads to the staging blob if the file has been
    modified, otherwise to the base. Ensures writes go to staging blobs.
-   Uses per-directory override lists for deletions and renames.
+   Uses per-directory override hash tables for deletions and renames.
 
 All I/O is ultimately delegated to the lower filesystem via the standard
 wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
@@ -82,7 +82,7 @@ wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
 | --------------------- | ------- |
 | **base**              | Always `/` — the entire root filesystem, read-only from agfs's perspective until commit. |
 | **staging directory** | `.agfs/staging/` — a flat blob store. Each entry is identified by a numeric ID (`staging/1`, `staging/2`, …). Files and symlinks are stored as blobs; directories created by `mkdir` are empty directories (children live in their own blobs). No mirrored directory tree. |
-| **override list**     | Per-directory in-memory list of overrides. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
+| **override table**    | Per-directory in-memory hash table of overrides. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
 | **journal**           | `.agfs/journal` — append-only log of all mutations. Written by the kernel, read by the CLI for commit/abort/status/diff. The kernel never reads it back. |
 | **mount point**       | `.agfs/mnt/` — the agent's view of the filesystem. Shows the merged base + staged changes with permission gating applied. |
 | **commit**            | CLI reads the journal and applies all operations to the base filesystem. |
@@ -121,12 +121,13 @@ agfs.toml                       # config file in CWD (mount options + rules)
 
 ### 3.4 Path Resolution
 
-Each directory dentry holds an **override list** of child overrides. Each
-override records the current state of a child name:
+Each directory dentry holds an **override hash table** of child overrides
+(64 buckets, keyed by `full_name_hash()`). Each override records the
+current state of a child name:
 
 ```c
 struct agfs_override {
-    struct list_head  list;
+    struct hlist_node node;
     u64               staging_id;  /* >0 = content/dir in staging/<id> */
     char              *base_path;  /* non-NULL = content at this base path */
     unsigned int      name_len;
@@ -141,11 +142,12 @@ Interpretation:
 - all zero/NULL → deleted (lookup returns negative dentry)
 - no entry at all → fall through to base filesystem
 
-**`find_override`** — linear scan of the parent directory's override list:
+**`find_override`** — hash lookup in the parent directory's override table:
 
 ```
 find_override(dir, name):
-    for ovr in dir.overrides:
+    bucket = hash(name) >> (32 - shift)
+    for ovr in dir.ovr_buckets[bucket]:
         if ovr.name == name:  return ovr
     return NULL
 ```
@@ -154,7 +156,7 @@ find_override(dir, name):
 duplicate it while holding the directory spinlock before resolving it, because
 writers are free to replace the string in place when publishing a new override.
 
-**`add_override`** — upsert: update existing override or append new one:
+**`add_override`** — upsert: update existing override or insert into bucket:
 
 ```
 add_override(dir, name, staging_id=0, base_path=NULL):
@@ -166,7 +168,8 @@ add_override(dir, name, staging_id=0, base_path=NULL):
         ovr = alloc_override(name)
         ovr.staging_id = staging_id
         ovr.base_path = strdup(base_path)
-        dir.overrides.append(ovr)
+        bucket = hash(name) >> (32 - shift)
+        dir.ovr_buckets[bucket].add(ovr)
 ```
 
 An override is **deleted** when `staging_id == 0 && base_path == NULL`
@@ -186,23 +189,23 @@ agfs_lookup(dir, name):
     return base_lookup(dir, name)   # fall through to base
 ```
 
-**Readdir** merges the override list with the base directory:
+**Readdir** merges the override table with the base directory:
 
 ```
 agfs_readdir(dir):
-    for ovr in dir.overrides:
+    for ovr in dir.ovr_buckets[*]:
         if not ovr.is_deleted:  dir_emit(ovr.name)
     for entry in base_readdir(dir):
         if not find_override(dir, entry.name):  dir_emit(entry.name)
 ```
 
-The override list is the kernel's in-memory source of truth. The journal
+The override table is the kernel's in-memory source of truth. The journal
 persists it on disk for the CLI. The kernel never reads the journal back.
 
 ### 3.5 Open / Read / Write Path
 
 The backing file (staging blob or base file) is determined at **lookup**
-time via the override list. `open()` receives a dentry already pointing at
+time via the override table. `open()` receives a dentry already pointing at
 the right lower inode.
 
 Staging publications that involve COW, re-COW, truncate-open, or rename
@@ -384,7 +387,7 @@ then base entries that aren't overridden.
 ```
 agfs_readdir(dir, ctx):
     # 1. Emit non-deleted overrides.
-    for ovr in dir.overrides:
+    for ovr in dir.ovr_buckets[*]:
         if not ovr.is_deleted:
             dir_emit(ctx, ovr.name)
 
@@ -396,7 +399,7 @@ agfs_readdir(dir, ctx):
 
 The merged list is built fresh on every `readdir` call — no caching.
 This ensures creates, deletes, and renames between `getdents64` calls
-are always visible. Override lists are small, so the cost is negligible.
+are always visible. Override hash tables are small, so the cost is negligible.
 
 ### 3.9 Journal Format
 
@@ -503,7 +506,7 @@ state.
 3. Appends `S\0<id>\0<name>\n` to the journal.
 4. Returns the snapshot ID to userspace.
 
-No override lists change. No caches invalidated. Existing file handles
+No override tables change. No caches invalidated. Existing file handles
 continue working — the re-COW check triggers lazily on the next write.
 
 The name defaults to `"after <cmd>"` when auto-snapshotting via `agfs exec`
@@ -956,12 +959,13 @@ struct agfs_dentry_info {
     spinlock_t              lock;
     struct path             lower_path;      // resolved lower path (staging blob or base)
     enum agfs_perm          perm;            // AGFS_PERM_NONE unless this dentry has a rule
-    struct list_head        overrides;       // agfs_override list (for directories)
+    struct hlist_head       *ovr_buckets;    // override hash table, lazily allocated (NULL for leaf files)
 };
 ```
 
-Each directory dentry holds an override list of child overrides that
-differ from the base filesystem. See §3.4 for the `agfs_override` struct.
+Directory dentries lazily allocate a 64-bucket override hash table on
+first `agfs_add_override`. Leaf file dentries keep `ovr_buckets = NULL`,
+avoiding the 512-byte allocation. See §3.4 for the `agfs_override` struct.
 
 ### 5.6 File Info
 
@@ -997,7 +1001,7 @@ dispatched-but-unanswered requests receive the default decision.
 |---|---|---|
 | `sb->staging_sem` | Publishing staging mutations atomically (override + journal + dentry swap + `inode->snapshot_gen`) | `rw_semaphore` (write for rename/COW/truncate-open). Create/mkdir/symlink/unlink/rmdir are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
-| `dentry_info->lock` | Per-directory override list + cached lower path | `spinlock` |
+| `dentry_info->lock` | Per-directory override table + cached lower path | `spinlock` |
 
 **Lock ordering**: `staging_sem` → `pending_lock` → `dentry_info->lock`
 ---
@@ -1022,7 +1026,7 @@ dispatched-but-unanswered requests receive the default decision.
 
 | Operation    | Perm check                                                   | Staging layer                                                                     | Passthrough                               |
 | ------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------- |
-| `lookup`     | —                                                            | Check override list first (deleted → ENOENT, staging_id → blob, base_path → redirect); fall back to base. | `lookup_one_len()` on base dir. |
+| `lookup`     | —                                                            | Check override table first (deleted → ENOENT, staging_id → blob, base_path → redirect); fall back to base. | `lookup_one_len()` on base dir. |
 | `create`     | — (dir perm via lower FS)                                    | Allocate staging blob, add override + journal append.                           | `vfs_create()` on staging blob. |
 | `mkdir`      | — (dir perm via lower FS)                                    | Allocate staging dir, add override + journal append.                            | —                               |
 | `unlink`     | — (dir perm via lower FS)                                    | Add DELETED override, journal append.                                           | —                                         |
@@ -1392,7 +1396,7 @@ agfs uses a fundamentally different staging model from overlayfs.
 **Staging vs live union**: overlayfs is a live union filesystem — the upper
 layer *is* the persistent state. There is no commit or abort. A renamed
 file is copied up to upper with `RENAME_WHITEOUT` and stays there forever.
-agfs treats staging as a flat blob store with in-memory override lists that
+agfs treats staging as a flat blob store with in-memory override tables that
 are explicitly committed or discarded via the journal.
 
 **Copy-up**: overlayfs always does a full copy-up on first write, even for
@@ -1403,10 +1407,10 @@ directly — zero copy for the most common agent write pattern.
 **Rename**: overlayfs does a real `vfs_rename()` in the upper directory,
 which requires copy-up. agfs does zero-copy renames by adding overrides
 (DELETED on old parent, REDIRECTED on new parent). Rename chains
-resolve naturally through the override list.
+resolve naturally through the override table.
 
 **Lookup**: overlayfs does two lookups per component (upper + lower) and
-merges the results. agfs checks the parent's override list first, then
+merges the results. agfs checks the parent's override table first, then
 falls back to base — one lookup.
 
 **Permission model**: overlayfs uses standard Unix permissions only. agfs

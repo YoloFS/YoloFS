@@ -2,7 +2,7 @@
 /*
  * agfs — staging layer helpers.
  *
- * Flat blob store, override list management, COW.
+ * Flat blob store, override hash table management, COW.
  */
 
 #include "agfs.h"
@@ -55,7 +55,12 @@ int agfs_staging_path(struct agfs_sb_info *sbi, u64 id,
 	return resolve_subpath(&sbi->staging_dir, name, result);
 }
 
-/* ── Override List (§3.4) ──────────────────────────────────────────── */
+/* ── Override Hash Table (§3.4) ─────────────────────────────────────── */
+
+static inline unsigned int agfs_ovr_hash(const char *name, unsigned int len)
+{
+	return full_name_hash(NULL, name, len) >> (32 - AGFS_OVR_SHIFT);
+}
 
 /*
  * Find an override by name. Caller must hold di->lock.
@@ -66,11 +71,13 @@ struct agfs_override *agfs_find_override(struct dentry *dir_dentry,
 {
 	struct agfs_dentry_info *di = AGFS_D(dir_dentry);
 	struct agfs_override *ovr;
+	unsigned int idx;
 
-	if (!di)
+	if (!di || !di->ovr_buckets)
 		return NULL;
 
-	list_for_each_entry(ovr, &di->overrides, list) {
+	idx = agfs_ovr_hash(name, namelen);
+	hlist_for_each_entry(ovr, &di->ovr_buckets[idx], node) {
 		if (ovr->name_len == namelen &&
 		    !memcmp(ovr->name, name, namelen))
 			return ovr;
@@ -87,12 +94,14 @@ int agfs_add_override(struct dentry *dir_dentry, const char *name,
 {
 	struct agfs_dentry_info *di = AGFS_D(dir_dentry);
 	struct agfs_override *ovr, *new_ovr = NULL;
+	struct hlist_head *new_buckets = NULL;
 	char *bp_copy = NULL;
+	unsigned int i;
 
 	if (!di)
 		return -EINVAL;
 
-	/* Pre-allocate in case we need a new entry */
+	/* Pre-allocate outside the lock (GFP_KERNEL is safe here) */
 	new_ovr = kmalloc(offsetof(struct agfs_override, name) + namelen + 1,
 			  GFP_KERNEL);
 	if (!new_ovr)
@@ -106,7 +115,27 @@ int agfs_add_override(struct dentry *dir_dentry, const char *name,
 		}
 	}
 
+	if (!di->ovr_buckets) {
+		new_buckets = kmalloc_array(AGFS_OVR_BUCKETS,
+					    sizeof(struct hlist_head),
+					    GFP_KERNEL);
+		if (!new_buckets) {
+			kfree(bp_copy);
+			kfree(new_ovr);
+			return -ENOMEM;
+		}
+		for (i = 0; i < AGFS_OVR_BUCKETS; i++)
+			INIT_HLIST_HEAD(&new_buckets[i]);
+	}
+
 	spin_lock(&di->lock);
+
+	/* Install bucket array if we're the first adder */
+	if (!di->ovr_buckets && new_buckets) {
+		di->ovr_buckets = new_buckets;
+		new_buckets = NULL;	/* ownership transferred */
+	}
+
 	ovr = agfs_find_override(dir_dentry, name, namelen);
 	if (ovr) {
 		/* Update existing */
@@ -115,6 +144,7 @@ int agfs_add_override(struct dentry *dir_dentry, const char *name,
 		ovr->base_path = bp_copy;
 		spin_unlock(&di->lock);
 		kfree(new_ovr);
+		kfree(new_buckets);
 		return 0;
 	}
 
@@ -124,8 +154,10 @@ int agfs_add_override(struct dentry *dir_dentry, const char *name,
 	new_ovr->name_len = namelen;
 	new_ovr->staging_id = staging_id;
 	new_ovr->base_path = bp_copy;
-	list_add_tail(&new_ovr->list, &di->overrides);
+	hlist_add_head(&new_ovr->node,
+		       &di->ovr_buckets[agfs_ovr_hash(name, namelen)]);
 	spin_unlock(&di->lock);
+	kfree(new_buckets);
 	return 0;
 }
 

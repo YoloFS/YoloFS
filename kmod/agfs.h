@@ -16,6 +16,7 @@
 #include <linux/wait.h>
 #include <linux/completion.h>
 #include <linux/list.h>
+#include <linux/stringhash.h>
 #include <linux/poll.h>
 #include <linux/ioctl.h>
 #include <linux/kref.h>
@@ -105,7 +106,7 @@ struct agfs_perm_request {
 /* ── Per-directory override entry (§3.4) ────────────────────────────── */
 
 struct agfs_override {
-	struct list_head	list;
+	struct hlist_node	node;
 	u64			staging_id;	/* >0 = content in staging/<id> */
 	char			*base_path;	/* non-NULL = content at base path */
 	unsigned int		name_len;
@@ -152,11 +153,16 @@ struct agfs_inode_info {
 
 /* ── Per-Dentry Info ───────────────────────────────────────────────── */
 
+/* override hash table: 64 buckets (shift=6) covers most directories well.
+ * Allocated lazily on first agfs_add_override; NULL for leaf files. */
+#define AGFS_OVR_SHIFT		6
+#define AGFS_OVR_BUCKETS	(1u << AGFS_OVR_SHIFT)
+
 struct agfs_dentry_info {
 	spinlock_t		lock;
 	struct path		lower_path;	/* resolved lower path (staging blob or base) */
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
-	struct list_head	overrides;	/* agfs_override list (for directories) */
+	struct hlist_head	*ovr_buckets;	/* NULL until first override */
 };
 
 /* ── Per-File Ctl State (for permission daemon fds) ─────────────────── */
