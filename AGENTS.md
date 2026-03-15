@@ -12,7 +12,7 @@
 - Always update documentation (`docs/`) before implementation.
 - Always run tests (unit and e2e) to verify changes.
 - To fix a bug, first write a failing test, then fix it.
-- Unless the test is wrong, do not modify existing tests when fixing a bug.
+- Do not modify existing tests when fixing a bug. If you are unsure, ask.
 
 ## Project Structure
 

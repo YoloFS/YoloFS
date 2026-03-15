@@ -85,7 +85,7 @@ def _read_ssh_pubkeys():
     return keys
 
 
-def create_seed_iso(user: str, password: str, host_cwd: Path, force: bool = False):
+def create_seed_iso(host_cwd: Path, force: bool = False):
     seed_path = DATA_DIR / SEED_NAME
     if seed_path.exists() and not force:
         print(f"Seed ISO already exists: {seed_path}")
@@ -113,8 +113,8 @@ def create_seed_iso(user: str, password: str, host_cwd: Path, force: bool = Fals
         f"mkdir -p {vm_workspace}",
         f"mount -t 9p -o trans=virtio,version=9p2000.L,rw hostcwd {vm_workspace}",
         *symlink_cmds,
-        f"chown -R {user}:{user} {vm_local}",
-        f'echo "cd {vm_workspace}" >> /home/{user}/.bashrc',
+        f"chown -R {DEFAULT_USER}:{DEFAULT_USER} {vm_local}",
+        f'echo "cd {vm_workspace}" >> /home/{DEFAULT_USER}/.bashrc',
     ]
     runcmd_yaml = "runcmd:\n" + "\n".join(f"  - {cmd}" for cmd in mount_cmds)
 
@@ -123,11 +123,11 @@ def create_seed_iso(user: str, password: str, host_cwd: Path, force: bool = Fals
         "hostname: ubuntu-vm\n"
         "manage_etc_hosts: true\n"
         "users:\n"
-        f"  - name: {user}\n"
+        f"  - name: {DEFAULT_USER}\n"
         "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
         "    shell: /bin/bash\n"
         "    lock_passwd: false\n"
-        f'    plain_text_passwd: "{password}"\n'
+        f'    plain_text_passwd: "{DEFAULT_PASSWORD}"\n'
         f"    {keys_yaml}\n"
         "ssh_pwauth: true\n"
         f"{runcmd_yaml}\n"
@@ -156,7 +156,7 @@ def create_seed_iso(user: str, password: str, host_cwd: Path, force: bool = Fals
     return seed_path
 
 
-def _ssh_cmd(ssh_port: int, user: str) -> list[str]:
+def _ssh_cmd() -> list[str]:
     """Base SSH command with common options."""
     return [
         "ssh",
@@ -165,8 +165,8 @@ def _ssh_cmd(ssh_port: int, user: str) -> list[str]:
         "-o", "LogLevel=ERROR",
         "-o", "PasswordAuthentication=no",
         "-o", "BatchMode=yes",
-        "-p", str(ssh_port),
-        f"{user}@localhost",
+        "-p", str(DEFAULT_SSH_PORT),
+        f"{DEFAULT_USER}@localhost",
     ]
 
 
