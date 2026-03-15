@@ -104,7 +104,7 @@ impl Default for Config {
             permission: true,
             staging: true,
             ask_timeout: None,
-            snapshot: false,
+            snapshot: true,
             rules,
         }
     }

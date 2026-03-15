@@ -296,3 +296,114 @@ fn run_from_snapshot(agfs: &Path, snap_name: &str) -> Result<bool> {
 
     Ok(has_diff)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::journal::Change;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Create a temp dir that looks like an agfs session with staging blobs.
+    /// Returns the TempDir (must be kept alive) and its path.
+    fn make_agfs(blobs: &[(u64, &str)]) -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        let staging = tmp.path().join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        for (id, content) in blobs {
+            fs::write(staging.join(id.to_string()), content).unwrap();
+        }
+        tmp
+    }
+
+    #[test]
+    fn state_map_empty_changes() {
+        let tmp = make_agfs(&[]);
+        let map = state_map(tmp.path(), &[]);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn state_map_added() {
+        let tmp = make_agfs(&[(1, "hello\n")]);
+        let changes = vec![Change::Added {
+            path: "/src/main.rs".into(),
+            blob_id: 1,
+        }];
+        let map = state_map(tmp.path(), &changes);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["/src/main.rs"], Some("hello\n".into()));
+    }
+
+    #[test]
+    fn state_map_modified() {
+        let tmp = make_agfs(&[(5, "new content")]);
+        let changes = vec![Change::Modified {
+            path: "/etc/config".into(),
+            blob_id: 5,
+        }];
+        let map = state_map(tmp.path(), &changes);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["/etc/config"], Some("new content".into()));
+    }
+
+    #[test]
+    fn state_map_deleted() {
+        let tmp = make_agfs(&[]);
+        let changes = vec![Change::Deleted("/old/file.txt".into())];
+        let map = state_map(tmp.path(), &changes);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["/old/file.txt"], None);
+    }
+
+    #[test]
+    fn state_map_renamed() {
+        // Renamed reads base content via read_base(from). Since the `from` path
+        // won't exist on the real filesystem, read_file_lossy returns "".
+        let tmp = make_agfs(&[]);
+        let changes = vec![Change::Renamed {
+            from: "/nonexistent/old.rs".into(),
+            to: "/nonexistent/new.rs".into(),
+        }];
+        let map = state_map(tmp.path(), &changes);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["/nonexistent/old.rs"], None);
+        // read_base on a missing path returns ""
+        assert_eq!(map["/nonexistent/new.rs"], Some(String::new()));
+    }
+
+    #[test]
+    fn state_map_renamed_modified() {
+        let tmp = make_agfs(&[(7, "modified content")]);
+        let changes = vec![Change::RenamedModified {
+            from: "/nonexistent/old.rs".into(),
+            to: "/nonexistent/new.rs".into(),
+            blob_id: 7,
+        }];
+        let map = state_map(tmp.path(), &changes);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["/nonexistent/old.rs"], None);
+        assert_eq!(map["/nonexistent/new.rs"], Some("modified content".into()));
+    }
+
+    #[test]
+    fn state_map_multiple_changes() {
+        let tmp = make_agfs(&[(1, "aaa"), (2, "bbb")]);
+        let changes = vec![
+            Change::Added {
+                path: "/a.txt".into(),
+                blob_id: 1,
+            },
+            Change::Modified {
+                path: "/b.txt".into(),
+                blob_id: 2,
+            },
+            Change::Deleted("/c.txt".into()),
+        ];
+        let map = state_map(tmp.path(), &changes);
+        assert_eq!(map.len(), 3);
+        assert_eq!(map["/a.txt"], Some("aaa".into()));
+        assert_eq!(map["/b.txt"], Some("bbb".into()));
+        assert_eq!(map["/c.txt"], None);
+    }
+}

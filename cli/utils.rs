@@ -25,3 +25,64 @@ pub fn session_dir() -> Result<PathBuf> {
         anyhow::bail!("no agfs session found (no .agfs/ directory)")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn plural_zero() {
+        assert_eq!(plural(0), "s");
+    }
+
+    #[test]
+    fn plural_one() {
+        assert_eq!(plural(1), "");
+    }
+
+    #[test]
+    fn plural_two() {
+        assert_eq!(plural(2), "s");
+    }
+
+    #[test]
+    fn to_base_path_with_leading_slash() {
+        assert_eq!(to_base_path("/foo/bar"), PathBuf::from("/foo/bar"));
+    }
+
+    #[test]
+    fn to_base_path_without_leading_slash() {
+        assert_eq!(to_base_path("foo/bar"), PathBuf::from("/foo/bar"));
+    }
+
+    #[test]
+    fn to_base_path_root() {
+        assert_eq!(to_base_path("/"), PathBuf::from("/"));
+    }
+
+    #[test]
+    fn session_dir_from_env() {
+        let dir = "/tmp/agfs-test-session";
+        // SAFETY: test is single-threaded; no other thread reads this var.
+        unsafe { std::env::set_var("AGFS_SESSION", dir); }
+        let result = session_dir().unwrap();
+        assert_eq!(result, PathBuf::from(dir));
+        unsafe { std::env::remove_var("AGFS_SESSION"); }
+    }
+
+    #[test]
+    fn session_dir_from_dotdir() {
+        // SAFETY: test is single-threaded; no other thread reads this var.
+        unsafe { std::env::remove_var("AGFS_SESSION"); }
+        let tmp = tempfile::tempdir().unwrap();
+        let agfs_dir = tmp.path().join(".agfs");
+        std::fs::create_dir(&agfs_dir).unwrap();
+        // Change cwd into the tempdir so session_dir finds .agfs/
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = session_dir().unwrap();
+        assert_eq!(result, agfs_dir);
+        std::env::set_current_dir(orig).unwrap();
+    }
+}

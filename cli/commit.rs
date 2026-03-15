@@ -188,3 +188,52 @@ fn run_partial(agfs: &Path, snapshot_name: &str) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::path::Path;
+
+    #[test]
+    fn ensure_parent_creates_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("a").join("b").join("file.txt");
+        let mut cache = HashSet::new();
+
+        ensure_parent(&file_path, &mut cache).unwrap();
+
+        let parent = file_path.parent().unwrap();
+        assert!(parent.exists());
+        assert!(cache.contains(parent));
+    }
+
+    #[test]
+    fn ensure_parent_caches_and_skips_second_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("c").join("file.txt");
+        let mut cache = HashSet::new();
+
+        ensure_parent(&file_path, &mut cache).unwrap();
+        assert!(cache.contains(file_path.parent().unwrap()));
+
+        // Remove the directory so we can detect if it would be recreated
+        fs::remove_dir_all(file_path.parent().unwrap()).unwrap();
+
+        // Second call should skip creation because parent is cached
+        ensure_parent(&file_path, &mut cache).unwrap();
+
+        // Directory should still be gone — ensure_parent skipped it
+        assert!(!file_path.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn ensure_parent_root_path() {
+        let root = Path::new("/");
+        let mut cache = HashSet::new();
+
+        // Root has no parent that needs creating; should succeed without error
+        ensure_parent(root, &mut cache).unwrap();
+        assert!(cache.is_empty());
+    }
+}
