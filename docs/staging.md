@@ -144,36 +144,34 @@ the write/open fails and the previous mapping remains authoritative.
 
 ```
 agfs_open(inode, file):
-    if file->f_flags & O_TRUNC:
-        // Truncating write: allocate new staging blob, publish atomically.
-        id = next_staging_id++
-        file_info->lower_file = create_and_open(staging/<id>)
-        down_write(staging_sem)
-        add_override(parent, name, staging_id=id)
-        journal(A, path, id)
-        swap dentry lower path to staging/<id>
-        inode->snapshot_gen = sbi->snapshot_gen
-        up_write(staging_sem)
+    orig_flags = file->f_flags
+
+    ovr = find_override(parent, name)
+    if file->f_flags & (O_WRONLY | O_RDWR) and ovr and ovr.staging_id:
+        // Already in staging from a prior write — open the blob directly.
+        file_info->lower_file = open(staging/<id>, file->f_flags)
 
     elif file->f_flags & (O_WRONLY | O_RDWR):
-        ovr = find_override(parent, name)
-        if ovr and ovr.staging_id:
-            // Already in staging from a prior write.
-            file_info->lower_file = open(staging/<id>, file->f_flags)
-        else:
-            // Base file. Open read-only; first write triggers COW.
-            file_info->lower_file = open(base_file, O_RDONLY)
+        // Base file. Strip O_TRUNC, open read-only; first write triggers COW.
+        file->f_flags &= ~O_TRUNC
+        file_info->lower_file = open(base_file, O_RDONLY)
+
     else:
         // Read-only: open the lower file the dentry points to.
         file_info->lower_file = open(lower_file, O_RDONLY)
 
+    // Track deferred truncation for COW on first write.
+    file_info->truncate = (orig_flags & O_TRUNC) && !(file->f_flags & O_TRUNC)
+
 agfs_write_iter(kiocb, iov_iter):
-    // Unified COW / re-COW. The check is purely per-inode:
+    // Unified COW / re-COW / deferred truncation. The check is:
     //   inode->snapshot_gen == 0  -> base file, needs base->staging COW
     //   inode->snapshot_gen < sbi -> staging blob is stale, needs re-COW
+    //   file_info->truncate       -> deferred O_TRUNC, needs empty blob
     // agfs_do_cow copies from the dentry's current lower_path
-    // (base or staging blob) to a fresh blob.
-    if inode->snapshot_gen < sbi->snapshot_gen:
+    // (base or staging blob) to a fresh blob. With truncate=true,
+    // it creates an empty blob instead of copying.
+    if inode->snapshot_gen < sbi->snapshot_gen or file_info->truncate:
         down_write(staging_sem)
         if inode->snapshot_gen < sbi->snapshot_gen:
             new_file = agfs_do_cow(sbi, dentry, flags)
@@ -208,8 +206,9 @@ agfs_mmap(file, vma):
 
 **Three cases, in order of likelihood for agent workloads:**
 
-1. `O_TRUNC` (most common: `>`, editors, code generators) -> allocate
-   staging blob directly, no copy.
+1. `O_TRUNC` (most common: `>`, editors, code generators) -> open base
+   read-only, defer truncation; first write creates an empty staging blob
+   via COW with `truncate=true` (zero copy).
 2. `O_RDONLY` -> open the resolved lower file (staging blob or base).
 3. `O_RDWR`/`O_WRONLY` without truncate (rare: `sed -i`, `dd`, append) ->
    copy base->staging blob on first write.

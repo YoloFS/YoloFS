@@ -74,6 +74,7 @@ struct agfs_file_info {
     struct file            *lower_file;     // opened lower file (base or staging)
     const struct vm_operations_struct *lower_vm_ops;
     struct agfs_ctl_private *ctl;           // non-NULL if this fd is a ctl daemon
+    bool                    truncate;       // deferred O_TRUNC -> empty blob on first write
 };
 ```
 

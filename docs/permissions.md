@@ -91,8 +91,11 @@ enum agfs_perm agfs_resolve_perm(struct dentry *dentry)
 {
     struct dentry *cur = dentry;
     while (cur) {
-        if (AGFS_D(cur)->perm != AGFS_PERM_NONE)
-            return AGFS_D(cur)->perm;
+        struct agfs_dentry_info *di = AGFS_D(cur);
+        if (di && di->perm != AGFS_PERM_NONE)
+            return di->perm;
+        if (cur == cur->d_parent)
+            break;              // reached root dentry
         cur = cur->d_parent;
     }
     return AGFS_PERM_ASK;
@@ -109,22 +112,23 @@ void agfs_cache_perm(struct inode *inode, struct dentry *dentry)
 }
 
 // Called by permission() -- O(1) in steady state.
-static int agfs_permission(struct inode *inode, int mask)
+static int agfs_permission(struct mnt_idmap *idmap,
+                           struct inode *inode, int mask)
 {
     struct agfs_inode_info *info = AGFS_I(inode);
-    struct agfs_sb_info *sb = AGFS_SB(inode->i_sb);
+    struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
 
     if (!S_ISREG(inode->i_mode))
         return inode_permission(info->lower_inode, mask);
 
     // Check generation -- re-resolve if stale.
     enum agfs_perm perm = info->cached_perm;
-    if (info->perm_gen != atomic64_read(&sb->perm_gen)) {
+    if (info->perm_gen != atomic64_read(&sbi->perm_gen)) {
         struct dentry *dentry = d_find_alias(inode);
         if (dentry) {
             perm = agfs_resolve_perm(dentry);
             info->cached_perm = perm;
-            info->perm_gen = atomic64_read(&sb->perm_gen);
+            info->perm_gen = atomic64_read(&sbi->perm_gen);
             dput(dentry);
         }
     }

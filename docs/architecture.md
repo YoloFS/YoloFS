@@ -213,6 +213,7 @@ agfs/
 │   ├── snapshot.rs            # snapshot create, log
 │   ├── watch.rs               # permission prompt daemon (handles TTY ownership)
 │   ├── ioctl.rs               # binary protocol structs + ioctl helpers
+│   ├── klog.rs                # kernel log reading utilities
 │   └── utils.rs               # shared helpers (session_dir, plural)
 └── tests/                     # Integration tests
 ```
