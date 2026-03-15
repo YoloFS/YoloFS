@@ -5,6 +5,7 @@ pub mod diff;
 pub mod exec;
 pub mod ioctl;
 pub mod journal;
+pub mod klog;
 pub mod kmod;
 pub mod mount;
 pub mod snapshot;
