@@ -91,6 +91,11 @@ impl AgfsSession {
         self.root.join(rel)
     }
 
+    /// Get the staging directory path.
+    pub fn staging_dir(&self) -> PathBuf {
+        self.root.join(".agfs/staging")
+    }
+
     /// Run an agfs CLI subcommand from the session root, return stdout.
     pub fn cli(&self, args: &[&str]) -> Result<String> {
         let output = Command::new(AGFS_BIN)

@@ -26,6 +26,7 @@ mod test_rmdir;
 mod test_rules;
 mod test_run;
 mod test_snapshot;
+mod test_staging;
 mod test_status;
 mod test_symlink;
 mod test_truncate_append;
