@@ -1,3 +1,3 @@
-from scripts.minitasks.base import MiniTask
-from scripts.minitasks.tasks import MINITASKS
+from minitasks.base import MiniTask
+from minitasks.tasks import MINITASKS
 

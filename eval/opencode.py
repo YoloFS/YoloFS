@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pyte
 
-from scripts.agent import Agent
-from scripts.records import ToolCall
+from agent import Agent
+from records import ToolCall
 
 OPENCODE_DB = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
 SHELL_TOOL_NAME = "bash"

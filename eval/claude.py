@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pyte
 
-from scripts.agent import Agent
-from scripts.records import ToolCall
+from agent import Agent
+from records import ToolCall
 
 
 @dataclass(frozen=True)

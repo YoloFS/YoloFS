@@ -3,8 +3,8 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from scripts.fs import DirEntry, FileEntry, FsEntry, SymlinkEntry
-from scripts.records import FsCheckResult, OutputCheckResult, ToolCall
+from fs import DirEntry, FileEntry, FsEntry, SymlinkEntry
+from records import FsCheckResult, OutputCheckResult, ToolCall
 
 
 @dataclass

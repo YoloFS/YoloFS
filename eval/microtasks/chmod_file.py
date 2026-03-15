@@ -1,4 +1,4 @@
-from scripts.microtasks.base import DirEntry, FileEntry, SymlinkEntry, Task
+from microtasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # Chmod: project, parent, symlink file, symlink dir file, spaces
 CHMOD_FILE_TASKS: list[Task] = [

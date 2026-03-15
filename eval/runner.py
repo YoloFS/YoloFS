@@ -18,10 +18,10 @@ from typing import TextIO
 
 import pyte
 
-from scripts.agent import Agent
-from scripts.consts import DATA_DIR, TERM_BLUE, TERM_GREEN, TERM_RED, TERM_RESET
-from scripts.records import FsCheckResult, OutputCheckResult, Result, ToolCall
-from scripts.microtasks import Task
+from agent import Agent
+from consts import DATA_DIR, TERM_BLUE, TERM_GREEN, TERM_RED, TERM_RESET
+from records import FsCheckResult, OutputCheckResult, Result, ToolCall
+from microtasks import Task
 
 STDOUT_FILENO = sys.stdout.fileno()
 TERMINAL_COLUMNS = 100

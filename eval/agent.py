@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pyte
 
-from scripts.records import ToolCall
+from records import ToolCall
 
 @dataclass(frozen=True)
 class Agent:

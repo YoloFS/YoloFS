@@ -14,8 +14,8 @@ of readable code sit between the user prompt and the actual filesystem mutations
 
 from pathlib import Path
 
-from scripts.fs import DirEntry, FileEntry
-from scripts.minitasks.base import MiniTask
+from fs import DirEntry, FileEntry
+from minitasks.base import MiniTask
 
 _DIR = Path(__file__).parent
 

@@ -4,16 +4,16 @@ import argparse
 import os
 import shutil
 
-from scripts.agent import Agent
-from scripts.claude import ClaudeAgent
-from scripts.codex import CodexAgent
-from scripts.consts import RESULTS_DIR
-from scripts.copilot import CopilotAgent
-from scripts.gemini import GeminiAgent
-from scripts.opencode import OpenCodeAgent
-from scripts.runner import Runner
-from scripts.minitasks import MINITASKS
-from scripts.microtasks import MICROTASKS, Task
+from agent import Agent
+from claude import ClaudeAgent
+from codex import CodexAgent
+from consts import RESULTS_DIR
+from copilot import CopilotAgent
+from gemini import GeminiAgent
+from opencode import OpenCodeAgent
+from runner import Runner
+from minitasks import MINITASKS
+from microtasks import MICROTASKS, Task
 
 ALL_TASKS = [*MICROTASKS, *MINITASKS]
 AGENTS = [ClaudeAgent(), CodexAgent(), CopilotAgent(), GeminiAgent(), OpenCodeAgent()]

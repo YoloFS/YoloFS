@@ -2,8 +2,8 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from scripts.fs import DirEntry, FileEntry, FsEntry
-from scripts.records import FsCheckResult, OutputCheckResult, ToolCall
+from fs import DirEntry, FileEntry, FsEntry
+from records import FsCheckResult, OutputCheckResult, ToolCall
 
 
 AGFS = Path(__file__).resolve().parent.parent.parent / "target" / "release" / "agfs"

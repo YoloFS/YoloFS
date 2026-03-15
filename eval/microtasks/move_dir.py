@@ -1,4 +1,4 @@
-from scripts.microtasks.base import DirEntry, FileEntry, Task
+from microtasks.base import DirEntry, FileEntry, Task
 
 # Dir Move: project, parent, spaces, non-empty
 MOVE_DIR_TASKS: list[Task] = [

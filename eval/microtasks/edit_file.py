@@ -1,4 +1,4 @@
-from scripts.microtasks.base import DirEntry, FileEntry, SymlinkEntry, Task
+from microtasks.base import DirEntry, FileEntry, SymlinkEntry, Task
 
 # Edit: project, parent, symlink file, symlink dir file, spaces
 EDIT_FILE_TASKS: list[Task] = [

@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from eval.consts import RESULTS_DIR
+from consts import RESULTS_DIR
 
 
 @dataclass
