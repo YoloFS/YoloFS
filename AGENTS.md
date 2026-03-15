@@ -31,9 +31,8 @@
 Tests run inside a QEMU VM managed by `vm.py` (repo auto-mounted via 9p).
 
 ```bash
-./vm.py start                 # launch the VM
-./vm.py ssh                   # interactive shell inside the VM
-./vm.py ssh -- make test      # unit + e2e tests
-./vm.py ssh -- make test-unit # unit tests only
-./vm.py ssh -- make test-e2e  # e2e tests only
+./vm.py -- make test      # unit + e2e tests (auto-starts VM if needed)
+./vm.py -- make test-unit # unit tests only
+./vm.py -- make test-e2e  # e2e tests only
+./vm.py stop              # stop the VM
 ```

@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "vm"
@@ -14,6 +15,7 @@ IMAGE_NAME = "ubuntu-24.04-minimal-cloudimg-amd64.img"
 IMAGE_URL = f"https://cloud-images.ubuntu.com/minimal/releases/noble/release/{IMAGE_NAME}"
 DISK_NAME = "disk.qcow2"
 SEED_NAME = "seed.iso"
+LOG_NAME = "vm.log"
 DEFAULT_DISK_SIZE = "20G"
 DEFAULT_RAM = "8G"
 DEFAULT_CPUS = os.cpu_count()
@@ -81,8 +83,6 @@ def _read_ssh_pubkeys():
         if key:
             keys.append(key)
     return keys
-
-
 
 
 def create_seed_iso(user: str, password: str, host_cwd: Path, force: bool = False):
@@ -156,6 +156,61 @@ def create_seed_iso(user: str, password: str, host_cwd: Path, force: bool = Fals
     return seed_path
 
 
+def _ssh_cmd(ssh_port: int, user: str) -> list[str]:
+    """Base SSH command with common options."""
+    return [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-o", "PasswordAuthentication=no",
+        "-o", "BatchMode=yes",
+        "-p", str(ssh_port),
+        f"{user}@localhost",
+    ]
+
+
+def is_vm_running():
+    """Check if the VM is running via pidfile."""
+    pidfile = DATA_DIR / "vm.pid"
+    if not pidfile.exists():
+        return False
+    pid = int(pidfile.read_text().strip())
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        pidfile.unlink(missing_ok=True)
+        return False
+
+
+def wait_for_ssh(ssh_port: int, user: str, timeout: int = 120):
+    """Block until SSH is reachable on the VM."""
+    start = time.time()
+    while time.time() - start < timeout:
+        result = subprocess.run(
+            _ssh_cmd(ssh_port, user) + ["-o", "ConnectTimeout=2", "true"],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return
+        time.sleep(2)
+    print(f"Error: SSH not available after {timeout}s. Check log: {DATA_DIR / LOG_NAME}")
+    sys.exit(1)
+
+
+def ensure_vm_started():
+    """Start the VM with defaults if not already running, and wait for SSH."""
+    if is_vm_running():
+        return
+    print("VM not running, starting...")
+    image_path = download_image()
+    disk_path = create_disk(image_path, DEFAULT_DISK_SIZE)
+    seed_path = create_seed_iso(DEFAULT_USER, DEFAULT_PASSWORD, Path.cwd())
+    run_vm(disk_path, seed_path, DEFAULT_RAM, DEFAULT_CPUS, DEFAULT_SSH_PORT, [])
+    wait_for_ssh(DEFAULT_SSH_PORT, DEFAULT_USER)
+
+
 def run_vm(
     disk_path: Path,
     seed_path: Path,
@@ -163,19 +218,10 @@ def run_vm(
     cpus: int,
     ssh_port: int,
     extra_args: list[str],
-    daemonize: bool = False,
+    foreground: bool = False,
 ):
     pidfile = DATA_DIR / "vm.pid"
-    if pidfile.exists():
-        pid = int(pidfile.read_text().strip())
-        try:
-            os.kill(pid, 0)
-            print(f"Error: VM is already running (pid {pid}).")
-            print(f"Connect with: python3 {__file__} ssh")
-            sys.exit(1)
-        except ProcessLookupError:
-            pidfile.unlink(missing_ok=True)
-
+    log_path = DATA_DIR / LOG_NAME
     cmd = [
         "qemu-system-x86_64",
         "-enable-kvm",
@@ -188,18 +234,28 @@ def run_vm(
         "-net", "nic,model=virtio",
         "-net", f"user,hostfwd=tcp::{ssh_port}-:22",
         "-virtfs", f"local,path={Path.cwd()},mount_tag=hostcwd,security_model=none",
-        "-nographic",
     ]
-    if daemonize:
-        pidfile = DATA_DIR / "vm.pid"
-        cmd += ["-daemonize", "-pidfile", str(pidfile)]
-    cmd += extra_args
 
-    print(f"Starting VM (ssh: ssh -p {ssh_port} {DEFAULT_USER}@localhost)...")
-    print(f"  RAM={ram}  CPUs={cpus}")
-    if not daemonize:
+    if foreground:
+        cmd += ["-nographic"]
+        cmd += extra_args
+        print(f"Starting VM (ssh: ssh -p {ssh_port} {DEFAULT_USER}@localhost)...")
+        print(f"  RAM={ram}  CPUs={cpus}")
         print("Press Ctrl-A X to exit QEMU console.\n")
-    os.execvp(cmd[0], cmd)
+        os.execvp(cmd[0], cmd)
+
+    cmd += [
+        "-display", "none",
+        "-serial", f"file:{log_path}",
+        "-monitor", "none",
+        "-daemonize",
+        "-pidfile", str(pidfile),
+    ]
+    cmd += extra_args
+    print(f"Starting VM in background...")
+    print(f"  SSH: ssh -p {ssh_port} {DEFAULT_USER}@localhost")
+    print(f"  Log: {log_path}")
+    subprocess.run(cmd, check=True)
 
 
 def stop_vm():
@@ -218,15 +274,7 @@ def stop_vm():
 
 def ssh_vm(ssh_port: int, user: str, ssh_args: list[str]):
     host_cwd = str(Path.cwd())
-    cmd = [
-        "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "PasswordAuthentication=no",
-        "-o", "BatchMode=yes",
-        "-p", str(ssh_port),
-        f"{user}@localhost",
-    ]
+    cmd = _ssh_cmd(ssh_port, user)
     if ssh_args:
         cmd += [f"cd {host_cwd} && source ~/.profile 2>/dev/null &&"] + ssh_args
     else:
@@ -235,11 +283,20 @@ def ssh_vm(ssh_port: int, user: str, ssh_args: list[str]):
 
 
 def main():
+    # ./vm.py          → auto-start VM + interactive shell
+    # ./vm.py -- <cmd> → auto-start VM + run command via SSH
+    if len(sys.argv) == 1 or (len(sys.argv) > 1 and sys.argv[1] == "--"):
+        cmd = sys.argv[2:] if len(sys.argv) > 1 else []
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        ensure_vm_started()
+        ssh_vm(DEFAULT_SSH_PORT, DEFAULT_USER, cmd)
+        return
+
     parser = argparse.ArgumentParser(description="Manage an Ubuntu 24.04 QEMU VM")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # --- start ---
-    p_start = sub.add_parser("start", help="Start the VM")
+    p_start = sub.add_parser("start", help="Start the VM (daemonized by default)")
     p_start.add_argument("--ram", default=DEFAULT_RAM, help=f"RAM (default: {DEFAULT_RAM})")
     p_start.add_argument("--cpus", type=int, default=DEFAULT_CPUS, help=f"CPUs (default: {DEFAULT_CPUS})")
     p_start.add_argument("--ssh-port", type=int, default=DEFAULT_SSH_PORT, help=f"Host SSH port (default: {DEFAULT_SSH_PORT})")
@@ -247,17 +304,11 @@ def main():
     p_start.add_argument("--user", default=DEFAULT_USER)
     p_start.add_argument("--password", default=DEFAULT_PASSWORD)
     p_start.add_argument("--force", action="store_true", help="Recreate disk and seed images")
-    p_start.add_argument("--daemonize", "-d", action="store_true", help="Run VM in background")
+    p_start.add_argument("--foreground", "-f", action="store_true", help="Run VM in foreground (interactive)")
     p_start.add_argument("extra", nargs="*", help="Extra QEMU arguments")
 
     # --- stop ---
     sub.add_parser("stop", help="Stop a daemonized VM")
-
-    # --- ssh ---
-    p_ssh = sub.add_parser("ssh", help="SSH into the VM")
-    p_ssh.add_argument("--ssh-port", type=int, default=DEFAULT_SSH_PORT)
-    p_ssh.add_argument("--user", default=DEFAULT_USER)
-    p_ssh.add_argument("extra", nargs="*", help="Extra SSH arguments")
 
     # --- download ---
     sub.add_parser("download", help="Download the base cloud image only")
@@ -269,14 +320,16 @@ def main():
     if args.command == "download":
         download_image()
     elif args.command == "start":
+        if is_vm_running():
+            pid = int((DATA_DIR / "vm.pid").read_text().strip())
+            print(f"Error: VM is already running (pid {pid}).")
+            sys.exit(1)
         image_path = download_image()
         disk_path = create_disk(image_path, args.disk_size, force=args.force)
         seed_path = create_seed_iso(args.user, args.password, Path.cwd(), force=args.force)
-        run_vm(disk_path, seed_path, args.ram, args.cpus, args.ssh_port, args.extra, args.daemonize)
+        run_vm(disk_path, seed_path, args.ram, args.cpus, args.ssh_port, args.extra, foreground=args.foreground)
     elif args.command == "stop":
         stop_vm()
-    elif args.command == "ssh":
-        ssh_vm(args.ssh_port, args.user, args.extra)
 
 
 if __name__ == "__main__":
