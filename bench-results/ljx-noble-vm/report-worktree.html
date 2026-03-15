@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <script src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js"></script>
+        <script src="https://cdn.plot.ly/plotly-3.0.1.min.js"></script>
+        
+</head>
+
+<body>
+    <div>
+        <div id="plotly-html-element" class="plotly-graph-div" style="height:100%; width:100%;"></div>
+
+        <script type="module">
+            const graph_div = document.getElementById("plotly-html-element");
+            await Plotly.newPlot(graph_div, {"data":[{"type":"bar","x":["native","rules-allow-all","rules-realistic"],"y":[11236.666666666666,31922.0,28383.333333333332],"name":"staging"},{"type":"bar","x":["native","rules-allow-all","rules-realistic"],"y":[0.0,9083.666666666666,6105.333333333333],"name":"commit","error_y":{"type":"data","array":[527.4848075747985,9001.859894241608,4965.828922636068],"visible":true}},{"type":"scatter","name":"native baseline","mode":"lines","x":["rules-allow-all","rules-realistic"],"y":[11236.666666666666,11236.666666666666]}],"layout":{"title":{"text":"worktree on ljx-noble-vm — Intel(R) Xeon(R) Silver 4215R CPU @ 3.20GHz / virtual disk ext4 / 6.8.0-101-generic kernel"},"xaxis":{"title":{"text":"scenario"}},"yaxis":{"title":{"text":"time (ms)"}},"barmode":"stack"},"config":{},"frames":null});
+        </script>
+    </div>
+</body>
+
+</html>
