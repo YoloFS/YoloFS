@@ -93,17 +93,12 @@ fn prompt_decision(req: &AgfsCtlRequest) -> Perm {
     // TTY is released automatically when _guard is dropped.
     if io::stdin().lock().read_line(&mut line).is_ok() {
         let trimmed = line.trim();
-        match trimmed {
-            "" | "d" | "deny" => Perm::Deny,
-            "a" | "allow" => Perm::Allow,
-            "rw" | "allow-rw" => Perm::AllowRw,
-            "ro" | "allow-ro" => Perm::AllowRo,
-            "rx" | "allow-rx" => Perm::AllowRx,
-            _ => {
-                eprintln!("  unknown: {trimmed}, denying");
-                Perm::Deny
-            }
+        let perm = parse_input(trimmed);
+        if matches!(perm, Perm::Deny) && !trimmed.is_empty() && trimmed != "d" && trimmed != "deny"
+        {
+            eprintln!("  unknown: {trimmed}, denying");
         }
+        perm
     } else {
         Perm::Deny
     }
@@ -162,6 +157,21 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
     }
 }
 
+/// Parse user input (already trimmed) into a [`Perm`] decision.
+///
+/// This is a pure function extracted from `prompt_decision` so it can be
+/// unit-tested without terminal access.
+fn parse_input(input: &str) -> Perm {
+    match input {
+        "" | "d" | "deny" => Perm::Deny,
+        "a" | "allow" => Perm::Allow,
+        "rw" | "allow-rw" => Perm::AllowRw,
+        "ro" | "allow-ro" => Perm::AllowRo,
+        "rx" | "allow-rx" => Perm::AllowRx,
+        _ => Perm::Deny,
+    }
+}
+
 /// Spawn a background watch daemon thread that prompts for ask requests.
 /// The thread runs until the process exits (it cannot be stopped early
 /// because it blocks on a kernel ioctl).
@@ -181,4 +191,76 @@ pub fn run_background() -> Result<()> {
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_string_is_deny() {
+        assert_eq!(parse_input(""), Perm::Deny);
+    }
+
+    #[test]
+    fn d_is_deny() {
+        assert_eq!(parse_input("d"), Perm::Deny);
+    }
+
+    #[test]
+    fn deny_is_deny() {
+        assert_eq!(parse_input("deny"), Perm::Deny);
+    }
+
+    #[test]
+    fn a_is_allow() {
+        assert_eq!(parse_input("a"), Perm::Allow);
+    }
+
+    #[test]
+    fn allow_is_allow() {
+        assert_eq!(parse_input("allow"), Perm::Allow);
+    }
+
+    #[test]
+    fn rw_is_allow_rw() {
+        assert_eq!(parse_input("rw"), Perm::AllowRw);
+    }
+
+    #[test]
+    fn allow_rw_is_allow_rw() {
+        assert_eq!(parse_input("allow-rw"), Perm::AllowRw);
+    }
+
+    #[test]
+    fn ro_is_allow_ro() {
+        assert_eq!(parse_input("ro"), Perm::AllowRo);
+    }
+
+    #[test]
+    fn allow_ro_is_allow_ro() {
+        assert_eq!(parse_input("allow-ro"), Perm::AllowRo);
+    }
+
+    #[test]
+    fn rx_is_allow_rx() {
+        assert_eq!(parse_input("rx"), Perm::AllowRx);
+    }
+
+    #[test]
+    fn allow_rx_is_allow_rx() {
+        assert_eq!(parse_input("allow-rx"), Perm::AllowRx);
+    }
+
+    #[test]
+    fn unknown_input_is_deny() {
+        assert_eq!(parse_input("xyz"), Perm::Deny);
+    }
+
+    #[test]
+    fn whitespace_input_is_deny() {
+        // parse_input receives already-trimmed input, so whitespace is
+        // treated as unknown and maps to Deny.
+        assert_eq!(parse_input("  a  "), Perm::Deny);
+    }
 }

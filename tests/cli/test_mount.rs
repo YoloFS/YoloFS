@@ -76,3 +76,89 @@ fn unknown_subcommand_shows_help() {
         "should show help for unknown subcommand: {combined}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Mount error-path tests
+// ---------------------------------------------------------------------------
+
+/// Without an agfs.toml, mount should still succeed using default options.
+#[test]
+fn mount_no_config_uses_defaults() {
+    let tmp = tempfile::tempdir().expect("creating temp dir");
+
+    let output = std::process::Command::new(AGFS_BIN)
+        .arg("mount")
+        .current_dir(tmp.path())
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("running agfs mount");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "agfs mount should succeed even without agfs.toml (uses defaults): {stderr}"
+    );
+
+    // Clean up — unmount the session we just created
+    let _ = std::process::Command::new(AGFS_BIN)
+        .args(["unmount", "--force"])
+        .current_dir(tmp.path())
+        .env("NO_COLOR", "1")
+        .output();
+}
+
+/// Invalid agfs.toml should cause `agfs mount` to fail (at the apply_rules step).
+#[test]
+fn mount_invalid_config_fails() {
+    let tmp = tempfile::tempdir().expect("creating temp dir");
+    std::fs::write(tmp.path().join("agfs.toml"), "{{invalid toml")
+        .expect("writing invalid config");
+
+    let output = std::process::Command::new(AGFS_BIN)
+        .arg("mount")
+        .current_dir(tmp.path())
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("running agfs mount");
+
+    assert!(
+        !output.status.success(),
+        "agfs mount should fail with an invalid agfs.toml"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("parse")
+            || stderr.contains("invalid")
+            || stderr.contains("toml")
+            || stderr.contains("expected"),
+        "stderr should mention parse/config error: {stderr}"
+    );
+
+    // Clean up — mount may have partially succeeded before apply_rules failed
+    let _ = std::process::Command::new(AGFS_BIN)
+        .args(["unmount", "--force"])
+        .current_dir(tmp.path())
+        .env("NO_COLOR", "1")
+        .output();
+}
+
+#[test]
+fn mount_nonexistent_dir_fails() {
+    let bad_path = std::path::PathBuf::from("/tmp/agfs_nonexistent_dir_that_does_not_exist");
+    // Ensure it really does not exist.
+    assert!(!bad_path.exists(), "sanity: path should not exist");
+
+    let result = std::process::Command::new(AGFS_BIN)
+        .arg("mount")
+        .current_dir(&bad_path)
+        .env("NO_COLOR", "1")
+        .output();
+
+    // Setting current_dir to a nonexistent path causes Command::output() itself
+    // to return an Err (on Linux: "No such file or directory").
+    assert!(
+        result.is_err(),
+        "Command::output() should fail when current_dir does not exist"
+    );
+}

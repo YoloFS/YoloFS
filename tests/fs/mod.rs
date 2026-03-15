@@ -9,3 +9,4 @@ mod test_symlink;
 mod test_truncate_append;
 mod test_multiple_writes;
 mod test_inode;
+mod test_concurrent;

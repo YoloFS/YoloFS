@@ -107,3 +107,52 @@ fn run_write_file_relative_path() {
         "writing to a relative path inside the sandbox should succeed"
     );
 }
+
+#[test]
+fn run_env_var_propagated() {
+    let session = AgfsSession::new().expect("session setup");
+    // AGFS_SESSION is always set by exec.rs — verify the sandbox sees it
+    let code = session
+        .run_in_sandbox(&["sh", "-c", "test -n \"$AGFS_SESSION\""])
+        .unwrap();
+    assert_eq!(code, 0, "AGFS_SESSION env var should be set in sandbox");
+}
+
+#[test]
+fn run_stderr_output() {
+    let session = AgfsSession::new().expect("session setup");
+    let code = session
+        .run_in_sandbox(&["sh", "-c", "echo err >&2"])
+        .unwrap();
+    assert_eq!(code, 0, "writing to stderr should succeed");
+}
+
+#[test]
+fn run_reads_modified_file() {
+    let session = AgfsSession::new().expect("session setup");
+    let target = session.root.join("hello.txt");
+    // Modify through mount
+    std::fs::write(session.mnt_path("hello.txt"), "modified\n").expect("write");
+
+    // Read inside sandbox — should see modified content
+    let code = session
+        .run_in_sandbox(&["sh", "-c", &format!("grep -q modified {}", target.display())])
+        .unwrap();
+    assert_eq!(code, 0, "sandbox should see modified file content");
+}
+
+#[test]
+fn run_multiple_commands_sequentially() {
+    let session = AgfsSession::new().expect("session setup");
+    let target = session.root.join("seq_test.txt");
+
+    let code1 = session
+        .run_in_sandbox(&["sh", "-c", &format!("echo first > {}", target.display())])
+        .unwrap();
+    assert_eq!(code1, 0);
+
+    let code2 = session
+        .run_in_sandbox(&["sh", "-c", &format!("grep -q first {}", target.display())])
+        .unwrap();
+    assert_eq!(code2, 0, "second command should see first command's output");
+}

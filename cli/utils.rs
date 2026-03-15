@@ -61,24 +61,23 @@ mod tests {
         assert_eq!(to_base_path("/"), PathBuf::from("/"));
     }
 
+    // session_dir tests mutate global state (env vars + cwd), so they
+    // must be serialised.  We use a single test to avoid races with the
+    // default parallel test runner.
     #[test]
-    fn session_dir_from_env() {
+    fn session_dir_env_and_dotdir() {
+        // ── Part 1: AGFS_SESSION env var takes precedence ──
         let dir = "/tmp/agfs-test-session";
-        // SAFETY: test is single-threaded; no other thread reads this var.
+        // SAFETY: no other thread reads this var during this test.
         unsafe { std::env::set_var("AGFS_SESSION", dir); }
         let result = session_dir().unwrap();
         assert_eq!(result, PathBuf::from(dir));
         unsafe { std::env::remove_var("AGFS_SESSION"); }
-    }
 
-    #[test]
-    fn session_dir_from_dotdir() {
-        // SAFETY: test is single-threaded; no other thread reads this var.
-        unsafe { std::env::remove_var("AGFS_SESSION"); }
+        // ── Part 2: falls back to .agfs/ in cwd ──
         let tmp = tempfile::tempdir().unwrap();
         let agfs_dir = tmp.path().join(".agfs");
         std::fs::create_dir(&agfs_dir).unwrap();
-        // Change cwd into the tempdir so session_dir finds .agfs/
         let orig = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = session_dir().unwrap();

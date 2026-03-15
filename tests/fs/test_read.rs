@@ -180,3 +180,44 @@ fn readdir_new_dir_with_files() {
     assert!(entries.contains(&"a.txt".to_string()), "got: {entries:?}");
     assert!(entries.contains(&"b.txt".to_string()), "got: {entries:?}");
 }
+
+#[test]
+fn readdir_many_files() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::create_dir(s.mnt_path("bigdir")).expect("mkdir");
+    for i in 0..100 {
+        fs::write(s.mnt_path(&format!("bigdir/file_{i:03}.txt")), format!("content {i}\n"))
+            .expect("write");
+    }
+
+    let entries: Vec<String> = fs::read_dir(s.mnt_path("bigdir"))
+        .expect("readdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
+
+    assert_eq!(entries.len(), 100, "expected 100 entries, got {}", entries.len());
+    for i in 0..100 {
+        let name = format!("file_{i:03}.txt");
+        assert!(entries.contains(&name), "missing {name} in readdir");
+    }
+}
+
+#[test]
+fn deeply_nested_path() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let mut path = String::new();
+    for i in 0..10 {
+        if !path.is_empty() {
+            path.push('/');
+        }
+        path.push_str(&format!("level_{i}"));
+    }
+    fs::create_dir_all(s.mnt_path(&path)).expect("mkdir -p");
+    let file_path = format!("{path}/deep.txt");
+    fs::write(s.mnt_path(&file_path), "deep content\n").expect("write");
+
+    let content = fs::read_to_string(s.mnt_path(&file_path)).expect("read");
+    assert_eq!(content, "deep content\n");
+}
