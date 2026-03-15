@@ -374,7 +374,7 @@ fn make_config(
     session_root: &Path,
     workload: &dyn Workload,
 ) -> agfs::config::Config {
-    use agfs::config::{Config, MountConfig, Perm};
+    use agfs::config::{Config, Perm};
     let mut rules = BTreeMap::new();
     match scenario {
         Scenario::RulesAllowAll => {
@@ -388,8 +388,9 @@ fn make_config(
         Scenario::Native => {}
     };
     Config {
-        mount: MountConfig { noperm: true, ..Default::default() },
+        permission: false,
         rules,
+        ..Default::default()
     }
 }
 

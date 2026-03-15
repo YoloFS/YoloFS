@@ -127,9 +127,10 @@ fn find_snapshot_index(records: &[Record], name: &str) -> Result<usize> {
     let mut last = None;
     for (i, record) in records.iter().enumerate() {
         if let Record::Snapshot { name: n, .. } = record
-            && n == name {
-                last = Some(i);
-            }
+            && n == name
+        {
+            last = Some(i);
+        }
     }
     last.ok_or_else(|| anyhow::anyhow!("snapshot not found: {name}"))
 }
@@ -427,8 +428,7 @@ impl ChangesState {
                         }
                     } else if new_entry.blob_id.is_none() {
                         changes.push(Change::Deleted(path.clone()));
-                    } else {
-                        let blob_id = new_entry.blob_id.unwrap();
+                    } else if let Some(blob_id) = new_entry.blob_id {
                         let base_file = base.join(path.trim_start_matches('/'));
                         if base_file.exists() {
                             changes.push(Change::Modified {
@@ -927,13 +927,28 @@ mod tests {
         assert_eq!(sections.len(), 3, "{sections:?}");
 
         assert_eq!(sections[0].snapshot, Some((1, "first".into())));
-        assert_eq!(sections[0].changes.len(), 1, "first: {:?}", sections[0].changes);
+        assert_eq!(
+            sections[0].changes.len(),
+            1,
+            "first: {:?}",
+            sections[0].changes
+        );
 
         assert_eq!(sections[1].snapshot, Some((2, "second".into())));
-        assert_eq!(sections[1].changes.len(), 1, "second: {:?}", sections[1].changes);
+        assert_eq!(
+            sections[1].changes.len(),
+            1,
+            "second: {:?}",
+            sections[1].changes
+        );
 
         assert!(sections[2].snapshot.is_none());
-        assert_eq!(sections[2].changes.len(), 1, "trailing: {:?}", sections[2].changes);
+        assert_eq!(
+            sections[2].changes.len(),
+            1,
+            "trailing: {:?}",
+            sections[2].changes
+        );
     }
 
     #[test]
@@ -954,13 +969,17 @@ mod tests {
 
         // First section: x added
         assert_eq!(sections[0].changes.len(), 1);
-        assert!(matches!(&sections[0].changes[0], Change::Added { path, blob_id }
-            if path == "/nonexistent_test_12345/x" && *blob_id == 1));
+        assert!(
+            matches!(&sections[0].changes[0], Change::Added { path, blob_id }
+            if path == "/nonexistent_test_12345/x" && *blob_id == 1)
+        );
 
         // Second section: x modified (blob changed from 1 to 2)
         assert_eq!(sections[1].changes.len(), 1);
-        assert!(matches!(&sections[1].changes[0], Change::Modified { path, blob_id }
-            if path == "/nonexistent_test_12345/x" && *blob_id == 2));
+        assert!(
+            matches!(&sections[1].changes[0], Change::Modified { path, blob_id }
+            if path == "/nonexistent_test_12345/x" && *blob_id == 2)
+        );
     }
 
     #[test]
@@ -1058,8 +1077,18 @@ mod tests {
 
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 2, "{sections:?}");
-        assert_eq!(sections[0].changes.len(), 3, "snap1: {:?}", sections[0].changes);
-        assert_eq!(sections[1].changes.len(), 2, "snap2: {:?}", sections[1].changes);
+        assert_eq!(
+            sections[0].changes.len(),
+            3,
+            "snap1: {:?}",
+            sections[0].changes
+        );
+        assert_eq!(
+            sections[1].changes.len(),
+            2,
+            "snap2: {:?}",
+            sections[1].changes
+        );
     }
 
     #[test]
@@ -1131,21 +1160,26 @@ mod tests {
         assert!(sections.len() >= 2, "{sections:?}");
 
         // snap1: x added
-        assert!(sections[0]
-            .changes
-            .iter()
-            .any(|c| matches!(c, Change::Added { path, .. }
-                if path == "/nonexistent_test_12345/x")));
+        assert!(
+            sections[0]
+                .changes
+                .iter()
+                .any(|c| matches!(c, Change::Added { path, .. }
+                if path == "/nonexistent_test_12345/x"))
+        );
 
         // trailing: x re-added (appears as Added since base doesn't have it)
         let trailing = sections.last().unwrap();
         assert!(trailing.snapshot.is_none() || trailing.snapshot.is_some());
-        let has_x = trailing
-            .changes
-            .iter()
-            .any(|c| matches!(c, Change::Added { path, blob_id }
-                if path == "/nonexistent_test_12345/x" && *blob_id == 2));
-        assert!(has_x, "expected re-add in trailing, got: {:?}", trailing.changes);
+        let has_x = trailing.changes.iter().any(|c| {
+            matches!(c, Change::Added { path, blob_id }
+                if path == "/nonexistent_test_12345/x" && *blob_id == 2)
+        });
+        assert!(
+            has_x,
+            "expected re-add in trailing, got: {:?}",
+            trailing.changes
+        );
     }
 
     #[test]

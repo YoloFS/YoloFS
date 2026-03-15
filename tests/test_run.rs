@@ -88,11 +88,7 @@ fn run_write_file_absolute_path() {
 
     let target = session.root.join("exec_output.txt");
     let code = session
-        .run_in_sandbox(&[
-            "sh",
-            "-c",
-            &format!("echo hello > {}", target.display()),
-        ])
+        .run_in_sandbox(&["sh", "-c", &format!("echo hello > {}", target.display())])
         .unwrap();
     assert_eq!(code, 0, "writing to absolute path should succeed");
 }

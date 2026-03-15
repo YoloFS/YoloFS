@@ -69,7 +69,9 @@ impl FromStr for Perm {
 
 // ── Typed config ─────────────────────────────────────────────────────
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -191,10 +193,7 @@ pub fn load_config() -> Config {
         Ok(p) => p,
         Err(_) => return Config::default(),
     };
-    match Config::load(&cp) {
-        Ok(c) => c,
-        Err(_) => Config::default(),
-    }
+    Config::load(&cp).unwrap_or_default()
 }
 
 /// Read [rules] from agfs.toml and apply via ioctl. Called during mount.
