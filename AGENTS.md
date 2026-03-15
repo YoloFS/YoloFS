@@ -9,8 +9,8 @@
 
 ## Workflow
 
-- Always update documentation (DESIGN.md) before implementation.
-- Always run `cargo test --lib` to verify changes.
+- Always update documentation (`docs/`) before implementation.
+- Always run tests (unit and e2e) to verify changes.
 - To fix a bug, first write a failing test, then fix it.
 - Unless the test is wrong, do not modify existing tests when fixing a bug.
 
@@ -18,13 +18,19 @@
 
 - **kmod/** — Linux kernel module (C). Build with `make kmod`.
 - **cli/** — Userspace CLI (Rust). Build with `make cli`.
-- **tests/** — Integration tests.
-- **DESIGN.md** — Authoritative design document. Keep in sync with code.
+- **tests/** — E2E tests:
+  - `tests/fs/` — black-box filesystem behavior through the mount via `std::fs`.
+  - `tests/cli/` — black-box; run `agfs <subcommand>` and assert on stdout/stderr/exit-code.
+  - `tests/perm/` — black-box permission rule enforcement.
+  - `tests/internals/` — white-box; inspect `.agfs/staging/` and `.agfs/journal` directly.
+- **docs/** — Design documents (architecture.md, cli.md, internals.md, permissions.md, staging.md, benchmark.md). Keep in sync with code.
 
 ## Build & Test
 
+Tests run inside a QEMU VM managed by `vm.py` (repo auto-mounted via 9p).
+
 ```bash
-make build          # build cli + kmod
-make install        # install cli binary + kernel module
-make test           # unit + integration tests
+./vm.py ssh -- make test      # unit + e2e tests
+./vm.py ssh -- make test-unit # unit tests only
+./vm.py ssh -- make test-e2e  # e2e tests only
 ```
