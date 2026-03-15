@@ -6,15 +6,12 @@ KMOD_INSTALL_DIR := /lib/modules/$(shell uname -r)/extra
 
 # ── Build ─────────────────────────────────────────────────────────────
 
-.PHONY: build clean cli kmod
+.PHONY: build clean cli kmod lint fix
 
 build: cli kmod
 
 cli:
 	cargo build --release
-	cargo build --release --bin agfs-bench
-	cargo test --lib --no-run --release
-	cargo test --test e2e --no-run --release
 
 kmod: $(KMOD_OUT)
 
@@ -26,6 +23,14 @@ $(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild)
 clean:
 	cargo clean
 	rm -rf kmod/build
+
+lint:
+	cargo fmt --check
+	cargo clippy -- -D warnings
+
+fix:
+	cargo fmt
+	cargo clippy --fix --allow-dirty
 
 # ── Install ───────────────────────────────────────────────────────────
 
@@ -42,7 +47,7 @@ uninstall:
 
 # ── Test ──────────────────────────────────────────────────────────────
 
-.PHONY: test test-unit test-e2e lint fix
+.PHONY: test test-unit test-e2e
 
 test: test-unit test-e2e
 
@@ -53,15 +58,7 @@ test-e2e: install
 	agfs init
 	cargo test --test e2e -- --test-threads=1
 
-lint:
-	cargo fmt --check
-	cargo clippy -- -D warnings
-
-fix:
-	cargo fmt
-	cargo clippy --fix --allow-dirty
-
-# ── Bench ──────────────────────────────────────────────────────────────
+# ── Bench ─────────────────────────────────────────────────────────────
 
 .PHONY: bench
 
@@ -71,14 +68,7 @@ bench: install
 	./target/release/agfs-bench
 	agfs unload
 
-# ── VM ─────────────────────────────────────────────────────────────
-
-VM_SSH := python3 vm.py ssh --
-
-vm-%: cli kmod
-	$(VM_SSH) $(MAKE) -C $(CURDIR) $*
-
-# ── CI ─────────────────────────────────────────────────────────────────
+# ── CI ────────────────────────────────────────────────────────────────
 
 .PHONY: ci
 

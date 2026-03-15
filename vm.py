@@ -20,7 +20,6 @@ DEFAULT_CPUS = os.cpu_count()
 DEFAULT_SSH_PORT = 2222
 DEFAULT_USER = "ubuntu"
 DEFAULT_PASSWORD = "ubuntu"
-DEFAULT_SHARE_TAG = "host_share"
 
 
 def download_image():
@@ -81,7 +80,7 @@ def _read_ssh_pubkeys():
     return keys
 
 
-def create_seed_iso(user: str, password: str, share_dir: str, force: bool = False):
+def create_seed_iso(user: str, password: str, force: bool = False):
     seed_path = DATA_DIR / SEED_NAME
     if seed_path.exists() and not force:
         print(f"Seed ISO already exists: {seed_path}")
@@ -106,14 +105,6 @@ def create_seed_iso(user: str, password: str, share_dir: str, force: bool = Fals
         f'    plain_text_passwd: "{password}"\n'
         f"    {keys_yaml}\n"
         "ssh_pwauth: true\n"
-    )
-
-    user_data += (
-        "mounts:\n"
-        f'  - [{DEFAULT_SHARE_TAG}, {share_dir}, 9p, "trans=virtio,version=9p2000.L", "0", "0"]\n'
-        "runcmd:\n"
-        f"  - mkdir -p {share_dir}\n"
-        f"  - chown {user}:{user} {share_dir}\n"
     )
 
     meta_data = textwrap.dedent(f"""\
@@ -147,7 +138,6 @@ def run_vm(
     ssh_port: int,
     extra_args: list[str],
     daemonize: bool = False,
-    share_dir: str = "",
 ):
     pidfile = DATA_DIR / "vm.pid"
     if pidfile.exists():
@@ -173,9 +163,6 @@ def run_vm(
         "-net", f"user,hostfwd=tcp::{ssh_port}-:22",
         "-nographic",
     ]
-    cmd += [
-        "-virtfs", f"local,path={share_dir},mount_tag={DEFAULT_SHARE_TAG},security_model=mapped-xattr,id=host_share",
-    ]
     if daemonize:
         pidfile = DATA_DIR / "vm.pid"
         cmd += ["-daemonize", "-pidfile", str(pidfile)]
@@ -183,7 +170,6 @@ def run_vm(
 
     print(f"Starting VM (ssh: ssh -p {ssh_port} {DEFAULT_USER}@localhost)...")
     print(f"  RAM={ram}  CPUs={cpus}")
-    print(f"  Shared: {share_dir}")
     if not daemonize:
         print("Press Ctrl-A X to exit QEMU console.\n")
     os.execvp(cmd[0], cmd)
@@ -212,7 +198,11 @@ def ssh_vm(ssh_port: int, user: str, ssh_args: list[str]):
         "-o", "BatchMode=yes",
         "-p", str(ssh_port),
         f"{user}@localhost",
-    ] + ssh_args
+    ]
+    if ssh_args:
+        cmd += [f"source ~/.profile 2>/dev/null &&"] + ssh_args
+    else:
+        cmd += ["-t", "exec $SHELL -l"]
     os.execvp(cmd[0], cmd)
 
 
@@ -253,9 +243,8 @@ def main():
     elif args.command == "start":
         image_path = download_image()
         disk_path = create_disk(image_path, args.disk_size, force=args.force)
-        share_dir = os.getcwd()
-        seed_path = create_seed_iso(args.user, args.password, force=args.force, share_dir=share_dir)
-        run_vm(disk_path, seed_path, args.ram, args.cpus, args.ssh_port, args.extra, args.daemonize, share_dir=share_dir)
+        seed_path = create_seed_iso(args.user, args.password, force=args.force)
+        run_vm(disk_path, seed_path, args.ram, args.cpus, args.ssh_port, args.extra, args.daemonize)
     elif args.command == "stop":
         stop_vm()
     elif args.command == "ssh":
