@@ -141,6 +141,72 @@ fn readdir_new_dir_with_files() {
     assert!(entries.contains(&"b.txt".to_string()), "got: {entries:?}");
 }
 
+// ── readdir d_type correctness ──
+
+/// DirEntry::file_type() uses d_type from getdents64 on Linux.
+/// Overridden directories must report as directories, not regular files.
+#[test]
+fn readdir_dtype_dir() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::create_dir(s.mnt_path("dtype_dir")).expect("mkdir");
+
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "dtype_dir" {
+            let ft = entry.file_type().expect("file_type");
+            assert!(
+                ft.is_dir(),
+                "readdir d_type for created directory should be dir, got: {ft:?}"
+            );
+            return;
+        }
+    }
+    panic!("dtype_dir not found in readdir");
+}
+
+/// Overridden symlinks must report as symlinks in readdir d_type.
+#[test]
+fn readdir_dtype_symlink() {
+    let s = AgfsSession::new().expect("session setup");
+
+    std::os::unix::fs::symlink("hello.txt", s.mnt_path("dtype_link")).expect("symlink");
+
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "dtype_link" {
+            let ft = entry.file_type().expect("file_type");
+            assert!(
+                ft.is_symlink(),
+                "readdir d_type for created symlink should be symlink, got: {ft:?}"
+            );
+            return;
+        }
+    }
+    panic!("dtype_link not found in readdir");
+}
+
+/// Overridden regular files should still report as regular files.
+#[test]
+fn readdir_dtype_file() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("dtype_file.txt"), "data\n").expect("create");
+
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "dtype_file.txt" {
+            let ft = entry.file_type().expect("file_type");
+            assert!(
+                ft.is_file(),
+                "readdir d_type for created file should be file, got: {ft:?}"
+            );
+            return;
+        }
+    }
+    panic!("dtype_file.txt not found in readdir");
+}
+
 #[test]
 fn readdir_many_files() {
     let s = AgfsSession::new().expect("session setup");

@@ -42,7 +42,9 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	AGFS_I(d_inode(dentry))->snapshot_gen =
 		atomic64_read(&sbi->snapshot_gen);
 	agfs_add_override(dentry->d_parent, dentry->d_name.name,
-			  dentry->d_name.len, id, NULL);
+			  dentry->d_name.len, id, NULL,
+			  S_ISDIR(mode) ? DT_DIR :
+			  S_ISLNK(mode) ? DT_LNK : DT_REG);
 	agfs_journal_append_a(sbi, buf, id);
 
 	revert_creds(old_cred);
@@ -82,7 +84,7 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 
 	err = agfs_add_override(dentry->d_parent,
 				dentry->d_name.name,
-				dentry->d_name.len, 0, NULL);
+				dentry->d_name.len, 0, NULL, DT_UNKNOWN);
 	if (err)
 		goto out;
 
@@ -126,6 +128,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	struct agfs_override *old_ovr = NULL;
 	u64 old_sid = 0;
 	char *old_bp = NULL;
+	unsigned char old_dtype = DT_UNKNOWN;
 	int err;
 
 	if (flags)
@@ -151,6 +154,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 					     old_dentry->d_name.len);
 		if (old_ovr) {
 			old_sid = old_ovr->staging_id;
+			old_dtype = old_ovr->d_type;
 			if (old_ovr->base_path) {
 				old_bp = kstrdup(old_ovr->base_path,
 						 GFP_ATOMIC);
@@ -164,6 +168,10 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		spin_unlock(&old_parent_di->lock);
 	}
 
+	/* Derive d_type from old dentry's inode when no override existed */
+	if (!old_ovr && d_inode(old_dentry))
+		old_dtype = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
+
 	if (old_ovr && !old_sid && !old_bp) {
 		/* Source is deleted — cannot rename */
 		err = -ENOENT;
@@ -173,13 +181,14 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		err = agfs_add_override(new_dentry->d_parent,
 					new_dentry->d_name.name,
 					new_dentry->d_name.len,
-					old_sid, NULL);
+					old_sid, NULL, old_dtype);
 	} else {
 		/* Base file or chained rename — redirect by path */
 		err = agfs_add_override(new_dentry->d_parent,
 					new_dentry->d_name.name,
 					new_dentry->d_name.len,
-					0, old_bp ? old_bp : old_buf);
+					0, old_bp ? old_bp : old_buf,
+					old_dtype);
 	}
 	if (err)
 		goto out;
@@ -187,7 +196,8 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	/* Hide the old name (deleted override) */
 	err = agfs_add_override(old_dentry->d_parent,
 				old_dentry->d_name.name,
-				old_dentry->d_name.len, 0, NULL);
+				old_dentry->d_name.len, 0, NULL,
+				DT_UNKNOWN);
 	if (err)
 		goto out;
 

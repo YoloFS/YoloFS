@@ -90,7 +90,7 @@ struct agfs_override *agfs_find_override(struct dentry *dir_dentry,
  */
 int agfs_add_override(struct dentry *dir_dentry, const char *name,
 		      unsigned int namelen, u64 staging_id,
-		      const char *base_path)
+		      const char *base_path, unsigned char d_type)
 {
 	struct agfs_dentry_info *di = AGFS_D(dir_dentry);
 	struct agfs_override *ovr, *new_ovr = NULL;
@@ -142,6 +142,7 @@ int agfs_add_override(struct dentry *dir_dentry, const char *name,
 		kfree(ovr->base_path);
 		ovr->staging_id = staging_id;
 		ovr->base_path = bp_copy;
+		ovr->d_type = d_type;
 		spin_unlock(&di->lock);
 		kfree(new_ovr);
 		kfree(new_buckets);
@@ -154,6 +155,7 @@ int agfs_add_override(struct dentry *dir_dentry, const char *name,
 	new_ovr->name_len = namelen;
 	new_ovr->staging_id = staging_id;
 	new_ovr->base_path = bp_copy;
+	new_ovr->d_type = d_type;
 	hlist_add_head(&new_ovr->node,
 		       &di->ovr_buckets[agfs_ovr_hash(name, namelen)]);
 	spin_unlock(&di->lock);
@@ -293,7 +295,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	err = agfs_add_override(dentry->d_parent,
 				dentry->d_name.name,
 				dentry->d_name.len,
-				id, NULL);
+				id, NULL, DT_REG);
 	if (err) {
 		path_put(&blob_path);
 		return err;

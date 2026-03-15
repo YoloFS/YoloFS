@@ -360,6 +360,7 @@ struct agfs_nameset_entry {
 	struct hlist_node	node;
 	unsigned int		len;
 	bool			is_deleted;
+	unsigned char		d_type;
 	char			name[];
 };
 
@@ -423,7 +424,7 @@ static bool agfs_nameset_has(struct agfs_nameset *ns,
 
 static int agfs_nameset_add(struct agfs_nameset *ns,
 			    const char *name, unsigned int len,
-			    bool is_deleted)
+			    bool is_deleted, unsigned char d_type)
 {
 	struct agfs_nameset_entry *e;
 	unsigned int idx;
@@ -440,6 +441,7 @@ static int agfs_nameset_add(struct agfs_nameset *ns,
 	e->name[len] = '\0';
 	e->len = len;
 	e->is_deleted = is_deleted;
+	e->d_type = d_type;
 	hlist_add_head(&e->node, &ns->buckets[idx]);
 	ns->count++;
 	return 0;
@@ -524,7 +526,8 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 				bool deleted = !ovr->staging_id && !ovr->base_path;
 
 				err = agfs_nameset_add(ns, ovr->name,
-						       ovr->name_len, deleted);
+						       ovr->name_len, deleted,
+						       ovr->d_type);
 				if (err) {
 					spin_unlock(&di->lock);
 					goto out;
@@ -550,7 +553,7 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 						continue;
 					}
 					if (!dir_emit(ctx, e->name, e->len,
-						      0, DT_REG)) {
+						      0, e->d_type)) {
 						err = 0;
 						goto out;
 					}

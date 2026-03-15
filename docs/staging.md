@@ -58,6 +58,7 @@ struct agfs_override {
     u64               staging_id;  /* >0 = content/dir in staging/<id> */
     char              *base_path;  /* non-NULL = content at this base path */
     unsigned int      name_len;
+    unsigned char     d_type;      /* DT_REG / DT_DIR / DT_LNK for readdir */
     char              name[];
 };
 ```
@@ -185,14 +186,15 @@ agfs_write_iter(kiocb, iov_iter):
 
 agfs_mmap(file, vma):
     // Unified COW / re-COW for writable shared mappings.
-    if inode->snapshot_gen < sbi->snapshot_gen and
-       (vma->vm_flags & (VM_WRITE | VM_SHARED)):
-        down_write(staging_sem)
-        if inode->snapshot_gen < sbi->snapshot_gen:
-            // agfs_do_cow copies from dentry's lower_path (base or blob)
-            ...
-            // inode->snapshot_gen updated inside agfs_do_cow
-        up_write(staging_sem)
+    // Only triggers when the file was opened for writing AND the
+    // mapping is both writable and shared.
+    if (file->f_flags & (O_WRONLY | O_RDWR)) and
+       (vma->vm_flags & (VM_WRITE | VM_SHARED)) == (VM_WRITE | VM_SHARED):
+        // same agfs_cow_if_needed check as write_iter
+        if inode->snapshot_gen < sbi->snapshot_gen or file_info->truncate:
+            down_write(staging_sem)
+            agfs_do_cow(...)
+            up_write(staging_sem)
 
     lower_file = file_info->lower_file
     vma->vm_file = lower_file
@@ -324,15 +326,23 @@ agfs_readdir(dir, ctx):
             dir_emit(ctx, entry.name)
 ```
 
+Override entries are emitted with the correct `d_type` (DT_REG, DT_DIR,
+DT_LNK) stored in each override. The `ino` field is 0 (unknown); callers
+that need the real inode number should `stat()` the entry.
+
 The merged list is built fresh on every `readdir` call — no caching.
 This ensures creates, deletes, and renames between `getdents64` calls
 are always visible. Override hash tables are small, so the cost is negligible.
 
 ## setattr / getattr / fsync
 
-**`setattr`** (e.g., `chmod`, `chown`, `truncate`): If the file is still in
-the base, a COW is triggered first — the base file is copied into a staging
-blob. Then the attribute change is applied to the staging blob.
+**`setattr`** (e.g., `chmod`, `chown`, `truncate`): `ATTR_MODE` is always
+stripped (chmod is a no-op through AgFS). When staging is active,
+`ATTR_SIZE` is stripped — size-only truncation is handled by the deferred
+`O_TRUNC` mechanism in the open/write path, not by setattr. Remaining
+attribute changes (e.g., `chown`, timestamps) propagate directly to the
+lower file (staging blob if COW'd, base file otherwise). No COW is
+triggered by setattr itself.
 
 **`getattr`** (e.g., `stat`): Stats from the resolved path — the staging
 blob if the file has been modified, otherwise the base file.

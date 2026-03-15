@@ -110,6 +110,7 @@ struct agfs_override {
 	u64			staging_id;	/* >0 = content in staging/<id> */
 	char			*base_path;	/* non-NULL = content at base path */
 	unsigned int		name_len;
+	unsigned char		d_type;		/* DT_REG / DT_DIR / DT_LNK for readdir */
 	char			name[];
 };
 
@@ -313,7 +314,7 @@ struct agfs_override *agfs_find_override(struct dentry *dir_dentry,
 					 unsigned int namelen);
 int agfs_add_override(struct dentry *dir_dentry, const char *name,
 		      unsigned int namelen, u64 staging_id,
-		      const char *base_path);
+		      const char *base_path, unsigned char d_type);
 int agfs_staging_alloc(struct agfs_sb_info *sbi, u64 *out_id,
 		      struct path *blob_path, umode_t mode,
 		      const char *symname);
