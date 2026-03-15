@@ -214,8 +214,8 @@ static int agfs_permission(struct mnt_idmap *idmap,
 	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
 	enum agfs_perm perm;
 
-	/* noperm: skip all permission gating (including staging-owned dirs) */
-	if (sbi->noperm)
+	/* Skip all permission gating if disabled */
+	if (!sbi->permission)
 		return 0;
 
 	/* Directories: delegate to lower FS */
@@ -280,7 +280,7 @@ static int agfs_setattr(struct mnt_idmap *idmap,
 		 * to the base file — the staging copy is the data store.
 		 * The VFS triggers this via O_TRUNC after open; the
 		 * staging file is already the correct size. */
-		if (!sbi->nostaging && S_ISREG(inode->i_mode))
+		if (sbi->staging && S_ISREG(inode->i_mode))
 			ia->ia_valid &= ~ATTR_SIZE;
 	}
 

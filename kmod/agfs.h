@@ -137,8 +137,8 @@ struct agfs_sb_info {
 	atomic_t		has_daemon;	/* 1 if a watch daemon is connected */
 	unsigned int		ask_timeout_s;
 	enum agfs_perm		ask_default;
-	bool			noperm;
-	bool			nostaging;
+	bool			permission;
+	bool			staging;
 };
 
 /* ── Per-Inode Info ────────────────────────────────────────────────── */

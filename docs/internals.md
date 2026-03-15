@@ -29,7 +29,7 @@ struct agfs_sb_info {
     atomic_t                has_daemon;      // 1 if a watch daemon is connected
     unsigned int            ask_timeout_s;   // seconds, 0 = infinite
     enum agfs_perm          ask_default;     // fallback on timeout
-    bool                    perm;            // enable permission gating
+    bool                    permission;      // enable permission gating
     bool                    staging;         // enable staging area
 };
 ```

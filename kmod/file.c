@@ -115,13 +115,13 @@ static int agfs_open(struct inode *inode, struct file *file)
 	if (!fi)
 		return -ENOMEM;
 
-	if (S_ISREG(inode->i_mode) && !sbi->noperm) {
+	if (S_ISREG(inode->i_mode) && sbi->permission) {
 		err = agfs_check_open_perm(sbi, dentry, file, buf);
 		if (err)
 			goto out_free;
 	}
 
-	if (S_ISREG(inode->i_mode) && !sbi->nostaging) {
+	if (S_ISREG(inode->i_mode) && sbi->staging) {
 		old_cred = override_creds(sbi->creator_cred);
 		lower_file = agfs_open_staged(sbi, dentry, file, buf);
 		revert_creds(old_cred);
@@ -493,7 +493,7 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 		return -EIO;
 
 	/* No staging → simple passthrough */
-	if (sbi->nostaging || !sbi->staging_dir.dentry) {
+	if (!sbi->staging || !sbi->staging_dir.dentry) {
 		lower_file->f_pos = ctx->pos;
 		err = iterate_dir(lower_file, ctx);
 		file->f_pos = lower_file->f_pos;

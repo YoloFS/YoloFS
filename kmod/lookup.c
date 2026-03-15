@@ -106,7 +106,7 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 
 	/* 1. Check override list on parent directory (§3.4) */
 	parent_di = AGFS_D(dentry->d_parent);
-	if (!sbi->nostaging && parent_di) {
+	if (sbi->staging && parent_di) {
 		struct agfs_override *ovr;
 		u64 sid = 0;
 		char *bp = NULL;

@@ -269,7 +269,7 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		struct agfs_ioc_snapshot snap;
 		u64 gen;
 
-		if (sbi->nostaging)
+		if (!sbi->staging)
 			return -EOPNOTSUPP;
 
 		if (copy_from_user(&snap, (void __user *)arg, sizeof(snap)))

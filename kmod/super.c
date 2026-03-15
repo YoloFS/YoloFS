@@ -114,8 +114,8 @@ static int agfs_show_options(struct seq_file *m, struct dentry *root)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(root->d_sb);
 
-	seq_printf(m, ",permission=%d", !sbi->noperm);
-	seq_printf(m, ",staging=%d", !sbi->nostaging);
+	seq_printf(m, ",permission=%d", sbi->permission);
+	seq_printf(m, ",staging=%d", sbi->staging);
 	seq_printf(m, ",ask_timeout=%u", sbi->ask_timeout_s);
 	seq_printf(m, ",ask_default=%d", sbi->ask_default);
 	return 0;
@@ -154,8 +154,8 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	/* Apply mount options */
 	sbi->ask_timeout_s = opts->ask_timeout_s;
 	sbi->ask_default = opts->ask_default ? opts->ask_default : AGFS_PERM_DENY;
-	sbi->noperm = !opts->permission;
-	sbi->nostaging = !opts->staging;
+	sbi->permission = opts->permission;
+	sbi->staging = opts->staging;
 	sbi->creator_cred = get_cred(current_cred());
 
 	/* Initialize perm gating state */
@@ -217,7 +217,7 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	/* Write the implicit initial snapshot (id=1) so userspace can
 	 * reference the mount-time state by id. */
-	if (!sbi->nostaging)
+	if (sbi->staging)
 		agfs_journal_append_s(sbi, 1, "(initial)");
 
 	/* Create root inode from lower root */
