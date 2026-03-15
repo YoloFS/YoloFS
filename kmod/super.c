@@ -48,6 +48,7 @@ static struct inode *agfs_alloc_inode(struct super_block *sb)
 	i->lower_inode = NULL;
 	i->cached_perm = AGFS_PERM_NONE;
 	i->perm_gen = 0;
+	i->snapshot_gen = 0;
 	return &i->vfs_inode;
 }
 
@@ -172,6 +173,7 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	/* Initialize staging semaphore and blob counter */
 	init_rwsem(&sbi->staging_sem);
 	atomic64_set(&sbi->next_staging_id, 0);
+	atomic64_set(&sbi->snapshot_gen, 1);
 
 	/* Resolve base path ("/") */
 	err = kern_path("/", LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &base_path);

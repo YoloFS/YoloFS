@@ -36,14 +36,17 @@ fn find_kmod() -> Option<std::path::PathBuf> {
 /// Load the agfs kernel module via insmod.
 fn load_kmod() -> Result<()> {
     if is_kmod_loaded() {
-        eprintln!("{} {}", "agfs:".green(), "kernel module already loaded");
+        eprintln!("{} kernel module already loaded", "agfs:".green());
         return Ok(());
     }
 
-    let ko_path = find_kmod()
-        .context("cannot find agfs.ko — build it with `make kmod`")?;
+    let ko_path = find_kmod().context("cannot find agfs.ko — build it with `make kmod`")?;
 
-    eprintln!("{} {}", "agfs: loading kernel module".green(), ko_path.display());
+    eprintln!(
+        "{} {}",
+        "agfs: loading kernel module".green(),
+        ko_path.display()
+    );
 
     let output = Command::new("sudo")
         .args(["insmod", &ko_path.to_string_lossy()])
@@ -61,7 +64,7 @@ fn load_kmod() -> Result<()> {
 /// Unload the agfs kernel module via rmmod.
 fn unload_kmod() -> Result<()> {
     if !is_kmod_loaded() {
-        eprintln!("{} {}", "agfs:".green(), "kernel module not loaded");
+        eprintln!("{} kernel module not loaded", "agfs:".green());
         return Ok(());
     }
 

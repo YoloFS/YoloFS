@@ -1,19 +1,27 @@
 // agfs CLI — status.rs
 //
 // `agfs status` — show staged changes (§3.10).
+// `agfs status --at <name>` — show state at a snapshot (§3.11.4).
 
 use crate::journal::{self, Change};
 use anyhow::Result;
 use colored::Colorize;
 
-pub fn run() -> Result<()> {
-    let agfs = crate::session_dir()?;
+pub fn run(at: Option<&str>) -> Result<()> {
+    let agfs = crate::utils::session_dir()?;
 
-    let changes = journal::resolve(&agfs)?;
+    let changes = match at {
+        Some(name) => journal::resolve_at(&agfs, name)?,
+        None => journal::resolve(&agfs)?,
+    };
 
     if changes.is_empty() {
         println!("{}", "No changes staged.".yellow());
         return Ok(());
+    }
+
+    if let Some(name) = at {
+        println!("{}", format!("State at snapshot \"{name}\":").dimmed());
     }
 
     for change in &changes {
@@ -35,7 +43,7 @@ pub fn run() -> Result<()> {
     let n = changes.len();
     println!(
         "\n{}",
-        format!("{n} staged change{}", if n == 1 { "" } else { "s" }).bold()
+        format!("{n} staged change{}", crate::utils::plural(n)).bold()
     );
     Ok(())
 }

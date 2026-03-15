@@ -1,6 +1,7 @@
 // agfs CLI — commit.rs
 //
 // `agfs commit` — apply staged changes to base (§3.10).
+// `agfs commit --at <name>` — partial commit up to a snapshot (§3.11.4).
 // Journal is resolved first, then changes are applied sequentially.
 
 use crate::ioctl;
@@ -43,8 +44,7 @@ fn apply_blob(agfs_dir: &Path, blob_id: u64, base_path: &Path) -> Result<()> {
         std::os::unix::fs::symlink(&target, base_path)
             .with_context(|| format!("creating symlink at {}", base_path.display()))?;
     } else if meta.is_dir() {
-        fs::create_dir_all(base_path)
-            .with_context(|| format!("mkdir {}", base_path.display()))?;
+        fs::create_dir_all(base_path).with_context(|| format!("mkdir {}", base_path.display()))?;
     } else {
         fs::rename(&blob, base_path)
             .or_else(|_| {
@@ -57,24 +57,11 @@ fn apply_blob(agfs_dir: &Path, blob_id: u64, base_path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn run() -> Result<()> {
-    let agfs = crate::session_dir()?;
-
-    let staging_dir = agfs.join("staging");
+fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<usize> {
     let base = Path::new("/");
-
-    let changes = journal::resolve(&agfs)?;
-
-    if changes.is_empty() {
-        println!("{}", "Nothing to commit.".yellow());
-        return Ok(());
-    }
-
     let mut committed = 0;
 
-    // Journal is resolved and sorted: adds/modifies (parents before children),
-    // then deletes (children before parents).
-    for change in &changes {
+    for change in changes {
         match change {
             Change::Renamed { from, to } => {
                 let base_old = base.join(from.trim_start_matches('/'));
@@ -91,7 +78,7 @@ pub fn run() -> Result<()> {
                     fs::rename(&base_old, &base_new)
                         .with_context(|| format!("rename {from} → {to}"))?;
                 }
-                apply_blob(&agfs, *blob_id, &base_new)?;
+                apply_blob(agfs, *blob_id, &base_new)?;
             }
             Change::Deleted(p) => {
                 let base_file = base.join(p.trim_start_matches('/'));
@@ -104,14 +91,36 @@ pub fn run() -> Result<()> {
                     .with_context(|| format!("deleting {p}"))?;
                 }
             }
-            Change::Added { path, blob_id }
-            | Change::Modified { path, blob_id } => {
+            Change::Added { path, blob_id } | Change::Modified { path, blob_id } => {
                 let base_file = base.join(path.trim_start_matches('/'));
-                apply_blob(&agfs, *blob_id, &base_file)?;
+                apply_blob(agfs, *blob_id, &base_file)?;
             }
         }
         committed += 1;
     }
+
+    Ok(committed)
+}
+
+pub fn run(at: Option<&str>) -> Result<()> {
+    let agfs = crate::utils::session_dir()?;
+
+    match at {
+        Some(name) => run_partial(&agfs, name),
+        None => run_full(&agfs),
+    }
+}
+
+fn run_full(agfs: &Path) -> Result<()> {
+    let staging_dir = agfs.join("staging");
+    let changes = journal::resolve(agfs)?;
+
+    if changes.is_empty() {
+        println!("{}", "Nothing to commit.".yellow());
+        return Ok(());
+    }
+
+    let committed = apply_changes(agfs, &changes)?;
 
     // Clean up staging directory and journal file
     if staging_dir.exists() {
@@ -124,14 +133,57 @@ pub fn run() -> Result<()> {
     }
 
     // Signal kernel to invalidate caches
-    let ctl_file = ioctl::open(&agfs).context("opening ctl for cache invalidation")?;
+    let ctl_file = ioctl::open(agfs).context("opening ctl for cache invalidation")?;
     ioctl::invalidate_cache(&ctl_file).context("invalidating cache")?;
 
     println!(
         "{}",
         format!(
             "Committed {committed} change{}.",
-            if committed == 1 { "" } else { "s" }
+            crate::utils::plural(committed)
+        )
+        .green()
+        .bold()
+    );
+
+    Ok(())
+}
+
+fn run_partial(agfs: &Path, snapshot_name: &str) -> Result<()> {
+    let (changes, remaining) = journal::split_at_snapshot(agfs, snapshot_name)?;
+
+    if changes.is_empty() {
+        println!("{}", "Nothing to commit at this snapshot.".yellow());
+        return Ok(());
+    }
+
+    let committed = apply_changes(agfs, &changes)?;
+
+    // Clean up staging blobs that weren't moved by apply_blob (dirs, symlinks)
+    for change in &changes {
+        if let Some(id) = change.blob_id() {
+            let blob = journal::blob_path(agfs, id);
+            if blob.exists() {
+                let _ = fs::remove_file(&blob);
+            }
+        }
+    }
+
+    // Rewrite journal: keep only records after the snapshot
+    let journal_path = agfs.join("journal");
+    let tmp_path = agfs.join("journal.tmp");
+    journal::write_records(&tmp_path, &remaining)?;
+    fs::rename(&tmp_path, &journal_path).context("replacing journal")?;
+
+    // Signal kernel to invalidate caches (reopens journal fd)
+    let ctl_file = ioctl::open(agfs).context("opening ctl for cache invalidation")?;
+    ioctl::invalidate_cache(&ctl_file).context("invalidating cache")?;
+
+    println!(
+        "{}",
+        format!(
+            "Committed {committed} change{} (up to snapshot \"{snapshot_name}\").",
+            crate::utils::plural(committed)
         )
         .green()
         .bold()

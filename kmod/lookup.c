@@ -136,7 +136,7 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 
 				kfree(bp);
 				old_cred = override_creds(sbi->creator_cred);
-				err = agfs_staging_blob_path(sbi, sid, &blob);
+				err = agfs_staging_path(sbi, sid, &blob);
 				revert_creds(old_cred);
 
 				if (!err) {

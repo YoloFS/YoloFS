@@ -56,11 +56,18 @@ struct agfs_ioc_rule {
 	__u8	_pad[7];
 };
 
+/* userspace ↔ kernel: AGFS_IOC_SNAPSHOT (name in, id out) */
+struct agfs_ioc_snapshot {
+	__u64	id;			/* out: assigned snapshot ID */
+	char	name[AGFS_PATH_MAX];	/* in: human-readable name (NUL-terminated) */
+};
+
 #define AGFS_IOC_RULE_ADD	_IOW('A', 10, struct agfs_ioc_rule)
 #define AGFS_IOC_RULE_REMOVE	_IOW('A', 11, struct agfs_ioc_rule)
 #define AGFS_IOC_CACHE_INVAL	_IO('A', 20)
 #define AGFS_IOC_GET_REQUEST	_IOR('A', 30, struct agfs_ctl_request)
 #define AGFS_IOC_PUT_RESPONSE	_IOW('A', 31, struct agfs_ctl_response)
+#define AGFS_IOC_SNAPSHOT	_IOWR('A', 40, struct agfs_ioc_snapshot)
 
 /* ── Control-File Protocol (binary, fixed-size) ────────────────────── */
 
@@ -118,6 +125,7 @@ struct agfs_sb_info {
 	struct file		*journal_file;	/* ./agfs/journal (append-only, opened lazily) */
 	struct rw_semaphore	staging_sem;	/* protects staging + journal writes */
 	atomic64_t		next_staging_id;/* counter for staging blob IDs */
+	atomic64_t		snapshot_gen;	/* bumped on each snapshot; triggers re-COW */
 
 	/* Permission gating */
 	atomic64_t		perm_gen;
@@ -138,6 +146,7 @@ struct agfs_inode_info {
 	struct inode		*lower_inode;
 	enum agfs_perm		cached_perm;
 	u64			perm_gen;
+	u64			snapshot_gen;	/* sbi->snapshot_gen at last COW; 0 = no COW yet */
 	struct inode		vfs_inode;	/* must be last for container_of */
 };
 
@@ -161,8 +170,6 @@ struct agfs_ctl_private {
 
 struct agfs_file_info {
 	struct file		*lower_file;
-	bool			needs_cow;
-	bool			is_staging;
 	const struct vm_operations_struct *lower_vm_ops;
 	struct agfs_ctl_private	*ctl;	/* non-NULL if this fd is a ctl daemon */
 };
@@ -292,7 +299,7 @@ int agfs_interpose(struct dentry *dentry, struct super_block *sb,
 int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen);
 int agfs_base_path(struct agfs_sb_info *sbi, const char *relpath,
 		   struct path *result);
-int agfs_staging_blob_path(struct agfs_sb_info *sbi, u64 id,
+int agfs_staging_path(struct agfs_sb_info *sbi, u64 id,
 			   struct path *result);
 struct agfs_override *agfs_find_override(struct dentry *dir_dentry,
 					 const char *name,
@@ -303,7 +310,7 @@ int agfs_add_override(struct dentry *dir_dentry, const char *name,
 int agfs_staging_alloc(struct agfs_sb_info *sbi, u64 *out_id,
 		      struct path *blob_path, umode_t mode,
 		      const char *symname);
-int agfs_do_cow_blob(struct agfs_sb_info *sbi, struct dentry *dentry,
+int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 		     struct file **new_file, int flags);
 
 /* journal.c */
@@ -312,6 +319,7 @@ int agfs_journal_append_a(struct agfs_sb_info *sbi, const char *path, u64 id);
 int agfs_journal_append_d(struct agfs_sb_info *sbi, const char *path);
 int agfs_journal_append_r(struct agfs_sb_info *sbi, const char *old_path,
 			  const char *new_path);
+int agfs_journal_append_s(struct agfs_sb_info *sbi, u64 id, const char *name);
 
 /* perm.c */
 static inline void agfs_perm_request_release(struct kref *kref)

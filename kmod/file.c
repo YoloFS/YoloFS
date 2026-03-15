@@ -109,23 +109,23 @@ static int agfs_open(struct inode *inode, struct file *file)
 				goto out_free;
 			}
 
-			/* Update override + dentry + journal */
+			/* Update override + dentry + journal + inode gen */
 			agfs_add_override(dentry->d_parent,
 					  dentry->d_name.name,
 					  dentry->d_name.len, id, NULL);
 			agfs_set_lower_path(dentry, &blob_path);
 			agfs_journal_append_a(sbi, buf, id);
+			AGFS_I(inode)->snapshot_gen =
+				atomic64_read(&sbi->snapshot_gen);
 
 			up_write(&sbi->staging_sem);
 
-			fi->needs_cow = false;
-			fi->is_staging = true;
 			file->f_flags &= ~O_TRUNC;
 		} else if (file->f_flags & (O_WRONLY | O_RDWR)) {
 			if (sid) {
 				/* Already in staging — open the blob */
 				struct path blob;
-				err = agfs_staging_blob_path(sbi, sid, &blob);
+				err = agfs_staging_path(sbi, sid, &blob);
 				if (err)
 					goto out_free;
 				lower_file = dentry_open(&blob,
@@ -137,8 +137,6 @@ static int agfs_open(struct inode *inode, struct file *file)
 					lower_file = NULL;
 					goto out_free;
 				}
-				fi->needs_cow = false;
-				fi->is_staging = true;
 			} else {
 				/* Base file — open read-only, COW on first write */
 				struct path lower_path;
@@ -152,7 +150,6 @@ static int agfs_open(struct inode *inode, struct file *file)
 					lower_file = NULL;
 					goto out_free;
 				}
-				fi->needs_cow = true;
 			}
 		} else {
 			/* Read-only: open the resolved lower file */
@@ -167,7 +164,6 @@ static int agfs_open(struct inode *inode, struct file *file)
 				lower_file = NULL;
 				goto out_free;
 			}
-			fi->needs_cow = false;
 		}
 
 		revert_creds(old_cred);
@@ -187,7 +183,6 @@ static int agfs_open(struct inode *inode, struct file *file)
 			lower_file = NULL;
 			goto out_free;
 		}
-		fi->needs_cow = false;
 	}
 
 done:
@@ -200,6 +195,44 @@ out_free:
 		revert_creds(old_cred);
 	kfree(fi);
 	return err;
+}
+
+/*
+ * Trigger COW / re-COW if the inode's snapshot_gen is behind the
+ * superblock's.  Returns 0 on success (or if no COW was needed).
+ * Caller must NOT hold staging_sem.
+ */
+static int agfs_cow_if_needed(struct file *file)
+{
+	struct agfs_file_info *fi = AGFS_F(file);
+	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
+	struct agfs_inode_info *ii = AGFS_I(file_inode(file));
+	const struct cred *old_cred;
+	struct file *new_file = NULL;
+	int err;
+
+	if (ii->snapshot_gen >= (u64)atomic64_read(&sbi->snapshot_gen))
+		return 0;
+
+	old_cred = override_creds(sbi->creator_cred);
+	down_write(&sbi->staging_sem);
+	if (ii->snapshot_gen <
+	    (u64)atomic64_read(&sbi->snapshot_gen)) {
+		err = agfs_do_cow(sbi, file->f_path.dentry,
+				       &new_file,
+				       file->f_flags & ~O_TRUNC);
+		if (err) {
+			up_write(&sbi->staging_sem);
+			revert_creds(old_cred);
+			return err;
+		}
+		fput(fi->lower_file);
+		fi->lower_file = new_file;
+		/* inode->snapshot_gen updated inside agfs_do_cow */
+	}
+	up_write(&sbi->staging_sem);
+	revert_creds(old_cred);
+	return 0;
 }
 
 /* ── read_iter ─────────────────────────────────────────────────────── */
@@ -232,41 +265,15 @@ static ssize_t agfs_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
 	struct file *file = iocb->ki_filp;
 	struct agfs_file_info *fi = AGFS_F(file);
-	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
 	struct file *lower_file;
 	ssize_t ret;
+	int err;
 
-	/* Lazy COW: copy base → staging blob on first write */
-	if (fi->needs_cow) {
-		const struct cred *old_cred;
-		struct file *new_file = NULL;
-		int err;
+	err = agfs_cow_if_needed(file);
+	if (err)
+		return err;
 
-		old_cred = override_creds(sbi->creator_cred);
-		down_write(&sbi->staging_sem);
-		/* Re-check after acquiring lock (another thread may have COW'd) */
-		if (!fi->needs_cow) {
-			up_write(&sbi->staging_sem);
-			revert_creds(old_cred);
-			goto cow_done;
-		}
-		err = agfs_do_cow_blob(sbi, file->f_path.dentry, &new_file,
-				       file->f_flags & ~O_TRUNC);
-		if (err) {
-			up_write(&sbi->staging_sem);
-			revert_creds(old_cred);
-			return err;
-		}
-
-		fput(fi->lower_file);
-		fi->lower_file = new_file;
-		fi->needs_cow = false;
-		fi->is_staging = true;
-		up_write(&sbi->staging_sem);
-		revert_creds(old_cred);
-	}
-
-cow_done:
+	/* Write to staging blob */
 	lower_file = fi->lower_file;
 	if (!lower_file)
 		return -EIO;
@@ -291,46 +298,21 @@ cow_done:
 static int agfs_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct agfs_file_info *fi = AGFS_F(file);
-	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
 	struct file *lower_file;
 	int err;
 
 	/*
-	 * Writable shared mapping on a file that still needs COW:
-	 * the lower file was opened O_RDONLY, so the kernel would
-	 * reject mmap(PROT_WRITE, MAP_SHARED) with -EACCES.
-	 * Trigger COW now to get a writable staging file.
+	 * Writable shared mapping needs a writable lower file.
+	 * Trigger COW / re-COW only if the file was opened for writing.
 	 */
-	if (fi->needs_cow &&
+	if ((file->f_flags & (O_WRONLY | O_RDWR)) &&
 	    (vma->vm_flags & (VM_WRITE | VM_SHARED)) ==
 	    (VM_WRITE | VM_SHARED)) {
-		const struct cred *old_cred;
-		struct file *new_file = NULL;
-
-		old_cred = override_creds(sbi->creator_cred);
-		down_write(&sbi->staging_sem);
-		if (!fi->needs_cow) {
-			up_write(&sbi->staging_sem);
-			revert_creds(old_cred);
-			goto mmap_ready;
-		}
-		err = agfs_do_cow_blob(sbi, file->f_path.dentry, &new_file,
-				       file->f_flags & ~O_TRUNC);
-		if (err) {
-			up_write(&sbi->staging_sem);
-			revert_creds(old_cred);
+		err = agfs_cow_if_needed(file);
+		if (err)
 			return err;
-		}
-
-		fput(fi->lower_file);
-		fi->lower_file = new_file;
-		fi->needs_cow = false;
-		fi->is_staging = true;
-		up_write(&sbi->staging_sem);
-		revert_creds(old_cred);
 	}
 
-mmap_ready:
 	lower_file = fi->lower_file;
 	if (!lower_file)
 		return -EIO;
@@ -361,8 +343,8 @@ static int agfs_fsync(struct file *file, loff_t start, loff_t end,
 	if (!lower_file)
 		return -EIO;
 
-	/* Staging files are ephemeral — no point fsyncing them */
-	if (fi->is_staging)
+	/* COW'd files live in staging and are ephemeral — skip fsync */
+	if (AGFS_I(file_inode(file))->snapshot_gen > 0)
 		return 0;
 
 	return vfs_fsync_range(lower_file, start, end, datasync);

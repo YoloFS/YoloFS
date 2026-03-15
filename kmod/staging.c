@@ -43,10 +43,10 @@ int agfs_base_path(struct agfs_sb_info *sbi, const char *relpath,
 	return resolve_subpath(&sbi->base_path, relpath, result);
 }
 
-int agfs_staging_blob_path(struct agfs_sb_info *sbi, u64 id,
+int agfs_staging_path(struct agfs_sb_info *sbi, u64 id,
 			   struct path *result)
 {
-	char name[20];
+	char name[21];
 
 	if (!sbi->staging_dir.dentry)
 		return -ENOENT;
@@ -143,7 +143,7 @@ int agfs_staging_alloc(struct agfs_sb_info *sbi, u64 *out_id,
 		       struct path *blob_path, umode_t mode,
 		       const char *symname)
 {
-	char name[20];
+	char name[21];
 	struct dentry *blob_dentry;
 	struct inode *dir;
 	u64 id;
@@ -188,7 +188,7 @@ int agfs_staging_alloc(struct agfs_sb_info *sbi, u64 *out_id,
 
 /* ── Copy-on-Write to Staging Blob ─────────────────────────────────── */
 
-int agfs_do_cow_blob(struct agfs_sb_info *sbi, struct dentry *dentry,
+int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 		     struct file **new_file, int flags)
 {
 	struct path blob_path;
@@ -266,6 +266,10 @@ int agfs_do_cow_blob(struct agfs_sb_info *sbi, struct dentry *dentry,
 	/* Update dentry lower_path to point at the blob */
 	agfs_set_lower_path(dentry, &blob_path);
 
+	/* Track COW generation on inode for new handle initialization */
+	AGFS_I(d_inode(dentry))->snapshot_gen =
+		atomic64_read(&sbi->snapshot_gen);
+
 	/* Append journal record (best-effort — override is already set) */
 	{
 		char buf[AGFS_PATH_MAX];
@@ -279,7 +283,7 @@ int agfs_do_cow_blob(struct agfs_sb_info *sbi, struct dentry *dentry,
 	if (new_file) {
 		struct path reopen;
 
-		err = agfs_staging_blob_path(sbi, id, &reopen);
+		err = agfs_staging_path(sbi, id, &reopen);
 		if (!err) {
 			*new_file = dentry_open(&reopen, flags,
 						current_cred());

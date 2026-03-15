@@ -1,9 +1,10 @@
 // agfs CLI — exec.rs
 //
-// `agfs exec [-- cmd]` — chroot into .agfs/mnt and exec a command,
+// `agfs exec [--snapshot] [-- cmd]` — chroot into .agfs/mnt and exec a command,
 // preserving the caller's working directory.
 
-use anyhow::{bail, Context, Result};
+use crate::{config, snapshot};
+use anyhow::{Context, Result, bail};
 use colored::Colorize;
 use std::env;
 use std::os::unix::process::CommandExt;
@@ -31,13 +32,27 @@ unsafe fn chroot_pre_exec(mnt: &Path, cwd: &Path) -> Result<(), std::io::Error> 
 
 /// Spawn a command in the sandbox and wait for it to exit.
 /// Returns the process exit code (0 = success).
-pub fn run(exec_args: &[String]) -> Result<u8> {
-    let agfs_dir = crate::session_dir()?;
+pub fn run(exec_args: &[String], do_snapshot: bool) -> Result<u8> {
+    let agfs_dir = crate::utils::session_dir()?;
     let mnt = agfs_dir.join("mnt");
     let cwd = env::current_dir().context("getting cwd")?;
 
     if !mnt.exists() {
         bail!("mount point .agfs/mnt/ does not exist — run `agfs mount` first");
+    }
+
+    // Auto-snapshot if requested via flag or config
+    let should_snapshot = do_snapshot || config::load_exec_config().auto_snapshot;
+    if should_snapshot {
+        let snap_name = if exec_args.is_empty() {
+            "sh".to_string()
+        } else {
+            exec_args.join(" ")
+        };
+        // Snapshot may fail (e.g., no prior staging), which is non-fatal
+        if let Err(e) = snapshot::create(Some(&snap_name)) {
+            eprintln!("{} {:#}", "agfs: snapshot failed:".yellow(), e);
+        }
     }
 
     let (cmd, args) = if exec_args.is_empty() {

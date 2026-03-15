@@ -34,6 +34,7 @@ nix::ioctl_write_ptr!(ioctl_rule_remove, b'A', 11, AgfsIocRule);
 nix::ioctl_none!(ioctl_cache_inval, b'A', 20);
 nix::ioctl_read!(ioctl_get_request, b'A', 30, AgfsCtlRequest);
 nix::ioctl_write_ptr!(ioctl_put_response, b'A', 31, AgfsCtlResponse);
+nix::ioctl_readwrite!(ioctl_snapshot, b'A', 40, AgfsIocSnapshot);
 
 /// Matches `struct agfs_ioc_rule` in the kernel.
 #[repr(C)]
@@ -62,6 +63,13 @@ pub struct AgfsCtlResponse {
     pub _pad: [u8; 7],
 }
 
+/// Matches `struct agfs_ioc_snapshot` in the kernel.
+#[repr(C)]
+pub struct AgfsIocSnapshot {
+    pub id: u64,
+    pub name: [u8; AGFS_PATH_MAX],
+}
+
 impl AgfsIocRule {
     pub fn new(path: &str, perm: u8) -> Self {
         let mut rule = Self {
@@ -78,7 +86,11 @@ impl AgfsIocRule {
 
 impl AgfsCtlRequest {
     pub fn path_str(&self) -> &str {
-        let end = self.path.iter().position(|&b| b == 0).unwrap_or(AGFS_PATH_MAX);
+        let end = self
+            .path
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(AGFS_PATH_MAX);
         std::str::from_utf8(&self.path[..end]).unwrap_or("<invalid>")
     }
 
@@ -117,8 +129,7 @@ pub fn write_response(fd: &File, id: u64, decision: u8) -> Result<()> {
         decision,
         _pad: [0u8; 7],
     };
-    unsafe { ioctl_put_response(fd.as_raw_fd(), &resp) }
-        .context("ioctl PUT_RESPONSE")?;
+    unsafe { ioctl_put_response(fd.as_raw_fd(), &resp) }.context("ioctl PUT_RESPONSE")?;
     Ok(())
 }
 
@@ -149,9 +160,21 @@ pub fn remove_rule(fd: &File, path: &str) -> Result<()> {
 
 /// Send AGFS_IOC_CACHE_INVAL ioctl.
 pub fn invalidate_cache(fd: &File) -> Result<()> {
-    unsafe { ioctl_cache_inval(fd.as_raw_fd()) }
-        .context("ioctl CACHE_INVAL")?;
+    unsafe { ioctl_cache_inval(fd.as_raw_fd()) }.context("ioctl CACHE_INVAL")?;
     Ok(())
+}
+
+/// Send AGFS_IOC_SNAPSHOT ioctl. Returns the assigned snapshot ID.
+pub fn create_snapshot(fd: &File, name: &str) -> Result<u64> {
+    let mut snap = AgfsIocSnapshot {
+        id: 0,
+        name: [0u8; AGFS_PATH_MAX],
+    };
+    let bytes = name.as_bytes();
+    let len = bytes.len().min(AGFS_PATH_MAX - 1);
+    snap.name[..len].copy_from_slice(&bytes[..len]);
+    unsafe { ioctl_snapshot(fd.as_raw_fd(), &mut snap) }.context("ioctl SNAPSHOT")?;
+    Ok(snap.id)
 }
 
 #[cfg(test)]
@@ -191,7 +214,9 @@ mod tests {
     #[test]
     fn ctl_request_op_str() {
         let mk = |op| AgfsCtlRequest {
-            id: 0, op, pid: 0,
+            id: 0,
+            op,
+            pid: 0,
             comm: [0u8; 16],
             path: [0u8; AGFS_PATH_MAX],
         };
@@ -207,5 +232,6 @@ mod tests {
         assert_eq!(size_of::<AgfsCtlRequest>(), 288);
         assert_eq!(size_of::<AgfsCtlResponse>(), 16);
         assert_eq!(size_of::<AgfsIocRule>(), 264);
+        assert_eq!(size_of::<AgfsIocSnapshot>(), 264);
     }
 }

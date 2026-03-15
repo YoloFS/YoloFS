@@ -1,15 +1,22 @@
 // agfs CLI — main.rs
 
-use agfs::{abort, commit, config, diff, exec, init, mount, status, watch};
+use agfs::{abort, commit, config, diff, exec, init, mount, snapshot, status, watch};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
 
 #[derive(Parser)]
-#[command(name = "agfs", about = "Agentic filesystem — staging-commit + permission gating")]
+#[command(
+    name = "agfs",
+    about = "Agentic filesystem — staging-commit + permission gating"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+
+    /// Snapshot before running the command
+    #[arg(long)]
+    snapshot: bool,
 
     /// Command to run inside the sandbox (after --)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -32,18 +39,43 @@ enum Command {
     Remount,
     /// Execute a command inside the sandbox (requires existing mount)
     Exec {
+        /// Snapshot before executing the command
+        #[arg(long)]
+        snapshot: bool,
+
         /// Command to run (after --)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         exec_args: Vec<String>,
     },
     /// Show staged changes
-    Status,
+    Status {
+        /// Show state at a named snapshot
+        #[arg(long)]
+        at: Option<String>,
+    },
     /// Git-style diff of staged vs base
-    Diff,
+    Diff {
+        /// Diff changes since a named snapshot
+        #[arg(long)]
+        from: Option<String>,
+    },
     /// Apply staged changes to base
-    Commit,
+    Commit {
+        /// Commit only changes up to a named snapshot
+        #[arg(long)]
+        at: Option<String>,
+    },
     /// Discard staged changes
     Abort,
+    /// Create or list snapshots
+    Snapshot {
+        #[command(subcommand)]
+        action: Option<SnapshotAction>,
+
+        /// Snapshot name (when not using a subcommand)
+        #[arg(trailing_var_arg = true)]
+        name: Vec<String>,
+    },
     /// Manage permission rules
     Rule {
         #[command(subcommand)]
@@ -73,6 +105,12 @@ enum RuleAction {
     },
 }
 
+#[derive(Subcommand)]
+enum SnapshotAction {
+    /// List all snapshots
+    List,
+}
+
 fn main() -> ! {
     let code = match run_cli() {
         Ok(code) => code,
@@ -88,17 +126,33 @@ fn run_cli() -> anyhow::Result<u8> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
+        Some(Command::Exec {
+            exec_args,
+            snapshot,
+        }) => return exec::run(&exec_args, snapshot),
         Some(Command::Init) => init::init()?,
         Some(Command::Reinit) => init::reinit()?,
         Some(Command::Deinit) => init::deinit()?,
         Some(Command::Mount) => mount::mount()?,
         Some(Command::Unmount) => mount::unmount()?,
         Some(Command::Remount) => mount::remount()?,
-        Some(Command::Status) => status::run()?,
-        Some(Command::Diff) => { diff::run()?; }
-        Some(Command::Commit) => commit::run()?,
+        Some(Command::Status { at }) => status::run(at.as_deref())?,
+        Some(Command::Diff { from }) => {
+            diff::run(from.as_deref())?;
+        }
+        Some(Command::Commit { at }) => commit::run(at.as_deref())?,
         Some(Command::Abort) => abort::run()?,
+        Some(Command::Snapshot { action, name }) => match action {
+            Some(SnapshotAction::List) => snapshot::list()?,
+            None => {
+                let snap_name = if name.is_empty() {
+                    None
+                } else {
+                    Some(name.join(" "))
+                };
+                snapshot::create(snap_name.as_deref())?;
+            }
+        },
         Some(Command::Rule { action }) => match action {
             RuleAction::Add { path, perm } => config::add_rule(&path, &perm)?,
             RuleAction::Remove { path } => config::remove_rule(&path)?,
@@ -110,7 +164,7 @@ fn run_cli() -> anyhow::Result<u8> {
                 Cli::parse_from(["agfs", "--help"]);
                 unreachable!();
             }
-            return run(&cli.exec_args);
+            return run(&cli.exec_args, cli.snapshot);
         }
     }
 
@@ -118,7 +172,7 @@ fn run_cli() -> anyhow::Result<u8> {
 }
 
 /// Full workflow: mount (if needed) → watch → exec → diff → commit/abort/stage.
-fn run(exec_args: &[String]) -> anyhow::Result<u8> {
+fn run(exec_args: &[String], do_snapshot: bool) -> anyhow::Result<u8> {
     // 1. Mount if not already mounted
     mount::mount()?;
 
@@ -126,10 +180,10 @@ fn run(exec_args: &[String]) -> anyhow::Result<u8> {
     watch::run_background()?;
 
     // 3. Exec (spawn + wait) — continue to diff even if command fails
-    let cmd_exit_code = exec::run(exec_args).unwrap_or(1);
+    let cmd_exit_code = exec::run(exec_args, do_snapshot).unwrap_or(1);
 
     // 4. Show diff
-    let has_changes = diff::run()?;
+    let has_changes = diff::run(None)?;
 
     if !has_changes {
         return Ok(cmd_exit_code);
@@ -146,7 +200,7 @@ fn run(exec_args: &[String]) -> anyhow::Result<u8> {
     io::stdin().lock().read_line(&mut line)?;
 
     match line.trim().to_ascii_lowercase().as_str() {
-        "c" | "commit" => commit::run()?,
+        "c" | "commit" => commit::run(None)?,
         "a" | "abort" => abort::run()?,
         _ => {
             eprintln!(

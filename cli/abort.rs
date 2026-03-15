@@ -8,23 +8,20 @@ use colored::Colorize;
 use std::fs;
 
 pub fn run() -> Result<()> {
-    let agfs = crate::session_dir()?;
+    let agfs = crate::utils::session_dir()?;
 
     let staging_dir = agfs.join("staging");
     let journal_path = agfs.join("journal");
 
     // rm -rf staging/
     if staging_dir.exists() {
-        fs::remove_dir_all(&staging_dir)
-            .context("removing staging directory")?;
-        fs::create_dir_all(&staging_dir)
-            .context("recreating staging directory")?;
+        fs::remove_dir_all(&staging_dir).context("removing staging directory")?;
+        fs::create_dir_all(&staging_dir).context("recreating staging directory")?;
     }
 
     // rm journal
     if journal_path.exists() {
-        fs::remove_file(&journal_path)
-            .context("removing journal file")?;
+        fs::remove_file(&journal_path).context("removing journal file")?;
     }
 
     // Signal kernel to invalidate caches

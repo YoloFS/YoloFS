@@ -14,8 +14,8 @@ use crate::config::Perm;
 use crate::ioctl::{self, AgfsCtlRequest};
 use anyhow::{Context, Result};
 use colored::Colorize;
-use nix::sys::signal::{signal, SigHandler, Signal};
-use nix::unistd::{getpgrp, tcgetpgrp, tcsetpgrp, Pid};
+use nix::sys::signal::{SigHandler, Signal, signal};
+use nix::unistd::{Pid, getpgrp, tcgetpgrp, tcsetpgrp};
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::OpenOptionsExt;
 
@@ -90,7 +90,8 @@ fn prompt_decision(req: &AgfsCtlRequest) -> Perm {
     io::stderr().flush().ok();
 
     let mut line = String::new();
-    let decision = if io::stdin().lock().read_line(&mut line).is_ok() {
+    // TTY is released automatically when _guard is dropped.
+    if io::stdin().lock().read_line(&mut line).is_ok() {
         let trimmed = line.trim();
         match trimmed {
             "" | "d" | "deny" => Perm::Deny,
@@ -105,15 +106,12 @@ fn prompt_decision(req: &AgfsCtlRequest) -> Perm {
         }
     } else {
         Perm::Deny
-    };
-
-    // TTY is released automatically when _guard is dropped.
-    decision
+    }
 }
 
 /// Interactive watch — blocks on ioctl read for each ask request.
 pub fn run(allow_all: bool) -> Result<()> {
-    let agfs = crate::session_dir()?;
+    let agfs = crate::utils::session_dir()?;
 
     let ctl_file = ioctl::open(&agfs)?;
     if allow_all {
@@ -159,11 +157,7 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
         } else {
             // claim_tty/release_tty is not needed here because TOSTOP
             // is normally unset, so background stderr writes succeed.
-            eprintln!(
-                "  → {} (req #{})",
-                decision,
-                req.id
-            );
+            eprintln!("  → {} (req #{})", decision, req.id);
         }
     }
 }
@@ -172,7 +166,7 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
 /// The thread runs until the process exits (it cannot be stopped early
 /// because it blocks on a kernel ioctl).
 pub fn run_background() -> Result<()> {
-    let agfs = crate::session_dir()?;
+    let agfs = crate::utils::session_dir()?;
 
     let ctl_file = std::fs::OpenOptions::new()
         .read(true)

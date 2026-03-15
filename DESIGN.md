@@ -53,6 +53,7 @@ either can be disabled at mount time.
  │    → AGFS_IOC_PUT_RESPONSE: post decision           │
  │    → AGFS_IOC_RULE_ADD/REMOVE: manage rules      │
  │    → AGFS_IOC_CACHE_INVAL: invalidate caches     │
+ │    → AGFS_IOC_SNAPSHOT: create snapshot           │
  └──────────────────────────────────────────────────┘
 ```
 
@@ -204,10 +205,12 @@ The backing file (staging blob or base file) is determined at **lookup**
 time via the override list. `open()` receives a dentry already pointing at
 the right lower inode.
 
-All staging publications (installing an override, updating the dentry's lower
-path, and appending the journal record) are serialized under `staging_sem` and
-must succeed as a unit. If the journal append fails, the write/open fails and
-the previous mapping remains authoritative.
+Staging publications that involve COW, re-COW, truncate-open, or rename
+(installing an override, updating the dentry's lower path, and appending the
+journal record) are serialized under `staging_sem` and must succeed as a unit.
+Create/mkdir/symlink/unlink/rmdir are already serialized by the VFS
+`inode_lock(dir)` and do not need `staging_sem`. If the journal append fails,
+the write/open fails and the previous mapping remains authoritative.
 
 ```
 agfs_open(inode, file):
@@ -219,53 +222,49 @@ agfs_open(inode, file):
         add_override(parent, name, staging_id=id)
         journal(A, path, id)
         swap dentry lower path to staging/<id>
+        inode->snapshot_gen = sbi->snapshot_gen
         up_write(staging_sem)
-        file_info->needs_cow = false
 
     elif file->f_flags & (O_WRONLY | O_RDWR):
         ovr = find_override(parent, name)
         if ovr and ovr.staging_id:
             // Already in staging from a prior write.
             file_info->lower_file = open(staging/<id>, file->f_flags)
-            file_info->needs_cow = false
         else:
             // Base file. Open read-only; first write triggers COW.
             file_info->lower_file = open(base_file, O_RDONLY)
-            file_info->needs_cow = true
     else:
         // Read-only: open the lower file the dentry points to.
         file_info->lower_file = open(lower_file, O_RDONLY)
-        file_info->needs_cow = false
 
 agfs_write_iter(kiocb, iov_iter):
-    if file_info->needs_cow:
-        // First write: copy base → new staging blob, publish atomically.
-        id = next_staging_id++
-        copy base_content → staging/<id>
+    // Unified COW / re-COW. The check is purely per-inode:
+    //   inode->snapshot_gen == 0  → base file, needs base→staging COW
+    //   inode->snapshot_gen < sbi → staging blob is stale, needs re-COW
+    // agfs_do_cow copies from the dentry's current lower_path
+    // (base or staging blob) to a fresh blob.
+    if inode->snapshot_gen < sbi->snapshot_gen:
         down_write(staging_sem)
-        add_override(parent, name, staging_id=id)
-        journal(A, path, id)
-        fput(file_info->lower_file)
-        file_info->lower_file = open(staging/<id>, file->f_flags)
+        if inode->snapshot_gen < sbi->snapshot_gen:
+            new_file = agfs_do_cow(sbi, dentry, flags)
+            fput(file_info->lower_file)
+            file_info->lower_file = new_file
+            // inode->snapshot_gen updated inside agfs_do_cow
         up_write(staging_sem)
-        file_info->needs_cow = false
 
     // Write to staging blob.
     lower_file->f_op->write_iter(...)
 
 agfs_mmap(file, vma):
-    if file_info->needs_cow and (vma->vm_flags & (VM_WRITE | VM_SHARED)):
-        // Writable shared mapping but lower file is still read-only.
-        // Trigger COW now so the lower file is writable before mmap.
-        id = next_staging_id++
-        copy base_content → staging/<id>
+    // Unified COW / re-COW for writable shared mappings.
+    if inode->snapshot_gen < sbi->snapshot_gen and
+       (vma->vm_flags & (VM_WRITE | VM_SHARED)):
         down_write(staging_sem)
-        add_override(parent, name, staging_id=id)
-        journal(A, path, id)
-        fput(file_info->lower_file)
-        file_info->lower_file = open(staging/<id>, file->f_flags)
+        if inode->snapshot_gen < sbi->snapshot_gen:
+            // agfs_do_cow copies from dentry's lower_path (base or blob)
+            ...
+            // inode->snapshot_gen updated inside agfs_do_cow
         up_write(staging_sem)
-        file_info->needs_cow = false
 
     lower_file = file_info->lower_file
     vma->vm_file = lower_file
@@ -405,12 +404,15 @@ separated by `\n` (newline after the last `\0`).
 A\0<path>\0<id>\n          # content/dir in staging/<id>
 D\0<path>\n                # deleted
 R\0<old_path>\0<new_path>\n   # rename
+S\0<id>\0<name>\n          # snapshot marker (id is monotonic u64, name is human label)
 ```
 
 `A` covers creates, modifies, symlinks, and mkdirs. The CLI determines
 the type by stat'ing `staging/<id>` (regular file, symlink, or directory).
 `D` records a deletion of a file or directory.
 `R` records a rename from `old_path` to `new_path`.
+`S` records a snapshot. The CLI resolves the journal up to a given `S`
+marker to reconstruct the staged state at that point in time.
 
 Written by the kernel (`kernel_write()` per mutation). Read by the CLI
 for commit/abort/status/diff. Never read by the kernel.
@@ -450,7 +452,8 @@ operation targets a distinct path.
 **Status** (`agfs status`):
 
 1. Replay journal in order (same as commit step 1) and classify:
-   renames, deletes, adds, modifies.
+   renames, deletes, adds, modifies. Optionally stop at a snapshot marker
+   with `--at <name>`.
 
 **Diff** (`agfs diff`):
 
@@ -458,6 +461,119 @@ operation targets a distinct path.
    For renames, show rename metadata (and diff if also modified).
    For deletes, show as deleted file.
 2. Output in git-style unified diff format.
+3. With `--from <name>`, diff changes since the named snapshot
+   (resolve at snapshot vs resolve at current, then diff the two states).
+
+### 3.11 Snapshot Mechanism
+
+Snapshots are named bookmarks in the journal. They enable inspecting,
+diffing, and committing staged changes at specific points in time.
+
+**Key insight**: the flat blob store already preserves all historical file
+states — old staging blobs are never deleted (only commit/abort removes the
+entire staging directory). The journal records which blob ID was associated
+with each path at each mutation. Replaying the journal up to a snapshot
+marker reconstructs the staged state at that point.
+
+The only kernel-side change is ensuring that writes after a snapshot create
+a **new** staging blob instead of overwriting the current one in place.
+This is the re-COW mechanism.
+
+#### 3.11.1 Creating a Snapshot
+
+`agfs snapshot [name]` calls `ioctl(AGFS_IOC_SNAPSHOT)`. The kernel:
+
+1. Returns `-ENOTSUP` if `nostaging` is set (snapshots require staging).
+2. Increments `sbi->snapshot_gen` (atomic counter).
+3. Appends `S\0<id>\0<name>\n` to the journal.
+4. Returns the snapshot ID to userspace.
+
+No override lists change. No caches invalidated. Existing file handles
+continue working — the re-COW check triggers lazily on the next write.
+
+The name defaults to the executed command (if run via `agfs exec --snapshot`)
+or a timestamp (if run via `agfs snapshot` with no argument). Names need
+not be unique; when multiple snapshots share a name, `--at` and `--from`
+match the latest one.
+
+#### 3.11.2 Re-COW on First Write After Snapshot
+
+The COW check is purely per-inode: `inode->snapshot_gen` records the
+`sbi->snapshot_gen` at which the current staging blob was created.
+`sbi->snapshot_gen` starts at 1, so `inode->snapshot_gen == 0` (no COW
+yet) naturally triggers COW on first write.
+
+On write, a single unified check handles both base→staging COW and
+staging→staging re-COW:
+
+    if inode->snapshot_gen < sbi->snapshot_gen:
+        agfs_do_cow(sbi, dentry, flags)  // source = dentry's lower_path
+
+`agfs_do_cow` copies from the dentry's current `lower_path` — which is
+the base file before any COW, or the current staging blob after one.
+The same function handles both cases; no separate re-COW path.
+`agfs_do_cow` also updates `inode->snapshot_gen` after a successful COW.
+
+Same check in `agfs_mmap` for writable shared mappings.
+
+`O_TRUNC` already allocates a fresh blob every time, so the old blob is
+naturally preserved. `inode->snapshot_gen` is set to `sbi->snapshot_gen`.
+
+**Invariant**: snapshots must be taken when no staging file handles are
+open (the CLI enforces this by taking snapshots between exec
+invocations). This avoids the need for per-fd generation tracking —
+there are no long-lived handles that span a snapshot boundary.
+
+**Multiple snapshots between writes** work naturally: if N snapshots occur
+without any write, the first write after them triggers one re-COW. The
+generation counter collapses consecutive snapshots.
+
+#### 3.11.3 Example Journal with Snapshots
+
+```
+A\0/src/main.rs\01\n          # COW: main.rs → blob 1
+A\0/src/lib.rs\02\n           # create lib.rs → blob 2
+S\01\0make build\n             # snapshot 1: "make build"
+A\0/src/main.rs\03\n          # re-COW: main.rs → blob 3 (blob 1 preserved)
+D\0/src/lib.rs\n              # delete lib.rs
+A\0/src/new.rs\04\n           # create new.rs
+S\02\0make test\n              # snapshot 2: "make test"
+A\0/src/new.rs\05\n           # re-COW: new.rs → blob 5 (blob 4 preserved)
+```
+
+State at each point:
+
+| Snapshot     | main.rs | lib.rs    | new.rs |
+|-------------|---------|-----------|--------|
+| "make build" | blob 1  | blob 2    | —      |
+| "make test"  | blob 3  | (deleted) | blob 4 |
+| current      | blob 3  | (deleted) | blob 5 |
+
+#### 3.11.4 Snapshot-Aware CLI Operations
+
+**`agfs status --at <name>`**: Resolve journal up to the named snapshot.
+
+**`agfs diff --from <name>`**: Diff changes since the named snapshot
+(resolve at snapshot vs resolve at current, then diff the two states).
+
+**`agfs commit --at <name>`**: Commit only changes up to the named
+snapshot. Thanks to re-COW, post-snapshot blobs are independent copies —
+committing pre-snapshot changes does not affect them:
+
+1. Resolve journal up to the snapshot → resolved changes.
+2. Apply those changes to base (same as full commit).
+3. Rewrite the journal atomically: write remaining post-snapshot records
+   to a temporary file, fsync, then rename over the journal. The kernel's
+   old journal fd (O_APPEND) continues appending to the unlinked old
+   file harmlessly; `AGFS_IOC_CACHE_INVAL` in step 4 reopens it.
+4. `AGFS_IOC_CACHE_INVAL`.
+
+Orphaned staging blobs (referenced only by committed pre-snapshot records)
+are left in place — they are cleaned up on the next full `commit` or
+`abort`, which removes the entire staging directory.
+
+**`agfs snapshot list`**: List all snapshots with their names and the
+number of changes since the previous snapshot.
 
 ---
 
@@ -512,6 +628,7 @@ Two levels:
    "/etc"       = "deny"
    "/etc/hosts" = "allow-ro"
    "/usr/bin"   = "allow-rx"
+   "/opt/bin"   = "allow"
   ```
 
    Paths can be **absolute** (`/etc`) or **relative** to the session root:
@@ -726,6 +843,7 @@ struct agfs_sb_info {
     struct file            *journal_file;      // .agfs/journal (opened at mount, append-only)
     struct rw_semaphore     staging_sem;       // protects staging + journal writes
     atomic64_t              next_staging_id;   // counter for staging blob IDs
+    atomic64_t              snapshot_gen;      // bumped on each snapshot; triggers re-COW
 
     // Permission gating
     atomic64_t              perm_gen;        // bumped on rule change; invalidates inode caches
@@ -750,6 +868,9 @@ struct agfs_inode_info {
     // Permission cache (resolved at lookup, checked at permission)
     enum agfs_perm          cached_perm;
     u64                     perm_gen;        // sb->perm_gen at time of caching
+
+    // Staging COW tracking (§3.11.2)
+    u64                     snapshot_gen;    // sbi->snapshot_gen at last COW (0 = no COW yet)
 
     struct inode            vfs_inode;       // embedded VFS inode
 };
@@ -778,6 +899,12 @@ struct agfs_ctl_response {
     __u64   id;
     __u8    decision;            // enum agfs_perm value
     __u8    _pad[7];
+};
+
+// userspace ↔ kernel: AGFS_IOC_SNAPSHOT (name in, id out)
+struct agfs_ioc_snapshot {
+    __u64   id;                  // out: assigned snapshot ID
+    char    name[AGFS_PATH_MAX]; // in: human-readable name (NUL-terminated)
 };
 ```
 
@@ -821,12 +948,16 @@ differ from the base filesystem. See §3.4 for the `agfs_override` struct.
 ```c
 struct agfs_file_info {
     struct file            *lower_file;     // opened lower file (base or staging)
-    bool                    needs_cow;      // true until first write copies base→staging
-    bool                    is_staging;     // true when lower_file points at a staging file
     const struct vm_operations_struct *lower_vm_ops;
     struct agfs_ctl_private *ctl;           // non-NULL if this fd is a ctl daemon
 };
 ```
+
+No per-fd snapshot state is needed. The COW check uses
+`inode->snapshot_gen < sbi->snapshot_gen` (purely per-inode). The fsync
+optimization uses `inode->snapshot_gen > 0`. The CLI enforces that
+snapshots are only taken when no staging file handles are open (§3.11.2),
+so there are no stale cross-snapshot handles to track.
 
 ### 5.7 Ctl Private (per-fd daemon state)
 
@@ -844,7 +975,7 @@ dispatched-but-unanswered requests receive the default decision.
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Publishing staging mutations atomically (override + journal + dentry swap) | `rw_semaphore` (write for rename/COW/truncate-open). Create/mkdir/symlink/unlink/rmdir are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
+| `sb->staging_sem` | Publishing staging mutations atomically (override + journal + dentry swap + `inode->snapshot_gen`) | `rw_semaphore` (write for rename/COW/truncate-open). Create/mkdir/symlink/unlink/rmdir are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
 | `dentry_info->lock` | Per-directory override list + cached lower path | `spinlock` |
 
@@ -888,11 +1019,11 @@ dispatched-but-unanswered requests receive the default decision.
 
 | Operation    | Behavior                                                                                                                                                                                          |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `open`       | Perm gating (via dentry). If writable and staging file exists: open staging file. If writable and no staging file: open base read-only, set `needs_cow`. If read-only: open staging file or base. |
+| `open`       | Perm gating (via dentry). If writable and staging file exists: open staging file. If writable and no staging file: open base read-only (COW on first write). If read-only: open resolved lower file. |
 | `read_iter`  | Swap `kiocb->ki_filp` to lower file, call `lower->read_iter()`.                                                                                                                                   |
-| `write_iter` | If `needs_cow`: copy base→staging, reopen as writable. Then delegate to `lower->write_iter()`.                                                                                                    |
-| `mmap`       | If `needs_cow` and mapping is writable+shared: trigger COW first (same as `write_iter`), then delegate to the now-writable lower file. Otherwise delegate directly. Save `vm_ops` for fault handling. |
-| `fsync`      | If `is_staging`: return 0 (staging files are ephemeral — committed or aborted, never persisted in place). Otherwise delegate to lower.                                                            |
+| `write_iter` | If `inode->snapshot_gen < sbi->snapshot_gen`: unified COW/re-COW via `agfs_do_cow` (source = dentry's `lower_path`). Then delegate to `lower->write_iter()`. |
+| `mmap`       | If `inode->snapshot_gen < sbi->snapshot_gen` and mapping is writable+shared: trigger COW/re-COW. Then delegate to lower file. |
+| `fsync`      | If `inode->snapshot_gen > 0`: return 0 (staging files are ephemeral). Otherwise delegate to lower.                                                            |
 | `release`    | `fput()` lower file. Free `agfs_file_info`.                                                                                                                                                       |
 | `llseek`     | Delegate to lower.                                                                                                                                                                                |
 
@@ -926,6 +1057,9 @@ the control/rule/ctl ioctl handler.
 // Control protocol (ask request / response)
 #define AGFS_IOC_GET_REQUEST        _IOR('A', 30, struct agfs_ctl_request)
 #define AGFS_IOC_PUT_RESPONSE       _IOW('A', 31, struct agfs_ctl_response)
+
+// Snapshot
+#define AGFS_IOC_SNAPSHOT           _IOWR('A', 40, struct agfs_ioc_snapshot)
 ```
 
 ### 7.2 Operations
@@ -937,6 +1071,7 @@ the control/rule/ctl ioctl handler.
 | `AGFS_IOC_RULE_ADD`     | Add a permission rule to a dentry. Kernel resolves the path, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps `perm_gen`.                                                |
 | `AGFS_IOC_RULE_REMOVE`  | Remove a rule from a dentry. Kernel sets `perm = NONE`, unpins the dentry, and bumps `perm_gen`.                                                                                |
 | `AGFS_IOC_CACHE_INVAL`  | Bump `perm_gen`, shrink dentry/inode caches, and reopen the journal file. Called by userspace after commit/abort.                                                           |
+| `AGFS_IOC_SNAPSHOT`     | Bump `snapshot_gen`, append `S` record to journal, return snapshot ID. Triggers lazy re-COW on next write to any staged file (§3.11). |
 
 `AGFS_IOC_CACHE_INVAL` is called by userspace after commit/abort. It:
 1. Bumps `perm_gen` to invalidate all cached inode permissions.
@@ -969,6 +1104,7 @@ $ agfs init              # create a default agfs.toml in the current directory
 ```bash
 $ agfs                   # launch sh inside the sandbox
 $ agfs -- make build     # run a specific command instead of sh
+$ agfs --snapshot -- make build  # snapshot before exec (or set auto_snapshot=true in agfs.toml)
 ```
 
 **Session management** — manual control over each step:
@@ -977,11 +1113,23 @@ $ agfs -- make build     # run a specific command instead of sh
 $ agfs mount             # create .agfs/ layout and mount the filesystem
 $ agfs exec              # chroot $SHELL into .agfs/mnt (requires existing mount)
 $ agfs exec -- make build
+$ agfs exec --snapshot -- make build  # snapshot before exec
 $ agfs status            # show staged changes
+$ agfs status --at <name> # show state at a snapshot
 $ agfs diff              # git-style diff of staged vs base (rename-aware)
+$ agfs diff --from <name> # diff changes since snapshot
 $ agfs commit            # apply staged changes to base
+$ agfs commit --at <name> # commit only changes up to a snapshot
 $ agfs abort             # discard staged changes
 $ agfs unmount           # tear down session
+```
+
+**Snapshots:**
+
+```bash
+$ agfs snapshot              # snapshot with timestamp as name
+$ agfs snapshot "checkpoint" # snapshot with explicit name
+$ agfs snapshot list         # list all snapshots
 ```
 
 **Permission rules and diagnostics:**
@@ -994,7 +1142,7 @@ $ agfs watch             # handle ask requests (daemon mode)
 
 ### 8.2 Mount Options
 
-Configured via `agfs.toml` or CLI flags:
+Configured via `agfs.toml` `[mount]` section:
 
 | Option | Default | Description |
 |---|---|---|
@@ -1002,6 +1150,14 @@ Configured via `agfs.toml` or CLI flags:
 | `ask_default` | `deny` | Fallback when no daemon is connected or on timeout |
 | `noperm` | false | Disable permission gating entirely |
 | `nostaging` | false | Disable staging (passthrough + gating only) |
+
+### 8.3 Exec Options
+
+Configured via `agfs.toml` `[exec]` section:
+
+| Option | Default | Description |
+|---|---|---|
+| `auto_snapshot` | false | Auto-snapshot before each `agfs exec` invocation |
 
 Inside the launched shell or command, agfs `chroot`s into `.agfs/mnt` so
 that the mounted view becomes `/`. The working directory remains the
@@ -1067,6 +1223,7 @@ agfs/
 │   ├── status.rs
 │   ├── diff.rs
 │   ├── journal.rs             # journal parsing + resolution (commit/status/diff)
+│   ├── snapshot.rs            # snapshot create, list, snapshot-aware operations
 │   ├── watch.rs               # permission prompt daemon (handles TTY ownership)
 │   └── ioctl.rs               # binary protocol structs + ioctl helpers
 └── tests/                     # Integration tests
@@ -1101,28 +1258,34 @@ $ agfs rule add /etc/hosts allow-ro
 
 # 2. Agent writes to a file matching an allow-rw rule
 $ echo "hello" > /src/main.rs
-   → kernel: agfs_lookup("src") → explicit rule → perm=ALLOW_RW
-   → kernel: agfs_lookup("main.rs") → no rule (NONE)
-   → kernel: agfs_open() → walk up: main.rs(NONE) → src(ALLOW_RW)
-   → kernel: perm=ALLOW_RW, O_WRONLY → pass
+   → kernel: agfs_lookup("src") → explicit rule on dentry → perm=ALLOW_RW
+   → kernel: agfs_lookup("main.rs") → no rule on dentry (NONE)
+              → agfs_cache_perm() walks up: main.rs(NONE) → src(ALLOW_RW)
+              → caches ALLOW_RW on main.rs inode
+   → kernel: agfs_open() → cached_perm=ALLOW_RW, O_WRONLY → pass
    → kernel: agfs_write_iter() → lazy COW, delegate to staging file
 
 # 3. Agent reads /etc/passwd (denied — /etc has deny rule)
 $ cat /etc/passwd
-   → kernel: agfs_lookup("etc") → explicit rule → perm=DENY
-   → kernel: agfs_lookup("passwd") → no rule (NONE)
-   → kernel: agfs_open("passwd") → resolve perm: passwd(NONE) → etc(DENY) → -EACCES
+   → kernel: agfs_lookup("etc") → explicit rule on dentry → perm=DENY
+   → kernel: agfs_lookup("passwd") → no rule on dentry (NONE)
+              → agfs_cache_perm() walks up: passwd(NONE) → etc(DENY)
+              → caches DENY on passwd inode
+   → kernel: agfs_open("passwd") → cached_perm=DENY → -EACCES
 
 # 4. Agent reads /etc/hosts (explicit override → allow-ro)
 $ cat /etc/hosts
-   → kernel: agfs_lookup("hosts") → explicit rule → perm=ALLOW_RO
-   → kernel: agfs_open() → walk up: hosts(ALLOW_RO) → pass
+   → kernel: agfs_lookup("hosts") → explicit rule on dentry → perm=ALLOW_RO
+              → agfs_cache_perm() → caches ALLOW_RO on hosts inode
+   → kernel: agfs_open() → cached_perm=ALLOW_RO → pass
 
 # 5. Agent reads /tmp/secrets (no rule anywhere → walk up reaches root → ask)
 $ cat /tmp/secrets
-   → kernel: agfs_lookup("tmp") → no rule (NONE)
-   → kernel: agfs_lookup("secrets") → no rule (NONE)
-   → kernel: agfs_open() → walk up: secrets(NONE) → tmp(NONE) → root(ASK)
+   → kernel: agfs_lookup("tmp") → no rule on dentry (NONE)
+   → kernel: agfs_lookup("secrets") → no rule on dentry (NONE)
+              → agfs_cache_perm() walks up: secrets(NONE) → tmp(NONE) → root(ASK)
+              → caches ASK on secrets inode
+   → kernel: agfs_open() → cached_perm=ASK
    → kernel: enqueue request, thread sleeps
    → daemon: ioctl(GET_REQUEST) → agfs_ctl_request { id:1, path:"/tmp/secrets", ... }
    → daemon: decision: allow-ro

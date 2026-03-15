@@ -263,6 +263,32 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		agfs_journal_open(sbi);
 		return 0;
 
+	case AGFS_IOC_SNAPSHOT: {
+		struct agfs_ioc_snapshot snap;
+		u64 gen;
+
+		if (sbi->nostaging)
+			return -EOPNOTSUPP;
+
+		if (copy_from_user(&snap, (void __user *)arg, sizeof(snap)))
+			return -EFAULT;
+
+		snap.name[AGFS_PATH_MAX - 1] = '\0';
+
+		down_write(&sbi->staging_sem);
+		gen = atomic64_inc_return(&sbi->snapshot_gen);
+		agfs_journal_append_s(sbi, gen, snap.name);
+		up_write(&sbi->staging_sem);
+
+		/* Best-effort: snapshot is already committed to the journal,
+		 * so return success even if copy_to_user fails. */
+		snap.id = gen;
+		if (copy_to_user((void __user *)arg, &snap, sizeof(snap)))
+			/* id already in journal — userspace can read it back */;
+
+		return 0;
+	}
+
 	default:
 		return -ENOTTY;
 	}

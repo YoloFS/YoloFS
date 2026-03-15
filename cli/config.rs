@@ -74,6 +74,8 @@ pub struct Config {
     #[serde(default)]
     pub mount: MountConfig,
     #[serde(default)]
+    pub exec: ExecConfig,
+    #[serde(default)]
     pub rules: BTreeMap<String, Perm>,
 }
 
@@ -87,6 +89,12 @@ pub struct MountConfig {
     pub ask_timeout: Option<u64>,
     #[serde(default)]
     pub ask_default: Option<Perm>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct ExecConfig {
+    #[serde(default)]
+    pub auto_snapshot: bool,
 }
 
 impl Default for Config {
@@ -104,6 +112,7 @@ impl Default for Config {
                 ask_default: Some(Perm::Deny),
                 ..Default::default()
             },
+            exec: ExecConfig::default(),
             rules,
         }
     }
@@ -129,7 +138,7 @@ fn config_path() -> Result<std::path::PathBuf> {
 }
 
 fn is_mounted() -> bool {
-    crate::session_dir().is_ok_and(|d| d.join("mnt").exists())
+    crate::utils::session_dir().is_ok_and(|d| d.join("mnt").exists())
 }
 
 /// Expand `$HOME`/`~`, then canonicalize (resolves relative paths, symlinks, `..`).
@@ -156,7 +165,9 @@ fn resolve_to_abs(path: &str) -> Result<String> {
 }
 
 fn resolve_through_mount(abs_path: &str, mnt: &Path) -> String {
-    mnt.join(abs_path.trim_start_matches('/')).to_string_lossy().to_string()
+    mnt.join(abs_path.trim_start_matches('/'))
+        .to_string_lossy()
+        .to_string()
 }
 
 // ── Mount options ─────────────────────────────────────────────────────
@@ -192,6 +203,18 @@ pub fn mount_options(agfs_dir: &Path) -> String {
 
 // ── Apply rules from config ───────────────────────────────────────────
 
+/// Load the exec config section from agfs.toml (if present).
+pub fn load_exec_config() -> ExecConfig {
+    let cp = match config_path() {
+        Ok(p) => p,
+        Err(_) => return ExecConfig::default(),
+    };
+    match Config::load(&cp) {
+        Ok(c) => c.exec,
+        Err(_) => ExecConfig::default(),
+    }
+}
+
 /// Read [rules] from agfs.toml and apply via ioctl. Called during mount.
 pub fn apply_rules(agfs_dir: &Path) -> Result<()> {
     let cwd = agfs_dir.parent().unwrap_or(Path::new("."));
@@ -208,7 +231,14 @@ pub fn apply_rules(agfs_dir: &Path) -> Result<()> {
     let ctl_file = ioctl::open(agfs_dir)?;
     let mnt = agfs_dir.join("mnt");
 
-    eprintln!("{}", format!("agfs: applying {} rule(s) from agfs.toml", config.rules.len()).cyan());
+    eprintln!(
+        "{}",
+        format!(
+            "agfs: applying {} rule(s) from agfs.toml",
+            config.rules.len()
+        )
+        .cyan()
+    );
 
     for (path, perm) in &config.rules {
         let abs_path = match resolve_to_abs(path) {
@@ -239,20 +269,29 @@ pub fn add_rule(path: &str, perm_str: &str) -> Result<()> {
     let mut config = if cp.exists() {
         Config::load(&cp)?
     } else {
-        Config { rules: BTreeMap::new(), ..Default::default() }
+        Config {
+            rules: BTreeMap::new(),
+            ..Default::default()
+        }
     };
     config.rules.insert(path.to_string(), perm);
     config.save(&cp)?;
 
     // Apply live if mounted
     if is_mounted() {
-        let agfs = crate::session_dir()?;
+        let agfs = crate::utils::session_dir()?;
         let mnt = agfs.join("mnt");
         let abs_path = resolve_to_abs(path)?;
         let resolved = resolve_through_mount(&abs_path, &mnt);
         let ctl_file = ioctl::open(&agfs)?;
         ioctl::add_rule(&ctl_file, &resolved, perm.to_ioctl())?;
-        eprintln!("{} {} = {} {}", "rule added:".green().bold(), path, perm, "(live)".green());
+        eprintln!(
+            "{} {} = {} {}",
+            "rule added:".green().bold(),
+            path,
+            perm,
+            "(live)".green()
+        );
     } else {
         eprintln!("{} {} = {}", "rule added:".green().bold(), path, perm);
     }
@@ -271,13 +310,18 @@ pub fn remove_rule(path: &str) -> Result<()> {
 
     // Apply live if mounted
     if is_mounted() {
-        let agfs = crate::session_dir()?;
+        let agfs = crate::utils::session_dir()?;
         let mnt = agfs.join("mnt");
         let abs_path = resolve_to_abs(path)?;
         let resolved = resolve_through_mount(&abs_path, &mnt);
         let ctl_file = ioctl::open(&agfs)?;
         ioctl::remove_rule(&ctl_file, &resolved)?;
-        eprintln!("{} {} {}", "rule removed:".yellow().bold(), path, "(live)".yellow());
+        eprintln!(
+            "{} {} {}",
+            "rule removed:".yellow().bold(),
+            path,
+            "(live)".yellow()
+        );
     } else {
         eprintln!("{} {}", "rule removed:".yellow().bold(), path);
     }
@@ -307,8 +351,12 @@ mod tests {
     fn perm_serde_roundtrip() {
         // TOML requires a table at the top level, so wrap in a struct
         #[derive(Serialize, Deserialize, PartialEq, Debug)]
-        struct Wrapper { perm: Perm }
-        let w = Wrapper { perm: Perm::AllowRx };
+        struct Wrapper {
+            perm: Perm,
+        }
+        let w = Wrapper {
+            perm: Perm::AllowRx,
+        };
         let s = toml::to_string(&w).unwrap();
         assert!(s.contains("allow-rx"), "s = {s}");
         let w2: Wrapper = toml::from_str(&s).unwrap();
@@ -415,6 +463,7 @@ mod tests {
                 ask_timeout: Some(5),
                 ..Default::default()
             },
+            exec: Default::default(),
             rules: BTreeMap::new(),
         };
         config.save(&tmp.path().join("agfs.toml")).unwrap();
@@ -434,6 +483,7 @@ mod tests {
                 ask_timeout: Some(10),
                 ..Default::default()
             },
+            exec: Default::default(),
             rules: BTreeMap::new(),
         };
         config.save(&tmp.path().join("agfs.toml")).unwrap();
@@ -447,7 +497,13 @@ mod tests {
     fn add_rule_to_config() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("agfs.toml");
-        Config { mount: Default::default(), rules: BTreeMap::new() }.save(&path).unwrap();
+        Config {
+            mount: Default::default(),
+            exec: Default::default(),
+            rules: BTreeMap::new(),
+        }
+        .save(&path)
+        .unwrap();
 
         let mut config = Config::load(&path).unwrap();
         config.rules.insert("/tmp".to_string(), Perm::AllowRw);
@@ -461,7 +517,11 @@ mod tests {
     fn remove_rule_from_config() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("agfs.toml");
-        let mut config = Config { mount: Default::default(), rules: BTreeMap::new() };
+        let mut config = Config {
+            mount: Default::default(),
+            exec: Default::default(),
+            rules: BTreeMap::new(),
+        };
         config.rules.insert("/tmp".to_string(), Perm::AllowRw);
         config.rules.insert("/etc".to_string(), Perm::AllowRo);
         config.save(&path).unwrap();

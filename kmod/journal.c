@@ -9,6 +9,7 @@
  *   A\0<path>\0<id>\n    — content/dir in staging/<id>
  *   D\0<path>\n          — deleted
  *   R\0<old>\0<new>\n    — rename hint
+ *   S\0<id>\0<name>\n    — snapshot marker
  */
 
 #include "agfs.h"
@@ -97,7 +98,7 @@ static int journal_write(struct agfs_sb_info *sbi, char tag,
 
 int agfs_journal_append_a(struct agfs_sb_info *sbi, const char *path, u64 id)
 {
-	char id_str[20];
+	char id_str[21];
 
 	snprintf(id_str, sizeof(id_str), "%llu", (unsigned long long)id);
 	return journal_write(sbi, 'A',
@@ -115,4 +116,13 @@ int agfs_journal_append_r(struct agfs_sb_info *sbi, const char *old_path,
 {
 	return journal_write(sbi, 'R',
 			     (const char *[]){ old_path, new_path, NULL });
+}
+
+int agfs_journal_append_s(struct agfs_sb_info *sbi, u64 id, const char *name)
+{
+	char id_str[21];
+
+	snprintf(id_str, sizeof(id_str), "%llu", (unsigned long long)id);
+	return journal_write(sbi, 'S',
+			     (const char *[]){ id_str, name, NULL });
 }
