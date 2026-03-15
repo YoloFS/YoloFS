@@ -286,25 +286,30 @@ agfs_mmap(file, vma):
 
 ### 3.6 Create / Mkdir / Symlink Path
 
-All creation operations allocate a staging blob and add an override:
+All creation operations allocate a staging blob, add an override, and set
+`inode->snapshot_gen = sbi->snapshot_gen` so the file is recognised as
+already staged (preventing a spurious re-COW on first write):
 
 ```
 agfs_create(dir, name, mode):
     id = next_staging_id++
     create file staging/<id>
     add_override(dir, name, staging_id=id)
+    inode->snapshot_gen = sbi->snapshot_gen
     journal(A, abs_path, id)
 
 agfs_mkdir(dir, name, mode):
     id = next_staging_id++
     create dir staging/<id>/
     add_override(dir, name, staging_id=id)
+    inode->snapshot_gen = sbi->snapshot_gen
     journal(A, abs_path, id)
 
 agfs_symlink(dir, name, target):
     id = next_staging_id++
     create symlink staging/<id> → target
     add_override(dir, name, staging_id=id)
+    inode->snapshot_gen = sbi->snapshot_gen
     journal(A, abs_path, id)
 ```
 
@@ -511,8 +516,11 @@ looking up by name, `--at` and `--from` match the latest one.
 
 The COW check is purely per-inode: `inode->snapshot_gen` records the
 `sbi->snapshot_gen` at which the current staging blob was created.
-`sbi->snapshot_gen` starts at 1, so `inode->snapshot_gen == 0` (no COW
-yet) naturally triggers COW on first write.
+`sbi->snapshot_gen` starts at 1.  Newly created files set
+`inode->snapshot_gen = sbi->snapshot_gen` at creation time (§3.6), so
+they are already up-to-date and skip the COW check.  Base files that
+have never been staged have `inode->snapshot_gen == 0`, which naturally
+triggers COW on first write.
 
 On write, a single unified check handles both base→staging COW and
 staging→staging re-COW:

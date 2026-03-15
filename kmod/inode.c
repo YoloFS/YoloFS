@@ -39,6 +39,8 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	}
 
 	agfs_set_lower_path(dentry, &blob_path);
+	AGFS_I(d_inode(dentry))->snapshot_gen =
+		atomic64_read(&sbi->snapshot_gen);
 	agfs_add_override(dentry->d_parent, dentry->d_name.name,
 			  dentry->d_name.len, id, NULL);
 	agfs_journal_append_a(sbi, buf, id);
