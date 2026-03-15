@@ -46,6 +46,52 @@ agfs.toml                       # config file in CWD (mount options + rules)
                                  #   ioctl on this directory fd for control
 ```
 
+## In-Kernel State
+
+All staging state lives in four per-object structures. Nothing is shared
+across mounts.
+
+**Per-superblock** (`agfs_sb_info`) — one instance, lives for the mount:
+
+| Field | Purpose |
+|-------|---------|
+| `staging_dir` | Pinned path to `.agfs/staging/` |
+| `journal_file` | Open file handle to `.agfs/journal` (`O_APPEND`). The kernel only appends; it never reads the journal back. |
+| `staging_sem` | rw\_semaphore serializing COW / re-COW and journal writes |
+| `next_staging_id` | Atomic counter for blob names (`1`, `2`, …) |
+| `snapshot_gen` | Atomic counter, starts at 1, bumped by each snapshot ioctl. Compared against per-inode `snapshot_gen` to trigger COW / re-COW. |
+| `creator_cred` | Saved mount-time credentials for staging directory operations (see [Credential Override](#credential-override-for-staging)) |
+
+**Per-inode** (`agfs_inode_info`) — one per cached inode:
+
+| Field | Purpose |
+|-------|---------|
+| `lower_inode` | Pointer to the lower-FS inode (staging blob or base file) |
+| `snapshot_gen` | The `sbi->snapshot_gen` value at the last COW. `0` means the file has never been COW'd (still a base file). The unified check `inode->snapshot_gen < sbi->snapshot_gen` triggers both initial COW and re-COW after snapshots. |
+
+**Per-dentry** (`agfs_dentry_info`) — one per cached dentry:
+
+| Field | Purpose |
+|-------|---------|
+| `lower_path` | Resolved path to the backing file — either `staging/<id>` or the base file. Updated in-place by COW. |
+| `ovr_buckets` | 64-bucket hash table of `agfs_override` entries. Only on directories, lazily allocated on first override. This is the kernel's source of truth for staged changes. |
+
+**Per-file** (`agfs_file_info`) — one per open file descriptor:
+
+| Field | Purpose |
+|-------|---------|
+| `lower_file` | Open file handle to the lower file. Swapped to a new staging blob handle on COW / re-COW. |
+| `truncate` | Deferred `O_TRUNC` flag — when a base file is opened with `O_TRUNC`, the flag is stripped and this bool is set. The first write creates an empty staging blob instead of copying base content. |
+
+**Per-override** (`agfs_override`) — one per staged child name in a directory:
+
+| Field | Purpose |
+|-------|---------|
+| `staging_id` | `>0` → content lives in `staging/<id>` |
+| `base_path` | Non-NULL → redirected to this absolute base path (zero-copy rename) |
+| `d_type` | File type (`DT_REG` / `DT_DIR` / `DT_LNK`) for correct readdir emission |
+| All zero/NULL | Entry is deleted (lookup returns negative dentry) |
+
 ## Path Resolution
 
 Each directory dentry holds an **override hash table** of child overrides
