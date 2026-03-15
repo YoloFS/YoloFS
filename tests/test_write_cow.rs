@@ -15,20 +15,17 @@ fn write_triggers_cow() {
     let base = fs::read_to_string(s.base_path("hello.txt")).expect("read base");
     assert_eq!(base, "base content\n");
 
-    // Staging has a blob with the COW copy
-    let staging = s.staging_dir();
-    let blob_content: Vec<String> = fs::read_dir(&staging)
-        .unwrap()
-        .filter_map(|e| {
-            let e = e.ok()?;
-            let name = e.file_name().to_string_lossy().to_string();
-            name.parse::<u64>().ok()?;
-            fs::read_to_string(e.path()).ok()
-        })
-        .collect();
+    // The change should be visible via `agfs status` and `agfs diff`
+    let status = s.cli(&["status"]).expect("status");
     assert!(
-        blob_content.iter().any(|c| c == "modified\n"),
-        "staging should contain a blob with the modified content"
+        status.contains("hello.txt"),
+        "status should show modified file: {status}"
+    );
+
+    let diff = s.cli(&["diff"]).expect("diff");
+    assert!(
+        diff.contains("+modified"),
+        "diff should show the new content: {diff}"
     );
 }
 

@@ -30,21 +30,21 @@ fn delete_preserves_base() {
     );
 }
 
-/// Deleting creates a journal D record (no whiteout in new model).
+/// Deleting creates a visible change in `agfs status`.
 #[test]
-fn delete_creates_journal_record() {
+fn delete_creates_status_entry() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
-    // Journal should have a D record
-    let journal = s.journal_path();
-    assert!(journal.exists(), "journal should exist after delete");
-    let data = fs::read(&journal).unwrap();
-    // Check for D\0 prefix
+    let status = s.cli(&["status"]).expect("status");
     assert!(
-        data.windows(2).any(|w| w == b"D\0"),
-        "journal should contain a D record"
+        status.contains("hello.txt"),
+        "status should show deleted file: {status}"
+    );
+    assert!(
+        status.contains("1 staged change"),
+        "should have exactly 1 staged change: {status}"
     );
 }
 

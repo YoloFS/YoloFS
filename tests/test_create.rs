@@ -33,16 +33,12 @@ fn create_lands_in_staging() {
 
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
 
-    // Staging directory should have a blob (numeric entry)
-    let staging = s.staging_dir();
-    let has_blob = fs::read_dir(&staging).unwrap().any(|e| {
-        e.unwrap()
-            .file_name()
-            .to_string_lossy()
-            .parse::<u64>()
-            .is_ok()
-    });
-    assert!(has_blob, "new file should create a blob in staging");
+    // Status should show the new file as a staged change
+    let status = s.cli(&["status"]).expect("status");
+    assert!(
+        status.contains("brandnew.txt"),
+        "status should show new file: {status}"
+    );
 
     // Base does NOT have the file
     assert!(

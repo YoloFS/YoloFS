@@ -33,16 +33,11 @@ fn symlink_commit_to_base() {
 
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink creation");
 
-    // Staging should have a symlink blob
-    let staging = s.staging_dir();
-    let has_symlink_blob = fs::read_dir(&staging).unwrap().any(|e| {
-        let e = e.unwrap();
-        e.file_name().to_string_lossy().parse::<u64>().is_ok()
-            && e.file_type().unwrap().is_symlink()
-    });
+    // Status should show the symlink as a staged change
+    let status = s.cli(&["status"]).expect("status");
     assert!(
-        has_symlink_blob,
-        "symlink should appear as a blob in staging"
+        status.contains("link.txt"),
+        "status should show symlink: {status}"
     );
 
     s.cli(&["commit"]).expect("commit");

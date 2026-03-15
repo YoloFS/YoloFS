@@ -126,16 +126,11 @@ fn commit_clears_staging_area() {
 
     s.cli(&["commit"]).expect("commit");
 
-    // Staging area should be empty (no files inside)
-    let staging_dir = s.root.join(".agfs/staging");
-    let entries: Vec<_> = fs::read_dir(&staging_dir)
-        .expect("read staging dir")
-        .filter_map(|e| e.ok())
-        .collect();
+    // Status should show no remaining changes
+    let status = s.cli(&["status"]).expect("status after commit");
     assert!(
-        entries.is_empty(),
-        "staging should be empty after commit, found: {:?}",
-        entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        status.contains("No changes"),
+        "status should show no changes after commit: {status}"
     );
 }
 

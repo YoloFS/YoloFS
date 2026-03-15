@@ -1,10 +1,12 @@
 use agfs::config::Config;
 use agfs::klog;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
+
+pub const AGFS_BIN: &str = "agfs";
 
 /// A managed agfs session for testing, driven entirely through the CLI.
 ///
@@ -70,7 +72,7 @@ impl AgfsSession {
             .context("running agfs mount")?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("agfs mount failed: {stderr}");
+            bail!("agfs mount failed: {stderr}");
         }
         self.mounted = true;
         Ok(())
@@ -80,23 +82,13 @@ impl AgfsSession {
     /// e.g., "hello.txt" → <mnt>/<root>/hello.txt
     pub fn mnt_path(&self, rel: &str) -> PathBuf {
         self.mnt
-            .join(self.root.strip_prefix("/").unwrap())
+            .join(self.root.strip_prefix("/").unwrap_or(&self.root))
             .join(rel)
     }
 
     /// Resolve a base (host) path.
     pub fn base_path(&self, rel: &str) -> PathBuf {
         self.root.join(rel)
-    }
-
-    /// Get the staging directory path.
-    pub fn staging_dir(&self) -> PathBuf {
-        self.root.join(".agfs/staging")
-    }
-
-    /// Get the journal file path.
-    pub fn journal_path(&self) -> PathBuf {
-        self.root.join(".agfs/journal")
     }
 
     /// Run an agfs CLI subcommand from the session root, return stdout.
@@ -110,7 +102,7 @@ impl AgfsSession {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            anyhow::bail!(
+            bail!(
                 "agfs {:?} failed ({}): stdout={} stderr={}",
                 args,
                 output.status,

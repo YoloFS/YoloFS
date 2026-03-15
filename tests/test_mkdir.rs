@@ -33,15 +33,11 @@ fn mkdir_lands_in_staging() {
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
-    // Staging should have a blob that is a directory
-    let staging = s.staging_dir();
-    let has_dir_blob = fs::read_dir(&staging).unwrap().any(|e| {
-        let e = e.unwrap();
-        e.file_name().to_string_lossy().parse::<u64>().is_ok() && e.file_type().unwrap().is_dir()
-    });
+    // Status should show the new directory as a staged change
+    let status = s.cli(&["status"]).expect("status");
     assert!(
-        has_dir_blob,
-        "new directory should create a dir blob in staging"
+        status.contains("newdir"),
+        "status should show new directory: {status}"
     );
     assert!(
         !s.base_path("newdir").exists(),
