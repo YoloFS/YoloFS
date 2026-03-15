@@ -20,7 +20,9 @@ sudo apt-get install -y --no-install-recommends \
     build-essential \
     linux-headers-"$(uname -r)" \
     bc \
-    kmod
+    kmod \
+    pkg-config \
+    libsystemd-dev
 
 # ── Rust ──────────────────────────────────────────────────────────────
 
