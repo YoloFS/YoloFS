@@ -299,12 +299,6 @@ The `total ms` column ranks optimization targets directly: it is the product
 of call count × mean latency and represents each op's contribution to total
 wall time.
 
-### Graceful degradation
-
-If bpftrace is unavailable or fails to attach (e.g., after a kmod rebuild that
-changes symbol names), the bench prints a warning, skips op histograms, and
-still collects I/O stats.
-
 ### Implementation structure
 
 ```
