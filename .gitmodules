@@ -7,3 +7,6 @@
 [submodule "third_party/opencode"]
 	path = third_party/opencode
 	url = https://github.com/anomalyco/opencode
+[submodule "results-bench"]
+	path = results-bench
+	url = git@github.com:ShawnZhong/Agfs-Bench-Results.git
