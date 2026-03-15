@@ -12,6 +12,9 @@ build: cli kmod
 
 cli:
 	cargo build --release
+	cargo build --release --bin agfs-bench
+	cargo test --lib --no-run --release
+	cargo test --test e2e --no-run --release
 
 kmod: $(KMOD_OUT)
 
@@ -67,6 +70,13 @@ bench: install
 	cargo build --release --bin agfs-bench
 	./target/release/agfs-bench
 	agfs unload
+
+# ── VM ─────────────────────────────────────────────────────────────
+
+VM_SSH := python3 vm.py ssh --
+
+vm-%: cli kmod
+	$(VM_SSH) $(MAKE) -C $(CURDIR) $*
 
 # ── CI ─────────────────────────────────────────────────────────────────
 

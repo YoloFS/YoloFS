@@ -1,4 +1,5 @@
-/data
+/data/*
+!/data/README.md
 __pycache__
 target
 third_party/linux*
