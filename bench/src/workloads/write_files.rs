@@ -1,7 +1,7 @@
-// write-files workload: write a single small file and commit.
+// write-files workload: create 1,000 small (4 KiB) files.
 //
-// Minimal self-contained workload with no external fixtures. Just enough
-// to exercise the create+write+commit path end-to-end.
+// Exercises the file-create and sequential-write paths without any network
+// dependency; no external fixture is required.
 
 use crate::workload::Workload;
 use agfs::config::Perm;
@@ -36,6 +36,11 @@ impl Workload for WriteFiles {
 
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
         fs::create_dir_all(dest).context("creating work dir")?;
-        fs::write(dest.join("hello.txt"), b"hello agfs\n").context("writing hello.txt")
+        let buf = vec![0u8; 4096];
+        for i in 0..1000 {
+            fs::write(dest.join(format!("file-{i:04}.dat")), &buf)
+                .with_context(|| format!("writing file-{i:04}.dat"))?;
+        }
+        Ok(())
     }
 }
