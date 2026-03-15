@@ -43,9 +43,11 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         bail!("mount point .agfs/mnt/ does not exist — run `agfs mount` first");
     }
 
+    let default_shell = env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+
     let (cmd, args) = if exec_args.is_empty() {
         eprintln!("{}", "agfs: entering sandbox (exit to return)".cyan());
-        ("sh".to_string(), vec![])
+        (default_shell.clone(), vec![])
     } else {
         let quoted: Vec<_> = exec_args.iter().map(|s| format!("\"{s}\"")).collect();
         eprintln!("{} [{}]", "agfs: exec".cyan(), quoted.join(", "));
@@ -69,7 +71,7 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
     // Snapshot after the command so the snapshot captures what the command did
     if config::load_config().snapshot {
         let cmd_desc = if exec_args.is_empty() {
-            "sh".to_string()
+            default_shell.clone()
         } else {
             exec_args.join(" ")
         };
