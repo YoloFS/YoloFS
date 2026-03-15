@@ -49,3 +49,22 @@ test-unit:
 test-integration: install
 	agfs init
 	cargo test --test integration -- --test-threads=1
+
+lint:
+	cargo fmt --check
+	cargo clippy -- -D warnings
+
+load-kmod: kmod
+	awk '$$3=="agfs"{print $$2}' /proc/mounts | xargs -r sudo umount
+	lsmod | grep -q '^agfs ' && sudo rmmod agfs || true
+	sudo insmod kmod/build/agfs.ko
+
+unload-kmod:
+	sudo rmmod agfs
+
+# ── CI ─────────────────────────────────────────────────────────────────
+
+.PHONY: ci
+
+ci: lint load-kmod
+	$(MAKE) test; ret=$$?; $(MAKE) unload-kmod; exit $$ret
