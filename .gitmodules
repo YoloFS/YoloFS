@@ -1,6 +1,3 @@
-[submodule "results"]
-	path = results
-	url = https://github.com/ShawnZhong/agentctl-results
 [submodule "third_party/codex"]
 	path = third_party/codex
 	url = https://github.com/openai/codex
@@ -10,3 +7,6 @@
 [submodule "results-bench"]
 	path = results-bench
 	url = git@github.com:ShawnZhong/Agfs-Bench-Results.git
+[submodule "results-eval"]
+	path = results-eval
+	url = git@github.com:ShawnZhong/Agfs-Eval-Results.git
