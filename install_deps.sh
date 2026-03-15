@@ -35,7 +35,9 @@ fi
 
 # ── uv (Python package manager) ──────────────────────────────────────
 
-if command -v uv &>/dev/null; then
+if [[ "${CI:-}" == "true" ]]; then
+    info "Skipping uv install in CI"
+elif command -v uv &>/dev/null; then
     info "uv already installed: $(uv --version)"
 else
     info "Installing uv"
