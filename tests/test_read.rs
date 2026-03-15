@@ -124,8 +124,8 @@ fn readdir_after_rename() {
     );
 
     // Content still accessible via the new name
-    let content =
-        fs::read_to_string(s.mnt_path("renamed.txt")).expect("renamed file should be readable");
+    let content = fs::read_to_string(s.mnt_path("renamed.txt"))
+        .expect("renamed file should be readable");
     assert_eq!(content, "base content\n");
 }
 

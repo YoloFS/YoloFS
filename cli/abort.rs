@@ -15,13 +15,16 @@ pub fn run() -> Result<()> {
 
     // rm -rf staging/
     if staging_dir.exists() {
-        fs::remove_dir_all(&staging_dir).context("removing staging directory")?;
-        fs::create_dir_all(&staging_dir).context("recreating staging directory")?;
+        fs::remove_dir_all(&staging_dir)
+            .context("removing staging directory")?;
+        fs::create_dir_all(&staging_dir)
+            .context("recreating staging directory")?;
     }
 
     // rm journal
     if journal_path.exists() {
-        fs::remove_file(&journal_path).context("removing journal file")?;
+        fs::remove_file(&journal_path)
+            .context("removing journal file")?;
     }
 
     // Signal kernel to invalidate caches

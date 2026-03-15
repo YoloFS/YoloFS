@@ -23,24 +23,11 @@ pub enum Record {
 /// A resolved change — the final effect of replaying the journal.
 #[derive(Debug)]
 pub enum Change {
-    Added {
-        path: String,
-        blob_id: u64,
-    },
-    Modified {
-        path: String,
-        blob_id: u64,
-    },
+    Added { path: String, blob_id: u64 },
+    Modified { path: String, blob_id: u64 },
     Deleted(String),
-    Renamed {
-        from: String,
-        to: String,
-    },
-    RenamedModified {
-        from: String,
-        to: String,
-        blob_id: u64,
-    },
+    Renamed { from: String, to: String },
+    RenamedModified { from: String, to: String, blob_id: u64 },
 }
 
 /// Read and parse the journal file.
@@ -303,8 +290,7 @@ mod tests {
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Added { path, blob_id } if path == "/nonexistent_test_12345/y" && *blob_id == 1),
-            "expected Added at y with blob 1, got: {:?}",
-            changes[0]
+            "expected Added at y with blob 1, got: {:?}", changes[0]
         );
     }
 
@@ -321,14 +307,10 @@ mod tests {
 
         let changes = resolve(dir.path()).unwrap();
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
-        let has_rename = changes.iter().any(|c| {
-            matches!(c, Change::Renamed { from, to }
-            if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/b")
-        });
-        let has_add = changes.iter().any(|c| {
-            matches!(c, Change::Added { path, blob_id }
-            if path == "/nonexistent_test_12345/a" && *blob_id == 2)
-        });
+        let has_rename = changes.iter().any(|c| matches!(c, Change::Renamed { from, to }
+            if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/b"));
+        let has_add = changes.iter().any(|c| matches!(c, Change::Added { path, blob_id }
+            if path == "/nonexistent_test_12345/a" && *blob_id == 2));
         assert!(has_rename, "expected Renamed(a→b), got: {changes:?}");
         assert!(has_add, "expected Added(a, 2), got: {changes:?}");
     }
@@ -348,8 +330,7 @@ mod tests {
         assert!(
             matches!(&changes[0], Change::Renamed { from, to }
                 if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/c"),
-            "expected Renamed(a→c), got: {:?}",
-            changes[0]
+            "expected Renamed(a→c), got: {:?}", changes[0]
         );
     }
 
@@ -401,20 +382,12 @@ mod tests {
         let changes = resolve(dir.path()).unwrap();
         // Should have: Add(/etc/hostname.bak, 1) + Delete(/etc/hostname)
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
-        let has_add = changes.iter().any(|c| {
-            matches!(c, Change::Added { path, blob_id }
-            if path == "/etc/hostname.bak" && *blob_id == 1)
-        });
+        let has_add = changes.iter().any(|c| matches!(c, Change::Added { path, blob_id }
+            if path == "/etc/hostname.bak" && *blob_id == 1));
         let has_delete = changes
             .iter()
             .any(|c| matches!(c, Change::Deleted(p) if p == "/etc/hostname"));
-        assert!(
-            has_add,
-            "expected Added(/etc/hostname.bak, 1), got: {changes:?}"
-        );
-        assert!(
-            has_delete,
-            "expected Deleted(/etc/hostname), got: {changes:?}"
-        );
+        assert!(has_add, "expected Added(/etc/hostname.bak, 1), got: {changes:?}");
+        assert!(has_delete, "expected Deleted(/etc/hostname), got: {changes:?}");
     }
 }

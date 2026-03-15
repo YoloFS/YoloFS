@@ -11,32 +11,14 @@ fn sequential_writes_to_different_files() {
     fs::write(s.mnt_path("multi.txt"), "mod2\n").unwrap();
     fs::write(s.mnt_path("subdir/deep.txt"), "mod3\n").unwrap();
 
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
-        "mod1\n"
-    );
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("multi.txt")).unwrap(),
-        "mod2\n"
-    );
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("subdir/deep.txt")).unwrap(),
-        "mod3\n"
-    );
+    assert_eq!(fs::read_to_string(s.mnt_path("hello.txt")).unwrap(), "mod1\n");
+    assert_eq!(fs::read_to_string(s.mnt_path("multi.txt")).unwrap(), "mod2\n");
+    assert_eq!(fs::read_to_string(s.mnt_path("subdir/deep.txt")).unwrap(), "mod3\n");
 
     // All bases unchanged
-    assert_eq!(
-        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
-        "base content\n"
-    );
-    assert_eq!(
-        fs::read_to_string(s.base_path("multi.txt")).unwrap(),
-        "line1\nline2\n"
-    );
-    assert_eq!(
-        fs::read_to_string(s.base_path("subdir/deep.txt")).unwrap(),
-        "nested\n"
-    );
+    assert_eq!(fs::read_to_string(s.base_path("hello.txt")).unwrap(), "base content\n");
+    assert_eq!(fs::read_to_string(s.base_path("multi.txt")).unwrap(), "line1\nline2\n");
+    assert_eq!(fs::read_to_string(s.base_path("subdir/deep.txt")).unwrap(), "nested\n");
 }
 
 #[test]
@@ -72,9 +54,6 @@ fn append_multiple_times() {
     let content = fs::read_to_string(s.mnt_path("multi.txt")).unwrap();
     assert!(content.starts_with("line1\nline2\n"));
     for i in 0..5 {
-        assert!(
-            content.contains(&format!("appended-{i}")),
-            "missing appended-{i}"
-        );
+        assert!(content.contains(&format!("appended-{i}")), "missing appended-{i}");
     }
 }

@@ -1,12 +1,12 @@
 pub mod abort;
 pub mod commit;
 pub mod config;
-pub mod diff;
-pub mod exec;
-pub mod init;
 pub mod ioctl;
+pub mod diff;
+pub mod init;
 pub mod journal;
 pub mod mount;
+pub mod exec;
 pub mod status;
 pub mod watch;
 

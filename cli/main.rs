@@ -6,10 +6,7 @@ use colored::Colorize;
 use std::io::{self, BufRead, Write};
 
 #[derive(Parser)]
-#[command(
-    name = "agfs",
-    about = "Agentic filesystem — staging-commit + permission gating"
-)]
+#[command(name = "agfs", about = "Agentic filesystem — staging-commit + permission gating")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -99,9 +96,7 @@ fn run_cli() -> anyhow::Result<u8> {
         Some(Command::Unmount) => mount::unmount()?,
         Some(Command::Remount) => mount::remount()?,
         Some(Command::Status) => status::run()?,
-        Some(Command::Diff) => {
-            diff::run()?;
-        }
+        Some(Command::Diff) => { diff::run()?; }
         Some(Command::Commit) => commit::run()?,
         Some(Command::Abort) => abort::run()?,
         Some(Command::Rule { action }) => match action {

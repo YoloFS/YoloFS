@@ -27,11 +27,7 @@ fn cwd_symlink_created() {
     let cwd_link = session.root.join(".agfs/cwd");
 
     assert!(
-        cwd_link
-            .symlink_metadata()
-            .unwrap()
-            .file_type()
-            .is_symlink(),
+        cwd_link.symlink_metadata().unwrap().file_type().is_symlink(),
         ".agfs/cwd should be a symlink"
     );
 
@@ -56,10 +52,7 @@ fn pseudofs_bind_mounted() {
 
     // /proc/self should be accessible (confirms it's a real procfs, not empty dir)
     let proc_self = session.mnt.join("proc/self");
-    assert!(
-        proc_self.exists(),
-        "/proc/self should be accessible via bind-mount"
-    );
+    assert!(proc_self.exists(), "/proc/self should be accessible via bind-mount");
 }
 
 #[test]
@@ -68,17 +61,11 @@ fn unmount_cleans_up_pseudofs() {
     let mnt = session.root.join(".agfs/mnt");
 
     // Verify bind-mounts are present
-    assert!(
-        mnt.join("proc/self").exists(),
-        "proc should be bind-mounted"
-    );
+    assert!(mnt.join("proc/self").exists(), "proc should be bind-mounted");
 
     let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
     assert!(ok, "unmount should succeed with bind-mounts: {stderr}");
-    assert!(
-        !session.root.join(".agfs").exists(),
-        ".agfs/ should be removed"
-    );
+    assert!(!session.root.join(".agfs").exists(), ".agfs/ should be removed");
 }
 
 /// When a process holds an fd on the mount, unmount should fail with a
@@ -91,10 +78,7 @@ fn unmount_reports_blocking_process() {
     // Spawn a child that holds a file on the agfs mount open.
     let file_in_mount = session.mnt_path("hello.txt");
     let mut child = Command::new("bash")
-        .args([
-            "-c",
-            &format!("exec 3<'{}'; sleep 60", file_in_mount.display()),
-        ])
+        .args(["-c", &format!("exec 3<'{}'; sleep 60", file_in_mount.display())])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

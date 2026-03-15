@@ -137,12 +137,13 @@ fn rename_then_recreate_old_name() {
     fs::write(s.mnt_path("hello.txt"), "new file\n").expect("recreate");
 
     // New file should be readable
-    let content =
-        fs::read_to_string(s.mnt_path("hello.txt")).expect("new hello.txt should be readable");
+    let content = fs::read_to_string(s.mnt_path("hello.txt"))
+        .expect("new hello.txt should be readable");
     assert_eq!(content, "new file\n");
 
     // Renamed file still accessible at new path
-    let moved = fs::read_to_string(s.mnt_path("moved.txt")).expect("moved.txt should be readable");
+    let moved = fs::read_to_string(s.mnt_path("moved.txt"))
+        .expect("moved.txt should be readable");
     assert_eq!(moved, "base content\n");
 }
 

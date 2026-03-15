@@ -82,7 +82,9 @@ pub struct AgfsSession {
 impl AgfsSession {
     /// Create a new test session with a custom agfs.toml config.
     pub fn new_with_config(config: Config) -> Result<Self> {
-        let root = tempfile::tempdir().context("creating temp dir")?.keep();
+        let root = tempfile::tempdir()
+            .context("creating temp dir")?
+            .keep();
 
         // Seed base test files
         fs::write(root.join("hello.txt"), "base content\n")?;
@@ -92,7 +94,10 @@ impl AgfsSession {
 
         // Seed an executable script for permission tests
         fs::write(root.join("test.sh"), "#!/bin/sh\necho ok\n")?;
-        fs::set_permissions(root.join("test.sh"), fs::Permissions::from_mode(0o755))?;
+        fs::set_permissions(
+            root.join("test.sh"),
+            fs::Permissions::from_mode(0o755),
+        )?;
 
         config.save(&root.join("agfs.toml"))?;
 
@@ -111,10 +116,7 @@ impl AgfsSession {
     /// Create a new test session: seed files, write agfs.toml, `agfs mount`.
     pub fn new() -> Result<Self> {
         Self::new_with_config(Config {
-            mount: MountConfig {
-                noperm: true,
-                ..Default::default()
-            },
+            mount: MountConfig { noperm: true, ..Default::default() },
             rules: BTreeMap::new(),
         })
     }
@@ -141,9 +143,7 @@ impl AgfsSession {
     /// Resolve a relative path through the agfs mount.
     /// e.g., "hello.txt" → <mnt>/<root>/hello.txt
     pub fn mnt_path(&self, rel: &str) -> PathBuf {
-        self.mnt
-            .join(self.root.strip_prefix("/").unwrap())
-            .join(rel)
+        self.mnt.join(self.root.strip_prefix("/").unwrap()).join(rel)
     }
 
     /// Resolve a base (host) path.

@@ -3,7 +3,7 @@
 // `agfs exec [-- cmd]` — chroot into .agfs/mnt and exec a command,
 // preserving the caller's working directory.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use std::env;
 use std::os::unix::process::CommandExt;

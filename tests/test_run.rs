@@ -29,10 +29,7 @@ fn run_command_not_found() {
     let session = AgfsSession::new().expect("session setup");
 
     let code = session.run_in_sandbox(&["nonexistent_cmd_xyz"]).unwrap();
-    assert_ne!(
-        code, 0,
-        "nonexistent command should return non-zero exit code"
-    );
+    assert_ne!(code, 0, "nonexistent command should return non-zero exit code");
 }
 
 #[test]
@@ -41,11 +38,7 @@ fn run_shell_pipe() {
 
     let chroot_path = session.root.join("hello.txt");
     let code = session
-        .run_in_sandbox(&[
-            "sh",
-            "-c",
-            &format!("cat {} | grep base", chroot_path.display()),
-        ])
+        .run_in_sandbox(&["sh", "-c", &format!("cat {} | grep base", chroot_path.display())])
         .unwrap();
     assert_eq!(code, 0, "shell pipe should work");
 }
@@ -56,11 +49,7 @@ fn run_shell_quotes() {
 
     let chroot_path = session.root.join("hello.txt");
     let code = session
-        .run_in_sandbox(&[
-            "sh",
-            "-c",
-            &format!("test \"$(cat {})\" = 'base content'", chroot_path.display()),
-        ])
+        .run_in_sandbox(&["sh", "-c", &format!("test \"$(cat {})\" = 'base content'", chroot_path.display())])
         .unwrap();
     assert_eq!(code, 0, "shell quotes should be preserved");
 }
@@ -72,11 +61,6 @@ fn run_reads_file_through_mount() {
     // Inside the chroot, paths are relative to the mount root (which IS /)
     // The test file lives at <root>/hello.txt, visible as <root>/hello.txt inside chroot
     let chroot_path = session.root.join("hello.txt");
-    let code = session
-        .run_in_sandbox(&["cat", chroot_path.to_str().unwrap()])
-        .unwrap();
-    assert_eq!(
-        code, 0,
-        "cat should succeed reading a file inside the sandbox"
-    );
+    let code = session.run_in_sandbox(&["cat", chroot_path.to_str().unwrap()]).unwrap();
+    assert_eq!(code, 0, "cat should succeed reading a file inside the sandbox");
 }
