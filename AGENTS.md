@@ -18,7 +18,8 @@
 
 - **kmod/** — Linux kernel module (C). Build with `make kmod`.
 - **cli/** — Userspace CLI (Rust). Build with `make cli`.
-- **tests/** — E2E tests:
+  Unit tests live inline via `#[cfg(test)]` in each module.
+- **tests/** — E2E / integration tests.
   - `tests/fs/` — black-box filesystem behavior through the mount via `std::fs`.
   - `tests/cli/` — black-box; run `agfs <subcommand>` and assert on stdout/stderr/exit-code.
   - `tests/perm/` — black-box permission rule enforcement.
@@ -30,6 +31,8 @@
 Tests run inside a QEMU VM managed by `vm.py` (repo auto-mounted via 9p).
 
 ```bash
+./vm.py start                 # launch the VM
+./vm.py ssh                   # interactive shell inside the VM
 ./vm.py ssh -- make test      # unit + e2e tests
 ./vm.py ssh -- make test-unit # unit tests only
 ./vm.py ssh -- make test-e2e  # e2e tests only
