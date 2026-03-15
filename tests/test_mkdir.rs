@@ -35,14 +35,14 @@ fn mkdir_lands_in_staging() {
 
     // Staging should have a blob that is a directory
     let staging = s.staging_dir();
-    let has_dir_blob = fs::read_dir(&staging)
-        .unwrap()
-        .any(|e| {
-            let e = e.unwrap();
-            e.file_name().to_string_lossy().parse::<u64>().is_ok()
-                && e.file_type().unwrap().is_dir()
-        });
-    assert!(has_dir_blob, "new directory should create a dir blob in staging");
+    let has_dir_blob = fs::read_dir(&staging).unwrap().any(|e| {
+        let e = e.unwrap();
+        e.file_name().to_string_lossy().parse::<u64>().is_ok() && e.file_type().unwrap().is_dir()
+    });
+    assert!(
+        has_dir_blob,
+        "new directory should create a dir blob in staging"
+    );
     assert!(
         !s.base_path("newdir").exists(),
         "new directory should not exist in base before commit"

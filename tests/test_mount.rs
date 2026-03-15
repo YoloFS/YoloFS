@@ -1,5 +1,5 @@
+use crate::helpers::{AGFS_BIN, AgfsSession};
 use agfs::config::{Config, MountConfig, Perm};
-use crate::helpers::{AgfsSession, AGFS_BIN};
 use std::collections::BTreeMap;
 
 #[test]
@@ -8,7 +8,10 @@ fn mount_and_unmount() {
 
     // Verify mount point exists and is accessible
     assert!(session.mnt.exists(), "mount point exists");
-    assert!(session.mnt.join("tmp").exists(), "root fs visible through mount");
+    assert!(
+        session.mnt.join("tmp").exists(),
+        "root fs visible through mount"
+    );
 
     // Verify test files visible through mount
     assert!(session.mnt_path("hello.txt").exists());
@@ -31,9 +34,13 @@ fn mount_creates_layout() {
 #[test]
 fn remount_picks_up_new_rules() {
     let session = AgfsSession::new_with_config(Config {
-        mount: MountConfig { noperm: true, ..Default::default() },
+        mount: MountConfig {
+            noperm: true,
+            ..Default::default()
+        },
         rules: BTreeMap::new(),
-    }).expect("session setup");
+    })
+    .expect("session setup");
 
     // Initially no rules — mount should work
     let (ok, _, stderr) = session.cli_output(&["mount"]).unwrap();
@@ -41,13 +48,21 @@ fn remount_picks_up_new_rules() {
 
     // Write config with rules, remount
     Config {
-        mount: MountConfig { noperm: true, ..Default::default() },
+        mount: MountConfig {
+            noperm: true,
+            ..Default::default()
+        },
         rules: BTreeMap::from([("/etc".into(), Perm::AllowRo)]),
-    }.save(&session.root.join("agfs.toml")).unwrap();
+    }
+    .save(&session.root.join("agfs.toml"))
+    .unwrap();
 
     let (ok, _, stderr) = session.cli_output(&["remount"]).unwrap();
     assert!(ok, "remount should succeed: {stderr}");
-    assert!(stderr.contains("applying 1 rule"), "remount should apply rules: {stderr}");
+    assert!(
+        stderr.contains("applying 1 rule"),
+        "remount should apply rules: {stderr}"
+    );
 }
 
 #[test]

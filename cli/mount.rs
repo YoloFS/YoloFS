@@ -28,7 +28,10 @@ fn umount_or_prompt(target: &Path) -> Result<()> {
     // Unmount failed with EBUSY — find who's blocking it.
     let pids = get_blocking_pids(target);
     if pids.is_empty() {
-        anyhow::bail!("{} is busy (could not identify blocking processes)", target.display());
+        anyhow::bail!(
+            "{} is busy (could not identify blocking processes)",
+            target.display()
+        );
     }
 
     eprintln!(
@@ -37,8 +40,7 @@ fn umount_or_prompt(target: &Path) -> Result<()> {
         target.display()
     );
     for &pid in &pids {
-        let comm = fs::read_to_string(format!("/proc/{pid}/comm"))
-            .unwrap_or_default();
+        let comm = fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
         eprintln!("  PID {pid}  {}", comm.trim());
     }
 
@@ -48,7 +50,10 @@ fn umount_or_prompt(target: &Path) -> Result<()> {
     io::stdin().lock().read_line(&mut input).ok();
 
     if !input.trim().eq_ignore_ascii_case("y") {
-        anyhow::bail!("{} is busy (user declined to kill blocking processes)", target.display());
+        anyhow::bail!(
+            "{} is busy (user declined to kill blocking processes)",
+            target.display()
+        );
     }
 
     for &pid in &pids {
@@ -59,8 +64,12 @@ fn umount_or_prompt(target: &Path) -> Result<()> {
     }
     std::thread::sleep(std::time::Duration::from_millis(200));
 
-    nix::mount::umount(target)
-        .with_context(|| format!("umount {} after killing blocking processes", target.display()))
+    nix::mount::umount(target).with_context(|| {
+        format!(
+            "umount {} after killing blocking processes",
+            target.display()
+        )
+    })
 }
 
 /// Get PIDs of processes with open file descriptors on the same device as `mount_path`.
@@ -136,8 +145,7 @@ fn unbind_mount_pseudofs(mnt: &Path) -> Result<()> {
         let target = mnt.join(source.trim_start_matches('/'));
         if target.exists() && is_mountpoint(&target) {
             eprintln!("{} {}", "agfs: unbinding".green(), source);
-            umount_or_prompt(&target)
-                .with_context(|| format!("unbinding {source}"))?;
+            umount_or_prompt(&target).with_context(|| format!("unbinding {source}"))?;
         }
     }
     Ok(())
@@ -153,8 +161,7 @@ pub fn unmount_at(agfs_dir: &Path) -> Result<()> {
     // Unbind pseudo filesystems, then unmount agfs
     unbind_mount_pseudofs(&mnt)?;
     if mnt.exists() && is_mountpoint(&mnt) {
-        umount_or_prompt(&mnt)
-            .with_context(|| format!("unmounting {}", mnt.display()))?;
+        umount_or_prompt(&mnt).with_context(|| format!("unmounting {}", mnt.display()))?;
     }
 
     // Remove the .agfs/ directory
@@ -186,7 +193,11 @@ pub fn mount() -> Result<()> {
 pub fn unmount() -> Result<()> {
     let agfs_dir = crate::session_dir()?;
     unmount_at(&agfs_dir)?;
-    eprintln!("{} {}", "agfs: unmounted".green(), agfs_dir.join("mnt").display());
+    eprintln!(
+        "{} {}",
+        "agfs: unmounted".green(),
+        agfs_dir.join("mnt").display()
+    );
     Ok(())
 }
 
@@ -199,16 +210,18 @@ pub fn remount() -> Result<()> {
 /// Check if a path is a mount point by comparing device IDs with its parent.
 fn is_mountpoint(path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    let Ok(meta) = fs::metadata(path) else { return false };
-    let Ok(parent_meta) = fs::metadata(path.join("..")) else { return false };
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    let Ok(parent_meta) = fs::metadata(path.join("..")) else {
+        return false;
+    };
     meta.dev() != parent_meta.dev()
 }
 
 pub fn setup_agfs_dir(agfs_dir: &Path) -> Result<()> {
-    fs::create_dir_all(agfs_dir.join("staging"))
-        .context("creating .agfs/staging/")?;
-    fs::create_dir_all(agfs_dir.join("mnt"))
-        .context("creating .agfs/mnt/")?;
+    fs::create_dir_all(agfs_dir.join("staging")).context("creating .agfs/staging/")?;
+    fs::create_dir_all(agfs_dir.join("mnt")).context("creating .agfs/mnt/")?;
     Ok(())
 }
 
@@ -234,7 +247,9 @@ pub fn do_mount(agfs_dir: &Path) -> Result<()> {
 /// Create .agfs/cwd symlink pointing to the cwd inside the mount.
 fn create_cwd_symlink(agfs_dir: &Path, cwd: &Path) -> Result<()> {
     let link = agfs_dir.join("cwd");
-    let target = agfs_dir.join("mnt").join(cwd.strip_prefix("/").unwrap_or(cwd));
+    let target = agfs_dir
+        .join("mnt")
+        .join(cwd.strip_prefix("/").unwrap_or(cwd));
     if link.exists() || link.symlink_metadata().is_ok() {
         fs::remove_file(&link).context("removing old .agfs/cwd symlink")?;
     }

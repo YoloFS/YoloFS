@@ -1,5 +1,5 @@
+use crate::helpers::{AGFS_BIN, AgfsSession};
 use agfs::config::{Config, MountConfig, Perm};
-use crate::helpers::{AgfsSession, AGFS_BIN};
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -12,7 +12,10 @@ use std::time::Duration;
 #[test]
 fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig { ask_default: Some(Perm::Ask), ..Default::default() },
+        mount: MountConfig {
+            ask_default: Some(Perm::Ask),
+            ..Default::default()
+        },
         rules: BTreeMap::new(),
     })
     .expect("session setup");
@@ -47,7 +50,10 @@ fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
         "watch daemon should have received an ask for {expected_path}, got:\n{stderr}"
     );
 
-    assert_eq!(code, 0, "touch a should succeed when watch --allow-all is running");
+    assert_eq!(
+        code, 0,
+        "touch a should succeed when watch --allow-all is running"
+    );
 }
 
 /// Starting a second watch while one is already running should fail
@@ -55,9 +61,13 @@ fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
 #[test]
 fn second_watch_reports_already_running() {
     let s = AgfsSession::new_with_config(Config {
-        mount: MountConfig { ask_default: Some(Perm::Deny), ..Default::default() },
+        mount: MountConfig {
+            ask_default: Some(Perm::Deny),
+            ..Default::default()
+        },
         rules: BTreeMap::new(),
-    }).expect("session setup");
+    })
+    .expect("session setup");
 
     // Start first watch in background.
     let mut watch1 = Command::new(AGFS_BIN)

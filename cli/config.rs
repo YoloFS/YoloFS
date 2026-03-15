@@ -156,7 +156,9 @@ fn resolve_to_abs(path: &str) -> Result<String> {
 }
 
 fn resolve_through_mount(abs_path: &str, mnt: &Path) -> String {
-    mnt.join(abs_path.trim_start_matches('/')).to_string_lossy().to_string()
+    mnt.join(abs_path.trim_start_matches('/'))
+        .to_string_lossy()
+        .to_string()
 }
 
 // ── Mount options ─────────────────────────────────────────────────────
@@ -208,7 +210,14 @@ pub fn apply_rules(agfs_dir: &Path) -> Result<()> {
     let ctl_file = ioctl::open(agfs_dir)?;
     let mnt = agfs_dir.join("mnt");
 
-    eprintln!("{}", format!("agfs: applying {} rule(s) from agfs.toml", config.rules.len()).cyan());
+    eprintln!(
+        "{}",
+        format!(
+            "agfs: applying {} rule(s) from agfs.toml",
+            config.rules.len()
+        )
+        .cyan()
+    );
 
     for (path, perm) in &config.rules {
         let abs_path = match resolve_to_abs(path) {
@@ -239,7 +248,10 @@ pub fn add_rule(path: &str, perm_str: &str) -> Result<()> {
     let mut config = if cp.exists() {
         Config::load(&cp)?
     } else {
-        Config { rules: BTreeMap::new(), ..Default::default() }
+        Config {
+            rules: BTreeMap::new(),
+            ..Default::default()
+        }
     };
     config.rules.insert(path.to_string(), perm);
     config.save(&cp)?;
@@ -252,7 +264,13 @@ pub fn add_rule(path: &str, perm_str: &str) -> Result<()> {
         let resolved = resolve_through_mount(&abs_path, &mnt);
         let ctl_file = ioctl::open(&agfs)?;
         ioctl::add_rule(&ctl_file, &resolved, perm.to_ioctl())?;
-        eprintln!("{} {} = {} {}", "rule added:".green().bold(), path, perm, "(live)".green());
+        eprintln!(
+            "{} {} = {} {}",
+            "rule added:".green().bold(),
+            path,
+            perm,
+            "(live)".green()
+        );
     } else {
         eprintln!("{} {} = {}", "rule added:".green().bold(), path, perm);
     }
@@ -277,7 +295,12 @@ pub fn remove_rule(path: &str) -> Result<()> {
         let resolved = resolve_through_mount(&abs_path, &mnt);
         let ctl_file = ioctl::open(&agfs)?;
         ioctl::remove_rule(&ctl_file, &resolved)?;
-        eprintln!("{} {} {}", "rule removed:".yellow().bold(), path, "(live)".yellow());
+        eprintln!(
+            "{} {} {}",
+            "rule removed:".yellow().bold(),
+            path,
+            "(live)".yellow()
+        );
     } else {
         eprintln!("{} {}", "rule removed:".yellow().bold(), path);
     }
@@ -307,8 +330,12 @@ mod tests {
     fn perm_serde_roundtrip() {
         // TOML requires a table at the top level, so wrap in a struct
         #[derive(Serialize, Deserialize, PartialEq, Debug)]
-        struct Wrapper { perm: Perm }
-        let w = Wrapper { perm: Perm::AllowRx };
+        struct Wrapper {
+            perm: Perm,
+        }
+        let w = Wrapper {
+            perm: Perm::AllowRx,
+        };
         let s = toml::to_string(&w).unwrap();
         assert!(s.contains("allow-rx"), "s = {s}");
         let w2: Wrapper = toml::from_str(&s).unwrap();
@@ -447,7 +474,12 @@ mod tests {
     fn add_rule_to_config() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("agfs.toml");
-        Config { mount: Default::default(), rules: BTreeMap::new() }.save(&path).unwrap();
+        Config {
+            mount: Default::default(),
+            rules: BTreeMap::new(),
+        }
+        .save(&path)
+        .unwrap();
 
         let mut config = Config::load(&path).unwrap();
         config.rules.insert("/tmp".to_string(), Perm::AllowRw);
@@ -461,7 +493,10 @@ mod tests {
     fn remove_rule_from_config() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("agfs.toml");
-        let mut config = Config { mount: Default::default(), rules: BTreeMap::new() };
+        let mut config = Config {
+            mount: Default::default(),
+            rules: BTreeMap::new(),
+        };
         config.rules.insert("/tmp".to_string(), Perm::AllowRw);
         config.rules.insert("/etc".to_string(), Perm::AllowRo);
         config.save(&path).unwrap();

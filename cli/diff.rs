@@ -78,12 +78,7 @@ pub fn run() -> Result<bool> {
                 print_unified_diff(&old_text, "");
             }
             Change::Renamed { from, to } => {
-                println!(
-                    "{} → {} {}",
-                    from.bold(),
-                    to.bold(),
-                    "(renamed)".cyan()
-                );
+                println!("{} → {} {}", from.bold(), to.bold(), "(renamed)".cyan());
             }
             Change::RenamedModified { from, to, blob_id } => {
                 let base_file = base.join(from.trim_start_matches('/'));
