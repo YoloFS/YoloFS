@@ -14,6 +14,7 @@ mod test_create;
 mod test_delete;
 mod test_diff;
 mod test_inode;
+mod test_journal;
 mod test_lifecycle;
 mod test_mkdir;
 mod test_mount;
