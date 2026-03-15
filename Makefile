@@ -39,7 +39,7 @@ uninstall:
 
 # ── Test ──────────────────────────────────────────────────────────────
 
-.PHONY: test test-unit test-e2e lint
+.PHONY: test test-unit test-e2e lint fix
 
 test: test-unit test-e2e
 
@@ -58,16 +58,15 @@ fix:
 	cargo fmt
 	cargo clippy --fix --allow-dirty
 
-unload-kmod:
-	sudo rmmod agfs
-
 # ── Bench ──────────────────────────────────────────────────────────────
 
 .PHONY: bench
 
-bench: load-kmod install
+bench: install
+	agfs load
 	cargo build --release --bin agfs-bench
 	./target/release/agfs-bench
+	agfs unload
 
 # ── CI ─────────────────────────────────────────────────────────────────
 
