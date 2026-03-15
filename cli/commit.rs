@@ -43,8 +43,7 @@ fn apply_blob(agfs_dir: &Path, blob_id: u64, base_path: &Path) -> Result<()> {
         std::os::unix::fs::symlink(&target, base_path)
             .with_context(|| format!("creating symlink at {}", base_path.display()))?;
     } else if meta.is_dir() {
-        fs::create_dir_all(base_path)
-            .with_context(|| format!("mkdir {}", base_path.display()))?;
+        fs::create_dir_all(base_path).with_context(|| format!("mkdir {}", base_path.display()))?;
     } else {
         fs::rename(&blob, base_path)
             .or_else(|_| {
@@ -104,8 +103,7 @@ pub fn run() -> Result<()> {
                     .with_context(|| format!("deleting {p}"))?;
                 }
             }
-            Change::Added { path, blob_id }
-            | Change::Modified { path, blob_id } => {
+            Change::Added { path, blob_id } | Change::Modified { path, blob_id } => {
                 let base_file = base.join(path.trim_start_matches('/'));
                 apply_blob(&agfs, *blob_id, &base_file)?;
             }

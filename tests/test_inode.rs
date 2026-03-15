@@ -70,5 +70,8 @@ fn getattr_staged_file() {
 
     // The staging file has the new content (via blob)
     let content_via_mount = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
-    assert_eq!(content_via_mount, "x\n", "read should return staging content");
+    assert_eq!(
+        content_via_mount, "x\n",
+        "read should return staging content"
+    );
 }

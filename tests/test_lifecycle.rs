@@ -24,8 +24,14 @@ fn full_write_commit_cycle() {
     assert!(output.contains("Committed 2"), "commit: {output}");
 
     // 5. Base has committed content
-    assert_eq!(fs::read_to_string(s.base_path("hello.txt")).unwrap(), "updated\n");
-    assert_eq!(fs::read_to_string(s.base_path("newfile.txt")).unwrap(), "brand new\n");
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        "updated\n"
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("newfile.txt")).unwrap(),
+        "brand new\n"
+    );
 }
 
 /// Full lifecycle: write → status → abort → verify base unchanged
@@ -67,7 +73,10 @@ fn double_commit() {
     // First round
     fs::write(s.mnt_path("hello.txt"), "round1\n").unwrap();
     s.cli(&["commit"]).unwrap();
-    assert_eq!(fs::read_to_string(s.base_path("hello.txt")).unwrap(), "round1\n");
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        "round1\n"
+    );
 }
 
 /// Abort, then verify base unchanged.
@@ -94,7 +103,10 @@ fn delete_commit_then_verify_base() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
     let status = s.cli(&["status"]).unwrap();
-    assert!(status.contains("hello.txt"), "status should show deleted file: {status}");
+    assert!(
+        status.contains("hello.txt"),
+        "status should show deleted file: {status}"
+    );
 
     s.cli(&["commit"]).expect("commit");
 
