@@ -74,7 +74,7 @@ pub fn reload() -> Result<()> {
 
 /// Find the .ko file: dev build directory, then system install path.
 fn find_ko() -> Option<PathBuf> {
-    let cwd_path = Path::new("kmod/build/agfs.ko");
+    let cwd_path = Path::new("target/kmod/agfs.ko");
     if cwd_path.exists() {
         return Some(cwd_path.to_path_buf());
     }
@@ -143,13 +143,13 @@ mod tests {
 
     #[test]
     fn find_ko_prefers_build_dir() {
-        let cwd_path = Path::new("kmod/build/agfs.ko");
+        let cwd_path = Path::new("target/kmod/agfs.ko");
         if cwd_path.exists() {
             let found = find_ko().expect("find_ko should succeed when build dir exists");
             assert_eq!(
                 found,
                 cwd_path.to_path_buf(),
-                "should prefer kmod/build/ over system path"
+                "should prefer target/kmod/ over system path"
             );
         }
     }

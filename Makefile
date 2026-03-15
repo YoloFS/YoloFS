@@ -1,8 +1,9 @@
 # ── Variables ─────────────────────────────────────────────────────────
 
 KDIR            ?= /lib/modules/$(shell uname -r)/build
-KMOD_OUT        := kmod/build/agfs.ko
+KMOD_OUT         := target/kmod/agfs.ko
 KMOD_INSTALL_DIR := /lib/modules/$(shell uname -r)/extra
+TARGET_DIR       := $(CURDIR)-target
 
 # ── Build ─────────────────────────────────────────────────────────────
 
@@ -10,19 +11,21 @@ KMOD_INSTALL_DIR := /lib/modules/$(shell uname -r)/extra
 
 build: cli kmod
 
-cli:
+$(TARGET_DIR):
+	mkdir -p $@
+
+cli: | $(TARGET_DIR)
 	cargo build --release
 
 kmod: $(KMOD_OUT)
 
-$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild)
-	mkdir -p kmod/build
-	cp kmod/Kbuild kmod/build/Kbuild
-	$(MAKE) -j$(nproc) -C $(KDIR) M=$(realpath kmod/build) KBUILD_KMOD_SRC=$(CURDIR)/kmod modules
+$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(TARGET_DIR)
+	mkdir -p $(TARGET_DIR)/kmod
+	cp kmod/Kbuild $(TARGET_DIR)/kmod/Kbuild
+	$(MAKE) -j$(nproc) -C $(KDIR) M=$(TARGET_DIR)/kmod KBUILD_KMOD_SRC=$(CURDIR)/kmod modules
 
 clean:
-	cargo clean
-	rm -rf kmod/build
+	rm -rf $(TARGET_DIR)
 
 lint:
 	cargo fmt --check

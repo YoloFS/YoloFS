@@ -22,9 +22,6 @@ DEFAULT_CPUS = os.cpu_count()
 DEFAULT_SSH_PORT = 2222
 DEFAULT_USER = "ubuntu"
 DEFAULT_PASSWORD = "ubuntu"
-# Build artifact directories (gitignored) to symlink to VM-local storage
-# so they don't write through to the host via 9p.
-LOCAL_DIRS = ["kmod/build", "target"]
 
 
 def download_image():
@@ -98,23 +95,11 @@ def create_seed_iso(host_cwd: Path, force: bool = False):
     else:
         keys_yaml = "ssh_authorized_keys: []"
 
-    # Build symlink commands for artifact directories
-    vm_workspace = str(host_cwd)
-    vm_local = f"{vm_workspace}-local"
-    symlink_cmds = []
-    for d in LOCAL_DIRS:
-        local_dir = f"{vm_local}/{d}"
-        mount_dir = f"{vm_workspace}/{d}"
-        symlink_cmds.append(f"mkdir -p {local_dir}")
-        symlink_cmds.append(f"rm -rf {mount_dir}")
-        symlink_cmds.append(f"ln -s {local_dir} {mount_dir}")
-
     mount_cmds = [
-        f"mkdir -p {vm_workspace}",
-        f"mount -t 9p -o trans=virtio,version=9p2000.L,rw hostcwd {vm_workspace}",
-        *symlink_cmds,
-        f"chown -R {DEFAULT_USER}:{DEFAULT_USER} {vm_local}",
-        f'echo "cd {vm_workspace}" >> /home/{DEFAULT_USER}/.bashrc',
+        f"mkdir -p {host_cwd}",
+        f"chown {DEFAULT_USER}:{DEFAULT_USER} {host_cwd.parent}",
+        f"mount -t 9p -o trans=virtio,version=9p2000.L,rw hostcwd {host_cwd}",
+        f'echo "cd {host_cwd}" >> /home/{DEFAULT_USER}/.bashrc',
     ]
     runcmd_yaml = "runcmd:\n" + "\n".join(f"  - {cmd}" for cmd in mount_cmds)
 
