@@ -10,15 +10,104 @@
 #include <linux/file.h>
 #include <linux/mm.h>
 
+/* ── open helpers ───────────────────────────────────────────────────── */
+
+static struct file *agfs_open_lower(struct dentry *dentry, int flags)
+{
+	struct path lower_path;
+	struct file *f;
+
+	agfs_get_lower_path(dentry, &lower_path);
+	f = dentry_open(&lower_path, flags, current_cred());
+	agfs_put_lower_path(dentry, &lower_path);
+	return f;
+}
+
+static int agfs_check_open_perm(struct agfs_sb_info *sbi,
+				struct dentry *dentry,
+				struct file *file, char *buf)
+{
+	struct agfs_inode_info *ii = AGFS_I(d_inode(dentry));
+	enum agfs_perm perm = ii->cached_perm;
+	int err;
+
+	if (ii->perm_gen != atomic64_read(&sbi->perm_gen)) {
+		perm = agfs_resolve_perm(dentry);
+		ii->cached_perm = perm;
+		ii->perm_gen = atomic64_read(&sbi->perm_gen);
+	}
+
+	if (perm == AGFS_PERM_ASK) {
+		unsigned int op;
+
+		if (file->f_mode & FMODE_EXEC)
+			op = AGFS_OP_EXEC;
+		else if (file->f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC))
+			op = AGFS_OP_WRITE;
+		else
+			op = AGFS_OP_READ;
+
+		err = agfs_dentry_relpath(dentry, buf, AGFS_PATH_MAX);
+		if (err)
+			return err;
+		err = agfs_ask_userspace(sbi, dentry, buf, op, &perm);
+		if (err)
+			return err;
+	}
+
+	return agfs_check_perm(perm, file->f_flags);
+}
+
+/* Open the right file for a staged regular file. */
+static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
+				     struct dentry *dentry,
+				     struct file *file, char *buf)
+{
+	struct agfs_dentry_info *parent_di = AGFS_D(dentry->d_parent);
+	struct agfs_override *ovr;
+	u64 sid = 0;
+	int err;
+
+	if (parent_di) {
+		spin_lock(&parent_di->lock);
+		ovr = agfs_find_override(dentry->d_parent,
+					 dentry->d_name.name,
+					 dentry->d_name.len);
+		if (ovr)
+			sid = ovr->staging_id;
+		spin_unlock(&parent_di->lock);
+	}
+
+	if ((file->f_flags & (O_WRONLY | O_RDWR)) && sid) {
+		struct path blob;
+		struct file *f;
+
+		err = agfs_staging_path(sbi, sid, &blob);
+		if (err)
+			return ERR_PTR(err);
+		f = dentry_open(&blob, file->f_flags, current_cred());
+		path_put(&blob);
+		return f;
+	}
+
+	/* Not yet staged → open base; writable opens use O_RDONLY for COW */
+	if (file->f_flags & (O_WRONLY | O_RDWR)) {
+		file->f_flags &= ~O_TRUNC; /* defer truncation to COW */
+		return agfs_open_lower(dentry, O_RDONLY);
+	}
+	return agfs_open_lower(dentry, file->f_flags);
+}
+
 /* ── open (§3.5 + §4.3) ───────────────────────────────────────────── */
 
 static int agfs_open(struct inode *inode, struct file *file)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
-	struct agfs_file_info *fi;
 	struct dentry *dentry = file->f_path.dentry;
-	struct file *lower_file = NULL;
-	const struct cred *old_cred = NULL;
+	struct agfs_file_info *fi;
+	const struct cred *old_cred;
+	struct file *lower_file;
+	unsigned int orig_flags = file->f_flags;
 	char buf[AGFS_PATH_MAX];
 	int err;
 
@@ -26,180 +115,41 @@ static int agfs_open(struct inode *inode, struct file *file)
 	if (!fi)
 		return -ENOMEM;
 
-	/* ── Permission gating for regular files ────────────────────── */
 	if (S_ISREG(inode->i_mode) && !sbi->noperm) {
-		enum agfs_perm perm = AGFS_I(inode)->cached_perm;
-
-		/* Re-resolve if stale */
-		if (AGFS_I(inode)->perm_gen !=
-		    atomic64_read(&sbi->perm_gen)) {
-			perm = agfs_resolve_perm(dentry);
-			AGFS_I(inode)->cached_perm = perm;
-			AGFS_I(inode)->perm_gen =
-				atomic64_read(&sbi->perm_gen);
-		}
-
-		if (perm == AGFS_PERM_ASK) {
-			unsigned int op;
-			if (file->f_mode & FMODE_EXEC)
-				op = AGFS_OP_EXEC;
-			else if (file->f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC))
-				op = AGFS_OP_WRITE;
-			else
-				op = AGFS_OP_READ;
-
-			err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
-			if (err)
-				goto out_free;
-			err = agfs_ask_userspace(sbi, dentry, buf, op, &perm);
-			if (err)
-				goto out_free;
-		}
-
-		err = agfs_check_perm(perm, file->f_flags);
+		err = agfs_check_open_perm(sbi, dentry, file, buf);
 		if (err)
 			goto out_free;
 	}
 
-	/* ── Staging redirect for regular files ─────────────────────── */
 	if (S_ISREG(inode->i_mode) && !sbi->nostaging) {
-		struct agfs_dentry_info *parent_di = AGFS_D(dentry->d_parent);
-		struct agfs_override *ovr;
-		u64 sid = 0;
-
 		old_cred = override_creds(sbi->creator_cred);
-
-		/* Check override list to know if file is staged */
-		if (parent_di) {
-			spin_lock(&parent_di->lock);
-			ovr = agfs_find_override(dentry->d_parent,
-						 dentry->d_name.name,
-						 dentry->d_name.len);
-			if (ovr)
-				sid = ovr->staging_id;
-			spin_unlock(&parent_di->lock);
-		}
-
-		err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
-		if (err)
-			goto out_free;
-
-		if (file->f_flags & O_TRUNC) {
-			/* Truncating write — allocate new staging blob */
-			struct path blob_path;
-			u64 id;
-
-			down_write(&sbi->staging_sem);
-
-			err = agfs_staging_alloc(sbi, &id, &blob_path,
-						 0644, NULL);
-			if (err) {
-				up_write(&sbi->staging_sem);
-				goto out_free;
-			}
-
-			lower_file = dentry_open(&blob_path,
-						 file->f_flags & ~O_TRUNC,
-						 current_cred());
-			if (IS_ERR(lower_file)) {
-				err = PTR_ERR(lower_file);
-				lower_file = NULL;
-				path_put(&blob_path);
-				up_write(&sbi->staging_sem);
-				goto out_free;
-			}
-
-			/* Update override + dentry + journal + inode gen */
-			agfs_add_override(dentry->d_parent,
-					  dentry->d_name.name,
-					  dentry->d_name.len, id, NULL);
-			agfs_set_lower_path(dentry, &blob_path);
-			agfs_journal_append_a(sbi, buf, id);
-			AGFS_I(inode)->snapshot_gen =
-				atomic64_read(&sbi->snapshot_gen);
-
-			up_write(&sbi->staging_sem);
-
-			file->f_flags &= ~O_TRUNC;
-		} else if (file->f_flags & (O_WRONLY | O_RDWR)) {
-			if (sid) {
-				/* Already in staging — open the blob */
-				struct path blob;
-				err = agfs_staging_path(sbi, sid, &blob);
-				if (err)
-					goto out_free;
-				lower_file = dentry_open(&blob,
-							 file->f_flags,
-							 current_cred());
-				path_put(&blob);
-				if (IS_ERR(lower_file)) {
-					err = PTR_ERR(lower_file);
-					lower_file = NULL;
-					goto out_free;
-				}
-			} else {
-				/* Base file — open read-only, COW on first write */
-				struct path lower_path;
-				agfs_get_lower_path(dentry, &lower_path);
-				lower_file = dentry_open(&lower_path,
-							 O_RDONLY,
-							 current_cred());
-				agfs_put_lower_path(dentry, &lower_path);
-				if (IS_ERR(lower_file)) {
-					err = PTR_ERR(lower_file);
-					lower_file = NULL;
-					goto out_free;
-				}
-			}
-		} else {
-			/* Read-only: open the resolved lower file */
-			struct path lower_path;
-			agfs_get_lower_path(dentry, &lower_path);
-			lower_file = dentry_open(&lower_path,
-						 file->f_flags,
-						 current_cred());
-			agfs_put_lower_path(dentry, &lower_path);
-			if (IS_ERR(lower_file)) {
-				err = PTR_ERR(lower_file);
-				lower_file = NULL;
-				goto out_free;
-			}
-		}
-
+		lower_file = agfs_open_staged(sbi, dentry, file, buf);
 		revert_creds(old_cred);
-		old_cred = NULL;
-		goto done;
+	} else {
+		lower_file = agfs_open_lower(dentry, file->f_flags);
 	}
 
-	/* Default: open lower file directly */
-	{
-		struct path lower_path;
-		agfs_get_lower_path(dentry, &lower_path);
-		lower_file = dentry_open(&lower_path, file->f_flags,
-					 current_cred());
-		agfs_put_lower_path(dentry, &lower_path);
-		if (IS_ERR(lower_file)) {
-			err = PTR_ERR(lower_file);
-			lower_file = NULL;
-			goto out_free;
-		}
+	if (IS_ERR(lower_file)) {
+		err = PTR_ERR(lower_file);
+		goto out_free;
 	}
 
-done:
+	/* O_TRUNC on unstaged file: agfs_open_staged stripped it from f_flags;
+	 * defer actual truncation to first write via agfs_cow_if_needed. */
+	fi->truncate = (orig_flags & O_TRUNC) && !(file->f_flags & O_TRUNC);
 	fi->lower_file = lower_file;
 	file->private_data = fi;
 	return 0;
 
 out_free:
-	if (old_cred)
-		revert_creds(old_cred);
 	kfree(fi);
 	return err;
 }
 
 /*
  * Trigger COW / re-COW if the inode's snapshot_gen is behind the
- * superblock's.  Returns 0 on success (or if no COW was needed).
+ * superblock's, or if deferred truncation is pending.
+ * Returns 0 on success (or if no COW was needed).
  * Caller must NOT hold staging_sem.
  */
 static int agfs_cow_if_needed(struct file *file)
@@ -209,18 +159,21 @@ static int agfs_cow_if_needed(struct file *file)
 	struct agfs_inode_info *ii = AGFS_I(file_inode(file));
 	const struct cred *old_cred;
 	struct file *new_file = NULL;
+	bool truncate = fi->truncate;
 	int err;
 
-	if (ii->snapshot_gen >= (u64)atomic64_read(&sbi->snapshot_gen))
+	if (!truncate &&
+	    ii->snapshot_gen >= (u64)atomic64_read(&sbi->snapshot_gen))
 		return 0;
 
 	old_cred = override_creds(sbi->creator_cred);
 	down_write(&sbi->staging_sem);
-	if (ii->snapshot_gen <
+	if (truncate ||
+	    ii->snapshot_gen <
 	    (u64)atomic64_read(&sbi->snapshot_gen)) {
 		err = agfs_do_cow(sbi, file->f_path.dentry,
 				       &new_file,
-				       file->f_flags & ~O_TRUNC);
+				       file->f_flags & ~O_TRUNC, truncate);
 		if (err) {
 			up_write(&sbi->staging_sem);
 			revert_creds(old_cred);
@@ -228,6 +181,7 @@ static int agfs_cow_if_needed(struct file *file)
 		}
 		fput(fi->lower_file);
 		fi->lower_file = new_file;
+		fi->truncate = false;
 		/* inode->snapshot_gen updated inside agfs_do_cow */
 	}
 	up_write(&sbi->staging_sem);

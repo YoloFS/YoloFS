@@ -10,10 +10,10 @@
 #include <linux/xattr.h>
 #include <linux/mm.h>
 
-/* ── create — allocate staging blob + override ─────────────────────── */
+/* ── create/mkdir/symlink — allocate staging blob + override ────────── */
 
-static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
-		       struct dentry *dentry, umode_t mode, bool excl)
+static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
+			      umode_t mode, const char *symname)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
 	const struct cred *old_cred;
@@ -28,7 +28,7 @@ static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
 
 	old_cred = override_creds(sbi->creator_cred);
 
-	err = agfs_staging_alloc(sbi, &id, &blob_path, mode, NULL);
+	err = agfs_staging_alloc(sbi, &id, &blob_path, mode, symname);
 	if (err)
 		goto out_revert;
 
@@ -49,16 +49,27 @@ static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
 out_revert:
 	revert_creds(old_cred);
 	return err;
+}
+
+static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
+		       struct dentry *dentry, umode_t mode, bool excl)
+{
+	return agfs_create_staged(dir, dentry, mode, NULL);
 }
 
 static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 		      struct dentry *dentry, umode_t mode)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
+	return agfs_create_staged(dir, dentry, S_IFDIR | mode, NULL);
+}
+
+/* ── unlink/rmdir — add DELETED override ───────────────────────────── */
+
+static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
+{
+	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
 	const struct cred *old_cred;
 	char buf[AGFS_PATH_MAX];
-	struct path blob_path;
-	u64 id;
 	int err;
 
 	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
@@ -67,87 +78,28 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 
 	old_cred = override_creds(sbi->creator_cred);
 
-	err = agfs_staging_alloc(sbi, &id, &blob_path, S_IFDIR | mode, NULL);
+	err = agfs_add_override(dentry->d_parent,
+				dentry->d_name.name,
+				dentry->d_name.len, 0, NULL);
 	if (err)
-		goto out_revert;
+		goto out;
 
-	err = agfs_interpose(dentry, dir->i_sb, &blob_path);
-	if (err) {
-		path_put(&blob_path);
-		goto out_revert;
-	}
-
-	agfs_set_lower_path(dentry, &blob_path);
-	agfs_add_override(dentry->d_parent, dentry->d_name.name,
-			  dentry->d_name.len, id, NULL);
-	agfs_journal_append_a(sbi, buf, id);
-
-	revert_creds(old_cred);
-	return 0;
-
-out_revert:
+	err = agfs_journal_append_d(sbi, buf);
+	if (!err)
+		d_drop(dentry);
+out:
 	revert_creds(old_cred);
 	return err;
 }
-
-/* ── unlink — add DELETED override ──────────────────────────────────── */
 
 static int agfs_unlink(struct inode *dir, struct dentry *dentry)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
-	const struct cred *old_cred;
-	char buf[AGFS_PATH_MAX];
-	int err;
-
-	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
-	if (err)
-		return err;
-
-	old_cred = override_creds(sbi->creator_cred);
-
-	/* Add deleted override (staging_id=0, base_path=NULL) */
-	err = agfs_add_override(dentry->d_parent,
-				dentry->d_name.name,
-				dentry->d_name.len, 0, NULL);
-	if (err)
-		goto out;
-
-	/* Append journal record */
-	err = agfs_journal_append_d(sbi, buf);
-	if (!err)
-		d_drop(dentry);
-out:
-	revert_creds(old_cred);
-	return err;
+	return agfs_delete_entry(dir, dentry);
 }
-
-/* ── rmdir — add DELETED override ──────────────────────────────────── */
 
 static int agfs_rmdir(struct inode *dir, struct dentry *dentry)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
-	const struct cred *old_cred;
-	char buf[AGFS_PATH_MAX];
-	int err;
-
-	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
-	if (err)
-		return err;
-
-	old_cred = override_creds(sbi->creator_cred);
-
-	err = agfs_add_override(dentry->d_parent,
-				dentry->d_name.name,
-				dentry->d_name.len, 0, NULL);
-	if (err)
-		goto out;
-
-	err = agfs_journal_append_d(sbi, buf);
-	if (!err)
-		d_drop(dentry);
-out:
-	revert_creds(old_cred);
-	return err;
+	return agfs_delete_entry(dir, dentry);
 }
 
 /* ── symlink ───────────────────────────────────────────────────────── */
@@ -155,40 +107,7 @@ out:
 static int agfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 			struct dentry *dentry, const char *symname)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
-	const struct cred *old_cred;
-	char buf[AGFS_PATH_MAX];
-	struct path blob_path;
-	u64 id;
-	int err;
-
-	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
-	if (err)
-		return err;
-
-	old_cred = override_creds(sbi->creator_cred);
-
-	err = agfs_staging_alloc(sbi, &id, &blob_path, S_IFLNK, symname);
-	if (err)
-		goto out_revert;
-
-	err = agfs_interpose(dentry, dir->i_sb, &blob_path);
-	if (err) {
-		path_put(&blob_path);
-		goto out_revert;
-	}
-
-	agfs_set_lower_path(dentry, &blob_path);
-	agfs_add_override(dentry->d_parent, dentry->d_name.name,
-			  dentry->d_name.len, id, NULL);
-	agfs_journal_append_a(sbi, buf, id);
-
-	revert_creds(old_cred);
-	return 0;
-
-out_revert:
-	revert_creds(old_cred);
-	return err;
+	return agfs_create_staged(dir, dentry, S_IFLNK, symname);
 }
 
 /* ── rename (§3.7) ─────────────────────────────────────────────────── */
@@ -253,18 +172,12 @@ static int agfs_rename(struct mnt_idmap *idmap,
 					new_dentry->d_name.name,
 					new_dentry->d_name.len,
 					old_sid, NULL);
-	} else if (old_bp) {
-		/* Already redirected (chained rename) — follow the chain */
-		err = agfs_add_override(new_dentry->d_parent,
-					new_dentry->d_name.name,
-					new_dentry->d_name.len,
-					0, old_bp);
 	} else {
-		/* File only in base — redirect without copying */
+		/* Base file or chained rename — redirect by path */
 		err = agfs_add_override(new_dentry->d_parent,
 					new_dentry->d_name.name,
 					new_dentry->d_name.len,
-					0, old_buf);
+					0, old_bp ? old_bp : old_buf);
 	}
 	if (err)
 		goto out;

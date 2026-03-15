@@ -1,15 +1,19 @@
 // agfs CLI — diff.rs
 //
-// `agfs diff` — git-style unified diff of staged vs base (§3.10).
-// `agfs diff --from <name>` — diff changes since a snapshot (§3.11.4).
+// `agfs status` — one-line summary of staged changes.
+// `agfs diff`   — git-style unified diff of staged vs base.
+// `--at <name>` — show state at a snapshot.
+// `--from <name>` — diff changes since a snapshot.
 
-use crate::journal::{self, Change};
+use crate::journal::{self, Change, Section};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+
+// ── File reading helpers ─────────────────────────────────────────────
 
 fn read_file_lossy(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
@@ -19,9 +23,11 @@ fn read_blob(agfs: &Path, blob_id: u64) -> String {
     read_file_lossy(&journal::blob_path(agfs, blob_id))
 }
 
-fn read_base(base: &Path, rel_path: &str) -> String {
-    read_file_lossy(&base.join(rel_path.trim_start_matches('/')))
+fn read_base(rel_path: &str) -> String {
+    read_file_lossy(&crate::utils::to_base_path(rel_path))
 }
+
+// ── Unified diff printing ────────────────────────────────────────────
 
 fn print_unified_diff(old_text: &str, new_text: &str) {
     let diff = TextDiff::from_lines(old_text, new_text);
@@ -47,10 +53,166 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
     }
 }
 
+// ── Section display helpers ──────────────────────────────────────────
+
+fn print_section_footer(section: &Section) {
+    if let Some((id, name)) = &section.snapshot {
+        println!(
+            "  {} {}",
+            format!("snapshot [{id}]").cyan().bold(),
+            name.dimmed()
+        );
+    }
+}
+
+// ── Per-change printing (summary vs verbose) ─────────────────────────
+
+fn print_change(agfs: &Path, change: &Change, verbose: bool) {
+    let indent = if verbose { "" } else { "  " };
+    match change {
+        Change::Added { path, blob_id } => {
+            println!("{indent}{} {}", path.bold(), "(added)".green());
+            if verbose {
+                print_unified_diff("", &read_blob(agfs, *blob_id));
+            }
+        }
+        Change::Modified { path, blob_id } => {
+            if verbose {
+                let old_text = read_base(path);
+                let new_text = read_blob(agfs, *blob_id);
+                if old_text != new_text {
+                    println!("{indent}{} {}", path.bold(), "(modified)".yellow());
+                    print_unified_diff(&old_text, &new_text);
+                }
+            } else {
+                println!("{indent}{} {}", path.bold(), "(modified)".yellow());
+            }
+        }
+        Change::Deleted(p) => {
+            println!("{indent}{} {}", p.bold(), "(deleted)".red());
+            if verbose {
+                print_unified_diff(&read_base(p), "");
+            }
+        }
+        Change::Renamed { from, to } => {
+            println!(
+                "{indent}{} → {} {}",
+                from.bold(),
+                to.bold(),
+                "(renamed)".cyan()
+            );
+        }
+        Change::RenamedModified { from, to, blob_id } => {
+            println!(
+                "{indent}{} → {} {}",
+                from.bold(),
+                to.bold(),
+                "(renamed + modified)".cyan()
+            );
+            if verbose {
+                let old_text = read_base(from);
+                let new_text = read_blob(agfs, *blob_id);
+                if old_text != new_text {
+                    print_unified_diff(&old_text, &new_text);
+                }
+            }
+        }
+    }
+    if verbose {
+        println!();
+    }
+}
+
+fn print_changes(agfs: &Path, changes: &[Change], verbose: bool) {
+    for change in changes {
+        print_change(agfs, change, verbose);
+    }
+}
+
+// ── Public entry points ──────────────────────────────────────────────
+
+/// `agfs status` — summary view.
+pub fn run_status(at: Option<&str>) -> Result<()> {
+    let agfs = crate::utils::session_dir()?;
+
+    if let Some(name) = at {
+        let changes = journal::resolve_at(&agfs, name)?;
+        if changes.is_empty() {
+            println!("{}", "No changes staged.".yellow());
+        } else {
+            println!("{}", format!("State at snapshot \"{name}\":").dimmed());
+            print_changes(&agfs, &changes, false);
+            print_total(changes.len());
+        }
+        return Ok(());
+    }
+
+    run_sections(&agfs, false)?;
+    Ok(())
+}
+
+/// `agfs diff` — verbose diff view. Returns true if there were changes.
+pub fn run_diff(from: Option<&str>) -> Result<bool> {
+    let agfs = crate::utils::session_dir()?;
+    if !agfs.exists() {
+        anyhow::bail!("no agfs session found (no .agfs/ directory)");
+    }
+
+    if let Some(snap_name) = from {
+        return run_from_snapshot(&agfs, snap_name);
+    }
+
+    run_sections(&agfs, true)
+}
+
+// ── Shared implementation ────────────────────────────────────────────
+
+fn run_sections(agfs: &Path, verbose: bool) -> Result<bool> {
+    let sections = journal::resolve_sections(agfs)?;
+    let total: usize = sections.iter().map(|s| s.changes.len()).sum();
+
+    if total == 0 {
+        println!("{}", "No changes staged.".yellow());
+        return Ok(false);
+    }
+
+    let has_snapshots = sections.iter().any(|s| s.snapshot.is_some());
+
+    for section in &sections {
+        if has_snapshots {
+            if section.snapshot.is_none() {
+                println!("{}", "── (unsaved changes) ──".dimmed());
+            }
+            if section.changes.is_empty() {
+                print_section_footer(section);
+                continue;
+            }
+        }
+        print_changes(agfs, &section.changes, verbose);
+        if has_snapshots {
+            print_section_footer(section);
+        }
+    }
+
+    if !verbose {
+        print_total(total);
+    }
+
+    Ok(true)
+}
+
+fn print_total(n: usize) {
+    println!(
+        "\n{}",
+        format!("{n} staged change{}", crate::utils::plural(n)).bold()
+    );
+}
+
+// ── Snapshot-to-current diff ─────────────────────────────────────────
+
 /// Build a map of path → blob content for a set of resolved changes.
 fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>> {
     let mut map = BTreeMap::new();
-    let base = Path::new("/");
     for change in changes {
         match change {
             Change::Added { path, blob_id } | Change::Modified { path, blob_id } => {
@@ -61,7 +223,7 @@ fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>
             }
             Change::Renamed { from, to } => {
                 map.insert(from.clone(), None);
-                map.insert(to.clone(), Some(read_base(base, from)));
+                map.insert(to.clone(), Some(read_base(from)));
             }
             Change::RenamedModified { from, to, blob_id } => {
                 map.insert(from.clone(), None);
@@ -70,96 +232,6 @@ fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>
         }
     }
     map
-}
-
-/// Print staged diff. Returns true if there were staged changes.
-pub fn run(from: Option<&str>) -> Result<bool> {
-    let agfs = crate::utils::session_dir()?;
-    if !agfs.exists() {
-        anyhow::bail!("no agfs session found (no .agfs/ directory)");
-    }
-
-    if let Some(snap_name) = from {
-        return run_from_snapshot(&agfs, snap_name);
-    }
-
-    let sections = journal::resolve_sections(&agfs)?;
-    let total: usize = sections.iter().map(|s| s.changes.len()).sum();
-
-    if total == 0 {
-        println!("{}", "No changes staged.".yellow());
-        return Ok(false);
-    }
-
-    let has_snapshots = sections.iter().any(|s| s.snapshot.is_some());
-    let base = Path::new("/");
-
-    for section in &sections {
-        if has_snapshots {
-            match &section.snapshot {
-                Some((id, name)) => {
-                    println!(
-                        "{}",
-                        format!("── snapshot \"{name}\" (id {id}) ──").cyan().bold()
-                    );
-                }
-                None => {
-                    println!("{}", "── (unsaved changes) ──".dimmed());
-                }
-            }
-            if section.changes.is_empty() {
-                println!("  {}", "(no changes)".dimmed());
-                println!();
-                continue;
-            }
-        }
-
-        print_section_diff(&agfs, base, &section.changes);
-    }
-
-    Ok(true)
-}
-
-fn print_section_diff(agfs: &Path, base: &Path, changes: &[Change]) {
-    for change in changes {
-        match change {
-            Change::Added { path, blob_id } => {
-                let new_text = read_blob(agfs, *blob_id);
-                println!("{} {}", path.bold(), "(added)".green());
-                print_unified_diff("", &new_text);
-            }
-            Change::Modified { path, blob_id } => {
-                let old_text = read_base(base, path);
-                let new_text = read_blob(agfs, *blob_id);
-                if old_text != new_text {
-                    println!("{} {}", path.bold(), "(modified)".yellow());
-                    print_unified_diff(&old_text, &new_text);
-                }
-            }
-            Change::Deleted(p) => {
-                let old_text = read_base(base, p);
-                println!("{} {}", p.bold(), "(deleted)".red());
-                print_unified_diff(&old_text, "");
-            }
-            Change::Renamed { from, to } => {
-                println!("{} → {} {}", from.bold(), to.bold(), "(renamed)".cyan());
-            }
-            Change::RenamedModified { from, to, blob_id } => {
-                let old_text = read_base(base, from);
-                let new_text = read_blob(agfs, *blob_id);
-                println!(
-                    "{} → {} {}",
-                    from.bold(),
-                    to.bold(),
-                    "(renamed + modified)".cyan()
-                );
-                if old_text != new_text {
-                    print_unified_diff(&old_text, &new_text);
-                }
-            }
-        }
-        println!();
-    }
 }
 
 /// Diff between snapshot state and current state.
@@ -188,28 +260,24 @@ fn run_from_snapshot(agfs: &Path, snap_name: &str) -> Result<bool> {
                 has_diff = true;
             }
             (None, Some(Some(new_text))) => {
-                // Path exists in current but not in snapshot state
                 println!("{} {}", path.bold(), "(added since snapshot)".green());
                 print_unified_diff("", new_text);
                 println!();
                 has_diff = true;
             }
             (Some(Some(old_text)), None) => {
-                // Path existed at snapshot but not in current
                 println!("{} {}", path.bold(), "(removed since snapshot)".red());
                 print_unified_diff(old_text, "");
                 println!();
                 has_diff = true;
             }
             (Some(Some(old_text)), Some(None)) => {
-                // Was content at snapshot, now deleted
                 println!("{} {}", path.bold(), "(deleted since snapshot)".red());
                 print_unified_diff(old_text, "");
                 println!();
                 has_diff = true;
             }
             (Some(None), Some(Some(new_text))) => {
-                // Was deleted at snapshot, now has content
                 println!("{} {}", path.bold(), "(restored since snapshot)".green());
                 print_unified_diff("", new_text);
                 println!();

@@ -49,7 +49,7 @@ fn full_write_abort_cycle() {
     assert!(status.contains("2 staged change"), "status: {status}");
 
     // 3. Abort
-    let output = s.cli(&["abort"]).unwrap();
+    let output = s.cli(&["abort", "--force"]).unwrap();
     assert!(output.contains("Staging discarded"), "abort: {output}");
 
     // 4. Base unchanged
@@ -86,7 +86,7 @@ fn abort_then_commit() {
 
     // Aborted round
     fs::write(s.mnt_path("hello.txt"), "aborted\n").unwrap();
-    s.cli(&["abort"]).unwrap();
+    s.cli(&["abort", "--force"]).unwrap();
     assert_eq!(
         fs::read_to_string(s.base_path("hello.txt")).unwrap(),
         "base content\n"
@@ -148,7 +148,7 @@ fn abort_then_modify_commit() {
 
     // Aborted round
     fs::write(s.mnt_path("hello.txt"), "aborted\n").unwrap();
-    s.cli(&["abort"]).unwrap();
+    s.cli(&["abort", "--force"]).unwrap();
 
     // Verify base is intact
     assert_eq!(

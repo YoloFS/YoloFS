@@ -161,6 +161,38 @@ void agfs_ctl_cleanup(struct agfs_sb_info *sbi, struct agfs_ctl_private *priv)
 	atomic_set(&sbi->has_daemon, 0);
 }
 
+/* ── Rule ioctl helpers ─────────────────────────────────────────────── */
+
+static int agfs_resolve_rule(struct file *file, unsigned long arg,
+			     struct agfs_ioc_rule *rule,
+			     struct path *rule_path,
+			     struct agfs_dentry_info **di_out)
+{
+	int err;
+
+	if (copy_from_user(rule, (void __user *)arg, sizeof(*rule)))
+		return -EFAULT;
+
+	rule->path[AGFS_PATH_MAX - 1] = '\0';
+
+	err = kern_path(rule->path, LOOKUP_FOLLOW, rule_path);
+	if (err)
+		return err;
+
+	if (rule_path->dentry->d_sb != file_inode(file)->i_sb) {
+		path_put(rule_path);
+		return -EXDEV;
+	}
+
+	*di_out = AGFS_D(rule_path->dentry);
+	if (!*di_out) {
+		path_put(rule_path);
+		return -ENOENT;
+	}
+
+	return 0;
+}
+
 /* ── Unified ioctl handler (rules + ctl) ───────────────────────────── */
 
 long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -180,27 +212,13 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		struct agfs_dentry_info *di;
 		int err;
 
-		if (copy_from_user(&rule, (void __user *)arg, sizeof(rule)))
-			return -EFAULT;
-
-		rule.path[AGFS_PATH_MAX - 1] = '\0';
-
-		if (rule.perm > AGFS_PERM_DENY)
-			return -EINVAL;
-
-		err = kern_path(rule.path, LOOKUP_FOLLOW, &rule_path);
+		err = agfs_resolve_rule(file, arg, &rule, &rule_path, &di);
 		if (err)
 			return err;
 
-		if (rule_path.dentry->d_sb != file_inode(file)->i_sb) {
+		if (rule.perm > AGFS_PERM_DENY) {
 			path_put(&rule_path);
-			return -EXDEV;
-		}
-
-		di = AGFS_D(rule_path.dentry);
-		if (!di) {
-			path_put(&rule_path);
-			return -ENOENT;
+			return -EINVAL;
 		}
 
 		spin_lock(&di->lock);
@@ -219,31 +237,15 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		struct agfs_dentry_info *di;
 		int err;
 
-		if (copy_from_user(&rule, (void __user *)arg, sizeof(rule)))
-			return -EFAULT;
-
-		rule.path[AGFS_PATH_MAX - 1] = '\0';
-
-		err = kern_path(rule.path, LOOKUP_FOLLOW, &rule_path);
+		err = agfs_resolve_rule(file, arg, &rule, &rule_path, &di);
 		if (err)
 			return err;
-
-		if (rule_path.dentry->d_sb != file_inode(file)->i_sb) {
-			path_put(&rule_path);
-			return -EXDEV;
-		}
-
-		di = AGFS_D(rule_path.dentry);
-		if (!di) {
-			path_put(&rule_path);
-			return -ENOENT;
-		}
 
 		spin_lock(&di->lock);
 		if (di->perm != AGFS_PERM_NONE) {
 			di->perm = AGFS_PERM_NONE;
 			spin_unlock(&di->lock);
-			dput(rule_path.dentry); /* balance dget from RULE_ADD */
+			dput(rule_path.dentry);
 		} else {
 			spin_unlock(&di->lock);
 		}

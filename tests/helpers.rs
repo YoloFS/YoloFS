@@ -170,7 +170,7 @@ impl Drop for AgfsSession {
 
         if self.mounted {
             let _ = Command::new(AGFS_BIN)
-                .arg("unmount")
+                .args(["unmount", "--force"])
                 .current_dir(&self.root)
                 .env("NO_COLOR", "1")
                 .output();

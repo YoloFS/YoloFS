@@ -1,34 +1,17 @@
-# ── Build ──────────────────────────────────────────────────────────────
+# ── Variables ─────────────────────────────────────────────────────────
 
-.PHONY: all build clean
+KDIR            ?= /lib/modules/$(shell uname -r)/build
+KMOD_OUT        := kmod/build/agfs.ko
+KMOD_INSTALL_DIR := /lib/modules/$(shell uname -r)/extra
 
-all: install
+# ── Build ─────────────────────────────────────────────────────────────
+
+.PHONY: build clean cli kmod
 
 build: cli kmod
 
-clean:
-	cargo clean
-	rm -rf kmod/build
-
-# ── CLI ────────────────────────────────────────────────────────────────
-
-.PHONY: cli install uninstall
-
 cli:
 	cargo build --release
-
-install: cli kmod
-	sudo install -m 4755 -o root target/release/agfs /usr/local/bin/agfs
-
-uninstall:
-	sudo rm -f /usr/local/bin/agfs
-
-# ── Kernel module ─────────────────────────────────────────────────────
-
-.PHONY: kmod
-
-KDIR ?= /lib/modules/$(shell uname -r)/build
-KMOD_OUT := kmod/build/agfs.ko
 
 kmod: $(KMOD_OUT)
 
@@ -37,27 +20,43 @@ $(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild)
 	cp kmod/Kbuild kmod/build/Kbuild
 	$(MAKE) -j$(nproc) -C $(KDIR) M=$(CURDIR)/kmod/build modules
 
-# ── Test ───────────────────────────────────────────────────────────────
+clean:
+	cargo clean
+	rm -rf kmod/build
 
-.PHONY: test test-unit test-integration
+# ── Install ───────────────────────────────────────────────────────────
 
-test: test-unit test-integration
+.PHONY: install uninstall
+
+install: cli kmod
+	sudo install -m 4755 -o root target/release/agfs /usr/local/bin/agfs
+	sudo install -d $(KMOD_INSTALL_DIR)
+	sudo install -m 644 $(KMOD_OUT) $(KMOD_INSTALL_DIR)/agfs.ko
+
+uninstall:
+	sudo rm -f /usr/local/bin/agfs
+	sudo rm -f $(KMOD_INSTALL_DIR)/agfs.ko
+
+# ── Test ──────────────────────────────────────────────────────────────
+
+.PHONY: test test-unit test-e2e lint
+
+test: test-unit test-e2e
 
 test-unit:
 	cargo test --lib
 
-test-integration: install
+test-e2e: install
 	agfs init
-	cargo test --test integration -- --test-threads=1
+	cargo test --test e2e -- --test-threads=1
 
 lint:
 	cargo fmt --check
 	cargo clippy -- -D warnings
 
-load-kmod: kmod
-	awk '$$3=="agfs"{print $$2}' /proc/mounts | xargs -r sudo umount
-	lsmod | grep -q '^agfs ' && sudo rmmod agfs || true
-	sudo insmod kmod/build/agfs.ko
+fix:
+	cargo fmt
+	cargo clippy --fix --allow-dirty
 
 unload-kmod:
 	sudo rmmod agfs
@@ -74,5 +73,8 @@ bench: load-kmod install
 
 .PHONY: ci
 
-ci: lint load-kmod
-	$(MAKE) test; ret=$$?; $(MAKE) unload-kmod; exit $$ret
+ci: lint install
+	agfs load
+	$(MAKE) test-unit
+	$(MAKE) test-e2e
+	agfs unload

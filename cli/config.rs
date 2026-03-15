@@ -196,6 +196,18 @@ pub fn load_config() -> Config {
     Config::load(&cp).unwrap_or_default()
 }
 
+/// Create agfs.toml with default config if it doesn't exist.
+pub fn init() -> Result<()> {
+    let cp = config_path()?;
+    if cp.exists() {
+        eprintln!("{}", "agfs.toml already exists".yellow());
+    } else {
+        Config::default().save(&cp)?;
+        eprintln!("{} {}", "created".green().bold(), cp.display());
+    }
+    Ok(())
+}
+
 /// Read [rules] from agfs.toml and apply via ioctl. Called during mount.
 pub fn apply_rules(agfs_dir: &Path) -> Result<()> {
     let cwd = agfs_dir.parent().unwrap_or(Path::new("."));
@@ -514,5 +526,42 @@ mod tests {
         let path = tmp.path().join("agfs.toml");
         fs::write(&path, "[rules]\n\"/tmp\" = \"bogus\"\n").unwrap();
         assert!(Config::load(&path).is_err());
+    }
+
+    #[test]
+    fn init_creates_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Run init from within the temp dir
+        let prev = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        super::init().unwrap();
+        env::set_current_dir(&prev).unwrap();
+
+        let path = tmp.path().join("agfs.toml");
+        assert!(path.exists(), "agfs.toml should be created");
+        let config = Config::load(&path).unwrap();
+        assert!(
+            config.permission,
+            "default config should have permission=true"
+        );
+        assert!(config.staging, "default config should have staging=true");
+    }
+
+    #[test]
+    fn init_does_not_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("agfs.toml");
+        fs::write(&path, "permission = false\nstaging = false\n").unwrap();
+
+        let prev = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        super::init().unwrap();
+        env::set_current_dir(&prev).unwrap();
+
+        let config = Config::load(&path).unwrap();
+        assert!(
+            !config.permission,
+            "init should not overwrite existing config"
+        );
     }
 }

@@ -52,8 +52,8 @@ pub fn list() -> Result<()> {
 
         println!(
             "  {} {} ({} change{})",
-            format!("[{}]", id).cyan(),
-            name.bold(),
+            format!("snapshot [{id}]").cyan().bold(),
+            name.dimmed(),
             changes,
             crate::utils::plural(changes)
         );
@@ -78,9 +78,19 @@ pub fn list() -> Result<()> {
 }
 
 fn default_snap_name() -> String {
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("snap-{}", now.as_secs())
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as libc::time_t;
+    let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    format!(
+        "snap-{:04}{:02}{:02}-{:02}{:02}{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+    )
 }

@@ -446,8 +446,10 @@ operation targets a distinct path.
 
 **Abort** (`agfs abort`):
 
-1. `rm -rf .agfs/staging/` and `rm .agfs/journal`.
-2. Signal kernel to invalidate caches.
+1. Count staged changes; if none, print "nothing to discard" and exit.
+2. Prompt for confirmation: `Discard N staged changes? [y/N]`.
+3. `rm -rf .agfs/staging/` and `rm .agfs/journal`.
+4. Signal kernel to invalidate caches.
 
 **Status** (`agfs status`):
 
@@ -485,6 +487,10 @@ This is the re-COW mechanism.
 
 #### 3.11.1 Creating a Snapshot
 
+On mount, the kernel writes an initial snapshot record `S\01\0(initial)\n`
+to the journal, giving userspace a stable id=1 reference to the mount-time
+state.
+
 `agfs snapshot [name]` calls `ioctl(AGFS_IOC_SNAPSHOT)`. The kernel:
 
 1. Returns `-ENOTSUP` if `staging` is disabled (snapshots require staging).
@@ -495,10 +501,11 @@ This is the re-COW mechanism.
 No override lists change. No caches invalidated. Existing file handles
 continue working — the re-COW check triggers lazily on the next write.
 
-The name defaults to the executed command (if run via `agfs exec --snapshot`)
-or a timestamp (if run via `agfs snapshot` with no argument). Names need
-not be unique; when multiple snapshots share a name, `--at` and `--from`
-match the latest one.
+The name defaults to `"after <cmd>"` when auto-snapshotting via `agfs exec`
+(e.g., `"after make build"`), or a human-readable timestamp like
+`snap-20260315-043807` when run via `agfs snapshot` with no argument. Names need
+not be unique; snapshots can also be addressed by their numeric ID. When
+looking up by name, `--at` and `--from` match the latest one.
 
 #### 3.11.2 Re-COW on First Write After Snapshot
 
@@ -535,32 +542,34 @@ generation counter collapses consecutive snapshots.
 #### 3.11.3 Example Journal with Snapshots
 
 ```
+S\01\0(initial)\n                 # implicit snapshot at mount time
 A\0/src/main.rs\01\n          # COW: main.rs → blob 1
 A\0/src/lib.rs\02\n           # create lib.rs → blob 2
-S\01\0make build\n             # snapshot 1: "make build"
+S\02\0after make build\n       # snapshot 2: "after make build"
 A\0/src/main.rs\03\n          # re-COW: main.rs → blob 3 (blob 1 preserved)
 D\0/src/lib.rs\n              # delete lib.rs
 A\0/src/new.rs\04\n           # create new.rs
-S\02\0make test\n              # snapshot 2: "make test"
+S\03\0after make test\n        # snapshot 3: "after make test"
 A\0/src/new.rs\05\n           # re-COW: new.rs → blob 5 (blob 4 preserved)
 ```
 
 State at each point:
 
-| Snapshot     | main.rs | lib.rs    | new.rs |
-|-------------|---------|-----------|--------|
-| "make build" | blob 1  | blob 2    | —      |
-| "make test"  | blob 3  | (deleted) | blob 4 |
-| current      | blob 3  | (deleted) | blob 5 |
+| Snapshot           | main.rs | lib.rs    | new.rs |
+|-------------------|---------|-----------|--------|
+| (initial)          | —       | —         | —      |
+| "after make build" | blob 1  | blob 2    | —      |
+| "after make test"  | blob 3  | (deleted) | blob 4 |
+| current            | blob 3  | (deleted) | blob 5 |
 
 #### 3.11.4 Snapshot-Aware CLI Operations
 
-**`agfs status --at <name>`**: Resolve journal up to the named snapshot.
+**`agfs status --at <name|id>`**: Resolve journal up to the named snapshot.
 
-**`agfs diff --from <name>`**: Diff changes since the named snapshot
+**`agfs diff --from <name|id>`**: Diff changes since the named snapshot
 (resolve at snapshot vs resolve at current, then diff the two states).
 
-**`agfs commit --at <name>`**: Commit only changes up to the named
+**`agfs commit --at <name|id>`**: Commit only changes up to the named
 snapshot. Thanks to re-COW, post-snapshot blobs are independent copies —
 committing pre-snapshot changes does not affect them:
 
@@ -576,7 +585,7 @@ Orphaned staging blobs (referenced only by committed pre-snapshot records)
 are left in place — they are cleaned up on the next full `commit` or
 `abort`, which removes the entire staging directory.
 
-**`agfs snapshot list`**: List all snapshots with their names and the
+**`agfs log`**: List all snapshots with their names and the
 number of changes since the previous snapshot.
 
 ---
@@ -1100,6 +1109,9 @@ resolved immediately using `ask_default`.
 
 ```bash
 $ agfs init              # create a default agfs.toml in the current directory
+$ agfs load              # load the kernel module
+$ agfs unload            # unmount all sessions and unload the kernel module
+$ agfs reload            # unload then reload the kernel module
 ```
 
 **Full workflow** — mount, watch, exec, diff, and prompt to commit/abort in one command:
@@ -1107,24 +1119,23 @@ $ agfs init              # create a default agfs.toml in the current directory
 ```bash
 $ agfs                   # launch sh inside the sandbox
 $ agfs -- make build     # run a specific command instead of sh
-$ agfs --snapshot -- make build  # snapshot before exec (or set snapshot=true in agfs.toml)
 ```
 
 **Session management** — manual control over each step:
 
 ```bash
-$ agfs mount             # create .agfs/ layout and mount the filesystem
+$ agfs mount             # create .agfs/ layout and mount (auto-loads kmod if needed)
 $ agfs exec              # chroot $SHELL into .agfs/mnt (requires existing mount)
 $ agfs exec -- make build
-$ agfs exec --snapshot -- make build  # snapshot before exec
-$ agfs status            # show staged changes
-$ agfs status --at <name> # show state at a snapshot
-$ agfs diff              # git-style diff of staged vs base (rename-aware)
-$ agfs diff --from <name> # diff changes since snapshot
+$ agfs status            # show staged changes (grouped by snapshot when present)
+$ agfs status --at <name|id> # show state at a snapshot
+$ agfs diff              # git-style diff of staged vs base (grouped by snapshot)
+$ agfs diff --from <name|id> # diff changes since snapshot
 $ agfs commit            # apply staged changes to base
-$ agfs commit --at <name> # commit only changes up to a snapshot
-$ agfs abort             # discard staged changes
-$ agfs unmount           # tear down session
+$ agfs commit --at <name|id> # commit only changes up to a snapshot
+$ agfs abort             # discard staged changes (prompts for confirmation)
+$ agfs unmount           # tear down session (prompts if staged changes exist)
+$ agfs remount           # unmount then remount (prompts if staged changes exist)
 ```
 
 **Snapshots:**
@@ -1132,7 +1143,7 @@ $ agfs unmount           # tear down session
 ```bash
 $ agfs snapshot              # snapshot with timestamp as name
 $ agfs snapshot "checkpoint" # snapshot with explicit name
-$ agfs snapshot list         # list all snapshots
+$ agfs log                   # show snapshot log with change counts
 ```
 
 **Permission rules and diagnostics:**
@@ -1153,7 +1164,7 @@ Configured via top-level keys in `agfs.toml`:
 | `ask_default` | `deny` | Fallback when no daemon is connected or on timeout |
 | `permission` | true | Enable permission gating |
 | `staging` | true | Enable staging area |
-| `snapshot` | false | Auto-snapshot before each `agfs exec` invocation |
+| `snapshot` | false | Auto-snapshot after each `agfs exec` invocation |
 
 Inside the launched shell or command, agfs `chroot`s into `.agfs/mnt` so
 that the mounted view becomes `/`. The working directory remains the
@@ -1210,18 +1221,18 @@ agfs/
 ├── cli/                       # Userspace CLI source (Rust)
 │   ├── main.rs
 │   ├── lib.rs
-│   ├── config.rs              # agfs.toml management (rules, mount options)
-│   ├── init.rs                # `agfs init/deinit/reinit` — kmod load/unload, teardown
-│   ├── mount.rs               # mount, unmount, remount (prompts to kill blocking procs)
+│   ├── config.rs              # agfs.toml management (init, rules, mount options)
+│   ├── kmod.rs                # `agfs load/unload/reload` — kernel module management
+│   ├── mount.rs               # mount, unmount, remount (auto-loads kmod, prompts on staged changes)
 │   ├── exec.rs
 │   ├── commit.rs
 │   ├── abort.rs
-│   ├── status.rs
-│   ├── diff.rs
-│   ├── journal.rs             # journal parsing + resolution (commit/status/diff)
-│   ├── snapshot.rs            # snapshot create, list, snapshot-aware operations
+│   ├── diff.rs                # `agfs status` + `agfs diff` (summary and verbose views)
+│   ├── journal.rs             # journal parsing + resolution + snapshot sections
+│   ├── snapshot.rs            # snapshot create, log
 │   ├── watch.rs               # permission prompt daemon (handles TTY ownership)
-│   └── ioctl.rs               # binary protocol structs + ioctl helpers
+│   ├── ioctl.rs               # binary protocol structs + ioctl helpers
+│   └── utils.rs               # shared helpers (session_dir, plural)
 └── tests/                     # Integration tests
 ```
 

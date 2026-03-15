@@ -189,62 +189,66 @@ int agfs_staging_alloc(struct agfs_sb_info *sbi, u64 *out_id,
 /* ── Copy-on-Write to Staging Blob ─────────────────────────────────── */
 
 int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
-		     struct file **new_file, int flags)
+		     struct file **new_file, int flags, bool truncate)
 {
 	struct path blob_path;
-	struct file *src, *dst;
-	struct path lower_path;
 	u64 id;
-	loff_t len;
 	int err;
-
-	/* Open current lower file (base) read-only */
-	agfs_get_lower_path(dentry, &lower_path);
-	src = dentry_open(&lower_path, O_RDONLY, current_cred());
-	agfs_put_lower_path(dentry, &lower_path);
-	if (IS_ERR(src))
-		return PTR_ERR(src);
 
 	/* Allocate a new staging blob */
 	err = agfs_staging_alloc(sbi, &id, &blob_path, 0644, NULL);
-	if (err) {
-		fput(src);
+	if (err)
 		return err;
-	}
 
-	/* Open blob for writing */
-	dst = dentry_open(&blob_path, O_WRONLY | O_TRUNC, current_cred());
-	if (IS_ERR(dst)) {
-		err = PTR_ERR(dst);
-		path_put(&blob_path);
-		fput(src);
-		return err;
-	}
+	/* Copy base content to blob (skip when truncating — blob stays empty) */
+	if (!truncate) {
+		struct file *src, *dst;
+		struct path lower_path;
+		loff_t len;
 
-	/* Copy contents */
-	len = i_size_read(file_inode(src));
-	if (len > 0) {
-		loff_t copied_total = 0;
-
-		while (copied_total < len) {
-			ssize_t copied;
-			size_t chunk = min_t(loff_t, len - copied_total,
-					     1 << 20);
-
-			copied = vfs_copy_file_range(src, copied_total,
-						     dst, copied_total,
-						     chunk, 0);
-			if (copied <= 0) {
-				if (copied == 0)
-					break;
-				err = copied;
-				goto out_close;
-			}
-			copied_total += copied;
+		agfs_get_lower_path(dentry, &lower_path);
+		src = dentry_open(&lower_path, O_RDONLY, current_cred());
+		agfs_put_lower_path(dentry, &lower_path);
+		if (IS_ERR(src)) {
+			path_put(&blob_path);
+			return PTR_ERR(src);
 		}
+
+		dst = dentry_open(&blob_path, O_WRONLY | O_TRUNC,
+				  current_cred());
+		if (IS_ERR(dst)) {
+			fput(src);
+			path_put(&blob_path);
+			return PTR_ERR(dst);
+		}
+
+		len = i_size_read(file_inode(src));
+		if (len > 0) {
+			loff_t copied_total = 0;
+
+			while (copied_total < len) {
+				ssize_t copied;
+				size_t chunk = min_t(loff_t,
+						     len - copied_total,
+						     1 << 20);
+
+				copied = vfs_copy_file_range(src, copied_total,
+							     dst, copied_total,
+							     chunk, 0);
+				if (copied <= 0) {
+					if (copied == 0)
+						break;
+					fput(dst);
+					fput(src);
+					path_put(&blob_path);
+					return copied;
+				}
+				copied_total += copied;
+			}
+		}
+		fput(dst);
+		fput(src);
 	}
-	fput(dst);
-	fput(src);
 
 	/*
 	 * Add override on parent directory.
@@ -294,11 +298,5 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 			}
 		}
 	}
-	return err;
-
-out_close:
-	fput(dst);
-	fput(src);
-	path_put(&blob_path);
 	return err;
 }

@@ -1,8 +1,30 @@
-Keep the code simple and easy to understand.
-No backwards compatibility is needed. 
-Remove deprecated code.
-Always run the tests to see if it works.
-Always update the documents first before implemetation.
-To fix a bug, first write a test for it.
-Do no repeat the same code.
-Perfer not to use fallback and instead think through the problem and implement the best solution.
+# AGENTS.md — Coding Guidelines for AgFS
+
+## Principles
+
+- Keep code simple and easy to understand.
+- No backwards compatibility needed — remove deprecated code.
+- Do not repeat the same code — extract shared logic.
+- Think through problems and implement the best solution; avoid fallbacks.
+
+## Workflow
+
+- Always update documentation (DESIGN.md) before implementation.
+- Always run `cargo test --lib` to verify changes.
+- To fix a bug, first write a failing test, then fix it.
+- Do not modify existing tests when fixing a bug.
+
+## Project Structure
+
+- **kmod/** — Linux kernel module (C). Build with `make kmod`.
+- **cli/** — Userspace CLI (Rust). Build with `make cli`.
+- **tests/** — Integration tests.
+- **DESIGN.md** — Authoritative design document. Keep in sync with code.
+
+## Build & Test
+
+```bash
+make build          # build cli + kmod
+make install        # install cli binary + kernel module
+make test           # unit + integration tests
+```

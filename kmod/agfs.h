@@ -172,6 +172,7 @@ struct agfs_file_info {
 	struct file		*lower_file;
 	const struct vm_operations_struct *lower_vm_ops;
 	struct agfs_ctl_private	*ctl;	/* non-NULL if this fd is a ctl daemon */
+	bool			truncate;	/* deferred O_TRUNC → empty blob on first write */
 };
 
 /* ── Accessor Macros ───────────────────────────────────────────────── */
@@ -311,7 +312,7 @@ int agfs_staging_alloc(struct agfs_sb_info *sbi, u64 *out_id,
 		      struct path *blob_path, umode_t mode,
 		      const char *symname);
 int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
-		     struct file **new_file, int flags);
+		     struct file **new_file, int flags, bool truncate);
 
 /* journal.c */
 int agfs_journal_open(struct agfs_sb_info *sbi);

@@ -215,6 +215,11 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	if (err)
 		goto out_put_base;
 
+	/* Write the implicit initial snapshot (id=1) so userspace can
+	 * reference the mount-time state by id. */
+	if (!sbi->nostaging)
+		agfs_journal_append_s(sbi, 1, "(initial)");
+
 	/* Create root inode from lower root */
 	inode = agfs_iget(sb, d_inode(base_path.dentry));
 	if (IS_ERR(inode)) {

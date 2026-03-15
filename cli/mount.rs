@@ -188,6 +188,7 @@ pub fn mount() -> Result<()> {
     }
 
     setup_agfs_dir(&agfs_dir)?;
+    crate::kmod::load()?;
     do_mount(&agfs_dir)?;
     bind_mount_pseudofs(&mnt)?;
     create_cwd_symlink(&agfs_dir, &cwd)?;
@@ -196,8 +197,11 @@ pub fn mount() -> Result<()> {
 }
 
 /// Unmount the agfs filesystem and remove the .agfs/ directory.
-pub fn unmount() -> Result<()> {
+pub fn unmount(force: bool) -> Result<()> {
     let agfs_dir = crate::utils::session_dir()?;
+    if !force {
+        prompt_if_staged(&agfs_dir)?;
+    }
     unmount_at(&agfs_dir)?;
     eprintln!(
         "{} {}",
@@ -208,9 +212,47 @@ pub fn unmount() -> Result<()> {
 }
 
 /// Unmount then mount again. Picks up new mount options from agfs.toml.
-pub fn remount() -> Result<()> {
-    unmount()?;
+pub fn remount(force: bool) -> Result<()> {
+    let agfs_dir = crate::utils::session_dir()?;
+    if !force {
+        prompt_if_staged(&agfs_dir)?;
+    }
+    unmount_at(&agfs_dir)?;
     mount()
+}
+
+/// If there are staged changes, ask the user to commit or abort before proceeding.
+fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
+    let changes = crate::journal::resolve(agfs_dir).unwrap_or_default();
+    if changes.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!(
+        "{}",
+        format!(
+            "Warning: {} staged change{} will be lost.",
+            changes.len(),
+            crate::utils::plural(changes.len())
+        )
+        .yellow()
+        .bold()
+    );
+    eprint!(
+        "{} ",
+        "[c]ommit, [a]bort, or [q]uit? [default: quit]:".bold()
+    );
+    io::stderr().flush().ok();
+
+    let mut line = String::new();
+    io::stdin().lock().read_line(&mut line)?;
+
+    match line.trim().to_ascii_lowercase().as_str() {
+        "c" | "commit" => crate::commit::run(None)?,
+        "a" | "abort" => crate::abort::reset_staging(agfs_dir)?,
+        _ => anyhow::bail!("unmount cancelled"),
+    }
+    Ok(())
 }
 
 /// Check if a path is a mount point by comparing device IDs with its parent.

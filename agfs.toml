@@ -11,4 +11,5 @@ snapshot = true
 "/usr/share" = "allow-ro"
 "/usr/bin/git" = "ask"
 "$HOME/.bash_history" = "allow-rw"
+"$HOME/.ssh/id_ed25519" = "ask"
 "." = "allow-rw"

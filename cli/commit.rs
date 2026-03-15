@@ -6,6 +6,7 @@
 
 use crate::ioctl;
 use crate::journal::{self, Change};
+use crate::utils::to_base_path;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
@@ -58,21 +59,20 @@ fn apply_blob(agfs_dir: &Path, blob_id: u64, base_path: &Path) -> Result<()> {
 }
 
 fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<usize> {
-    let base = Path::new("/");
     let mut committed = 0;
 
     for change in changes {
         match change {
             Change::Renamed { from, to } => {
-                let base_old = base.join(from.trim_start_matches('/'));
-                let base_new = base.join(to.trim_start_matches('/'));
+                let base_old = to_base_path(from);
+                let base_new = to_base_path(to);
                 ensure_parent(&base_new)?;
                 fs::rename(&base_old, &base_new)
                     .with_context(|| format!("rename {from} → {to}"))?;
             }
             Change::RenamedModified { from, to, blob_id } => {
-                let base_old = base.join(from.trim_start_matches('/'));
-                let base_new = base.join(to.trim_start_matches('/'));
+                let base_old = to_base_path(from);
+                let base_new = to_base_path(to);
                 ensure_parent(&base_new)?;
                 if base_old.exists() {
                     fs::rename(&base_old, &base_new)
@@ -81,7 +81,7 @@ fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<usize> {
                 apply_blob(agfs, *blob_id, &base_new)?;
             }
             Change::Deleted(p) => {
-                let base_file = base.join(p.trim_start_matches('/'));
+                let base_file = to_base_path(p);
                 if base_file.exists() {
                     if base_file.is_dir() {
                         fs::remove_dir_all(&base_file)
@@ -92,7 +92,7 @@ fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<usize> {
                 }
             }
             Change::Added { path, blob_id } | Change::Modified { path, blob_id } => {
-                let base_file = base.join(path.trim_start_matches('/'));
+                let base_file = to_base_path(path);
                 apply_blob(agfs, *blob_id, &base_file)?;
             }
         }
@@ -112,7 +112,6 @@ pub fn run(at: Option<&str>) -> Result<()> {
 }
 
 fn run_full(agfs: &Path) -> Result<()> {
-    let staging_dir = agfs.join("staging");
     let changes = journal::resolve(agfs)?;
 
     if changes.is_empty() {
@@ -122,19 +121,7 @@ fn run_full(agfs: &Path) -> Result<()> {
 
     let committed = apply_changes(agfs, &changes)?;
 
-    // Clean up staging directory and journal file
-    if staging_dir.exists() {
-        fs::remove_dir_all(&staging_dir).context("removing staging dir")?;
-        fs::create_dir_all(&staging_dir).context("recreating staging dir")?;
-    }
-    let journal_path = agfs.join("journal");
-    if journal_path.exists() {
-        fs::remove_file(&journal_path).context("removing journal file")?;
-    }
-
-    // Signal kernel to invalidate caches
-    let ctl_file = ioctl::open(agfs).context("opening ctl for cache invalidation")?;
-    ioctl::invalidate_cache(&ctl_file).context("invalidating cache")?;
+    crate::abort::reset_staging(agfs)?;
 
     println!(
         "{}",

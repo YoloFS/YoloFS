@@ -36,7 +36,7 @@ fn snapshot_list() {
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write");
     s.cli(&["snapshot", "second"]).expect("snapshot 2");
 
-    let output = s.cli(&["snapshot", "list"]).expect("snapshot list");
+    let output = s.cli(&["log"]).expect("snapshot list");
     assert!(output.contains("first"), "should list first: {output}");
     assert!(output.contains("second"), "should list second: {output}");
 }
@@ -161,7 +161,7 @@ fn snapshot_default_name() {
 
     s.cli(&["snapshot"]).expect("snapshot with no name");
 
-    let output = s.cli(&["snapshot", "list"]).expect("list");
+    let output = s.cli(&["log"]).expect("list");
     assert!(
         output.contains("snap-"),
         "default name should start with 'snap-': {output}"
@@ -269,7 +269,8 @@ fn second_handle_skips_redundant_recow() {
         .count();
 
     // Handle B opens and writes — should NOT create another blob
-    // because inode->cow_snapshot_gen already matches sbi->snapshot_gen
+    // because inode->snapshot_gen already matches sbi->snapshot_gen.
+    // O_TRUNC on an already-staged file truncates the blob in-place.
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
 
     let blobs_after_v3 = fs::read_dir(s.staging_dir())
@@ -283,22 +284,19 @@ fn second_handle_skips_redundant_recow() {
         })
         .count();
 
-    // v3 should reuse the existing post-snapshot blob (no new blob created).
-    // O_TRUNC allocates a fresh blob, so with truncating writes the count
-    // increases. But the re-COW path should NOT fire since the blob is
-    // already up-to-date with the snapshot generation.
-    //
-    // Note: fs::write uses O_WRONLY|O_CREATE|O_TRUNC, which always
-    // allocates a fresh blob in the O_TRUNC open path. So the blob count
-    // WILL increase by 1. The key correctness check is that the content
-    // is correct and that status shows exactly 1 change.
+    assert_eq!(
+        blobs_after_v3, blobs_after_recow,
+        "v3 should not create a new blob (no redundant re-COW)"
+    );
+
+    // Content should be correct
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
     assert_eq!(content, "v3\n");
 
     let status = s.cli(&["status"]).expect("status");
     assert!(
-        status.contains("1 staged change"),
-        "should be exactly 1 change: {status}"
+        status.contains("2 staged change"),
+        "should show changes across snapshot sections: {status}"
     );
 }
 

@@ -122,17 +122,31 @@ pub fn blob_path(agfs_dir: &Path, blob_id: u64) -> PathBuf {
     agfs_dir.join("staging").join(blob_id.to_string())
 }
 
-/// Find the record index of the latest snapshot with the given name.
-fn find_snapshot_index(records: &[Record], name: &str) -> Result<usize> {
+/// Find the record index of a snapshot by name or numeric ID.
+/// Tries parsing as a numeric ID first, then falls back to name match
+/// (using the latest occurrence if names are duplicated).
+fn find_snapshot_index(records: &[Record], name_or_id: &str) -> Result<usize> {
+    // Try numeric ID first
+    if let Ok(target_id) = name_or_id.parse::<u64>() {
+        for (i, record) in records.iter().enumerate() {
+            if let Record::Snapshot { id, .. } = record
+                && *id == target_id
+            {
+                return Ok(i);
+            }
+        }
+    }
+
+    // Fall back to name match (latest occurrence)
     let mut last = None;
     for (i, record) in records.iter().enumerate() {
         if let Record::Snapshot { name: n, .. } = record
-            && n == name
+            && n == name_or_id
         {
             last = Some(i);
         }
     }
-    last.ok_or_else(|| anyhow::anyhow!("snapshot not found: {name}"))
+    last.ok_or_else(|| anyhow::anyhow!("snapshot not found: {name_or_id}"))
 }
 
 /// Resolve journal up to (and including) the named snapshot.
@@ -338,16 +352,7 @@ impl ChangesState {
         let mut entries = BTreeMap::new();
         for change in changes {
             match change {
-                Change::Added { path, blob_id } => {
-                    entries.insert(
-                        path.clone(),
-                        StateEntry {
-                            blob_id: Some(*blob_id),
-                            renamed_from: None,
-                        },
-                    );
-                }
-                Change::Modified { path, blob_id } => {
+                Change::Added { path, blob_id } | Change::Modified { path, blob_id } => {
                     entries.insert(
                         path.clone(),
                         StateEntry {
@@ -426,8 +431,7 @@ impl ChangesState {
                                 to: path.clone(),
                             });
                         }
-                    } else if new_entry.blob_id.is_none() {
-                        changes.push(Change::Deleted(path.clone()));
+
                     } else if let Some(blob_id) = new_entry.blob_id {
                         let base_file = base.join(path.trim_start_matches('/'));
                         if base_file.exists() {
@@ -441,6 +445,8 @@ impl ChangesState {
                                 blob_id,
                             });
                         }
+                    } else {
+                        changes.push(Change::Deleted(path.clone()));
                     }
                 }
                 Some(old_entry) if old_entry != new_entry => {
@@ -814,6 +820,102 @@ mod tests {
         let dir = setup_test_dir();
         fs::write(dir.path().join("journal"), b"A\0/a\01\n").unwrap();
         assert!(resolve_at(dir.path(), "nonexistent").is_err());
+    }
+
+    #[test]
+    fn resolve_at_by_numeric_id() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
+        data.extend_from_slice(b"S\05\0mysnap\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/y\02\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("staging/1"), "").unwrap();
+        fs::write(dir.path().join("staging/2"), "").unwrap();
+
+        // Lookup by ID "5" should find the snapshot
+        let changes = resolve_at(dir.path(), "5").unwrap();
+        assert_eq!(changes.len(), 1, "by id: {changes:?}");
+
+        // Lookup by name should also work
+        let changes2 = resolve_at(dir.path(), "mysnap").unwrap();
+        assert_eq!(changes2.len(), 1, "by name: {changes2:?}");
+    }
+
+    #[test]
+    fn resolve_at_id_not_found() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"S\01\0snap\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        // ID 99 doesn't exist
+        assert!(resolve_at(dir.path(), "99").is_err());
+    }
+
+    #[test]
+    fn resolve_at_id_takes_priority_over_name() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // Snapshot with id=1 named "first", snapshot with id=2 named "1"
+        // (a name that looks like a number)
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
+        data.extend_from_slice(b"S\01\0first\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/y\02\n");
+        data.extend_from_slice(b"S\02\01\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("staging/1"), "").unwrap();
+        fs::write(dir.path().join("staging/2"), "").unwrap();
+
+        // "1" should match id=1 (the first snapshot), not the name "1" (second snapshot)
+        let changes = resolve_at(dir.path(), "1").unwrap();
+        assert_eq!(
+            changes.len(),
+            1,
+            "id=1 should find first snapshot: {changes:?}"
+        );
+
+        // "2" should match id=2
+        let changes2 = resolve_at(dir.path(), "2").unwrap();
+        assert_eq!(
+            changes2.len(),
+            2,
+            "id=2 should find second snapshot: {changes2:?}"
+        );
+
+        // "first" should match by name
+        let changes3 = resolve_at(dir.path(), "first").unwrap();
+        assert_eq!(changes3.len(), 1, "name=first: {changes3:?}");
+    }
+
+    #[test]
+    fn split_at_snapshot_by_id() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/a\01\n");
+        data.extend_from_slice(b"S\07\0snap\n");
+        data.extend_from_slice(b"A\0/b\02\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        // Split by numeric ID
+        let (changes, remaining) = split_at_snapshot(dir.path(), "7").unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn resolve_from_by_id() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
+        data.extend_from_slice(b"S\03\0snap\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345/y\02\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("staging/1"), "").unwrap();
+        fs::write(dir.path().join("staging/2"), "").unwrap();
+
+        let (at_snap, current) = resolve_from(dir.path(), "3").unwrap();
+        assert_eq!(at_snap.len(), 1, "at snap: {at_snap:?}");
+        assert_eq!(current.len(), 2, "current: {current:?}");
     }
 
     #[test]
