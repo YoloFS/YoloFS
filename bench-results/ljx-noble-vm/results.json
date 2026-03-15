@@ -1,5 +1,5 @@
 {
-  "timestamp": 1773559756,
+  "timestamp": 1773560818,
   "env": {
     "hostname": "ljx-noble-vm",
     "cpu": "Intel(R) Xeon(R) Silver 4215R CPU @ 3.20GHz",
@@ -9,7 +9,7 @@
     "storage_device_model": "virtual disk",
     "filesystem": "ext4",
     "filesystem_size_gb": 192,
-    "filesystem_free_gb": 171,
+    "filesystem_free_gb": 170,
     "mount_options": "rw,relatime,discard,errors=remount-ro,commit=30",
     "kernel": "6.8.0-101-generic",
     "distro": "Ubuntu 24.04.4 LTS"
@@ -24,21 +24,21 @@
             {
               "staging_ms": null,
               "commit_ms": null,
-              "total_ms": 11377
+              "total_ms": 10446
             },
             {
               "staging_ms": null,
               "commit_ms": null,
-              "total_ms": 11801
+              "total_ms": 9581
             },
             {
               "staging_ms": null,
               "commit_ms": null,
-              "total_ms": 10532
+              "total_ms": 11786
             }
           ],
-          "mean_total_ms": 11236.666666666666,
-          "stddev_total_ms": 527.4848075747985,
+          "mean_total_ms": 10604.333333333334,
+          "stddev_total_ms": 907.1230469028015,
           "mean_staging_ms": null,
           "mean_commit_ms": null,
           "outlier_iter_indices": [],
@@ -48,25 +48,25 @@
           "scenario": "rules-allow-all",
           "iterations": [
             {
-              "staging_ms": 36970,
-              "commit_ms": 15916,
-              "total_ms": 52886
+              "staging_ms": 39437,
+              "commit_ms": 66562,
+              "total_ms": 105999
             },
             {
-              "staging_ms": 33617,
-              "commit_ms": 5410,
-              "total_ms": 39027
+              "staging_ms": 29335,
+              "commit_ms": 83438,
+              "total_ms": 112773
             },
             {
-              "staging_ms": 25179,
-              "commit_ms": 5925,
-              "total_ms": 31104
+              "staging_ms": 28023,
+              "commit_ms": 75612,
+              "total_ms": 103635
             }
           ],
-          "mean_total_ms": 41005.666666666664,
-          "stddev_total_ms": 9001.859894241608,
-          "mean_staging_ms": 31922.0,
-          "mean_commit_ms": 9083.666666666666,
+          "mean_total_ms": 107469.0,
+          "stddev_total_ms": 3872.67659377852,
+          "mean_staging_ms": 32265.0,
+          "mean_commit_ms": 75204.0,
           "outlier_iter_indices": [],
           "kernel_messages": []
         },
@@ -74,25 +74,25 @@
           "scenario": "rules-realistic",
           "iterations": [
             {
-              "staging_ms": 35849,
-              "commit_ms": 5425,
-              "total_ms": 41274
+              "staging_ms": 26631,
+              "commit_ms": 81036,
+              "total_ms": 107667
             },
             {
-              "staging_ms": 23081,
-              "commit_ms": 6447,
-              "total_ms": 29528
+              "staging_ms": 29049,
+              "commit_ms": 79104,
+              "total_ms": 108153
             },
             {
-              "staging_ms": 26220,
-              "commit_ms": 6444,
-              "total_ms": 32664
+              "staging_ms": 60462,
+              "commit_ms": 40520,
+              "total_ms": 100982
             }
           ],
-          "mean_total_ms": 34488.666666666664,
-          "stddev_total_ms": 4965.828922636068,
-          "mean_staging_ms": 28383.333333333332,
-          "mean_commit_ms": 6105.333333333333,
+          "mean_total_ms": 105600.66666666667,
+          "stddev_total_ms": 3271.9118094607757,
+          "mean_staging_ms": 38714.0,
+          "mean_commit_ms": 66886.66666666667,
           "outlier_iter_indices": [],
           "kernel_messages": []
         }
@@ -132,13 +132,13 @@
           "iterations": [
             {
               "staging_ms": 0,
-              "commit_ms": 1,
-              "total_ms": 1
+              "commit_ms": 12,
+              "total_ms": 12
             },
             {
-              "staging_ms": 0,
-              "commit_ms": 1,
-              "total_ms": 1
+              "staging_ms": 14,
+              "commit_ms": 3,
+              "total_ms": 17
             },
             {
               "staging_ms": 0,
@@ -146,10 +146,10 @@
               "total_ms": 3
             }
           ],
-          "mean_total_ms": 1.6666666666666667,
-          "stddev_total_ms": 0.9428090415820634,
-          "mean_staging_ms": 0.0,
-          "mean_commit_ms": 1.6666666666666667,
+          "mean_total_ms": 10.666666666666666,
+          "stddev_total_ms": 5.792715732327589,
+          "mean_staging_ms": 4.666666666666667,
+          "mean_commit_ms": 6.0,
           "outlier_iter_indices": [],
           "kernel_messages": []
         },
@@ -158,24 +158,24 @@
           "iterations": [
             {
               "staging_ms": 0,
-              "commit_ms": 1,
-              "total_ms": 1
+              "commit_ms": 3,
+              "total_ms": 3
             },
             {
               "staging_ms": 0,
-              "commit_ms": 2,
-              "total_ms": 2
+              "commit_ms": 3,
+              "total_ms": 3
             },
             {
               "staging_ms": 0,
-              "commit_ms": 2,
-              "total_ms": 2
+              "commit_ms": 3,
+              "total_ms": 3
             }
           ],
-          "mean_total_ms": 1.6666666666666667,
-          "stddev_total_ms": 0.4714045207910317,
+          "mean_total_ms": 3.0,
+          "stddev_total_ms": 0.0,
           "mean_staging_ms": 0.0,
-          "mean_commit_ms": 1.6666666666666667,
+          "mean_commit_ms": 3.0,
           "outlier_iter_indices": [],
           "kernel_messages": []
         }
