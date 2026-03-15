@@ -454,7 +454,7 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 	struct agfs_readdir_data *rdd =
 		container_of(ctx, struct agfs_readdir_data, ctx);
 
-	if (agfs_nameset_has(rdd->ns, name, namelen))
+	if (rdd->ns && agfs_nameset_has(rdd->ns, name, namelen))
 		return true;
 
 	if (*rdd->off < rdd->caller_ctx->pos) {
