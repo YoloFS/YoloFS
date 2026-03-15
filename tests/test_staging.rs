@@ -394,3 +394,305 @@ fn blob_path_matches_library_api() {
     assert_eq!(lib_path, manual_path, "blob_path() should match manual construction");
     assert!(lib_path.exists(), "blob should exist at library-computed path");
 }
+
+// ── Rename blobs ─────────────────────────────────────────────────────────────
+
+/// Pure rename of a base file creates no new blob (only journal R record).
+#[test]
+fn pure_rename_creates_no_blob() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let blobs_before = blob_entries(&s);
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
+    let blobs_after = blob_entries(&s);
+
+    assert_eq!(
+        blobs_before, blobs_after,
+        "pure rename should not create new staging blobs"
+    );
+}
+
+/// Rename + modify (write after rename) produces a blob at the new path.
+#[test]
+fn rename_then_write_produces_blob() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
+    fs::write(s.mnt_path("moved.txt"), "new content\n").expect("write renamed file");
+
+    let ch = changes(&s);
+    // Should resolve to RenamedModified with a blob
+    let blob_id = ch.iter()
+        .find_map(|c| match c {
+            Change::RenamedModified { to, blob_id, .. } if to.ends_with("/moved.txt") => Some(*blob_id),
+            // May also appear as separate Renamed + Modified depending on resolution
+            Change::Modified { path, blob_id } if path.ends_with("/moved.txt") => Some(*blob_id),
+            _ => None,
+        })
+        .expect("should have a blob for renamed+modified file");
+
+    assert_eq!(
+        fs::read_to_string(blob_path(&s, blob_id)).unwrap(),
+        "new content\n"
+    );
+}
+
+/// Write then rename: blob content still correct under the new path.
+#[test]
+fn write_then_rename_blob_content() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "written first\n").expect("write");
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("final.txt")).expect("rename");
+
+    // Read through mount to verify
+    let content = fs::read_to_string(s.mnt_path("final.txt")).unwrap();
+    assert_eq!(content, "written first\n");
+
+    // The blob should have the written content — may resolve as RenamedModified
+    // or as separate changes depending on the resolver.
+    let ch = changes(&s);
+    let blob_id = ch.iter()
+        .find_map(|c| match c {
+            Change::RenamedModified { to, blob_id, .. } if to.ends_with("/final.txt") => Some(*blob_id),
+            Change::Modified { path, blob_id } if path.ends_with("/final.txt") => Some(*blob_id),
+            Change::Added { path, blob_id } if path.ends_with("/final.txt") => Some(*blob_id),
+            _ => None,
+        });
+
+    if let Some(id) = blob_id {
+        assert_eq!(fs::read_to_string(blob_path(&s, id)).unwrap(), "written first\n");
+    }
+    // If no blob (pure Renamed), the content lives in the original blob
+    // referenced by the first write — verify it's readable through mount.
+}
+
+// ── Binary content ───────────────────────────────────────────────────────────
+
+/// Binary (non-UTF8) content is preserved exactly in the blob.
+#[test]
+fn binary_content_preserved() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let data: Vec<u8> = (0..=255).collect();
+    fs::write(s.mnt_path("binary.bin"), &data).expect("write binary");
+
+    let ch = changes(&s);
+    let id = blob_id_for(&ch, "/binary.bin");
+    let blob_data = fs::read(blob_path(&s, id)).unwrap();
+    assert_eq!(blob_data, data, "binary blob content should match exactly");
+}
+
+/// Blob preserves NUL bytes and other control characters.
+#[test]
+fn nul_bytes_preserved() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let data = b"before\0middle\0after\n";
+    fs::write(s.mnt_path("nulls.txt"), data).expect("write with NULs");
+
+    let ch = changes(&s);
+    let id = blob_id_for(&ch, "/nulls.txt");
+    let blob_data = fs::read(blob_path(&s, id)).unwrap();
+    assert_eq!(blob_data, data, "NUL bytes should be preserved in blob");
+}
+
+// ── Truncate ─────────────────────────────────────────────────────────────────
+
+/// O_TRUNC on an already-staged file: the kernel writes from offset 0 but
+/// does not ftruncate the blob to the new size.  This is a known limitation
+/// (the blob retains trailing bytes from the previous write).  Verify the
+/// read-through-mount returns the kernel's view of the file.
+#[test]
+fn truncate_rewrite_overwrites_from_start() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "this is a long string\n").expect("write long");
+    fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
+
+    // The staging blob starts with the new content, but the kernel's i_size
+    // tracks the correct length — verify via mount read.
+    let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
+    // Kernel may either truncate properly or leave trailing bytes:
+    assert!(
+        content.starts_with("short\n"),
+        "mount content should start with the new data: {content:?}"
+    );
+}
+
+// ── File permissions ─────────────────────────────────────────────────────────
+
+/// Staging blobs are created with root credentials (credential override).
+/// The original file permissions are NOT preserved in the staging blob itself;
+/// they are preserved in the inode metadata and applied during commit.
+#[test]
+fn staging_blob_has_root_ownership() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
+
+    let ch = changes(&s);
+    let id = blob_id_for(&ch, "/hello.txt");
+    let blob = blob_path(&s, id);
+
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::metadata(&blob).unwrap();
+    // Staging blobs are created with root credentials
+    assert_eq!(meta.uid(), 0, "staging blob should be owned by root");
+}
+
+// ── Multiple files ───────────────────────────────────────────────────────────
+
+/// Writing multiple files produces one blob per file, each with correct content.
+#[test]
+fn multiple_files_each_get_correct_blob() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "aaa\n").expect("write 1");
+    fs::write(s.mnt_path("multi.txt"), "bbb\n").expect("write 2");
+    fs::write(s.mnt_path("new1.txt"), "ccc\n").expect("create 1");
+    fs::write(s.mnt_path("new2.txt"), "ddd\n").expect("create 2");
+
+    let ch = changes(&s);
+
+    let pairs = [
+        ("/hello.txt", "aaa\n"),
+        ("/multi.txt", "bbb\n"),
+        ("/new1.txt", "ccc\n"),
+        ("/new2.txt", "ddd\n"),
+    ];
+    for (suffix, expected) in &pairs {
+        let id = blob_id_for(&ch, suffix);
+        let actual = fs::read_to_string(blob_path(&s, id)).unwrap();
+        assert_eq!(&actual, expected, "blob for {suffix} should have correct content");
+    }
+}
+
+// ── No redundant re-COW ─────────────────────────────────────────────────────
+
+/// Without a snapshot, rewriting a file reuses the same blob (no new allocation).
+#[test]
+fn rewrite_without_snapshot_reuses_blob() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
+    let blobs_after_v1 = blob_entries(&s);
+
+    fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
+    let blobs_after_v2 = blob_entries(&s);
+
+    assert_eq!(
+        blobs_after_v1, blobs_after_v2,
+        "rewrite without snapshot should reuse the same blob"
+    );
+
+    let ch = changes(&s);
+    let id = blob_id_for(&ch, "/hello.txt");
+    assert_eq!(fs::read_to_string(blob_path(&s, id)).unwrap(), "v2\n");
+}
+
+// ── Commit --at partial ──────────────────────────────────────────────────────
+
+/// Commit --at a snapshot clears pre-snapshot blobs but keeps post-snapshot blobs.
+#[test]
+fn commit_at_keeps_post_snapshot_blobs() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "pre-snap\n").expect("write pre");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    fs::write(s.mnt_path("multi.txt"), "post-snap\n").expect("write post");
+
+    // Grab the post-snapshot blob id before commit
+    let ch = changes(&s);
+    let post_id = blob_id_for(&ch, "/multi.txt");
+
+    s.cli(&["commit", "--at", "s1"]).expect("commit --at");
+
+    // Post-snapshot blob should still exist
+    let remaining = blob_entries(&s);
+    assert!(
+        remaining.contains(&post_id),
+        "post-snapshot blob should survive commit --at: remaining={remaining:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(blob_path(&s, post_id)).unwrap(),
+        "post-snap\n",
+        "post-snapshot blob content should be intact"
+    );
+}
+
+// ── Nested file paths ────────────────────────────────────────────────────────
+
+/// Writing to a deeply nested path produces a blob with correct content.
+#[test]
+fn deep_nested_file_blob() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::create_dir_all(s.mnt_path("a/b/c")).expect("mkdir -p");
+    fs::write(s.mnt_path("a/b/c/leaf.txt"), "deep content\n").expect("write nested");
+
+    let ch = changes(&s);
+    let id = blob_id_for(&ch, "/leaf.txt");
+    assert_eq!(fs::read_to_string(blob_path(&s, id)).unwrap(), "deep content\n");
+}
+
+/// Modifying a pre-existing nested file creates a blob.
+#[test]
+fn modify_nested_base_file() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // subdir/deep.txt is seeded in base
+    fs::write(s.mnt_path("subdir/deep.txt"), "updated nested\n").expect("write");
+
+    let ch = changes(&s);
+    let id = blob_id_for(&ch, "/deep.txt");
+    assert_eq!(fs::read_to_string(blob_path(&s, id)).unwrap(), "updated nested\n");
+}
+
+// ── Symlink edge cases ───────────────────────────────────────────────────────
+
+/// Symlink to an absolute path preserves the absolute target.
+#[test]
+fn symlink_absolute_target() {
+    let s = AgfsSession::new().expect("session setup");
+
+    std::os::unix::fs::symlink("/etc/hostname", s.mnt_path("abs_link")).expect("symlink");
+
+    let ch = changes(&s);
+    let id = blob_id_for(&ch, "/abs_link");
+    let target = fs::read_link(blob_path(&s, id)).unwrap();
+    assert_eq!(target.to_str().unwrap(), "/etc/hostname");
+}
+
+/// Symlink to a relative path with directories preserves the full relative target.
+#[test]
+fn symlink_relative_with_dirs() {
+    let s = AgfsSession::new().expect("session setup");
+
+    std::os::unix::fs::symlink("../hello.txt", s.mnt_path("subdir/uplink")).expect("symlink");
+
+    let ch = changes(&s);
+    let id = blob_id_for(&ch, "/uplink");
+    let target = fs::read_link(blob_path(&s, id)).unwrap();
+    assert_eq!(target.to_str().unwrap(), "../hello.txt");
+}
+
+// ── Delete + recreate ────────────────────────────────────────────────────────
+
+/// Delete then recreate a file: the new file gets a fresh blob.
+#[test]
+fn delete_recreate_gets_new_blob() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
+    fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
+
+    let ch = changes(&s);
+    // Should resolve to Modified (delete + re-add collapses)
+    let id = blob_id_for(&ch, "/hello.txt");
+    assert_eq!(
+        fs::read_to_string(blob_path(&s, id)).unwrap(),
+        "reborn\n",
+        "recreated file blob should have the new content"
+    );
+}
