@@ -62,6 +62,14 @@ load-kmod: kmod
 unload-kmod:
 	sudo rmmod agfs
 
+# ── Bench ──────────────────────────────────────────────────────────────
+
+.PHONY: bench
+
+bench: install
+	cargo build --release --bin agfs-bench
+	./target/release/agfs-bench
+
 # ── CI ─────────────────────────────────────────────────────────────────
 
 .PHONY: ci

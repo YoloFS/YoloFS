@@ -18,12 +18,8 @@ Writes additionally incur staging costs: data is written to a blob in the
 staging directory rather than directly to the base filesystem, and eventually
 flushed to the base on `commit`.
 
-The benchmark suite serves two purposes:
-
-- **Artifact evaluation**: comprehensive, reproducible results demonstrating
-  agfs overhead across realistic workloads and permission configurations.
-- **Iterative development**: a fast subset that gives quick feedback when
-  optimising the kernel module or userspace tooling.
+The benchmark suite produces comprehensive, reproducible results demonstrating
+agfs overhead across realistic workloads and permission configurations.
 
 ---
 
@@ -33,13 +29,12 @@ The suite defines multiple workloads to avoid overfitting to a single access
 pattern. Each workload is a self-contained Rust function that performs a
 specific operation on the mounted filesystem.
 
-### Clone (`clone-large`)
+### Write files (`write-files`)
 
-Full `git clone --no-local --no-hardlinks` of the Linux kernel source from a
-local bare mirror (`~/.cache/agfs-bench/linux.git`, fetched automatically on
-first run). Tests lookup, create, and readdir at scale (~1.2M files).
-
-Primarily stresses write and metadata paths.
+Creates 1,000 small files (4 KiB each) in a temporary directory. Exercises the
+file-create and sequential-write paths without any network dependency; no
+external fixture is required. Useful for rapid iteration and as a quick sanity
+check before running heavier workloads.
 
 ---
 
@@ -52,17 +47,11 @@ The goal is to isolate the cost of each level of gating.
 |---|---|---|
 | `native` | No agfs, direct ext4 | True baseline |
 | `rules-allow-all` | `allow-rw /` rule | VFS interposition + staging; no per-access gating |
-| `ask-default-allow` | `ask_default=allow` | Fast-path gating resolved without IPC |
 | `rules-realistic` | workload-defined rules | Typical rule-based config; most accesses hit cache |
-| `ask-daemon-allow` | default (`ask`) + auto-approve daemon | Full IPC round-trip on every ungated access |
 
 `rules-allow-all` is the practical floor for a useful agfs configuration: all
 writes are staged, all reads pass through VFS interposition, but no gating
 overhead is paid per-access. `native` is the absolute floor.
-
-The auto-approve daemon used by `ask-daemon-allow` is an internal
-implementation detail of the bench binary — it is spawned and managed
-automatically as part of fixture setup, not exposed as a user-facing command.
 
 ---
 
@@ -79,15 +68,10 @@ total = staging_time + commit_time
   while running inside agfs. This is what the agent experiences.
 - **`commit_time`**: wall time of `agfs commit` after the workload completes.
   This is the cost of flushing staged changes to the base filesystem.
-- **`abort_time`**: wall time of `agfs abort` (measured in `staging-lifecycle`).
-  Should be near-instantaneous regardless of staging size.
-
-For read-only workloads (`find-files`, `grep-tree`), staging is not involved
-and only a single wall-time figure is reported.
 
 All timings are taken with `std::time::Instant` inside the bench binary.
-Each (workload, scenario, cache-state) triple is run 10 times (3 in quick
-mode); mean ± stddev are reported, and outliers (>2σ) are flagged.
+Each (workload, scenario) pair is run `N_ITERS` times (currently 3), preceded
+by one warm-up run; mean ± stddev are reported, and outliers (>2σ) are flagged.
 
 ---
 
@@ -96,7 +80,10 @@ mode); mean ± stddev are reported, and outliers (>2σ) are flagged.
 **Fixture** (setup, not timed): constructed once and reused across all
 subsequent runs. If the fixture already exists it is not rebuilt.
 
-- Mirror repository fetched to `~/.cache/agfs-bench/linux.git` if not present.
+- Each workload declares its own fixture requirements via `ensure_fixture()`,
+  called once before any scenarios run for that workload.
+- `worktree`: clones the Linux kernel to `~/.cache/agfs-bench/linux`.
+- `write-files`: no external fixture needed.
 - agfs mounted with the appropriate options and rules.
 - For `ask-daemon-allow`: the auto-approve daemon spawned as a child process
   and confirmed listening before timing begins.
@@ -106,6 +93,7 @@ begins. This populates the page cache for the mirror and warms the dentry/inode
 caches on the agfs mount. The warm-up result is discarded.
 
 **Run** (timed): the workload is run N+1 times total (1 warm-up + N timed).
+Currently N=3 by default; increase `N_ITERS` for more statistical confidence.
 Mean ± stddev of the N timed iterations is reported; outliers (>2σ) are
 flagged.
 
@@ -143,11 +131,8 @@ Verbose logs include:
 - Workload stdout/stderr
 - Kernel messages produced during the run, captured via the systemd journal
   using the same cursor-snapshot approach as the integration test helpers
-  (`snapshot_journal` before the run, `kernel_messages_since` after)
-- agfs journal contents at the point of failure
-
-The systemd journal utilities in `tests/helpers.rs` should be extracted into
-the shared library crate so the bench binary can reuse them directly.
+  (`klog::snapshot` before the run, `klog::since` after; both live in `cli/klog.rs`)
+- agfs journal contents at the point of failure, parsed via `agfs::journal::read`
 
 Results are written to `results/<hostname>/` in the repository. By default the
 previous result for that host is overwritten and a new commit made; git history
@@ -156,19 +141,40 @@ subdirectory (`results/<hostname>/<timestamp>/`) instead, retaining multiple
 results from the same machine in the working tree.
 
 Each result records environment metadata in the JSON so results from different
-machines are not conflated: hardware (CPU model, memory size, storage type) and
-software (kernel version, Linux distribution).
+machines are not conflated:
+- **Hardware**: CPU model, memory size, storage type (from `/sys/block/*/queue/rotational`)
+- **Filesystem**: type, total size, and mount options of the filesystem where
+  sessions run (from `/proc/mounts` + `statvfs`)
+- **Software**: kernel version, Linux distribution
 
 Setup (fetching the linux mirror, creating directories) is performed
 automatically before the first workload that requires it.
 
-Results are written to JSON and an HTML report is generated using the
-[`plotly`](https://crates.io/crates/plotly) crate. The report contains:
+Results are written to JSON (`results.json`) with the following top-level
+structure and an HTML report is generated using the
+[`plotly`](https://crates.io/crates/plotly) crate:
 
-- Grouped bar charts: workload × scenario, showing staging time and commit
-  time as stacked bars, with native as a reference line.
-- Error bars showing stddev across iterations.
-- Separate panels for warm-cache and cold-cache read workloads.
+```json
+{
+  "env": { "hostname": "...", "cpu": "...", ... },
+  "workloads": [
+    {
+      "workload": "clone-large",
+      "scenarios": [
+        { "scenario": "native", "iters": [...], "mean_ms": 0, "stddev_ms": 0 },
+        ...
+      ]
+    },
+    { "workload": "write-files", "scenarios": [...] }
+  ]
+}
+```
+
+The HTML report contains one chart per workload:
+
+- Stacked bar charts: scenario × (staging time, commit time), with native as
+  a horizontal reference line.
+- Error bars on the top of each stack showing total stddev across iterations.
 
 `make bench` runs `agfs-bench`. It is not part of the default CI pipeline; it
 is triggered manually via `workflow_dispatch` on a dedicated GitHub Actions

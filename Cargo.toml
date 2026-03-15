@@ -7,19 +7,28 @@ edition = "2024"
 name = "agfs"
 path = "cli/main.rs"
 
+[[bin]]
+name = "agfs-bench"
+path = "bench/src/main.rs"
+
 [lib]
 path = "cli/lib.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-nix = { version = "0.29", features = ["fs", "mount", "sched", "process", "signal", "term", "ioctl", "poll", "dir", "user"] }
+nix = { version = "0.29", features = ["fs", "mount", "sched", "process", "signal", "term", "ioctl", "poll", "dir", "user", "hostname"] }
 anyhow = "1"
 colored = "2"
 libc = "0.2"
 similar = "2"
-systemd = "0.10"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+systemd = "0.10"
+plotly = "0.14"
+dirs-next = "2"
 
 [dev-dependencies]
-tempfile = "3"
+
+[dependencies.tempfile]
+version = "3"
