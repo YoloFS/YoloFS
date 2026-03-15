@@ -170,6 +170,14 @@ def _ssh_cmd(ssh_port: int, user: str) -> list[str]:
     ]
 
 
+def _print_vm_info():
+    """Print VM connection info."""
+    log_path = DATA_DIR / LOG_NAME
+    print(f"  SSH:  ssh -p {DEFAULT_SSH_PORT} {DEFAULT_USER}@localhost")
+    print(f"  Log:  {log_path}")
+    print(f"  Stop: ./vm.py stop")
+
+
 def is_vm_running():
     """Check if the VM is running via pidfile."""
     pidfile = DATA_DIR / "vm.pid"
@@ -202,6 +210,8 @@ def wait_for_ssh(ssh_port: int, user: str, timeout: int = 120):
 def ensure_vm_started():
     """Start the VM with defaults if not already running, and wait for SSH."""
     if is_vm_running():
+        print("VM already running.")
+        _print_vm_info()
         return
     print("VM not running, starting...")
     image_path = download_image()
@@ -253,9 +263,8 @@ def run_vm(
     ]
     cmd += extra_args
     print(f"Starting VM in background...")
-    print(f"  SSH: ssh -p {ssh_port} {DEFAULT_USER}@localhost")
-    print(f"  Log: {log_path}")
     subprocess.run(cmd, check=True)
+    _print_vm_info()
 
 
 def stop_vm():
@@ -321,8 +330,8 @@ def main():
         download_image()
     elif args.command == "start":
         if is_vm_running():
-            pid = int((DATA_DIR / "vm.pid").read_text().strip())
-            print(f"Error: VM is already running (pid {pid}).")
+            print(f"VM is already running.")
+            _print_vm_info()
             sys.exit(1)
         image_path = download_image()
         disk_path = create_disk(image_path, args.disk_size, force=args.force)

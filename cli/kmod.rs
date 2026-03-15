@@ -99,6 +99,11 @@ fn find_agfs_dirs() -> Vec<String> {
     let Ok(content) = std::fs::read_to_string("/proc/mounts") else {
         return Vec::new();
     };
+    parse_mounts(&content)
+}
+
+/// Parse /proc/mounts content and return the source column for agfs entries.
+fn parse_mounts(content: &str) -> Vec<String> {
     content
         .lines()
         .filter(|line| line.contains(" agfs "))
@@ -119,20 +124,9 @@ fn unmount_all() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-
-    #[test]
-    fn is_loaded_checks_sysfs() {
-        // /sys/module/agfs exists iff the module is loaded.
-        // We can't control this in a unit test, but verify it returns
-        // a consistent result matching the sysfs entry.
-        let expected = Path::new("/sys/module/agfs").exists();
-        assert_eq!(is_loaded(), expected);
-    }
 
     #[test]
     fn find_ko_returns_existing_path() {
-        // If find_ko returns Some, the path must actually exist.
         if let Some(path) = find_ko() {
             assert!(
                 path.exists(),
@@ -149,7 +143,6 @@ mod tests {
 
     #[test]
     fn find_ko_prefers_build_dir() {
-        // If kmod/build/agfs.ko exists (dev environment), it should be preferred.
         let cwd_path = Path::new("kmod/build/agfs.ko");
         if cwd_path.exists() {
             let found = find_ko().expect("find_ko should succeed when build dir exists");
@@ -162,46 +155,46 @@ mod tests {
     }
 
     #[test]
-    fn find_agfs_dirs_returns_valid_paths() {
-        // Each returned path should be a directory (or at least parseable).
-        let dirs = find_agfs_dirs();
-        for dir in &dirs {
-            assert!(!dir.is_empty(), "find_agfs_dirs returned an empty string");
-            // The source column in /proc/mounts for agfs is the .agfs/ dir
-            assert!(
-                Path::new(dir).is_absolute() || dir.contains(".agfs"),
-                "unexpected agfs mount source: {dir}"
-            );
-        }
+    fn parse_mounts_extracts_agfs_sources() {
+        let content = "\
+/dev/sda1 / ext4 rw,relatime 0 0
+/home/user/.agfs/abc /.agfs/abc/mnt agfs rw 0 0
+proc /proc proc rw,nosuid 0 0
+/tmp/project/.agfs /.agfs/mnt agfs rw 0 0
+";
+        let dirs = parse_mounts(content);
+        assert_eq!(dirs, vec![
+            "/home/user/.agfs/abc",
+            "/tmp/project/.agfs",
+        ]);
     }
 
     #[test]
-    fn find_agfs_dirs_parses_proc_mounts() {
-        // Verify we can read /proc/mounts without panicking, and the
-        // result count matches a manual grep.
-        let dirs = find_agfs_dirs();
-        let content = fs::read_to_string("/proc/mounts").unwrap_or_default();
-        let expected_count = content.lines().filter(|l| l.contains(" agfs ")).count();
-        assert_eq!(
-            dirs.len(),
-            expected_count,
-            "find_agfs_dirs count should match /proc/mounts grep"
-        );
+    fn parse_mounts_empty_input() {
+        assert!(parse_mounts("").is_empty());
     }
 
     #[test]
-    fn uname_returns_valid_release() {
-        // Verify our libc::uname usage produces a valid kernel release string.
-        let mut uts = unsafe { std::mem::zeroed::<libc::utsname>() };
-        assert_eq!(unsafe { libc::uname(&mut uts) }, 0);
-        let release = unsafe { std::ffi::CStr::from_ptr(uts.release.as_ptr()) }
-            .to_str()
-            .expect("release should be valid UTF-8");
-        assert!(!release.is_empty(), "kernel release should not be empty");
-        // Kernel release looks like "6.8.0-101-generic"
-        assert!(
-            release.contains('.'),
-            "kernel release should contain dots: {release}"
-        );
+    fn parse_mounts_no_agfs_entries() {
+        let content = "\
+/dev/sda1 / ext4 rw,relatime 0 0
+proc /proc proc rw,nosuid 0 0
+";
+        assert!(parse_mounts(content).is_empty());
+    }
+
+    #[test]
+    fn parse_mounts_ignores_substring_matches() {
+        // "magfs" contains "agfs" but should not match " agfs "
+        let content = "src /mnt magfs rw 0 0\n";
+        assert!(parse_mounts(content).is_empty());
+    }
+
+    #[test]
+    fn find_agfs_dirs_matches_proc_mounts() {
+        let dirs = find_agfs_dirs();
+        let content = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+        let expected = parse_mounts(&content);
+        assert_eq!(dirs, expected);
     }
 }

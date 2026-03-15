@@ -1,6 +1,7 @@
 use crate::helpers::{AGFS_BIN, AgfsSession};
 use agfs::config::{Config, Perm};
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -90,4 +91,149 @@ fn second_watch_reports_already_running() {
     // Clean up.
     let _ = Command::new("kill").arg(watch1.id().to_string()).status();
     let _ = watch1.wait();
+}
+
+// ── Interactive daemon tests (PTY-free: pipe stdin/stderr) ──────────
+
+/// Helper: mount with "/" = Allow (so dir traversal never triggers an ask),
+/// then live-add an Ask rule for a single file so only that file's open()
+/// goes through the interactive daemon path.
+fn session_with_ask_file() -> (AgfsSession, String) {
+    let s = AgfsSession::new_with_config(Config {
+        ask_default: Some(Perm::Deny),
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let file_path = s.root.display().to_string();
+    s.cli(&["rule", "add", &file_path, "ask"]).unwrap();
+    (s, file_path)
+}
+
+/// Interactive `agfs watch` — daemon reads "a\n" from piped stdin and
+/// responds Allow.  A subsequent read through the mount should succeed.
+#[test]
+fn interactive_watch_allow_permits_read() {
+    let (s, _path) = session_with_ask_file();
+
+    let mut watch = Command::new(AGFS_BIN)
+        .args(["watch"])
+        .current_dir(&s.root)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn interactive watch");
+
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Pre-fill stdin with "a" (allow).
+    watch
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"a\n")
+        .unwrap();
+
+    let content = std::fs::read_to_string(s.mnt_path("hello.txt"));
+
+    watch.kill().ok();
+    let output = watch.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    assert!(
+        stderr.contains("[ask]"),
+        "daemon should have prompted: {stderr}"
+    );
+    assert!(
+        stderr.contains("Allow"),
+        "daemon should log Allow decision: {stderr}"
+    );
+
+    let content = content.expect("read should succeed after interactive 'allow'");
+    assert_eq!(content, "base content\n");
+}
+
+/// Interactive `agfs watch` — daemon reads "d\n" from piped stdin and
+/// responds Deny.  A subsequent read through the mount should fail.
+#[test]
+fn interactive_watch_deny_blocks_read() {
+    let (s, _path) = session_with_ask_file();
+
+    let mut watch = Command::new(AGFS_BIN)
+        .args(["watch"])
+        .current_dir(&s.root)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn interactive watch");
+
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Pre-fill stdin with "d" (deny).
+    watch
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"d\n")
+        .unwrap();
+
+    let result = std::fs::read_to_string(s.mnt_path("hello.txt"));
+
+    watch.kill().ok();
+    let output = watch.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    assert!(
+        stderr.contains("[ask]"),
+        "daemon should have prompted: {stderr}"
+    );
+    assert!(
+        stderr.contains("Deny"),
+        "daemon should log Deny decision: {stderr}"
+    );
+    assert!(result.is_err(), "read should fail after interactive 'deny'");
+}
+
+/// Interactive `agfs watch` — daemon reads "ro\n" → AllowRo.
+/// Read succeeds, but write is denied.
+#[test]
+fn interactive_watch_allow_ro_permits_read_denies_write() {
+    let (s, _path) = session_with_ask_file();
+
+    // Pre-fill two responses: "ro\n" for the read open, "ro\n" for the write open.
+    let mut watch = Command::new(AGFS_BIN)
+        .args(["watch"])
+        .current_dir(&s.root)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn interactive watch");
+
+    std::thread::sleep(Duration::from_millis(200));
+
+    watch
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"ro\nro\n")
+        .unwrap();
+
+    // Read should succeed (AllowRo permits reads).
+    let content = std::fs::read_to_string(s.mnt_path("hello.txt"))
+        .expect("read should succeed with allow-ro");
+    assert_eq!(content, "base content\n");
+
+    // Write should fail (AllowRo denies writes).
+    let result = std::fs::write(s.mnt_path("hello.txt"), "overwritten\n");
+    assert!(result.is_err(), "write should fail with allow-ro");
+
+    watch.kill().ok();
+    let _ = watch.wait();
 }
