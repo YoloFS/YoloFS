@@ -96,3 +96,12 @@ fn delete_nested_file() {
         "base nested file should be untouched"
     );
 }
+
+/// Deleting a nonexistent file should fail.
+#[test]
+fn delete_nonexistent_fails() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let result = fs::remove_file(s.mnt_path("no_such_file.txt"));
+    assert!(result.is_err(), "deleting nonexistent file should fail");
+}

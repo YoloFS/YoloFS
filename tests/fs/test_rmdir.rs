@@ -39,3 +39,30 @@ fn rmdir_base_dir_adds_override() {
     }
     // rmdir may fail with ENOTEMPTY if the VFS checks emptiness — that's fine
 }
+
+/// rmdir on a non-empty staging directory succeeds because agfs adds a
+/// DELETED override without checking directory emptiness.
+#[test]
+fn rmdir_nonempty_staging_dir() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::create_dir(s.mnt_path("hasfiles")).expect("mkdir");
+    fs::write(s.mnt_path("hasfiles/child.txt"), "data\n").expect("write");
+
+    // agfs rmdir adds a DELETED override — the child file becomes unreachable
+    fs::remove_dir(s.mnt_path("hasfiles")).expect("rmdir non-empty staging dir");
+
+    assert!(
+        !s.mnt_path("hasfiles").is_dir(),
+        "removed dir should not be visible through mount"
+    );
+}
+
+/// rmdir on a nonexistent directory should fail.
+#[test]
+fn rmdir_nonexistent_fails() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let result = fs::remove_dir(s.mnt_path("no_such_dir"));
+    assert!(result.is_err(), "rmdir on nonexistent directory should fail");
+}

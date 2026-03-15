@@ -55,3 +55,26 @@ fn symlink_commit_to_base() {
         "symlink target should be preserved"
     );
 }
+
+/// A dangling symlink (target doesn't exist) should be visible via lstat.
+#[test]
+fn dangling_symlink_stat_succeeds() {
+    let s = AgfsSession::new().expect("session setup");
+
+    std::os::unix::fs::symlink("nonexistent.txt", s.mnt_path("dangle.txt")).expect("symlink");
+
+    // symlink_metadata (lstat) should succeed — the symlink itself exists
+    let meta = fs::symlink_metadata(s.mnt_path("dangle.txt")).expect("lstat dangling symlink");
+    assert!(meta.file_type().is_symlink());
+}
+
+/// Reading through a dangling symlink should fail (target doesn't exist).
+#[test]
+fn read_dangling_symlink_fails() {
+    let s = AgfsSession::new().expect("session setup");
+
+    std::os::unix::fs::symlink("nonexistent.txt", s.mnt_path("dangle.txt")).expect("symlink");
+
+    let result = fs::read_to_string(s.mnt_path("dangle.txt"));
+    assert!(result.is_err(), "reading through dangling symlink should fail");
+}

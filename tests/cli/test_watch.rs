@@ -148,8 +148,8 @@ fn interactive_watch_allow_permits_read() {
         "daemon should have prompted: {stderr}"
     );
     assert!(
-        stderr.contains("Allow"),
-        "daemon should log Allow decision: {stderr}"
+        stderr.contains("→ allow"),
+        "daemon should log allow decision: {stderr}"
     );
 
     let content = content.expect("read should succeed after interactive 'allow'");
@@ -193,8 +193,8 @@ fn interactive_watch_deny_blocks_read() {
         "daemon should have prompted: {stderr}"
     );
     assert!(
-        stderr.contains("Deny"),
-        "daemon should log Deny decision: {stderr}"
+        stderr.contains("→ deny"),
+        "daemon should log deny decision: {stderr}"
     );
     assert!(result.is_err(), "read should fail after interactive 'deny'");
 }

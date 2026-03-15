@@ -184,3 +184,12 @@ fn rename_deleted_file_fails() {
         "renaming a deleted file should fail, got Ok"
     );
 }
+
+/// Renaming a nonexistent file should fail.
+#[test]
+fn rename_nonexistent_fails() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let result = fs::rename(s.mnt_path("no_such_file.txt"), s.mnt_path("dest.txt"));
+    assert!(result.is_err(), "renaming nonexistent file should fail");
+}

@@ -1,12 +1,11 @@
 mod test_read;
-mod test_write_cow;
+mod test_readdir;
+mod test_write;
 mod test_create;
 mod test_delete;
 mod test_mkdir;
 mod test_rmdir;
 mod test_rename;
 mod test_symlink;
-mod test_truncate_append;
-mod test_multiple_writes;
 mod test_inode;
 mod test_concurrent;

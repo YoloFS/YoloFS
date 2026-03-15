@@ -61,3 +61,13 @@ fn mkdir_file_inside_commit() {
         "file inside new dir should be committed to base"
     );
 }
+
+/// mkdir on an existing directory should fail with EEXIST.
+#[test]
+fn mkdir_existing_fails() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // subdir/ exists in base
+    let result = fs::create_dir(s.mnt_path("subdir"));
+    assert!(result.is_err(), "mkdir on existing directory should fail");
+}

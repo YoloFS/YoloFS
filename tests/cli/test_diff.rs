@@ -31,3 +31,25 @@ fn diff_new_file() {
     assert!(output.contains("added.txt"), "output: {output}");
     assert!(output.contains("+brand new"), "output: {output}");
 }
+
+#[test]
+fn diff_deleted_file() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::remove_file(s.mnt_path("hello.txt")).unwrap();
+
+    let output = s.cli(&["diff"]).expect("diff");
+    assert!(output.contains("hello.txt"), "output: {output}");
+    assert!(output.contains("deleted"), "diff should indicate deletion: {output}");
+}
+
+#[test]
+fn diff_renamed_file() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).unwrap();
+
+    let output = s.cli(&["diff"]).expect("diff");
+    assert!(output.contains("hello.txt"), "diff should mention old name: {output}");
+    assert!(output.contains("moved.txt"), "diff should mention new name: {output}");
+}

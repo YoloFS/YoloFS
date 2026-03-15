@@ -28,11 +28,9 @@
 
 ## Build & Test
 
-Tests run inside a QEMU VM managed by `vm.py` (repo auto-mounted via 9p).
-
 ```bash
-./vm.py -- make test      # unit + e2e tests (auto-starts VM if needed)
-./vm.py -- make test-unit # unit tests only
-./vm.py -- make test-e2e  # e2e tests only
-./vm.py stop              # stop the VM
+make vm-build     # build cli + kmod
+make vm-test      # unit + e2e tests (auto-starts VM if needed)
+make vm-test-unit # unit tests only
+make vm-test-e2e  # e2e tests only
 ```
