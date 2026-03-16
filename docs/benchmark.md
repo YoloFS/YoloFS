@@ -57,17 +57,22 @@ place agfs in context relative to alternatives.
 | Backend | Mechanism | Needs root? |
 |---|---|---|
 | `native` | Direct ext4 writes, no staging | no |
-| `agfs` | Kernel stackable fs; inode store + `agfs commit` | no (setuid) |
+| `agfs-allow-all` | Kernel stackable fs; `allow-rw /` rule | no (setuid) |
+| `agfs-realistic` | Kernel stackable fs; workload-defined rules | no (setuid) |
 | `try` | overlayfs sandbox via `unshare`; `try commit` to apply | no (user-ns) |
 | `branchfs` | FUSE copy-on-write branches; `branchfs commit` | no |
 | `btrfs` | btrfs subvolume snapshot; rsync back on commit | yes (cap) |
 
-### agfs scenarios
+`agfs-bench` does **not** need to run as root. The agfs binary is setuid,
+`try` uses user namespaces, and branchfs runs in userspace. Only the profiler
+(§7) invokes `sudo` internally for `perf` and `bpftrace`.
 
-The agfs backend is run under three permission configurations to isolate the
-cost of each level of gating:
+### agfs backends
 
-| Scenario | Configuration | What it measures |
+The agfs backend is split into two configurations to isolate the cost of each
+level of gating:
+
+| Backend | Configuration | What it measures |
 |---|---|---|
 | `agfs-allow-all` | `allow-rw /` rule | VFS interposition + staging; no per-access gating |
 | `agfs-realistic` | workload-defined rules | Typical rule-based config; most accesses hit cache |
@@ -78,23 +83,35 @@ cost of each level of gating:
 ### try
 
 `try` wraps a command in a Linux user-namespace with an overlayfs upper layer,
-then offers to commit or discard the changes. The adapter invokes the workload
-binary as a subprocess under `try -n -- <cmd>` (no auto-commit), then calls
-`try commit <sandbox_dir>` as the commit step, which replays the overlay upper
-layer back to the base directory.
+then offers to commit or discard the changes. Since the workload runs inside
+`try`'s namespace, the adapter uses a self-exec pattern: it invokes
+`try -n -D <sandbox> -- agfs-bench exec-workload --name <name> --dest <dest>`
+(no auto-commit), then calls `try commit <sandbox>` as the commit step.
+
+`try` requires overlayfs to work inside user namespaces. Availability is
+probed at startup by running `try -n -- /bin/true`; if this fails (e.g.
+stale submounts under `/tmp`, or a kernel that rejects unprivileged
+overlayfs), the backend is skipped with a diagnostic message.
 
 ### branchfs
 
 `branchfs` is a FUSE filesystem (from `third_party/branchfs`) that provides
-O(1) branch creation and atomic commit-to-parent semantics. The adapter mounts
-branchfs over the base directory, creates a new branch, runs the workload
-inside it, then calls `branchfs commit`.
+O(1) branch creation and atomic commit-to-parent semantics. Each iteration:
+
+1. Mounts branchfs over a fresh base directory with a per-iteration storage
+   directory (`branchfs mount --base <base> --storage <storage> <mnt>`).
+2. Creates a `bench` branch (`branchfs create bench <mnt>`).
+3. Runs the workload directly inside the mount.
+4. Commits the branch (`branchfs commit <mnt>`).
+5. Unmounts (`branchfs unmount <mnt>`).
 
 ### btrfs
 
+**Not yet implemented.** Design:
+
 btrfs subvolume snapshots are O(1) copy-on-write clones within a btrfs volume.
 Because the root filesystem is ext4, btrfs requires a dedicated raw disk
-provided by the user (e.g. `/dev/sdb`). The bench tool handles all setup
+provided by the user (e.g. `/dev/sdb`). The bench tool would handle all setup
 automatically and idempotently:
 
 1. **`mkfs`**: if the device does not already contain a btrfs filesystem,
@@ -104,30 +121,43 @@ automatically and idempotently:
 3. **Base subvolume**: if `/mnt/btrfs-bench/<workload>/base` does not exist,
    it is created as a btrfs subvolume and the fixture is copied into it.
 
-The device is specified via `--btrfs-device <path>` (e.g. `--btrfs-device
-/dev/sdb`). If the flag is omitted the btrfs backend is skipped silently.
+The device would be specified via `--btrfs-device <path>`. If the flag is
+omitted the btrfs backend is skipped.
 
 Each iteration:
 1. Takes an O(1) snapshot of `base` → `work`.
 2. Runs the workload inside the snapshot.
 3. On commit, syncs changes back to `base` via rsync and deletes the snapshot.
 
-All setup steps are guarded so re-running on an already-prepared disk skips
-`mkfs` and `mount` safely.
-
 ---
 
 ## 4. Timing Model
 
-Time is decomposed into two phases:
+Time is decomposed into three phases:
 
 ```
-total = staging_time + commit_time
+total = init_time + staging_time + commit_time
 ```
 
+- **`init_time`**: wall time of sandbox creation (mount, snapshot, namespace
+  setup). This is the cost of *entering* the sandbox before any work begins.
+  For `native` this is None.
 - **`staging_time`**: wall time of the workload itself. This is what the agent
   experiences while doing work.
-- **`commit_time`**: wall time of the commit step. For `native` this is zero.
+- **`commit_time`**: wall time of the commit step. For `native` this is None.
+
+| Backend | init | staging | commit |
+|---|---|---|---|
+| `native` | — | workload | — |
+| `agfs-*` | `agfs mount` | workload | `agfs commit` |
+| `try` | namespace + overlay setup | workload | `try commit` |
+| `branchfs` | `branchfs mount` + `create` | workload | `branchfs commit` |
+| `btrfs` | `btrfs subvolume snapshot` | workload | rsync + delete |
+
+For `try`, the init/staging split is measured via a ready signal: the
+`exec-workload` subprocess prints a marker to stdout just before it starts the
+workload. The parent watches for this marker — wall time before it arrives is
+init (namespace + overlayfs setup), wall time after is staging.
 
 All timings are taken with `std::time::Instant` inside the bench binary.
 Each (workload, backend) pair is run `--runs N` times (default 3), preceded
@@ -135,7 +165,7 @@ by one warm-up run; mean ± stddev are reported, and outliers (>2σ) are flagged
 Each iteration prints its result inline:
 
 ```
-    iter 1/3… 412 ms  (stage 387 + commit 25)
+    iter 1/3… 489 ms  (init 5 + stage 389 + commit 95)
 ```
 
 ---
@@ -149,8 +179,6 @@ subsequent runs. If the fixture already exists it is not rebuilt.
   called once before any backends run for that workload.
 - `worktree`: clones the Linux kernel to `~/.cache/agfs-bench/linux`.
 - `write-files`: no external fixture needed.
-- For the btrfs backend, fixtures are additionally mirrored to
-  `/mnt/btrfs-bench/<workload>/base` before the first btrfs run.
 
 **Warm-up**: one warm-up run is performed in `native` mode before all backends
 for a workload begin. It populates the page cache and warms dentry/inode caches.
@@ -175,55 +203,60 @@ parsing, and kmsg utilities with the CLI via the library crate.
 
 ```
 bench/src/
-  main.rs          — CLI, scenario runner, statistics
+  main.rs          — CLI, backend runner, statistics, exec-workload subcommand
+  backend.rs       — Backend trait
+  backends/
+    mod.rs         — registry (all, by_name)
+    native.rs
+    agfs.rs        — agfs-allow-all + agfs-realistic + ProfileSession
+    try_backend.rs — try (self-exec via exec-workload)
+    branchfs.rs
   workload.rs      — Workload trait + IterResult
   workloads/       — one file per workload
-  backend.rs       — Backend + Session traits
-  backends/
-    native.rs
-    agfs.rs
-    try.rs
-    branchfs.rs
-    btrfs.rs
   profiler.rs      — bpftrace + perf flamegraph
   report.rs        — plotly HTML report
 ```
 
+### Backend availability
+
+Each backend implements `available()` and `unavailable_reason()`. At startup,
+unavailable backends are skipped with a diagnostic:
+
+```
+Skipping backend 'try': 'try -n -- /bin/true' failed (stale mounts under /tmp? overlayfs issue?)
+```
+
+`agfs-bench list` shows all backends with availability status.
+
 ### Third-party tools
 
-| Tool | Source | Build |
+| Tool | Source | Install |
 |---|---|---|
-| `try` | `third_party/try/` | shell script, no build |
-| `branchfs` | `third_party/branchfs/` | `cargo build --release` |
-| `btrfs-progs` | system package | `apt install btrfs-progs` |
-
-`make install` builds and installs all of the above. btrfs disk setup is
-handled automatically by `agfs-bench` at runtime when `--btrfs-device` is
-passed; no separate `make` target is needed.
+| `try` | `third_party/try/` | `make install-third-party` |
+| `branchfs` | `third_party/branchfs/` | `make install-third-party` |
 
 ### CLI
 
 ```
 agfs-bench [--workload <name>] [--backend <name>] [--runs N] [--verbose]
-           [--timestamped-results] [--btrfs-device <path>]
+           [--timestamped-results]
 agfs-bench rerender
 agfs-bench list
 agfs-bench profile [--workload <name>] [--scenario <name>] [--no-bpftrace]
+agfs-bench exec-workload --name <name> --dest <path> [--verbose]
 ```
 
-- With no flags: runs all workloads × all backends (btrfs skipped unless
-  `--btrfs-device` is given).
+- With no flags: runs all workloads × all available backends.
 - `--workload` / `--backend`: filter to a specific combination.
 - `--runs N`: number of timed iterations (default 3).
-- `--btrfs-device <path>`: raw block device to use for the btrfs backend
-  (e.g. `/dev/sdb`). The bench tool formats, mounts, and prepares it
-  automatically on first use; subsequent runs skip steps already done.
 - `--verbose`: capture detailed logs for all runs, not just failures.
 - `--timestamped-results`: write results into a timestamped subdirectory
   (`results-bench/<hostname>/<timestamp>/`) instead of overwriting.
 - `rerender`: regenerate HTML reports from existing `results.json`.
-- `list`: print all registered workload names.
+- `list`: print all registered workloads and backends with availability.
 - `profile`: run the profiling mode (see §7).
+- `exec-workload`: internal subcommand used by the `try` backend to run a
+  workload as a subprocess inside the `try` namespace.
 
 ### Logging and failure handling
 
@@ -321,7 +354,7 @@ Artifacts are saved to `results-bench/<hostname>/profiling/<workload>/<scenario>
 Example summary:
 
 ```
-Profile: write-files / rules-allow-all  (wall: 167 ms)
+Profile: write-files / agfs-allow-all  (wall: 167 ms)
 
   op                               calls  median µs  p99 µs    total ms
   --------------------------------------------------------------------------

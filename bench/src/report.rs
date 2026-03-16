@@ -17,32 +17,40 @@ pub fn render(results: &BenchResults, out_dir: &Path) -> Result<()> {
 fn render_workload(wl: &WorkloadResult, results: &BenchResults, out_dir: &Path) -> Result<()> {
     let mut plot = Plot::new();
 
-    let scenario_names: Vec<String> = wl.scenarios.iter().map(|s| s.scenario.clone()).collect();
+    let backend_names: Vec<String> = wl.backends.iter().map(|b| b.backend.clone()).collect();
 
     let native_ms = wl
-        .scenarios
+        .backends
         .iter()
-        .find(|s| s.scenario == "native")
-        .map(|s| s.mean_total_ms);
+        .find(|b| b.backend == "native")
+        .map(|b| b.mean_total_ms);
 
-    let staging_vals: Vec<f64> = wl
-        .scenarios
+    let init_vals: Vec<f64> = wl
+        .backends
         .iter()
-        .map(|s| s.mean_staging_ms.unwrap_or(s.mean_total_ms))
+        .map(|b| b.mean_init_ms.unwrap_or(0.0))
+        .collect();
+
+    // For native (no phases), the full time goes into staging.
+    let staging_vals: Vec<f64> = wl
+        .backends
+        .iter()
+        .map(|b| b.mean_staging_ms.unwrap_or(b.mean_total_ms))
         .collect();
 
     let commit_vals: Vec<f64> = wl
-        .scenarios
+        .backends
         .iter()
-        .map(|s| s.mean_commit_ms.unwrap_or(0.0))
+        .map(|b| b.mean_commit_ms.unwrap_or(0.0))
         .collect();
 
-    let stddev_vals: Vec<f64> = wl.scenarios.iter().map(|s| s.stddev_total_ms).collect();
+    let stddev_vals: Vec<f64> = wl.backends.iter().map(|b| b.stddev_total_ms).collect();
 
-    plot.add_trace(Bar::new(scenario_names.clone(), staging_vals).name("staging"));
+    plot.add_trace(Bar::new(backend_names.clone(), init_vals).name("init"));
+    plot.add_trace(Bar::new(backend_names.clone(), staging_vals).name("staging"));
 
     plot.add_trace(
-        Bar::new(scenario_names.clone(), commit_vals)
+        Bar::new(backend_names.clone(), commit_vals)
             .name("commit")
             .error_y(
                 ErrorData::new(ErrorType::Data)
@@ -51,17 +59,17 @@ fn render_workload(wl: &WorkloadResult, results: &BenchResults, out_dir: &Path) 
             ),
     );
 
-    // Draw the native reference line only across non-native scenarios so
+    // Draw the native reference line only across non-native backends so
     // that native itself renders as a normal bar.
     if let Some(native) = native_ms {
-        let agfs_names: Vec<String> = scenario_names
+        let other_names: Vec<String> = backend_names
             .iter()
             .filter(|s| s.as_str() != "native")
             .cloned()
             .collect();
-        if !agfs_names.is_empty() {
+        if !other_names.is_empty() {
             plot.add_trace(
-                Scatter::new(agfs_names.clone(), vec![native; agfs_names.len()])
+                Scatter::new(other_names.clone(), vec![native; other_names.len()])
                     .name("native baseline")
                     .mode(Mode::Lines),
             );
@@ -78,7 +86,7 @@ fn render_workload(wl: &WorkloadResult, results: &BenchResults, out_dir: &Path) 
         Layout::new()
             .bar_mode(BarMode::Stack)
             .title(Title::with_text(title))
-            .x_axis(Axis::new().title(Title::with_text("scenario")))
+            .x_axis(Axis::new().title(Title::with_text("backend")))
             .y_axis(Axis::new().title(Title::with_text("time (ms)"))),
     );
     plot.set_configuration(Configuration::new().responsive(true).fill_frame(true));

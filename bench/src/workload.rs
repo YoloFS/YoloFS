@@ -5,10 +5,14 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Timing for one timed iteration. For the native scenario `staging_ms` and
-/// `commit_ms` are None and `total_ms` is the full wall time.
+/// Timing for one timed iteration.
+///
+/// Phases: `init` (mount/snapshot), `staging` (workload), `commit` (apply).
+/// Any phase may be None if the backend doesn't have that step (e.g. native
+/// has no phases, try has no separable init).
 #[derive(Serialize, Deserialize, Clone)]
 pub struct IterResult {
+    pub init_ms: Option<u64>,
     pub staging_ms: Option<u64>,
     pub commit_ms: Option<u64>,
     pub total_ms: u64,

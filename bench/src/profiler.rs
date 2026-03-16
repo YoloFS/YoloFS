@@ -307,10 +307,7 @@ fn parse_histograms(raw: &str) -> Vec<Histogram> {
             if let Some(current) = current.take() {
                 hists.push(current);
             }
-            current = Some(Histogram {
-                name: name.to_string(),
-                buckets: Vec::new(),
-            });
+            current = Some(Histogram { name: name.to_string(), buckets: Vec::new() });
             continue;
         }
 
@@ -394,7 +391,7 @@ fn compute_stats(hists: Vec<Histogram>) -> Vec<OpStats> {
 
 /// Return the lower bound of the bucket containing the Nth percentile.
 fn percentile(buckets: &[Bucket], total: u64, pct: u64) -> u64 {
-    let target = (total * pct).div_ceil(100); // ceil
+    let target = (total * pct).div_ceil(100);
     let mut acc = 0u64;
     for b in buckets {
         acc += b.count;
