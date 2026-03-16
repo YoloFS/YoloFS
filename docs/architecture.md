@@ -183,7 +183,7 @@ agfs/
 │   ├── architecture.md        # This file
 │   ├── staging.md             # Staging-commit mechanism
 │   ├── permissions.md         # Permission gating layer
-│   ├── internals.md           # Kernel data structures & VFS ops
+│   ├── internals.md           # VFS ops, ioctl behavior & concurrency
 │   └── cli.md                 # CLI reference
 ├── kmod/                      # Kernel module
 │   ├── Kbuild
