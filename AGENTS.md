@@ -13,6 +13,7 @@
 - Always run tests (unit and e2e) to verify changes.
 - To fix a bug, first write a failing test, then fix it.
 - Do not modify existing tests when fixing a bug. If you are unsure, ask.
+- Do not use git (commit, push, rebase, etc.) unless explicitly asked.
 
 ## Project Structure
 
