@@ -1,6 +1,6 @@
 // agfs CLI — journal.rs
 //
-// Parse and resolve the append-only mutation journal (§3.9/§3.10).
+// Parse and resolve the append-only mutation journal.
 //
 // Record format (NUL-separated fields, newline-terminated):
 //   A\0<path>\0<ino>\n   — content/dir in inodes/<ino>

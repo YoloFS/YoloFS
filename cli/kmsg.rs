@@ -65,8 +65,6 @@ impl KmsgCursor {
     }
 }
 
-// ── helpers ──────────────────────────────────────────────────────────
-
 /// Open `/dev/kmsg` read-only and non-blocking.  Returns the raw fd.
 fn kmsg_open() -> Option<i32> {
     let fd = unsafe {

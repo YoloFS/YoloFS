@@ -1,6 +1,6 @@
 // agfs CLI — abort.rs
 //
-// `agfs abort` — discard staged changes (§3.6).
+// `agfs abort` — discard staged changes.
 
 use anyhow::{Context, Result};
 use colored::Colorize;

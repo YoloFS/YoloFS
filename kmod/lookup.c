@@ -85,6 +85,90 @@ int agfs_interpose(struct dentry *dentry, struct super_block *sb,
 	return 0;
 }
 
+/* ── Staging lookup helper ──────────────────────────────────────────── */
+
+/*
+ * Try to resolve a name through the staging dirent table.
+ * Returns  1 if the name was resolved (dentry is fully set up),
+ *          0 if staging did not handle it (fall through to base),
+ *         <0 on error.
+ */
+static int agfs_lookup_staged(struct agfs_sb_info *sbi, struct dentry *dentry)
+{
+	struct inode *parent_inode = d_inode(dentry->d_parent);
+	struct agfs_inode_info *parent_ii = AGFS_I(parent_inode);
+	struct agfs_dirent *de;
+	u64 ino = 0;
+	char *bp = NULL;
+
+	spin_lock(&parent_ii->de_lock);
+	de = agfs_find_dirent(parent_inode,
+				 dentry->d_name.name,
+				 dentry->d_name.len);
+	if (de) {
+		ino = de->ino;
+		if (de->base_path) {
+			bp = kstrdup(de->base_path, GFP_ATOMIC);
+			if (!bp) {
+				spin_unlock(&parent_ii->de_lock);
+				return -ENOMEM;
+			}
+		}
+	}
+	spin_unlock(&parent_ii->de_lock);
+
+	if (!de)
+		return 0;
+
+	if (ino) {
+		/* Staged inode */
+		struct inode *inode;
+		struct path ino_path;
+		int err;
+
+		kfree(bp);
+		err = agfs_inode_path(sbi, ino, &ino_path);
+		if (err)
+			return 0; /* resolution failed — fall through to base */
+
+		agfs_set_lower_path(dentry, &ino_path);
+		inode = agfs_iget(dentry->d_sb, d_inode(ino_path.dentry));
+		if (IS_ERR(inode)) {
+			path_put(&ino_path);
+			return PTR_ERR(inode);
+		}
+		agfs_cache_perm(inode, dentry);
+		d_add(dentry, inode);
+		return 1;
+	}
+
+	if (bp) {
+		/* Redirected base path (zero-copy rename) */
+		struct inode *inode;
+		struct path base;
+		int err;
+
+		err = kern_path(bp, LOOKUP_FOLLOW, &base);
+		kfree(bp);
+		if (err)
+			return 0; /* base path gone — fall through */
+
+		agfs_set_lower_path(dentry, &base);
+		inode = agfs_iget(dentry->d_sb, d_inode(base.dentry));
+		if (IS_ERR(inode)) {
+			path_put(&base);
+			return PTR_ERR(inode);
+		}
+		agfs_cache_perm(inode, dentry);
+		d_add(dentry, inode);
+		return 1;
+	}
+
+	/* Deleted (ino=0, base_path=NULL) */
+	d_add(dentry, NULL);
+	return 1;
+}
+
 /* ── Lookup ────────────────────────────────────────────────────────── */
 
 struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
@@ -95,87 +179,20 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 	struct dentry *lower_dentry;
 	struct vfsmount *lower_mnt;
 	struct path lower_path;
-	struct inode *inode = NULL;
+	struct inode *inode;
 	int err;
 
-	/* Allocate private data for this dentry */
 	err = agfs_new_dentry_private_data(dentry);
 	if (err)
 		return ERR_PTR(err);
 
-	/* 1. Check dirent table on parent directory inode */
+	/* 1. Check staging dirent table */
 	if (sbi->staging) {
-		struct inode *parent_inode = d_inode(dentry->d_parent);
-		struct agfs_inode_info *parent_ii = AGFS_I(parent_inode);
-		struct agfs_dirent *de;
-		u64 ino = 0;
-		char *bp = NULL;
-
-		spin_lock(&parent_ii->de_lock);
-		de = agfs_find_dirent(parent_inode,
-					 dentry->d_name.name,
-					 dentry->d_name.len);
-		if (de) {
-			ino = de->ino;
-			if (de->base_path) {
-				bp = kstrdup(de->base_path, GFP_ATOMIC);
-				if (!bp) {
-					spin_unlock(&parent_ii->de_lock);
-					err = -ENOMEM;
-					goto out_free;
-				}
-			}
-		}
-		spin_unlock(&parent_ii->de_lock);
-
-		if (de) {
-			if (ino) {
-				/* Staged inode */
-				struct path ino_path;
-
-				kfree(bp);
-				err = agfs_inode_path(sbi, ino, &ino_path);
-
-				if (!err) {
-					agfs_set_lower_path(dentry, &ino_path);
-					inode = agfs_iget(dentry->d_sb,
-							  d_inode(ino_path.dentry));
-					if (IS_ERR(inode)) {
-						err = PTR_ERR(inode);
-						path_put(&ino_path);
-						goto out_free;
-					}
-					agfs_cache_perm(inode, dentry);
-					d_add(dentry, inode);
-					return NULL;
-				}
-				/* Inode resolution failed — fall through to base */
-			} else if (bp) {
-				/* Redirected base path (zero-copy rename) */
-				struct path base;
-
-				err = kern_path(bp, LOOKUP_FOLLOW, &base);
-				kfree(bp);
-				if (!err) {
-					agfs_set_lower_path(dentry, &base);
-					inode = agfs_iget(dentry->d_sb,
-							  d_inode(base.dentry));
-					if (IS_ERR(inode)) {
-						err = PTR_ERR(inode);
-						path_put(&base);
-						goto out_free;
-					}
-					agfs_cache_perm(inode, dentry);
-					d_add(dentry, inode);
-					return NULL;
-				}
-				/* Base path gone — fall through */
-			} else {
-				/* Deleted (ino=0, base_path=NULL) */
-				d_add(dentry, NULL);
-				return NULL;
-			}
-		}
+		err = agfs_lookup_staged(sbi, dentry);
+		if (err < 0)
+			goto out_free;
+		if (err > 0)
+			return NULL;
 	}
 
 	/* 2. Fall back to base (lower) filesystem */
@@ -194,27 +211,22 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 		goto out_free;
 	}
 
-	/* Store the lower path */
 	lower_path.dentry = lower_dentry;
 	lower_path.mnt = mntget(lower_mnt);
 	agfs_set_lower_path(dentry, &lower_path);
 
-	/* If lower dentry is negative, return negative dentry */
 	if (d_is_negative(lower_dentry)) {
 		d_add(dentry, NULL);
 		return NULL;
 	}
 
-	/* Interpose: create agfs inode for the lower inode */
 	inode = agfs_iget(dentry->d_sb, d_inode(lower_dentry));
 	if (IS_ERR(inode)) {
 		err = PTR_ERR(inode);
 		goto out_put;
 	}
 
-	/* Cache permission on the new inode */
 	agfs_cache_perm(inode, dentry);
-
 	d_add(dentry, inode);
 	return NULL;
 

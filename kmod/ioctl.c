@@ -209,6 +209,113 @@ static int agfs_resolve_rule(struct file *file, unsigned long arg,
 	return 0;
 }
 
+/* ── Rule / snapshot ioctl handlers ─────────────────────────────────── */
+
+static long agfs_rule_add_ioctl(struct file *file, unsigned long arg)
+{
+	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
+	struct agfs_ioc_rule rule;
+	struct path rule_path;
+	struct agfs_dentry_info *di;
+	bool first;
+	int err;
+
+	err = agfs_resolve_rule(file, arg, &rule, &rule_path, &di);
+	if (err)
+		return err;
+
+	if (rule.perm > AGFS_PERM_DENY) {
+		path_put(&rule_path);
+		return -EINVAL;
+	}
+
+	spin_lock(&di->lock);
+	first = (di->perm == AGFS_PERM_NONE);
+	if (first) {
+		dget(rule_path.dentry);
+		di->rule_dentry = rule_path.dentry;
+	}
+	di->perm = (enum agfs_perm)rule.perm;
+	spin_unlock(&di->lock);
+
+	if (first) {
+		spin_lock(&sbi->pinned_rules_lock);
+		if (list_empty(&di->rule_pin))
+			list_add(&di->rule_pin, &sbi->pinned_rules);
+		spin_unlock(&sbi->pinned_rules_lock);
+	}
+
+	atomic64_inc(&sbi->perm_gen);
+	path_put(&rule_path);
+	return 0;
+}
+
+static long agfs_rule_remove_ioctl(struct file *file, unsigned long arg)
+{
+	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
+	struct agfs_ioc_rule rule;
+	struct path rule_path;
+	struct agfs_dentry_info *di;
+	bool had_rule;
+	int err;
+
+	err = agfs_resolve_rule(file, arg, &rule, &rule_path, &di);
+	if (err)
+		return err;
+
+	spin_lock(&di->lock);
+	had_rule = (di->perm != AGFS_PERM_NONE);
+	if (had_rule) {
+		di->perm = AGFS_PERM_NONE;
+		di->rule_dentry = NULL;
+	}
+	spin_unlock(&di->lock);
+
+	if (had_rule) {
+		spin_lock(&sbi->pinned_rules_lock);
+		if (!list_empty(&di->rule_pin))
+			list_del_init(&di->rule_pin);
+		spin_unlock(&sbi->pinned_rules_lock);
+		dput(rule_path.dentry);
+	}
+
+	atomic64_inc(&sbi->perm_gen);
+	path_put(&rule_path);
+	return 0;
+}
+
+static long agfs_snapshot_ioctl(struct file *file, unsigned long arg)
+{
+	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
+	struct agfs_ioc_snapshot snap;
+	u64 gen;
+
+	if (!sbi->staging)
+		return -EOPNOTSUPP;
+
+	if (copy_from_user(&snap, (void __user *)arg, sizeof(snap)))
+		return -EFAULT;
+
+	snap.name[AGFS_PATH_MAX - 1] = '\0';
+
+	down_write(&sbi->staging_sem);
+	if (atomic_read(&sbi->staging_fd_count) > 0) {
+		up_write(&sbi->staging_sem);
+		return -EBUSY;
+	}
+	gen = atomic64_inc_return(&sbi->snapshot_gen);
+	agfs_journal_append_s(sbi, gen, snap.name);
+	up_write(&sbi->staging_sem);
+
+	/* Best-effort: snapshot is already committed to the journal,
+	 * so return success even if copy_to_user fails. */
+	snap.id = gen;
+	if (copy_to_user((void __user *)arg, &snap, sizeof(snap)))
+		/* id already in journal — userspace can read it back */;
+
+	return 0;
+}
+
 /* ── Unified ioctl handler (rules + ctl) ───────────────────────────── */
 
 long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -222,70 +329,11 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case AGFS_IOC_PUT_RESPONSE:
 		return agfs_put_response_ioctl(file, arg);
 
-	case AGFS_IOC_RULE_ADD: {
-		struct agfs_ioc_rule rule;
-		struct path rule_path;
-		struct agfs_dentry_info *di;
-		int err;
+	case AGFS_IOC_RULE_ADD:
+		return agfs_rule_add_ioctl(file, arg);
 
-		err = agfs_resolve_rule(file, arg, &rule, &rule_path, &di);
-		if (err)
-			return err;
-
-		if (rule.perm > AGFS_PERM_DENY) {
-			path_put(&rule_path);
-			return -EINVAL;
-		}
-
-		spin_lock(&di->lock);
-		if (di->perm == AGFS_PERM_NONE) {
-			dget(rule_path.dentry);
-			di->rule_dentry = rule_path.dentry;
-		}
-		di->perm = (enum agfs_perm)rule.perm;
-		spin_unlock(&di->lock);
-
-		if (di->rule_dentry) {
-			spin_lock(&sbi->pinned_rules_lock);
-			if (list_empty(&di->rule_pin))
-				list_add(&di->rule_pin, &sbi->pinned_rules);
-			spin_unlock(&sbi->pinned_rules_lock);
-		}
-
-		atomic64_inc(&sbi->perm_gen);
-		path_put(&rule_path);
-		return 0;
-	}
-
-	case AGFS_IOC_RULE_REMOVE: {
-		struct agfs_ioc_rule rule;
-		struct path rule_path;
-		struct agfs_dentry_info *di;
-		int err;
-
-		err = agfs_resolve_rule(file, arg, &rule, &rule_path, &di);
-		if (err)
-			return err;
-
-		spin_lock(&di->lock);
-		if (di->perm != AGFS_PERM_NONE) {
-			di->perm = AGFS_PERM_NONE;
-			di->rule_dentry = NULL;
-			spin_unlock(&di->lock);
-
-			spin_lock(&sbi->pinned_rules_lock);
-			if (!list_empty(&di->rule_pin))
-				list_del_init(&di->rule_pin);
-			spin_unlock(&sbi->pinned_rules_lock);
-
-			dput(rule_path.dentry);
-		} else {
-			spin_unlock(&di->lock);
-		}
-		atomic64_inc(&sbi->perm_gen);
-		path_put(&rule_path);
-		return 0;
-	}
+	case AGFS_IOC_RULE_REMOVE:
+		return agfs_rule_remove_ioctl(file, arg);
 
 	case AGFS_IOC_CACHE_INVAL:
 		atomic64_inc(&sbi->perm_gen);
@@ -299,35 +347,8 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		agfs_journal_open(sbi);
 		return 0;
 
-	case AGFS_IOC_SNAPSHOT: {
-		struct agfs_ioc_snapshot snap;
-		u64 gen;
-
-		if (!sbi->staging)
-			return -EOPNOTSUPP;
-
-		if (copy_from_user(&snap, (void __user *)arg, sizeof(snap)))
-			return -EFAULT;
-
-		snap.name[AGFS_PATH_MAX - 1] = '\0';
-
-		down_write(&sbi->staging_sem);
-		if (atomic_read(&sbi->staging_fd_count) > 0) {
-			up_write(&sbi->staging_sem);
-			return -EBUSY;
-		}
-		gen = atomic64_inc_return(&sbi->snapshot_gen);
-		agfs_journal_append_s(sbi, gen, snap.name);
-		up_write(&sbi->staging_sem);
-
-		/* Best-effort: snapshot is already committed to the journal,
-		 * so return success even if copy_to_user fails. */
-		snap.id = gen;
-		if (copy_to_user((void __user *)arg, &snap, sizeof(snap)))
-			/* id already in journal — userspace can read it back */;
-
-		return 0;
-	}
+	case AGFS_IOC_SNAPSHOT:
+		return agfs_snapshot_ioctl(file, arg);
 
 	default:
 		return -ENOTTY;

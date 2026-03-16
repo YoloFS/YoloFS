@@ -1,6 +1,6 @@
 // agfs CLI — snapshot.rs
 //
-// `agfs snapshot [name]` — create a snapshot (§3.11).
+// `agfs snapshot [name]` — create a snapshot.
 // `agfs snapshot list`   — list all snapshots from the journal.
 
 use crate::{ioctl, journal};

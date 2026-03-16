@@ -10,7 +10,7 @@
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
 
-/* ── Resolve permission by walking up dentry chain (§4.2) ──────────── */
+/* ── Resolve permission by walking up dentry chain ─────────────────── */
 
 enum agfs_perm agfs_resolve_perm(struct dentry *dentry)
 {
@@ -62,7 +62,7 @@ int agfs_check_perm(enum agfs_perm perm, int f_flags)
 	}
 }
 
-/* ── Ask Protocol (§4.3) ──────────────────────────────────────────── */
+/* ── Ask Protocol ─────────────────────────────────────────────────── */
 
 int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 		       const char *relpath, enum agfs_op op,

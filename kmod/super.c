@@ -133,32 +133,15 @@ const struct super_operations agfs_sops = {
 	.show_options	= agfs_show_options,
 };
 
-/* ── Fill Superblock (mount) ───────────────────────────────────────── */
+/* ── Fill Superblock helpers ────────────────────────────────────────── */
 
-static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
+static void agfs_init_sbi(struct agfs_sb_info *sbi,
+			   const struct agfs_fs_opts *opts)
 {
-	struct agfs_fs_opts *opts = fc->fs_private;
-	struct agfs_sb_info *sbi;
-	struct inode *inode;
-	struct path base_path;
-	int err;
-
-	sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
-	if (!sbi)
-		return -ENOMEM;
-
-	sb->s_fs_info = sbi;
-	sb->s_op = &agfs_sops;
-	sb->s_d_op = &agfs_dops;
-	sb->s_magic = AGFS_SUPER_MAGIC;
-	sb->s_maxbytes = MAX_LFS_FILESIZE;
-	sb->s_stack_depth = 0;
-
-	/* Apply mount options */
 	sbi->permission = opts->permission;
 	sbi->staging = opts->staging;
 
-	/* Initialize perm gating state */
+	/* Permission gating state */
 	atomic64_set(&sbi->perm_gen, 1);
 	INIT_LIST_HEAD(&sbi->ask_engine.pending_reqs);
 	spin_lock_init(&sbi->ask_engine.pending_lock);
@@ -173,65 +156,99 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	INIT_LIST_HEAD(&sbi->pinned_rules);
 	spin_lock_init(&sbi->pinned_rules_lock);
 
-	/* Initialize staging semaphore and inode counter */
+	/* Staging state */
 	init_rwsem(&sbi->staging_sem);
 	atomic64_set(&sbi->next_ino, 0);
 	atomic64_set(&sbi->snapshot_gen, 1);
 	atomic_set(&sbi->staging_fd_count, 0);
 	INIT_LIST_HEAD(&sbi->pinned_dirs);
 	spin_lock_init(&sbi->pinned_dirs_lock);
+}
+
+static int agfs_resolve_paths(struct agfs_sb_info *sbi,
+			      struct super_block *sb,
+			      struct fs_context *fc)
+{
+	struct path base_path;
+	int err;
 
 	/* Resolve base path ("/") */
 	err = kern_path("/", LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &base_path);
 	if (err)
-		goto out_put;
+		return err;
 
 	sbi->base_path = base_path;
 	sbi->lower_sb = base_path.dentry->d_sb;
 	atomic_inc(&sbi->lower_sb->s_active);
 	sb->s_maxbytes = sbi->lower_sb->s_maxbytes;
 	sb->s_stack_depth = sbi->lower_sb->s_stack_depth + 1;
-	if (sb->s_stack_depth > FILESYSTEM_MAX_STACK_DEPTH) {
-		err = -EINVAL;
-		goto out_put;
-	}
+	if (sb->s_stack_depth > FILESYSTEM_MAX_STACK_DEPTH)
+		return -EINVAL;
 
 	/* Resolve storage path from mount source (required) */
 	if (!fc->source || !fc->source[0]) {
 		pr_err("agfs: source path is required\n");
-		err = -EINVAL;
-		goto out_put;
+		return -EINVAL;
 	}
 
 	err = kern_path(fc->source, LOOKUP_FOLLOW | LOOKUP_DIRECTORY,
 			&sbi->storage_path);
 	if (err)
-		goto out_put;
+		return err;
 
-	/* Resolve inodes dir */
+	/* Resolve inodes dir (may not exist yet — that's ok) */
 	{
 		struct path inodes;
+
 		err = vfs_path_lookup(sbi->storage_path.dentry,
 				      sbi->storage_path.mnt,
 				      "inodes", LOOKUP_DIRECTORY,
 				      &inodes);
 		if (!err)
 			sbi->inodes_dir = inodes;
-		/* inodes dir may not exist yet — that's ok */
 	}
 
 	/* Open the journal file */
 	err = agfs_journal_open(sbi);
 	if (err)
-		goto out_put;
+		return err;
 
 	/* Write the implicit initial snapshot (id=1) so userspace can
 	 * reference the mount-time state by id. */
 	if (sbi->staging)
 		agfs_journal_append_s(sbi, 1, "(initial)");
 
+	return 0;
+}
+
+/* ── Fill Superblock (mount) ───────────────────────────────────────── */
+
+static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
+{
+	struct agfs_fs_opts *opts = fc->fs_private;
+	struct agfs_sb_info *sbi;
+	struct inode *inode;
+	int err;
+
+	sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
+	if (!sbi)
+		return -ENOMEM;
+
+	sb->s_fs_info = sbi;
+	sb->s_op = &agfs_sops;
+	sb->s_d_op = &agfs_dops;
+	sb->s_magic = AGFS_SUPER_MAGIC;
+	sb->s_maxbytes = MAX_LFS_FILESIZE;
+	sb->s_stack_depth = 0;
+
+	agfs_init_sbi(sbi, opts);
+
+	err = agfs_resolve_paths(sbi, sb, fc);
+	if (err)
+		goto out_put;
+
 	/* Create root inode from lower root */
-	inode = agfs_iget(sb, d_inode(base_path.dentry));
+	inode = agfs_iget(sb, d_inode(sbi->base_path.dentry));
 	if (IS_ERR(inode)) {
 		err = PTR_ERR(inode);
 		goto out_put;
@@ -243,16 +260,13 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		goto out_put;
 	}
 
-	/* Set up root dentry private data */
 	err = agfs_new_dentry_private_data(sb->s_root);
 	if (err)
 		goto out_root;
 
-	/* Set lower path on root dentry (needs its own reference) */
-	path_get(&base_path);
-	agfs_set_lower_path(sb->s_root, &base_path);
+	path_get(&sbi->base_path);
+	agfs_set_lower_path(sb->s_root, &sbi->base_path);
 
-	/* Root dentry has perm = ASK by default */
 	AGFS_D(sb->s_root)->perm = AGFS_PERM_ASK;
 
 	return 0;

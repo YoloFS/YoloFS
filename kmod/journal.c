@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * agfs — append-only mutation journal (§3.9).
+ * agfs — append-only mutation journal.
  *
  * Written by the kernel on every mutation. Read by the CLI for
  * commit/abort/status/diff. The kernel never reads it back.

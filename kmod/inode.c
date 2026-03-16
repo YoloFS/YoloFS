@@ -106,7 +106,88 @@ static int agfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 	return agfs_create_staged(dir, dentry, S_IFLNK, symname);
 }
 
-/* ── rename (§3.7) ─────────────────────────────────────────────────── */
+/* ── rename helpers ─────────────────────────────────────────────────── */
+
+struct agfs_rename_ctx {
+	u64		ino;
+	u64		gen;
+	char		*base_path;
+	unsigned char	d_type;
+	bool		found;
+};
+
+/*
+ * Read the source dirent state under de_lock.
+ * Must be called with staging_sem held.  Caller must kfree(ctx->base_path).
+ */
+static int agfs_rename_read_src(struct inode *old_dir,
+				struct dentry *old_dentry,
+				struct agfs_rename_ctx *ctx)
+{
+	struct agfs_inode_info *parent_ii = AGFS_I(old_dir);
+	struct agfs_dirent *de;
+
+	memset(ctx, 0, sizeof(*ctx));
+	ctx->d_type = DT_UNKNOWN;
+
+	spin_lock(&parent_ii->de_lock);
+	de = agfs_find_dirent(old_dir,
+				 old_dentry->d_name.name,
+				 old_dentry->d_name.len);
+	if (de) {
+		ctx->found = true;
+		ctx->ino = de->ino;
+		ctx->gen = de->snapshot_gen;
+		ctx->d_type = de->d_type;
+		if (de->base_path) {
+			ctx->base_path = kstrdup(de->base_path, GFP_ATOMIC);
+			if (!ctx->base_path) {
+				spin_unlock(&parent_ii->de_lock);
+				return -ENOMEM;
+			}
+		}
+	}
+	spin_unlock(&parent_ii->de_lock);
+
+	/* Derive d_type from inode when no dirent existed */
+	if (!de && d_inode(old_dentry))
+		ctx->d_type = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
+
+	return 0;
+}
+
+/*
+ * Add the destination dirent based on the source state.
+ * Staged inodes keep their ino; base files get a path redirect.
+ */
+static int agfs_rename_add_dst(struct inode *new_dir,
+			       struct dentry *new_dentry,
+			       const struct agfs_rename_ctx *ctx,
+			       char *old_buf)
+{
+	if (ctx->ino) {
+		return agfs_add_dirent(new_dir,
+					new_dentry->d_name.name,
+					new_dentry->d_name.len,
+					&(struct agfs_dirent){
+						.ino = ctx->ino,
+						.d_type = ctx->d_type,
+						.snapshot_gen = ctx->gen,
+					});
+	}
+
+	return agfs_add_dirent(new_dir,
+				new_dentry->d_name.name,
+				new_dentry->d_name.len,
+				&(struct agfs_dirent){
+					.base_path = ctx->base_path
+						     ? ctx->base_path
+						     : old_buf,
+					.d_type = ctx->d_type,
+				});
+}
+
+/* ── rename ────────────────────────────────────────────────────────── */
 
 static int agfs_rename(struct mnt_idmap *idmap,
 		       struct inode *old_dir, struct dentry *old_dentry,
@@ -114,13 +195,8 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		       unsigned int flags)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
-	struct agfs_inode_info *old_parent_ii;
+	struct agfs_rename_ctx ctx;
 	char old_buf[AGFS_PATH_MAX], new_buf[AGFS_PATH_MAX];
-	struct agfs_dirent *old_de = NULL;
-	u64 old_ino = 0;
-	u64 old_gen = 0;
-	char *old_bp = NULL;
-	unsigned char old_dtype = DT_UNKNOWN;
 	int err;
 
 	if (flags)
@@ -135,69 +211,26 @@ static int agfs_rename(struct mnt_idmap *idmap,
 
 	down_write(&sbi->staging_sem);
 
-	/* Check current dirent state on old name.
-	 * Snapshot base_path while holding the lock. */
-	old_parent_ii = AGFS_I(old_dir);
-	spin_lock(&old_parent_ii->de_lock);
-	old_de = agfs_find_dirent(old_dir,
-				     old_dentry->d_name.name,
-				     old_dentry->d_name.len);
-	if (old_de) {
-		old_ino = old_de->ino;
-		old_gen = old_de->snapshot_gen;
-		old_dtype = old_de->d_type;
-		if (old_de->base_path) {
-			old_bp = kstrdup(old_de->base_path,
-					 GFP_ATOMIC);
-			if (!old_bp) {
-				spin_unlock(&old_parent_ii->de_lock);
-				err = -ENOMEM;
-				goto out;
-			}
-		}
-	}
-	spin_unlock(&old_parent_ii->de_lock);
-
-	/* Derive d_type from old dentry's inode when no dirent existed */
-	if (!old_de && d_inode(old_dentry))
-		old_dtype = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
-
-	if (old_de && !old_ino && !old_bp) {
-		/* Source is deleted — cannot rename */
-		err = -ENOENT;
-		goto out;
-	} else if (old_ino) {
-		/* File has a staged inode — move the dirent, keep same ino */
-		err = agfs_add_dirent(new_dir,
-					new_dentry->d_name.name,
-					new_dentry->d_name.len,
-					&(struct agfs_dirent){
-						.ino = old_ino,
-						.d_type = old_dtype,
-						.snapshot_gen = old_gen,
-					});
-	} else {
-		/* Base file or chained rename — redirect by path */
-		err = agfs_add_dirent(new_dir,
-					new_dentry->d_name.name,
-					new_dentry->d_name.len,
-					&(struct agfs_dirent){
-						.base_path = old_bp ? old_bp
-								    : old_buf,
-						.d_type = old_dtype,
-					});
-	}
+	err = agfs_rename_read_src(old_dir, old_dentry, &ctx);
 	if (err)
 		goto out;
 
-	/* Hide the old name (deleted dirent) */
+	if (ctx.found && !ctx.ino && !ctx.base_path) {
+		/* Source is deleted — cannot rename */
+		err = -ENOENT;
+		goto out;
+	}
+
+	err = agfs_rename_add_dst(new_dir, new_dentry, &ctx, old_buf);
+	if (err)
+		goto out;
+
 	err = agfs_del_dirent(old_dir,
 				old_dentry->d_name.name,
 				old_dentry->d_name.len);
 	if (err)
 		goto out;
 
-	/* Journal rename */
 	err = agfs_journal_append_r(sbi, old_buf, new_buf);
 
 	/* Invalidate dcache for both names so next lookup uses dirents */
@@ -205,12 +238,12 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	d_drop(new_dentry);
 
 out:
-	kfree(old_bp);
+	kfree(ctx.base_path);
 	up_write(&sbi->staging_sem);
 	return err;
 }
 
-/* ── permission (§4.2) ─────────────────────────────────────────────── */
+/* ── permission ────────────────────────────────────────────────────── */
 
 static int agfs_permission(struct mnt_idmap *idmap,
 			   struct inode *inode, int mask)

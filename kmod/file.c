@@ -168,7 +168,7 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 	return new_file;
 }
 
-/* ── open (§3.5 + §4.3) ───────────────────────────────────────────── */
+/* ── open ──────────────────────────────────────────────────────────── */
 
 static int agfs_open(struct inode *inode, struct file *file)
 {
@@ -350,7 +350,7 @@ static loff_t agfs_llseek(struct file *file, loff_t offset, int whence)
 	return ret;
 }
 
-/* ── Directory: readdir / iterate_shared (§3.8 merged listing) ──────── */
+/* ── Directory: readdir / iterate_shared (merged listing) ───────────── */
 
 /*
  * Merged readdir: dirents first, then base entries not overridden.

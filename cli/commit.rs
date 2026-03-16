@@ -1,7 +1,7 @@
 // agfs CLI — commit.rs
 //
-// `agfs commit` — apply staged changes to base (§3.10).
-// `agfs commit --at <name>` — partial commit up to a snapshot (§3.11.4).
+// `agfs commit` — apply staged changes to base.
+// `agfs commit --at <name>` — partial commit up to a snapshot.
 // Journal is resolved first, then changes are applied sequentially.
 
 use crate::ioctl;

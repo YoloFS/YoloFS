@@ -103,7 +103,7 @@ struct agfs_perm_request {
 	struct list_head	list;
 };
 
-/* ── Per-directory dirent (§3.4) ────────────────────────────── */
+/* ── Per-directory dirent ─────────────────────────────────────── */
 
 struct agfs_dirent {
 	struct hlist_node	node;
