@@ -1,16 +1,14 @@
 # ── Variables ─────────────────────────────────────────────────────────
 
-KDIR            ?= /lib/modules/$(shell uname -r)/build
+KDIR             := /lib/modules/$(shell uname -r)
 KMOD_OUT         := target/kmod/agfs.ko
-KMOD_INSTALL_DIR := /lib/modules/$(shell uname -r)/extra
+KMOD_INSTALL_DIR := $(KDIR)/extra
+BTF_VMLINUX      := $(KDIR)/build/vmlinux
 TARGET_DIR       := $(CURDIR)-target
 
 # ── Build ─────────────────────────────────────────────────────────────
 
 .PHONY: build clean cli kmod lint fix
-
-BTF_SRC  := /sys/kernel/btf/vmlinux
-BTF_DEST := /usr/lib/modules/$(shell uname -r)/build/vmlinux
 
 build: cli kmod
 
@@ -20,15 +18,15 @@ $(TARGET_DIR):
 cli: | $(TARGET_DIR)
 	cargo build --release
 
-kmod: $(BTF_DEST) $(KMOD_OUT)
+kmod: $(BTF_VMLINUX) $(KMOD_OUT)
 
 $(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(TARGET_DIR)
 	mkdir -p $(TARGET_DIR)/kmod
 	cp kmod/Kbuild $(TARGET_DIR)/kmod/Kbuild
-	$(MAKE) -j$(nproc) -C $(KDIR) M=$(TARGET_DIR)/kmod KBUILD_KMOD_SRC=$(CURDIR)/kmod modules
+	$(MAKE) -j$(nproc) -C $(KDIR)/build M=$(TARGET_DIR)/kmod KBUILD_KMOD_SRC=$(CURDIR)/kmod modules
 
-$(BTF_DEST): $(BTF_SRC)
-	sudo cp $(BTF_SRC) $(BTF_DEST)
+$(BTF_VMLINUX): /sys/kernel/btf/vmlinux
+	sudo cp $< $@
 
 clean:
 	rm -rf $(TARGET_DIR)
