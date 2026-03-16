@@ -2,6 +2,7 @@ use crate::helpers::AgfsSession;
 use agfs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
 // ── Directory ops bypass agfs permission (inode.c: agfs_permission
 //    delegates to lower FS for non-regular files) ──
@@ -103,6 +104,69 @@ fn create_allowed_under_deny() {
         status.contains("newfile.txt"),
         "status should show the created file: {status}"
     );
+}
+
+/// Regression: a non-root user must be able to write into a directory they
+/// just created inside the sandbox.
+///
+/// Real-world trigger: `make install-third-party` runs autoconf, which uses
+/// Perl's File::Temp to create a private temp dir (mode 0700) under /tmp.
+/// The mkdir succeeds but the subsequent chdir/write into it fails with
+/// EACCES.
+///
+/// Root cause: `agfs_permission` (inode.c:231) delegates directory permission
+/// checks to the lower filesystem instead of going through agfs rules.
+/// Staging blobs are always created under root credentials
+/// (`override_creds(sbi->creator_cred)`), so a directory staged by a
+/// non-root user ends up root-owned — and the creating user cannot write
+/// into it.
+#[test]
+fn non_root_mkdir_then_write_inside() {
+    use nix::sys::wait::{WaitStatus, waitpid};
+    use nix::unistd::{ForkResult, Uid, fork, setuid};
+
+    let s = AgfsSession::new_with_config(Config {
+        permission: true,
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    // Allow non-root to traverse the temp path to the mount point.
+    fs::set_permissions(&s.root, fs::Permissions::from_mode(0o777)).unwrap();
+
+    let newdir = s.mnt_path("newdir");
+
+    match unsafe { fork() }.expect("fork") {
+        ForkResult::Child => {
+            setuid(Uid::from_raw(1000)).expect("setuid 1000");
+            // Mode 0700: the user intends to own this dir privately.
+            // This mirrors Perl's File::Temp, which is the real-world trigger.
+            if std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&newdir)
+                .is_err()
+            {
+                std::process::exit(1);
+            }
+            // Write inside — requires write+exec on the new dir.
+            // With the bug the staging blob is root-owned 0700, so
+            // agfs_permission (delegating dir checks to lower FS) returns EACCES.
+            let ok = std::fs::write(newdir.join("file.txt"), "data").is_ok();
+            std::process::exit(if ok { 0 } else { 2 });
+        }
+        ForkResult::Parent { child } => {
+            match waitpid(child, None).expect("waitpid") {
+                WaitStatus::Exited(_, 0) => {}
+                WaitStatus::Exited(_, 2) => panic!(
+                    "non-root user could mkdir but not write inside it: \
+                     staging blob is root-owned, agfs_permission delegates \
+                     directory checks to lower FS (inode.c:231)"
+                ),
+                other => panic!("unexpected child status: {other:?}"),
+            }
+        }
+    }
 }
 
 /// Listing a directory's contents should work even under deny
