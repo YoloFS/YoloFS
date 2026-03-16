@@ -27,6 +27,16 @@ BUILD_PKGS=(
     git
     pahole
     bpftrace
+    # try build deps
+    autoconf
+    attr
+    pandoc
+    # branchfs build deps
+    fuse3
+    libfuse3-dev
+    # btrfs backend
+    btrfs-progs
+    rsync
 )
 
 # ── Installers ────────────────────────────────────────────────────────
@@ -60,3 +70,9 @@ fi
 
 install_apt "${pkgs[@]}"
 install_rust
+
+# ── Kernel settings required by try ──────────────────────────────────
+
+info "Configuring kernel settings for try (overlay + unprivileged userns)"
+sudo modprobe overlay
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0

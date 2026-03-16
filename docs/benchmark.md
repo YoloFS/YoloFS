@@ -93,18 +93,27 @@ inside it, then calls `branchfs commit`.
 ### btrfs
 
 btrfs subvolume snapshots are O(1) copy-on-write clones within a btrfs volume.
-Because the root filesystem is ext4, btrfs requires a dedicated mount point
-(`/mnt/btrfs-bench`, a loop-mounted btrfs image). The fixture for each workload
-must live on this volume (not on ext4) so that snapshots can be taken cheaply.
+Because the root filesystem is ext4, btrfs requires a dedicated raw disk
+provided by the user (e.g. `/dev/sdb`). The bench tool handles all setup
+automatically and idempotently:
 
-The adapter:
-1. Ensures the base subvolume at `/mnt/btrfs-bench/<workload>/base` is
-   populated with the fixture.
-2. Takes a snapshot (`btrfs subvolume snapshot`) as the working directory.
-3. Runs the workload inside the snapshot.
-4. On commit, syncs changes back to base via rsync and deletes the snapshot.
+1. **`mkfs`**: if the device does not already contain a btrfs filesystem,
+   `mkfs.btrfs` is run once.
+2. **Mount**: if `/mnt/btrfs-bench` is not already mounted, the device is
+   mounted there.
+3. **Base subvolume**: if `/mnt/btrfs-bench/<workload>/base` does not exist,
+   it is created as a btrfs subvolume and the fixture is copied into it.
 
-The btrfs mount point and loop image are created by `make btrfs-setup` (see §6).
+The device is specified via `--btrfs-device <path>` (e.g. `--btrfs-device
+/dev/sdb`). If the flag is omitted the btrfs backend is skipped silently.
+
+Each iteration:
+1. Takes an O(1) snapshot of `base` → `work`.
+2. Runs the workload inside the snapshot.
+3. On commit, syncs changes back to `base` via rsync and deletes the snapshot.
+
+All setup steps are guarded so re-running on an already-prepared disk skips
+`mkfs` and `mount` safely.
 
 ---
 
@@ -188,22 +197,27 @@ bench/src/
 | `branchfs` | `third_party/branchfs/` | `cargo build --release` |
 | `btrfs-progs` | system package | `apt install btrfs-progs` |
 
-`make install` builds and installs all of the above. `make btrfs-setup` creates
-the loop-backed btrfs volume at `/mnt/btrfs-bench` (idempotent).
+`make install` builds and installs all of the above. btrfs disk setup is
+handled automatically by `agfs-bench` at runtime when `--btrfs-device` is
+passed; no separate `make` target is needed.
 
 ### CLI
 
 ```
 agfs-bench [--workload <name>] [--backend <name>] [--runs N] [--verbose]
-           [--timestamped-results]
+           [--timestamped-results] [--btrfs-device <path>]
 agfs-bench rerender
 agfs-bench list
 agfs-bench profile [--workload <name>] [--scenario <name>] [--no-bpftrace]
 ```
 
-- With no flags: runs all workloads × all backends.
+- With no flags: runs all workloads × all backends (btrfs skipped unless
+  `--btrfs-device` is given).
 - `--workload` / `--backend`: filter to a specific combination.
 - `--runs N`: number of timed iterations (default 3).
+- `--btrfs-device <path>`: raw block device to use for the btrfs backend
+  (e.g. `/dev/sdb`). The bench tool formats, mounts, and prepares it
+  automatically on first use; subsequent runs skip steps already done.
 - `--verbose`: capture detailed logs for all runs, not just failures.
 - `--timestamped-results`: write results into a timestamped subdirectory
   (`results-bench/<hostname>/<timestamp>/`) instead of overwriting.
