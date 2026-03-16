@@ -1,25 +1,18 @@
-// write-files workload: create 1,000 small (4 KiB) files.
+// stat-files workload: stat 1,000 pre-existing files.
 //
-// Exercises the file-create and sequential-write paths without any network
-// dependency; no external fixture is required.
+// Exercises the pure metadata/permission path with no data I/O. For agfs
+// this hits agfs_permission and agfs_getattr on every call.
 
 use crate::workload::{Workload, WorkloadKind};
 use agfs::config::Perm;
 use anyhow::{Context, Result};
-use std::fs;
 use std::path::Path;
 
-pub struct WriteFiles;
+pub struct StatFiles;
 
-impl WriteFiles {
-    pub fn new() -> Self {
-        WriteFiles
-    }
-}
-
-impl Workload for WriteFiles {
+impl Workload for StatFiles {
     fn name(&self) -> &'static str {
-        "write-files"
+        "stat-files"
     }
 
     fn kind(&self) -> WorkloadKind {
@@ -27,7 +20,7 @@ impl Workload for WriteFiles {
     }
 
     fn work_dir(&self) -> &'static str {
-        "write-dest"
+        "stat-dest"
     }
 
     fn ensure_fixture(&self) -> Result<()> {
@@ -38,12 +31,15 @@ impl Workload for WriteFiles {
         vec![(session_root.to_string_lossy().into_owned(), Perm::AllowRw)]
     }
 
+    fn populate_base(&self, base: &Path) -> Result<()> {
+        super::populate_files(base, 1000, 4096)
+    }
+
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        fs::create_dir_all(dest).context("creating work dir")?;
-        let buf = vec![0u8; 4096];
         for i in 0..1000 {
-            fs::write(dest.join(format!("file-{i:04}.dat")), &buf)
-                .with_context(|| format!("writing file-{i:04}.dat"))?;
+            let meta = std::fs::metadata(dest.join(format!("file-{i:04}.dat")))
+                .with_context(|| format!("stat file-{i:04}.dat"))?;
+            std::hint::black_box(&meta);
         }
         Ok(())
     }

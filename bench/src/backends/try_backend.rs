@@ -44,6 +44,7 @@ impl Backend for Try {
         std::fs::create_dir_all(&sandbox_dir)?;
         let dest = root.path().join(workload.work_dir());
         std::fs::create_dir_all(&dest)?;
+        workload.populate_base(&dest)?;
 
         // Build the inner exec-workload command, then wrap it in try.
         let inner = backend::exec_workload_cmd(workload.name(), &dest, verbose)?;

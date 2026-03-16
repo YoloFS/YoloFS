@@ -4,7 +4,7 @@
 // Run: `git worktree add <dest>` — exercises file creation at scale with no
 // pack transfer or delta computation.
 
-use crate::workload::Workload;
+use crate::workload::{Workload, WorkloadKind};
 use agfs::config::Perm;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -29,6 +29,10 @@ impl Worktree {
 impl Workload for Worktree {
     fn name(&self) -> &'static str {
         "worktree"
+    }
+
+    fn kind(&self) -> WorkloadKind {
+        WorkloadKind::Macro
     }
 
     fn work_dir(&self) -> &'static str {

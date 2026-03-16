@@ -34,6 +34,14 @@ struct Cli {
     #[arg(long)]
     workload: Option<String>,
 
+    /// Run only microbenchmarks
+    #[arg(long, conflicts_with_all = ["workload", "r#macro"])]
+    micro: bool,
+
+    /// Run only macrobenchmarks
+    #[arg(long, name = "macro", conflicts_with_all = ["workload", "micro"])]
+    r#macro: bool,
+
     /// Run only this backend
     #[arg(long)]
     backend: Option<String>,
@@ -627,8 +635,12 @@ fn main() -> Result<()> {
     }
 
     if let Some(Cmd::List) = cli.cmd {
-        println!("Workloads:");
-        for w in workloads::all() {
+        println!("Workloads (micro):");
+        for w in workloads::by_kind(workload::WorkloadKind::Micro) {
+            println!("  {}", w.name());
+        }
+        println!("\nWorkloads (macro):");
+        for w in workloads::by_kind(workload::WorkloadKind::Macro) {
             println!("  {}", w.name());
         }
         println!("\nBackends:");
@@ -659,6 +671,10 @@ fn main() -> Result<()> {
     let selected_workloads: Vec<Box<dyn Workload>> = if let Some(name) = &cli.workload {
         let w = workloads::by_name(name).with_context(|| format!("unknown workload: {name}"))?;
         vec![w]
+    } else if cli.micro {
+        workloads::by_kind(workload::WorkloadKind::Micro)
+    } else if cli.r#macro {
+        workloads::by_kind(workload::WorkloadKind::Macro)
     } else {
         workloads::all()
     };

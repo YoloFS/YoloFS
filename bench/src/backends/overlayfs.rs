@@ -43,6 +43,11 @@ impl Backend for Overlayfs {
             std::fs::create_dir_all(d)?;
         }
 
+        // Populate lower dir before mounting (not timed).
+        let lower_work = lower.join(workload.work_dir());
+        std::fs::create_dir_all(&lower_work)?;
+        workload.populate_base(&lower_work)?;
+
         // Build the inner exec-workload command, then wrap it in unshare.
         // Inside the namespace, exec-overlayfs mounts the overlay then runs
         // the workload via the standard exec-workload protocol (READY marker).

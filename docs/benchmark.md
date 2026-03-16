@@ -28,16 +28,29 @@ it against alternative staging/sandboxing approaches.
 
 The suite defines multiple workloads to avoid overfitting to a single access
 pattern. Each workload is a self-contained Rust function that performs a
-specific operation on the mounted filesystem.
+specific operation on the mounted filesystem. Workloads are categorised as
+**micro** (isolate a single operation) or **macro** (real-world task).
 
-### Write files (`write-files`)
+Workloads that need pre-existing files (read, stat, overwrite, rename)
+implement `populate_base()`. Each backend calls this to populate the base
+directory *before* mounting, so that operations correctly exercise copy-up /
+passthrough behaviour.
 
-Creates 1,000 small files (4 KiB each) in a temporary directory. Exercises the
-file-create and sequential-write paths without any network dependency; no
-external fixture is required. Useful for rapid iteration and as a quick sanity
-check before running heavier workloads.
+### Microbenchmarks
 
-### Worktree (`worktree`)
+Each micro workload operates on 1,000 files of 4 KiB.
+
+| Workload | Operation | What it exercises |
+|---|---|---|
+| `write-files` | Create 1,000 new files | File creation + sequential write path |
+| `read-files` | Read 1,000 existing files | Read passthrough (lower fs or staged inode) |
+| `stat-files` | Stat 1,000 existing files | Metadata / permission check overhead |
+| `overwrite-files` | Overwrite 1,000 existing files | Copy-on-write / copy-up path |
+| `rename-files` | Rename 1,000 existing files | Directory ops + journal (agfs) or copy-up (overlayfs) |
+
+### Macrobenchmarks
+
+#### Worktree (`worktree`)
 
 Runs `git worktree add --detach` from a local Linux kernel clone
 (`~/.cache/agfs-bench/linux`). Exercises the read-heavy path: the workload

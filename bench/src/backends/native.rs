@@ -27,6 +27,7 @@ impl Backend for Native {
 
         let dest = root.path().join(workload.work_dir());
         std::fs::create_dir_all(&dest)?;
+        workload.populate_base(&dest)?;
 
         let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose)?;
         cmd.stderr(if verbose {

@@ -14,9 +14,9 @@ struct Session {
 }
 
 impl Session {
-    /// Set up the session: write config + `agfs mount`.
+    /// Set up the session: write config, populate base, `agfs mount`.
     /// Returns (session, init_ms) where init_ms is the wall time of mount.
-    fn setup(config: Config) -> Result<(Self, u64)> {
+    fn setup(config: Config, workload: &dyn Workload) -> Result<(Self, u64)> {
         let cache = dirs_next::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("agfs-bench");
@@ -30,6 +30,11 @@ impl Session {
         config
             .save(&root.path().join("agfs.toml"))
             .context("writing agfs.toml")?;
+
+        // Populate base directory before mounting (not timed).
+        let base_work = root.path().join(workload.work_dir());
+        std::fs::create_dir_all(&base_work)?;
+        workload.populate_base(&base_work)?;
 
         let t = Instant::now();
         let out = Command::new("agfs")
@@ -110,7 +115,7 @@ fn run_agfs_iteration(
     workload: &dyn Workload,
     verbose: bool,
 ) -> Result<(IterResult, Vec<String>)> {
-    let (session, init_ms) = Session::setup(config)?;
+    let (session, init_ms) = Session::setup(config, workload)?;
 
     let dest = session.mnt_path(workload.work_dir());
 
@@ -200,6 +205,11 @@ impl Backend for AgfsRealistic {
             ..Default::default()
         };
         config.save(&root.path().join("agfs.toml"))?;
+
+        // Populate base directory before mounting (not timed).
+        let base_work = root.path().join(workload.work_dir());
+        std::fs::create_dir_all(&base_work)?;
+        workload.populate_base(&base_work)?;
 
         let t_init = Instant::now();
         let out = Command::new("agfs")
@@ -295,6 +305,11 @@ pub fn setup_profile_session(
     };
 
     config.save(&root.path().join("agfs.toml"))?;
+
+    // Populate base directory before mounting.
+    let base_work = root.path().join(workload.work_dir());
+    std::fs::create_dir_all(&base_work)?;
+    workload.populate_base(&base_work)?;
 
     let out = Command::new("agfs")
         .arg("mount")

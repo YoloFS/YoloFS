@@ -42,6 +42,11 @@ impl Backend for BranchFs {
         std::fs::create_dir_all(&storage_dir)?;
         std::fs::create_dir_all(&mnt_dir)?;
 
+        // Populate base directory before mounting (not timed).
+        let base_work = base_dir.join(workload.work_dir());
+        std::fs::create_dir_all(&base_work)?;
+        workload.populate_base(&base_work)?;
+
         let pipe = if verbose {
             Stdio::inherit()
         } else {
