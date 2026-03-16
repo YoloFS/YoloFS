@@ -387,6 +387,11 @@ out_inode:
 static void __exit agfs_exit(void)
 {
 	unregister_filesystem(&agfs_fs_type);
+
+	/* Wait for all pending RCU callbacks (the VFS defers free_inode
+	 * via call_rcu, so slabs may still be in use until those fire). */
+	rcu_barrier();
+
 	agfs_destroy_dentry_cache();
 	kmem_cache_destroy(agfs_inode_cachep);
 	pr_info("agfs: module unloaded\n");
