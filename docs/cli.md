@@ -28,23 +28,23 @@ $ agfs -- make build     # run a specific command instead of sh
 $ agfs mount             # create .agfs/ layout and mount (auto-loads kmod if needed)
 $ agfs exec              # chroot $SHELL into .agfs/mnt (requires existing mount)
 $ agfs exec -- make build
-$ agfs status            # show staged changes (grouped by snapshot when present)
-$ agfs status --at <name|id> # show state at a snapshot
-$ agfs diff              # git-style diff of staged vs base (grouped by snapshot)
-$ agfs diff --from <name|id> # diff changes since snapshot
+$ agfs status            # show staged changes (grouped by checkpoint when present)
+$ agfs status --at <name|id> # show state at a checkpoint
+$ agfs diff              # git-style diff of staged vs base (grouped by checkpoint)
+$ agfs diff --from <name|id> # diff changes since checkpoint
 $ agfs commit            # apply staged changes to base
-$ agfs commit --at <name|id> # commit only changes up to a snapshot
+$ agfs commit --at <name|id> # commit only changes up to a checkpoint
 $ agfs abort             # discard staged changes (prompts for confirmation)
 $ agfs unmount           # tear down session (prompts if staged changes exist)
 $ agfs remount           # unmount then remount (prompts if staged changes exist)
 ```
 
-**Snapshots:**
+**Checkpoints:**
 
 ```bash
-$ agfs snapshot              # snapshot with timestamp as name
-$ agfs snapshot "checkpoint" # snapshot with explicit name
-$ agfs log                   # show snapshot log with change counts
+$ agfs checkpoint              # checkpoint with timestamp as name
+$ agfs checkpoint "checkpoint" # checkpoint with explicit name
+$ agfs log                   # show checkpoint log with change counts
 ```
 
 **Permission rules and diagnostics:**
@@ -65,7 +65,7 @@ Configured via top-level keys in `agfs.toml`:
 | `ask_default` | `deny` | Fallback when no daemon is connected or on timeout |
 | `permission` | true | Enable permission gating |
 | `staging` | true | Enable staging area |
-| `snapshot` | true | Auto-snapshot after each `agfs exec` invocation |
+| `checkpoint` | true | Auto-checkpoint after each `agfs exec` invocation |
 
 ## Execution Environment
 

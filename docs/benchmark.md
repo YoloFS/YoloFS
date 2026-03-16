@@ -62,7 +62,7 @@ place agfs in context relative to alternatives.
 | `overlayfs` | User-namespace overlayfs; replay upper on commit | no (user-ns) | yes |
 | `branchfs` | FUSE copy-on-write branches; `branchfs commit` | no | yes |
 | `try` | Shell wrapper around overlayfs (`try` tool) | no (user-ns) | **hidden** |
-| `btrfs` | btrfs subvolume snapshot; rsync back on commit | yes (cap) | not yet |
+| `btrfs` | btrfs subvolume checkpoint; rsync back on commit | yes (cap) | not yet |
 
 `agfs-bench` does **not** need to run as root. The agfs binary is setuid,
 overlayfs and `try` use user namespaces, and branchfs runs in userspace. Only
@@ -127,7 +127,7 @@ O(1) branch creation and atomic commit-to-parent semantics. Each iteration:
 
 **Not yet implemented.** Design:
 
-btrfs subvolume snapshots are O(1) copy-on-write clones within a btrfs volume.
+btrfs subvolume checkpoints are O(1) copy-on-write clones within a btrfs volume.
 Because the root filesystem is ext4, btrfs requires a dedicated raw disk
 provided by the user (e.g. `/dev/sdb`). The bench tool would handle all setup
 automatically and idempotently:
@@ -143,9 +143,9 @@ The device would be specified via `--btrfs-device <path>`. If the flag is
 omitted the btrfs backend is skipped.
 
 Each iteration:
-1. Takes an O(1) snapshot of `base` → `work`.
-2. Runs the workload inside the snapshot.
-3. On commit, syncs changes back to `base` via rsync and deletes the snapshot.
+1. Takes an O(1) checkpoint of `base` → `work`.
+2. Runs the workload inside the checkpoint.
+3. On commit, syncs changes back to `base` via rsync and deletes the checkpoint.
 
 ---
 
@@ -157,7 +157,7 @@ Time is decomposed into three phases:
 total = init_time + staging_time + commit_time
 ```
 
-- **`init_time`**: wall time of sandbox creation (mount, snapshot, namespace
+- **`init_time`**: wall time of sandbox creation (mount, checkpoint, namespace
   setup). This is the cost of *entering* the sandbox before any work begins.
   For `native` this is None.
 - **`staging_time`**: wall time of the workload itself. This is what the agent
@@ -171,7 +171,7 @@ total = init_time + staging_time + commit_time
 | `overlayfs` | `unshare` + `mount -t overlay` | workload | replay upper → lower |
 | `try` | shell namespace setup | workload | `try commit` |
 | `branchfs` | `branchfs mount` + `create` | workload | `branchfs commit` |
-| `btrfs` | `btrfs subvolume snapshot` | workload | rsync + delete |
+| `btrfs` | `btrfs subvolume checkpoint` | workload | rsync + delete |
 
 Every backend runs the workload as a subprocess via the `exec-workload`
 subcommand. The subprocess prints a `READY` marker to stdout just before it
@@ -208,10 +208,10 @@ for a workload begin. It populates the page cache and warms dentry/inode caches.
 The warm-up result is discarded.
 
 **Run** (timed): each backend runs N timed iterations. Each iteration creates
-a fresh session (tempdir / mount / snapshot) to avoid stale dentry state.
+a fresh session (tempdir / mount / checkpoint) to avoid stale dentry state.
 Mean ± stddev of the N timed iterations is reported; outliers (>2σ) are flagged.
 
-**Teardown**: the mount / snapshot / session directory are removed automatically
+**Teardown**: the mount / checkpoint / session directory are removed automatically
 when the session is dropped at the end of each iteration.
 
 ---

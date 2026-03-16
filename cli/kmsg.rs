@@ -51,9 +51,10 @@ impl KmsgCursor {
             match kmsg_read(fd, &mut buf) {
                 ReadResult::Record(n) => {
                     if let Some((seq, msg)) = parse_record(&buf[..n])
-                        && seq > self.seq {
-                            messages.push(msg);
-                        }
+                        && seq > self.seq
+                    {
+                        messages.push(msg);
+                    }
                 }
                 ReadResult::Skip => continue,
                 ReadResult::Done => break,
@@ -67,12 +68,7 @@ impl KmsgCursor {
 
 /// Open `/dev/kmsg` read-only and non-blocking.  Returns the raw fd.
 fn kmsg_open() -> Option<i32> {
-    let fd = unsafe {
-        libc::open(
-            c"/dev/kmsg".as_ptr(),
-            libc::O_RDONLY | libc::O_NONBLOCK,
-        )
-    };
+    let fd = unsafe { libc::open(c"/dev/kmsg".as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
     if fd < 0 {
         eprintln!(
             "kmsg: could not open /dev/kmsg: {}",

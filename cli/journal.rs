@@ -1,12 +1,12 @@
 // agfs CLI — journal.rs
 //
-// Parse and resolve the append-only mutation journal.
+// Parse and resolve the append-only journal.
 //
 // Record format (NUL-separated fields, newline-terminated):
 //   A\0<path>\0<ino>\n   — content/dir in inodes/<ino>
 //   D\0<path>\n          — deleted
 //   R\0<old>\0<new>\n    — rename
-//   S\0<id>\0<name>\n    — snapshot marker
+//   K\0<id>\0<name>\n    — checkpoint marker
 
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,7 +19,7 @@ pub enum Record {
     Add { path: String, ino: u64 },
     Delete { path: String },
     Rename { old_path: String, new_path: String },
-    Snapshot { id: u64, name: String },
+    Checkpoint { id: u64, name: String },
 }
 
 /// A resolved change — the final effect of replaying the journal.
@@ -79,11 +79,11 @@ pub fn read(agfs_dir: &Path) -> Result<Vec<Record>> {
                 let new_path = String::from_utf8_lossy(fields[2]).to_string();
                 records.push(Record::Rename { old_path, new_path });
             }
-            b"S" if fields.len() >= 3 => {
+            b"K" if fields.len() >= 3 => {
                 let id_str = String::from_utf8_lossy(fields[1]);
                 let name = String::from_utf8_lossy(fields[2]).to_string();
                 if let Ok(id) = id_str.parse::<u64>() {
-                    records.push(Record::Snapshot { id, name });
+                    records.push(Record::Checkpoint { id, name });
                 }
             }
             _ => {}
@@ -109,14 +109,14 @@ pub fn inode_path(agfs_dir: &Path, ino: u64) -> PathBuf {
     agfs_dir.join("inodes").join(ino.to_string())
 }
 
-/// Find the record index of a snapshot by name or numeric ID.
+/// Find the record index of a checkpoint by name or numeric ID.
 /// Tries parsing as a numeric ID first, then falls back to name match
 /// (using the latest occurrence if names are duplicated).
-fn find_snapshot_index(records: &[Record], name_or_id: &str) -> Result<usize> {
+fn find_checkpoint_index(records: &[Record], name_or_id: &str) -> Result<usize> {
     // Try numeric ID first
     if let Ok(target_id) = name_or_id.parse::<u64>() {
         for (i, record) in records.iter().enumerate() {
-            if let Record::Snapshot { id, .. } = record
+            if let Record::Checkpoint { id, .. } = record
                 && *id == target_id
             {
                 return Ok(i);
@@ -127,38 +127,38 @@ fn find_snapshot_index(records: &[Record], name_or_id: &str) -> Result<usize> {
     // Fall back to name match (latest occurrence)
     let mut last = None;
     for (i, record) in records.iter().enumerate() {
-        if let Record::Snapshot { name: n, .. } = record
+        if let Record::Checkpoint { name: n, .. } = record
             && n == name_or_id
         {
             last = Some(i);
         }
     }
-    last.ok_or_else(|| anyhow::anyhow!("snapshot not found: {name_or_id}"))
+    last.ok_or_else(|| anyhow::anyhow!("checkpoint not found: {name_or_id}"))
 }
 
-/// Resolve journal up to (and including) the named snapshot.
-/// Returns changes that were staged at the time of the snapshot.
-pub fn resolve_at(agfs_dir: &Path, snapshot_name: &str) -> Result<Vec<Change>> {
+/// Resolve journal up to (and including) the named checkpoint.
+/// Returns changes that were staged at the time of the checkpoint.
+pub fn resolve_at(agfs_dir: &Path, checkpoint_name: &str) -> Result<Vec<Change>> {
     let records = read(agfs_dir)?;
-    let snap_idx = find_snapshot_index(&records, snapshot_name)?;
-    let truncated = &records[..=snap_idx];
+    let chk_idx = find_checkpoint_index(&records, checkpoint_name)?;
+    let truncated = &records[..=chk_idx];
     resolve_records(truncated)
 }
 
-/// Resolve journal from after the named snapshot to the end.
-/// Returns the diff between snapshot state and current state as two
-/// resolved states: (at_snapshot, current).
-pub fn resolve_from(agfs_dir: &Path, snapshot_name: &str) -> Result<(Vec<Change>, Vec<Change>)> {
+/// Resolve journal from after the named checkpoint to the end.
+/// Returns the diff between checkpoint state and current state as two
+/// resolved states: (at_checkpoint, current).
+pub fn resolve_from(agfs_dir: &Path, checkpoint_name: &str) -> Result<(Vec<Change>, Vec<Change>)> {
     let records = read(agfs_dir)?;
-    let snap_idx = find_snapshot_index(&records, snapshot_name)?;
-    let at_snap = resolve_records(&records[..=snap_idx])?;
+    let chk_idx = find_checkpoint_index(&records, checkpoint_name)?;
+    let at_chk = resolve_records(&records[..=chk_idx])?;
     let current = resolve_records(&records)?;
-    Ok((at_snap, current))
+    Ok((at_chk, current))
 }
 
 /// Incremental resolution state — processes records one at a time and can
 /// emit the resolved change list at any point. Used by both `resolve_records`
-/// (batch) and `resolve_sections` (incremental snapshots) so the journal is
+/// (batch) and `resolve_sections` (incremental checkpoints) so the journal is
 /// traversed only once.
 struct ResolveState {
     resolved_renames: BTreeMap<String, String>,
@@ -215,7 +215,7 @@ impl ResolveState {
                         .insert(new_path.clone(), old_path.clone());
                 }
             }
-            Record::Snapshot { .. } => {}
+            Record::Checkpoint { .. } => {}
         }
     }
 
@@ -270,7 +270,7 @@ impl ResolveState {
 }
 
 /// Resolve a slice of records into changes. Internal helper factored
-/// out of `resolve()` so snapshot-aware variants can reuse it.
+/// out of `resolve()` so checkpoint-aware variants can reuse it.
 fn resolve_records(records: &[Record]) -> Result<Vec<Change>> {
     let mut state = ResolveState::new();
     for record in records {
@@ -279,64 +279,64 @@ fn resolve_records(records: &[Record]) -> Result<Vec<Change>> {
     Ok(state.emit_changes())
 }
 
-/// A group of resolved changes belonging to a snapshot (or trailing).
+/// A group of resolved changes belonging to a checkpoint (or trailing).
 #[derive(Debug)]
 pub struct Section {
-    /// Snapshot id and name, or None for trailing (unsaved) changes.
-    pub snapshot: Option<(u64, String)>,
+    /// Checkpoint id and name, or None for trailing (unsaved) changes.
+    pub checkpoint: Option<(u64, String)>,
     pub changes: Vec<Change>,
 }
 
-/// Resolve the journal into sections grouped by snapshot boundaries.
+/// Resolve the journal into sections grouped by checkpoint boundaries.
 ///
 /// Each section contains the *delta* of changes introduced between the
-/// previous snapshot and this one.  The trailing section (snapshot=None)
-/// holds changes after the last snapshot.
+/// previous checkpoint and this one.  The trailing section (checkpoint=None)
+/// holds changes after the last checkpoint.
 ///
-/// When there are no snapshots, returns a single section with snapshot=None.
+/// When there are no checkpoints, returns a single section with checkpoint=None.
 pub fn resolve_sections(agfs_dir: &Path) -> Result<Vec<Section>> {
     let records = read(agfs_dir)?;
 
-    // Collect snapshot boundary indices
-    let snap_indices: Vec<(usize, u64, String)> = records
+    // Collect checkpoint boundary indices
+    let chk_indices: Vec<(usize, u64, String)> = records
         .iter()
         .enumerate()
         .filter_map(|(i, r)| match r {
-            Record::Snapshot { id, name } => Some((i, *id, name.clone())),
+            Record::Checkpoint { id, name } => Some((i, *id, name.clone())),
             _ => None,
         })
         .collect();
 
-    if snap_indices.is_empty() {
+    if chk_indices.is_empty() {
         let changes = resolve_records(&records)?;
         return Ok(vec![Section {
-            snapshot: None,
+            checkpoint: None,
             changes,
         }]);
     }
 
     // Process records incrementally through a single ResolveState,
-    // snapshotting at each boundary — O(N) total instead of O(N*S).
+    // checkpointting at each boundary — O(N) total instead of O(N*S).
     let mut sections = Vec::new();
     let mut state = ResolveState::new();
     let mut prev_cs = ChangesState::default();
     let mut record_idx = 0;
 
-    for &(snap_idx, snap_id, ref snap_name) in &snap_indices {
-        while record_idx <= snap_idx {
+    for &(chk_idx, chk_id, ref chk_name) in &chk_indices {
+        while record_idx <= chk_idx {
             state.process(&records[record_idx]);
             record_idx += 1;
         }
         let curr_cs = ChangesState::from_changes(&state.emit_changes());
         let delta = prev_cs.diff(&curr_cs);
         sections.push(Section {
-            snapshot: Some((snap_id, snap_name.clone())),
+            checkpoint: Some((chk_id, chk_name.clone())),
             changes: delta,
         });
         prev_cs = curr_cs;
     }
 
-    // Trailing changes after the last snapshot
+    // Trailing changes after the last checkpoint
     while record_idx < records.len() {
         state.process(&records[record_idx]);
         record_idx += 1;
@@ -345,7 +345,7 @@ pub fn resolve_sections(agfs_dir: &Path) -> Result<Vec<Section>> {
     let trailing = prev_cs.diff(&final_cs);
     if !trailing.is_empty() {
         sections.push(Section {
-            snapshot: None,
+            checkpoint: None,
             changes: trailing,
         });
     }
@@ -353,7 +353,7 @@ pub fn resolve_sections(agfs_dir: &Path) -> Result<Vec<Section>> {
     Ok(sections)
 }
 
-/// Lightweight snapshot of resolved state for computing per-section deltas.
+/// Lightweight checkpoint of resolved state for computing per-section deltas.
 #[derive(Default)]
 struct ChangesState {
     /// path → (ino or None for deletes, rename source or None)
@@ -486,16 +486,16 @@ impl ChangesState {
     }
 }
 
-/// Split the journal at a named snapshot: resolve changes up to the snapshot,
+/// Split the journal at a named checkpoint: resolve changes up to the checkpoint,
 /// and return remaining records after it. Reads the journal once.
-pub fn split_at_snapshot(
+pub fn split_at_checkpoint(
     agfs_dir: &Path,
-    snapshot_name: &str,
+    checkpoint_name: &str,
 ) -> Result<(Vec<Change>, Vec<Record>)> {
     let records = read(agfs_dir)?;
-    let snap_idx = find_snapshot_index(&records, snapshot_name)?;
-    let changes = resolve_records(&records[..=snap_idx])?;
-    let remaining = records[snap_idx + 1..].to_vec();
+    let chk_idx = find_checkpoint_index(&records, checkpoint_name)?;
+    let changes = resolve_records(&records[..=chk_idx])?;
+    let remaining = records[chk_idx + 1..].to_vec();
     Ok((changes, remaining))
 }
 
@@ -526,8 +526,8 @@ pub fn write_records(journal_path: &Path, records: &[Record]) -> Result<()> {
                 data.extend_from_slice(new_path.as_bytes());
                 data.push(b'\n');
             }
-            Record::Snapshot { id, name } => {
-                data.push(b'S');
+            Record::Checkpoint { id, name } => {
+                data.push(b'K');
                 data.push(0);
                 data.extend_from_slice(id.to_string().as_bytes());
                 data.push(0);
@@ -756,46 +756,46 @@ mod tests {
         );
     }
 
-    // ── Snapshot tests ───────────────────────────────────────────────
+    // ── Checkpoint tests ───────────────────────────────────────────────
 
     #[test]
-    fn read_snapshot_record() {
+    fn read_checkpoint_record() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/a\01\n");
-        data.extend_from_slice(b"S\01\0build\n");
+        data.extend_from_slice(b"K\01\0build\n");
         data.extend_from_slice(b"A\0/a\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let records = read(dir.path()).unwrap();
         assert_eq!(records.len(), 3);
-        assert!(matches!(&records[1], Record::Snapshot { id: 1, name } if name == "build"));
+        assert!(matches!(&records[1], Record::Checkpoint { id: 1, name } if name == "build"));
     }
 
     #[test]
-    fn split_at_snapshot_basic() {
+    fn split_at_checkpoint_basic() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/a\01\n");
-        data.extend_from_slice(b"S\01\0first\n");
+        data.extend_from_slice(b"K\01\0first\n");
         data.extend_from_slice(b"A\0/a\02\n");
-        data.extend_from_slice(b"S\02\0second\n");
+        data.extend_from_slice(b"K\02\0second\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
         fs::write(dir.path().join("inodes/2"), "").unwrap();
 
-        let (changes, remaining) = split_at_snapshot(dir.path(), "first").unwrap();
+        let (changes, remaining) = split_at_checkpoint(dir.path(), "first").unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(remaining.len(), 2); // A + S
     }
 
     #[test]
-    fn resolve_at_snapshot() {
+    fn resolve_at_checkpoint() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        // Add file, snapshot, then modify file
+        // Add file, checkpoint, then modify file
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
-        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"K\01\0snap1\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\02\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/y\03\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
@@ -815,13 +815,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_at_matches_latest_snapshot() {
+    fn resolve_at_matches_latest_checkpoint() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
-        data.extend_from_slice(b"S\01\0dup\n");
+        data.extend_from_slice(b"K\01\0dup\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/y\02\n");
-        data.extend_from_slice(b"S\02\0dup\n");
+        data.extend_from_slice(b"K\02\0dup\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/z\03\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
@@ -845,13 +845,13 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
-        data.extend_from_slice(b"S\05\0mysnap\n");
+        data.extend_from_slice(b"K\05\0mysnap\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/y\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
         fs::write(dir.path().join("inodes/2"), "").unwrap();
 
-        // Lookup by ID "5" should find the snapshot
+        // Lookup by ID "5" should find the checkpoint
         let changes = resolve_at(dir.path(), "5").unwrap();
         assert_eq!(changes.len(), 1, "by id: {changes:?}");
 
@@ -864,7 +864,7 @@ mod tests {
     fn resolve_at_id_not_found() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"S\01\0snap\n");
+        data.extend_from_slice(b"K\01\0snap\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         // ID 99 doesn't exist
         assert!(resolve_at(dir.path(), "99").is_err());
@@ -874,22 +874,22 @@ mod tests {
     fn resolve_at_id_takes_priority_over_name() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        // Snapshot with id=1 named "first", snapshot with id=2 named "1"
+        // Checkpoint with id=1 named "first", checkpoint with id=2 named "1"
         // (a name that looks like a number)
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
-        data.extend_from_slice(b"S\01\0first\n");
+        data.extend_from_slice(b"K\01\0first\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/y\02\n");
-        data.extend_from_slice(b"S\02\01\n");
+        data.extend_from_slice(b"K\02\01\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
         fs::write(dir.path().join("inodes/2"), "").unwrap();
 
-        // "1" should match id=1 (the first snapshot), not the name "1" (second snapshot)
+        // "1" should match id=1 (the first checkpoint), not the name "1" (second checkpoint)
         let changes = resolve_at(dir.path(), "1").unwrap();
         assert_eq!(
             changes.len(),
             1,
-            "id=1 should find first snapshot: {changes:?}"
+            "id=1 should find first checkpoint: {changes:?}"
         );
 
         // "2" should match id=2
@@ -897,7 +897,7 @@ mod tests {
         assert_eq!(
             changes2.len(),
             2,
-            "id=2 should find second snapshot: {changes2:?}"
+            "id=2 should find second checkpoint: {changes2:?}"
         );
 
         // "first" should match by name
@@ -906,16 +906,16 @@ mod tests {
     }
 
     #[test]
-    fn split_at_snapshot_by_id() {
+    fn split_at_checkpoint_by_id() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/a\01\n");
-        data.extend_from_slice(b"S\07\0snap\n");
+        data.extend_from_slice(b"K\07\0snap\n");
         data.extend_from_slice(b"A\0/b\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         // Split by numeric ID
-        let (changes, remaining) = split_at_snapshot(dir.path(), "7").unwrap();
+        let (changes, remaining) = split_at_checkpoint(dir.path(), "7").unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(remaining.len(), 1);
     }
@@ -925,23 +925,23 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
-        data.extend_from_slice(b"S\03\0snap\n");
+        data.extend_from_slice(b"K\03\0snap\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/y\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
         fs::write(dir.path().join("inodes/2"), "").unwrap();
 
-        let (at_snap, current) = resolve_from(dir.path(), "3").unwrap();
-        assert_eq!(at_snap.len(), 1, "at snap: {at_snap:?}");
+        let (at_chk, current) = resolve_from(dir.path(), "3").unwrap();
+        assert_eq!(at_chk.len(), 1, "at chk: {at_chk:?}");
         assert_eq!(current.len(), 2, "current: {current:?}");
     }
 
     #[test]
-    fn resolve_skips_snapshot_records() {
+    fn resolve_skips_checkpoint_records() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
-        data.extend_from_slice(b"S\01\0snap\n");
+        data.extend_from_slice(b"K\01\0snap\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
@@ -951,16 +951,16 @@ mod tests {
     }
 
     #[test]
-    fn split_at_snapshot_remaining() {
+    fn split_at_checkpoint_remaining() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/a\01\n");
-        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"K\01\0snap1\n");
         data.extend_from_slice(b"A\0/b\02\n");
         data.extend_from_slice(b"D\0/c\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
-        let (_changes, remaining) = split_at_snapshot(dir.path(), "snap1").unwrap();
+        let (_changes, remaining) = split_at_checkpoint(dir.path(), "snap1").unwrap();
         assert_eq!(remaining.len(), 2);
         assert!(matches!(&remaining[0], Record::Add { path, ino } if path == "/b" && *ino == 2));
         assert!(matches!(&remaining[1], Record::Delete { path } if path == "/c"));
@@ -974,7 +974,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             },
-            Record::Snapshot {
+            Record::Checkpoint {
                 id: 1,
                 name: "snap".into(),
             },
@@ -990,7 +990,7 @@ mod tests {
         let parsed = read(dir.path()).unwrap();
         assert_eq!(parsed.len(), 4);
         assert!(matches!(&parsed[0], Record::Add { path, ino } if path == "/a" && *ino == 1));
-        assert!(matches!(&parsed[1], Record::Snapshot { id: 1, name } if name == "snap"));
+        assert!(matches!(&parsed[1], Record::Checkpoint { id: 1, name } if name == "snap"));
         assert!(matches!(&parsed[2], Record::Delete { path } if path == "/b"));
         assert!(matches!(&parsed[3], Record::Rename { old_path, new_path }
             if old_path == "/c" && new_path == "/d"));
@@ -999,7 +999,7 @@ mod tests {
     // ── resolve_sections tests ───────────────────────────────────────
 
     #[test]
-    fn sections_no_snapshots() {
+    fn sections_no_checkpoints() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
@@ -1010,33 +1010,33 @@ mod tests {
 
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 1);
-        assert!(sections[0].snapshot.is_none());
+        assert!(sections[0].checkpoint.is_none());
         assert_eq!(sections[0].changes.len(), 2);
     }
 
     #[test]
-    fn sections_one_snapshot_no_trailing() {
+    fn sections_one_checkpoint_no_trailing() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
-        data.extend_from_slice(b"S\01\0build\n");
+        data.extend_from_slice(b"K\01\0build\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
 
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 1);
-        assert_eq!(sections[0].snapshot, Some((1, "build".into())));
+        assert_eq!(sections[0].checkpoint, Some((1, "build".into())));
         assert_eq!(sections[0].changes.len(), 1);
     }
 
     #[test]
-    fn sections_two_snapshots_with_trailing() {
+    fn sections_two_checkpoints_with_trailing() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
-        data.extend_from_slice(b"S\01\0first\n");
+        data.extend_from_slice(b"K\01\0first\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/b\02\n");
-        data.extend_from_slice(b"S\02\0second\n");
+        data.extend_from_slice(b"K\02\0second\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/c\03\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
@@ -1046,7 +1046,7 @@ mod tests {
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 3, "{sections:?}");
 
-        assert_eq!(sections[0].snapshot, Some((1, "first".into())));
+        assert_eq!(sections[0].checkpoint, Some((1, "first".into())));
         assert_eq!(
             sections[0].changes.len(),
             1,
@@ -1054,7 +1054,7 @@ mod tests {
             sections[0].changes
         );
 
-        assert_eq!(sections[1].snapshot, Some((2, "second".into())));
+        assert_eq!(sections[1].checkpoint, Some((2, "second".into())));
         assert_eq!(
             sections[1].changes.len(),
             1,
@@ -1062,7 +1062,7 @@ mod tests {
             sections[1].changes
         );
 
-        assert!(sections[2].snapshot.is_none());
+        assert!(sections[2].checkpoint.is_none());
         assert_eq!(
             sections[2].changes.len(),
             1,
@@ -1072,14 +1072,14 @@ mod tests {
     }
 
     #[test]
-    fn sections_modify_across_snapshots() {
+    fn sections_modify_across_checkpoints() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        // Add file in first snapshot, modify it in second
+        // Add file in first checkpoint, modify it in second
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
-        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"K\01\0snap1\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\02\n");
-        data.extend_from_slice(b"S\02\0snap2\n");
+        data.extend_from_slice(b"K\02\0snap2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "v1").unwrap();
         fs::write(dir.path().join("inodes/2"), "v2").unwrap();
@@ -1103,19 +1103,19 @@ mod tests {
     }
 
     #[test]
-    fn sections_empty_snapshot() {
+    fn sections_empty_checkpoint() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"S\01\0empty\n");
+        data.extend_from_slice(b"K\01\0empty\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
 
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 2);
-        assert_eq!(sections[0].snapshot, Some((1, "empty".into())));
+        assert_eq!(sections[0].checkpoint, Some((1, "empty".into())));
         assert!(sections[0].changes.is_empty());
-        assert!(sections[1].snapshot.is_none());
+        assert!(sections[1].checkpoint.is_none());
         assert_eq!(sections[1].changes.len(), 1);
     }
 
@@ -1125,9 +1125,9 @@ mod tests {
         let mut data = Vec::new();
         // Add file in snap1, delete it in snap2
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
-        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"K\01\0snap1\n");
         data.extend_from_slice(b"D\0/nonexistent_test_12345/x\n");
-        data.extend_from_slice(b"S\02\0snap2\n");
+        data.extend_from_slice(b"K\02\0snap2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
@@ -1154,9 +1154,9 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
-        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"K\01\0snap1\n");
         data.extend_from_slice(b"R\0/nonexistent_test_12345/a\0/nonexistent_test_12345/b\n");
-        data.extend_from_slice(b"S\02\0snap2\n");
+        data.extend_from_slice(b"K\02\0snap2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
@@ -1186,10 +1186,10 @@ mod tests {
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/b\02\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/c\03\n");
-        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"K\01\0snap1\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/d\04\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/e\05\n");
-        data.extend_from_slice(b"S\02\0snap2\n");
+        data.extend_from_slice(b"K\02\0snap2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         for i in 1..=5 {
             fs::write(dir.path().join(format!("inodes/{i}")), "").unwrap();
@@ -1217,35 +1217,35 @@ mod tests {
         // No journal file at all
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 1);
-        assert!(sections[0].snapshot.is_none());
+        assert!(sections[0].checkpoint.is_none());
         assert!(sections[0].changes.is_empty());
     }
 
     #[test]
-    fn sections_only_snapshot_records() {
+    fn sections_only_checkpoint_records() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"S\01\0snap1\n");
-        data.extend_from_slice(b"S\02\0snap2\n");
+        data.extend_from_slice(b"K\01\0snap1\n");
+        data.extend_from_slice(b"K\02\0snap2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let sections = resolve_sections(dir.path()).unwrap();
-        // Two empty snapshot sections, no trailing
+        // Two empty checkpoint sections, no trailing
         assert_eq!(sections.len(), 2, "{sections:?}");
         assert!(sections[0].changes.is_empty());
         assert!(sections[1].changes.is_empty());
     }
 
     #[test]
-    fn sections_three_snapshots() {
+    fn sections_three_checkpoints() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
-        data.extend_from_slice(b"S\01\0s1\n");
+        data.extend_from_slice(b"K\01\0s1\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/b\02\n");
-        data.extend_from_slice(b"S\02\0s2\n");
+        data.extend_from_slice(b"K\02\0s2\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/c\03\n");
-        data.extend_from_slice(b"S\03\0s3\n");
+        data.extend_from_slice(b"K\03\0s3\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         for i in 1..=3 {
             fs::write(dir.path().join(format!("inodes/{i}")), "").unwrap();
@@ -1256,20 +1256,20 @@ mod tests {
         for (i, s) in sections.iter().enumerate() {
             assert_eq!(s.changes.len(), 1, "section {i}: {:?}", s.changes);
         }
-        assert_eq!(sections[0].snapshot, Some((1, "s1".into())));
-        assert_eq!(sections[1].snapshot, Some((2, "s2".into())));
-        assert_eq!(sections[2].snapshot, Some((3, "s3".into())));
+        assert_eq!(sections[0].checkpoint, Some((1, "s1".into())));
+        assert_eq!(sections[1].checkpoint, Some((2, "s2".into())));
+        assert_eq!(sections[2].checkpoint, Some((3, "s3".into())));
     }
 
     #[test]
-    fn sections_add_delete_readd_across_snapshots() {
+    fn sections_add_delete_readd_across_checkpoints() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Add x in snap1, delete in snap2, re-add in trailing
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
-        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"K\01\0snap1\n");
         data.extend_from_slice(b"D\0/nonexistent_test_12345/x\n");
-        data.extend_from_slice(b"S\02\0snap2\n");
+        data.extend_from_slice(b"K\02\0snap2\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "v1").unwrap();
@@ -1290,7 +1290,7 @@ mod tests {
 
         // trailing: x re-added (appears as Added since base doesn't have it)
         let trailing = sections.last().unwrap();
-        assert!(trailing.snapshot.is_none() || trailing.snapshot.is_some());
+        assert!(trailing.checkpoint.is_none() || trailing.checkpoint.is_some());
         let has_x = trailing.changes.iter().any(|c| {
             matches!(c, Change::Added { path, ino }
                 if path == "/nonexistent_test_12345/x" && *ino == 2)
@@ -1307,11 +1307,11 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
-        data.extend_from_slice(b"S\01\0snap1\n");
+        data.extend_from_slice(b"K\01\0snap1\n");
         // Rename a→b then modify b (new ino)
         data.extend_from_slice(b"R\0/nonexistent_test_12345/a\0/nonexistent_test_12345/b\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/b\02\n");
-        data.extend_from_slice(b"S\02\0snap2\n");
+        data.extend_from_slice(b"K\02\0snap2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "v1").unwrap();
         fs::write(dir.path().join("inodes/2"), "v2").unwrap();

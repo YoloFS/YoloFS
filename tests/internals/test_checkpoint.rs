@@ -5,30 +5,30 @@ use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Creating a snapshot produces a Snapshot record with the given name.
+/// Creating a checkpoint produces a Checkpoint record with the given name.
 #[test]
-fn snapshot_produces_snapshot_record() {
+fn checkpoint_produces_checkpoint_record() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    s.cli(&["snapshot", "build"]).expect("snapshot");
+    s.cli(&["checkpoint", "build"]).expect("checkpoint");
 
     let records = journal(&s);
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Snapshot { name, .. } if name == "build")),
+            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "build")),
         "journal should have an S record named 'build': {records:?}"
     );
 }
 
-/// Write after snapshot produces a new Add (re-COW) with a different ino.
+/// Write after checkpoint produces a new Add (re-COW) with a different ino.
 #[test]
-fn recow_after_snapshot_produces_new_add() {
+fn recow_after_checkpoint_produces_new_add() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 (re-COW)");
 
     let records = journal(&s);
@@ -46,10 +46,10 @@ fn recow_after_snapshot_produces_new_add() {
         assert_ne!(ino1, ino2, "re-COW ino values should differ: {records:?}");
     }
 
-    // Snapshot "s1" should sit between the two adds.
-    let snap_pos = records
+    // Checkpoint "s1" should sit between the two adds.
+    let chk_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Snapshot { name, .. } if name == "s1"))
+        .position(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1"))
         .unwrap();
     let first_add = records
         .iter()
@@ -59,91 +59,97 @@ fn recow_after_snapshot_produces_new_add() {
         .iter()
         .rposition(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
         .unwrap();
-    assert!(first_add < snap_pos, "first Add should precede Snapshot s1");
-    assert!(snap_pos < last_add, "Snapshot s1 should precede re-COW Add");
+    assert!(
+        first_add < chk_pos,
+        "first Add should precede Checkpoint s1"
+    );
+    assert!(
+        chk_pos < last_add,
+        "Checkpoint s1 should precede re-COW Add"
+    );
 }
 
-/// Multiple snapshots interleaved with writes: each snapshot gets a unique id.
+/// Multiple checkpoints interleaved with writes: each checkpoint gets a unique id.
 #[test]
-fn multiple_snapshots_have_distinct_ids() {
+fn multiple_checkpoints_have_distinct_ids() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
-    s.cli(&["snapshot", "s1"]).expect("snapshot s1");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write");
-    s.cli(&["snapshot", "s2"]).expect("snapshot s2");
+    s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
 
     let records = journal(&s);
     let snaps: Vec<_> = records
         .iter()
         .filter_map(|r| match r {
-            Record::Snapshot { id, name } if name != "(initial)" => Some((id, name)),
+            Record::Checkpoint { id, name } if name != "(initial)" => Some((id, name)),
             _ => None,
         })
         .collect();
     assert_eq!(
         snaps.len(),
         2,
-        "should have 2 user snapshot records: {records:?}"
+        "should have 2 user checkpoint records: {records:?}"
     );
-    assert_ne!(snaps[0].0, snaps[1].0, "snapshot ids should differ");
+    assert_ne!(snaps[0].0, snaps[1].0, "checkpoint ids should differ");
     assert_eq!(snaps[0].1, "s1");
     assert_eq!(snaps[1].1, "s2");
 }
 
-/// Rename after snapshot: the R record appears after the S record.
+/// Rename after checkpoint: the R record appears after the S record.
 #[test]
-fn rename_after_snapshot() {
+fn rename_after_checkpoint() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
     let records = journal(&s);
-    let snap_pos = records
+    let chk_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Snapshot { .. }))
+        .position(|r| matches!(r, Record::Checkpoint { .. }))
         .unwrap();
     let ren_pos = records
         .iter()
         .position(|r| matches!(r, Record::Rename { .. }))
         .unwrap();
     assert!(
-        snap_pos < ren_pos,
-        "Snapshot should precede Rename: {records:?}"
+        chk_pos < ren_pos,
+        "Checkpoint should precede Rename: {records:?}"
     );
 }
 
-/// Delete after snapshot: the D record appears after the S record.
+/// Delete after checkpoint: the D record appears after the S record.
 #[test]
-fn delete_after_snapshot() {
+fn delete_after_checkpoint() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
 
     let records = journal(&s);
-    let snap_pos = records
+    let chk_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Snapshot { .. }))
+        .position(|r| matches!(r, Record::Checkpoint { .. }))
         .unwrap();
     let del_pos = records
         .iter()
         .position(|r| matches!(r, Record::Delete { .. }))
         .unwrap();
     assert!(
-        snap_pos < del_pos,
-        "Snapshot should precede Delete: {records:?}"
+        chk_pos < del_pos,
+        "Checkpoint should precede Delete: {records:?}"
     );
 }
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// After snapshot + re-COW, the pre-snapshot inode is preserved with old content.
+/// After checkpoint + re-COW, the pre-checkpoint inode is preserved with old content.
 #[test]
-fn recow_preserves_pre_snapshot_inode() {
+fn recow_preserves_pre_checkpoint_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
@@ -151,14 +157,14 @@ fn recow_preserves_pre_snapshot_inode() {
     let ch_v1 = changes(&s);
     let id_v1 = ino_for(&ch_v1, "/hello.txt");
 
-    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 (re-COW)");
 
     // v1 inode should still have old content
     assert_eq!(
         fs::read_to_string(inode_path(&s, id_v1)).unwrap(),
         "v1\n",
-        "pre-snapshot inode should be preserved with v1 content"
+        "pre-checkpoint inode should be preserved with v1 content"
     );
 
     // v2 should be in a different inode
@@ -172,20 +178,20 @@ fn recow_preserves_pre_snapshot_inode() {
     );
 }
 
-/// Multiple snapshots preserve each version's inode independently.
+/// Multiple checkpoints preserve each version's inode independently.
 #[test]
-fn multiple_snapshots_preserve_all_inodes() {
+fn multiple_checkpoints_preserve_all_inodes() {
     let s = AgfsSession::new().expect("session setup");
 
-    // v1 → snap → v2 → snap → v3
+    // v1 → chk → v2 → chk → v3
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     let id_v1 = ino_for(&changes(&s), "/hello.txt");
 
-    s.cli(&["snapshot", "s1"]).expect("snapshot s1");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
     let id_v2 = ino_for(&changes(&s), "/hello.txt");
 
-    s.cli(&["snapshot", "s2"]).expect("snapshot s2");
+    s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
     let id_v3 = ino_for(&changes(&s), "/hello.txt");
 

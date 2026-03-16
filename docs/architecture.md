@@ -42,7 +42,7 @@ interposition (the wrapfs pattern). It adds two orthogonal capabilities:
  │    → AGFS_IOC_PUT_RESPONSE: post decision        │
  │    → AGFS_IOC_RULE_ADD/REMOVE: manage rules      │
  │    → AGFS_IOC_CACHE_INVAL: invalidate caches     │
- │    → AGFS_IOC_SNAPSHOT: create snapshot           │
+ │    → AGFS_IOC_CHECKPOINT: create checkpoint           │
  └──────────────────────────────────────────────────┘
 ```
 
@@ -209,8 +209,8 @@ agfs/
 │   ├── commit.rs
 │   ├── abort.rs
 │   ├── diff.rs                # `agfs status` + `agfs diff` (summary and verbose views)
-│   ├── journal.rs             # journal parsing + resolution + snapshot sections
-│   ├── snapshot.rs            # snapshot create, log
+│   ├── journal.rs             # journal parsing + resolution + checkpoint sections
+│   ├── checkpoint.rs            # checkpoint create, log
 │   ├── watch.rs               # permission prompt daemon (handles TTY ownership)
 │   ├── ioctl.rs               # binary protocol structs + ioctl helpers
 │   ├── kmsg.rs                # kernel log reading via /dev/kmsg

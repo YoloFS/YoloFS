@@ -1,6 +1,6 @@
 // agfs CLI — main.rs
 
-use agfs::{abort, commit, config, diff, exec, kmod, mount, snapshot, watch};
+use agfs::{abort, checkpoint, commit, config, diff, exec, kmod, mount, watch};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
@@ -51,19 +51,19 @@ enum Command {
     },
     /// Show staged changes
     Status {
-        /// Show state at a named snapshot
+        /// Show state at a named checkpoint
         #[arg(long)]
         at: Option<String>,
     },
     /// Git-style diff of staged vs base
     Diff {
-        /// Diff changes since a named snapshot
+        /// Diff changes since a named checkpoint
         #[arg(long)]
         from: Option<String>,
     },
     /// Apply staged changes to base
     Commit {
-        /// Commit only changes up to a named snapshot
+        /// Commit only changes up to a named checkpoint
         #[arg(long)]
         at: Option<String>,
     },
@@ -73,11 +73,11 @@ enum Command {
         #[arg(long, short)]
         force: bool,
     },
-    /// Show snapshot log
+    /// Show checkpoint log
     Log,
-    /// Create a snapshot
-    Snapshot {
-        /// Snapshot name
+    /// Create a checkpoint
+    Checkpoint {
+        /// Checkpoint name
         #[arg(trailing_var_arg = true)]
         name: Vec<String>,
     },
@@ -139,14 +139,14 @@ fn run_cli() -> anyhow::Result<u8> {
         }
         Some(Command::Commit { at }) => commit::run(at.as_deref())?,
         Some(Command::Abort { force }) => abort::run(force)?,
-        Some(Command::Log) => snapshot::list()?,
-        Some(Command::Snapshot { name }) => {
-            let snap_name = if name.is_empty() {
+        Some(Command::Log) => checkpoint::list()?,
+        Some(Command::Checkpoint { name }) => {
+            let chk_name = if name.is_empty() {
                 None
             } else {
                 Some(name.join(" "))
             };
-            snapshot::create(snap_name.as_deref())?;
+            checkpoint::create(chk_name.as_deref())?;
         }
         Some(Command::Rule { action }) => match action {
             RuleAction::Add { path, perm } => config::add_rule(&path, &perm)?,

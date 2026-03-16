@@ -307,7 +307,10 @@ fn parse_histograms(raw: &str) -> Vec<Histogram> {
             if let Some(current) = current.take() {
                 hists.push(current);
             }
-            current = Some(Histogram { name: name.to_string(), buckets: Vec::new() });
+            current = Some(Histogram {
+                name: name.to_string(),
+                buckets: Vec::new(),
+            });
             continue;
         }
 

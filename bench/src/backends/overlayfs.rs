@@ -46,18 +46,22 @@ impl Backend for Overlayfs {
         // Build the inner exec-workload command, then wrap it in unshare.
         // Inside the namespace, exec-overlayfs mounts the overlay then runs
         // the workload via the standard exec-workload protocol (READY marker).
-        let self_exe =
-            std::env::current_exe().context("resolving current executable")?;
+        let self_exe = std::env::current_exe().context("resolving current executable")?;
 
         let mut cmd = Command::new("unshare");
         cmd.args(["--user", "--map-root-user", "--mount", "--"])
             .arg(&self_exe)
             .arg("exec-overlayfs")
-            .arg("--name").arg(workload.name())
-            .arg("--lower").arg(&lower)
-            .arg("--upper").arg(&upper)
-            .arg("--work").arg(&work)
-            .arg("--merged").arg(&merged);
+            .arg("--name")
+            .arg(workload.name())
+            .arg("--lower")
+            .arg(&lower)
+            .arg("--upper")
+            .arg(&upper)
+            .arg("--work")
+            .arg(&work)
+            .arg("--merged")
+            .arg(&merged);
         if verbose {
             cmd.arg("--verbose");
         }
@@ -203,8 +207,15 @@ fn overlayfs_probe() -> bool {
     );
     Command::new("unshare")
         .args([
-            "--user", "--map-root-user", "--mount", "--",
-            "mount", "-t", "overlay", "overlay", "-o",
+            "--user",
+            "--map-root-user",
+            "--mount",
+            "--",
+            "mount",
+            "-t",
+            "overlay",
+            "overlay",
+            "-o",
         ])
         .arg(&opts)
         .arg(dir.path().join("merged"))

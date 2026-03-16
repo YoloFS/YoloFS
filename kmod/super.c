@@ -158,7 +158,7 @@ static void agfs_init_sbi(struct agfs_sb_info *sbi,
 	/* Staging state */
 	init_rwsem(&sbi->staging_sem);
 	atomic64_set(&sbi->next_ino, 0);
-	atomic64_set(&sbi->snapshot_gen, 1);
+	atomic64_set(&sbi->checkpoint_gen, 1);
 	atomic_set(&sbi->staging_fd_count, 0);
 	INIT_LIST_HEAD(&sbi->pinned_dirs);
 	spin_lock_init(&sbi->pinned_dirs_lock);
@@ -212,10 +212,10 @@ static int agfs_resolve_paths(struct agfs_sb_info *sbi,
 	if (err)
 		return err;
 
-	/* Write the implicit initial snapshot (id=1) so userspace can
+	/* Write the implicit initial checkpoint (id=1) so userspace can
 	 * reference the mount-time state by id. */
 	if (sbi->staging)
-		agfs_journal_append_s(sbi, 1, "(initial)");
+		agfs_journal_append_k(sbi, 1, "(initial)");
 
 	return 0;
 }

@@ -60,7 +60,7 @@ impl AgfsSession {
     }
 
     fn mount(&mut self) -> Result<()> {
-        // Snapshot the kernel ring buffer before mounting so we can detect any
+        // Checkpoint the kernel ring buffer before mounting so we can detect any
         // kernel messages (warnings, errors, BUG/WARN traces) produced by this
         // session.
         self.cursor = kmsg::KmsgCursor::now();

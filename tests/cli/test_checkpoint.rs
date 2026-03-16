@@ -1,50 +1,50 @@
 use crate::helpers::AgfsSession;
 use std::fs;
 
-/// Creating a snapshot is visible via `agfs log`.
+/// Creating a checkpoint is visible via `agfs log`.
 #[test]
-fn snapshot_visible_in_log() {
+fn checkpoint_visible_in_log() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    s.cli(&["snapshot", "build"]).expect("snapshot");
+    s.cli(&["checkpoint", "build"]).expect("checkpoint");
 
     let log = s.cli(&["log"]).expect("log");
     assert!(
         log.contains("build"),
-        "agfs log should list the 'build' snapshot: {log}"
+        "agfs log should list the 'build' checkpoint: {log}"
     );
 }
 
-/// Snapshot list shows created snapshots.
+/// Checkpoint list shows created checkpoints.
 #[test]
-fn snapshot_list() {
+fn checkpoint_list() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
-    s.cli(&["snapshot", "first"]).expect("snapshot 1");
+    s.cli(&["checkpoint", "first"]).expect("checkpoint 1");
 
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write");
-    s.cli(&["snapshot", "second"]).expect("snapshot 2");
+    s.cli(&["checkpoint", "second"]).expect("checkpoint 2");
 
-    let output = s.cli(&["log"]).expect("snapshot list");
+    let output = s.cli(&["log"]).expect("checkpoint list");
     assert!(output.contains("first"), "should list first: {output}");
     assert!(output.contains("second"), "should list second: {output}");
 }
 
-/// Status --at shows state at a snapshot, not the current state.
+/// Status --at shows state at a checkpoint, not the current state.
 #[test]
-fn status_at_snapshot() {
+fn status_at_checkpoint() {
     let s = AgfsSession::new().expect("session setup");
 
-    // Modify hello.txt, snapshot, then create another file
+    // Modify hello.txt, checkpoint, then create another file
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    s.cli(&["snapshot", "checkpoint"]).expect("snapshot");
+    s.cli(&["checkpoint", "checkpoint"]).expect("checkpoint");
 
-    // Create a new file after the snapshot
-    fs::write(s.mnt_path("new_after_snap.txt"), "new content\n").expect("write new");
+    // Create a new file after the checkpoint
+    fs::write(s.mnt_path("new_after_chk.txt"), "new content\n").expect("write new");
 
-    // Status --at checkpoint should not show new_after_snap.txt
+    // Status --at checkpoint should not show new_after_chk.txt
     let at_output = s
         .cli(&["status", "--at", "checkpoint"])
         .expect("status --at");
@@ -53,8 +53,8 @@ fn status_at_snapshot() {
         "should show hello.txt: {at_output}"
     );
     assert!(
-        !at_output.contains("new_after_snap.txt"),
-        "should NOT show new_after_snap.txt: {at_output}"
+        !at_output.contains("new_after_chk.txt"),
+        "should NOT show new_after_chk.txt: {at_output}"
     );
 
     // Regular status should show both
@@ -64,19 +64,19 @@ fn status_at_snapshot() {
         "full should show hello.txt: {full_output}"
     );
     assert!(
-        full_output.contains("new_after_snap.txt"),
-        "full should show new_after_snap.txt: {full_output}"
+        full_output.contains("new_after_chk.txt"),
+        "full should show new_after_chk.txt: {full_output}"
     );
 }
 
-/// Re-COW: writing after a snapshot preserves the old inode.
+/// Re-COW: writing after a checkpoint preserves the old inode.
 #[test]
-fn recow_preserves_snapshot_inode() {
+fn recow_preserves_checkpoint_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     // Write v1
     fs::write(s.mnt_path("hello.txt"), "version1\n").expect("write v1");
-    s.cli(&["snapshot", "v1"]).expect("snapshot v1");
+    s.cli(&["checkpoint", "v1"]).expect("checkpoint v1");
 
     // Write v2 (should trigger re-COW)
     fs::write(s.mnt_path("hello.txt"), "version2\n").expect("write v2");
@@ -85,7 +85,7 @@ fn recow_preserves_snapshot_inode() {
     let current = fs::read_to_string(s.mnt_path("hello.txt")).expect("read current");
     assert_eq!(current, "version2\n");
 
-    // Re-COW: status --at v1 should show the snapshot state, proving inode preserved
+    // Re-COW: status --at v1 should show the checkpoint state, proving inode preserved
     let at_v1 = s.cli(&["status", "--at", "v1"]).expect("status --at v1");
     assert!(
         at_v1.contains("hello.txt"),
@@ -93,23 +93,23 @@ fn recow_preserves_snapshot_inode() {
     );
     assert!(
         at_v1.contains("1 staged change"),
-        "v1 snapshot should have exactly 1 change: {at_v1}"
+        "v1 checkpoint should have exactly 1 change: {at_v1}"
     );
 }
 
-/// Commit --at only commits changes up to the snapshot.
+/// Commit --at only commits changes up to the checkpoint.
 #[test]
-fn commit_at_snapshot() {
+fn commit_at_checkpoint() {
     let s = AgfsSession::new().expect("session setup");
 
-    // Write a file, snapshot, write another
+    // Write a file, checkpoint, write another
     fs::write(s.mnt_path("hello.txt"), "committed version\n").expect("write hello");
-    s.cli(&["snapshot", "checkpoint"]).expect("snapshot");
+    s.cli(&["checkpoint", "checkpoint"]).expect("checkpoint");
 
-    // Create a new file after snapshot
+    // Create a new file after checkpoint
     fs::write(s.mnt_path("new_after.txt"), "staged only\n").expect("write new");
 
-    // Commit only up to the snapshot
+    // Commit only up to the checkpoint
     s.cli(&["commit", "--at", "checkpoint"])
         .expect("commit --at");
 
@@ -118,7 +118,7 @@ fn commit_at_snapshot() {
     assert_eq!(base_content, "committed version\n");
 
     // new_after.txt should still be staged (not in base from a fresh write)
-    // Status should show remaining post-snapshot changes
+    // Status should show remaining post-checkpoint changes
     let remaining_status = s.cli(&["status"]).expect("status after partial commit");
     assert!(
         remaining_status.contains("new_after.txt") || remaining_status.contains("staged"),
@@ -126,24 +126,24 @@ fn commit_at_snapshot() {
     );
 }
 
-/// Snapshot with no name uses a timestamp.
+/// Checkpoint with no name uses a timestamp.
 #[test]
-fn snapshot_default_name() {
+fn checkpoint_default_name() {
     let s = AgfsSession::new().expect("session setup");
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
-    s.cli(&["snapshot"]).expect("snapshot with no name");
+    s.cli(&["checkpoint"]).expect("checkpoint with no name");
 
     let output = s.cli(&["log"]).expect("list");
     assert!(
-        output.contains("snap-"),
-        "default name should start with 'snap-': {output}"
+        output.contains("chk-"),
+        "default name should start with 'chk-': {output}"
     );
 }
 
 /// Two handles writing the same file: second handle sees the first handle's writes.
 #[test]
-fn two_handles_same_file_no_snapshot() {
+fn two_handles_same_file_no_checkpoint() {
     let s = AgfsSession::new().expect("session setup");
 
     // Handle A writes v1
@@ -160,7 +160,7 @@ fn two_handles_same_file_no_snapshot() {
     let base = fs::read_to_string(s.base_path("hello.txt")).expect("read base");
     assert_eq!(base, "base content\n");
 
-    // Only one staged inode needed (no snapshot → no re-COW)
+    // Only one staged inode needed (no checkpoint → no re-COW)
     let status = s.cli(&["status"]).expect("status");
     assert!(
         status.contains("hello.txt"),
@@ -172,17 +172,17 @@ fn two_handles_same_file_no_snapshot() {
     );
 }
 
-/// After a snapshot, a second handle's write triggers re-COW,
-/// preserving the snapshot inode while both handles produce correct reads.
+/// After a checkpoint, a second handle's write triggers re-COW,
+/// preserving the checkpoint inode while both handles produce correct reads.
 #[test]
-fn two_handles_recow_after_snapshot() {
+fn two_handles_recow_after_checkpoint() {
     let s = AgfsSession::new().expect("session setup");
 
     // Handle A writes v1
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
 
-    // Snapshot preserves v1 state
-    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    // Checkpoint preserves v1 state
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
 
     // Handle B writes v2 (triggers re-COW: v1 inode preserved, new inode for v2)
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
@@ -191,15 +191,15 @@ fn two_handles_recow_after_snapshot() {
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
     assert_eq!(content, "v2\n");
 
-    // status --at s1 should show the v1 snapshot state (proves re-COW preserved it)
+    // status --at s1 should show the v1 checkpoint state (proves re-COW preserved it)
     let at_s1 = s.cli(&["status", "--at", "s1"]).expect("status --at s1");
     assert!(
         at_s1.contains("hello.txt"),
-        "snapshot state should have hello.txt: {at_s1}"
+        "checkpoint state should have hello.txt: {at_s1}"
     );
     assert!(
         at_s1.contains("1 staged change"),
-        "snapshot s1 should have exactly 1 change: {at_s1}"
+        "checkpoint s1 should have exactly 1 change: {at_s1}"
     );
 
     // Base still original
@@ -208,20 +208,20 @@ fn two_handles_recow_after_snapshot() {
 }
 
 /// Second handle opening after another handle already re-COW'd should NOT
-/// trigger a redundant re-COW (per-inode cow_snapshot_gen optimization).
+/// trigger a redundant re-COW (per-inode cow_checkpoint_gen optimization).
 #[test]
 fn second_handle_skips_redundant_recow() {
     let s = AgfsSession::new().expect("session setup");
 
-    // Handle A writes, snapshot, Handle A re-COWs
+    // Handle A writes, checkpoint, Handle A re-COWs
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 (re-COW)");
 
     let status_before = s.cli(&["status"]).expect("status after v2");
 
     // Handle B opens and writes — should NOT create another inode
-    // because dirent.snapshot_gen already matches sbi->snapshot_gen.
+    // because dirent.checkpoint_gen already matches sbi->checkpoint_gen.
     // O_TRUNC on an already-staged file truncates the inode in-place.
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
 
@@ -237,18 +237,18 @@ fn second_handle_skips_redundant_recow() {
     );
 }
 
-/// Multiple snapshots with writes interleaved: each snapshot preserves
+/// Multiple checkpoints with writes interleaved: each checkpoint preserves
 /// the correct inode state.
 #[test]
-fn multiple_snapshots_interleaved_writes() {
+fn multiple_checkpoints_interleaved_writes() {
     let s = AgfsSession::new().expect("session setup");
 
-    // v1 → snapshot s1 → v2 → snapshot s2 → v3
+    // v1 → checkpoint s1 → v2 → checkpoint s2 → v3
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    s.cli(&["snapshot", "s1"]).expect("snapshot s1");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
 
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
-    s.cli(&["snapshot", "s2"]).expect("snapshot s2");
+    s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
 
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
 
@@ -278,21 +278,21 @@ fn multiple_snapshots_interleaved_writes() {
         "s2 should be 1 change: {at_s2}"
     );
 
-    // Each snapshot state is independently verifiable via CLI — no need to count inodes.
-    // The log should list both snapshots.
+    // Each checkpoint state is independently verifiable via CLI — no need to count inodes.
+    // The log should list both checkpoints.
     let log = s.cli(&["log"]).expect("log");
     assert!(log.contains("s1"), "log should list s1: {log}");
     assert!(log.contains("s2"), "log should list s2: {log}");
 }
 
-/// Open a file with O_APPEND (not O_TRUNC) after a snapshot: the
-/// append should trigger re-COW, preserving the pre-snapshot content.
+/// Open a file with O_APPEND (not O_TRUNC) after a checkpoint: the
+/// append should trigger re-COW, preserving the pre-checkpoint content.
 #[test]
-fn append_after_snapshot_triggers_recow() {
+fn append_after_checkpoint_triggers_recow() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "line1\n").expect("write");
-    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
 
     // Append (O_APPEND, not O_TRUNC) — should re-COW before appending
     use std::io::Write;
@@ -307,14 +307,14 @@ fn append_after_snapshot_triggers_recow() {
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
     assert_eq!(content, "line1\nline2\n");
 
-    // The pre-snapshot state should be preserved (re-COW triggered by append)
+    // The pre-checkpoint state should be preserved (re-COW triggered by append)
     let at_s1 = s.cli(&["status", "--at", "s1"]).expect("status --at s1");
     assert!(
         at_s1.contains("hello.txt"),
-        "snapshot s1 should have hello.txt preserved: {at_s1}"
+        "checkpoint s1 should have hello.txt preserved: {at_s1}"
     );
     assert!(
         at_s1.contains("1 staged change"),
-        "snapshot s1 should have 1 change: {at_s1}"
+        "checkpoint s1 should have 1 change: {at_s1}"
     );
 }

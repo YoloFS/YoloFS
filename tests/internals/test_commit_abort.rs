@@ -5,31 +5,31 @@ use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Commit --at a snapshot clears records up to the snapshot, keeps the rest.
+/// Commit --at a checkpoint clears records up to the checkpoint, keeps the rest.
 #[test]
-fn commit_at_snapshot_preserves_trailing_records() {
+fn commit_at_checkpoint_preserves_trailing_records() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    s.cli(&["snapshot", "s1"]).expect("snapshot");
-    fs::write(s.mnt_path("multi.txt"), "post-snap\n").expect("write after snapshot");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
+    fs::write(s.mnt_path("multi.txt"), "post-chk\n").expect("write after checkpoint");
 
     s.cli(&["commit", "--at", "s1"]).expect("commit --at");
 
     let records = journal(&s);
-    // Pre-snapshot records and the snapshot itself should be gone
+    // Pre-checkpoint records and the checkpoint itself should be gone
     assert!(
         !records
             .iter()
-            .any(|r| matches!(r, Record::Snapshot { name, .. } if name == "s1")),
-        "s1 snapshot should be cleared after commit --at: {records:?}"
+            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1")),
+        "s1 checkpoint should be cleared after commit --at: {records:?}"
     );
-    // Post-snapshot write should remain
+    // Post-checkpoint write should remain
     assert!(
         records
             .iter()
             .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/multi.txt"))),
-        "post-snapshot Add should remain: {records:?}"
+        "post-checkpoint Add should remain: {records:?}"
     );
 }
 
@@ -114,30 +114,30 @@ fn abort_empties_inode_store() {
     );
 }
 
-/// Commit --at a snapshot clears pre-snapshot inodes but keeps post-snapshot inodes.
+/// Commit --at a checkpoint clears pre-checkpoint inodes but keeps post-checkpoint inodes.
 #[test]
-fn commit_at_keeps_post_snapshot_inodes() {
+fn commit_at_keeps_post_checkpoint_inodes() {
     let s = AgfsSession::new().expect("session setup");
 
-    fs::write(s.mnt_path("hello.txt"), "pre-snap\n").expect("write pre");
-    s.cli(&["snapshot", "s1"]).expect("snapshot");
-    fs::write(s.mnt_path("multi.txt"), "post-snap\n").expect("write post");
+    fs::write(s.mnt_path("hello.txt"), "pre-chk\n").expect("write pre");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
+    fs::write(s.mnt_path("multi.txt"), "post-chk\n").expect("write post");
 
-    // Grab the post-snapshot inode id before commit
+    // Grab the post-checkpoint inode id before commit
     let ch = changes(&s);
     let post_id = ino_for(&ch, "/multi.txt");
 
     s.cli(&["commit", "--at", "s1"]).expect("commit --at");
 
-    // Post-snapshot inode should still exist
+    // Post-checkpoint inode should still exist
     let remaining = inos(&s);
     assert!(
         remaining.contains(&post_id),
-        "post-snapshot inode should survive commit --at: remaining={remaining:?}"
+        "post-checkpoint inode should survive commit --at: remaining={remaining:?}"
     );
     assert_eq!(
         fs::read_to_string(inode_path(&s, post_id)).unwrap(),
-        "post-snap\n",
-        "post-snapshot inode content should be intact"
+        "post-chk\n",
+        "post-checkpoint inode content should be intact"
     );
 }

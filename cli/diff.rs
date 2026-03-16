@@ -2,8 +2,8 @@
 //
 // `agfs status` — one-line summary of staged changes.
 // `agfs diff`   — git-style unified diff of staged vs base.
-// `--at <name>` — show state at a snapshot.
-// `--from <name>` — diff changes since a snapshot.
+// `--at <name>` — show state at a checkpoint.
+// `--from <name>` — diff changes since a checkpoint.
 
 use crate::journal::{self, Change, Section};
 use anyhow::Result;
@@ -56,10 +56,10 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
 // ── Section display helpers ──────────────────────────────────────────
 
 fn print_section_footer(section: &Section) {
-    if let Some((id, name)) = &section.snapshot {
+    if let Some((id, name)) = &section.checkpoint {
         println!(
             "  {} {}",
-            format!("snapshot [{id}]").cyan().bold(),
+            format!("checkpoint [{id}]").cyan().bold(),
             name.dimmed()
         );
     }
@@ -140,7 +140,7 @@ pub fn run_status(at: Option<&str>) -> Result<()> {
         if changes.is_empty() {
             println!("{}", "No changes staged.".yellow());
         } else {
-            println!("{}", format!("State at snapshot \"{name}\":").dimmed());
+            println!("{}", format!("State at checkpoint \"{name}\":").dimmed());
             print_changes(&agfs, &changes, false);
             print_total(changes.len());
         }
@@ -158,8 +158,8 @@ pub fn run_diff(from: Option<&str>) -> Result<bool> {
         anyhow::bail!("no agfs session found (no .agfs/ directory)");
     }
 
-    if let Some(snap_name) = from {
-        return run_from_snapshot(&agfs, snap_name);
+    if let Some(chk_name) = from {
+        return run_from_checkpoint(&agfs, chk_name);
     }
 
     run_sections(&agfs, true)
@@ -176,11 +176,11 @@ fn run_sections(agfs: &Path, verbose: bool) -> Result<bool> {
         return Ok(false);
     }
 
-    let has_snapshots = sections.iter().any(|s| s.snapshot.is_some());
+    let has_checkpoints = sections.iter().any(|s| s.checkpoint.is_some());
 
     for section in &sections {
-        if has_snapshots {
-            if section.snapshot.is_none() {
+        if has_checkpoints {
+            if section.checkpoint.is_none() {
                 println!("{}", "── (unsaved changes) ──".dimmed());
             }
             if section.changes.is_empty() {
@@ -189,7 +189,7 @@ fn run_sections(agfs: &Path, verbose: bool) -> Result<bool> {
             }
         }
         print_changes(agfs, &section.changes, verbose);
-        if has_snapshots {
+        if has_checkpoints {
             print_section_footer(section);
         }
     }
@@ -208,7 +208,7 @@ fn print_total(n: usize) {
     );
 }
 
-// ── Snapshot-to-current diff ─────────────────────────────────────────
+// ── Checkpoint-to-current diff ─────────────────────────────────────────
 
 /// Build a map of path → inode content for a set of resolved changes.
 fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>> {
@@ -234,41 +234,41 @@ fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>
     map
 }
 
-/// Diff between snapshot state and current state.
-fn run_from_snapshot(agfs: &Path, snap_name: &str) -> Result<bool> {
-    let (snap_changes, current_changes) = journal::resolve_from(agfs, snap_name)?;
+/// Diff between checkpoint state and current state.
+fn run_from_checkpoint(agfs: &Path, chk_name: &str) -> Result<bool> {
+    let (chk_changes, current_changes) = journal::resolve_from(agfs, chk_name)?;
 
-    let snap_state = state_map(agfs, &snap_changes);
+    let chk_state = state_map(agfs, &chk_changes);
     let current_state = state_map(agfs, &current_changes);
 
     // Collect all paths
-    let mut all_paths: Vec<&String> = snap_state.keys().chain(current_state.keys()).collect();
+    let mut all_paths: Vec<&String> = chk_state.keys().chain(current_state.keys()).collect();
     all_paths.sort();
     all_paths.dedup();
 
     let mut has_diff = false;
 
     for path in all_paths {
-        let old = snap_state.get(path);
+        let old = chk_state.get(path);
         let new = current_state.get(path);
 
         let (label, old_text, new_text) = match (old, new) {
             (Some(Some(old_text)), Some(Some(new_text))) if old_text != new_text => (
-                "(modified since snapshot)".yellow(),
+                "(modified since checkpoint)".yellow(),
                 old_text.as_str(),
                 new_text.as_str(),
             ),
             (None, Some(Some(new_text))) => {
-                ("(added since snapshot)".green(), "", new_text.as_str())
+                ("(added since checkpoint)".green(), "", new_text.as_str())
             }
             (Some(Some(old_text)), None) => {
-                ("(removed since snapshot)".red(), old_text.as_str(), "")
+                ("(removed since checkpoint)".red(), old_text.as_str(), "")
             }
             (Some(Some(old_text)), Some(None)) => {
-                ("(deleted since snapshot)".red(), old_text.as_str(), "")
+                ("(deleted since checkpoint)".red(), old_text.as_str(), "")
             }
             (Some(None), Some(Some(new_text))) => {
-                ("(restored since snapshot)".green(), "", new_text.as_str())
+                ("(restored since checkpoint)".green(), "", new_text.as_str())
             }
             _ => continue,
         };
@@ -282,7 +282,7 @@ fn run_from_snapshot(agfs: &Path, snap_name: &str) -> Result<bool> {
     if !has_diff {
         println!(
             "{}",
-            format!("No changes since snapshot \"{snap_name}\".").yellow()
+            format!("No changes since checkpoint \"{chk_name}\".").yellow()
         );
     }
 

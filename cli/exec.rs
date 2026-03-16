@@ -2,10 +2,10 @@
 //
 // `agfs exec [-- cmd]` — chroot into .agfs/mnt and exec a command,
 // preserving the caller's working directory.
-// When config.snapshot=true, a snapshot is created after the command
+// When config.checkpoint=true, a checkpoint is created after the command
 // finishes, capturing what the command did.
 
-use crate::{config, snapshot};
+use crate::{checkpoint, config};
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
 use std::env;
@@ -68,16 +68,16 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         eprintln!("{} {}", "agfs: command exited with".red(), code);
     }
 
-    // Snapshot after the command so the snapshot captures what the command did
-    if config::load_config().snapshot {
+    // Checkpoint after the command so the checkpoint captures what the command did
+    if config::load_config().checkpoint {
         let cmd_desc = if exec_args.is_empty() {
             default_shell.clone()
         } else {
             exec_args.join(" ")
         };
-        let snap_name = format!("after {cmd_desc}");
-        if let Err(e) = snapshot::create(Some(&snap_name)) {
-            eprintln!("{} {:#}", "agfs: snapshot failed:".yellow(), e);
+        let chk_name = format!("after {cmd_desc}");
+        if let Err(e) = checkpoint::create(Some(&chk_name)) {
+            eprintln!("{} {:#}", "agfs: checkpoint failed:".yellow(), e);
         }
     }
 

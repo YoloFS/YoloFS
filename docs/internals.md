@@ -11,17 +11,17 @@ first `agfs_add_dirent`. Non-directory inodes keep `de_buckets = NULL`,
 avoiding the 512-byte allocation. See [staging.md — Path Resolution](staging.md#path-resolution) for the
 `agfs_dirent` struct.
 
-No per-fd snapshot state is needed. The COW check uses
-`dirent.snapshot_gen < sbi->snapshot_gen` (purely per-dirent). The fsync
+No per-fd checkpoint state is needed. The COW check uses
+`dirent.checkpoint_gen < sbi->checkpoint_gen` (purely per-dirent). The fsync
 optimization uses `dirent.ino > 0`. The CLI enforces that
-snapshots are only taken when no staging file handles are open
-(see [staging.md — Re-COW](staging.md#re-cow-on-first-open-for-write-after-snapshot)),
-so there are no stale cross-snapshot handles to track.
+checkpoints are only taken when no staging file handles are open
+(see [staging.md — Re-COW](staging.md#re-cow-on-first-open-for-write-after-checkpoint)),
+so there are no stale cross-checkpoint handles to track.
 
 ## Control Protocol
 
 The ioctl-based control interface uses fixed-size binary structs (see
-`agfs_ctl_request`, `agfs_ctl_response`, and `agfs_ioc_snapshot` in
+`agfs_ctl_request`, `agfs_ctl_response`, and `agfs_ioc_checkpoint` in
 [`agfs.h`](../kmod/agfs.h)) — no parsing, just `copy_to_user()` /
 `copy_from_user()`.
 
@@ -91,7 +91,7 @@ descriptor (typically `.agfs/mnt`). Ioctl command macros are defined in
 | `AGFS_IOC_RULE_ADD`     | Add a permission rule to a dentry. Kernel resolves the path, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps `perm_gen`.                                                |
 | `AGFS_IOC_RULE_REMOVE`  | Remove a rule from a dentry. Kernel sets `perm = NONE`, unpins the dentry, and bumps `perm_gen`.                                                                                |
 | `AGFS_IOC_CACHE_INVAL`  | Bump `perm_gen`, release pinned directory inodes, shrink dentry/inode caches, and reopen the journal file. Called by userspace after commit/abort.                                                           |
-| `AGFS_IOC_SNAPSHOT`     | Bump `snapshot_gen`, append `S` record to journal, return snapshot ID. Rejects with `-EBUSY` if staging fds are open. Triggers re-COW on next open-for-write to any staged file (see [staging.md — Snapshots](staging.md#snapshot-mechanism)). |
+| `AGFS_IOC_CHECKPOINT`     | Bump `checkpoint_gen`, append `K` record to journal, return checkpoint ID. Rejects with `-EBUSY` if staging fds are open. Triggers re-COW on next open-for-write to any staged file (see [staging.md — Checkpoints](staging.md#checkpoint-mechanism)). |
 
 `AGFS_IOC_CACHE_INVAL` is called by userspace after commit/abort. It:
 1. Bumps `perm_gen` to invalidate all cached inode permissions.
@@ -113,7 +113,7 @@ resolved immediately using `ask_default`.
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + `dirent.snapshot_gen`) | `rw_semaphore` (write for COW/snapshot). Create/mkdir/symlink/unlink/rmdir/rename are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
+| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + `dirent.checkpoint_gen`) | `rw_semaphore` (write for COW/checkpoint). Create/mkdir/symlink/unlink/rmdir/rename are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
 | `inode->i_rwsem` (VFS) | Per-directory dirent table | `rw_semaphore` (held by VFS for lookup/readdir/mutations) |
 | `dentry_info->lock` | Cached lower path | `spinlock` |

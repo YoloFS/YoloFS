@@ -487,11 +487,8 @@ fn write_results(results: &BenchResults, out_dir: &Path) -> Result<BenchResults>
             match workload_map.get_mut(&new_wl.workload) {
                 Some(existing_wl) => {
                     // Merge backends: replace re-run backends, keep the rest.
-                    let new_backend_names: std::collections::HashSet<&str> = new_wl
-                        .backends
-                        .iter()
-                        .map(|b| b.backend.as_str())
-                        .collect();
+                    let new_backend_names: std::collections::HashSet<&str> =
+                        new_wl.backends.iter().map(|b| b.backend.as_str()).collect();
                     existing_wl
                         .backends
                         .retain(|b| !new_backend_names.contains(b.backend.as_str()));
@@ -567,8 +564,8 @@ fn main() -> Result<()> {
         verbose,
     }) = &cli.cmd
     {
-        let workload = workloads::by_name(name)
-            .with_context(|| format!("unknown workload: {name}"))?;
+        let workload =
+            workloads::by_name(name).with_context(|| format!("unknown workload: {name}"))?;
         std::fs::create_dir_all(dest)?;
         println!("{}", backend::READY_MARKER);
         workload.run(dest, *verbose)?;
@@ -602,8 +599,8 @@ fn main() -> Result<()> {
         )
         .with_context(|| format!("mounting overlayfs on {}", merged.display()))?;
 
-        let workload = workloads::by_name(name)
-            .with_context(|| format!("unknown workload: {name}"))?;
+        let workload =
+            workloads::by_name(name).with_context(|| format!("unknown workload: {name}"))?;
         let dest = merged.join(workload.work_dir());
         std::fs::create_dir_all(&dest)?;
         println!("{}", backend::READY_MARKER);
@@ -640,9 +637,7 @@ fn main() -> Result<()> {
                 // Don't probe availability for hidden backends.
                 println!("  {} (hidden)", b.name());
             } else if !b.available() {
-                let reason = b
-                    .unavailable_reason()
-                    .unwrap_or("missing required tools");
+                let reason = b.unavailable_reason().unwrap_or("missing required tools");
                 println!("  {} (unavailable: {})", b.name(), reason);
             } else {
                 println!("  {}", b.name());
@@ -682,9 +677,7 @@ fn main() -> Result<()> {
                 continue;
             }
             if !b.available() {
-                let reason = b
-                    .unavailable_reason()
-                    .unwrap_or("missing required tools");
+                let reason = b.unavailable_reason().unwrap_or("missing required tools");
                 eprintln!("Skipping backend '{}': {}", b.name(), reason);
             }
         }
@@ -703,7 +696,8 @@ fn main() -> Result<()> {
         eprintln!("  warm-up…");
         {
             let native = backends::native::Native;
-            native.run_one(workload.as_ref(), cli.verbose)
+            native
+                .run_one(workload.as_ref(), cli.verbose)
                 .context("warm-up iteration failed")?;
         }
 

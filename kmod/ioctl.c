@@ -209,7 +209,7 @@ static int agfs_resolve_rule(struct file *file, unsigned long arg,
 	return 0;
 }
 
-/* ── Rule / snapshot ioctl handlers ─────────────────────────────────── */
+/* ── Rule / checkpoint ioctl handlers ─────────────────────────────────── */
 
 static long agfs_rule_add_ioctl(struct file *file, unsigned long arg)
 {
@@ -284,33 +284,33 @@ static long agfs_rule_remove_ioctl(struct file *file, unsigned long arg)
 	return 0;
 }
 
-static long agfs_snapshot_ioctl(struct file *file, unsigned long arg)
+static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
-	struct agfs_ioc_snapshot snap;
+	struct agfs_ioc_checkpoint chk;
 	u64 gen;
 
 	if (!sbi->staging)
 		return -EOPNOTSUPP;
 
-	if (copy_from_user(&snap, (void __user *)arg, sizeof(snap)))
+	if (copy_from_user(&chk, (void __user *)arg, sizeof(chk)))
 		return -EFAULT;
 
-	snap.name[AGFS_PATH_MAX - 1] = '\0';
+	chk.name[AGFS_PATH_MAX - 1] = '\0';
 
 	down_write(&sbi->staging_sem);
 	if (atomic_read(&sbi->staging_fd_count) > 0) {
 		up_write(&sbi->staging_sem);
 		return -EBUSY;
 	}
-	gen = atomic64_inc_return(&sbi->snapshot_gen);
-	agfs_journal_append_s(sbi, gen, snap.name);
+	gen = atomic64_inc_return(&sbi->checkpoint_gen);
+	agfs_journal_append_k(sbi, gen, chk.name);
 	up_write(&sbi->staging_sem);
 
-	/* Best-effort: snapshot is already committed to the journal,
+	/* Best-effort: checkpoint is already committed to the journal,
 	 * so return success even if copy_to_user fails. */
-	snap.id = gen;
-	if (copy_to_user((void __user *)arg, &snap, sizeof(snap)))
+	chk.id = gen;
+	if (copy_to_user((void __user *)arg, &chk, sizeof(chk)))
 		/* id already in journal — userspace can read it back */;
 
 	return 0;
@@ -347,8 +347,8 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		agfs_journal_open(sbi);
 		return 0;
 
-	case AGFS_IOC_SNAPSHOT:
-		return agfs_snapshot_ioctl(file, arg);
+	case AGFS_IOC_CHECKPOINT:
+		return agfs_checkpoint_ioctl(file, arg);
 
 	default:
 		return -ENOTTY;

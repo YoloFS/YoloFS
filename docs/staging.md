@@ -9,11 +9,11 @@ until an explicit `commit`. An `abort` discards them instantly.
 Two invariants simplify the kernel-side design. Both are **enforced** in
 the kernel, not merely assumed.
 
-1. **No open file handles during snapshot.** The snapshot ioctl rejects
+1. **No open file handles during checkpoint.** The checkpoint ioctl rejects
    with `-EBUSY` if any staging fds are open (`sbi->staging_fd_count > 0`).
-   The CLI naturally satisfies this by taking snapshots between `agfs exec`
+   The CLI naturally satisfies this by taking checkpoints between `agfs exec`
    invocations, never while agent processes are running. This means
-   `sbi->snapshot_gen` cannot change while any staging fd is open, so the
+   `sbi->checkpoint_gen` cannot change while any staging fd is open, so the
    COW decision can be made once at `open()` time — the write and mmap
    paths are pure pass-throughs with zero staging logic.
 
@@ -53,7 +53,7 @@ point separately (see [permissions.md](permissions.md)).
 ```
 agfs.toml                       # config file in CWD (mount options + rules)
 .agfs/                          # created by `agfs` in CWD
-├── journal                      # append-only mutation log (all ops)
+├── journal                      # append-only journal (all ops)
 ├── inodes/                      # flat inode store (inodes/1, inodes/2, ...)
 │   ├── 1                        # inode: content of some file
 │   ├── 2                        # inode: content of another file
@@ -65,7 +65,7 @@ agfs.toml                       # config file in CWD (mount options + rules)
 ## In-Kernel State
 
 All staging state lives in the structures below. Nothing is shared
-across mounts. The two design invariants (no open fds during snapshot,
+across mounts. The two design invariants (no open fds during checkpoint,
 directory inodes pinned) keep the state minimal: the file struct carries
 zero staging-specific fields; all staging truth lives in the dirent
 table on directory inodes.
@@ -76,10 +76,10 @@ table on directory inodes.
 |-------|---------|
 | `inodes_dir` | Pinned path to `.agfs/inodes/` |
 | `journal_file` | Open file handle to `.agfs/journal` (`O_APPEND`). The kernel only appends; it never reads the journal back. |
-| `staging_sem` | rw\_semaphore serializing COW / re-COW, snapshot, and journal writes |
+| `staging_sem` | rw\_semaphore serializing COW / re-COW, checkpoint, and journal writes |
 | `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
-| `snapshot_gen` | Atomic counter, starts at 1, bumped by each snapshot ioctl. Compared against `dirent.snapshot_gen` at open time to decide COW / re-COW. |
-| `staging_fd_count` | Atomic counter of open staging fds (opened for write). Snapshot ioctl rejects with `-EBUSY` when > 0. |
+| `checkpoint_gen` | Atomic counter, starts at 1, bumped by each checkpoint ioctl. Compared against `dirent.checkpoint_gen` at open time to decide COW / re-COW. |
+| `staging_fd_count` | Atomic counter of open staging fds (opened for write). Checkpoint ioctl rejects with `-EBUSY` when > 0. |
 | `pinned_dirs` | List head tracking `igrab()`-pinned directory inodes (those with dirents) for bulk release at cache invalidation / unmount. |
 | `pinned_dirs_lock` | Spinlock protecting `pinned_dirs`. |
 
@@ -95,7 +95,7 @@ The dirent table lives on the directory inode because it is a property
 of the directory itself, not of the dentry name. Directories are never
 COW'd, so their inode identity is stable for the entire staging session.
 The COW generation for regular files is tracked on the dirent entry
-(`snapshot_gen`), not on the inode.
+(`checkpoint_gen`), not on the inode.
 
 **Per-dentry** (`agfs_dentry_info`) — one per cached dentry:
 
@@ -109,7 +109,7 @@ The COW generation for regular files is tracked on the dirent entry
 |-------|---------|
 | `lower_file` | Open file handle to the lower file. Always points at the correct inode (COW is resolved at open time, not deferred to write). |
 
-No staging-specific flags. Because no fd spans a snapshot boundary
+No staging-specific flags. Because no fd spans a checkpoint boundary
 (enforced by `staging_fd_count`), the file handle established at open
 time is valid for the lifetime of the fd.
 
@@ -120,7 +120,7 @@ time is valid for the lifetime of the fd.
 | `ino` | `>0` → content lives in `inodes/<ino>` |
 | `base_path` | Non-NULL → redirected to this absolute base path (zero-copy rename) |
 | `d_type` | File type (`DT_REG` / `DT_DIR` / `DT_LNK`) for correct readdir emission |
-| `snapshot_gen` | `sbi->snapshot_gen` at the time this inode was created. Used at open time: if `snapshot_gen < sbi->snapshot_gen`, a re-COW is needed. |
+| `checkpoint_gen` | `sbi->checkpoint_gen` at the time this inode was created. Used at open time: if `checkpoint_gen < sbi->checkpoint_gen`, a re-COW is needed. |
 | All zero/NULL | Entry is deleted (lookup returns negative dentry) |
 
 ## Path Resolution
@@ -134,7 +134,7 @@ struct agfs_dirent {
     struct hlist_node node;
     u64               ino;        /* >0 = content/dir in inodes/<ino> */
     char              *base_path; /* non-NULL = content at this base path */
-    u64               snapshot_gen;    /* sbi->snapshot_gen when inode was created */
+    u64               checkpoint_gen;    /* sbi->checkpoint_gen when inode was created */
     unsigned int      name_len;
     unsigned char     d_type;     /* DT_REG / DT_DIR / DT_LNK for readdir */
     char              name[];
@@ -143,7 +143,7 @@ struct agfs_dirent {
 
 Interpretation:
 - `ino > 0` → file, symlink, or directory in `inodes/<ino>`.
-  `snapshot_gen` records when the inode was created; if `snapshot_gen < sbi->snapshot_gen`,
+  `checkpoint_gen` records when the inode was created; if `checkpoint_gen < sbi->checkpoint_gen`,
   a re-COW is needed on the next open-for-write.
 - `base_path != NULL` → file with content at this mirrored absolute base path
   (same namespace used in the journal)
@@ -167,17 +167,17 @@ writers are free to replace the string in place when publishing a new dirent.
 **`add_dirent`** — upsert: update existing dirent or insert into bucket:
 
 ```
-add_dirent(dir, name, ino=0, base_path=NULL, snapshot_gen=0):
+add_dirent(dir, name, ino=0, base_path=NULL, checkpoint_gen=0):
     de = find_dirent(dir, name)
     if de:
         de.ino = ino
         de.base_path = strdup(base_path)   # replace owned copy
-        de.snapshot_gen = snapshot_gen
+        de.checkpoint_gen = checkpoint_gen
     else:
         de = alloc_dirent(name)
         de.ino = ino
         de.base_path = strdup(base_path)
-        de.snapshot_gen = snapshot_gen
+        de.checkpoint_gen = checkpoint_gen
         bucket = hash(name) >> (32 - shift)
         dir.de_buckets[bucket].add(de)
 ```
@@ -219,8 +219,8 @@ time via the dirent table. `open()` receives a dentry already pointing at
 the right lower inode.
 
 COW and re-COW are resolved at **open time**, not deferred to the first
-write. Because no fd spans a snapshot boundary (enforced by `staging_fd_count`),
-`sbi->snapshot_gen` is stable for the lifetime of the fd, so the decision
+write. Because no fd spans a checkpoint boundary (enforced by `staging_fd_count`),
+`sbi->checkpoint_gen` is stable for the lifetime of the fd, so the decision
 made at open time is final. This makes `write_iter` and `mmap` pure
 pass-throughs with zero staging logic.
 
@@ -237,7 +237,7 @@ agfs_open(inode, file):
     de = find_dirent(parent, name)
 
     if file->f_flags & (O_WRONLY | O_RDWR):
-        if de and de.ino and de.snapshot_gen >= sbi->snapshot_gen:
+        if de and de.ino and de.checkpoint_gen >= sbi->checkpoint_gen:
             // Inode is current — open it directly (O_TRUNC truncates in place).
             down_read(staging_sem)
             atomic_inc(staging_fd_count)
@@ -253,7 +253,7 @@ agfs_open(inode, file):
             // already COW'd this file since our check above.
             atomic_inc(staging_fd_count)
             new_file = agfs_do_cow(sbi, dentry, flags, O_TRUNC in flags)
-            // agfs_do_cow updates: dirent (ino, snapshot_gen,
+            // agfs_do_cow updates: dirent (ino, checkpoint_gen,
             //   clears base_path), dentry lower_path, journal
             up_write(staging_sem)
             file_info->lower_file = new_file
@@ -294,26 +294,26 @@ agfs_mmap(file, vma):
 ## Create / Mkdir / Symlink Path
 
 All creation operations allocate a new inode and add a dirent with
-`snapshot_gen = sbi->snapshot_gen` so the file is recognised as already staged
+`checkpoint_gen = sbi->checkpoint_gen` so the file is recognised as already staged
 (preventing a spurious re-COW on next open-for-write):
 
 ```
 agfs_create(dir, name, mode):
     ino = next_ino++
     create file inodes/<ino>
-    add_dirent(dir, name, ino=ino, snapshot_gen=sbi->snapshot_gen)
+    add_dirent(dir, name, ino=ino, checkpoint_gen=sbi->checkpoint_gen)
     journal(A, abs_path, ino)
 
 agfs_mkdir(dir, name, mode):
     ino = next_ino++
     create dir inodes/<ino>/
-    add_dirent(dir, name, ino=ino, snapshot_gen=sbi->snapshot_gen)
+    add_dirent(dir, name, ino=ino, checkpoint_gen=sbi->checkpoint_gen)
     journal(A, abs_path, ino)
 
 agfs_symlink(dir, name, target):
     ino = next_ino++
     create symlink inodes/<ino> -> target
-    add_dirent(dir, name, ino=ino, snapshot_gen=sbi->snapshot_gen)
+    add_dirent(dir, name, ino=ino, checkpoint_gen=sbi->checkpoint_gen)
     journal(A, abs_path, ino)
 ```
 
@@ -350,7 +350,7 @@ agfs_rename(old_parent, old_name, new_parent, new_name):
     if old_de and old_de.ino:
         # File has a staged inode -- move the dirent, keep same ino.
         add_dirent(new_parent, new_name, ino=old_de.ino,
-                     snapshot_gen=old_de.snapshot_gen)
+                     checkpoint_gen=old_de.checkpoint_gen)
     elif old_de and old_de.base_path:
         # Already redirected (chained rename) -- follow the chain.
         add_dirent(new_parent, new_name, base_path=old_de.base_path)
@@ -437,14 +437,14 @@ separated by `\n` (newline after the last `\0`).
 A\0<path>\0<ino>\n             # content/dir in inodes/<ino>
 D\0<path>\n                    # deleted
 R\0<old_path>\0<new_path>\n    # rename
-S\0<id>\0<name>\n              # snapshot marker (id is monotonic u64, name is human label)
+K\0<id>\0<name>\n              # checkpoint marker (id is monotonic u64, name is human label)
 ```
 
 `A` covers creates, modifies, symlinks, and mkdirs. The CLI determines
 the type by stat'ing `inodes/<ino>` (regular file, symlink, or directory).
 `D` records a deletion of a file or directory.
 `R` records a rename from `old_path` to `new_path`.
-`S` records a snapshot. The CLI resolves the journal up to a given `S`
+`K` records a checkpoint. The CLI resolves the journal up to a given `K`
 marker to reconstruct the staged state at that point in time.
 
 Written by the kernel (`kernel_write()` per mutation). Read by the CLI
@@ -487,10 +487,10 @@ operation targets a distinct path.
 **Status** (`agfs status`):
 
 1. Replay journal in order (same as commit step 1) and classify:
-   renames, deletes, adds, modifies. Optionally stop at a snapshot marker
+   renames, deletes, adds, modifies. Optionally stop at a checkpoint marker
    with `--at <name>`.
-2. When snapshots exist, group changes under snapshot headers showing
-   which changes belong to each snapshot section (and any trailing
+2. When checkpoints exist, group changes under checkpoint headers showing
+   which changes belong to each checkpoint section (and any trailing
    unsaved changes).
 
 **Diff** (`agfs diff`):
@@ -499,58 +499,58 @@ operation targets a distinct path.
    For renames, show rename metadata (and diff if also modified).
    For deletes, show as deleted file.
 2. Output in git-style unified diff format.
-3. When snapshots exist, group diffs under snapshot headers.
-4. With `--from <name>`, diff changes since the named snapshot
-   (resolve at snapshot vs resolve at current, then diff the two states).
+3. When checkpoints exist, group diffs under checkpoint headers.
+4. With `--from <name>`, diff changes since the named checkpoint
+   (resolve at checkpoint vs resolve at current, then diff the two states).
 
-## Snapshot Mechanism
+## Checkpoint Mechanism
 
-Snapshots are named bookmarks in the journal. They enable inspecting,
+Checkpoints are named bookmarks in the journal. They enable inspecting,
 diffing, and committing staged changes at specific points in time.
 
 **Key insight**: the flat inode store already preserves all historical file
 states — old inodes are never deleted (only commit/abort removes the
 entire inode store). The journal records which ino was associated
-with each path at each mutation. Replaying the journal up to a snapshot
+with each path at each mutation. Replaying the journal up to a checkpoint
 marker reconstructs the staged state at that point.
 
-The only kernel-side change is ensuring that writes after a snapshot create
+The only kernel-side change is ensuring that writes after a checkpoint create
 a **new** inode instead of overwriting the current one in place.
 This is the re-COW mechanism.
 
-### Creating a Snapshot
+### Creating a Checkpoint
 
-On mount, the kernel writes an initial snapshot record `S\01\0(initial)\n`
+On mount, the kernel writes an initial checkpoint record `K\01\0(initial)\n`
 to the journal, giving userspace a stable id=1 reference to the mount-time
 state.
 
-`agfs snapshot [name]` calls `ioctl(AGFS_IOC_SNAPSHOT)`. The kernel:
+`agfs checkpoint [name]` calls `ioctl(AGFS_IOC_CHECKPOINT)`. The kernel:
 
-1. Returns `-ENOTSUP` if `staging` is disabled (snapshots require staging).
+1. Returns `-ENOTSUP` if `staging` is disabled (checkpoints require staging).
 2. Takes `staging_sem` write lock.
 3. If `staging_fd_count > 0`, releases sem and returns `-EBUSY`.
-4. Increments `sbi->snapshot_gen` (atomic counter).
-5. Appends `S\0<id>\0<name>\n` to the journal.
+4. Increments `sbi->checkpoint_gen` (atomic counter).
+5. Appends `K\0<id>\0<name>\n` to the journal.
 6. Releases `staging_sem`.
-7. Returns the snapshot ID to userspace.
+7. Returns the checkpoint ID to userspace.
 
 No dirent tables change. No caches invalidated. The write lock on
 `staging_sem` ensures no open-for-write is mid-flight when the generation
 is bumped (open-for-write holds at least a read lock while incrementing
 `staging_fd_count`).
 
-The name defaults to `"after <cmd>"` when auto-snapshotting via `agfs exec`
+The name defaults to `"after <cmd>"` when auto-checkpointing via `agfs exec`
 (e.g., `"after make build"`), or a human-readable timestamp like
-`snap-20260315-043807` when run via `agfs snapshot` with no argument. Names need
-not be unique; snapshots can also be addressed by their numeric ID. When
+`snap-20260315-043807` when run via `agfs checkpoint` with no argument. Names need
+not be unique; checkpoints can also be addressed by their numeric ID. When
 looking up by name, `--at` and `--from` match the latest one.
 
-### Re-COW on First Open-for-Write After Snapshot
+### Re-COW on First Open-for-Write After Checkpoint
 
-The COW check is per-dirent: `dirent.snapshot_gen` records the
-`sbi->snapshot_gen` at which the current inode was created.
-`sbi->snapshot_gen` starts at 1. Newly created files set
-`snapshot_gen = sbi->snapshot_gen` at creation time, so they are already
+The COW check is per-dirent: `dirent.checkpoint_gen` records the
+`sbi->checkpoint_gen` at which the current inode was created.
+`sbi->checkpoint_gen` starts at 1. Newly created files set
+`checkpoint_gen = sbi->checkpoint_gen` at creation time, so they are already
 up-to-date and skip the COW check. Base files that have no dirent
 (or have `ino == 0`) naturally trigger COW on the first
 open-for-write.
@@ -558,65 +558,65 @@ open-for-write.
 At open time, the COW check in `agfs_open` (see [Open / Read / Write
 Path](#open--read--write-path)) handles both base→staged COW and
 staged→staged re-COW: if the dirent is missing, has no ino, or has a
-stale `snapshot_gen`, a fresh inode is created.
+stale `checkpoint_gen`, a fresh inode is created.
 
 `agfs_do_cow` copies from the dentry's current `lower_path` — which is
 the base file before any COW, or the current staged inode after one.
 The same function handles both cases; no separate re-COW path.
-`agfs_do_cow` also updates `dirent.snapshot_gen` after a successful COW.
+`agfs_do_cow` also updates `dirent.checkpoint_gen` after a successful COW.
 
-Because no fd spans a snapshot boundary (enforced by `staging_fd_count`),
+Because no fd spans a checkpoint boundary (enforced by `staging_fd_count`),
 the write and mmap paths need no COW checks — they are pure pass-throughs.
 
-**Multiple snapshots between opens** work naturally: if N snapshots occur
+**Multiple checkpoints between opens** work naturally: if N checkpoints occur
 without any open-for-write, the first open after them triggers one re-COW.
-The generation counter collapses consecutive snapshots.
+The generation counter collapses consecutive checkpoints.
 
-### Example Journal with Snapshots
+### Example Journal with Checkpoints
 
 ```
-S\01\0(initial)\n                 # implicit snapshot at mount time
+K\01\0(initial)\n                 # implicit checkpoint at mount time
 A\0/src/main.rs\01\n          # COW: main.rs -> ino 1
 A\0/src/lib.rs\02\n           # create lib.rs -> ino 2
-S\02\0after make build\n       # snapshot 2: "after make build"
+K\02\0after make build\n       # checkpoint 2: "after make build"
 A\0/src/main.rs\03\n          # re-COW: main.rs -> ino 3 (ino 1 preserved)
 D\0/src/lib.rs\n              # delete lib.rs
 A\0/src/new.rs\04\n           # create new.rs
-S\03\0after make test\n        # snapshot 3: "after make test"
+K\03\0after make test\n        # checkpoint 3: "after make test"
 A\0/src/new.rs\05\n           # re-COW: new.rs -> ino 5 (ino 4 preserved)
 ```
 
 State at each point:
 
-| Snapshot           | main.rs | lib.rs    | new.rs |
+| Checkpoint           | main.rs | lib.rs    | new.rs |
 |-------------------|---------|-----------|--------|
 | (initial)          | --      | --        | --     |
 | "after make build" | ino 1   | ino 2     | --     |
 | "after make test"  | ino 3   | (deleted) | ino 4  |
 | current            | ino 3   | (deleted) | ino 5  |
 
-### Snapshot-Aware CLI Operations
+### Checkpoint-Aware CLI Operations
 
-**`agfs status --at <name|id>`**: Resolve journal up to the named snapshot.
+**`agfs status --at <name|id>`**: Resolve journal up to the named checkpoint.
 
-**`agfs diff --from <name|id>`**: Diff changes since the named snapshot
-(resolve at snapshot vs resolve at current, then diff the two states).
+**`agfs diff --from <name|id>`**: Diff changes since the named checkpoint
+(resolve at checkpoint vs resolve at current, then diff the two states).
 
 **`agfs commit --at <name|id>`**: Commit only changes up to the named
-snapshot. Thanks to re-COW, post-snapshot inodes are independent copies —
-committing pre-snapshot changes does not affect them:
+checkpoint. Thanks to re-COW, post-checkpoint inodes are independent copies —
+committing pre-checkpoint changes does not affect them:
 
-1. Resolve journal up to the snapshot -> resolved changes.
+1. Resolve journal up to the checkpoint -> resolved changes.
 2. Apply those changes to base (same as full commit).
-3. Rewrite the journal atomically: write remaining post-snapshot records
+3. Rewrite the journal atomically: write remaining post-checkpoint records
    to a temporary file, fsync, then rename over the journal. The kernel's
    old journal fd (O_APPEND) continues appending to the unlinked old
    file harmlessly; `AGFS_IOC_CACHE_INVAL` in step 4 reopens it.
 4. `AGFS_IOC_CACHE_INVAL` (releases pinned directory inodes, invalidates caches, reopens journal).
 
-Orphaned inodes (referenced only by committed pre-snapshot records)
+Orphaned inodes (referenced only by committed pre-checkpoint records)
 are left in place — they are cleaned up on the next full `commit` or
 `abort`, which removes the entire inode store.
 
-**`agfs log`**: List all snapshots with their names and the
-number of changes since the previous snapshot.
+**`agfs log`**: List all checkpoints with their names and the
+number of changes since the previous checkpoint.

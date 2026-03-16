@@ -82,7 +82,7 @@ agfs commit                 # apply changes to the real filesystem
 
 | Aspect | AgFS | OverlayFS |
 |--------|------|-----------|
-| **Model** | Explicit commit/abort with snapshots | Live union — upper *is* the state |
+| **Model** | Explicit commit/abort with checkpoints | Live union — upper *is* the state |
 | **Truncating write** | Zero-copy (empty inode) | Full copy-up, then truncate |
 | **Rename** | Zero-copy via dirent metadata | `vfs_rename()` with copy-up |
 | **Lookup** | Dirent table, then base — one lookup | Upper + lower — two lookups |
@@ -117,7 +117,7 @@ permission = true       # enable permission gating
 staging = true          # enable staging area
 ask_default = "deny"    # fallback when no daemon or on timeout
 ask_timeout = 30        # seconds before ask request times out (0 = infinite)
-snapshot = true         # auto-snapshot after each `agfs exec`
+checkpoint = true         # auto-checkpoint after each `agfs exec`
 
 [rules]
 "."          = "allow-rw"
@@ -134,7 +134,7 @@ root (the directory containing `.agfs/`).
 | Document | Description |
 |----------|-------------|
 | [Architecture](docs/architecture.md) | High-level design, lifecycle walkthrough, source layout |
-| [Staging Layer](docs/staging.md) | Staging-commit mechanism: COW, journal, path resolution, snapshots |
+| [Staging Layer](docs/staging.md) | Staging-commit mechanism: COW, journal, path resolution, checkpoints |
 | [Permission Layer](docs/permissions.md) | Permission gating: rule engine, ask protocol, Landlock comparison |
 | [Kernel Reference](docs/internals.md) | Data structures, VFS operations map, ioctl interface, concurrency |
 | [CLI Reference](docs/cli.md) | Commands, options, terminal handling |

@@ -42,8 +42,8 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 					.d_type = S_ISDIR(mode) ? DT_DIR :
 						  S_ISLNK(mode) ? DT_LNK :
 						  DT_REG,
-					.snapshot_gen = (u64)atomic64_read(
-							&sbi->snapshot_gen),
+					.checkpoint_gen = (u64)atomic64_read(
+							&sbi->checkpoint_gen),
 				});
 	if (err)
 		return err;
@@ -136,7 +136,7 @@ static int agfs_rename_read_src(struct inode *old_dir,
 	if (de) {
 		ctx->found = true;
 		ctx->ino = de->ino;
-		ctx->gen = de->snapshot_gen;
+		ctx->gen = de->checkpoint_gen;
 		ctx->d_type = de->d_type;
 		if (de->base_path) {
 			ctx->base_path = kstrdup(de->base_path, GFP_KERNEL);
@@ -168,7 +168,7 @@ static int agfs_rename_add_dst(struct inode *new_dir,
 					&(struct agfs_dirent){
 						.ino = ctx->ino,
 						.d_type = ctx->d_type,
-						.snapshot_gen = ctx->gen,
+						.checkpoint_gen = ctx->gen,
 					});
 	}
 
@@ -207,7 +207,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 
 	/* VFS holds inode_lock(old_dir) + inode_lock(new_dir), which
 	 * serializes dirent access.  staging_sem is not needed here —
-	 * rename does not interact with snapshot_gen or COW state. */
+	 * rename does not interact with checkpoint_gen or COW state. */
 
 	err = agfs_rename_read_src(old_dir, old_dentry, &ctx);
 	if (err)

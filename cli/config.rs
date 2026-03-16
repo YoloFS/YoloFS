@@ -84,7 +84,7 @@ pub struct Config {
     #[serde(default)]
     pub ask_default: Option<Perm>,
     #[serde(default)]
-    pub snapshot: bool,
+    pub checkpoint: bool,
     #[serde(default)]
     pub rules: BTreeMap<String, Perm>,
 }
@@ -104,7 +104,7 @@ impl Default for Config {
             permission: true,
             staging: true,
             ask_timeout: None,
-            snapshot: true,
+            checkpoint: true,
             rules,
         }
     }

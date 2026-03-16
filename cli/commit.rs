@@ -1,7 +1,7 @@
 // agfs CLI — commit.rs
 //
 // `agfs commit` — apply staged changes to base.
-// `agfs commit --at <name>` — partial commit up to a snapshot.
+// `agfs commit --at <name>` — partial commit up to a checkpoint.
 // Journal is resolved first, then changes are applied sequentially.
 
 use crate::ioctl;
@@ -160,11 +160,11 @@ fn run_full(agfs: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_partial(agfs: &Path, snapshot_name: &str) -> Result<()> {
-    let (changes, remaining) = journal::split_at_snapshot(agfs, snapshot_name)?;
+fn run_partial(agfs: &Path, checkpoint_name: &str) -> Result<()> {
+    let (changes, remaining) = journal::split_at_checkpoint(agfs, checkpoint_name)?;
 
     if changes.is_empty() {
-        println!("{}", "Nothing to commit at this snapshot.".yellow());
+        println!("{}", "Nothing to commit at this checkpoint.".yellow());
         return Ok(());
     }
 
@@ -181,7 +181,7 @@ fn run_partial(agfs: &Path, snapshot_name: &str) -> Result<()> {
         }
     }
 
-    // Rewrite journal: keep only records after the snapshot
+    // Rewrite journal: keep only records after the checkpoint
     let journal_path = agfs.join("journal");
     let tmp_path = agfs.join("journal.tmp");
     journal::write_records(&tmp_path, &remaining)?;
@@ -194,7 +194,7 @@ fn run_partial(agfs: &Path, snapshot_name: &str) -> Result<()> {
     println!(
         "{}",
         format!(
-            "Committed {committed} change{} (up to snapshot \"{snapshot_name}\").",
+            "Committed {committed} change{} (up to checkpoint \"{checkpoint_name}\").",
             crate::utils::plural(committed)
         )
         .green()

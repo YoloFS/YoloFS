@@ -7,7 +7,7 @@ use std::path::Path;
 
 /// Timing for one timed iteration.
 ///
-/// Phases: `init` (mount/snapshot), `staging` (workload), `commit` (apply).
+/// Phases: `init` (mount/checkpoint), `staging` (workload), `commit` (apply).
 /// Any phase may be None if the backend doesn't have that step (e.g. native
 /// has no phases, try has no separable init).
 #[derive(Serialize, Deserialize, Clone)]

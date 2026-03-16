@@ -98,7 +98,9 @@ pub fn run_workload_subprocess(cmd: &mut Command) -> Result<SubprocessResult> {
         bail!("workload subprocess exited without READY marker: {stderr}");
     }
 
-    let output = child.wait_with_output().context("waiting for workload subprocess")?;
+    let output = child
+        .wait_with_output()
+        .context("waiting for workload subprocess")?;
     let total_ms = t0.elapsed().as_millis() as u64;
     let staging_ms = total_ms - startup_ms;
 

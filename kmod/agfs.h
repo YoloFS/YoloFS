@@ -57,9 +57,9 @@ struct agfs_ioc_rule {
 	__u8	_pad[7];
 };
 
-/* userspace ↔ kernel: AGFS_IOC_SNAPSHOT (name in, id out) */
-struct agfs_ioc_snapshot {
-	__u64	id;			/* out: assigned snapshot ID */
+/* userspace ↔ kernel: AGFS_IOC_CHECKPOINT (name in, id out) */
+struct agfs_ioc_checkpoint {
+	__u64	id;			/* out: assigned checkpoint ID */
 	char	name[AGFS_PATH_MAX];	/* in: human-readable name (NUL-terminated) */
 };
 
@@ -68,7 +68,7 @@ struct agfs_ioc_snapshot {
 #define AGFS_IOC_CACHE_INVAL	_IO('A', 20)
 #define AGFS_IOC_GET_REQUEST	_IOR('A', 30, struct agfs_ctl_request)
 #define AGFS_IOC_PUT_RESPONSE	_IOW('A', 31, struct agfs_ctl_response)
-#define AGFS_IOC_SNAPSHOT	_IOWR('A', 40, struct agfs_ioc_snapshot)
+#define AGFS_IOC_CHECKPOINT	_IOWR('A', 40, struct agfs_ioc_checkpoint)
 
 /* ── Control-File Protocol (binary, fixed-size) ────────────────────── */
 
@@ -109,7 +109,7 @@ struct agfs_dirent {
 	struct hlist_node	node;
 	u64			ino;		/* >0 = content in inodes/<ino> */
 	char			*base_path;	/* non-NULL = content at base path */
-	u64			snapshot_gen;	/* sbi->snapshot_gen when inode was created */
+	u64			checkpoint_gen;	/* sbi->checkpoint_gen when inode was created */
 	unsigned int		name_len;
 	unsigned char		d_type;		/* DT_REG / DT_DIR / DT_LNK for readdir */
 	char			name[];
@@ -143,7 +143,7 @@ struct agfs_sb_info {
 	struct file		*journal_file;	/* ./agfs/journal (append-only, opened lazily) */
 	struct rw_semaphore	staging_sem;	/* protects staging + journal writes */
 	atomic64_t		next_ino;	/* counter for inode store IDs */
-	atomic64_t		snapshot_gen;	/* bumped on each snapshot; triggers re-COW */
+	atomic64_t		checkpoint_gen;	/* bumped on each checkpoint; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
 	struct list_head	pinned_dirs;	/* igrab()'d directory inodes with dirents */
 	spinlock_t		pinned_dirs_lock;/* protects pinned_dirs */
@@ -355,7 +355,7 @@ int agfs_journal_append_a(struct agfs_sb_info *sbi, const char *path, u64 id);
 int agfs_journal_append_d(struct agfs_sb_info *sbi, const char *path);
 int agfs_journal_append_r(struct agfs_sb_info *sbi, const char *old_path,
 			  const char *new_path);
-int agfs_journal_append_s(struct agfs_sb_info *sbi, u64 id, const char *name);
+int agfs_journal_append_k(struct agfs_sb_info *sbi, u64 id, const char *name);
 
 /* perm.c */
 static inline void agfs_perm_request_release(struct kref *kref)

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * agfs — append-only mutation journal.
+ * agfs — append-only journal.
  *
  * Written by the kernel on every mutation. Read by the CLI for
  * commit/abort/status/diff. The kernel never reads it back.
@@ -9,7 +9,7 @@
  *   A\0<path>\0<id>\n    — content/dir in staging/<id>
  *   D\0<path>\n          — deleted
  *   R\0<old>\0<new>\n    — rename hint
- *   S\0<id>\0<name>\n    — snapshot marker
+ *   K\0<id>\0<name>\n    — checkpoint marker
  */
 
 #include "agfs.h"
@@ -96,11 +96,11 @@ int agfs_journal_append_r(struct agfs_sb_info *sbi, const char *old_path,
 			     (const char *[]){ old_path, new_path, NULL });
 }
 
-int agfs_journal_append_s(struct agfs_sb_info *sbi, u64 id, const char *name)
+int agfs_journal_append_k(struct agfs_sb_info *sbi, u64 id, const char *name)
 {
 	char id_str[21];
 
 	snprintf(id_str, sizeof(id_str), "%llu", (unsigned long long)id);
-	return journal_write(sbi, 'S',
+	return journal_write(sbi, 'K',
 			     (const char *[]){ id_str, name, NULL });
 }

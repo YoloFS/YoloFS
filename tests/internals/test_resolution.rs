@@ -14,9 +14,9 @@ use std::fs;
 fn operations_produce_ordered_records() {
     let s = AgfsSession::new().expect("session setup");
 
-    // write → snapshot → delete → rename
+    // write → checkpoint → delete → rename
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
-    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("delete");
     fs::rename(s.mnt_path("multi.txt"), s.mnt_path("renamed.txt")).expect("rename");
 
@@ -28,7 +28,9 @@ fn operations_produce_ordered_records() {
         "missing A: {records:?}"
     );
     assert!(
-        records.iter().any(|r| matches!(r, Record::Snapshot { .. })),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Checkpoint { .. })),
         "missing S: {records:?}"
     );
     assert!(
@@ -40,10 +42,10 @@ fn operations_produce_ordered_records() {
         "missing R: {records:?}"
     );
 
-    // Snapshot "s1" should appear after the Add (write) and before the Delete.
-    let snap_pos = records
+    // Checkpoint "s1" should appear after the Add (write) and before the Delete.
+    let chk_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Snapshot { name, .. } if name == "s1"))
+        .position(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1"))
         .unwrap();
     let add_pos = records
         .iter()
@@ -53,8 +55,8 @@ fn operations_produce_ordered_records() {
         .iter()
         .position(|r| matches!(r, Record::Delete { .. }))
         .unwrap();
-    assert!(add_pos < snap_pos, "Add should precede Snapshot s1");
-    assert!(snap_pos < del_pos, "Snapshot s1 should precede Delete");
+    assert!(add_pos < chk_pos, "Add should precede Checkpoint s1");
+    assert!(chk_pos < del_pos, "Checkpoint s1 should precede Delete");
 }
 
 /// Writing to a renamed file: rename produces R, then write produces A at new path.

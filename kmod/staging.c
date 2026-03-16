@@ -203,7 +203,7 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 		old_de->ino = de->ino;
 		old_de->base_path = bp_copy;
 		old_de->d_type = de->d_type;
-		old_de->snapshot_gen = de->snapshot_gen;
+		old_de->checkpoint_gen = de->checkpoint_gen;
 		goto out;
 	}
 
@@ -220,7 +220,7 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 	new_de->ino = de->ino;
 	new_de->base_path = bp_copy;
 	new_de->d_type = de->d_type;
-	new_de->snapshot_gen = de->snapshot_gen;
+	new_de->checkpoint_gen = de->checkpoint_gen;
 
 	hlist_add_head(&new_de->node,
 		       &dii->de_buckets[agfs_de_hash(name, namelen)]);
@@ -365,8 +365,8 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 				&(struct agfs_dirent){
 					.ino = ino,
 					.d_type = DT_REG,
-					.snapshot_gen = (u64)atomic64_read(
-							&sbi->snapshot_gen),
+					.checkpoint_gen = (u64)atomic64_read(
+							&sbi->checkpoint_gen),
 				});
 	inode_unlock(d_inode(dentry->d_parent));
 	if (err) {

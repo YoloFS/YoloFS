@@ -1,4 +1,5 @@
 pub mod abort;
+pub mod checkpoint;
 pub mod commit;
 pub mod config;
 pub mod diff;
@@ -8,6 +9,5 @@ pub mod journal;
 pub mod kmod;
 pub mod kmsg;
 pub mod mount;
-pub mod snapshot;
 pub mod utils;
 pub mod watch;

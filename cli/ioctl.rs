@@ -34,7 +34,7 @@ nix::ioctl_write_ptr!(ioctl_rule_remove, b'A', 11, AgfsIocRule);
 nix::ioctl_none!(ioctl_cache_inval, b'A', 20);
 nix::ioctl_read!(ioctl_get_request, b'A', 30, AgfsCtlRequest);
 nix::ioctl_write_ptr!(ioctl_put_response, b'A', 31, AgfsCtlResponse);
-nix::ioctl_readwrite!(ioctl_snapshot, b'A', 40, AgfsIocSnapshot);
+nix::ioctl_readwrite!(ioctl_checkpoint, b'A', 40, AgfsIocCheckpoint);
 
 /// Matches `struct agfs_ioc_rule` in the kernel.
 #[repr(C)]
@@ -63,9 +63,9 @@ pub struct AgfsCtlResponse {
     pub _pad: [u8; 7],
 }
 
-/// Matches `struct agfs_ioc_snapshot` in the kernel.
+/// Matches `struct agfs_ioc_checkpoint` in the kernel.
 #[repr(C)]
-pub struct AgfsIocSnapshot {
+pub struct AgfsIocCheckpoint {
     pub id: u64,
     pub name: [u8; AGFS_PATH_MAX],
 }
@@ -164,17 +164,17 @@ pub fn invalidate_cache(fd: &File) -> Result<()> {
     Ok(())
 }
 
-/// Send AGFS_IOC_SNAPSHOT ioctl. Returns the assigned snapshot ID.
-pub fn create_snapshot(fd: &File, name: &str) -> Result<u64> {
-    let mut snap = AgfsIocSnapshot {
+/// Send AGFS_IOC_CHECKPOINT ioctl. Returns the assigned checkpoint ID.
+pub fn create_checkpoint(fd: &File, name: &str) -> Result<u64> {
+    let mut chk = AgfsIocCheckpoint {
         id: 0,
         name: [0u8; AGFS_PATH_MAX],
     };
     let bytes = name.as_bytes();
     let len = bytes.len().min(AGFS_PATH_MAX - 1);
-    snap.name[..len].copy_from_slice(&bytes[..len]);
-    unsafe { ioctl_snapshot(fd.as_raw_fd(), &mut snap) }.context("ioctl SNAPSHOT")?;
-    Ok(snap.id)
+    chk.name[..len].copy_from_slice(&bytes[..len]);
+    unsafe { ioctl_checkpoint(fd.as_raw_fd(), &mut chk) }.context("ioctl CHECKPOINT")?;
+    Ok(chk.id)
 }
 
 #[cfg(test)]
@@ -232,6 +232,6 @@ mod tests {
         assert_eq!(size_of::<AgfsCtlRequest>(), 288);
         assert_eq!(size_of::<AgfsCtlResponse>(), 16);
         assert_eq!(size_of::<AgfsIocRule>(), 264);
-        assert_eq!(size_of::<AgfsIocSnapshot>(), 264);
+        assert_eq!(size_of::<AgfsIocCheckpoint>(), 264);
     }
 }

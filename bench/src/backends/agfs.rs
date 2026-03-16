@@ -316,7 +316,12 @@ pub fn setup_profile_session(
             .join(workload.work_dir())
     };
 
-    Ok((ProfileSession { _session: Session { root } }, mnt_path))
+    Ok((
+        ProfileSession {
+            _session: Session { root },
+        },
+        mnt_path,
+    ))
 }
 
 /// Opaque handle that keeps the agfs mount alive for profiling.

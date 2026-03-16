@@ -94,7 +94,7 @@ static struct file *agfs_open_staged_ino(struct agfs_sb_info *sbi,
 	return f;
 }
 
-/* Read ino + snapshot_gen from the parent's dirent table. */
+/* Read ino + checkpoint_gen from the parent's dirent table. */
 static void agfs_read_dirent(struct dentry *dentry, u64 *ino, u64 *gen)
 {
 	struct inode *dir = d_inode(dentry->d_parent);
@@ -106,7 +106,7 @@ static void agfs_read_dirent(struct dentry *dentry, u64 *ino, u64 *gen)
 				 dentry->d_name.len);
 	if (de) {
 		*ino = de->ino;
-		*gen = de->snapshot_gen;
+		*gen = de->checkpoint_gen;
 	} else {
 		*ino = 0;
 		*gen = 0;
@@ -132,10 +132,10 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 		return agfs_open_lower(dentry, file->f_flags);
 
 	/* Fast path: inode is current — open directly */
-	if (ino && gen >= (u64)atomic64_read(&sbi->snapshot_gen)) {
+	if (ino && gen >= (u64)atomic64_read(&sbi->checkpoint_gen)) {
 		down_read(&sbi->staging_sem);
-		/* Re-check under lock — a snapshot may have raced */
-		if (gen >= (u64)atomic64_read(&sbi->snapshot_gen)) {
+		/* Re-check under lock — a checkpoint may have raced */
+		if (gen >= (u64)atomic64_read(&sbi->checkpoint_gen)) {
 			atomic_inc(&sbi->staging_fd_count);
 			up_read(&sbi->staging_sem);
 			return agfs_open_staged_ino(sbi, ino, file->f_flags);
@@ -150,7 +150,7 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 
 	/* Re-check under sem — a concurrent open may have COW'd */
 	agfs_read_dirent(dentry, &ino, &gen);
-	if (ino && gen >= (u64)atomic64_read(&sbi->snapshot_gen)) {
+	if (ino && gen >= (u64)atomic64_read(&sbi->checkpoint_gen)) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_write(&sbi->staging_sem);
 		return agfs_open_staged_ino(sbi, ino, file->f_flags);
@@ -356,7 +356,7 @@ static loff_t agfs_llseek(struct file *file, loff_t offset, int whence)
  * Merged readdir: dirents first, then base entries not overridden.
  *
  * The VFS holds inode_lock_shared(dir) for the duration of iterate_shared,
- * so the dirent table is stable — no snapshot or temporary hash set needed.
+ * so the dirent table is stable — no checkpoint or temporary hash set needed.
  * We iterate the dirent table directly for emission and dedup.
  */
 
