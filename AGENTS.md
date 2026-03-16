@@ -6,6 +6,7 @@
 - No backwards compatibility needed — remove deprecated code.
 - Do not repeat the same code — extract shared logic.
 - Think through problems and implement the best solution; avoid fallbacks.
+- Keep functions short. Extract helpers when a function does multiple distinct things.
 
 ## Workflow
 
