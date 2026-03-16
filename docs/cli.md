@@ -85,44 +85,45 @@ The agfs binary is installed setuid root (`install -m 4755 -o root`).
 This is needed because `mount()`, `umount()`, bind-mounting `/proc` `/sys`
 `/dev`, and `chroot()` all require `CAP_SYS_ADMIN`.
 
-### Current behavior (BUG)
+### Privilege lifecycle
 
-The binary runs with euid=0 throughout its entire lifetime. It never drops
-privileges before exec'ing user commands. This means:
+The `pre_exec` hook in `exec.rs` performs three steps in the child process
+(after fork, before execvp):
 
-- `agfs exec -- make build` runs `make` with euid=0. Build tools see
-  themselves as root and may behave differently (skip permission checks,
-  install to system paths, etc).
-- Files created by the user's command are visible to the kernel module with
-  the process's real uid (1000), but the effective uid (0) can mask
-  permission bugs — operations that should fail with EACCES succeed because
-  euid is root.
-- The staging layer creates blobs under `override_creds(sbi->creator_cred)`,
-  where `creator_cred` captures uid=0 from the setuid binary. This makes
-  staged directories root-owned, causing EACCES for the real user when
-  `agfs_permission` delegates directory checks to the lower filesystem
-  (see `tests/perm/test_dir_ops.rs::non_root_mkdir_then_write_inside`).
+1. `chroot()` into `.agfs/mnt` — needs euid=0.
+2. `chdir()` to the caller's original working directory.
+3. Permanently drop privileges: `setgid(real_gid)` then `setuid(real_uid)`.
 
-### Target behavior
+Order matters in step 3 — `setuid()` is irreversible and removes the
+ability to call `setgid()`, so gid must be set first.
 
-The CLI should hold root only for privileged syscalls and drop before
-running user code:
+After the drop, the user's command runs with the invoking user's uid and
+gid. The kernel module enforces file access via its rule engine based on
+process credentials, not euid.
 
 | Phase | euid | Why |
 |---|---|---|
 | `mount()`, bind-mounts, `chroot()` | 0 | Require `CAP_SYS_ADMIN` |
 | `exec` user command | real uid | User code must not run as root |
-| `commit`, `status`, `diff` | real uid | Operate on user-owned files; kernel module checks real uid |
+| `commit`, `status`, `diff` | 0 | May need access to root-owned staging blobs (see below) |
 | `load`/`unload` | delegates to `sudo` | Already handled correctly |
 
-The drop in `exec` should be permanent (`setgid(real_gid)` then
-`setuid(real_uid)` — order matters because you cannot change gid after
-dropping uid). This goes in the `pre_exec` closure after `chroot()` and
-`chdir()`, before the child calls `execvp()`.
+### Known issue: staging blob ownership
 
-Once the staging ownership bug is fixed (staged blobs owned by the real
-user, not root), the same drop can be applied to `commit` and other
-subcommands that don't need privileged syscalls.
+The staging layer creates blobs under `override_creds(sbi->creator_cred)`,
+where `creator_cred` captures euid=0 from the setuid binary at mount time.
+This makes staged directories root-owned. When `agfs_permission` delegates
+directory permission checks to the lower filesystem (instead of using agfs
+rules), the real user gets EACCES on directories they created.
+
+Real-world trigger: `make install-third-party` runs autoconf, which uses
+Perl's `File::Temp` to create a private temp dir (mode 0700). The mkdir
+succeeds but subsequent access fails because the staged blob is
+`root:root 0700`. See `tests/perm/test_dir_ops.rs::non_root_mkdir_then_write_inside`.
+
+Once the kernel module is fixed to create staging blobs owned by the real
+user (not `creator_cred`), the privilege drop can be extended to `commit`
+and other subcommands.
 
 ## TTY / Terminal Ownership
 
