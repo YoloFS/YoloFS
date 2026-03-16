@@ -114,94 +114,124 @@ static void agfs_free_de_buckets(struct agfs_inode_info *dii)
 }
 
 /*
- * Add or update a dirent. ino=0 && base_path=NULL means deleted.
- * On first dirent for a directory, pins the inode via igrab().
+ * Lazily allocate the bucket array for a directory inode.
+ * Sets *first = true if this call created the array (caller must pin).
  */
-int agfs_add_dirent(struct inode *dir, const char *name,
-		      unsigned int namelen, u64 ino,
-		      const char *base_path, unsigned char d_type,
-		      u64 snapshot_gen)
+static int agfs_ensure_de_buckets(struct agfs_inode_info *dii, bool *first)
 {
-	struct agfs_inode_info *dii = AGFS_I(dir);
-	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
-	struct agfs_dirent *de, *new_de = NULL;
-	struct hlist_head *new_buckets = NULL;
-	char *bp_copy = NULL;
+	struct hlist_head *buckets;
 	unsigned int i;
-	bool first_de = false;
 
-	/* Pre-allocate outside the lock (GFP_KERNEL is safe here) */
-	new_de = kmalloc(offsetof(struct agfs_dirent, name) + namelen + 1,
-			  GFP_KERNEL);
-	if (!new_de)
+	*first = false;
+	if (dii->de_buckets)
+		return 0;
+
+	buckets = kmalloc_array(AGFS_DE_BUCKETS, sizeof(struct hlist_head),
+				GFP_KERNEL);
+	if (!buckets)
 		return -ENOMEM;
-
-	if (base_path) {
-		bp_copy = kstrdup(base_path, GFP_KERNEL);
-		if (!bp_copy) {
-			kfree(new_de);
-			return -ENOMEM;
-		}
-	}
-
-	if (!dii->de_buckets) {
-		new_buckets = kmalloc_array(AGFS_DE_BUCKETS,
-					    sizeof(struct hlist_head),
-					    GFP_KERNEL);
-		if (!new_buckets) {
-			kfree(bp_copy);
-			kfree(new_de);
-			return -ENOMEM;
-		}
-		for (i = 0; i < AGFS_DE_BUCKETS; i++)
-			INIT_HLIST_HEAD(&new_buckets[i]);
-	}
+	for (i = 0; i < AGFS_DE_BUCKETS; i++)
+		INIT_HLIST_HEAD(&buckets[i]);
 
 	spin_lock(&dii->de_lock);
+	if (!dii->de_buckets) {
+		dii->de_buckets = buckets;
+		buckets = NULL;
+		*first = true;
+	}
+	spin_unlock(&dii->de_lock);
 
-	/* Install bucket array if we're the first adder */
-	if (!dii->de_buckets && new_buckets) {
-		dii->de_buckets = new_buckets;
-		new_buckets = NULL;	/* ownership transferred */
-		first_de = true;
+	kfree(buckets);
+	return 0;
+}
+
+/*
+ * Pin a directory inode on first dirent insertion so it survives eviction.
+ */
+static int agfs_pin_dir(struct agfs_inode_info *dii, struct agfs_sb_info *sbi)
+{
+	if (!igrab(&dii->vfs_inode)) {
+		agfs_free_de_buckets(dii);
+		return -EIO;
+	}
+	spin_lock(&sbi->pinned_dirs_lock);
+	list_add(&dii->de_pin, &sbi->pinned_dirs);
+	spin_unlock(&sbi->pinned_dirs_lock);
+	return 0;
+}
+
+/*
+ * Add or update a dirent. All-zero de means deleted.
+ * On first dirent for a directory, pins the inode via igrab().
+ *
+ * Callers hold inode_lock(dir) or staging_sem, so no concurrent writer
+ * can race between the find-miss and the insert — no retry needed.
+ */
+int agfs_del_dirent(struct inode *dir, const char *name,
+		      unsigned int namelen)
+{
+	return agfs_add_dirent(dir, name, namelen, &(struct agfs_dirent){0});
+}
+
+int agfs_add_dirent(struct inode *dir, const char *name,
+		      unsigned int namelen,
+		      const struct agfs_dirent *de)
+{
+	struct agfs_inode_info *dii = AGFS_I(dir);
+	struct agfs_dirent *old_de, *new_de;
+	char *bp_copy = NULL;
+	bool first_de;
+	int err;
+
+	if (de->base_path) {
+		bp_copy = kstrdup(de->base_path, GFP_KERNEL);
+		if (!bp_copy)
+			return -ENOMEM;
 	}
 
-	de = agfs_find_dirent(dir, name, namelen);
-	if (de) {
-		/* Update existing */
-		kfree(de->base_path);
-		de->ino = ino;
-		de->base_path = bp_copy;
-		de->d_type = d_type;
-		de->snapshot_gen = snapshot_gen;
+	err = agfs_ensure_de_buckets(dii, &first_de);
+	if (err) {
+		kfree(bp_copy);
+		return err;
+	}
+
+	/* Fast path: update existing entry in place */
+	spin_lock(&dii->de_lock);
+	old_de = agfs_find_dirent(dir, name, namelen);
+	if (old_de) {
+		kfree(old_de->base_path);
+		old_de->ino = de->ino;
+		old_de->base_path = bp_copy;
+		old_de->d_type = de->d_type;
+		old_de->snapshot_gen = de->snapshot_gen;
 		spin_unlock(&dii->de_lock);
-		kfree(new_de);
-		kfree(new_buckets);
-	} else {
-		/* Insert new */
-		memcpy(new_de->name, name, namelen);
-		new_de->name[namelen] = '\0';
-		new_de->name_len = namelen;
-		new_de->ino = ino;
-		new_de->base_path = bp_copy;
-		new_de->d_type = d_type;
-		new_de->snapshot_gen = snapshot_gen;
-		hlist_add_head(&new_de->node,
-			       &dii->de_buckets[agfs_de_hash(name, namelen)]);
-		spin_unlock(&dii->de_lock);
-		kfree(new_buckets);
+		goto out;
 	}
+	spin_unlock(&dii->de_lock);
 
-	/* Pin the directory inode on first dirent */
-	if (first_de) {
-		if (!igrab(&dii->vfs_inode)) {
-			agfs_free_de_buckets(dii);
-			return -EIO;
-		}
-		spin_lock(&sbi->pinned_dirs_lock);
-		list_add(&dii->de_pin, &sbi->pinned_dirs);
-		spin_unlock(&sbi->pinned_dirs_lock);
+	/* Slow path: allocate new entry and insert */
+	new_de = kmalloc(offsetof(struct agfs_dirent, name) + namelen + 1,
+			 GFP_KERNEL);
+	if (!new_de) {
+		kfree(bp_copy);
+		return -ENOMEM;
 	}
+	memcpy(new_de->name, name, namelen);
+	new_de->name[namelen] = '\0';
+	new_de->name_len = namelen;
+	new_de->ino = de->ino;
+	new_de->base_path = bp_copy;
+	new_de->d_type = de->d_type;
+	new_de->snapshot_gen = de->snapshot_gen;
+
+	spin_lock(&dii->de_lock);
+	hlist_add_head(&new_de->node,
+		       &dii->de_buckets[agfs_de_hash(name, namelen)]);
+	spin_unlock(&dii->de_lock);
+
+out:
+	if (first_de)
+		return agfs_pin_dir(dii, AGFS_SB(dir->i_sb));
 	return 0;
 }
 
@@ -258,6 +288,48 @@ int agfs_inode_alloc(struct agfs_sb_info *sbi, u64 *out_ino,
 	return 0;
 }
 
+/* ── Copy File Content to Inode Store ──────────────────────────────── */
+
+static int agfs_copy_to_inode(struct dentry *dentry,
+			      const struct path *inode_path)
+{
+	struct file *src, *dst;
+	struct path lower_path;
+	loff_t len, copied_total = 0;
+	ssize_t copied;
+	int err = 0;
+
+	agfs_get_lower_path(dentry, &lower_path);
+	src = dentry_open(&lower_path, O_RDONLY, current_cred());
+	agfs_put_lower_path(dentry, &lower_path);
+	if (IS_ERR(src))
+		return PTR_ERR(src);
+
+	dst = dentry_open(inode_path, O_WRONLY | O_TRUNC, current_cred());
+	if (IS_ERR(dst)) {
+		fput(src);
+		return PTR_ERR(dst);
+	}
+
+	len = i_size_read(file_inode(src));
+	while (copied_total < len) {
+		size_t chunk = min_t(loff_t, len - copied_total, 1 << 20);
+
+		copied = vfs_copy_file_range(src, copied_total,
+					     dst, copied_total, chunk, 0);
+		if (copied <= 0) {
+			if (copied < 0)
+				err = copied;
+			break;
+		}
+		copied_total += copied;
+	}
+
+	fput(dst);
+	fput(src);
+	return err;
+}
+
 /* ── Copy-on-Write to Inode Store ──────────────────────────────────── */
 
 int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
@@ -267,60 +339,18 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	u64 ino;
 	int err;
 
-	/* Allocate a new inode in the store, preserving the base file's mode */
 	err = agfs_inode_alloc(sbi, &ino, &inode_path,
 			       d_inode(dentry)->i_mode & ~S_IFMT, NULL);
 	if (err)
 		return err;
 
-	/* Copy base content to inode (skip when truncating — inode stays empty) */
+	/* Copy base content (skip when truncating — inode stays empty) */
 	if (!truncate) {
-		struct file *src, *dst;
-		struct path lower_path;
-		loff_t len;
-
-		agfs_get_lower_path(dentry, &lower_path);
-		src = dentry_open(&lower_path, O_RDONLY, current_cred());
-		agfs_put_lower_path(dentry, &lower_path);
-		if (IS_ERR(src)) {
+		err = agfs_copy_to_inode(dentry, &inode_path);
+		if (err) {
 			path_put(&inode_path);
-			return PTR_ERR(src);
+			return err;
 		}
-
-		dst = dentry_open(&inode_path, O_WRONLY | O_TRUNC,
-				  current_cred());
-		if (IS_ERR(dst)) {
-			fput(src);
-			path_put(&inode_path);
-			return PTR_ERR(dst);
-		}
-
-		len = i_size_read(file_inode(src));
-		if (len > 0) {
-			loff_t copied_total = 0;
-
-			while (copied_total < len) {
-				ssize_t copied;
-				size_t chunk = min_t(loff_t,
-						     len - copied_total,
-						     1 << 20);
-
-				copied = vfs_copy_file_range(src, copied_total,
-							     dst, copied_total,
-							     chunk, 0);
-				if (copied <= 0) {
-					if (copied == 0)
-						break;
-					fput(dst);
-					fput(src);
-					path_put(&inode_path);
-					return copied;
-				}
-				copied_total += copied;
-			}
-		}
-		fput(dst);
-		fput(src);
 	}
 
 	/*
@@ -333,8 +363,12 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	err = agfs_add_dirent(d_inode(dentry->d_parent),
 				dentry->d_name.name,
 				dentry->d_name.len,
-				ino, NULL, DT_REG,
-				(u64)atomic64_read(&sbi->snapshot_gen));
+				&(struct agfs_dirent){
+					.ino = ino,
+					.d_type = DT_REG,
+					.snapshot_gen = (u64)atomic64_read(
+							&sbi->snapshot_gen),
+				});
 	if (err) {
 		path_put(&inode_path);
 		return err;

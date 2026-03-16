@@ -36,10 +36,15 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 
 	agfs_replace_lower_path(dentry, &inode_path);
 	err = agfs_add_dirent(dir, dentry->d_name.name,
-				dentry->d_name.len, ino, NULL,
-				S_ISDIR(mode) ? DT_DIR :
-				S_ISLNK(mode) ? DT_LNK : DT_REG,
-				(u64)atomic64_read(&sbi->snapshot_gen));
+				dentry->d_name.len,
+				&(struct agfs_dirent){
+					.ino = ino,
+					.d_type = S_ISDIR(mode) ? DT_DIR :
+						  S_ISLNK(mode) ? DT_LNK :
+						  DT_REG,
+					.snapshot_gen = (u64)atomic64_read(
+							&sbi->snapshot_gen),
+				});
 	if (err)
 		return err;
 	agfs_journal_append_a(sbi, buf, ino);
@@ -71,10 +76,9 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 	if (err)
 		return err;
 
-	err = agfs_add_dirent(dir,
+	err = agfs_del_dirent(dir,
 				dentry->d_name.name,
-				dentry->d_name.len, 0, NULL, DT_UNKNOWN,
-				0);
+				dentry->d_name.len);
 	if (err)
 		return err;
 
@@ -167,24 +171,29 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		err = agfs_add_dirent(new_dir,
 					new_dentry->d_name.name,
 					new_dentry->d_name.len,
-					old_ino, NULL, old_dtype,
-					old_gen);
+					&(struct agfs_dirent){
+						.ino = old_ino,
+						.d_type = old_dtype,
+						.snapshot_gen = old_gen,
+					});
 	} else {
 		/* Base file or chained rename — redirect by path */
 		err = agfs_add_dirent(new_dir,
 					new_dentry->d_name.name,
 					new_dentry->d_name.len,
-					0, old_bp ? old_bp : old_buf,
-					old_dtype, 0);
+					&(struct agfs_dirent){
+						.base_path = old_bp ? old_bp
+								    : old_buf,
+						.d_type = old_dtype,
+					});
 	}
 	if (err)
 		goto out;
 
 	/* Hide the old name (deleted dirent) */
-	err = agfs_add_dirent(old_dir,
+	err = agfs_del_dirent(old_dir,
 				old_dentry->d_name.name,
-				old_dentry->d_name.len, 0, NULL,
-				DT_UNKNOWN, 0);
+				old_dentry->d_name.len);
 	if (err)
 		goto out;
 

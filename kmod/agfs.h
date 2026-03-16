@@ -339,9 +339,10 @@ struct agfs_dirent *agfs_find_dirent(struct inode *dir,
 					 const char *name,
 					 unsigned int namelen);
 int agfs_add_dirent(struct inode *dir, const char *name,
-		      unsigned int namelen, u64 ino,
-		      const char *base_path, unsigned char d_type,
-		      u64 snapshot_gen);
+		      unsigned int namelen,
+		      const struct agfs_dirent *de);
+int agfs_del_dirent(struct inode *dir, const char *name,
+		      unsigned int namelen);
 int agfs_inode_alloc(struct agfs_sb_info *sbi, u64 *out_ino,
 		     struct path *inode_path, umode_t mode,
 		     const char *symname);
