@@ -98,12 +98,24 @@ test-e2e: install
 
 # ── Bench ─────────────────────────────────────────────────────────────
 
-.PHONY: bench
+.PHONY: bench bench-micro bench-macro
 
 bench: install
 	agfs reload
 	cargo build --release --bin agfs-bench
 	./target/release/agfs-bench
+	agfs unload
+
+bench-micro: install
+	agfs reload
+	cargo build --release --bin agfs-bench
+	./target/release/agfs-bench --micro
+	agfs unload
+
+bench-macro: install
+	agfs reload
+	cargo build --release --bin agfs-bench
+	./target/release/agfs-bench --macro
 	agfs unload
 
 # ── VM ────────────────────────────────────────────────────────────────
