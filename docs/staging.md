@@ -17,10 +17,10 @@ the kernel, not merely assumed.
    COW decision can be made once at `open()` time — the write and mmap
    paths are pure pass-throughs with zero staging logic.
 
-2. **Directory inodes with overrides are pinned.** When the first
-   override is added to a directory, the kernel takes an extra `igrab()`
+2. **Directory inodes with dirents are pinned.** When the first
+   dirent is added to a directory, the kernel takes an extra `igrab()`
    on its inode, preventing eviction regardless of memory pressure.
-   The override hash table lives on the inode (not the dentry), so it
+   The dirent hash table lives on the inode (not the dentry), so it
    survives dentry eviction naturally. Pins are released in bulk by
    `AGFS_IOC_CACHE_INVAL` (called by commit/abort) and during
    `kill_sb` (unmount). Directories are never COW'd, so their inode
@@ -33,7 +33,7 @@ the kernel, not merely assumed.
 | --------------------- | ------- |
 | **base**              | Always `/` — the entire root filesystem, read-only from AgFS's perspective until commit. |
 | **inode store**       | `.agfs/inodes/` — a flat store of inodes. Each entry is identified by a numeric ino (`inodes/1`, `inodes/2`, ...). Regular files and symlinks are stored as inodes; directories created by `mkdir` are empty directory inodes (children live in their own entries). No mirrored directory tree. |
-| **override table**    | Per-directory-inode in-memory hash table of overrides. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
+| **dirent table**    | Per-directory-inode in-memory hash table of dirents. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
 | **journal**           | `.agfs/journal` — append-only log of all mutations. Written by the kernel, read by the CLI for commit/abort/status/diff. The kernel never reads it back. |
 | **mount point**       | `.agfs/mnt/` — the agent's view of the filesystem. Shows the merged base + staged changes with permission gating applied. |
 | **commit**            | CLI reads the journal and applies all operations to the base filesystem. |
@@ -67,7 +67,7 @@ agfs.toml                       # config file in CWD (mount options + rules)
 All staging state lives in the structures below. Nothing is shared
 across mounts. The two design invariants (no open fds during snapshot,
 directory inodes pinned) keep the state minimal: the file struct carries
-zero staging-specific fields; all staging truth lives in the override
+zero staging-specific fields; all staging truth lives in the dirent
 table on directory inodes.
 
 **Per-superblock** (`agfs_sb_info`) — one instance, lives for the mount:
@@ -78,9 +78,9 @@ table on directory inodes.
 | `journal_file` | Open file handle to `.agfs/journal` (`O_APPEND`). The kernel only appends; it never reads the journal back. |
 | `staging_sem` | rw\_semaphore serializing COW / re-COW, snapshot, and journal writes |
 | `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
-| `snapshot_gen` | Atomic counter, starts at 1, bumped by each snapshot ioctl. Compared against `override.snapshot_gen` at open time to decide COW / re-COW. |
+| `snapshot_gen` | Atomic counter, starts at 1, bumped by each snapshot ioctl. Compared against `dirent.snapshot_gen` at open time to decide COW / re-COW. |
 | `staging_fd_count` | Atomic counter of open staging fds (opened for write). Snapshot ioctl rejects with `-EBUSY` when > 0. |
-| `pinned_dirs` | List head tracking `igrab()`-pinned directory inodes (those with overrides) for bulk release at cache invalidation / unmount. |
+| `pinned_dirs` | List head tracking `igrab()`-pinned directory inodes (those with dirents) for bulk release at cache invalidation / unmount. |
 | `pinned_dirs_lock` | Spinlock protecting `pinned_dirs`. |
 
 **Per-inode** (`agfs_inode_info`) — one per cached inode:
@@ -88,14 +88,14 @@ table on directory inodes.
 | Field | Purpose |
 |-------|---------|
 | `lower_inode` | Pointer to the lower-FS inode (base file at lookup time). Not updated after COW — stale but harmless. Used only for `evict_inode` cleanup and directory permission pass-through. |
-| `ovr_buckets` | *(directories only)* 64-bucket hash table of `agfs_override` entries. Lazily allocated on first override. This is the kernel's source of truth for staged changes. |
-| `ovr_lock` | *(directories only)* Spinlock protecting `ovr_buckets`. |
-| `ovr_pin` | *(directories only)* Node in `sbi->pinned_dirs`. Linked on first override, removed at cache invalidation / unmount. |
+| `de_buckets` | *(directories only)* 64-bucket hash table of `agfs_dirent` entries. Lazily allocated on first dirent. This is the kernel's source of truth for staged changes. |
+| `de_lock` | *(directories only)* Spinlock protecting `de_buckets`. |
+| `de_pin` | *(directories only)* Node in `sbi->pinned_dirs`. Linked on first dirent, removed at cache invalidation / unmount. |
 
-The override table lives on the directory inode because it is a property
+The dirent table lives on the directory inode because it is a property
 of the directory itself, not of the dentry name. Directories are never
 COW'd, so their inode identity is stable for the entire staging session.
-The COW generation for regular files is tracked on the override entry
+The COW generation for regular files is tracked on the dirent entry
 (`snapshot_gen`), not on the inode.
 
 **Per-dentry** (`agfs_dentry_info`) — one per cached dentry:
@@ -114,7 +114,7 @@ No staging-specific flags. Because no fd spans a snapshot boundary
 (enforced by `staging_fd_count`), the file handle established at open
 time is valid for the lifetime of the fd.
 
-**Per-override** (`agfs_override`) — one per staged child name in a directory:
+**Per-dirent** (`agfs_dirent`) — one per staged child name in a directory:
 
 | Field | Purpose |
 |-------|---------|
@@ -126,12 +126,12 @@ time is valid for the lifetime of the fd.
 
 ## Path Resolution
 
-Each directory inode holds an **override hash table** of child overrides
-(64 buckets, keyed by `full_name_hash()`). Each override records the
+Each directory inode holds a **dirent hash table** of child dirents
+(64 buckets, keyed by `full_name_hash()`). Each dirent records the
 current state of a child name:
 
 ```c
-struct agfs_override {
+struct agfs_dirent {
     struct hlist_node node;
     u64               ino;        /* >0 = content/dir in inodes/<ino> */
     char              *base_path; /* non-NULL = content at this base path */
@@ -151,72 +151,72 @@ Interpretation:
 - all zero/NULL → deleted (lookup returns negative dentry)
 - no entry at all → fall through to base filesystem
 
-**`find_override`** — hash lookup in the parent directory's override table:
+**`find_dirent`** — hash lookup in the parent directory's dirent table:
 
 ```
-find_override(dir, name):
+find_dirent(dir, name):
     bucket = hash(name) >> (32 - shift)
-    for ovr in dir.ovr_buckets[bucket]:
-        if ovr.name == name:  return ovr
+    for de in dir.de_buckets[bucket]:
+        if de.name == name:  return de
     return NULL
 ```
 
-`base_path` is always owned by the override entry. Readers must snapshot or
-duplicate it while holding the inode's `ovr_lock` before resolving it, because
-writers are free to replace the string in place when publishing a new override.
+`base_path` is always owned by the dirent entry. Readers must snapshot or
+duplicate it while holding the inode's `de_lock` before resolving it, because
+writers are free to replace the string in place when publishing a new dirent.
 
-**`add_override`** — upsert: update existing override or insert into bucket:
+**`add_dirent`** — upsert: update existing dirent or insert into bucket:
 
 ```
-add_override(dir, name, ino=0, base_path=NULL, snapshot_gen=0):
-    ovr = find_override(dir, name)
-    if ovr:
-        ovr.ino = ino
-        ovr.base_path = strdup(base_path)   # replace owned copy
-        ovr.snapshot_gen = snapshot_gen
+add_dirent(dir, name, ino=0, base_path=NULL, snapshot_gen=0):
+    de = find_dirent(dir, name)
+    if de:
+        de.ino = ino
+        de.base_path = strdup(base_path)   # replace owned copy
+        de.snapshot_gen = snapshot_gen
     else:
-        ovr = alloc_override(name)
-        ovr.ino = ino
-        ovr.base_path = strdup(base_path)
-        ovr.snapshot_gen = snapshot_gen
+        de = alloc_dirent(name)
+        de.ino = ino
+        de.base_path = strdup(base_path)
+        de.snapshot_gen = snapshot_gen
         bucket = hash(name) >> (32 - shift)
-        dir.ovr_buckets[bucket].add(ovr)
+        dir.de_buckets[bucket].add(de)
 ```
 
-An override is **deleted** when `ino == 0 && base_path == NULL`
-(i.e. `add_override(dir, name)` with no other arguments).
+A dirent is **deleted** when `ino == 0 && base_path == NULL`
+(i.e. `add_dirent(dir, name)` with no other arguments).
 
 **Lookup** (`agfs_lookup`) — called by the VFS when a name is first
 accessed in a directory:
 
 ```
 agfs_lookup(dir, name):
-    ovr = find_override(dir, name)
-    if ovr:
-        ino, base_path = snapshot(ovr)   # copy under ovr_lock
+    de = find_dirent(dir, name)
+    if de:
+        ino, base_path = snapshot(de)   # copy under de_lock
         if ino:            return inode for inodes/<ino>
         if base_path:      return inode for base/<path>
         return negative dentry  # deleted
     return base_lookup(dir, name)   # fall through to base
 ```
 
-**Readdir** merges the override table with the base directory:
+**Readdir** merges the dirent table with the base directory:
 
 ```
 agfs_readdir(dir):
-    for ovr in dir.ovr_buckets[*]:
-        if not ovr.is_deleted:  dir_emit(ovr.name)
+    for de in dir.de_buckets[*]:
+        if not de.is_deleted:  dir_emit(de.name)
     for entry in base_readdir(dir):
-        if not find_override(dir, entry.name):  dir_emit(entry.name)
+        if not find_dirent(dir, entry.name):  dir_emit(entry.name)
 ```
 
-The override table is the kernel's in-memory source of truth. The journal
+The dirent table is the kernel's in-memory source of truth. The journal
 persists it on disk for the CLI. The kernel never reads the journal back.
 
 ## Open / Read / Write Path
 
 The backing file (staged inode or base file) is determined at **lookup**
-time via the override table. `open()` receives a dentry already pointing at
+time via the dirent table. `open()` receives a dentry already pointing at
 the right lower inode.
 
 COW and re-COW are resolved at **open time**, not deferred to the first
@@ -226,7 +226,7 @@ made at open time is final. This makes `write_iter` and `mmap` pure
 pass-throughs with zero staging logic.
 
 Staging publications that involve COW, re-COW, or rename (installing an
-override, updating the dentry's lower path, and appending the journal
+dirent, updating the dentry's lower path, and appending the journal
 record) are serialized under `staging_sem` and must succeed as a unit.
 If any step fails (e.g., journal append), the operation fails and the
 previous mapping remains authoritative.
@@ -235,10 +235,10 @@ Create/mkdir/symlink/unlink/rmdir are already serialized by the VFS
 
 ```
 agfs_open(inode, file):
-    ovr = find_override(parent, name)
+    de = find_dirent(parent, name)
 
     if file->f_flags & (O_WRONLY | O_RDWR):
-        if ovr and ovr.ino and ovr.snapshot_gen >= sbi->snapshot_gen:
+        if de and de.ino and de.snapshot_gen >= sbi->snapshot_gen:
             // Inode is current — open it directly (O_TRUNC truncates in place).
             down_read(staging_sem)
             atomic_inc(staging_fd_count)
@@ -250,11 +250,11 @@ agfs_open(inode, file):
             // agfs_do_cow copies from dentry's current lower_path
             // to a fresh inode. With O_TRUNC, creates an empty inode.
             down_write(staging_sem)
-            // Re-check override under sem — a concurrent open may have
+            // Re-check dirent under sem — a concurrent open may have
             // already COW'd this file since our check above.
             atomic_inc(staging_fd_count)
             new_file = agfs_do_cow(sbi, dentry, flags, O_TRUNC in flags)
-            // agfs_do_cow updates: override (ino, snapshot_gen,
+            // agfs_do_cow updates: dirent (ino, snapshot_gen,
             //   clears base_path), dentry lower_path, journal
             up_write(staging_sem)
             file_info->lower_file = new_file
@@ -294,7 +294,7 @@ agfs_mmap(file, vma):
 
 ## Create / Mkdir / Symlink Path
 
-All creation operations allocate a new inode and add an override with
+All creation operations allocate a new inode and add a dirent with
 `snapshot_gen = sbi->snapshot_gen` so the file is recognised as already staged
 (preventing a spurious re-COW on next open-for-write):
 
@@ -302,19 +302,19 @@ All creation operations allocate a new inode and add an override with
 agfs_create(dir, name, mode):
     ino = next_ino++
     create file inodes/<ino>
-    add_override(dir, name, ino=ino, snapshot_gen=sbi->snapshot_gen)
+    add_dirent(dir, name, ino=ino, snapshot_gen=sbi->snapshot_gen)
     journal(A, abs_path, ino)
 
 agfs_mkdir(dir, name, mode):
     ino = next_ino++
     create dir inodes/<ino>/
-    add_override(dir, name, ino=ino, snapshot_gen=sbi->snapshot_gen)
+    add_dirent(dir, name, ino=ino, snapshot_gen=sbi->snapshot_gen)
     journal(A, abs_path, ino)
 
 agfs_symlink(dir, name, target):
     ino = next_ino++
     create symlink inodes/<ino> -> target
-    add_override(dir, name, ino=ino, snapshot_gen=sbi->snapshot_gen)
+    add_dirent(dir, name, ino=ino, snapshot_gen=sbi->snapshot_gen)
     journal(A, abs_path, ino)
 ```
 
@@ -323,61 +323,61 @@ visible in `agfs status` / `agfs diff` and cleanly discarded by abort.
 
 ## Delete / Rmdir Path
 
-Delete adds a "deleted" override (all fields zero/NULL) and appends
+Delete adds a "deleted" dirent (all fields zero/NULL) and appends
 to the journal:
 
 ```
 agfs_unlink(dir, name):
-    add_override(dir, name)   # all zero = deleted
+    add_dirent(dir, name)   # all zero = deleted
     journal(D, abs_path)
 
 agfs_rmdir(dir, name):
-    add_override(dir, name)   # all zero = deleted
+    add_dirent(dir, name)   # all zero = deleted
     journal(D, abs_path)
 ```
 
-Subsequent lookup of the name finds the override and returns a negative
+Subsequent lookup of the name finds the dirent and returns a negative
 dentry. The base file is untouched until commit.
 
 ## Rename Handling
 
 Rename is decomposed into a delete of the old name + creation at the new
-name. No file content is copied — only override metadata changes.
+name. No file content is copied — only dirent metadata changes.
 
 ```
 agfs_rename(old_parent, old_name, new_parent, new_name):
-    old_ovr = find_override(old_parent, old_name)
+    old_de = find_dirent(old_parent, old_name)
 
-    if old_ovr and old_ovr.ino:
-        # File has a staged inode -- move the override, keep same ino.
-        add_override(new_parent, new_name, ino=old_ovr.ino,
-                     snapshot_gen=old_ovr.snapshot_gen)
-    elif old_ovr and old_ovr.base_path:
+    if old_de and old_de.ino:
+        # File has a staged inode -- move the dirent, keep same ino.
+        add_dirent(new_parent, new_name, ino=old_de.ino,
+                     snapshot_gen=old_de.snapshot_gen)
+    elif old_de and old_de.base_path:
         # Already redirected (chained rename) -- follow the chain.
-        add_override(new_parent, new_name, base_path=old_ovr.base_path)
+        add_dirent(new_parent, new_name, base_path=old_de.base_path)
     else:
         # File only in base -- redirect without copying.
-        add_override(new_parent, new_name,
+        add_dirent(new_parent, new_name,
                      base_path=abs_base_path(old_parent, old_name))
 
     # Hide the old name (all fields zero/NULL = deleted).
-    add_override(old_parent, old_name)
+    add_dirent(old_parent, old_name)
     journal(R, old_abs_path, new_abs_path)
 ```
 
 **Rename chains** (`mv a->b`, then `mv b->c`) work naturally: the second
-rename finds the REDIRECTED override on `b`, follows its `base_path` to
-the original base file, and creates a new REDIRECTED override on `c`.
+rename finds the REDIRECTED dirent on `b`, follows its `base_path` to
+the original base file, and creates a new REDIRECTED dirent on `c`.
 
 **Rename + recreate** (`mv a->b`, then `touch a`) works because the new
-`touch a` adds an ADDED override that supersedes the DELETED override.
+`touch a` adds an ADDED dirent that supersedes the DELETED dirent.
 
-**Read after rename**: lookup of the new name finds the override ->
+**Read after rename**: lookup of the new name finds the dirent ->
 opens the base file at the redirected path (or the staged inode).
-Lookup of the old name finds the DELETED override -> returns `-ENOENT`.
+Lookup of the old name finds the DELETED dirent -> returns `-ENOENT`.
 
 **Write after rename**: opening for write triggers COW at open time. The
-base file is copied into a new inode; the override changes from
+base file is copied into a new inode; the dirent changes from
 `base_path=...` to `ino=N`.
 
 Commit and abort handling for renames is covered in
@@ -385,29 +385,29 @@ Commit and abort handling for renames is covered in
 
 ## Readdir (Merged Directory Listing)
 
-`readdir` (`iterate_shared`) presents a merged view: overrides first,
+`readdir` (`iterate_shared`) presents a merged view: dirents first,
 then base entries that aren't overridden.
 
 ```
 agfs_readdir(dir, ctx):
-    # 1. Emit non-deleted overrides.
-    for ovr in dir.ovr_buckets[*]:
-        if not ovr.is_deleted:
-            dir_emit(ctx, ovr.name)
+    # 1. Emit non-deleted dirents.
+    for de in dir.de_buckets[*]:
+        if not de.is_deleted:
+            dir_emit(ctx, de.name)
 
-    # 2. Emit base entries not overridden by overrides.
+    # 2. Emit base entries not overridden by dirents.
     for entry in base_readdir(dir):
-        if not find_override(dir, entry.name):
+        if not find_dirent(dir, entry.name):
             dir_emit(ctx, entry.name)
 ```
 
-Override entries are emitted with the correct `d_type` (DT_REG, DT_DIR,
-DT_LNK) stored in each override. The `ino` passed to `dir_emit` is 0
+Dirent entries are emitted with the correct `d_type` (DT_REG, DT_DIR,
+DT_LNK) stored in each dirent. The `ino` passed to `dir_emit` is 0
 (unknown); callers that need the real inode number should `stat()` the entry.
 
 The merged list is built fresh on every `readdir` call — no caching.
 This ensures creates, deletes, and renames between `getdents64` calls
-are always visible. Override hash tables are small, so the cost is negligible.
+are always visible. Dirent hash tables are small, so the cost is negligible.
 
 ## setattr / getattr / fsync
 
@@ -422,7 +422,7 @@ triggered by setattr itself.
 **`getattr`** (e.g., `stat`): Stats from the resolved path — the staged
 inode if the file has been modified, otherwise the base file.
 
-**`fsync`**: If the file is in staging (the override has `ino > 0`),
+**`fsync`**: If the file is in staging (the dirent has `ino > 0`),
 returns 0 immediately — staged inodes are ephemeral and will be committed or
 discarded as a batch. For base files opened read-only, fsync is delegated to
 the lower filesystem as usual.
@@ -535,7 +535,7 @@ state.
 6. Releases `staging_sem`.
 7. Returns the snapshot ID to userspace.
 
-No override tables change. No caches invalidated. The write lock on
+No dirent tables change. No caches invalidated. The write lock on
 `staging_sem` ensures no open-for-write is mid-flight when the generation
 is bumped (open-for-write holds at least a read lock while incrementing
 `staging_fd_count`).
@@ -548,23 +548,23 @@ looking up by name, `--at` and `--from` match the latest one.
 
 ### Re-COW on First Open-for-Write After Snapshot
 
-The COW check is per-override: `override.snapshot_gen` records the
+The COW check is per-dirent: `dirent.snapshot_gen` records the
 `sbi->snapshot_gen` at which the current inode was created.
 `sbi->snapshot_gen` starts at 1. Newly created files set
 `snapshot_gen = sbi->snapshot_gen` at creation time, so they are already
-up-to-date and skip the COW check. Base files that have no override
+up-to-date and skip the COW check. Base files that have no dirent
 (or have `ino == 0`) naturally trigger COW on the first
 open-for-write.
 
 At open time, the COW check in `agfs_open` (see [Open / Read / Write
 Path](#open--read--write-path)) handles both base→staged COW and
-staged→staged re-COW: if the override is missing, has no ino, or has a
+staged→staged re-COW: if the dirent is missing, has no ino, or has a
 stale `snapshot_gen`, a fresh inode is created.
 
 `agfs_do_cow` copies from the dentry's current `lower_path` — which is
 the base file before any COW, or the current staged inode after one.
 The same function handles both cases; no separate re-COW path.
-`agfs_do_cow` also updates `override.snapshot_gen` after a successful COW.
+`agfs_do_cow` also updates `dirent.snapshot_gen` after a successful COW.
 
 Because no fd spans a snapshot boundary (enforced by `staging_fd_count`),
 the write and mmap paths need no COW checks — they are pure pass-throughs.

@@ -204,7 +204,7 @@ const INTERESTING: &[&str] = &[
     "agfs_journal_append_d",
     "agfs_journal_append_r",
     "agfs_release",
-    "agfs_find_override",
+    "agfs_find_dirent",
 ];
 
 fn discover_agfs_funcs() -> Result<Vec<String>> {

@@ -1,7 +1,7 @@
 use crate::helpers::AgfsSession;
 use std::fs;
 
-// ── inode.c: agfs_unlink — adds DELETED override ──
+// ── inode.c: agfs_unlink — adds DELETED dirent ──
 
 /// Deleting a file through the mount hides it from the mount view.
 #[test]

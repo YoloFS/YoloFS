@@ -9,7 +9,7 @@
 #include "agfs.h"
 #include <linux/xattr.h>
 
-/* ── create/mkdir/symlink — allocate inode + override ───────────────── */
+/* ── create/mkdir/symlink — allocate inode + dirent ───────────────── */
 
 static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 			      umode_t mode, const char *symname)
@@ -35,7 +35,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	}
 
 	agfs_replace_lower_path(dentry, &inode_path);
-	err = agfs_add_override(dir, dentry->d_name.name,
+	err = agfs_add_dirent(dir, dentry->d_name.name,
 				dentry->d_name.len, ino, NULL,
 				S_ISDIR(mode) ? DT_DIR :
 				S_ISLNK(mode) ? DT_LNK : DT_REG,
@@ -59,7 +59,7 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	return agfs_create_staged(dir, dentry, S_IFDIR | mode, NULL);
 }
 
-/* ── unlink/rmdir — add DELETED override ───────────────────────────── */
+/* ── unlink/rmdir — add DELETED dirent ───────────────────────────── */
 
 static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 {
@@ -71,7 +71,7 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 	if (err)
 		return err;
 
-	err = agfs_add_override(dir,
+	err = agfs_add_dirent(dir,
 				dentry->d_name.name,
 				dentry->d_name.len, 0, NULL, DT_UNKNOWN,
 				0);
@@ -112,7 +112,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
 	struct agfs_inode_info *old_parent_ii;
 	char old_buf[AGFS_PATH_MAX], new_buf[AGFS_PATH_MAX];
-	struct agfs_override *old_ovr = NULL;
+	struct agfs_dirent *old_de = NULL;
 	u64 old_ino = 0;
 	u64 old_gen = 0;
 	char *old_bp = NULL;
@@ -131,47 +131,47 @@ static int agfs_rename(struct mnt_idmap *idmap,
 
 	down_write(&sbi->staging_sem);
 
-	/* Check current override state on old name.
+	/* Check current dirent state on old name.
 	 * Snapshot base_path while holding the lock. */
 	old_parent_ii = AGFS_I(old_dir);
-	spin_lock(&old_parent_ii->ovr_lock);
-	old_ovr = agfs_find_override(old_dir,
+	spin_lock(&old_parent_ii->de_lock);
+	old_de = agfs_find_dirent(old_dir,
 				     old_dentry->d_name.name,
 				     old_dentry->d_name.len);
-	if (old_ovr) {
-		old_ino = old_ovr->ino;
-		old_gen = old_ovr->snapshot_gen;
-		old_dtype = old_ovr->d_type;
-		if (old_ovr->base_path) {
-			old_bp = kstrdup(old_ovr->base_path,
+	if (old_de) {
+		old_ino = old_de->ino;
+		old_gen = old_de->snapshot_gen;
+		old_dtype = old_de->d_type;
+		if (old_de->base_path) {
+			old_bp = kstrdup(old_de->base_path,
 					 GFP_ATOMIC);
 			if (!old_bp) {
-				spin_unlock(&old_parent_ii->ovr_lock);
+				spin_unlock(&old_parent_ii->de_lock);
 				err = -ENOMEM;
 				goto out;
 			}
 		}
 	}
-	spin_unlock(&old_parent_ii->ovr_lock);
+	spin_unlock(&old_parent_ii->de_lock);
 
-	/* Derive d_type from old dentry's inode when no override existed */
-	if (!old_ovr && d_inode(old_dentry))
+	/* Derive d_type from old dentry's inode when no dirent existed */
+	if (!old_de && d_inode(old_dentry))
 		old_dtype = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
 
-	if (old_ovr && !old_ino && !old_bp) {
+	if (old_de && !old_ino && !old_bp) {
 		/* Source is deleted — cannot rename */
 		err = -ENOENT;
 		goto out;
 	} else if (old_ino) {
-		/* File has a staged inode — move the override, keep same ino */
-		err = agfs_add_override(new_dir,
+		/* File has a staged inode — move the dirent, keep same ino */
+		err = agfs_add_dirent(new_dir,
 					new_dentry->d_name.name,
 					new_dentry->d_name.len,
 					old_ino, NULL, old_dtype,
 					old_gen);
 	} else {
 		/* Base file or chained rename — redirect by path */
-		err = agfs_add_override(new_dir,
+		err = agfs_add_dirent(new_dir,
 					new_dentry->d_name.name,
 					new_dentry->d_name.len,
 					0, old_bp ? old_bp : old_buf,
@@ -180,8 +180,8 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (err)
 		goto out;
 
-	/* Hide the old name (deleted override) */
-	err = agfs_add_override(old_dir,
+	/* Hide the old name (deleted dirent) */
+	err = agfs_add_dirent(old_dir,
 				old_dentry->d_name.name,
 				old_dentry->d_name.len, 0, NULL,
 				DT_UNKNOWN, 0);
@@ -191,7 +191,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	/* Journal rename */
 	err = agfs_journal_append_r(sbi, old_buf, new_buf);
 
-	/* Invalidate dcache for both names so next lookup uses overrides */
+	/* Invalidate dcache for both names so next lookup uses dirents */
 	d_drop(old_dentry);
 	d_drop(new_dentry);
 

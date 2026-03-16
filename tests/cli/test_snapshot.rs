@@ -221,7 +221,7 @@ fn second_handle_skips_redundant_recow() {
     let status_before = s.cli(&["status"]).expect("status after v2");
 
     // Handle B opens and writes — should NOT create another inode
-    // because override.snapshot_gen already matches sbi->snapshot_gen.
+    // because dirent.snapshot_gen already matches sbi->snapshot_gen.
     // O_TRUNC on an already-staged file truncates the inode in-place.
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
 

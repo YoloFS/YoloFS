@@ -1,7 +1,7 @@
 use crate::helpers::AgfsSession;
 use std::fs;
 
-// ── inode.c: agfs_rmdir — adds DELETED override ──
+// ── inode.c: agfs_rmdir — adds DELETED dirent ──
 
 /// rmdir a directory that was created through the mount (staged dir).
 #[test]
@@ -21,14 +21,14 @@ fn rmdir_staged_dir() {
     );
 }
 
-/// rmdir a base directory adds a DELETED override.
+/// rmdir a base directory adds a DELETED dirent.
 /// This test documents the current behavior.
 #[test]
-fn rmdir_base_dir_adds_override() {
+fn rmdir_base_dir_adds_dirent() {
     let s = AgfsSession::new().expect("session setup");
 
     // subdir/ exists in base with files inside.
-    // agfs_rmdir adds a DELETED override.
+    // agfs_rmdir adds a DELETED dirent.
     let result = fs::remove_dir(s.mnt_path("subdir"));
     if result.is_ok() {
         // Base should be untouched
@@ -41,7 +41,7 @@ fn rmdir_base_dir_adds_override() {
 }
 
 /// rmdir on a non-empty staged directory succeeds because agfs adds a
-/// DELETED override without checking directory emptiness.
+/// DELETED dirent without checking directory emptiness.
 #[test]
 fn rmdir_nonempty_staged_dir() {
     let s = AgfsSession::new().expect("session setup");
@@ -49,7 +49,7 @@ fn rmdir_nonempty_staged_dir() {
     fs::create_dir(s.mnt_path("hasfiles")).expect("mkdir");
     fs::write(s.mnt_path("hasfiles/child.txt"), "data\n").expect("write");
 
-    // agfs rmdir adds a DELETED override — the child file becomes unreachable
+    // agfs rmdir adds a DELETED dirent — the child file becomes unreachable
     fs::remove_dir(s.mnt_path("hasfiles")).expect("rmdir non-empty staged dir");
 
     assert!(

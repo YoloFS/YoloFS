@@ -103,32 +103,32 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 	if (err)
 		return ERR_PTR(err);
 
-	/* 1. Check override list on parent directory inode */
+	/* 1. Check dirent table on parent directory inode */
 	if (sbi->staging) {
 		struct inode *parent_inode = d_inode(dentry->d_parent);
 		struct agfs_inode_info *parent_ii = AGFS_I(parent_inode);
-		struct agfs_override *ovr;
+		struct agfs_dirent *de;
 		u64 ino = 0;
 		char *bp = NULL;
 
-		spin_lock(&parent_ii->ovr_lock);
-		ovr = agfs_find_override(parent_inode,
+		spin_lock(&parent_ii->de_lock);
+		de = agfs_find_dirent(parent_inode,
 					 dentry->d_name.name,
 					 dentry->d_name.len);
-		if (ovr) {
-			ino = ovr->ino;
-			if (ovr->base_path) {
-				bp = kstrdup(ovr->base_path, GFP_ATOMIC);
+		if (de) {
+			ino = de->ino;
+			if (de->base_path) {
+				bp = kstrdup(de->base_path, GFP_ATOMIC);
 				if (!bp) {
-					spin_unlock(&parent_ii->ovr_lock);
+					spin_unlock(&parent_ii->de_lock);
 					err = -ENOMEM;
 					goto out_free;
 				}
 			}
 		}
-		spin_unlock(&parent_ii->ovr_lock);
+		spin_unlock(&parent_ii->de_lock);
 
-		if (ovr) {
+		if (de) {
 			if (ino) {
 				/* Staged inode */
 				struct path ino_path;

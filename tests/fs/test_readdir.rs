@@ -59,7 +59,7 @@ fn readdir_hides_deleted_file() {
 
 /// After rename, readdir shows new name and hides old name.
 /// The kernel creates a staged stub at the new path so readdir
-/// discovers it when merging overrides + base.
+/// discovers it when merging dirents + base.
 #[test]
 fn readdir_after_rename() {
     let s = AgfsSession::new().expect("session setup");

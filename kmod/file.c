@@ -94,24 +94,24 @@ static struct file *agfs_open_staged_ino(struct agfs_sb_info *sbi,
 	return f;
 }
 
-/* Snapshot ino + snapshot_gen from the parent's override table. */
-static void agfs_snapshot_ovr(struct dentry *dentry, u64 *ino, u64 *gen)
+/* Snapshot ino + snapshot_gen from the parent's dirent table. */
+static void agfs_snapshot_de(struct dentry *dentry, u64 *ino, u64 *gen)
 {
 	struct inode *dir = d_inode(dentry->d_parent);
 	struct agfs_inode_info *dii = AGFS_I(dir);
-	struct agfs_override *ovr;
+	struct agfs_dirent *de;
 
-	spin_lock(&dii->ovr_lock);
-	ovr = agfs_find_override(dir, dentry->d_name.name,
+	spin_lock(&dii->de_lock);
+	de = agfs_find_dirent(dir, dentry->d_name.name,
 				 dentry->d_name.len);
-	if (ovr) {
-		*ino = ovr->ino;
-		*gen = ovr->snapshot_gen;
+	if (de) {
+		*ino = de->ino;
+		*gen = de->snapshot_gen;
 	} else {
 		*ino = 0;
 		*gen = 0;
 	}
-	spin_unlock(&dii->ovr_lock);
+	spin_unlock(&dii->de_lock);
 }
 
 /* Open the right file for a staged regular file.
@@ -126,7 +126,7 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 	u64 ino, gen;
 	int err;
 
-	agfs_snapshot_ovr(dentry, &ino, &gen);
+	agfs_snapshot_de(dentry, &ino, &gen);
 
 	if (!(file->f_flags & (O_WRONLY | O_RDWR)))
 		return agfs_open_lower(dentry, file->f_flags);
@@ -149,7 +149,7 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 	down_write(&sbi->staging_sem);
 
 	/* Re-check under sem — a concurrent open may have COW'd */
-	agfs_snapshot_ovr(dentry, &ino, &gen);
+	agfs_snapshot_de(dentry, &ino, &gen);
 	if (ino && gen >= (u64)atomic64_read(&sbi->snapshot_gen)) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_write(&sbi->staging_sem);
@@ -353,9 +353,9 @@ static loff_t agfs_llseek(struct file *file, loff_t offset, int whence)
 /* ── Directory: readdir / iterate_shared (§3.8 merged listing) ──────── */
 
 /*
- * Merged readdir: override entries first, then base entries not overridden.
+ * Merged readdir: dirents first, then base entries not overridden.
  *
- * Override names are snapshotted into a hash set (for O(1) dedup), then
+ * Stage dirent names are snapshotted into a hash set (for O(1) dedup), then
  * base directory entries are streamed through a filldir callback that
  * skips any name present in the set.
  */
@@ -487,32 +487,32 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 }
 
 /*
- * Snapshot override entries into a nameset and emit non-deleted ones.
+ * Snapshot dirent entries into a nameset and emit non-deleted ones.
  * Returns the nameset (caller frees) or ERR_PTR on error.
  * Sets *done = true when dir_emit signals the buffer is full.
  */
-static struct agfs_nameset *agfs_emit_overrides(struct inode *dir,
+static struct agfs_nameset *agfs_emit_dirents(struct inode *dir,
 						struct dir_context *ctx,
 						loff_t *off, bool *done)
 {
 	struct agfs_inode_info *dii = AGFS_I(dir);
 	struct agfs_nameset *ns;
-	struct agfs_override *ovr;
+	struct agfs_dirent *de;
 	struct agfs_nameset_entry *e;
 	unsigned int count = 0, bi, i;
 	int err;
 
 	*done = false;
 
-	if (!dii->ovr_buckets)
+	if (!dii->de_buckets)
 		return NULL;
 
 	/* Count entries under spinlock */
-	spin_lock(&dii->ovr_lock);
-	for (bi = 0; bi < AGFS_OVR_BUCKETS; bi++)
-		hlist_for_each_entry(ovr, &dii->ovr_buckets[bi], node)
+	spin_lock(&dii->de_lock);
+	for (bi = 0; bi < AGFS_DE_BUCKETS; bi++)
+		hlist_for_each_entry(de, &dii->de_buckets[bi], node)
 			count++;
-	spin_unlock(&dii->ovr_lock);
+	spin_unlock(&dii->de_lock);
 
 	/* Allocate outside spinlock — GFP_KERNEL may sleep */
 	ns = agfs_nameset_alloc(count);
@@ -520,27 +520,27 @@ static struct agfs_nameset *agfs_emit_overrides(struct inode *dir,
 		return ERR_PTR(-ENOMEM);
 
 	/* Re-acquire and populate; table may have changed */
-	spin_lock(&dii->ovr_lock);
-	if (!dii->ovr_buckets) {
-		spin_unlock(&dii->ovr_lock);
+	spin_lock(&dii->de_lock);
+	if (!dii->de_buckets) {
+		spin_unlock(&dii->de_lock);
 		return ns;
 	}
-	for (bi = 0; bi < AGFS_OVR_BUCKETS; bi++) {
-		hlist_for_each_entry(ovr, &dii->ovr_buckets[bi], node) {
-			bool deleted = !ovr->ino && !ovr->base_path;
+	for (bi = 0; bi < AGFS_DE_BUCKETS; bi++) {
+		hlist_for_each_entry(de, &dii->de_buckets[bi], node) {
+			bool deleted = !de->ino && !de->base_path;
 
-			err = agfs_nameset_add(ns, ovr->name, ovr->name_len,
-					       deleted, ovr->d_type);
+			err = agfs_nameset_add(ns, de->name, de->name_len,
+					       deleted, de->d_type);
 			if (err) {
-				spin_unlock(&dii->ovr_lock);
+				spin_unlock(&dii->de_lock);
 				agfs_nameset_free(ns);
 				return ERR_PTR(err);
 			}
 		}
 	}
-	spin_unlock(&dii->ovr_lock);
+	spin_unlock(&dii->de_lock);
 
-	/* Emit non-deleted overrides, respecting ctx->pos */
+	/* Emit non-deleted dirents, respecting ctx->pos */
 	for (i = 0; i < (1u << ns->shift); i++) {
 		hlist_for_each_entry(e, &ns->buckets[i], node) {
 			if (e->is_deleted) {
@@ -586,8 +586,8 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 		return err;
 	}
 
-	/* Phase 1: snapshot overrides, emit non-deleted entries */
-	ns = agfs_emit_overrides(file_inode(file), ctx, &off, &done);
+	/* Phase 1: snapshot dirents, emit non-deleted entries */
+	ns = agfs_emit_dirents(file_inode(file), ctx, &off, &done);
 	if (IS_ERR(ns))
 		return PTR_ERR(ns);
 	if (done) {

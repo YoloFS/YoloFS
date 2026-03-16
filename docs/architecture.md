@@ -55,7 +55,7 @@ The two layers execute in order for every VFS operation:
    If `allow-*`, falls through.
 2. **Staging Layer** — routes reads to the staged inode if the file has been
    modified, otherwise to the base. Ensures writes go to staged inodes.
-   Uses per-directory-inode override hash tables for deletions and renames.
+   Uses per-directory-inode dirent hash tables for deletions and renames.
 
 All I/O is ultimately delegated to the lower filesystem via the standard
 wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
@@ -75,7 +75,7 @@ AgFS uses a fundamentally different staging model from OverlayFS.
 **Staging vs live union**: OverlayFS is a live union filesystem — the upper
 layer *is* the persistent state. There is no commit or abort. A renamed
 file is copied up to upper with `RENAME_WHITEOUT` and stays there forever.
-AgFS treats staging as a flat inode store with in-memory override tables that
+AgFS treats staging as a flat inode store with in-memory dirent tables that
 are explicitly committed or discarded via the journal.
 
 **Copy-up**: OverlayFS always does a full copy-up on first write, even for
@@ -84,12 +84,12 @@ truncates). AgFS detects `O_TRUNC` and creates an empty staged inode
 directly — zero copy for the most common agent write pattern.
 
 **Rename**: OverlayFS does a real `vfs_rename()` in the upper directory,
-which requires copy-up. AgFS does zero-copy renames by adding overrides
+which requires copy-up. AgFS does zero-copy renames by adding dirents
 (DELETED on old parent, REDIRECTED on new parent). Rename chains
-resolve naturally through the override table.
+resolve naturally through the dirent table.
 
 **Lookup**: OverlayFS does two lookups per component (upper + lower) and
-merges the results. AgFS checks the parent's override table first, then
+merges the results. AgFS checks the parent's dirent table first, then
 falls back to base — one lookup.
 
 **Permission model**: OverlayFS uses standard Unix permissions only. AgFS

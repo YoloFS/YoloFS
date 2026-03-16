@@ -6,14 +6,14 @@ All struct definitions live in [`kmod/agfs.h`](../kmod/agfs.h).
 
 ## Design Notes
 
-Directory inodes lazily allocate a 64-bucket override hash table on
-first `agfs_add_override`. Non-directory inodes keep `ovr_buckets = NULL`,
+Directory inodes lazily allocate a 64-bucket dirent hash table on
+first `agfs_add_dirent`. Non-directory inodes keep `de_buckets = NULL`,
 avoiding the 512-byte allocation. See [staging.md — Path Resolution](staging.md#path-resolution) for the
-`agfs_override` struct.
+`agfs_dirent` struct.
 
 No per-fd snapshot state is needed. The COW check uses
-`override.snapshot_gen < sbi->snapshot_gen` (purely per-override). The fsync
-optimization uses `override.ino > 0`. The CLI enforces that
+`dirent.snapshot_gen < sbi->snapshot_gen` (purely per-dirent). The fsync
+optimization uses `dirent.ino > 0`. The CLI enforces that
 snapshots are only taken when no staging file handles are open
 (see [staging.md — Re-COW](staging.md#re-cow-on-first-open-for-write-after-snapshot)),
 so there are no stale cross-snapshot handles to track.
@@ -46,13 +46,13 @@ fails with `-ENAMETOOLONG` and no ask request is enqueued.
 
 | Operation    | Perm check                                                   | Staging layer                                                                     | Passthrough                               |
 | ------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------- |
-| `lookup`     | --                                                           | Check override table first (deleted -> ENOENT, ino -> staged inode, base_path -> redirect); fall back to base. | `lookup_one_len()` on base dir. |
-| `create`     | -- (dir perm via lower FS)                                   | Allocate inode, add override + journal append.                                  | `vfs_create()` on inode store.  |
-| `mkdir`      | -- (dir perm via lower FS)                                   | Allocate directory inode, add override + journal append.                        | --                               |
-| `unlink`     | -- (dir perm via lower FS)                                   | Add DELETED override, journal append.                                           | --                                         |
-| `rmdir`      | -- (dir perm via lower FS)                                   | Add DELETED override, journal append.                                           | --                                         |
+| `lookup`     | --                                                           | Check dirent table first (deleted -> ENOENT, ino -> staged inode, base_path -> redirect); fall back to base. | `lookup_one_len()` on base dir. |
+| `create`     | -- (dir perm via lower FS)                                   | Allocate inode, add dirent + journal append.                                  | `vfs_create()` on inode store.  |
+| `mkdir`      | -- (dir perm via lower FS)                                   | Allocate directory inode, add dirent + journal append.                        | --                               |
+| `unlink`     | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal append.                                           | --                                         |
+| `rmdir`      | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal append.                                           | --                                         |
 | `rename`     | -- (dir perm via lower FS)                                   | See [Rename Handling](staging.md#rename-handling).                               | --                                         |
-| `symlink`    | -- (dir perm via lower FS)                                   | Allocate inode (symlink), add override + journal append.                        | `vfs_symlink()`.                          |
+| `symlink`    | -- (dir perm via lower FS)                                   | Allocate inode (symlink), add dirent + journal append.                        | `vfs_symlink()`.                          |
 | `permission` | **Gating for regular files (O(1) cached); delegate to lower FS for dirs.** | --                                                                                 | `inode_permission()` on lower inode.      |
 | `setattr`    | Gated (regular files only).                                  | Setattr on resolved lower file (staged inode or base). No COW triggered.           | `notify_change()` on lower.               |
 | `getattr`    | Gated (regular files only).                                  | Stat from resolved path (staged inode or base).                                   | `vfs_getattr()` on lower.                 |
@@ -65,7 +65,7 @@ fails with `-ENAMETOOLONG` and no ask request is enqueued.
 | `read_iter`  | Swap `kiocb->ki_filp` to lower file, call `lower->read_iter()`.                                                                                                                                   |
 | `write_iter` | Pure pass-through — COW already resolved at open time. Delegate to `lower->write_iter()`. |
 | `mmap`       | Pure pass-through — COW already resolved at open time. Delegate to lower file. |
-| `fsync`      | If override has `ino > 0`: return 0 (staged inodes are ephemeral). Otherwise delegate to lower.                                                            |
+| `fsync`      | If dirent has `ino > 0`: return 0 (staged inodes are ephemeral). Otherwise delegate to lower.                                                            |
 | `release`    | Decrement `staging_fd_count` if write-mode. `fput()` lower file. Free `agfs_file_info`.                                                                                                           |
 | `llseek`     | Delegate to lower.                                                                                                                                                                                |
 
@@ -95,7 +95,7 @@ descriptor (typically `.agfs/mnt`). Ioctl command macros are defined in
 
 `AGFS_IOC_CACHE_INVAL` is called by userspace after commit/abort. It:
 1. Bumps `perm_gen` to invalidate all cached inode permissions.
-2. Walks `pinned_dirs`, frees override tables, and calls `iput()` on each
+2. Walks `pinned_dirs`, frees dirent tables, and calls `iput()` on each
    pinned directory inode.
 3. Calls `shrink_dcache_sb()` to drop stale dentry caches so the mount
    reflects the new base state.
@@ -113,9 +113,9 @@ resolved immediately using `ask_default`.
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Publishing staging mutations atomically (override + journal + dentry swap + `override.snapshot_gen`) | `rw_semaphore` (write for rename/COW). Create/mkdir/symlink/unlink/rmdir are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
+| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + `dirent.snapshot_gen`) | `rw_semaphore` (write for rename/COW). Create/mkdir/symlink/unlink/rmdir are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
-| `inode_info->ovr_lock` | Per-directory override table | `spinlock` |
+| `inode_info->de_lock` | Per-directory dirent table | `spinlock` |
 | `dentry_info->lock` | Cached lower path | `spinlock` |
 
-**Lock ordering**: `staging_sem` -> `pending_lock` -> `ovr_lock` -> `dentry_info->lock`
+**Lock ordering**: `staging_sem` -> `pending_lock` -> `de_lock` -> `dentry_info->lock`

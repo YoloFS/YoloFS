@@ -103,9 +103,9 @@ struct agfs_perm_request {
 	struct list_head	list;
 };
 
-/* ── Per-directory override entry (§3.4) ────────────────────────────── */
+/* ── Per-directory dirent (§3.4) ────────────────────────────── */
 
-struct agfs_override {
+struct agfs_dirent {
 	struct hlist_node	node;
 	u64			ino;		/* >0 = content in inodes/<ino> */
 	char			*base_path;	/* non-NULL = content at base path */
@@ -145,7 +145,7 @@ struct agfs_sb_info {
 	atomic64_t		next_ino;	/* counter for inode store IDs */
 	atomic64_t		snapshot_gen;	/* bumped on each snapshot; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
-	struct list_head	pinned_dirs;	/* igrab()'d directory inodes with overrides */
+	struct list_head	pinned_dirs;	/* igrab()'d directory inodes with dirents */
 	spinlock_t		pinned_dirs_lock;/* protects pinned_dirs */
 
 	/* Permission gating */
@@ -160,20 +160,20 @@ struct agfs_sb_info {
 
 /* ── Per-Inode Info ────────────────────────────────────────────────── */
 
-/* override hash table: 64 buckets (shift=6) covers most directories well.
- * Allocated lazily on first agfs_add_override; NULL for leaf files. */
-#define AGFS_OVR_SHIFT		6
-#define AGFS_OVR_BUCKETS	(1u << AGFS_OVR_SHIFT)
+/* dirent hash table: 64 buckets (shift=6) covers most directories well.
+ * Allocated lazily on first agfs_add_dirent; NULL for leaf files. */
+#define AGFS_DE_SHIFT		6
+#define AGFS_DE_BUCKETS	(1u << AGFS_DE_SHIFT)
 
 struct agfs_inode_info {
 	struct inode		*lower_inode;
 	enum agfs_perm		cached_perm;
 	u64			perm_gen;
 
-	/* Directory override table (lazily allocated) */
-	struct hlist_head	*ovr_buckets;	/* NULL until first override */
-	spinlock_t		ovr_lock;	/* protects ovr_buckets */
-	struct list_head	ovr_pin;	/* node in sbi->pinned_dirs */
+	/* Directory dirent table (lazily allocated) */
+	struct hlist_head	*de_buckets;	/* NULL until first dirent */
+	spinlock_t		de_lock;	/* protects de_buckets */
+	struct list_head	de_pin;	/* node in sbi->pinned_dirs */
 
 	struct inode		vfs_inode;	/* must be last for container_of */
 };
@@ -335,10 +335,10 @@ int agfs_base_path(struct agfs_sb_info *sbi, const char *relpath,
 		   struct path *result);
 int agfs_inode_path(struct agfs_sb_info *sbi, u64 ino,
 		    struct path *result);
-struct agfs_override *agfs_find_override(struct inode *dir,
+struct agfs_dirent *agfs_find_dirent(struct inode *dir,
 					 const char *name,
 					 unsigned int namelen);
-int agfs_add_override(struct inode *dir, const char *name,
+int agfs_add_dirent(struct inode *dir, const char *name,
 		      unsigned int namelen, u64 ino,
 		      const char *base_path, unsigned char d_type,
 		      u64 snapshot_gen);

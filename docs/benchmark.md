@@ -283,7 +283,7 @@ kfunctions via BTF (`kfunc`/`kretfunc` probes):
 | `agfs_journal_append_d` | Journal write for delete |
 | `agfs_journal_append_r` | Journal write for rename |
 | `agfs_release` | File release |
-| `agfs_find_override` | Staging index lookup |
+| `agfs_find_dirent` | Staging index lookup |
 
 Each function gets its own per-tid start map (`@s_<func>[tid]`) to avoid
 clobbering timestamps on nested calls (e.g. `agfs_create` calling

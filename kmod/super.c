@@ -48,9 +48,9 @@ static struct inode *agfs_alloc_inode(struct super_block *sb)
 	i->lower_inode = NULL;
 	i->cached_perm = AGFS_PERM_NONE;
 	i->perm_gen = 0;
-	i->ovr_buckets = NULL;
-	spin_lock_init(&i->ovr_lock);
-	INIT_LIST_HEAD(&i->ovr_pin);
+	i->de_buckets = NULL;
+	spin_lock_init(&i->de_lock);
+	INIT_LIST_HEAD(&i->de_pin);
 	return &i->vfs_inode;
 }
 
@@ -68,7 +68,7 @@ static void agfs_evict_inode(struct inode *inode)
 	clear_inode(inode);
 
 	/* Pinned dirs are cleaned by agfs_release_pinned_dirs; warn if leaked */
-	WARN_ON_ONCE(ii->ovr_buckets);
+	WARN_ON_ONCE(ii->de_buckets);
 
 	lower_inode = agfs_lower_inode(inode);
 	if (lower_inode)

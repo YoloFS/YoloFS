@@ -2,7 +2,7 @@
 /*
  * agfs — staging layer helpers.
  *
- * Flat inode store, override hash table management, COW.
+ * Flat inode store, dirent hash table management, COW.
  */
 
 #include "agfs.h"
@@ -55,151 +55,151 @@ int agfs_inode_path(struct agfs_sb_info *sbi, u64 ino,
 	return resolve_subpath(&sbi->inodes_dir, name, result);
 }
 
-/* ── Override Hash Table ───────────────────────────────────────────── */
+/* ── Stage Dirent Hash Table ───────────────────────────────────────────── */
 
-static inline unsigned int agfs_ovr_hash(const char *name, unsigned int len)
+static inline unsigned int agfs_de_hash(const char *name, unsigned int len)
 {
-	return full_name_hash(NULL, name, len) >> (32 - AGFS_OVR_SHIFT);
+	return full_name_hash(NULL, name, len) >> (32 - AGFS_DE_SHIFT);
 }
 
 /*
- * Find an override by name. Caller must hold dii->ovr_lock.
+ * Find a dirent by name. Caller must hold dii->de_lock.
  */
-struct agfs_override *agfs_find_override(struct inode *dir,
+struct agfs_dirent *agfs_find_dirent(struct inode *dir,
 					 const char *name,
 					 unsigned int namelen)
 {
 	struct agfs_inode_info *dii = AGFS_I(dir);
-	struct agfs_override *ovr;
+	struct agfs_dirent *de;
 	unsigned int idx;
 
-	if (!dii->ovr_buckets)
+	if (!dii->de_buckets)
 		return NULL;
 
-	idx = agfs_ovr_hash(name, namelen);
-	hlist_for_each_entry(ovr, &dii->ovr_buckets[idx], node) {
-		if (ovr->name_len == namelen &&
-		    !memcmp(ovr->name, name, namelen))
-			return ovr;
+	idx = agfs_de_hash(name, namelen);
+	hlist_for_each_entry(de, &dii->de_buckets[idx], node) {
+		if (de->name_len == namelen &&
+		    !memcmp(de->name, name, namelen))
+			return de;
 	}
 	return NULL;
 }
 
 /*
- * Free all override entries and the bucket array on a directory inode.
+ * Free all dirent entries and the bucket array on a directory inode.
  */
-static void agfs_free_ovr_buckets(struct agfs_inode_info *dii)
+static void agfs_free_de_buckets(struct agfs_inode_info *dii)
 {
 	struct hlist_head *buckets;
-	struct agfs_override *ovr;
+	struct agfs_dirent *de;
 	struct hlist_node *tmp;
 	unsigned int i;
 
-	spin_lock(&dii->ovr_lock);
-	buckets = dii->ovr_buckets;
-	dii->ovr_buckets = NULL;
-	spin_unlock(&dii->ovr_lock);
+	spin_lock(&dii->de_lock);
+	buckets = dii->de_buckets;
+	dii->de_buckets = NULL;
+	spin_unlock(&dii->de_lock);
 
 	if (!buckets)
 		return;
 
-	for (i = 0; i < AGFS_OVR_BUCKETS; i++) {
-		hlist_for_each_entry_safe(ovr, tmp, &buckets[i], node) {
-			hlist_del(&ovr->node);
-			kfree(ovr->base_path);
-			kfree(ovr);
+	for (i = 0; i < AGFS_DE_BUCKETS; i++) {
+		hlist_for_each_entry_safe(de, tmp, &buckets[i], node) {
+			hlist_del(&de->node);
+			kfree(de->base_path);
+			kfree(de);
 		}
 	}
 	kfree(buckets);
 }
 
 /*
- * Add or update an override. ino=0 && base_path=NULL means deleted.
- * On first override for a directory, pins the inode via igrab().
+ * Add or update a dirent. ino=0 && base_path=NULL means deleted.
+ * On first dirent for a directory, pins the inode via igrab().
  */
-int agfs_add_override(struct inode *dir, const char *name,
+int agfs_add_dirent(struct inode *dir, const char *name,
 		      unsigned int namelen, u64 ino,
 		      const char *base_path, unsigned char d_type,
 		      u64 snapshot_gen)
 {
 	struct agfs_inode_info *dii = AGFS_I(dir);
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
-	struct agfs_override *ovr, *new_ovr = NULL;
+	struct agfs_dirent *de, *new_de = NULL;
 	struct hlist_head *new_buckets = NULL;
 	char *bp_copy = NULL;
 	unsigned int i;
-	bool first_override = false;
+	bool first_de = false;
 
 	/* Pre-allocate outside the lock (GFP_KERNEL is safe here) */
-	new_ovr = kmalloc(offsetof(struct agfs_override, name) + namelen + 1,
+	new_de = kmalloc(offsetof(struct agfs_dirent, name) + namelen + 1,
 			  GFP_KERNEL);
-	if (!new_ovr)
+	if (!new_de)
 		return -ENOMEM;
 
 	if (base_path) {
 		bp_copy = kstrdup(base_path, GFP_KERNEL);
 		if (!bp_copy) {
-			kfree(new_ovr);
+			kfree(new_de);
 			return -ENOMEM;
 		}
 	}
 
-	if (!dii->ovr_buckets) {
-		new_buckets = kmalloc_array(AGFS_OVR_BUCKETS,
+	if (!dii->de_buckets) {
+		new_buckets = kmalloc_array(AGFS_DE_BUCKETS,
 					    sizeof(struct hlist_head),
 					    GFP_KERNEL);
 		if (!new_buckets) {
 			kfree(bp_copy);
-			kfree(new_ovr);
+			kfree(new_de);
 			return -ENOMEM;
 		}
-		for (i = 0; i < AGFS_OVR_BUCKETS; i++)
+		for (i = 0; i < AGFS_DE_BUCKETS; i++)
 			INIT_HLIST_HEAD(&new_buckets[i]);
 	}
 
-	spin_lock(&dii->ovr_lock);
+	spin_lock(&dii->de_lock);
 
 	/* Install bucket array if we're the first adder */
-	if (!dii->ovr_buckets && new_buckets) {
-		dii->ovr_buckets = new_buckets;
+	if (!dii->de_buckets && new_buckets) {
+		dii->de_buckets = new_buckets;
 		new_buckets = NULL;	/* ownership transferred */
-		first_override = true;
+		first_de = true;
 	}
 
-	ovr = agfs_find_override(dir, name, namelen);
-	if (ovr) {
+	de = agfs_find_dirent(dir, name, namelen);
+	if (de) {
 		/* Update existing */
-		kfree(ovr->base_path);
-		ovr->ino = ino;
-		ovr->base_path = bp_copy;
-		ovr->d_type = d_type;
-		ovr->snapshot_gen = snapshot_gen;
-		spin_unlock(&dii->ovr_lock);
-		kfree(new_ovr);
+		kfree(de->base_path);
+		de->ino = ino;
+		de->base_path = bp_copy;
+		de->d_type = d_type;
+		de->snapshot_gen = snapshot_gen;
+		spin_unlock(&dii->de_lock);
+		kfree(new_de);
 		kfree(new_buckets);
 	} else {
 		/* Insert new */
-		memcpy(new_ovr->name, name, namelen);
-		new_ovr->name[namelen] = '\0';
-		new_ovr->name_len = namelen;
-		new_ovr->ino = ino;
-		new_ovr->base_path = bp_copy;
-		new_ovr->d_type = d_type;
-		new_ovr->snapshot_gen = snapshot_gen;
-		hlist_add_head(&new_ovr->node,
-			       &dii->ovr_buckets[agfs_ovr_hash(name, namelen)]);
-		spin_unlock(&dii->ovr_lock);
+		memcpy(new_de->name, name, namelen);
+		new_de->name[namelen] = '\0';
+		new_de->name_len = namelen;
+		new_de->ino = ino;
+		new_de->base_path = bp_copy;
+		new_de->d_type = d_type;
+		new_de->snapshot_gen = snapshot_gen;
+		hlist_add_head(&new_de->node,
+			       &dii->de_buckets[agfs_de_hash(name, namelen)]);
+		spin_unlock(&dii->de_lock);
 		kfree(new_buckets);
 	}
 
-	/* Pin the directory inode on first override */
-	if (first_override) {
+	/* Pin the directory inode on first dirent */
+	if (first_de) {
 		if (!igrab(&dii->vfs_inode)) {
-			agfs_free_ovr_buckets(dii);
+			agfs_free_de_buckets(dii);
 			return -EIO;
 		}
 		spin_lock(&sbi->pinned_dirs_lock);
-		list_add(&dii->ovr_pin, &sbi->pinned_dirs);
+		list_add(&dii->de_pin, &sbi->pinned_dirs);
 		spin_unlock(&sbi->pinned_dirs_lock);
 	}
 	return 0;
@@ -324,13 +324,13 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	}
 
 	/*
-	 * Add override on parent directory inode.
+	 * Add dirent on parent directory inode.
 	 *
 	 * NOTE: if this fails the inode file remains on disk unreferenced.
 	 * Orphaned inodes are cleaned up on the next `agfs commit` or
 	 * `agfs abort` because the entire inode store is removed.
 	 */
-	err = agfs_add_override(d_inode(dentry->d_parent),
+	err = agfs_add_dirent(d_inode(dentry->d_parent),
 				dentry->d_name.name,
 				dentry->d_name.len,
 				ino, NULL, DT_REG,
@@ -345,7 +345,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	/* Update dentry lower_path to point at the inode (consumes original ref) */
 	agfs_replace_lower_path(dentry, &inode_path);
 
-	/* Append journal record (best-effort — override is already set) */
+	/* Append journal record (best-effort — dirent is already set) */
 	{
 		char buf[AGFS_PATH_MAX];
 
@@ -377,9 +377,9 @@ void agfs_release_pinned_dirs(struct agfs_sb_info *sbi)
 	list_splice_init(&sbi->pinned_dirs, &local);
 	spin_unlock(&sbi->pinned_dirs_lock);
 
-	list_for_each_entry_safe(ii, tmp, &local, ovr_pin) {
-		list_del_init(&ii->ovr_pin);
-		agfs_free_ovr_buckets(ii);
+	list_for_each_entry_safe(ii, tmp, &local, de_pin) {
+		list_del_init(&ii->de_pin);
+		agfs_free_de_buckets(ii);
 		iput(&ii->vfs_inode);
 	}
 }
