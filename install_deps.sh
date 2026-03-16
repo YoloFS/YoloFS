@@ -23,7 +23,6 @@ BUILD_PKGS=(
     bc
     kmod
     pkg-config
-    libsystemd-dev
     git
     pahole
     bpftrace

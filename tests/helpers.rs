@@ -1,5 +1,5 @@
 use agfs::config::Config;
-use agfs::klog;
+use agfs::kmsg;
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -13,13 +13,13 @@ pub const AGFS_BIN: &str = "agfs";
 /// Creates a temp directory, seeds base files, and uses `agfs mount` /
 /// `agfs commit` / `agfs abort` for the full lifecycle.
 ///
-/// On drop the systemd journal is checked for any kernel messages produced
+/// On drop the kernel ring buffer is checked for any kernel messages produced
 /// since the session started.  If any are found the test fails with a panic.
 pub struct AgfsSession {
     pub root: PathBuf,
     pub mnt: PathBuf,
     mounted: bool,
-    journal_cursor: Option<String>,
+    cursor: Option<kmsg::KmsgCursor>,
 }
 
 impl AgfsSession {
@@ -45,7 +45,7 @@ impl AgfsSession {
             root,
             mnt,
             mounted: false,
-            journal_cursor: None,
+            cursor: None,
         };
         session.mount()?;
         Ok(session)
@@ -60,9 +60,10 @@ impl AgfsSession {
     }
 
     fn mount(&mut self) -> Result<()> {
-        // Snapshot the journal before mounting so we can detect any kernel
-        // messages (warnings, errors, BUG/WARN traces) produced by this session.
-        self.journal_cursor = klog::snapshot();
+        // Snapshot the kernel ring buffer before mounting so we can detect any
+        // kernel messages (warnings, errors, BUG/WARN traces) produced by this
+        // session.
+        self.cursor = kmsg::KmsgCursor::now();
 
         let output = Command::new(AGFS_BIN)
             .arg("mount")
@@ -154,12 +155,12 @@ impl AgfsSession {
 
 impl Drop for AgfsSession {
     fn drop(&mut self) {
-        // Check the journal for unexpected kernel messages before tearing down.
-        // Guard against double-panic: skip the check if we are already unwinding.
+        // Check the kernel ring buffer for unexpected messages before tearing
+        // down.  Guard against double-panic: skip the check if already unwinding.
         let kernel_msgs = if !std::thread::panicking() {
-            self.journal_cursor
-                .as_deref()
-                .map(klog::since)
+            self.cursor
+                .as_ref()
+                .map(|c| c.read_new())
                 .unwrap_or_default()
         } else {
             Vec::new()

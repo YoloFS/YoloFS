@@ -169,7 +169,7 @@ when the session is dropped at the end of each iteration.
 
 The benchmark suite is a Rust binary (`agfs-bench`) in the same Cargo workspace
 as the CLI, under `bench/src/`. It shares ioctl types, mount helpers, config
-parsing, and klog utilities with the CLI via the library crate.
+parsing, and kmsg utilities with the CLI via the library crate.
 
 ### Directory layout
 
@@ -231,7 +231,7 @@ On failure, the failing (workload, backend) combination is automatically rerun
 with verbose logging enabled. Verbose logs include:
 
 - Workload stdout/stderr
-- Kernel messages captured via `klog::snapshot` / `klog::since`
+- Kernel messages captured via `kmsg::KmsgCursor`
 - agfs journal contents at the point of failure (agfs backend only)
 
 ### Results

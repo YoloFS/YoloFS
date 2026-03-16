@@ -9,7 +9,7 @@ mod report;
 mod workload;
 mod workloads;
 
-use agfs::klog;
+use agfs::kmsg;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -414,7 +414,7 @@ fn run_iteration(
     workload: &dyn Workload,
     verbose: bool,
 ) -> Result<(IterResult, Vec<String>)> {
-    let cursor = klog::snapshot();
+    let cursor = kmsg::KmsgCursor::now();
 
     let dest = if session.scenario.uses_agfs() {
         session.mnt_path(workload.work_dir())
@@ -460,7 +460,7 @@ fn run_iteration(
         }
     };
 
-    let kernel_msgs = cursor.as_deref().map(klog::since).unwrap_or_default();
+    let kernel_msgs = cursor.as_ref().map(|c| c.read_new()).unwrap_or_default();
 
     // No explicit cleanup: the session owns a TempDir that is deleted on drop,
     // giving the next iteration a completely fresh base directory and mount.

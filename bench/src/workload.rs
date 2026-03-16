@@ -17,7 +17,7 @@ pub struct IterResult {
 /// A self-contained benchmark workload.
 ///
 /// Each workload defines what it needs (fixture, rules) and what it does
-/// (`run`). The runner handles all agfs mechanics (mount, commit, klog).
+/// (`run`). The runner handles all agfs mechanics (mount, commit, kmsg).
 pub trait Workload: Send + Sync {
     /// Short identifier used on the CLI and in results JSON.
     fn name(&self) -> &'static str;
