@@ -14,9 +14,6 @@ jobs:
       - name: Install dependencies
         run: ./install_deps.sh
 
-      - name: Create build directories
-        run: mkdir -p "$(pwd)-target"
-
       - name: Lint
         run: make lint
 
