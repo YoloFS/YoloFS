@@ -96,38 +96,22 @@ int agfs_interpose(struct dentry *dentry, struct super_block *sb,
 static int agfs_lookup_staged(struct agfs_sb_info *sbi, struct dentry *dentry)
 {
 	struct inode *parent_inode = d_inode(dentry->d_parent);
-	struct agfs_inode_info *parent_ii = AGFS_I(parent_inode);
 	struct agfs_dirent *de;
-	u64 ino = 0;
-	char *bp = NULL;
 
-	spin_lock(&parent_ii->de_lock);
+	/* VFS holds inode_lock_shared(parent) during lookup */
 	de = agfs_find_dirent(parent_inode,
 				 dentry->d_name.name,
 				 dentry->d_name.len);
-	if (de) {
-		ino = de->ino;
-		if (de->base_path) {
-			bp = kstrdup(de->base_path, GFP_ATOMIC);
-			if (!bp) {
-				spin_unlock(&parent_ii->de_lock);
-				return -ENOMEM;
-			}
-		}
-	}
-	spin_unlock(&parent_ii->de_lock);
-
 	if (!de)
 		return 0;
 
-	if (ino) {
+	if (de->ino) {
 		/* Staged inode */
 		struct inode *inode;
 		struct path ino_path;
 		int err;
 
-		kfree(bp);
-		err = agfs_inode_path(sbi, ino, &ino_path);
+		err = agfs_inode_path(sbi, de->ino, &ino_path);
 		if (err)
 			return 0; /* resolution failed — fall through to base */
 
@@ -142,14 +126,13 @@ static int agfs_lookup_staged(struct agfs_sb_info *sbi, struct dentry *dentry)
 		return 1;
 	}
 
-	if (bp) {
+	if (de->base_path) {
 		/* Redirected base path (zero-copy rename) */
 		struct inode *inode;
 		struct path base;
 		int err;
 
-		err = kern_path(bp, LOOKUP_FOLLOW, &base);
-		kfree(bp);
+		err = kern_path(de->base_path, LOOKUP_FOLLOW, &base);
 		if (err)
 			return 0; /* base path gone — fall through */
 

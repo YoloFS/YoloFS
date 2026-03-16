@@ -113,9 +113,9 @@ resolved immediately using `ask_default`.
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + `dirent.snapshot_gen`) | `rw_semaphore` (write for rename/COW). Create/mkdir/symlink/unlink/rmdir are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
+| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + `dirent.snapshot_gen`) | `rw_semaphore` (write for COW/snapshot). Create/mkdir/symlink/unlink/rmdir/rename are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
-| `inode_info->de_lock` | Per-directory dirent table | `spinlock` |
+| `inode->i_rwsem` (VFS) | Per-directory dirent table | `rw_semaphore` (held by VFS for lookup/readdir/mutations) |
 | `dentry_info->lock` | Cached lower path | `spinlock` |
 
-**Lock ordering**: `staging_sem` -> `pending_lock` -> `de_lock` -> `dentry_info->lock`
+**Lock ordering**: `staging_sem` -> `inode->i_rwsem` -> `pending_lock` -> `dentry_info->lock`

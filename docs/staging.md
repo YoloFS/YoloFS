@@ -88,8 +88,7 @@ table on directory inodes.
 | Field | Purpose |
 |-------|---------|
 | `lower_inode` | Pointer to the lower-FS inode (base file at lookup time). Not updated after COW — stale but harmless. Used only for `evict_inode` cleanup and directory permission pass-through. |
-| `de_buckets` | *(directories only)* 64-bucket hash table of `agfs_dirent` entries. Lazily allocated on first dirent. This is the kernel's source of truth for staged changes. |
-| `de_lock` | *(directories only)* Spinlock protecting `de_buckets`. |
+| `de_buckets` | *(directories only)* 64-bucket hash table of `agfs_dirent` entries. Lazily allocated on first dirent. This is the kernel's source of truth for staged changes. Protected by the VFS `inode->i_rwsem` (shared for reads, exclusive for writes). |
 | `de_pin` | *(directories only)* Node in `sbi->pinned_dirs`. Linked on first dirent, removed at cache invalidation / unmount. |
 
 The dirent table lives on the directory inode because it is a property
@@ -161,8 +160,8 @@ find_dirent(dir, name):
     return NULL
 ```
 
-`base_path` is always owned by the dirent entry. Readers must snapshot or
-duplicate it while holding the inode's `de_lock` before resolving it, because
+`base_path` is always owned by the dirent entry. Readers that outlive the
+VFS `i_rwsem` (e.g. rename) must duplicate it before resolving, because
 writers are free to replace the string in place when publishing a new dirent.
 
 **`add_dirent`** — upsert: update existing dirent or insert into bucket:
@@ -193,7 +192,7 @@ accessed in a directory:
 agfs_lookup(dir, name):
     de = find_dirent(dir, name)
     if de:
-        ino, base_path = snapshot(de)   # copy under de_lock
+        ino, base_path = de.ino, de.base_path   # stable under i_rwsem
         if ino:            return inode for inodes/<ino>
         if base_path:      return inode for base/<path>
         return negative dentry  # deleted
@@ -225,12 +224,12 @@ write. Because no fd spans a snapshot boundary (enforced by `staging_fd_count`),
 made at open time is final. This makes `write_iter` and `mmap` pure
 pass-throughs with zero staging logic.
 
-Staging publications that involve COW, re-COW, or rename (installing an
+Staging publications that involve COW or re-COW (installing a
 dirent, updating the dentry's lower path, and appending the journal
 record) are serialized under `staging_sem` and must succeed as a unit.
 If any step fails (e.g., journal append), the operation fails and the
 previous mapping remains authoritative.
-Create/mkdir/symlink/unlink/rmdir are already serialized by the VFS
+Create/mkdir/symlink/unlink/rmdir/rename are already serialized by the VFS
 `inode_lock(dir)` and do not need `staging_sem`.
 
 ```

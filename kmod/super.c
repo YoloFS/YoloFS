@@ -49,7 +49,6 @@ static struct inode *agfs_alloc_inode(struct super_block *sb)
 	i->cached_perm = AGFS_PERM_NONE;
 	i->perm_gen = 0;
 	i->de_buckets = NULL;
-	spin_lock_init(&i->de_lock);
 	INIT_LIST_HEAD(&i->de_pin);
 	return &i->vfs_inode;
 }

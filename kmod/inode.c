@@ -117,20 +117,19 @@ struct agfs_rename_ctx {
 };
 
 /*
- * Read the source dirent state under de_lock.
- * Must be called with staging_sem held.  Caller must kfree(ctx->base_path).
+ * Read the source dirent state. VFS holds inode_lock(old_dir).
+ * Caller must kfree(ctx->base_path).
  */
 static int agfs_rename_read_src(struct inode *old_dir,
 				struct dentry *old_dentry,
 				struct agfs_rename_ctx *ctx)
 {
-	struct agfs_inode_info *parent_ii = AGFS_I(old_dir);
 	struct agfs_dirent *de;
 
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->d_type = DT_UNKNOWN;
 
-	spin_lock(&parent_ii->de_lock);
+	/* VFS holds inode_lock(old_dir) during rename */
 	de = agfs_find_dirent(old_dir,
 				 old_dentry->d_name.name,
 				 old_dentry->d_name.len);
@@ -140,14 +139,11 @@ static int agfs_rename_read_src(struct inode *old_dir,
 		ctx->gen = de->snapshot_gen;
 		ctx->d_type = de->d_type;
 		if (de->base_path) {
-			ctx->base_path = kstrdup(de->base_path, GFP_ATOMIC);
-			if (!ctx->base_path) {
-				spin_unlock(&parent_ii->de_lock);
+			ctx->base_path = kstrdup(de->base_path, GFP_KERNEL);
+			if (!ctx->base_path)
 				return -ENOMEM;
-			}
 		}
 	}
-	spin_unlock(&parent_ii->de_lock);
 
 	/* Derive d_type from inode when no dirent existed */
 	if (!de && d_inode(old_dentry))
@@ -209,7 +205,9 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (err)
 		return err;
 
-	down_write(&sbi->staging_sem);
+	/* VFS holds inode_lock(old_dir) + inode_lock(new_dir), which
+	 * serializes dirent access.  staging_sem is not needed here —
+	 * rename does not interact with snapshot_gen or COW state. */
 
 	err = agfs_rename_read_src(old_dir, old_dentry, &ctx);
 	if (err)
@@ -239,7 +237,6 @@ static int agfs_rename(struct mnt_idmap *idmap,
 
 out:
 	kfree(ctx.base_path);
-	up_write(&sbi->staging_sem);
 	return err;
 }
 

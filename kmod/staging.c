@@ -63,7 +63,7 @@ static inline unsigned int agfs_de_hash(const char *name, unsigned int len)
 }
 
 /*
- * Find a dirent by name. Caller must hold dii->de_lock.
+ * Find a dirent by name. Caller must hold dir->i_rwsem (shared or exclusive).
  */
 struct agfs_dirent *agfs_find_dirent(struct inode *dir,
 					 const char *name,
@@ -86,19 +86,18 @@ struct agfs_dirent *agfs_find_dirent(struct inode *dir,
 }
 
 /*
- * Free all dirent entries and the bucket array on a directory inode.
+ * Free all dirent entries and the bucket array.
+ * Caller must hold inode_lock(dir) (exclusive).
  */
-static void agfs_free_de_buckets(struct agfs_inode_info *dii)
+static void agfs_free_de_buckets_locked(struct agfs_inode_info *dii)
 {
 	struct hlist_head *buckets;
 	struct agfs_dirent *de;
 	struct hlist_node *tmp;
 	unsigned int i;
 
-	spin_lock(&dii->de_lock);
 	buckets = dii->de_buckets;
 	dii->de_buckets = NULL;
-	spin_unlock(&dii->de_lock);
 
 	if (!buckets)
 		return;
@@ -114,34 +113,39 @@ static void agfs_free_de_buckets(struct agfs_inode_info *dii)
 }
 
 /*
+ * Free all dirent entries and the bucket array on a directory inode.
+ * Takes inode_lock internally.
+ */
+static void agfs_free_de_buckets(struct agfs_inode_info *dii)
+{
+	inode_lock(&dii->vfs_inode);
+	agfs_free_de_buckets_locked(dii);
+	inode_unlock(&dii->vfs_inode);
+}
+
+/*
  * Lazily allocate the bucket array for a directory inode.
  * Sets *first = true if this call created the array (caller must pin).
+ * Caller must hold inode_lock(dir) (exclusive).
  */
 static int agfs_ensure_de_buckets(struct agfs_inode_info *dii, bool *first)
 {
-	struct hlist_head *buckets;
 	unsigned int i;
 
 	*first = false;
 	if (dii->de_buckets)
 		return 0;
 
-	buckets = kmalloc_array(AGFS_DE_BUCKETS, sizeof(struct hlist_head),
-				GFP_KERNEL);
-	if (!buckets)
+	dii->de_buckets = kmalloc_array(AGFS_DE_BUCKETS,
+					sizeof(struct hlist_head),
+					GFP_KERNEL);
+	if (!dii->de_buckets)
 		return -ENOMEM;
+
 	for (i = 0; i < AGFS_DE_BUCKETS; i++)
-		INIT_HLIST_HEAD(&buckets[i]);
+		INIT_HLIST_HEAD(&dii->de_buckets[i]);
 
-	spin_lock(&dii->de_lock);
-	if (!dii->de_buckets) {
-		dii->de_buckets = buckets;
-		buckets = NULL;
-		*first = true;
-	}
-	spin_unlock(&dii->de_lock);
-
-	kfree(buckets);
+	*first = true;
 	return 0;
 }
 
@@ -151,7 +155,7 @@ static int agfs_ensure_de_buckets(struct agfs_inode_info *dii, bool *first)
 static int agfs_pin_dir(struct agfs_inode_info *dii, struct agfs_sb_info *sbi)
 {
 	if (!igrab(&dii->vfs_inode)) {
-		agfs_free_de_buckets(dii);
+		agfs_free_de_buckets_locked(dii);
 		return -EIO;
 	}
 	spin_lock(&sbi->pinned_dirs_lock);
@@ -162,10 +166,7 @@ static int agfs_pin_dir(struct agfs_inode_info *dii, struct agfs_sb_info *sbi)
 
 /*
  * Add or update a dirent. All-zero de means deleted.
- * On first dirent for a directory, pins the inode via igrab().
- *
- * Callers hold inode_lock(dir) or staging_sem, so no concurrent writer
- * can race between the find-miss and the insert — no retry needed.
+ * Caller must hold inode_lock(dir) (exclusive).
  */
 int agfs_del_dirent(struct inode *dir, const char *name,
 		      unsigned int namelen)
@@ -195,8 +196,7 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 		return err;
 	}
 
-	/* Fast path: update existing entry in place */
-	spin_lock(&dii->de_lock);
+	/* Update existing entry in place */
 	old_de = agfs_find_dirent(dir, name, namelen);
 	if (old_de) {
 		kfree(old_de->base_path);
@@ -204,12 +204,10 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 		old_de->base_path = bp_copy;
 		old_de->d_type = de->d_type;
 		old_de->snapshot_gen = de->snapshot_gen;
-		spin_unlock(&dii->de_lock);
 		goto out;
 	}
-	spin_unlock(&dii->de_lock);
 
-	/* Slow path: allocate new entry and insert */
+	/* Allocate new entry and insert */
 	new_de = kmalloc(offsetof(struct agfs_dirent, name) + namelen + 1,
 			 GFP_KERNEL);
 	if (!new_de) {
@@ -224,10 +222,8 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 	new_de->d_type = de->d_type;
 	new_de->snapshot_gen = de->snapshot_gen;
 
-	spin_lock(&dii->de_lock);
 	hlist_add_head(&new_de->node,
 		       &dii->de_buckets[agfs_de_hash(name, namelen)]);
-	spin_unlock(&dii->de_lock);
 
 out:
 	if (first_de)
@@ -355,11 +351,14 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 
 	/*
 	 * Add dirent on parent directory inode.
+	 * Take inode_lock(parent) to serialize against VFS-driven
+	 * create/unlink/rename on the same directory.
 	 *
 	 * NOTE: if this fails the inode file remains on disk unreferenced.
 	 * Orphaned inodes are cleaned up on the next `agfs commit` or
 	 * `agfs abort` because the entire inode store is removed.
 	 */
+	inode_lock(d_inode(dentry->d_parent));
 	err = agfs_add_dirent(d_inode(dentry->d_parent),
 				dentry->d_name.name,
 				dentry->d_name.len,
@@ -369,6 +368,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 					.snapshot_gen = (u64)atomic64_read(
 							&sbi->snapshot_gen),
 				});
+	inode_unlock(d_inode(dentry->d_parent));
 	if (err) {
 		path_put(&inode_path);
 		return err;

@@ -170,9 +170,8 @@ struct agfs_inode_info {
 	enum agfs_perm		cached_perm;
 	u64			perm_gen;
 
-	/* Directory dirent table (lazily allocated) */
+	/* Directory dirent table (lazily allocated, protected by VFS i_rwsem) */
 	struct hlist_head	*de_buckets;	/* NULL until first dirent */
-	spinlock_t		de_lock;	/* protects de_buckets */
 	struct list_head	de_pin;	/* node in sbi->pinned_dirs */
 
 	struct inode		vfs_inode;	/* must be last for container_of */
