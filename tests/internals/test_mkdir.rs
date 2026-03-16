@@ -1,6 +1,6 @@
+use super::helpers::{changes, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, inos, inode_path, ino_for};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -14,7 +14,9 @@ fn mkdir_produces_add_record() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/newdir"))),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/newdir"))),
         "journal should have an A record for newdir: {records:?}"
     );
 }
@@ -30,7 +32,9 @@ fn rmdir_produces_delete_record() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Delete { path } if path.ends_with("/tmpdir"))),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Delete { path } if path.ends_with("/tmpdir"))),
         "journal should have a D record for tmpdir: {records:?}"
     );
 }
@@ -46,7 +50,9 @@ fn rmdir_base_dir_produces_delete_record() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Delete { path } if path.ends_with("/subdir"))),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Delete { path } if path.ends_with("/subdir"))),
         "journal should have a D record for base dir: {records:?}"
     );
 }
@@ -61,7 +67,9 @@ fn rename_dir_produces_rename_record() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Rename { old_path, new_path }
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Rename { old_path, new_path }
             if old_path.ends_with("/olddir") && new_path.ends_with("/newdir"))),
         "journal should have an R record for olddir → newdir: {records:?}"
     );
@@ -82,7 +90,10 @@ fn mkdir_creates_directory_inode() {
 
     assert!(path.is_dir(), "mkdir inode should be a directory");
     let entries: Vec<_> = fs::read_dir(&path).unwrap().collect();
-    assert!(entries.is_empty(), "mkdir inode should be empty (children get their own inodes)");
+    assert!(
+        entries.is_empty(),
+        "mkdir inode should be empty (children get their own inodes)"
+    );
 }
 
 /// mkdir -p with a file inside: both directory and file get inodes.
@@ -97,18 +108,32 @@ fn mkdir_with_file_creates_separate_inodes() {
 
     // The file should have its own inode
     let file_ino = ino_for(&ch, "/data.txt");
-    assert!(inode_path(&s, file_ino).is_file(), "file should have its own inode");
-    assert_eq!(fs::read_to_string(inode_path(&s, file_ino)).unwrap(), "nested\n");
+    assert!(
+        inode_path(&s, file_ino).is_file(),
+        "file should have its own inode"
+    );
+    assert_eq!(
+        fs::read_to_string(inode_path(&s, file_ino)).unwrap(),
+        "nested\n"
+    );
 
     // Parent directories should also have inode entries
-    let dir_ids: Vec<u64> = ch.iter()
+    let dir_ids: Vec<u64> = ch
+        .iter()
         .filter_map(|c| match c {
-            agfs::journal::Change::Added { path, ino } if path.ends_with("/parent") || path.ends_with("/child") => Some(*ino),
+            agfs::journal::Change::Added { path, ino }
+                if path.ends_with("/parent") || path.ends_with("/child") =>
+            {
+                Some(*ino)
+            }
             _ => None,
         })
         .collect();
     for ino in &dir_ids {
-        assert!(inode_path(&s, *ino).is_dir(), "directory inode {ino} should be a dir");
+        assert!(
+            inode_path(&s, *ino).is_dir(),
+            "directory inode {ino} should be a dir"
+        );
     }
 }
 

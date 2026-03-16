@@ -1,6 +1,6 @@
+use super::helpers::{changes, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, inos, inode_path, ino_for};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -14,7 +14,9 @@ fn rename_produces_rename_record() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Rename { old_path, new_path }
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Rename { old_path, new_path }
             if old_path.ends_with("/hello.txt") && new_path.ends_with("/moved.txt"))),
         "journal should have an R record for hello.txt → moved.txt: {records:?}"
     );
@@ -70,5 +72,8 @@ fn write_then_rename_inode_content() {
     // or as separate changes depending on the resolver.
     let ch = changes(&s);
     let ino = ino_for(&ch, "/final.txt");
-    assert_eq!(fs::read_to_string(inode_path(&s, ino)).unwrap(), "written first\n");
+    assert_eq!(
+        fs::read_to_string(inode_path(&s, ino)).unwrap(),
+        "written first\n"
+    );
 }

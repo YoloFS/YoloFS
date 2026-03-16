@@ -17,35 +17,13 @@
 #include <linux/file.h>
 #include <linux/namei.h>
 
-/* ── Create and open the journal file, cache on sbi ────────────────── */
+/* ── Open the journal file, cache on sbi ───────────────────────────── */
 
 int agfs_journal_open(struct agfs_sb_info *sbi)
 {
-	struct dentry *new_dentry;
-	struct inode *dir;
 	struct path journal_p;
 	struct file *f;
 	int err;
-
-	dir = d_inode(sbi->storage_path.dentry);
-	inode_lock(dir);
-	new_dentry = lookup_one_len("journal",
-				    sbi->storage_path.dentry, 7);
-	if (IS_ERR(new_dentry)) {
-		inode_unlock(dir);
-		return PTR_ERR(new_dentry);
-	}
-	if (d_is_negative(new_dentry)) {
-		err = vfs_create(mnt_idmap(sbi->storage_path.mnt),
-				 dir, new_dentry, 0644, true);
-		if (err) {
-			dput(new_dentry);
-			inode_unlock(dir);
-			return err;
-		}
-	}
-	dput(new_dentry);
-	inode_unlock(dir);
 
 	err = vfs_path_lookup(sbi->storage_path.dentry,
 			      sbi->storage_path.mnt,

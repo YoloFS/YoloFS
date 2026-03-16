@@ -31,10 +31,14 @@ pub fn inode_path(s: &AgfsSession, ino: u64) -> PathBuf {
 
 /// Find the ino for a change matching a path suffix.
 pub fn ino_for(changes: &[Change], suffix: &str) -> u64 {
-    changes.iter()
+    changes
+        .iter()
         .find_map(|c| match c {
-            Change::Added { path, .. }
-            | Change::Modified { path, .. } if path.ends_with(suffix) => c.ino(),
+            Change::Added { path, .. } | Change::Modified { path, .. }
+                if path.ends_with(suffix) =>
+            {
+                c.ino()
+            }
             Change::RenamedModified { to, .. } if to.ends_with(suffix) => c.ino(),
             _ => None,
         })

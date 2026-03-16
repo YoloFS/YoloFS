@@ -175,7 +175,6 @@ static int agfs_open(struct inode *inode, struct file *file)
 	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
 	struct dentry *dentry = file->f_path.dentry;
 	struct agfs_file_info *fi;
-	const struct cred *old_cred;
 	struct file *lower_file;
 	int err;
 
@@ -192,9 +191,7 @@ static int agfs_open(struct inode *inode, struct file *file)
 	}
 
 	if (S_ISREG(inode->i_mode) && sbi->staging) {
-		old_cred = override_creds(sbi->creator_cred);
 		lower_file = agfs_open_staged(sbi, dentry, file);
-		revert_creds(old_cred);
 	} else {
 		lower_file = agfs_open_lower(dentry, file->f_flags);
 	}

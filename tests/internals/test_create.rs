@@ -1,6 +1,6 @@
+use super::helpers::{changes, ino_for, inode_path, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, inode_path, ino_for};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -14,7 +14,9 @@ fn create_produces_add_record() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/brandnew.txt"))),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/brandnew.txt"))),
         "journal should have an A record for brandnew.txt: {records:?}"
     );
 }

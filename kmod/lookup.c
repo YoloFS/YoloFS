@@ -132,12 +132,9 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 			if (ino) {
 				/* Staged inode */
 				struct path ino_path;
-				const struct cred *old_cred;
 
 				kfree(bp);
-				old_cred = override_creds(sbi->creator_cred);
 				err = agfs_inode_path(sbi, ino, &ino_path);
-				revert_creds(old_cred);
 
 				if (!err) {
 					agfs_set_lower_path(dentry, &ino_path);

@@ -1,6 +1,6 @@
+use super::helpers::{changes, ino_for, inode_path, inos};
 use crate::helpers::AgfsSession;
 use agfs::journal;
-use super::helpers::{changes, inos, inode_path, ino_for};
 use std::fs;
 
 // ── Inode store structure and properties ───────────────────────────────
@@ -39,12 +39,16 @@ fn inos_are_unique() {
 
     let ids = inos(&s);
     let unique: std::collections::HashSet<u64> = ids.iter().copied().collect();
-    assert_eq!(ids.len(), unique.len(), "inode IDs should be unique: {ids:?}");
+    assert_eq!(
+        ids.len(),
+        unique.len(),
+        "inode IDs should be unique: {ids:?}"
+    );
 }
 
-/// Staged inodes are created with root credentials (credential override).
+/// Staged inodes are created with the calling user's credentials.
 #[test]
-fn staged_inode_has_root_ownership() {
+fn staged_inode_owned_by_caller() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
@@ -55,7 +59,11 @@ fn staged_inode_has_root_ownership() {
 
     use std::os::unix::fs::MetadataExt;
     let meta = fs::metadata(&path).unwrap();
-    assert_eq!(meta.uid(), 0, "staged inode should be owned by root");
+    assert_eq!(
+        meta.uid(),
+        nix::unistd::getuid().as_raw(),
+        "staged inode should be owned by caller"
+    );
 }
 
 /// journal::inode_path() returns the correct inode store path.
@@ -71,6 +79,12 @@ fn inode_path_matches_library_api() {
     let agfs_dir = s.root.join(".agfs");
     let lib_path = journal::inode_path(&agfs_dir, ino);
     let manual_path = s.inodes_dir().join(ino.to_string());
-    assert_eq!(lib_path, manual_path, "inode_path() should match manual construction");
-    assert!(lib_path.exists(), "inode should exist at library-computed path");
+    assert_eq!(
+        lib_path, manual_path,
+        "inode_path() should match manual construction"
+    );
+    assert!(
+        lib_path.exists(),
+        "inode should exist at library-computed path"
+    );
 }

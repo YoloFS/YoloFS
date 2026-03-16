@@ -270,6 +270,13 @@ fn is_mountpoint(path: &Path) -> bool {
 pub fn setup_agfs_dir(agfs_dir: &Path) -> Result<()> {
     fs::create_dir_all(agfs_dir.join("inodes")).context("creating .agfs/inodes/")?;
     fs::create_dir_all(agfs_dir.join("mnt")).context("creating .agfs/mnt/")?;
+
+    // Create the journal file; the kernel module expects it to exist.
+    let journal = agfs_dir.join("journal");
+    if !journal.exists() {
+        fs::File::create(&journal).context("creating .agfs/journal")?;
+    }
+
     Ok(())
 }
 

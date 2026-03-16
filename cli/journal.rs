@@ -25,24 +25,11 @@ pub enum Record {
 /// A resolved change — the final effect of replaying the journal.
 #[derive(Debug)]
 pub enum Change {
-    Added {
-        path: String,
-        ino: u64,
-    },
-    Modified {
-        path: String,
-        ino: u64,
-    },
+    Added { path: String, ino: u64 },
+    Modified { path: String, ino: u64 },
     Deleted(String),
-    Renamed {
-        from: String,
-        to: String,
-    },
-    RenamedModified {
-        from: String,
-        to: String,
-        ino: u64,
-    },
+    Renamed { from: String, to: String },
+    RenamedModified { from: String, to: String, ino: u64 },
 }
 
 impl Change {

@@ -39,21 +39,14 @@ the kernel, not merely assumed.
 | **commit**            | CLI reads the journal and applies all operations to the base filesystem. |
 | **abort**             | CLI deletes journal + inode store. O(1). |
 
-## Credential Override for Inode Store
+## Inode Store Ownership
 
-The inode store directory is created during mount (typically by root) and is
-owned by root. When non-root user processes trigger staging operations through
-AgFS (create, mkdir, COW, write, etc.), the VFS permission checks on the inode
-store would fail because the user lacks write permission on root-owned
-directories.
-
-To solve this, AgFS saves the mount-time credentials (`current_cred()`) in
-`agfs_sb_info` during `agfs_fill_super` and uses `override_creds()` /
-`revert_creds()` to temporarily assume them when performing inode store
-operations. This is the standard pattern used by OverlayFS and other stackable
-filesystems. The actual permission model for user access is enforced
-separately by the AgFS permission gating layer (see [permissions.md](permissions.md)),
-not by Unix mode bits on the inode store.
+The inode store directory (`.agfs/inodes/`) and journal file (`.agfs/journal`)
+are created by the CLI during `agfs mount` and are owned by the calling user.
+This means all kernel-side VFS operations on the inode store (create, mkdir,
+open, lookup) run under the user's own credentials — no credential override
+is needed. The AgFS permission gating layer controls access through the mount
+point separately (see [permissions.md](permissions.md)).
 
 ## Storage Layout
 
@@ -89,7 +82,6 @@ table on directory inodes.
 | `staging_fd_count` | Atomic counter of open staging fds (opened for write). Snapshot ioctl rejects with `-EBUSY` when > 0. |
 | `pinned_dirs` | List head tracking `igrab()`-pinned directory inodes (those with overrides) for bulk release at cache invalidation / unmount. |
 | `pinned_dirs_lock` | Spinlock protecting `pinned_dirs`. |
-| `creator_cred` | Saved mount-time credentials for inode store operations (see [Credential Override](#credential-override-for-inode-store)) |
 
 **Per-inode** (`agfs_inode_info`) — one per cached inode:
 

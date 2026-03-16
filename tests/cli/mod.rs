@@ -1,11 +1,11 @@
-mod test_status;
-mod test_diff;
-mod test_commit;
 mod test_abort;
+mod test_commit;
+mod test_diff;
 mod test_lifecycle;
 mod test_mount;
-mod test_unmount;
+mod test_rules;
 mod test_run;
 mod test_snapshot;
+mod test_status;
+mod test_unmount;
 mod test_watch;
-mod test_rules;

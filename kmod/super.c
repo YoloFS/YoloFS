@@ -84,9 +84,6 @@ static void agfs_put_super(struct super_block *sb)
 	if (!sbi)
 		return;
 
-	if (sbi->creator_cred)
-		put_cred(sbi->creator_cred);
-
 	if (sbi->inodes_dir.dentry)
 		path_put(&sbi->inodes_dir);
 	if (sbi->journal_file)
@@ -160,7 +157,6 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	/* Apply mount options */
 	sbi->permission = opts->permission;
 	sbi->staging = opts->staging;
-	sbi->creator_cred = get_cred(current_cred());
 
 	/* Initialize perm gating state */
 	atomic64_set(&sbi->perm_gen, 1);
@@ -222,7 +218,7 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		/* inodes dir may not exist yet — that's ok */
 	}
 
-	/* Open (or create) the journal file */
+	/* Open the journal file */
 	err = agfs_journal_open(sbi);
 	if (err)
 		goto out_put;

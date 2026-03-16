@@ -64,5 +64,8 @@ fn rmdir_nonexistent_fails() {
     let s = AgfsSession::new().expect("session setup");
 
     let result = fs::remove_dir(s.mnt_path("no_such_dir"));
-    assert!(result.is_err(), "rmdir on nonexistent directory should fail");
+    assert!(
+        result.is_err(),
+        "rmdir on nonexistent directory should fail"
+    );
 }

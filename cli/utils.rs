@@ -69,10 +69,14 @@ mod tests {
         // ── Part 1: AGFS_SESSION env var takes precedence ──
         let dir = "/tmp/agfs-test-session";
         // SAFETY: no other thread reads this var during this test.
-        unsafe { std::env::set_var("AGFS_SESSION", dir); }
+        unsafe {
+            std::env::set_var("AGFS_SESSION", dir);
+        }
         let result = session_dir().unwrap();
         assert_eq!(result, PathBuf::from(dir));
-        unsafe { std::env::remove_var("AGFS_SESSION"); }
+        unsafe {
+            std::env::remove_var("AGFS_SESSION");
+        }
 
         // ── Part 2: falls back to .agfs/ in cwd ──
         let tmp = tempfile::tempdir().unwrap();

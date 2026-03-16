@@ -41,7 +41,10 @@ fn status_deleted() {
     fs::remove_file(s.mnt_path("hello.txt")).unwrap();
 
     let output = s.cli(&["status"]).expect("status");
-    assert!(output.contains("deleted"), "status should show deleted: {output}");
+    assert!(
+        output.contains("deleted"),
+        "status should show deleted: {output}"
+    );
     assert!(output.contains("hello.txt"), "output: {output}");
     assert!(output.contains("1 staged change"), "output: {output}");
 }
@@ -53,6 +56,9 @@ fn status_renamed() {
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).unwrap();
 
     let output = s.cli(&["status"]).expect("status");
-    assert!(output.contains("renamed"), "status should show renamed: {output}");
+    assert!(
+        output.contains("renamed"),
+        "status should show renamed: {output}"
+    );
     assert!(output.contains("moved.txt"), "output: {output}");
 }

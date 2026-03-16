@@ -111,8 +111,7 @@ fn mount_no_config_uses_defaults() {
 #[test]
 fn mount_invalid_config_fails() {
     let tmp = tempfile::tempdir().expect("creating temp dir");
-    std::fs::write(tmp.path().join("agfs.toml"), "{{invalid toml")
-        .expect("writing invalid config");
+    std::fs::write(tmp.path().join("agfs.toml"), "{{invalid toml").expect("writing invalid config");
 
     let output = std::process::Command::new(AGFS_BIN)
         .arg("mount")

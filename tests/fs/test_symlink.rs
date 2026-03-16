@@ -76,5 +76,8 @@ fn read_dangling_symlink_fails() {
     std::os::unix::fs::symlink("nonexistent.txt", s.mnt_path("dangle.txt")).expect("symlink");
 
     let result = fs::read_to_string(s.mnt_path("dangle.txt"));
-    assert!(result.is_err(), "reading through dangling symlink should fail");
+    assert!(
+        result.is_err(),
+        "reading through dangling symlink should fail"
+    );
 }

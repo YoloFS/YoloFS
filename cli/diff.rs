@@ -253,9 +253,11 @@ fn run_from_snapshot(agfs: &Path, snap_name: &str) -> Result<bool> {
         let new = current_state.get(path);
 
         let (label, old_text, new_text) = match (old, new) {
-            (Some(Some(old_text)), Some(Some(new_text))) if old_text != new_text => {
-                ("(modified since snapshot)".yellow(), old_text.as_str(), new_text.as_str())
-            }
+            (Some(Some(old_text)), Some(Some(new_text))) if old_text != new_text => (
+                "(modified since snapshot)".yellow(),
+                old_text.as_str(),
+                new_text.as_str(),
+            ),
             (None, Some(Some(new_text))) => {
                 ("(added since snapshot)".green(), "", new_text.as_str())
             }

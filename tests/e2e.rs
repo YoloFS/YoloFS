@@ -8,7 +8,7 @@
 /// The --test-threads=1 is required because each test mounts/unmounts agfs.
 mod helpers;
 
-mod fs;
 mod cli;
-mod perm;
+mod fs;
 mod internals;
+mod perm;

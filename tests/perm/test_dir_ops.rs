@@ -155,17 +155,15 @@ fn non_root_mkdir_then_write_inside() {
             let ok = std::fs::write(newdir.join("file.txt"), "data").is_ok();
             std::process::exit(if ok { 0 } else { 2 });
         }
-        ForkResult::Parent { child } => {
-            match waitpid(child, None).expect("waitpid") {
-                WaitStatus::Exited(_, 0) => {}
-                WaitStatus::Exited(_, 2) => panic!(
-                    "non-root user could mkdir but not write inside it: \
+        ForkResult::Parent { child } => match waitpid(child, None).expect("waitpid") {
+            WaitStatus::Exited(_, 0) => {}
+            WaitStatus::Exited(_, 2) => panic!(
+                "non-root user could mkdir but not write inside it: \
                      staged inode is root-owned, agfs_permission delegates \
                      directory checks to lower FS (inode.c:231)"
-                ),
-                other => panic!("unexpected child status: {other:?}"),
-            }
-        }
+            ),
+            other => panic!("unexpected child status: {other:?}"),
+        },
     }
 }
 

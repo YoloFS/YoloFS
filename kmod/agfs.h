@@ -137,7 +137,6 @@ struct agfs_sb_info {
 	struct super_block	*lower_sb;
 	struct path		base_path;	/* always "/" */
 	struct path		storage_path;	/* ./agfs/ directory */
-	const struct cred	*creator_cred;	/* mount-time credentials */
 
 	/* Staging */
 	struct path		inodes_dir;	/* ./agfs/inodes/ (flat inode store) */

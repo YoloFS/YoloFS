@@ -696,7 +696,10 @@ fn run_profile(env: &Env, workload_name: &str, scenario_name: &str, bpftrace: bo
             .output()
             .context("running agfs commit")?;
         if !out.status.success() {
-            bail!("agfs commit failed: {}", String::from_utf8_lossy(&out.stderr));
+            bail!(
+                "agfs commit failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
     }
     let wall_ms = t0.elapsed().as_millis() as u64;
@@ -712,7 +715,12 @@ fn main() -> Result<()> {
 
     let env = collect_env();
 
-    if let Some(Cmd::Profile { workload: wname, scenario: sname, no_bpftrace }) = cli.cmd {
+    if let Some(Cmd::Profile {
+        workload: wname,
+        scenario: sname,
+        no_bpftrace,
+    }) = cli.cmd
+    {
         let scenarios: Vec<&str> = match sname.as_deref() {
             Some(s) => vec![s],
             None => Scenario::all().iter().map(|s| s.name()).collect(),

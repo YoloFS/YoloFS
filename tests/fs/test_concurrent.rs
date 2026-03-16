@@ -21,8 +21,7 @@ fn concurrent_writes_to_different_files() {
 
     // Verify all files exist with correct content
     for i in 0..10 {
-        let content = fs::read_to_string(s.mnt_path(&format!("concurrent_{i}.txt")))
-            .expect("read");
+        let content = fs::read_to_string(s.mnt_path(&format!("concurrent_{i}.txt"))).expect("read");
         assert_eq!(content, format!("content from thread {i}\n"));
     }
 }
@@ -34,9 +33,7 @@ fn concurrent_reads() {
     let handles: Vec<_> = (0..10)
         .map(|_| {
             let path = s.mnt_path("hello.txt");
-            thread::spawn(move || {
-                fs::read_to_string(&path).expect("read")
-            })
+            thread::spawn(move || fs::read_to_string(&path).expect("read"))
         })
         .collect();
 
@@ -82,6 +79,9 @@ fn concurrent_create_and_readdir() {
 
     // After both finish, all dynamic files should exist
     for i in 5..10 {
-        assert!(s.mnt_path(&format!("dyn_{i}.txt")).exists(), "dyn_{i}.txt should exist");
+        assert!(
+            s.mnt_path(&format!("dyn_{i}.txt")).exists(),
+            "dyn_{i}.txt should exist"
+        );
     }
 }

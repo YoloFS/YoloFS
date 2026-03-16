@@ -136,7 +136,11 @@ fn run_reads_modified_file() {
 
     // Read inside sandbox — should see modified content
     let code = session
-        .run_in_sandbox(&["sh", "-c", &format!("grep -q modified {}", target.display())])
+        .run_in_sandbox(&[
+            "sh",
+            "-c",
+            &format!("grep -q modified {}", target.display()),
+        ])
         .unwrap();
     assert_eq!(code, 0, "sandbox should see modified file content");
 }

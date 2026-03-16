@@ -1,6 +1,6 @@
+use super::helpers::{changes, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, inos, inode_path, ino_for};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -19,12 +19,16 @@ fn commit_at_snapshot_preserves_trailing_records() {
     let records = journal(&s);
     // Pre-snapshot records and the snapshot itself should be gone
     assert!(
-        !records.iter().any(|r| matches!(r, Record::Snapshot { name, .. } if name == "s1")),
+        !records
+            .iter()
+            .any(|r| matches!(r, Record::Snapshot { name, .. } if name == "s1")),
         "s1 snapshot should be cleared after commit --at: {records:?}"
     );
     // Post-snapshot write should remain
     assert!(
-        records.iter().any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/multi.txt"))),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/multi.txt"))),
         "post-snapshot Add should remain: {records:?}"
     );
 }
@@ -35,12 +39,18 @@ fn commit_clears_journal() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    assert!(!journal(&s).is_empty(), "journal should have records before commit");
+    assert!(
+        !journal(&s).is_empty(),
+        "journal should have records before commit"
+    );
 
     s.cli(&["commit"]).expect("commit");
 
     let records = journal(&s);
-    assert!(records.is_empty(), "journal should be empty after commit: {records:?}");
+    assert!(
+        records.is_empty(),
+        "journal should be empty after commit: {records:?}"
+    );
 }
 
 /// Abort clears the journal.
@@ -49,12 +59,18 @@ fn abort_clears_journal() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    assert!(!journal(&s).is_empty(), "journal should have records before abort");
+    assert!(
+        !journal(&s).is_empty(),
+        "journal should have records before abort"
+    );
 
     s.cli(&["abort", "--force"]).expect("abort");
 
     let records = journal(&s);
-    assert!(records.is_empty(), "journal should be empty after abort: {records:?}");
+    assert!(
+        records.is_empty(),
+        "journal should be empty after abort: {records:?}"
+    );
 }
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────
@@ -66,7 +82,10 @@ fn commit_empties_inode_store() {
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
-    assert!(!inos(&s).is_empty(), "inode store should have entries before commit");
+    assert!(
+        !inos(&s).is_empty(),
+        "inode store should have entries before commit"
+    );
 
     s.cli(&["commit"]).expect("commit");
 
@@ -82,7 +101,10 @@ fn abort_empties_inode_store() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    assert!(!inos(&s).is_empty(), "inode store should have entries before abort");
+    assert!(
+        !inos(&s).is_empty(),
+        "inode store should have entries before abort"
+    );
 
     s.cli(&["abort", "--force"]).expect("abort");
 

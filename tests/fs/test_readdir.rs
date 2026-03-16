@@ -213,8 +213,11 @@ fn readdir_many_files() {
 
     fs::create_dir(s.mnt_path("bigdir")).expect("mkdir");
     for i in 0..100 {
-        fs::write(s.mnt_path(&format!("bigdir/file_{i:03}.txt")), format!("content {i}\n"))
-            .expect("write");
+        fs::write(
+            s.mnt_path(&format!("bigdir/file_{i:03}.txt")),
+            format!("content {i}\n"),
+        )
+        .expect("write");
     }
 
     let entries: Vec<String> = fs::read_dir(s.mnt_path("bigdir"))
@@ -222,7 +225,12 @@ fn readdir_many_files() {
         .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
         .collect();
 
-    assert_eq!(entries.len(), 100, "expected 100 entries, got {}", entries.len());
+    assert_eq!(
+        entries.len(),
+        100,
+        "expected 100 entries, got {}",
+        entries.len()
+    );
     for i in 0..100 {
         let name = format!("file_{i:03}.txt");
         assert!(entries.contains(&name), "missing {name} in readdir");

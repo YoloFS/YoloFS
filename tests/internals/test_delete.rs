@@ -1,6 +1,6 @@
+use super::helpers::{changes, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, inos, inode_path, ino_for};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -14,7 +14,9 @@ fn delete_produces_delete_record() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Delete { path } if path.ends_with("/hello.txt"))),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Delete { path } if path.ends_with("/hello.txt"))),
         "journal should have a D record for hello.txt: {records:?}"
     );
 }

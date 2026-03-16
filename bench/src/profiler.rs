@@ -10,7 +10,7 @@
 // per-op stats (median, p99, total), writes summary.txt / bpftrace.txt /
 // stacks.txt / flamegraph.svg into the given output directory.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -91,8 +91,7 @@ impl Profiler {
             let (tx, rx) = std::sync::mpsc::channel::<bool>();
             let bpf_output_thread = bpf_output.clone();
             std::thread::spawn(move || {
-                let mut out =
-                    fs::File::create(&bpf_output_thread).expect("creating bpftrace.txt");
+                let mut out = fs::File::create(&bpf_output_thread).expect("creating bpftrace.txt");
                 let reader = std::io::BufReader::new(stdout);
                 let mut found = false;
                 for line in reader.lines() {
@@ -123,7 +122,12 @@ impl Profiler {
             (None, None)
         };
 
-        Ok(Self { bpftrace, perf, bpf_output, out_dir: out_dir.to_path_buf() })
+        Ok(Self {
+            bpftrace,
+            perf,
+            bpf_output,
+            out_dir: out_dir.to_path_buf(),
+        })
     }
 
     /// Stop both tools, compute stats, write all artifacts, print summary.
@@ -215,12 +219,11 @@ fn discover_agfs_funcs() -> Result<Vec<String>> {
         );
     }
     // Lines are "kfunc:agfs:agfs_foo" — strip the "kfunc:agfs:" prefix.
-    let available: std::collections::HashSet<String> =
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter_map(|l| l.strip_prefix("kfunc:agfs:"))
-            .map(|s| s.to_string())
-            .collect();
+    let available: std::collections::HashSet<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix("kfunc:agfs:"))
+        .map(|s| s.to_string())
+        .collect();
     Ok(INTERESTING
         .iter()
         .filter(|f| available.contains(**f))
@@ -247,7 +250,6 @@ fn generate_script(funcs: &[String]) -> String {
     }
     s
 }
-
 
 // ── Parsing and statistics ────────────────────────────────────────────────────
 
@@ -297,19 +299,22 @@ fn parse_histograms(raw: &str) -> Vec<Histogram> {
 
     for line in raw.lines() {
         // New histogram header: @agfs_foo:
-        if let Some(rest) = line.strip_prefix('@') {
-            if let Some(name) = rest.trim_end().strip_suffix(':') {
-                if !name.is_empty() && !name.contains('[') {
+        if let Some(rest) = line.strip_prefix('@')
+            && let Some(name) = rest.trim_end().strip_suffix(':')
+                && !name.is_empty() && !name.contains('[') {
                     if let Some(current) = current.take() {
                         hists.push(current);
                     }
-                    current = Some(Histogram { name: name.to_string(), buckets: Vec::new() });
+                    current = Some(Histogram {
+                        name: name.to_string(),
+                        buckets: Vec::new(),
+                    });
                     continue;
                 }
-            }
-        }
 
-        let Some(ref mut hist) = current else { continue };
+        let Some(ref mut hist) = current else {
+            continue;
+        };
 
         // Bucket line: leading whitespace, then '[' ...
         let trimmed = line.trim();
@@ -324,7 +329,7 @@ fn parse_histograms(raw: &str) -> Vec<Histogram> {
         }
 
         // Closing delimiter is ']' for point values ([0], [1]) or ')' for ranges ([2, 4)).
-        let close = match trimmed.find(|c| c == ']' || c == ')') {
+        let close = match trimmed.find([']', ')']) {
             Some(i) => i,
             None => continue,
         };
@@ -387,7 +392,7 @@ fn compute_stats(hists: Vec<Histogram>) -> Vec<OpStats> {
 
 /// Return the lower bound of the bucket containing the Nth percentile.
 fn percentile(buckets: &[Bucket], total: u64, pct: u64) -> u64 {
-    let target = (total * pct + 99) / 100; // ceil
+    let target = (total * pct).div_ceil(100); // ceil
     let mut acc = 0u64;
     for b in buckets {
         acc += b.count;
@@ -410,7 +415,9 @@ fn write_summary(out_dir: &Path, ops: &[OpStats], wall_ms: u64) -> Result<()> {
         .unwrap_or("?");
 
     let mut buf = String::new();
-    buf.push_str(&format!("Profile: {workload} / {scenario}  (wall: {wall_ms} ms)\n\n"));
+    buf.push_str(&format!(
+        "Profile: {workload} / {scenario}  (wall: {wall_ms} ms)\n\n"
+    ));
 
     if ops.is_empty() {
         buf.push_str("  (no bpftrace data)\n");
@@ -453,8 +460,8 @@ fn generate_flamegraph(out_dir: &Path) -> Result<()> {
     // Collapse stacks.
     let mut collapsed: Vec<u8> = Vec::new();
     {
-        use inferno::collapse::perf::{Folder, Options};
         use inferno::collapse::Collapse;
+        use inferno::collapse::perf::{Folder, Options};
         let mut folder = Folder::from(Options::default());
         folder
             .collapse(script.stdout.as_slice(), &mut collapsed)

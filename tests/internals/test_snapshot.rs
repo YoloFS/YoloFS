@@ -1,6 +1,6 @@
+use super::helpers::{changes, ino_for, inode_path, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, inode_path, ino_for};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -15,7 +15,9 @@ fn snapshot_produces_snapshot_record() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Snapshot { name, .. } if name == "build")),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Snapshot { name, .. } if name == "build")),
         "journal should have an S record named 'build': {records:?}"
     );
 }
@@ -30,7 +32,8 @@ fn recow_after_snapshot_produces_new_add() {
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 (re-COW)");
 
     let records = journal(&s);
-    let adds: Vec<_> = records.iter()
+    let adds: Vec<_> = records
+        .iter()
         .filter(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
         .collect();
     assert!(
@@ -44,9 +47,18 @@ fn recow_after_snapshot_produces_new_add() {
     }
 
     // Snapshot "s1" should sit between the two adds.
-    let snap_pos = records.iter().position(|r| matches!(r, Record::Snapshot { name, .. } if name == "s1")).unwrap();
-    let first_add = records.iter().position(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt"))).unwrap();
-    let last_add = records.iter().rposition(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt"))).unwrap();
+    let snap_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Snapshot { name, .. } if name == "s1"))
+        .unwrap();
+    let first_add = records
+        .iter()
+        .position(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
+        .unwrap();
+    let last_add = records
+        .iter()
+        .rposition(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
+        .unwrap();
     assert!(first_add < snap_pos, "first Add should precede Snapshot s1");
     assert!(snap_pos < last_add, "Snapshot s1 should precede re-COW Add");
 }
@@ -62,13 +74,18 @@ fn multiple_snapshots_have_distinct_ids() {
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
     let records = journal(&s);
-    let snaps: Vec<_> = records.iter()
+    let snaps: Vec<_> = records
+        .iter()
         .filter_map(|r| match r {
             Record::Snapshot { id, name } if name != "(initial)" => Some((id, name)),
             _ => None,
         })
         .collect();
-    assert_eq!(snaps.len(), 2, "should have 2 user snapshot records: {records:?}");
+    assert_eq!(
+        snaps.len(),
+        2,
+        "should have 2 user snapshot records: {records:?}"
+    );
     assert_ne!(snaps[0].0, snaps[1].0, "snapshot ids should differ");
     assert_eq!(snaps[0].1, "s1");
     assert_eq!(snaps[1].1, "s2");
@@ -84,9 +101,18 @@ fn rename_after_snapshot() {
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
     let records = journal(&s);
-    let snap_pos = records.iter().position(|r| matches!(r, Record::Snapshot { .. })).unwrap();
-    let ren_pos = records.iter().position(|r| matches!(r, Record::Rename { .. })).unwrap();
-    assert!(snap_pos < ren_pos, "Snapshot should precede Rename: {records:?}");
+    let snap_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Snapshot { .. }))
+        .unwrap();
+    let ren_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Rename { .. }))
+        .unwrap();
+    assert!(
+        snap_pos < ren_pos,
+        "Snapshot should precede Rename: {records:?}"
+    );
 }
 
 /// Delete after snapshot: the D record appears after the S record.
@@ -99,9 +125,18 @@ fn delete_after_snapshot() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
 
     let records = journal(&s);
-    let snap_pos = records.iter().position(|r| matches!(r, Record::Snapshot { .. })).unwrap();
-    let del_pos = records.iter().position(|r| matches!(r, Record::Delete { .. })).unwrap();
-    assert!(snap_pos < del_pos, "Snapshot should precede Delete: {records:?}");
+    let snap_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Snapshot { .. }))
+        .unwrap();
+    let del_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Delete { .. }))
+        .unwrap();
+    assert!(
+        snap_pos < del_pos,
+        "Snapshot should precede Delete: {records:?}"
+    );
 }
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────

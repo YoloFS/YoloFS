@@ -1,6 +1,6 @@
+use super::helpers::{changes, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, inos, inode_path, ino_for};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -16,7 +16,9 @@ fn modify_produces_add_record() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt"))),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt"))),
         "journal should have an A record for hello.txt: {records:?}"
     );
 }
@@ -32,12 +34,16 @@ fn multiple_writes_produce_multiple_adds() {
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
 
     let records = journal(&s);
-    let add_count = records.iter()
+    let add_count = records
+        .iter()
         .filter(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
         .count();
     // At least 1 A record; the kernel may coalesce O_TRUNC reopens on the
     // same inode, but the first COW always produces one.
-    assert!(add_count >= 1, "should have at least 1 A record, got {add_count}: {records:?}");
+    assert!(
+        add_count >= 1,
+        "should have at least 1 A record, got {add_count}: {records:?}"
+    );
 }
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────
@@ -97,7 +103,10 @@ fn append_updates_inode() {
     let ch = changes(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let content = fs::read_to_string(inode_path(&s, ino)).unwrap();
-    assert_eq!(content, "line1\nline2\n", "inode should contain appended content");
+    assert_eq!(
+        content, "line1\nline2\n",
+        "inode should contain appended content"
+    );
 }
 
 /// Without a snapshot, rewriting a file reuses the same inode (no new allocation).
@@ -131,7 +140,10 @@ fn truncate_rewrite_overwrites_from_start() {
     fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
 
     let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
-    assert_eq!(content, "short\n", "mount content should be exactly the new data");
+    assert_eq!(
+        content, "short\n",
+        "mount content should be exactly the new data"
+    );
 }
 
 /// O_TRUNC on an already-staged file: the inode in the store must contain
@@ -148,7 +160,10 @@ fn truncate_rewrite_inode_has_exact_content() {
     let path = inode_path(&s, ino);
 
     let inode_content = fs::read_to_string(&path).unwrap();
-    assert_eq!(inode_content, "short\n", "inode should contain only the truncated content");
+    assert_eq!(
+        inode_content, "short\n",
+        "inode should contain only the truncated content"
+    );
 
     let meta = fs::metadata(&path).unwrap();
     assert_eq!(meta.len(), 6, "inode size should be exactly 6 bytes");
@@ -180,7 +195,11 @@ fn truncate_only_produces_empty_inode() {
     let path = inode_path(&s, ino);
 
     let meta = fs::metadata(&path).unwrap();
-    assert_eq!(meta.len(), 0, "inode should be 0 bytes after O_TRUNC with no write");
+    assert_eq!(
+        meta.len(),
+        0,
+        "inode should be 0 bytes after O_TRUNC with no write"
+    );
 }
 
 /// A large file write produces an inode with the correct size.
@@ -210,7 +229,10 @@ fn binary_content_preserved() {
     let ch = changes(&s);
     let ino = ino_for(&ch, "/binary.bin");
     let inode_data = fs::read(inode_path(&s, ino)).unwrap();
-    assert_eq!(inode_data, data, "binary inode content should match exactly");
+    assert_eq!(
+        inode_data, data,
+        "binary inode content should match exactly"
+    );
 }
 
 /// Inode preserves NUL bytes and other control characters.
@@ -248,7 +270,10 @@ fn multiple_files_each_get_correct_inode() {
     for (suffix, expected) in &pairs {
         let ino = ino_for(&ch, suffix);
         let actual = fs::read_to_string(inode_path(&s, ino)).unwrap();
-        assert_eq!(&actual, expected, "inode for {suffix} should have correct content");
+        assert_eq!(
+            &actual, expected,
+            "inode for {suffix} should have correct content"
+        );
     }
 }
 
@@ -262,7 +287,10 @@ fn deep_nested_file_inode() {
 
     let ch = changes(&s);
     let ino = ino_for(&ch, "/leaf.txt");
-    assert_eq!(fs::read_to_string(inode_path(&s, ino)).unwrap(), "deep content\n");
+    assert_eq!(
+        fs::read_to_string(inode_path(&s, ino)).unwrap(),
+        "deep content\n"
+    );
 }
 
 /// Modifying a pre-existing nested file creates an inode.
@@ -275,5 +303,8 @@ fn modify_nested_base_file() {
 
     let ch = changes(&s);
     let ino = ino_for(&ch, "/deep.txt");
-    assert_eq!(fs::read_to_string(inode_path(&s, ino)).unwrap(), "updated nested\n");
+    assert_eq!(
+        fs::read_to_string(inode_path(&s, ino)).unwrap(),
+        "updated nested\n"
+    );
 }

@@ -8,7 +8,6 @@
 
 #include "agfs.h"
 #include <linux/xattr.h>
-#include <linux/mm.h>
 
 /* ── create/mkdir/symlink — allocate inode + override ───────────────── */
 
@@ -16,7 +15,6 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 			      umode_t mode, const char *symname)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
-	const struct cred *old_cred;
 	char buf[AGFS_PATH_MAX];
 	struct path inode_path;
 	u64 ino;
@@ -26,16 +24,14 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	if (err)
 		return err;
 
-	old_cred = override_creds(sbi->creator_cred);
-
 	err = agfs_inode_alloc(sbi, &ino, &inode_path, mode, symname);
 	if (err)
-		goto out_revert;
+		return err;
 
 	err = agfs_interpose(dentry, dir->i_sb, &inode_path);
 	if (err) {
 		path_put(&inode_path);
-		goto out_revert;
+		return err;
 	}
 
 	agfs_replace_lower_path(dentry, &inode_path);
@@ -44,18 +40,11 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 				S_ISDIR(mode) ? DT_DIR :
 				S_ISLNK(mode) ? DT_LNK : DT_REG,
 				(u64)atomic64_read(&sbi->snapshot_gen));
-	if (err) {
-		revert_creds(old_cred);
+	if (err)
 		return err;
-	}
 	agfs_journal_append_a(sbi, buf, ino);
 
-	revert_creds(old_cred);
 	return 0;
-
-out_revert:
-	revert_creds(old_cred);
-	return err;
 }
 
 static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
@@ -75,7 +64,6 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
-	const struct cred *old_cred;
 	char buf[AGFS_PATH_MAX];
 	int err;
 
@@ -83,20 +71,16 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 	if (err)
 		return err;
 
-	old_cred = override_creds(sbi->creator_cred);
-
 	err = agfs_add_override(dir,
 				dentry->d_name.name,
 				dentry->d_name.len, 0, NULL, DT_UNKNOWN,
 				0);
 	if (err)
-		goto out;
+		return err;
 
 	err = agfs_journal_append_d(sbi, buf);
 	if (!err)
 		d_drop(dentry);
-out:
-	revert_creds(old_cred);
 	return err;
 }
 
@@ -127,7 +111,6 @@ static int agfs_rename(struct mnt_idmap *idmap,
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
 	struct agfs_inode_info *old_parent_ii;
-	const struct cred *old_cred;
 	char old_buf[AGFS_PATH_MAX], new_buf[AGFS_PATH_MAX];
 	struct agfs_override *old_ovr = NULL;
 	u64 old_ino = 0;
@@ -146,7 +129,6 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (err)
 		return err;
 
-	old_cred = override_creds(sbi->creator_cred);
 	down_write(&sbi->staging_sem);
 
 	/* Check current override state on old name.
@@ -216,7 +198,6 @@ static int agfs_rename(struct mnt_idmap *idmap,
 out:
 	kfree(old_bp);
 	up_write(&sbi->staging_sem);
-	revert_creds(old_cred);
 	return err;
 }
 

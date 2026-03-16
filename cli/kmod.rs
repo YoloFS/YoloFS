@@ -163,10 +163,7 @@ proc /proc proc rw,nosuid 0 0
 /tmp/project/.agfs /.agfs/mnt agfs rw 0 0
 ";
         let dirs = parse_mounts(content);
-        assert_eq!(dirs, vec![
-            "/home/user/.agfs/abc",
-            "/tmp/project/.agfs",
-        ]);
+        assert_eq!(dirs, vec!["/home/user/.agfs/abc", "/tmp/project/.agfs",]);
     }
 
     #[test]

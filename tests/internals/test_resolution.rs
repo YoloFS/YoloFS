@@ -1,6 +1,6 @@
+use super::helpers::journal;
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::journal;
 use std::fs;
 
 // ── Compound journal operations ──────────────────────────────────────────────
@@ -23,15 +23,36 @@ fn operations_produce_ordered_records() {
     let records = journal(&s);
 
     // Verify each type is present
-    assert!(records.iter().any(|r| matches!(r, Record::Add { .. })), "missing A: {records:?}");
-    assert!(records.iter().any(|r| matches!(r, Record::Snapshot { .. })), "missing S: {records:?}");
-    assert!(records.iter().any(|r| matches!(r, Record::Delete { .. })), "missing D: {records:?}");
-    assert!(records.iter().any(|r| matches!(r, Record::Rename { .. })), "missing R: {records:?}");
+    assert!(
+        records.iter().any(|r| matches!(r, Record::Add { .. })),
+        "missing A: {records:?}"
+    );
+    assert!(
+        records.iter().any(|r| matches!(r, Record::Snapshot { .. })),
+        "missing S: {records:?}"
+    );
+    assert!(
+        records.iter().any(|r| matches!(r, Record::Delete { .. })),
+        "missing D: {records:?}"
+    );
+    assert!(
+        records.iter().any(|r| matches!(r, Record::Rename { .. })),
+        "missing R: {records:?}"
+    );
 
     // Snapshot "s1" should appear after the Add (write) and before the Delete.
-    let snap_pos = records.iter().position(|r| matches!(r, Record::Snapshot { name, .. } if name == "s1")).unwrap();
-    let add_pos = records.iter().position(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt"))).unwrap();
-    let del_pos = records.iter().position(|r| matches!(r, Record::Delete { .. })).unwrap();
+    let snap_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Snapshot { name, .. } if name == "s1"))
+        .unwrap();
+    let add_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
+        .unwrap();
+    let del_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Delete { .. }))
+        .unwrap();
     assert!(add_pos < snap_pos, "Add should precede Snapshot s1");
     assert!(snap_pos < del_pos, "Snapshot s1 should precede Delete");
 }
@@ -46,18 +67,28 @@ fn write_after_rename() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Rename { old_path, new_path }
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Rename { old_path, new_path }
             if old_path.ends_with("/hello.txt") && new_path.ends_with("/moved.txt"))),
         "should have R record: {records:?}"
     );
     assert!(
-        records.iter().any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/moved.txt"))),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/moved.txt"))),
         "should have A record at new path: {records:?}"
     );
 
     // The rename should precede the write
-    let r_pos = records.iter().position(|r| matches!(r, Record::Rename { .. })).unwrap();
-    let a_pos = records.iter().rposition(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/moved.txt"))).unwrap();
+    let r_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Rename { .. }))
+        .unwrap();
+    let a_pos = records
+        .iter()
+        .rposition(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/moved.txt")))
+        .unwrap();
     assert!(r_pos < a_pos, "Rename should precede the Add at new path");
 }
 
@@ -71,11 +102,15 @@ fn create_then_rename() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/temp.txt"))),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/temp.txt"))),
         "should have A record for original path: {records:?}"
     );
     assert!(
-        records.iter().any(|r| matches!(r, Record::Rename { old_path, new_path }
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Rename { old_path, new_path }
             if old_path.ends_with("/temp.txt") && new_path.ends_with("/final.txt"))),
         "should have R record: {records:?}"
     );
@@ -91,11 +126,15 @@ fn create_then_delete() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/ephemeral.txt"))),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/ephemeral.txt"))),
         "should have A record: {records:?}"
     );
     assert!(
-        records.iter().any(|r| matches!(r, Record::Delete { path } if path.ends_with("/ephemeral.txt"))),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Delete { path } if path.ends_with("/ephemeral.txt"))),
         "should have D record: {records:?}"
     );
 }
@@ -109,8 +148,14 @@ fn modify_then_delete() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
 
     let records = journal(&s);
-    let a_pos = records.iter().position(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt"))).expect("missing A");
-    let d_pos = records.iter().position(|r| matches!(r, Record::Delete { path } if path.ends_with("/hello.txt"))).expect("missing D");
+    let a_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
+        .expect("missing A");
+    let d_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Delete { path } if path.ends_with("/hello.txt")))
+        .expect("missing D");
     assert!(a_pos < d_pos, "Add should precede Delete: {records:?}");
 }
 
@@ -124,16 +169,26 @@ fn rename_then_delete() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Rename { old_path, new_path }
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Rename { old_path, new_path }
             if old_path.ends_with("/hello.txt") && new_path.ends_with("/moved.txt"))),
         "should have R record: {records:?}"
     );
     assert!(
-        records.iter().any(|r| matches!(r, Record::Delete { path } if path.ends_with("/moved.txt"))),
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Delete { path } if path.ends_with("/moved.txt"))),
         "should have D record at new path: {records:?}"
     );
 
-    let r_pos = records.iter().position(|r| matches!(r, Record::Rename { .. })).expect("missing R");
-    let d_pos = records.iter().position(|r| matches!(r, Record::Delete { path } if path.ends_with("/moved.txt"))).expect("missing D");
+    let r_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Rename { .. }))
+        .expect("missing R");
+    let d_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Delete { path } if path.ends_with("/moved.txt")))
+        .expect("missing D");
     assert!(r_pos < d_pos, "Rename should precede Delete: {records:?}");
 }

@@ -130,12 +130,7 @@ fn interactive_watch_allow_permits_read() {
     std::thread::sleep(Duration::from_millis(200));
 
     // Pre-fill stdin with "a" (allow).
-    watch
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(b"a\n")
-        .unwrap();
+    watch.stdin.as_mut().unwrap().write_all(b"a\n").unwrap();
 
     let content = std::fs::read_to_string(s.mnt_path("hello.txt"));
 
@@ -175,12 +170,7 @@ fn interactive_watch_deny_blocks_read() {
     std::thread::sleep(Duration::from_millis(200));
 
     // Pre-fill stdin with "d" (deny).
-    watch
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(b"d\n")
-        .unwrap();
+    watch.stdin.as_mut().unwrap().write_all(b"d\n").unwrap();
 
     let result = std::fs::read_to_string(s.mnt_path("hello.txt"));
 
