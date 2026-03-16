@@ -1,7 +1,6 @@
 use crate::backend::{self, Backend};
 use crate::workload::{IterResult, Workload};
 use agfs::config::{Config, Perm};
-use agfs::kmsg;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -112,7 +111,6 @@ fn run_agfs_iteration(
     verbose: bool,
 ) -> Result<(IterResult, Vec<String>)> {
     let (session, init_ms) = Session::setup(config)?;
-    let cursor = kmsg::KmsgCursor::now();
 
     let dest = session.mnt_path(workload.work_dir());
 
@@ -144,8 +142,6 @@ fn run_agfs_iteration(
         }
     };
 
-    let kernel_msgs = cursor.as_ref().map(|c| c.read_new()).unwrap_or_default();
-
     Ok((
         IterResult {
             init_ms: Some(init_ms),
@@ -153,7 +149,7 @@ fn run_agfs_iteration(
             commit_ms: Some(commit_ms),
             total_ms: init_ms + result.staging_ms + commit_ms,
         },
-        kernel_msgs,
+        vec![],
     ))
 }
 
@@ -222,7 +218,6 @@ impl Backend for AgfsRealistic {
         }
 
         let session = Session { root };
-        let cursor = kmsg::KmsgCursor::now();
         let dest = session.mnt_path(workload.work_dir());
 
         let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose)?;
@@ -253,8 +248,6 @@ impl Backend for AgfsRealistic {
             }
         };
 
-        let kernel_msgs = cursor.as_ref().map(|c| c.read_new()).unwrap_or_default();
-
         Ok((
             IterResult {
                 init_ms: Some(init_ms),
@@ -262,7 +255,7 @@ impl Backend for AgfsRealistic {
                 commit_ms: Some(commit_ms),
                 total_ms: init_ms + result.staging_ms + commit_ms,
             },
-            kernel_msgs,
+            vec![],
         ))
     }
 }
