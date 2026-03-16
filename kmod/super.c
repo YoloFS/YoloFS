@@ -170,6 +170,8 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sbi->ask_engine.timeout_s = opts->ask_timeout_s;
 	sbi->ask_engine.default_perm = opts->ask_default
 		? opts->ask_default : AGFS_PERM_DENY;
+	INIT_LIST_HEAD(&sbi->pinned_rules);
+	spin_lock_init(&sbi->pinned_rules_lock);
 
 	/* Initialize staging semaphore and inode counter */
 	init_rwsem(&sbi->staging_sem);
@@ -327,8 +329,10 @@ static void agfs_kill_super(struct super_block *sb)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(sb);
 
-	if (sbi)
+	if (sbi) {
+		agfs_release_pinned_rules(sbi);
 		agfs_release_pinned_dirs(sbi);
+	}
 
 	/* Pre-prune cached dentries (especially those created by chroot
 	 * lookups through the overlay of "/") so that the aggressive

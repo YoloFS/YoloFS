@@ -154,6 +154,29 @@ void agfs_daemon_cleanup(struct agfs_sb_info *sbi)
 	spin_unlock(&eng->dispatch_lock);
 }
 
+/* ── Release all rule-pinned dentries ───────────────────────────────── */
+
+void agfs_release_pinned_rules(struct agfs_sb_info *sbi)
+{
+	LIST_HEAD(local);
+	struct agfs_dentry_info *di, *tmp;
+
+	spin_lock(&sbi->pinned_rules_lock);
+	list_splice_init(&sbi->pinned_rules, &local);
+	spin_unlock(&sbi->pinned_rules_lock);
+
+	list_for_each_entry_safe(di, tmp, &local, rule_pin) {
+		struct dentry *dentry = di->rule_dentry;
+
+		list_del_init(&di->rule_pin);
+		spin_lock(&di->lock);
+		di->perm = AGFS_PERM_NONE;
+		di->rule_dentry = NULL;
+		spin_unlock(&di->lock);
+		dput(dentry);
+	}
+}
+
 /* ── Rule ioctl helpers ─────────────────────────────────────────────── */
 
 static int agfs_resolve_rule(struct file *file, unsigned long arg,
@@ -215,10 +238,20 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		}
 
 		spin_lock(&di->lock);
-		if (di->perm == AGFS_PERM_NONE)
+		if (di->perm == AGFS_PERM_NONE) {
 			dget(rule_path.dentry);
+			di->rule_dentry = rule_path.dentry;
+		}
 		di->perm = (enum agfs_perm)rule.perm;
 		spin_unlock(&di->lock);
+
+		if (di->rule_dentry) {
+			spin_lock(&sbi->pinned_rules_lock);
+			if (list_empty(&di->rule_pin))
+				list_add(&di->rule_pin, &sbi->pinned_rules);
+			spin_unlock(&sbi->pinned_rules_lock);
+		}
+
 		atomic64_inc(&sbi->perm_gen);
 		path_put(&rule_path);
 		return 0;
@@ -237,7 +270,14 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		spin_lock(&di->lock);
 		if (di->perm != AGFS_PERM_NONE) {
 			di->perm = AGFS_PERM_NONE;
+			di->rule_dentry = NULL;
 			spin_unlock(&di->lock);
+
+			spin_lock(&sbi->pinned_rules_lock);
+			if (!list_empty(&di->rule_pin))
+				list_del_init(&di->rule_pin);
+			spin_unlock(&sbi->pinned_rules_lock);
+
 			dput(rule_path.dentry);
 		} else {
 			spin_unlock(&di->lock);

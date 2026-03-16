@@ -152,6 +152,8 @@ struct agfs_sb_info {
 	bool			permission;	/* enable/disable toggle */
 	atomic64_t		perm_gen;	/* cache invalidation counter */
 	struct agfs_ask_engine	ask_engine;	/* ask protocol state */
+	struct list_head	pinned_rules;	/* dget()'d dentries with perm rules */
+	spinlock_t		pinned_rules_lock;/* protects pinned_rules */
 
 	bool			staging;
 };
@@ -182,6 +184,8 @@ struct agfs_dentry_info {
 	spinlock_t		lock;
 	struct path		lower_path;	/* resolved lower path (inode entry or base) */
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
+	struct list_head	rule_pin;	/* node in sbi->pinned_rules */
+	struct dentry		*rule_dentry;	/* back-pointer for dput on release */
 };
 
 /* ── Per-File Info ─────────────────────────────────────────────────── */
@@ -368,5 +372,6 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 /* ioctl.c */
 long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 void agfs_daemon_cleanup(struct agfs_sb_info *sbi);
+void agfs_release_pinned_rules(struct agfs_sb_info *sbi);
 
 #endif /* _AGFS_H_ */

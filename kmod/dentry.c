@@ -17,6 +17,8 @@ int agfs_new_dentry_private_data(struct dentry *dentry)
 
 	spin_lock_init(&info->lock);
 	info->perm = AGFS_PERM_NONE;
+	INIT_LIST_HEAD(&info->rule_pin);
+	info->rule_dentry = NULL;
 	dentry->d_fsdata = info;
 	return 0;
 }
