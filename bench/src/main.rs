@@ -454,19 +454,34 @@ fn write_results(results: &BenchResults, out_dir: &Path) -> Result<()> {
             }
         };
 
-        let new_names: std::collections::HashSet<&str> = results
-            .workloads
-            .iter()
-            .map(|w| w.workload.as_str())
-            .collect();
-
-        let mut workloads: Vec<WorkloadResult> = existing
+        // Build a map of existing workloads for merging.
+        let mut workload_map: std::collections::BTreeMap<String, WorkloadResult> = existing
             .workloads
             .into_iter()
-            .filter(|w| !new_names.contains(w.workload.as_str()))
+            .map(|w| (w.workload.clone(), w))
             .collect();
-        workloads.extend(results.workloads.iter().cloned());
-        workloads.sort_by(|a, b| a.workload.cmp(&b.workload));
+
+        for new_wl in &results.workloads {
+            match workload_map.get_mut(&new_wl.workload) {
+                Some(existing_wl) => {
+                    // Merge backends: replace re-run backends, keep the rest.
+                    let new_backend_names: std::collections::HashSet<&str> = new_wl
+                        .backends
+                        .iter()
+                        .map(|b| b.backend.as_str())
+                        .collect();
+                    existing_wl
+                        .backends
+                        .retain(|b| !new_backend_names.contains(b.backend.as_str()));
+                    existing_wl.backends.extend(new_wl.backends.iter().cloned());
+                }
+                None => {
+                    workload_map.insert(new_wl.workload.clone(), new_wl.clone());
+                }
+            }
+        }
+
+        let workloads: Vec<WorkloadResult> = workload_map.into_values().collect();
 
         BenchResults {
             timestamp: results.timestamp,
