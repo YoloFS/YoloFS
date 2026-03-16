@@ -19,12 +19,14 @@ QEMU_PKGS=(
 BUILD_PKGS=(
     build-essential
     "linux-headers-$(uname -r)"
+    "linux-tools-$(uname -r)"
     bc
     kmod
     pkg-config
     libsystemd-dev
     git
     pahole
+    bpftrace
 )
 
 # ── Installers ────────────────────────────────────────────────────────
