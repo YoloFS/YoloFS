@@ -183,3 +183,44 @@ fn readdir_allowed_under_deny() {
         .collect();
     assert!(!entries.is_empty(), "directory should have entries");
 }
+
+// ── Base directory permissions are enforced ──────────────────────────
+
+/// Creating a file inside a read-only base directory should fail because
+/// agfs_permission delegates directory checks to the lower filesystem.
+#[test]
+fn create_in_readonly_base_dir_denied() {
+    let s = AgfsSession::new_with_config(Config {
+        permission: true,
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let dir = s.base_path("subdir");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("chmod");
+
+    let result = fs::write(s.mnt_path("subdir/newfile.txt"), "data");
+    assert!(result.is_err(), "create should fail in read-only base dir");
+
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("restore");
+}
+
+/// mkdir inside a read-only base directory should fail.
+#[test]
+fn mkdir_in_readonly_base_dir_denied() {
+    let s = AgfsSession::new_with_config(Config {
+        permission: true,
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let dir = s.base_path("subdir");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("chmod");
+
+    let result = fs::create_dir(s.mnt_path("subdir/newdir"));
+    assert!(result.is_err(), "mkdir should fail in read-only base dir");
+
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("restore");
+}

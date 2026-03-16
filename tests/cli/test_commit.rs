@@ -1,5 +1,6 @@
 use crate::helpers::AgfsSession;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn commit_modified_file() {
@@ -88,5 +89,71 @@ fn commit_replace_dir_with_file() {
         fs::read_to_string(s.base_path("subdir")).unwrap(),
         "now a file\n",
         "base should have the file content"
+    );
+}
+
+/// Committing a modified read-only file should preserve its 0o444 mode.
+#[test]
+fn commit_preserves_readonly_mode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let s = AgfsSession::new().expect("session setup");
+
+    let base = s.base_path("hello.txt");
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o444)).expect("chmod");
+
+    fs::write(s.mnt_path("hello.txt"), "committed\n").expect("write");
+    s.cli(&["commit"]).expect("commit");
+
+    let meta = fs::metadata(&base).unwrap();
+    assert_eq!(
+        meta.mode() & 0o777,
+        0o444,
+        "committed file should preserve original mode 0444, got {:o}",
+        meta.mode() & 0o777
+    );
+    assert_eq!(fs::read_to_string(&base).unwrap(), "committed\n");
+}
+
+/// Committing a modified executable file should preserve its 0o755 mode.
+#[test]
+fn commit_preserves_executable_mode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let s = AgfsSession::new().expect("session setup");
+
+    // test.sh is seeded with mode 0o755
+    fs::write(s.mnt_path("test.sh"), "#!/bin/sh\necho committed\n").expect("write");
+    s.cli(&["commit"]).expect("commit");
+
+    let base = s.base_path("test.sh");
+    let meta = fs::metadata(&base).unwrap();
+    assert_eq!(
+        meta.mode() & 0o777,
+        0o755,
+        "committed executable should preserve mode 0755, got {:o}",
+        meta.mode() & 0o777
+    );
+}
+
+/// Committing a newly created file should keep its default mode (not
+/// inherit from some other file).
+#[test]
+fn commit_new_file_has_default_mode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("brand_new.txt"), "new\n").expect("write");
+    s.cli(&["commit"]).expect("commit");
+
+    let base = s.base_path("brand_new.txt");
+    let meta = fs::metadata(&base).unwrap();
+    let mode = meta.mode() & 0o777;
+    // New files get the default mode from the creating process's umask
+    assert!(
+        mode == 0o644 || mode == 0o664,
+        "new file should have reasonable default mode, got {:o}",
+        mode
     );
 }

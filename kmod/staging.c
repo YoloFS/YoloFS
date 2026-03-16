@@ -267,8 +267,9 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	u64 ino;
 	int err;
 
-	/* Allocate a new inode in the store */
-	err = agfs_inode_alloc(sbi, &ino, &inode_path, 0644, NULL);
+	/* Allocate a new inode in the store, preserving the base file's mode */
+	err = agfs_inode_alloc(sbi, &ino, &inode_path,
+			       d_inode(dentry)->i_mode & ~S_IFMT, NULL);
 	if (err)
 		return err;
 

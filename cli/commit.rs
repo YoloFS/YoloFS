@@ -38,6 +38,14 @@ fn apply_inode(
 
     ensure_parent(base_path, ensured)?;
 
+    // Save existing file's permissions before removal so we can restore
+    // them after moving the staged inode (preserves base file modes).
+    let original_perms = base_path
+        .symlink_metadata()
+        .ok()
+        .filter(|m| m.is_file())
+        .map(|m| m.permissions());
+
     // Remove whatever exists at the target path
     if let Ok(existing) = base_path.symlink_metadata() {
         if existing.is_dir() && !existing.file_type().is_symlink() {
@@ -64,6 +72,13 @@ fn apply_inode(
             })
             .with_context(|| format!("moving inode to {}", base_path.display()))?;
     }
+
+    // Restore original permissions for modified files.
+    if let Some(perms) = original_perms {
+        fs::set_permissions(base_path, perms)
+            .with_context(|| format!("restoring permissions on {}", base_path.display()))?;
+    }
+
     Ok(())
 }
 

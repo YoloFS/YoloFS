@@ -186,7 +186,7 @@ fn append_to_file() {
 }
 
 /// Writing to a base file with read-only permissions still triggers COW
-/// (the kernel module uses credential override for inode store writes).
+/// (the staged copy in the inode store is what gets written to).
 #[test]
 fn write_to_readonly_base_triggers_cow() {
     let s = AgfsSession::new().expect("session setup");
@@ -195,7 +195,7 @@ fn write_to_readonly_base_triggers_cow() {
     let base = s.base_path("hello.txt");
     fs::set_permissions(&base, fs::Permissions::from_mode(0o444)).expect("chmod");
 
-    // Writing through the mount should still succeed (credential override)
+    // Writing through the mount should still succeed (COW to inode store)
     fs::write(s.mnt_path("hello.txt"), "overridden\n").expect("write to readonly base");
 
     let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
@@ -203,4 +203,46 @@ fn write_to_readonly_base_triggers_cow() {
 
     // Restore permissions for cleanup
     fs::set_permissions(&base, fs::Permissions::from_mode(0o644)).expect("restore chmod");
+}
+
+/// COW should preserve the base file's permission mode, not reset to 0644.
+#[test]
+fn cow_preserves_readonly_mode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let s = AgfsSession::new().expect("session setup");
+
+    let base = s.base_path("hello.txt");
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o444)).expect("chmod");
+
+    fs::write(s.mnt_path("hello.txt"), "overridden\n").expect("write");
+
+    let meta = fs::metadata(s.mnt_path("hello.txt")).unwrap();
+    assert_eq!(
+        meta.mode() & 0o777,
+        0o444,
+        "stat through mount should show original mode 0444, got {:o}",
+        meta.mode() & 0o777
+    );
+
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o644)).expect("restore");
+}
+
+/// COW should preserve executable mode bits.
+#[test]
+fn cow_preserves_executable_mode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let s = AgfsSession::new().expect("session setup");
+
+    // test.sh is seeded with mode 0o755
+    fs::write(s.mnt_path("test.sh"), "#!/bin/sh\necho modified\n").expect("write");
+
+    let meta = fs::metadata(s.mnt_path("test.sh")).unwrap();
+    assert_eq!(
+        meta.mode() & 0o777,
+        0o755,
+        "stat should preserve executable mode 0755, got {:o}",
+        meta.mode() & 0o777
+    );
 }
