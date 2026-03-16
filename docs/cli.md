@@ -108,22 +108,29 @@ process credentials, not euid.
 | `commit`, `status`, `diff` | 0 | May need access to root-owned staging blobs (see below) |
 | `load`/`unload` | delegates to `sudo` | Already handled correctly |
 
-### Known issue: staging blob ownership
+### Staging blob ownership
 
-The staging layer creates blobs under `override_creds(sbi->creator_cred)`,
-where `creator_cred` captures euid=0 from the setuid binary at mount time.
-This makes staged directories root-owned. When `agfs_permission` delegates
-directory permission checks to the lower filesystem (instead of using agfs
-rules), the real user gets EACCES on directories they created.
+The kernel module creates staging blobs via `vfs_create` / `vfs_mkdir`
+using `current_cred()`. Before the privilege drop fix, `current_cred()`
+had euid=0 (from the setuid binary), making all staging blobs root-owned.
 
-Real-world trigger: `make install-third-party` runs autoconf, which uses
-Perl's `File::Temp` to create a private temp dir (mode 0700). The mkdir
-succeeds but subsequent access fails because the staged blob is
-`root:root 0700`. See `tests/perm/test_dir_ops.rs::non_root_mkdir_then_write_inside`.
+The privilege drop in `exec` fixes this for the CLI path: user commands
+now run with the real user's credentials, so `current_cred()` in the
+kernel sees the invoking user's uid and staging blobs are created with
+correct ownership.
 
-Once the kernel module is fixed to create staging blobs owned by the real
-user (not `creator_cred`), the privilege drop can be extended to `commit`
-and other subcommands.
+Note: `mount` still runs as root (needed for `mount()` syscall), so the
+initial `.agfs/` directory structure is root-owned. This is expected —
+only the inodes created by user commands inside `agfs exec` need user
+ownership.
+
+There is a separate kernel-side issue: `agfs_permission` delegates
+directory permission checks to the lower filesystem instead of using
+agfs rules (see `inode.c`). This means directory access depends on the
+blob's Unix ownership rather than the agfs rule engine. The CLI privilege
+drop makes this work in practice (blobs are user-owned), but the kernel
+behavior is still incorrect — a direct `mount -t agfs` without the CLI
+would still produce root-owned blobs.
 
 ## TTY / Terminal Ownership
 
