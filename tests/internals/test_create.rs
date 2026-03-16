@@ -1,6 +1,6 @@
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, blob_path, blob_id_for};
+use super::helpers::{journal, changes, inode_path, ino_for};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -19,34 +19,34 @@ fn create_produces_add_record() {
     );
 }
 
-// ── Staging ──────────────────────────────────────────────────────────────────
+// ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// Creating a new file produces a staging blob.
+/// Creating a new file produces a staged inode.
 #[test]
-fn create_file_produces_blob() {
+fn create_file_produces_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("brandnew.txt"), "fresh content\n").expect("create");
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/brandnew.txt");
-    let blob = blob_path(&s, id);
+    let ino = ino_for(&ch, "/brandnew.txt");
+    let path = inode_path(&s, ino);
 
-    assert!(blob.is_file(), "new file blob should be a regular file");
-    assert_eq!(fs::read_to_string(&blob).unwrap(), "fresh content\n");
+    assert!(path.is_file(), "new file inode should be a regular file");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "fresh content\n");
 }
 
-/// An empty file (touch) creates an empty blob.
+/// An empty file (touch) creates an empty inode.
 #[test]
-fn empty_file_creates_empty_blob() {
+fn empty_file_creates_empty_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("empty.txt"), "").expect("touch");
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/empty.txt");
-    let blob = blob_path(&s, id);
+    let ino = ino_for(&ch, "/empty.txt");
+    let path = inode_path(&s, ino);
 
-    assert!(blob.is_file(), "empty file blob should exist");
-    assert_eq!(fs::read(&blob).unwrap().len(), 0, "blob should be 0 bytes");
+    assert!(path.is_file(), "empty file inode should exist");
+    assert_eq!(fs::read(&path).unwrap().len(), 0, "inode should be 0 bytes");
 }

@@ -1,6 +1,6 @@
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, blob_entries, blob_path, blob_id_for};
+use super::helpers::{journal, changes, inos, inode_path, ino_for};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -36,54 +36,53 @@ fn multiple_writes_produce_multiple_adds() {
         .filter(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
         .count();
     // At least 1 A record; the kernel may coalesce O_TRUNC reopens on the
-    // same blob, but the first COW always produces one.
+    // same inode, but the first COW always produces one.
     assert!(add_count >= 1, "should have at least 1 A record, got {add_count}: {records:?}");
 }
 
-// ── Staging ──────────────────────────────────────────────────────────────────
+// ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// Writing to an existing file creates a staging blob with the new content.
+/// Writing to an existing file creates a staged inode with the new content.
 #[test]
-fn modify_creates_blob_with_content() {
+fn modify_creates_inode_with_content() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/hello.txt");
-    let blob = blob_path(&s, id);
+    let ino = ino_for(&ch, "/hello.txt");
+    let path = inode_path(&s, ino);
 
-    assert!(blob.exists(), "staging blob should exist at {}", blob.display());
-    assert!(blob.is_file(), "staging blob should be a regular file");
+    assert!(path.is_file(), "staged inode should be a regular file");
     assert_eq!(
-        fs::read_to_string(&blob).unwrap(),
+        fs::read_to_string(&path).unwrap(),
         "modified\n",
-        "staging blob content should match what was written"
+        "staged inode content should match what was written"
     );
 }
 
-/// Overwriting a file multiple times updates the blob content in-place.
+/// Overwriting a file multiple times updates the inode content in-place.
 #[test]
-fn overwrite_updates_blob_content() {
+fn overwrite_updates_inode_content() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     fs::write(s.mnt_path("hello.txt"), "v2 is longer\n").expect("write v2");
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/hello.txt");
-    let blob = blob_path(&s, id);
+    let ino = ino_for(&ch, "/hello.txt");
+    let path = inode_path(&s, ino);
 
     assert_eq!(
-        fs::read_to_string(&blob).unwrap(),
+        fs::read_to_string(&path).unwrap(),
         "v2 is longer\n",
-        "blob should contain the latest write"
+        "inode should contain the latest write"
     );
 }
 
-/// Appending to a file updates the blob content.
+/// Appending to a file updates the inode content.
 #[test]
-fn append_updates_blob() {
+fn append_updates_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "line1\n").expect("write");
@@ -96,30 +95,30 @@ fn append_updates_blob() {
     drop(f);
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/hello.txt");
-    let content = fs::read_to_string(blob_path(&s, id)).unwrap();
-    assert_eq!(content, "line1\nline2\n", "blob should contain appended content");
+    let ino = ino_for(&ch, "/hello.txt");
+    let content = fs::read_to_string(inode_path(&s, ino)).unwrap();
+    assert_eq!(content, "line1\nline2\n", "inode should contain appended content");
 }
 
-/// Without a snapshot, rewriting a file reuses the same blob (no new allocation).
+/// Without a snapshot, rewriting a file reuses the same inode (no new allocation).
 #[test]
-fn rewrite_without_snapshot_reuses_blob() {
+fn rewrite_without_snapshot_reuses_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    let blobs_after_v1 = blob_entries(&s);
+    let inos_after_v1 = inos(&s);
 
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
-    let blobs_after_v2 = blob_entries(&s);
+    let inos_after_v2 = inos(&s);
 
     assert_eq!(
-        blobs_after_v1, blobs_after_v2,
-        "rewrite without snapshot should reuse the same blob"
+        inos_after_v1, inos_after_v2,
+        "rewrite without snapshot should reuse the same inode"
     );
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/hello.txt");
-    assert_eq!(fs::read_to_string(blob_path(&s, id)).unwrap(), "v2\n");
+    let ino = ino_for(&ch, "/hello.txt");
+    assert_eq!(fs::read_to_string(inode_path(&s, ino)).unwrap(), "v2\n");
 }
 
 /// O_TRUNC on an already-staged file: verify the read-through-mount returns
@@ -132,29 +131,75 @@ fn truncate_rewrite_overwrites_from_start() {
     fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
 
     let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
-    assert!(
-        content.starts_with("short\n"),
-        "mount content should start with the new data: {content:?}"
-    );
+    assert_eq!(content, "short\n", "mount content should be exactly the new data");
 }
 
-/// A large file write produces a blob with the correct size.
+/// O_TRUNC on an already-staged file: the inode in the store must contain
+/// only the new (shorter) data — no leftover bytes from the previous write.
 #[test]
-fn large_file_blob_size() {
+fn truncate_rewrite_inode_has_exact_content() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "this is a long string\n").expect("write long");
+    fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
+
+    let ch = changes(&s);
+    let ino = ino_for(&ch, "/hello.txt");
+    let path = inode_path(&s, ino);
+
+    let inode_content = fs::read_to_string(&path).unwrap();
+    assert_eq!(inode_content, "short\n", "inode should contain only the truncated content");
+
+    let meta = fs::metadata(&path).unwrap();
+    assert_eq!(meta.len(), 6, "inode size should be exactly 6 bytes");
+}
+
+/// Opening with O_TRUNC and writing nothing: the inode must be empty (0 bytes).
+#[test]
+fn truncate_only_produces_empty_inode() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // First write to stage the file
+    fs::write(s.mnt_path("hello.txt"), "some content\n").expect("initial write");
+
+    // Open with O_WRONLY | O_TRUNC, write nothing, close
+    let _f = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(s.mnt_path("hello.txt"))
+        .expect("open O_TRUNC");
+    drop(_f);
+
+    // Mount should show empty file
+    let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
+    assert_eq!(content, "", "mount should show empty file after O_TRUNC");
+
+    // Inode in the store should be 0 bytes
+    let ch = changes(&s);
+    let ino = ino_for(&ch, "/hello.txt");
+    let path = inode_path(&s, ino);
+
+    let meta = fs::metadata(&path).unwrap();
+    assert_eq!(meta.len(), 0, "inode should be 0 bytes after O_TRUNC with no write");
+}
+
+/// A large file write produces an inode with the correct size.
+#[test]
+fn large_file_inode_size() {
     let s = AgfsSession::new().expect("session setup");
 
     let data = "x".repeat(1024 * 1024); // 1 MiB
     fs::write(s.mnt_path("big.txt"), &data).expect("write large file");
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/big.txt");
-    let blob = blob_path(&s, id);
+    let ino = ino_for(&ch, "/big.txt");
+    let path = inode_path(&s, ino);
 
-    let meta = fs::metadata(&blob).unwrap();
-    assert_eq!(meta.len(), 1024 * 1024, "blob should be 1 MiB");
+    let meta = fs::metadata(&path).unwrap();
+    assert_eq!(meta.len(), 1024 * 1024, "inode should be 1 MiB");
 }
 
-/// Binary (non-UTF8) content is preserved exactly in the blob.
+/// Binary (non-UTF8) content is preserved exactly in the inode.
 #[test]
 fn binary_content_preserved() {
     let s = AgfsSession::new().expect("session setup");
@@ -163,12 +208,12 @@ fn binary_content_preserved() {
     fs::write(s.mnt_path("binary.bin"), &data).expect("write binary");
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/binary.bin");
-    let blob_data = fs::read(blob_path(&s, id)).unwrap();
-    assert_eq!(blob_data, data, "binary blob content should match exactly");
+    let ino = ino_for(&ch, "/binary.bin");
+    let inode_data = fs::read(inode_path(&s, ino)).unwrap();
+    assert_eq!(inode_data, data, "binary inode content should match exactly");
 }
 
-/// Blob preserves NUL bytes and other control characters.
+/// Inode preserves NUL bytes and other control characters.
 #[test]
 fn nul_bytes_preserved() {
     let s = AgfsSession::new().expect("session setup");
@@ -177,14 +222,14 @@ fn nul_bytes_preserved() {
     fs::write(s.mnt_path("nulls.txt"), data).expect("write with NULs");
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/nulls.txt");
-    let blob_data = fs::read(blob_path(&s, id)).unwrap();
-    assert_eq!(blob_data, data, "NUL bytes should be preserved in blob");
+    let ino = ino_for(&ch, "/nulls.txt");
+    let inode_data = fs::read(inode_path(&s, ino)).unwrap();
+    assert_eq!(inode_data, data, "NUL bytes should be preserved in inode");
 }
 
-/// Writing multiple files produces one blob per file, each with correct content.
+/// Writing multiple files produces one inode per file, each with correct content.
 #[test]
-fn multiple_files_each_get_correct_blob() {
+fn multiple_files_each_get_correct_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "aaa\n").expect("write 1");
@@ -201,26 +246,26 @@ fn multiple_files_each_get_correct_blob() {
         ("/new2.txt", "ddd\n"),
     ];
     for (suffix, expected) in &pairs {
-        let id = blob_id_for(&ch, suffix);
-        let actual = fs::read_to_string(blob_path(&s, id)).unwrap();
-        assert_eq!(&actual, expected, "blob for {suffix} should have correct content");
+        let ino = ino_for(&ch, suffix);
+        let actual = fs::read_to_string(inode_path(&s, ino)).unwrap();
+        assert_eq!(&actual, expected, "inode for {suffix} should have correct content");
     }
 }
 
-/// Writing to a deeply nested path produces a blob with correct content.
+/// Writing to a deeply nested path produces an inode with correct content.
 #[test]
-fn deep_nested_file_blob() {
+fn deep_nested_file_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::create_dir_all(s.mnt_path("a/b/c")).expect("mkdir -p");
     fs::write(s.mnt_path("a/b/c/leaf.txt"), "deep content\n").expect("write nested");
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/leaf.txt");
-    assert_eq!(fs::read_to_string(blob_path(&s, id)).unwrap(), "deep content\n");
+    let ino = ino_for(&ch, "/leaf.txt");
+    assert_eq!(fs::read_to_string(inode_path(&s, ino)).unwrap(), "deep content\n");
 }
 
-/// Modifying a pre-existing nested file creates a blob.
+/// Modifying a pre-existing nested file creates an inode.
 #[test]
 fn modify_nested_base_file() {
     let s = AgfsSession::new().expect("session setup");
@@ -229,6 +274,6 @@ fn modify_nested_base_file() {
     fs::write(s.mnt_path("subdir/deep.txt"), "updated nested\n").expect("write");
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/deep.txt");
-    assert_eq!(fs::read_to_string(blob_path(&s, id)).unwrap(), "updated nested\n");
+    let ino = ino_for(&ch, "/deep.txt");
+    assert_eq!(fs::read_to_string(inode_path(&s, ino)).unwrap(), "updated nested\n");
 }

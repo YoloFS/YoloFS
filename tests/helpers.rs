@@ -91,9 +91,9 @@ impl AgfsSession {
         self.root.join(rel)
     }
 
-    /// Get the staging directory path.
-    pub fn staging_dir(&self) -> PathBuf {
-        self.root.join(".agfs/staging")
+    /// Get the inode store directory path.
+    pub fn inodes_dir(&self) -> PathBuf {
+        self.root.join(".agfs/inodes")
     }
 
     /// Run an agfs CLI subcommand from the session root, return stdout.

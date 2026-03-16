@@ -19,8 +19,8 @@ fn read_file_lossy(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
-fn read_blob(agfs: &Path, blob_id: u64) -> String {
-    read_file_lossy(&journal::blob_path(agfs, blob_id))
+fn read_inode(agfs: &Path, ino: u64) -> String {
+    read_file_lossy(&journal::inode_path(agfs, ino))
 }
 
 fn read_base(rel_path: &str) -> String {
@@ -70,16 +70,16 @@ fn print_section_footer(section: &Section) {
 fn print_change(agfs: &Path, change: &Change, verbose: bool) {
     let indent = if verbose { "" } else { "  " };
     match change {
-        Change::Added { path, blob_id } => {
+        Change::Added { path, ino } => {
             println!("{indent}{} {}", path.bold(), "(added)".green());
             if verbose {
-                print_unified_diff("", &read_blob(agfs, *blob_id));
+                print_unified_diff("", &read_inode(agfs, *ino));
             }
         }
-        Change::Modified { path, blob_id } => {
+        Change::Modified { path, ino } => {
             if verbose {
                 let old_text = read_base(path);
-                let new_text = read_blob(agfs, *blob_id);
+                let new_text = read_inode(agfs, *ino);
                 if old_text != new_text {
                     println!("{indent}{} {}", path.bold(), "(modified)".yellow());
                     print_unified_diff(&old_text, &new_text);
@@ -102,7 +102,7 @@ fn print_change(agfs: &Path, change: &Change, verbose: bool) {
                 "(renamed)".cyan()
             );
         }
-        Change::RenamedModified { from, to, blob_id } => {
+        Change::RenamedModified { from, to, ino } => {
             println!(
                 "{indent}{} → {} {}",
                 from.bold(),
@@ -111,7 +111,7 @@ fn print_change(agfs: &Path, change: &Change, verbose: bool) {
             );
             if verbose {
                 let old_text = read_base(from);
-                let new_text = read_blob(agfs, *blob_id);
+                let new_text = read_inode(agfs, *ino);
                 if old_text != new_text {
                     print_unified_diff(&old_text, &new_text);
                 }
@@ -210,13 +210,13 @@ fn print_total(n: usize) {
 
 // ── Snapshot-to-current diff ─────────────────────────────────────────
 
-/// Build a map of path → blob content for a set of resolved changes.
+/// Build a map of path → inode content for a set of resolved changes.
 fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>> {
     let mut map = BTreeMap::new();
     for change in changes {
         match change {
-            Change::Added { path, blob_id } | Change::Modified { path, blob_id } => {
-                map.insert(path.clone(), Some(read_blob(agfs, *blob_id)));
+            Change::Added { path, ino } | Change::Modified { path, ino } => {
+                map.insert(path.clone(), Some(read_inode(agfs, *ino)));
             }
             Change::Deleted(path) => {
                 map.insert(path.clone(), None);
@@ -225,9 +225,9 @@ fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>
                 map.insert(from.clone(), None);
                 map.insert(to.clone(), Some(read_base(from)));
             }
-            Change::RenamedModified { from, to, blob_id } => {
+            Change::RenamedModified { from, to, ino } => {
                 map.insert(from.clone(), None);
-                map.insert(to.clone(), Some(read_blob(agfs, *blob_id)));
+                map.insert(to.clone(), Some(read_inode(agfs, *ino)));
             }
         }
     }
@@ -252,39 +252,29 @@ fn run_from_snapshot(agfs: &Path, snap_name: &str) -> Result<bool> {
         let old = snap_state.get(path);
         let new = current_state.get(path);
 
-        match (old, new) {
+        let (label, old_text, new_text) = match (old, new) {
             (Some(Some(old_text)), Some(Some(new_text))) if old_text != new_text => {
-                println!("{} {}", path.bold(), "(modified since snapshot)".yellow());
-                print_unified_diff(old_text, new_text);
-                println!();
-                has_diff = true;
+                ("(modified since snapshot)".yellow(), old_text.as_str(), new_text.as_str())
             }
             (None, Some(Some(new_text))) => {
-                println!("{} {}", path.bold(), "(added since snapshot)".green());
-                print_unified_diff("", new_text);
-                println!();
-                has_diff = true;
+                ("(added since snapshot)".green(), "", new_text.as_str())
             }
             (Some(Some(old_text)), None) => {
-                println!("{} {}", path.bold(), "(removed since snapshot)".red());
-                print_unified_diff(old_text, "");
-                println!();
-                has_diff = true;
+                ("(removed since snapshot)".red(), old_text.as_str(), "")
             }
             (Some(Some(old_text)), Some(None)) => {
-                println!("{} {}", path.bold(), "(deleted since snapshot)".red());
-                print_unified_diff(old_text, "");
-                println!();
-                has_diff = true;
+                ("(deleted since snapshot)".red(), old_text.as_str(), "")
             }
             (Some(None), Some(Some(new_text))) => {
-                println!("{} {}", path.bold(), "(restored since snapshot)".green());
-                print_unified_diff("", new_text);
-                println!();
-                has_diff = true;
+                ("(restored since snapshot)".green(), "", new_text.as_str())
             }
-            _ => {}
-        }
+            _ => continue,
+        };
+
+        println!("{} {}", path.bold(), label);
+        print_unified_diff(old_text, new_text);
+        println!();
+        has_diff = true;
     }
 
     if !has_diff {
@@ -304,14 +294,14 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// Create a temp dir that looks like an agfs session with staging blobs.
+    /// Create a temp dir that looks like an agfs session with staged inodes.
     /// Returns the TempDir (must be kept alive) and its path.
-    fn make_agfs(blobs: &[(u64, &str)]) -> TempDir {
+    fn make_agfs(inodes: &[(u64, &str)]) -> TempDir {
         let tmp = TempDir::new().unwrap();
-        let staging = tmp.path().join("staging");
-        fs::create_dir_all(&staging).unwrap();
-        for (id, content) in blobs {
-            fs::write(staging.join(id.to_string()), content).unwrap();
+        let inodes_dir = tmp.path().join("inodes");
+        fs::create_dir_all(&inodes_dir).unwrap();
+        for (ino, content) in inodes {
+            fs::write(inodes_dir.join(ino.to_string()), content).unwrap();
         }
         tmp
     }
@@ -328,7 +318,7 @@ mod tests {
         let tmp = make_agfs(&[(1, "hello\n")]);
         let changes = vec![Change::Added {
             path: "/src/main.rs".into(),
-            blob_id: 1,
+            ino: 1,
         }];
         let map = state_map(tmp.path(), &changes);
         assert_eq!(map.len(), 1);
@@ -340,7 +330,7 @@ mod tests {
         let tmp = make_agfs(&[(5, "new content")]);
         let changes = vec![Change::Modified {
             path: "/etc/config".into(),
-            blob_id: 5,
+            ino: 5,
         }];
         let map = state_map(tmp.path(), &changes);
         assert_eq!(map.len(), 1);
@@ -378,7 +368,7 @@ mod tests {
         let changes = vec![Change::RenamedModified {
             from: "/nonexistent/old.rs".into(),
             to: "/nonexistent/new.rs".into(),
-            blob_id: 7,
+            ino: 7,
         }];
         let map = state_map(tmp.path(), &changes);
         assert_eq!(map.len(), 2);
@@ -392,11 +382,11 @@ mod tests {
         let changes = vec![
             Change::Added {
                 path: "/a.txt".into(),
-                blob_id: 1,
+                ino: 1,
             },
             Change::Modified {
                 path: "/b.txt".into(),
-                blob_id: 2,
+                ino: 2,
             },
             Change::Deleted("/c.txt".into()),
         ];

@@ -1,6 +1,6 @@
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, blob_entries, blob_path, blob_id_for};
+use super::helpers::{journal, changes, inos, inode_path, ino_for};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -19,36 +19,36 @@ fn delete_produces_delete_record() {
     );
 }
 
-// ── Staging ──────────────────────────────────────────────────────────────────
+// ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// Deleting a file does NOT create a new blob (only a journal D record).
+/// Deleting a file does NOT create a new inode (only a journal D record).
 #[test]
-fn delete_creates_no_blob() {
+fn delete_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
 
-    let blobs_before = blob_entries(&s);
+    let inos_before = inos(&s);
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
-    let blobs_after = blob_entries(&s);
+    let inos_after = inos(&s);
 
     assert_eq!(
-        blobs_before, blobs_after,
-        "delete should not create new staging blobs"
+        inos_before, inos_after,
+        "delete should not create new staged inodes"
     );
 }
 
-/// Delete then recreate a file: the new file gets a fresh blob.
+/// Delete then recreate a file: the new file gets a fresh inode.
 #[test]
-fn delete_recreate_gets_new_blob() {
+fn delete_recreate_gets_new_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
     fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/hello.txt");
+    let ino = ino_for(&ch, "/hello.txt");
     assert_eq!(
-        fs::read_to_string(blob_path(&s, id)).unwrap(),
+        fs::read_to_string(inode_path(&s, ino)).unwrap(),
         "reborn\n",
-        "recreated file blob should have the new content"
+        "recreated file inode should have the new content"
     );
 }

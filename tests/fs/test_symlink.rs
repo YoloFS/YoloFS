@@ -26,7 +26,7 @@ fn follow_symlink_reads_target() {
     assert_eq!(content, "base content\n");
 }
 
-/// Symlink lands in staging and can be committed to base.
+/// Symlink lands in inode store and can be committed to base.
 #[test]
 fn symlink_commit_to_base() {
     let s = AgfsSession::new().expect("session setup");

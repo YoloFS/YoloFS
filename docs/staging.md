@@ -1,36 +1,59 @@
 # Staging-Commit Layer
 
-The staging layer intercepts all writes and redirects them to a flat blob
-store. Changes are invisible to the lower filesystem until an explicit
-`commit`. An `abort` discards them instantly.
+The staging layer intercepts all writes and redirects them to a flat inode
+store (`.agfs/inodes/`). Changes are invisible to the lower filesystem
+until an explicit `commit`. An `abort` discards them instantly.
+
+## Design Invariants
+
+Two invariants simplify the kernel-side design. Both are **enforced** in
+the kernel, not merely assumed.
+
+1. **No open file handles during snapshot.** The snapshot ioctl rejects
+   with `-EBUSY` if any staging fds are open (`sbi->staging_fd_count > 0`).
+   The CLI naturally satisfies this by taking snapshots between `agfs exec`
+   invocations, never while agent processes are running. This means
+   `sbi->snapshot_gen` cannot change while any staging fd is open, so the
+   COW decision can be made once at `open()` time — the write and mmap
+   paths are pure pass-throughs with zero staging logic.
+
+2. **Directory inodes with overrides are pinned.** When the first
+   override is added to a directory, the kernel takes an extra `igrab()`
+   on its inode, preventing eviction regardless of memory pressure.
+   The override hash table lives on the inode (not the dentry), so it
+   survives dentry eviction naturally. Pins are released in bulk by
+   `AGFS_IOC_CACHE_INVAL` (called by commit/abort) and during
+   `kill_sb` (unmount). Directories are never COW'd, so their inode
+   identity (keyed by `lower_inode` in `iget5_locked`) is stable for
+   the entire staging session.
 
 ## Concepts
 
 | Term                  | Meaning |
 | --------------------- | ------- |
 | **base**              | Always `/` — the entire root filesystem, read-only from AgFS's perspective until commit. |
-| **staging directory** | `.agfs/staging/` — a flat blob store. Each entry is identified by a numeric ID (`staging/1`, `staging/2`, ...). Files and symlinks are stored as blobs; directories created by `mkdir` are empty directories (children live in their own blobs). No mirrored directory tree. |
-| **override table**    | Per-directory in-memory hash table of overrides. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
+| **inode store**       | `.agfs/inodes/` — a flat store of inodes. Each entry is identified by a numeric ino (`inodes/1`, `inodes/2`, ...). Regular files and symlinks are stored as inodes; directories created by `mkdir` are empty directory inodes (children live in their own entries). No mirrored directory tree. |
+| **override table**    | Per-directory-inode in-memory hash table of overrides. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
 | **journal**           | `.agfs/journal` — append-only log of all mutations. Written by the kernel, read by the CLI for commit/abort/status/diff. The kernel never reads it back. |
 | **mount point**       | `.agfs/mnt/` — the agent's view of the filesystem. Shows the merged base + staged changes with permission gating applied. |
 | **commit**            | CLI reads the journal and applies all operations to the base filesystem. |
-| **abort**             | CLI deletes journal + staging directory. O(1). |
+| **abort**             | CLI deletes journal + inode store. O(1). |
 
-## Credential Override for Staging
+## Credential Override for Inode Store
 
-The staging directory is created during mount (typically by root) and is owned
-by root. When non-root user processes trigger staging operations through AgFS
-(create, mkdir, COW, write, etc.), the VFS permission checks on the staging
-directory would fail because the user lacks write permission on root-owned
+The inode store directory is created during mount (typically by root) and is
+owned by root. When non-root user processes trigger staging operations through
+AgFS (create, mkdir, COW, write, etc.), the VFS permission checks on the inode
+store would fail because the user lacks write permission on root-owned
 directories.
 
 To solve this, AgFS saves the mount-time credentials (`current_cred()`) in
 `agfs_sb_info` during `agfs_fill_super` and uses `override_creds()` /
-`revert_creds()` to temporarily assume them when performing staging directory
+`revert_creds()` to temporarily assume them when performing inode store
 operations. This is the standard pattern used by OverlayFS and other stackable
 filesystems. The actual permission model for user access is enforced
 separately by the AgFS permission gating layer (see [permissions.md](permissions.md)),
-not by Unix mode bits on the staging directory.
+not by Unix mode bits on the inode store.
 
 ## Storage Layout
 
@@ -38,9 +61,9 @@ not by Unix mode bits on the staging directory.
 agfs.toml                       # config file in CWD (mount options + rules)
 .agfs/                          # created by `agfs` in CWD
 ├── journal                      # append-only mutation log (all ops)
-├── staging/                     # flat blob store (staging/1, staging/2, ...)
-│   ├── 1                        # blob: content of some file
-│   ├── 2                        # blob: content of another file
+├── inodes/                      # flat inode store (inodes/1, inodes/2, ...)
+│   ├── 1                        # inode: content of some file
+│   ├── 2                        # inode: content of another file
 │   └── ...
 └── mnt/                         # mount point -- agent works here
                                  #   ioctl on this directory fd for control
@@ -48,73 +71,93 @@ agfs.toml                       # config file in CWD (mount options + rules)
 
 ## In-Kernel State
 
-All staging state lives in four per-object structures. Nothing is shared
-across mounts.
+All staging state lives in the structures below. Nothing is shared
+across mounts. The two design invariants (no open fds during snapshot,
+directory inodes pinned) keep the state minimal: the file struct carries
+zero staging-specific fields; all staging truth lives in the override
+table on directory inodes.
 
 **Per-superblock** (`agfs_sb_info`) — one instance, lives for the mount:
 
 | Field | Purpose |
 |-------|---------|
-| `staging_dir` | Pinned path to `.agfs/staging/` |
+| `inodes_dir` | Pinned path to `.agfs/inodes/` |
 | `journal_file` | Open file handle to `.agfs/journal` (`O_APPEND`). The kernel only appends; it never reads the journal back. |
-| `staging_sem` | rw\_semaphore serializing COW / re-COW and journal writes |
-| `next_staging_id` | Atomic counter for blob names (`1`, `2`, …) |
-| `snapshot_gen` | Atomic counter, starts at 1, bumped by each snapshot ioctl. Compared against per-inode `snapshot_gen` to trigger COW / re-COW. |
-| `creator_cred` | Saved mount-time credentials for staging directory operations (see [Credential Override](#credential-override-for-staging)) |
+| `staging_sem` | rw\_semaphore serializing COW / re-COW, snapshot, and journal writes |
+| `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
+| `snapshot_gen` | Atomic counter, starts at 1, bumped by each snapshot ioctl. Compared against `override.snapshot_gen` at open time to decide COW / re-COW. |
+| `staging_fd_count` | Atomic counter of open staging fds (opened for write). Snapshot ioctl rejects with `-EBUSY` when > 0. |
+| `pinned_dirs` | List head tracking `igrab()`-pinned directory inodes (those with overrides) for bulk release at cache invalidation / unmount. |
+| `pinned_dirs_lock` | Spinlock protecting `pinned_dirs`. |
+| `creator_cred` | Saved mount-time credentials for inode store operations (see [Credential Override](#credential-override-for-inode-store)) |
 
 **Per-inode** (`agfs_inode_info`) — one per cached inode:
 
 | Field | Purpose |
 |-------|---------|
-| `lower_inode` | Pointer to the lower-FS inode (staging blob or base file) |
-| `snapshot_gen` | The `sbi->snapshot_gen` value at the last COW. `0` means the file has never been COW'd (still a base file). The unified check `inode->snapshot_gen < sbi->snapshot_gen` triggers both initial COW and re-COW after snapshots. |
+| `lower_inode` | Pointer to the lower-FS inode (base file at lookup time). Not updated after COW — stale but harmless. Used only for `evict_inode` cleanup and directory permission pass-through. |
+| `ovr_buckets` | *(directories only)* 64-bucket hash table of `agfs_override` entries. Lazily allocated on first override. This is the kernel's source of truth for staged changes. |
+| `ovr_lock` | *(directories only)* Spinlock protecting `ovr_buckets`. |
+| `ovr_pin` | *(directories only)* Node in `sbi->pinned_dirs`. Linked on first override, removed at cache invalidation / unmount. |
+
+The override table lives on the directory inode because it is a property
+of the directory itself, not of the dentry name. Directories are never
+COW'd, so their inode identity is stable for the entire staging session.
+The COW generation for regular files is tracked on the override entry
+(`snapshot_gen`), not on the inode.
 
 **Per-dentry** (`agfs_dentry_info`) — one per cached dentry:
 
 | Field | Purpose |
 |-------|---------|
-| `lower_path` | Resolved path to the backing file — either `staging/<id>` or the base file. Updated in-place by COW. |
-| `ovr_buckets` | 64-bucket hash table of `agfs_override` entries. Only on directories, lazily allocated on first override. This is the kernel's source of truth for staged changes. |
+| `lower_path` | Resolved path to the backing file — either `inodes/<ino>` or the base file. Updated in-place by COW. |
 
 **Per-file** (`agfs_file_info`) — one per open file descriptor:
 
 | Field | Purpose |
 |-------|---------|
-| `lower_file` | Open file handle to the lower file. Swapped to a new staging blob handle on COW / re-COW. |
-| `truncate` | Deferred `O_TRUNC` flag — when a base file is opened with `O_TRUNC`, the flag is stripped and this bool is set. The first write creates an empty staging blob instead of copying base content. |
+| `lower_file` | Open file handle to the lower file. Always points at the correct inode (COW is resolved at open time, not deferred to write). |
+
+No staging-specific flags. Because no fd spans a snapshot boundary
+(enforced by `staging_fd_count`), the file handle established at open
+time is valid for the lifetime of the fd.
 
 **Per-override** (`agfs_override`) — one per staged child name in a directory:
 
 | Field | Purpose |
 |-------|---------|
-| `staging_id` | `>0` → content lives in `staging/<id>` |
+| `ino` | `>0` → content lives in `inodes/<ino>` |
 | `base_path` | Non-NULL → redirected to this absolute base path (zero-copy rename) |
 | `d_type` | File type (`DT_REG` / `DT_DIR` / `DT_LNK`) for correct readdir emission |
+| `snapshot_gen` | `sbi->snapshot_gen` at the time this inode was created. Used at open time: if `snapshot_gen < sbi->snapshot_gen`, a re-COW is needed. |
 | All zero/NULL | Entry is deleted (lookup returns negative dentry) |
 
 ## Path Resolution
 
-Each directory dentry holds an **override hash table** of child overrides
+Each directory inode holds an **override hash table** of child overrides
 (64 buckets, keyed by `full_name_hash()`). Each override records the
 current state of a child name:
 
 ```c
 struct agfs_override {
     struct hlist_node node;
-    u64               staging_id;  /* >0 = content/dir in staging/<id> */
-    char              *base_path;  /* non-NULL = content at this base path */
+    u64               ino;        /* >0 = content/dir in inodes/<ino> */
+    char              *base_path; /* non-NULL = content at this base path */
+    u64               snapshot_gen;    /* sbi->snapshot_gen when inode was created */
     unsigned int      name_len;
-    unsigned char     d_type;      /* DT_REG / DT_DIR / DT_LNK for readdir */
+    unsigned char     d_type;     /* DT_REG / DT_DIR / DT_LNK for readdir */
     char              name[];
 };
 ```
 
 Interpretation:
-- `staging_id > 0` -> file, symlink, or directory in `staging/<id>`
-- `base_path != NULL` -> file with content at this mirrored absolute base path
+- `ino > 0` → file, symlink, or directory in `inodes/<ino>`.
+  `snapshot_gen` records when the inode was created; if `snapshot_gen < sbi->snapshot_gen`,
+  a re-COW is needed on the next open-for-write.
+- `base_path != NULL` → file with content at this mirrored absolute base path
   (same namespace used in the journal)
-- all zero/NULL -> deleted (lookup returns negative dentry)
-- no entry at all -> fall through to base filesystem
+- all zero/NULL → deleted (lookup returns negative dentry)
+- no entry at all → fall through to base filesystem
 
 **`find_override`** — hash lookup in the parent directory's override table:
 
@@ -127,26 +170,28 @@ find_override(dir, name):
 ```
 
 `base_path` is always owned by the override entry. Readers must snapshot or
-duplicate it while holding the directory spinlock before resolving it, because
+duplicate it while holding the inode's `ovr_lock` before resolving it, because
 writers are free to replace the string in place when publishing a new override.
 
 **`add_override`** — upsert: update existing override or insert into bucket:
 
 ```
-add_override(dir, name, staging_id=0, base_path=NULL):
+add_override(dir, name, ino=0, base_path=NULL, snapshot_gen=0):
     ovr = find_override(dir, name)
     if ovr:
-        ovr.staging_id = staging_id
+        ovr.ino = ino
         ovr.base_path = strdup(base_path)   # replace owned copy
+        ovr.snapshot_gen = snapshot_gen
     else:
         ovr = alloc_override(name)
-        ovr.staging_id = staging_id
+        ovr.ino = ino
         ovr.base_path = strdup(base_path)
+        ovr.snapshot_gen = snapshot_gen
         bucket = hash(name) >> (32 - shift)
         dir.ovr_buckets[bucket].add(ovr)
 ```
 
-An override is **deleted** when `staging_id == 0 && base_path == NULL`
+An override is **deleted** when `ino == 0 && base_path == NULL`
 (i.e. `add_override(dir, name)` with no other arguments).
 
 **Lookup** (`agfs_lookup`) — called by the VFS when a name is first
@@ -156,8 +201,8 @@ accessed in a directory:
 agfs_lookup(dir, name):
     ovr = find_override(dir, name)
     if ovr:
-        sid, base_path = snapshot(ovr)   # copy under dir lock
-        if sid:            return inode for staging/<id>
+        ino, base_path = snapshot(ovr)   # copy under ovr_lock
+        if ino:            return inode for inodes/<ino>
         if base_path:      return inode for base/<path>
         return negative dentry  # deleted
     return base_lookup(dir, name)   # fall through to base
@@ -178,70 +223,64 @@ persists it on disk for the CLI. The kernel never reads the journal back.
 
 ## Open / Read / Write Path
 
-The backing file (staging blob or base file) is determined at **lookup**
+The backing file (staged inode or base file) is determined at **lookup**
 time via the override table. `open()` receives a dentry already pointing at
 the right lower inode.
 
-Staging publications that involve COW, re-COW, truncate-open, or rename
-(installing an override, updating the dentry's lower path, and appending the
-journal record) are serialized under `staging_sem` and must succeed as a unit.
+COW and re-COW are resolved at **open time**, not deferred to the first
+write. Because no fd spans a snapshot boundary (enforced by `staging_fd_count`),
+`sbi->snapshot_gen` is stable for the lifetime of the fd, so the decision
+made at open time is final. This makes `write_iter` and `mmap` pure
+pass-throughs with zero staging logic.
+
+Staging publications that involve COW, re-COW, or rename (installing an
+override, updating the dentry's lower path, and appending the journal
+record) are serialized under `staging_sem` and must succeed as a unit.
+If any step fails (e.g., journal append), the operation fails and the
+previous mapping remains authoritative.
 Create/mkdir/symlink/unlink/rmdir are already serialized by the VFS
-`inode_lock(dir)` and do not need `staging_sem`. If the journal append fails,
-the write/open fails and the previous mapping remains authoritative.
+`inode_lock(dir)` and do not need `staging_sem`.
 
 ```
 agfs_open(inode, file):
-    orig_flags = file->f_flags
-
     ovr = find_override(parent, name)
-    if file->f_flags & (O_WRONLY | O_RDWR) and ovr and ovr.staging_id:
-        // Already in staging from a prior write — open the blob directly.
-        file_info->lower_file = open(staging/<id>, file->f_flags)
 
-    elif file->f_flags & (O_WRONLY | O_RDWR):
-        // Base file. Strip O_TRUNC, open read-only; first write triggers COW.
-        file->f_flags &= ~O_TRUNC
-        file_info->lower_file = open(base_file, O_RDONLY)
+    if file->f_flags & (O_WRONLY | O_RDWR):
+        if ovr and ovr.ino and ovr.snapshot_gen >= sbi->snapshot_gen:
+            // Inode is current — open it directly (O_TRUNC truncates in place).
+            down_read(staging_sem)
+            atomic_inc(staging_fd_count)
+            up_read(staging_sem)
+            file_info->lower_file = open(inodes/<ino>, file->f_flags)
+
+        else:
+            // Needs COW (base file, redirected, or stale inode).
+            // agfs_do_cow copies from dentry's current lower_path
+            // to a fresh inode. With O_TRUNC, creates an empty inode.
+            down_write(staging_sem)
+            // Re-check override under sem — a concurrent open may have
+            // already COW'd this file since our check above.
+            atomic_inc(staging_fd_count)
+            new_file = agfs_do_cow(sbi, dentry, flags, O_TRUNC in flags)
+            // agfs_do_cow updates: override (ino, snapshot_gen,
+            //   clears base_path), dentry lower_path, journal
+            up_write(staging_sem)
+            file_info->lower_file = new_file
 
     else:
         // Read-only: open the lower file the dentry points to.
         file_info->lower_file = open(lower_file, O_RDONLY)
 
-    // Track deferred truncation for COW on first write.
-    file_info->truncate = (orig_flags & O_TRUNC) && !(file->f_flags & O_TRUNC)
+agfs_release(inode, file):
+    if file was opened for write:
+        atomic_dec(staging_fd_count)
 
 agfs_write_iter(kiocb, iov_iter):
-    // Unified COW / re-COW / deferred truncation. The check is:
-    //   inode->snapshot_gen == 0  -> base file, needs base->staging COW
-    //   inode->snapshot_gen < sbi -> staging blob is stale, needs re-COW
-    //   file_info->truncate       -> deferred O_TRUNC, needs empty blob
-    // agfs_do_cow copies from the dentry's current lower_path
-    // (base or staging blob) to a fresh blob. With truncate=true,
-    // it creates an empty blob instead of copying.
-    if inode->snapshot_gen < sbi->snapshot_gen or file_info->truncate:
-        down_write(staging_sem)
-        if inode->snapshot_gen < sbi->snapshot_gen:
-            new_file = agfs_do_cow(sbi, dentry, flags)
-            fput(file_info->lower_file)
-            file_info->lower_file = new_file
-            // inode->snapshot_gen updated inside agfs_do_cow
-        up_write(staging_sem)
-
-    // Write to staging blob.
+    // Pure pass-through — COW already resolved at open time.
     lower_file->f_op->write_iter(...)
 
 agfs_mmap(file, vma):
-    // Unified COW / re-COW for writable shared mappings.
-    // Only triggers when the file was opened for writing AND the
-    // mapping is both writable and shared.
-    if (file->f_flags & (O_WRONLY | O_RDWR)) and
-       (vma->vm_flags & (VM_WRITE | VM_SHARED)) == (VM_WRITE | VM_SHARED):
-        // same agfs_cow_if_needed check as write_iter
-        if inode->snapshot_gen < sbi->snapshot_gen or file_info->truncate:
-            down_write(staging_sem)
-            agfs_do_cow(...)
-            up_write(staging_sem)
-
+    // Pure pass-through — COW already resolved at open time.
     lower_file = file_info->lower_file
     vma->vm_file = lower_file
     ret = lower_file->f_op->mmap(lower_file, vma)
@@ -254,43 +293,40 @@ agfs_mmap(file, vma):
 
 **Three cases, in order of likelihood for agent workloads:**
 
-1. `O_TRUNC` (most common: `>`, editors, code generators) -> open base
-   read-only, defer truncation; first write creates an empty staging blob
-   via COW with `truncate=true` (zero copy).
-2. `O_RDONLY` -> open the resolved lower file (staging blob or base).
-3. `O_RDWR`/`O_WRONLY` without truncate (rare: `sed -i`, `dd`, append) ->
-   copy base->staging blob on first write.
+1. `O_TRUNC` (most common: `>`, editors, code generators) → if the inode is
+   current, truncate in place (reuses the same ino); otherwise COW
+   creates an empty inode (zero copy).
+2. `O_RDONLY` → open the resolved lower file (staged inode or base).
+3. `O_RDWR`/`O_WRONLY` without truncate (rare: `sed -i`, `dd`, append) →
+   COW at open if base file or stale inode; otherwise open inode directly.
 
 ## Create / Mkdir / Symlink Path
 
-All creation operations allocate a staging blob, add an override, and set
-`inode->snapshot_gen = sbi->snapshot_gen` so the file is recognised as
-already staged (preventing a spurious re-COW on first write):
+All creation operations allocate a new inode and add an override with
+`snapshot_gen = sbi->snapshot_gen` so the file is recognised as already staged
+(preventing a spurious re-COW on next open-for-write):
 
 ```
 agfs_create(dir, name, mode):
-    id = next_staging_id++
-    create file staging/<id>
-    add_override(dir, name, staging_id=id)
-    inode->snapshot_gen = sbi->snapshot_gen
-    journal(A, abs_path, id)
+    ino = next_ino++
+    create file inodes/<ino>
+    add_override(dir, name, ino=ino, snapshot_gen=sbi->snapshot_gen)
+    journal(A, abs_path, ino)
 
 agfs_mkdir(dir, name, mode):
-    id = next_staging_id++
-    create dir staging/<id>/
-    add_override(dir, name, staging_id=id)
-    inode->snapshot_gen = sbi->snapshot_gen
-    journal(A, abs_path, id)
+    ino = next_ino++
+    create dir inodes/<ino>/
+    add_override(dir, name, ino=ino, snapshot_gen=sbi->snapshot_gen)
+    journal(A, abs_path, ino)
 
 agfs_symlink(dir, name, target):
-    id = next_staging_id++
-    create symlink staging/<id> -> target
-    add_override(dir, name, staging_id=id)
-    inode->snapshot_gen = sbi->snapshot_gen
-    journal(A, abs_path, id)
+    ino = next_ino++
+    create symlink inodes/<ino> -> target
+    add_override(dir, name, ino=ino, snapshot_gen=sbi->snapshot_gen)
+    journal(A, abs_path, ino)
 ```
 
-`touch` (create + close, no write) produces an empty blob in staging —
+`touch` (create + close, no write) produces an empty inode in the store —
 visible in `agfs status` / `agfs diff` and cleanly discarded by abort.
 
 ## Delete / Rmdir Path
@@ -320,9 +356,10 @@ name. No file content is copied — only override metadata changes.
 agfs_rename(old_parent, old_name, new_parent, new_name):
     old_ovr = find_override(old_parent, old_name)
 
-    if old_ovr and old_ovr.staging_id:
-        # File is in a staging blob -- move the override, keep same blob.
-        add_override(new_parent, new_name, staging_id=old_ovr.staging_id)
+    if old_ovr and old_ovr.ino:
+        # File has a staged inode -- move the override, keep same ino.
+        add_override(new_parent, new_name, ino=old_ovr.ino,
+                     snapshot_gen=old_ovr.snapshot_gen)
     elif old_ovr and old_ovr.base_path:
         # Already redirected (chained rename) -- follow the chain.
         add_override(new_parent, new_name, base_path=old_ovr.base_path)
@@ -344,12 +381,12 @@ the original base file, and creates a new REDIRECTED override on `c`.
 `touch a` adds an ADDED override that supersedes the DELETED override.
 
 **Read after rename**: lookup of the new name finds the override ->
-opens the base file at the redirected path (or the staging blob).
+opens the base file at the redirected path (or the staged inode).
 Lookup of the old name finds the DELETED override -> returns `-ENOENT`.
 
-**Write after rename**: triggers lazy COW as usual. The base file is
-copied into a new staging blob; the override changes from
-`base_path=...` to `staging_id=N`.
+**Write after rename**: opening for write triggers COW at open time. The
+base file is copied into a new inode; the override changes from
+`base_path=...` to `ino=N`.
 
 Commit and abort handling for renames is covered in
 [Staging Operations](#staging-operations-userspace).
@@ -373,8 +410,8 @@ agfs_readdir(dir, ctx):
 ```
 
 Override entries are emitted with the correct `d_type` (DT_REG, DT_DIR,
-DT_LNK) stored in each override. The `ino` field is 0 (unknown); callers
-that need the real inode number should `stat()` the entry.
+DT_LNK) stored in each override. The `ino` passed to `dir_emit` is 0
+(unknown); callers that need the real inode number should `stat()` the entry.
 
 The merged list is built fresh on every `readdir` call — no caching.
 This ensures creates, deletes, and renames between `getdents64` calls
@@ -384,19 +421,19 @@ are always visible. Override hash tables are small, so the cost is negligible.
 
 **`setattr`** (e.g., `chmod`, `chown`, `truncate`): `ATTR_MODE` is always
 stripped (chmod is a no-op through AgFS). When staging is active,
-`ATTR_SIZE` is stripped — size-only truncation is handled by the deferred
-`O_TRUNC` mechanism in the open/write path, not by setattr. Remaining
+`ATTR_SIZE` is stripped — truncation is handled by the COW mechanism at
+open time (O_TRUNC creates an empty inode), not by setattr. Remaining
 attribute changes (e.g., `chown`, timestamps) propagate directly to the
-lower file (staging blob if COW'd, base file otherwise). No COW is
+lower file (staged inode if COW'd, base file otherwise). No COW is
 triggered by setattr itself.
 
-**`getattr`** (e.g., `stat`): Stats from the resolved path — the staging
-blob if the file has been modified, otherwise the base file.
+**`getattr`** (e.g., `stat`): Stats from the resolved path — the staged
+inode if the file has been modified, otherwise the base file.
 
-**`fsync`**: If the file is in staging (`inode->snapshot_gen > 0`), returns 0
-immediately — staging files are ephemeral and will be committed or discarded
-as a batch. For base files opened read-only, fsync is delegated to the lower
-filesystem as usual.
+**`fsync`**: If the file is in staging (the override has `ino > 0`),
+returns 0 immediately — staged inodes are ephemeral and will be committed or
+discarded as a batch. For base files opened read-only, fsync is delegated to
+the lower filesystem as usual.
 
 ## Journal Format
 
@@ -406,14 +443,14 @@ renames). Fields within a record are separated by `\0`; records are
 separated by `\n` (newline after the last `\0`).
 
 ```
-A\0<path>\0<id>\n          # content/dir in staging/<id>
-D\0<path>\n                # deleted
-R\0<old_path>\0<new_path>\n   # rename
-S\0<id>\0<name>\n          # snapshot marker (id is monotonic u64, name is human label)
+A\0<path>\0<ino>\n             # content/dir in inodes/<ino>
+D\0<path>\n                    # deleted
+R\0<old_path>\0<new_path>\n    # rename
+S\0<id>\0<name>\n              # snapshot marker (id is monotonic u64, name is human label)
 ```
 
 `A` covers creates, modifies, symlinks, and mkdirs. The CLI determines
-the type by stat'ing `staging/<id>` (regular file, symlink, or directory).
+the type by stat'ing `inodes/<ino>` (regular file, symlink, or directory).
 `D` records a deletion of a file or directory.
 `R` records a rename from `old_path` to `new_path`.
 `S` records a snapshot. The CLI resolves the journal up to a given `S`
@@ -432,18 +469,18 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 1. Replay journal in order to build a resolved operation list. Each path
    is tracked through its lifetime of mutations so that intermediate
    operations collapse into their final effect:
-   - `A(x) -> R(x,y)` collapses to `Add(y)` (staging file, no base rename).
+   - `A(x) -> R(x,y)` collapses to `Add(y)` (staged inode, no base rename).
    - `R(a,b) -> R(b,c)` collapses to `Rename(a,c)`.
    - `A(x) -> D(x)` cancels out (path never existed in base).
    - `R(a,b) -> A(a)` produces `Rename(a,b) + Add(a)`.
 2. Apply resolved changes sequentially. For each change:
    - **Rename**: `rename(base/old, base/new)`.
    - **Delete**: `rm base/path`.
-   - **Add/Modify**: move `staging/<id> -> base/path` (stat blob to
+   - **Add/Modify**: move `inodes/<ino> -> base/path` (stat inode to
      determine type: regular file -> copy/rename, symlink -> recreate,
      directory -> mkdir), creating parent dirs as needed.
-3. Clean up: remove journal + staging directory.
-4. Signal kernel to invalidate caches (`AGFS_IOC_CACHE_INVAL`).
+3. Clean up: remove journal + inode store.
+4. Signal kernel to invalidate caches and release pinned directory inodes (`AGFS_IOC_CACHE_INVAL`).
 
 Since step 1 resolves all cross-dependencies, no particular ordering
 between renames, deletes, and adds is required — each resolved
@@ -453,8 +490,8 @@ operation targets a distinct path.
 
 1. Count staged changes; if none, print "nothing to discard" and exit.
 2. Prompt for confirmation: `Discard N staged changes? [y/N]`.
-3. `rm -rf .agfs/staging/` and `rm .agfs/journal`.
-4. Signal kernel to invalidate caches.
+3. `rm -rf .agfs/inodes/` and `rm .agfs/journal`.
+4. Signal kernel to invalidate caches and release pinned directory inodes.
 
 **Status** (`agfs status`):
 
@@ -467,7 +504,7 @@ operation targets a distinct path.
 
 **Diff** (`agfs diff`):
 
-1. Read journal. For modified/added files, diff `staging/<id>` vs base.
+1. Read journal. For modified/added files, diff `inodes/<ino>` vs base.
    For renames, show rename metadata (and diff if also modified).
    For deletes, show as deleted file.
 2. Output in git-style unified diff format.
@@ -480,14 +517,14 @@ operation targets a distinct path.
 Snapshots are named bookmarks in the journal. They enable inspecting,
 diffing, and committing staged changes at specific points in time.
 
-**Key insight**: the flat blob store already preserves all historical file
-states — old staging blobs are never deleted (only commit/abort removes the
-entire staging directory). The journal records which blob ID was associated
+**Key insight**: the flat inode store already preserves all historical file
+states — old inodes are never deleted (only commit/abort removes the
+entire inode store). The journal records which ino was associated
 with each path at each mutation. Replaying the journal up to a snapshot
 marker reconstructs the staged state at that point.
 
 The only kernel-side change is ensuring that writes after a snapshot create
-a **new** staging blob instead of overwriting the current one in place.
+a **new** inode instead of overwriting the current one in place.
 This is the re-COW mechanism.
 
 ### Creating a Snapshot
@@ -499,12 +536,17 @@ state.
 `agfs snapshot [name]` calls `ioctl(AGFS_IOC_SNAPSHOT)`. The kernel:
 
 1. Returns `-ENOTSUP` if `staging` is disabled (snapshots require staging).
-2. Increments `sbi->snapshot_gen` (atomic counter).
-3. Appends `S\0<id>\0<name>\n` to the journal.
-4. Returns the snapshot ID to userspace.
+2. Takes `staging_sem` write lock.
+3. If `staging_fd_count > 0`, releases sem and returns `-EBUSY`.
+4. Increments `sbi->snapshot_gen` (atomic counter).
+5. Appends `S\0<id>\0<name>\n` to the journal.
+6. Releases `staging_sem`.
+7. Returns the snapshot ID to userspace.
 
-No override tables change. No caches invalidated. Existing file handles
-continue working — the re-COW check triggers lazily on the next write.
+No override tables change. No caches invalidated. The write lock on
+`staging_sem` ensures no open-for-write is mid-flight when the generation
+is bumped (open-for-write holds at least a read lock while incrementing
+`staging_fd_count`).
 
 The name defaults to `"after <cmd>"` when auto-snapshotting via `agfs exec`
 (e.g., `"after make build"`), or a human-readable timestamp like
@@ -512,53 +554,45 @@ The name defaults to `"after <cmd>"` when auto-snapshotting via `agfs exec`
 not be unique; snapshots can also be addressed by their numeric ID. When
 looking up by name, `--at` and `--from` match the latest one.
 
-### Re-COW on First Write After Snapshot
+### Re-COW on First Open-for-Write After Snapshot
 
-The COW check is purely per-inode: `inode->snapshot_gen` records the
-`sbi->snapshot_gen` at which the current staging blob was created.
-`sbi->snapshot_gen` starts at 1.  Newly created files set
-`inode->snapshot_gen = sbi->snapshot_gen` at creation time, so
-they are already up-to-date and skip the COW check.  Base files that
-have never been staged have `inode->snapshot_gen == 0`, which naturally
-triggers COW on first write.
+The COW check is per-override: `override.snapshot_gen` records the
+`sbi->snapshot_gen` at which the current inode was created.
+`sbi->snapshot_gen` starts at 1. Newly created files set
+`snapshot_gen = sbi->snapshot_gen` at creation time, so they are already
+up-to-date and skip the COW check. Base files that have no override
+(or have `ino == 0`) naturally trigger COW on the first
+open-for-write.
 
-On write, a single unified check handles both base->staging COW and
-staging->staging re-COW:
-
-    if inode->snapshot_gen < sbi->snapshot_gen:
-        agfs_do_cow(sbi, dentry, flags)  // source = dentry's lower_path
+At open time, the COW check in `agfs_open` (see [Open / Read / Write
+Path](#open--read--write-path)) handles both base→staged COW and
+staged→staged re-COW: if the override is missing, has no ino, or has a
+stale `snapshot_gen`, a fresh inode is created.
 
 `agfs_do_cow` copies from the dentry's current `lower_path` — which is
-the base file before any COW, or the current staging blob after one.
+the base file before any COW, or the current staged inode after one.
 The same function handles both cases; no separate re-COW path.
-`agfs_do_cow` also updates `inode->snapshot_gen` after a successful COW.
+`agfs_do_cow` also updates `override.snapshot_gen` after a successful COW.
 
-Same check in `agfs_mmap` for writable shared mappings.
+Because no fd spans a snapshot boundary (enforced by `staging_fd_count`),
+the write and mmap paths need no COW checks — they are pure pass-throughs.
 
-`O_TRUNC` already allocates a fresh blob every time, so the old blob is
-naturally preserved. `inode->snapshot_gen` is set to `sbi->snapshot_gen`.
-
-**Invariant**: snapshots must be taken when no staging file handles are
-open (the CLI enforces this by taking snapshots between exec
-invocations). This avoids the need for per-fd generation tracking —
-there are no long-lived handles that span a snapshot boundary.
-
-**Multiple snapshots between writes** work naturally: if N snapshots occur
-without any write, the first write after them triggers one re-COW. The
-generation counter collapses consecutive snapshots.
+**Multiple snapshots between opens** work naturally: if N snapshots occur
+without any open-for-write, the first open after them triggers one re-COW.
+The generation counter collapses consecutive snapshots.
 
 ### Example Journal with Snapshots
 
 ```
 S\01\0(initial)\n                 # implicit snapshot at mount time
-A\0/src/main.rs\01\n          # COW: main.rs -> blob 1
-A\0/src/lib.rs\02\n           # create lib.rs -> blob 2
+A\0/src/main.rs\01\n          # COW: main.rs -> ino 1
+A\0/src/lib.rs\02\n           # create lib.rs -> ino 2
 S\02\0after make build\n       # snapshot 2: "after make build"
-A\0/src/main.rs\03\n          # re-COW: main.rs -> blob 3 (blob 1 preserved)
+A\0/src/main.rs\03\n          # re-COW: main.rs -> ino 3 (ino 1 preserved)
 D\0/src/lib.rs\n              # delete lib.rs
 A\0/src/new.rs\04\n           # create new.rs
 S\03\0after make test\n        # snapshot 3: "after make test"
-A\0/src/new.rs\05\n           # re-COW: new.rs -> blob 5 (blob 4 preserved)
+A\0/src/new.rs\05\n           # re-COW: new.rs -> ino 5 (ino 4 preserved)
 ```
 
 State at each point:
@@ -566,9 +600,9 @@ State at each point:
 | Snapshot           | main.rs | lib.rs    | new.rs |
 |-------------------|---------|-----------|--------|
 | (initial)          | --      | --        | --     |
-| "after make build" | blob 1  | blob 2    | --     |
-| "after make test"  | blob 3  | (deleted) | blob 4 |
-| current            | blob 3  | (deleted) | blob 5 |
+| "after make build" | ino 1   | ino 2     | --     |
+| "after make test"  | ino 3   | (deleted) | ino 4  |
+| current            | ino 3   | (deleted) | ino 5  |
 
 ### Snapshot-Aware CLI Operations
 
@@ -578,7 +612,7 @@ State at each point:
 (resolve at snapshot vs resolve at current, then diff the two states).
 
 **`agfs commit --at <name|id>`**: Commit only changes up to the named
-snapshot. Thanks to re-COW, post-snapshot blobs are independent copies —
+snapshot. Thanks to re-COW, post-snapshot inodes are independent copies —
 committing pre-snapshot changes does not affect them:
 
 1. Resolve journal up to the snapshot -> resolved changes.
@@ -587,11 +621,11 @@ committing pre-snapshot changes does not affect them:
    to a temporary file, fsync, then rename over the journal. The kernel's
    old journal fd (O_APPEND) continues appending to the unlinked old
    file harmlessly; `AGFS_IOC_CACHE_INVAL` in step 4 reopens it.
-4. `AGFS_IOC_CACHE_INVAL`.
+4. `AGFS_IOC_CACHE_INVAL` (releases pinned directory inodes, invalidates caches, reopens journal).
 
-Orphaned staging blobs (referenced only by committed pre-snapshot records)
+Orphaned inodes (referenced only by committed pre-snapshot records)
 are left in place — they are cleaned up on the next full `commit` or
-`abort`, which removes the entire staging directory.
+`abort`, which removes the entire inode store.
 
 **`agfs log`**: List all snapshots with their names and the
 number of changes since the previous snapshot.

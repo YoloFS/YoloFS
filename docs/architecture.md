@@ -53,9 +53,9 @@ The two layers execute in order for every VFS operation:
    (controlled by standard Unix permissions on the lower FS).
    If `ask`, sleeps the calling thread. If `deny`, returns `-EACCES`.
    If `allow-*`, falls through.
-2. **Staging Layer** — routes reads to the staging blob if the file has been
-   modified, otherwise to the base. Ensures writes go to staging blobs.
-   Uses per-directory override hash tables for deletions and renames.
+2. **Staging Layer** — routes reads to the staged inode if the file has been
+   modified, otherwise to the base. Ensures writes go to staged inodes.
+   Uses per-directory-inode override hash tables for deletions and renames.
 
 All I/O is ultimately delegated to the lower filesystem via the standard
 wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
@@ -75,12 +75,12 @@ AgFS uses a fundamentally different staging model from OverlayFS.
 **Staging vs live union**: OverlayFS is a live union filesystem — the upper
 layer *is* the persistent state. There is no commit or abort. A renamed
 file is copied up to upper with `RENAME_WHITEOUT` and stays there forever.
-AgFS treats staging as a flat blob store with in-memory override tables that
+AgFS treats staging as a flat inode store with in-memory override tables that
 are explicitly committed or discarded via the journal.
 
 **Copy-up**: OverlayFS always does a full copy-up on first write, even for
 truncating writes (`echo "x" > file` copies the entire file, then
-truncates). AgFS detects `O_TRUNC` and creates an empty staging blob
+truncates). AgFS detects `O_TRUNC` and creates an empty staged inode
 directly — zero copy for the most common agent write pattern.
 
 **Rename**: OverlayFS does a real `vfs_rename()` in the upper directory,
@@ -97,7 +97,7 @@ adds the progressive gating layer (ask/allow/deny) with the ask protocol
 for interactive approval.
 
 **On-disk format**: OverlayFS requires filesystem support for whiteouts
-(`RENAME_WHITEOUT`, ext4/xfs). AgFS uses a flat blob store + append-only
+(`RENAME_WHITEOUT`, ext4/xfs). AgFS uses a flat inode store + append-only
 journal, working on any lower FS.
 
 ## Lifecycle Example
@@ -132,7 +132,7 @@ $ echo "hello" > /src/main.rs
               -> agfs_cache_perm() walks up: main.rs(NONE) -> src(ALLOW_RW)
               -> caches ALLOW_RW on main.rs inode
    -> kernel: agfs_open() -> cached_perm=ALLOW_RW, O_WRONLY -> pass
-   -> kernel: agfs_write_iter() -> lazy COW, delegate to staging file
+   -> kernel: agfs_write_iter() -> pass-through to staged inode
 
 # 3. Agent reads /etc/passwd (denied -- /etc has deny rule)
 $ cat /etc/passwd
@@ -168,7 +168,7 @@ $ echo x >> /etc/hosts
 
 # 7. Commit all staged changes to the real filesystem (userspace)
 $ agfs commit
-   -> userspace: replay journal -- apply renames, deletes, copy blobs to base
+   -> userspace: replay journal -- apply renames, deletes, move inodes to base
    -> userspace: ioctl(AGFS_IOC_CACHE_INVAL) on .agfs/mnt
    -> kernel: invalidate dentry + inode caches
    -> umount .agfs/mnt

@@ -1,6 +1,6 @@
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, blob_path, blob_id_for};
+use super::helpers::{journal, changes, inode_path, ino_for};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ fn snapshot_produces_snapshot_record() {
     );
 }
 
-/// Write after snapshot produces a new Add (re-COW) with a different blob id.
+/// Write after snapshot produces a new Add (re-COW) with a different ino.
 #[test]
 fn recow_after_snapshot_produces_new_add() {
     let s = AgfsSession::new().expect("session setup");
@@ -38,9 +38,9 @@ fn recow_after_snapshot_produces_new_add() {
         "re-COW should produce a second A record: {records:?}"
     );
 
-    // The two adds should have different blob ids (re-COW allocates a new blob)
-    if let (Record::Add { id: id1, .. }, Record::Add { id: id2, .. }) = (adds[0], adds[1]) {
-        assert_ne!(id1, id2, "re-COW blob ids should differ: {records:?}");
+    // The two adds should have different ino values (re-COW allocates a new inode)
+    if let (Record::Add { ino: ino1, .. }, Record::Add { ino: ino2, .. }) = (adds[0], adds[1]) {
+        assert_ne!(ino1, ino2, "re-COW ino values should differ: {records:?}");
     }
 
     // Snapshot "s1" should sit between the two adds.
@@ -104,63 +104,63 @@ fn delete_after_snapshot() {
     assert!(snap_pos < del_pos, "Snapshot should precede Delete: {records:?}");
 }
 
-// ── Staging ──────────────────────────────────────────────────────────────────
+// ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// After snapshot + re-COW, the pre-snapshot blob is preserved with old content.
+/// After snapshot + re-COW, the pre-snapshot inode is preserved with old content.
 #[test]
-fn recow_preserves_pre_snapshot_blob() {
+fn recow_preserves_pre_snapshot_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
 
     let ch_v1 = changes(&s);
-    let id_v1 = blob_id_for(&ch_v1, "/hello.txt");
+    let id_v1 = ino_for(&ch_v1, "/hello.txt");
 
     s.cli(&["snapshot", "s1"]).expect("snapshot");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 (re-COW)");
 
-    // v1 blob should still have old content
+    // v1 inode should still have old content
     assert_eq!(
-        fs::read_to_string(blob_path(&s, id_v1)).unwrap(),
+        fs::read_to_string(inode_path(&s, id_v1)).unwrap(),
         "v1\n",
-        "pre-snapshot blob should be preserved with v1 content"
+        "pre-snapshot inode should be preserved with v1 content"
     );
 
-    // v2 should be in a different blob
+    // v2 should be in a different inode
     let ch_v2 = changes(&s);
-    let id_v2 = blob_id_for(&ch_v2, "/hello.txt");
-    assert_ne!(id_v1, id_v2, "re-COW should allocate a new blob ID");
+    let id_v2 = ino_for(&ch_v2, "/hello.txt");
+    assert_ne!(id_v1, id_v2, "re-COW should allocate a new inode ID");
     assert_eq!(
-        fs::read_to_string(blob_path(&s, id_v2)).unwrap(),
+        fs::read_to_string(inode_path(&s, id_v2)).unwrap(),
         "v2\n",
-        "current blob should have v2 content"
+        "current inode should have v2 content"
     );
 }
 
-/// Multiple snapshots preserve each version's blob independently.
+/// Multiple snapshots preserve each version's inode independently.
 #[test]
-fn multiple_snapshots_preserve_all_blobs() {
+fn multiple_snapshots_preserve_all_inodes() {
     let s = AgfsSession::new().expect("session setup");
 
     // v1 → snap → v2 → snap → v3
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    let id_v1 = blob_id_for(&changes(&s), "/hello.txt");
+    let id_v1 = ino_for(&changes(&s), "/hello.txt");
 
     s.cli(&["snapshot", "s1"]).expect("snapshot s1");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
-    let id_v2 = blob_id_for(&changes(&s), "/hello.txt");
+    let id_v2 = ino_for(&changes(&s), "/hello.txt");
 
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
-    let id_v3 = blob_id_for(&changes(&s), "/hello.txt");
+    let id_v3 = ino_for(&changes(&s), "/hello.txt");
 
-    // All three blob IDs should be different
+    // All three inode IDs should be different
     assert_ne!(id_v1, id_v2);
     assert_ne!(id_v2, id_v3);
     assert_ne!(id_v1, id_v3);
 
-    // Each blob should have the correct content
-    assert_eq!(fs::read_to_string(blob_path(&s, id_v1)).unwrap(), "v1\n");
-    assert_eq!(fs::read_to_string(blob_path(&s, id_v2)).unwrap(), "v2\n");
-    assert_eq!(fs::read_to_string(blob_path(&s, id_v3)).unwrap(), "v3\n");
+    // Each inode should have the correct content
+    assert_eq!(fs::read_to_string(inode_path(&s, id_v1)).unwrap(), "v1\n");
+    assert_eq!(fs::read_to_string(inode_path(&s, id_v2)).unwrap(), "v2\n");
+    assert_eq!(fs::read_to_string(inode_path(&s, id_v3)).unwrap(), "v3\n");
 }

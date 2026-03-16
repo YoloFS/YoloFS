@@ -3,7 +3,7 @@
 // Parse and resolve the append-only mutation journal (§3.9/§3.10).
 //
 // Record format (NUL-separated fields, newline-terminated):
-//   A\0<path>\0<id>\n    — content/dir in staging/<id>
+//   A\0<path>\0<ino>\n   — content/dir in inodes/<ino>
 //   D\0<path>\n          — deleted
 //   R\0<old>\0<new>\n    — rename
 //   S\0<id>\0<name>\n    — snapshot marker
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 /// A raw journal record.
 #[derive(Debug, Clone)]
 pub enum Record {
-    Add { path: String, id: u64 },
+    Add { path: String, ino: u64 },
     Delete { path: String },
     Rename { old_path: String, new_path: String },
     Snapshot { id: u64, name: String },
@@ -27,11 +27,11 @@ pub enum Record {
 pub enum Change {
     Added {
         path: String,
-        blob_id: u64,
+        ino: u64,
     },
     Modified {
         path: String,
-        blob_id: u64,
+        ino: u64,
     },
     Deleted(String),
     Renamed {
@@ -41,17 +41,17 @@ pub enum Change {
     RenamedModified {
         from: String,
         to: String,
-        blob_id: u64,
+        ino: u64,
     },
 }
 
 impl Change {
-    /// Return the staging blob ID if this change carries one.
-    pub fn blob_id(&self) -> Option<u64> {
+    /// Return the staged inode ID if this change carries one.
+    pub fn ino(&self) -> Option<u64> {
         match self {
-            Change::Added { blob_id, .. }
-            | Change::Modified { blob_id, .. }
-            | Change::RenamedModified { blob_id, .. } => Some(*blob_id),
+            Change::Added { ino, .. }
+            | Change::Modified { ino, .. }
+            | Change::RenamedModified { ino, .. } => Some(*ino),
             _ => None,
         }
     }
@@ -78,9 +78,9 @@ pub fn read(agfs_dir: &Path) -> Result<Vec<Record>> {
         match tag {
             b"A" if fields.len() >= 3 => {
                 let path = String::from_utf8_lossy(fields[1]).to_string();
-                let id_str = String::from_utf8_lossy(fields[2]);
-                if let Ok(id) = id_str.parse::<u64>() {
-                    records.push(Record::Add { path, id });
+                let ino_str = String::from_utf8_lossy(fields[2]);
+                if let Ok(ino) = ino_str.parse::<u64>() {
+                    records.push(Record::Add { path, ino });
                 }
             }
             b"D" if fields.len() >= 2 => {
@@ -117,9 +117,9 @@ pub fn resolve(agfs_dir: &Path) -> Result<Vec<Change>> {
     resolve_records(&records)
 }
 
-/// Get the staging blob path for a given blob ID.
-pub fn blob_path(agfs_dir: &Path, blob_id: u64) -> PathBuf {
-    agfs_dir.join("staging").join(blob_id.to_string())
+/// Get the staged inode path for a given ino.
+pub fn inode_path(agfs_dir: &Path, ino: u64) -> PathBuf {
+    agfs_dir.join("inodes").join(ino.to_string())
 }
 
 /// Find the record index of a snapshot by name or numeric ID.
@@ -174,7 +174,6 @@ pub fn resolve_from(agfs_dir: &Path, snapshot_name: &str) -> Result<(Vec<Change>
 /// (batch) and `resolve_sections` (incremental snapshots) so the journal is
 /// traversed only once.
 struct ResolveState {
-    staging: BTreeMap<String, u64>,
     resolved_renames: BTreeMap<String, String>,
     resolved_adds: BTreeMap<String, u64>,
     resolved_deletes: BTreeSet<String>,
@@ -184,7 +183,6 @@ struct ResolveState {
 impl ResolveState {
     fn new() -> Self {
         Self {
-            staging: BTreeMap::new(),
             resolved_renames: BTreeMap::new(),
             resolved_adds: BTreeMap::new(),
             resolved_deletes: BTreeSet::new(),
@@ -195,14 +193,12 @@ impl ResolveState {
     fn process(&mut self, record: &Record) {
         let base = Path::new("/");
         match record {
-            Record::Add { path, id } => {
-                self.staging.insert(path.clone(), *id);
-                self.resolved_adds.insert(path.clone(), *id);
+            Record::Add { path, ino } => {
+                self.resolved_adds.insert(path.clone(), *ino);
                 self.resolved_deletes.remove(path);
             }
             Record::Delete { path } => {
-                if self.staging.remove(path).is_some() {
-                    self.resolved_adds.remove(path);
+                if self.resolved_adds.remove(path).is_some() {
                     let base_file = base.join(path.trim_start_matches('/'));
                     if base_file.exists() {
                         self.resolved_deletes.insert(path.clone());
@@ -215,10 +211,8 @@ impl ResolveState {
                 }
             }
             Record::Rename { old_path, new_path } => {
-                if let Some(blob_id) = self.staging.remove(old_path) {
-                    self.resolved_adds.remove(old_path);
-                    self.resolved_adds.insert(new_path.clone(), blob_id);
-                    self.staging.insert(new_path.clone(), blob_id);
+                if let Some(ino) = self.resolved_adds.remove(old_path) {
+                    self.resolved_adds.insert(new_path.clone(), ino);
                     let base_file = base.join(old_path.trim_start_matches('/'));
                     if base_file.exists() {
                         self.resolved_deletes.insert(old_path.clone());
@@ -245,11 +239,11 @@ impl ResolveState {
         let rename_dsts: BTreeSet<&String> = self.resolved_renames.values().collect();
 
         for (old_path, new_path) in &self.resolved_renames {
-            if let Some(&blob_id) = self.resolved_adds.get(new_path) {
+            if let Some(&ino) = self.resolved_adds.get(new_path) {
                 changes.push(Change::RenamedModified {
                     from: old_path.clone(),
                     to: new_path.clone(),
-                    blob_id,
+                    ino,
                 });
             } else {
                 changes.push(Change::Renamed {
@@ -259,7 +253,7 @@ impl ResolveState {
             }
         }
 
-        for (path, blob_id) in &self.resolved_adds {
+        for (path, ino) in &self.resolved_adds {
             if rename_dsts.contains(path) {
                 continue;
             }
@@ -267,12 +261,12 @@ impl ResolveState {
             if base_file.exists() {
                 changes.push(Change::Modified {
                     path: path.clone(),
-                    blob_id: *blob_id,
+                    ino: *ino,
                 });
             } else {
                 changes.push(Change::Added {
                     path: path.clone(),
-                    blob_id: *blob_id,
+                    ino: *ino,
                 });
             }
         }
@@ -375,13 +369,13 @@ pub fn resolve_sections(agfs_dir: &Path) -> Result<Vec<Section>> {
 /// Lightweight snapshot of resolved state for computing per-section deltas.
 #[derive(Default)]
 struct ChangesState {
-    /// path → (blob_id or None for deletes, rename source or None)
+    /// path → (ino or None for deletes, rename source or None)
     entries: BTreeMap<String, StateEntry>,
 }
 
 #[derive(Clone, PartialEq)]
 struct StateEntry {
-    blob_id: Option<u64>,
+    ino: Option<u64>,
     renamed_from: Option<String>,
 }
 
@@ -390,11 +384,11 @@ impl ChangesState {
         let mut entries = BTreeMap::new();
         for change in changes {
             match change {
-                Change::Added { path, blob_id } | Change::Modified { path, blob_id } => {
+                Change::Added { path, ino } | Change::Modified { path, ino } => {
                     entries.insert(
                         path.clone(),
                         StateEntry {
-                            blob_id: Some(*blob_id),
+                            ino: Some(*ino),
                             renamed_from: None,
                         },
                     );
@@ -403,7 +397,7 @@ impl ChangesState {
                     entries.insert(
                         path.clone(),
                         StateEntry {
-                            blob_id: None,
+                            ino: None,
                             renamed_from: None,
                         },
                     );
@@ -412,30 +406,30 @@ impl ChangesState {
                     entries.insert(
                         from.clone(),
                         StateEntry {
-                            blob_id: None,
+                            ino: None,
                             renamed_from: None,
                         },
                     );
                     entries.insert(
                         to.clone(),
                         StateEntry {
-                            blob_id: None,
+                            ino: None,
                             renamed_from: Some(from.clone()),
                         },
                     );
                 }
-                Change::RenamedModified { from, to, blob_id } => {
+                Change::RenamedModified { from, to, ino } => {
                     entries.insert(
                         from.clone(),
                         StateEntry {
-                            blob_id: None,
+                            ino: None,
                             renamed_from: None,
                         },
                     );
                     entries.insert(
                         to.clone(),
                         StateEntry {
-                            blob_id: Some(*blob_id),
+                            ino: Some(*ino),
                             renamed_from: Some(from.clone()),
                         },
                     );
@@ -457,11 +451,11 @@ impl ChangesState {
                 None => {
                     // New path in this section — emit the appropriate change
                     if let Some(from) = &new_entry.renamed_from {
-                        if let Some(blob_id) = new_entry.blob_id {
+                        if let Some(ino) = new_entry.ino {
                             changes.push(Change::RenamedModified {
                                 from: from.clone(),
                                 to: path.clone(),
-                                blob_id,
+                                ino,
                             });
                         } else {
                             changes.push(Change::Renamed {
@@ -469,17 +463,17 @@ impl ChangesState {
                                 to: path.clone(),
                             });
                         }
-                    } else if let Some(blob_id) = new_entry.blob_id {
+                    } else if let Some(ino) = new_entry.ino {
                         let base_file = base.join(path.trim_start_matches('/'));
                         if base_file.exists() {
                             changes.push(Change::Modified {
                                 path: path.clone(),
-                                blob_id,
+                                ino,
                             });
                         } else {
                             changes.push(Change::Added {
                                 path: path.clone(),
-                                blob_id,
+                                ino,
                             });
                         }
                     } else {
@@ -488,12 +482,12 @@ impl ChangesState {
                 }
                 Some(old_entry) if old_entry != new_entry => {
                     // Path existed before but changed
-                    if let Some(blob_id) = new_entry.blob_id {
+                    if let Some(ino) = new_entry.ino {
                         changes.push(Change::Modified {
                             path: path.clone(),
-                            blob_id,
+                            ino,
                         });
-                    } else if new_entry.blob_id.is_none() && old_entry.blob_id.is_some() {
+                    } else if old_entry.ino.is_some() {
                         changes.push(Change::Deleted(path.clone()));
                     }
                 }
@@ -523,12 +517,12 @@ pub fn write_records(journal_path: &Path, records: &[Record]) -> Result<()> {
     let mut data = Vec::new();
     for record in records {
         match record {
-            Record::Add { path, id } => {
+            Record::Add { path, ino } => {
                 data.push(b'A');
                 data.push(0);
                 data.extend_from_slice(path.as_bytes());
                 data.push(0);
-                data.extend_from_slice(id.to_string().as_bytes());
+                data.extend_from_slice(ino.to_string().as_bytes());
                 data.push(b'\n');
             }
             Record::Delete { path } => {
@@ -565,7 +559,7 @@ mod tests {
 
     fn setup_test_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("staging")).unwrap();
+        fs::create_dir_all(dir.path().join("inodes")).unwrap();
         dir
     }
 
@@ -587,17 +581,17 @@ mod tests {
 
         let records = read(dir.path()).unwrap();
         assert_eq!(records.len(), 3);
-        assert!(matches!(&records[0], Record::Add { path, id } if path == "/a" && *id == 1));
+        assert!(matches!(&records[0], Record::Add { path, ino } if path == "/a" && *ino == 1));
         assert!(matches!(&records[1], Record::Delete { path } if path == "/b"));
         assert!(matches!(&records[2], Record::Rename { old_path, new_path }
             if old_path == "/c" && new_path == "/d"));
     }
 
     #[test]
-    fn blob_path_format() {
+    fn inode_path_format() {
         let dir = setup_test_dir();
-        let p = blob_path(dir.path(), 42);
-        assert!(p.ends_with("staging/42"));
+        let p = inode_path(dir.path(), 42);
+        assert!(p.ends_with("inodes/42"));
     }
 
     #[test]
@@ -613,7 +607,7 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/nonexistent_test_12345/new.txt\01\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "content").unwrap();
+        fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
         let changes = resolve(dir.path()).unwrap();
         assert_eq!(changes.len(), 1);
@@ -654,13 +648,13 @@ mod tests {
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
         data.extend_from_slice(b"R\0/nonexistent_test_12345/x\0/nonexistent_test_12345/y\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "content").unwrap();
+        fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
         let changes = resolve(dir.path()).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], Change::Added { path, blob_id } if path == "/nonexistent_test_12345/y" && *blob_id == 1),
-            "expected Added at y with blob 1, got: {:?}",
+            matches!(&changes[0], Change::Added { path, ino } if path == "/nonexistent_test_12345/y" && *ino == 1),
+            "expected Added at y with ino 1, got: {:?}",
             changes[0]
         );
     }
@@ -674,7 +668,7 @@ mod tests {
         data.extend_from_slice(b"R\0/nonexistent_test_12345/a\0/nonexistent_test_12345/b\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/2"), "new content").unwrap();
+        fs::write(dir.path().join("inodes/2"), "new content").unwrap();
 
         let changes = resolve(dir.path()).unwrap();
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
@@ -683,8 +677,8 @@ mod tests {
             if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/b")
         });
         let has_add = changes.iter().any(|c| {
-            matches!(c, Change::Added { path, blob_id }
-            if path == "/nonexistent_test_12345/a" && *blob_id == 2)
+            matches!(c, Change::Added { path, ino }
+            if path == "/nonexistent_test_12345/a" && *ino == 2)
         });
         assert!(has_rename, "expected Renamed(a→b), got: {changes:?}");
         assert!(has_add, "expected Added(a, 2), got: {changes:?}");
@@ -718,7 +712,7 @@ mod tests {
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
         data.extend_from_slice(b"D\0/nonexistent_test_12345/x\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "content").unwrap();
+        fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
         let changes = resolve(dir.path()).unwrap();
         assert!(changes.is_empty(), "expected no changes, got: {changes:?}");
@@ -734,7 +728,7 @@ mod tests {
         data.extend_from_slice(b"A\0/etc/hostname\01\n");
         data.extend_from_slice(b"D\0/etc/hostname\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "modified").unwrap();
+        fs::write(dir.path().join("inodes/1"), "modified").unwrap();
 
         let changes = resolve(dir.path()).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
@@ -745,7 +739,7 @@ mod tests {
         );
     }
 
-    /// Modify base file then rename: blob goes to new path, base old path deleted.
+    /// Modify base file then rename: inode goes to new path, base old path deleted.
     #[test]
     fn modify_base_then_rename() {
         let dir = setup_test_dir();
@@ -753,14 +747,14 @@ mod tests {
         data.extend_from_slice(b"A\0/etc/hostname\01\n");
         data.extend_from_slice(b"R\0/etc/hostname\0/etc/hostname.bak\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "modified").unwrap();
+        fs::write(dir.path().join("inodes/1"), "modified").unwrap();
 
         let changes = resolve(dir.path()).unwrap();
         // Should have: Add(/etc/hostname.bak, 1) + Delete(/etc/hostname)
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
         let has_add = changes.iter().any(|c| {
-            matches!(c, Change::Added { path, blob_id }
-            if path == "/etc/hostname.bak" && *blob_id == 1)
+            matches!(c, Change::Added { path, ino }
+            if path == "/etc/hostname.bak" && *ino == 1)
         });
         let has_delete = changes
             .iter()
@@ -800,8 +794,8 @@ mod tests {
         data.extend_from_slice(b"A\0/a\02\n");
         data.extend_from_slice(b"S\02\0second\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "").unwrap();
-        fs::write(dir.path().join("staging/2"), "").unwrap();
+        fs::write(dir.path().join("inodes/1"), "").unwrap();
+        fs::write(dir.path().join("inodes/2"), "").unwrap();
 
         let (changes, remaining) = split_at_snapshot(dir.path(), "first").unwrap();
         assert_eq!(changes.len(), 1);
@@ -818,17 +812,17 @@ mod tests {
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\02\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/y\03\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "v1").unwrap();
-        fs::write(dir.path().join("staging/2"), "v2").unwrap();
-        fs::write(dir.path().join("staging/3"), "v3").unwrap();
+        fs::write(dir.path().join("inodes/1"), "v1").unwrap();
+        fs::write(dir.path().join("inodes/2"), "v2").unwrap();
+        fs::write(dir.path().join("inodes/3"), "v3").unwrap();
 
-        // At snap1, only x with blob 1 should be visible
+        // At snap1, only x with ino 1 should be visible
         let changes = resolve_at(dir.path(), "snap1").unwrap();
         assert_eq!(changes.len(), 1, "at snap1: {changes:?}");
-        assert!(matches!(&changes[0], Change::Added { path, blob_id }
-            if path == "/nonexistent_test_12345/x" && *blob_id == 1));
+        assert!(matches!(&changes[0], Change::Added { path, ino }
+            if path == "/nonexistent_test_12345/x" && *ino == 1));
 
-        // Full resolve should see x with blob 2 and y with blob 3
+        // Full resolve should see x with ino 2 and y with ino 3
         let all = resolve(dir.path()).unwrap();
         assert_eq!(all.len(), 2, "full: {all:?}");
     }
@@ -843,9 +837,9 @@ mod tests {
         data.extend_from_slice(b"S\02\0dup\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/z\03\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "").unwrap();
-        fs::write(dir.path().join("staging/2"), "").unwrap();
-        fs::write(dir.path().join("staging/3"), "").unwrap();
+        fs::write(dir.path().join("inodes/1"), "").unwrap();
+        fs::write(dir.path().join("inodes/2"), "").unwrap();
+        fs::write(dir.path().join("inodes/3"), "").unwrap();
 
         // "dup" should match the latest (second) occurrence
         let changes = resolve_at(dir.path(), "dup").unwrap();
@@ -867,8 +861,8 @@ mod tests {
         data.extend_from_slice(b"S\05\0mysnap\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/y\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "").unwrap();
-        fs::write(dir.path().join("staging/2"), "").unwrap();
+        fs::write(dir.path().join("inodes/1"), "").unwrap();
+        fs::write(dir.path().join("inodes/2"), "").unwrap();
 
         // Lookup by ID "5" should find the snapshot
         let changes = resolve_at(dir.path(), "5").unwrap();
@@ -900,8 +894,8 @@ mod tests {
         data.extend_from_slice(b"A\0/nonexistent_test_12345/y\02\n");
         data.extend_from_slice(b"S\02\01\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "").unwrap();
-        fs::write(dir.path().join("staging/2"), "").unwrap();
+        fs::write(dir.path().join("inodes/1"), "").unwrap();
+        fs::write(dir.path().join("inodes/2"), "").unwrap();
 
         // "1" should match id=1 (the first snapshot), not the name "1" (second snapshot)
         let changes = resolve_at(dir.path(), "1").unwrap();
@@ -947,8 +941,8 @@ mod tests {
         data.extend_from_slice(b"S\03\0snap\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/y\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "").unwrap();
-        fs::write(dir.path().join("staging/2"), "").unwrap();
+        fs::write(dir.path().join("inodes/1"), "").unwrap();
+        fs::write(dir.path().join("inodes/2"), "").unwrap();
 
         let (at_snap, current) = resolve_from(dir.path(), "3").unwrap();
         assert_eq!(at_snap.len(), 1, "at snap: {at_snap:?}");
@@ -962,7 +956,7 @@ mod tests {
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\01\n");
         data.extend_from_slice(b"S\01\0snap\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "content").unwrap();
+        fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
         let changes = resolve(dir.path()).unwrap();
         assert_eq!(changes.len(), 1);
@@ -981,7 +975,7 @@ mod tests {
 
         let (_changes, remaining) = split_at_snapshot(dir.path(), "snap1").unwrap();
         assert_eq!(remaining.len(), 2);
-        assert!(matches!(&remaining[0], Record::Add { path, id } if path == "/b" && *id == 2));
+        assert!(matches!(&remaining[0], Record::Add { path, ino } if path == "/b" && *ino == 2));
         assert!(matches!(&remaining[1], Record::Delete { path } if path == "/c"));
     }
 
@@ -991,7 +985,7 @@ mod tests {
         let records = vec![
             Record::Add {
                 path: "/a".into(),
-                id: 1,
+                ino: 1,
             },
             Record::Snapshot {
                 id: 1,
@@ -1008,7 +1002,7 @@ mod tests {
 
         let parsed = read(dir.path()).unwrap();
         assert_eq!(parsed.len(), 4);
-        assert!(matches!(&parsed[0], Record::Add { path, id } if path == "/a" && *id == 1));
+        assert!(matches!(&parsed[0], Record::Add { path, ino } if path == "/a" && *ino == 1));
         assert!(matches!(&parsed[1], Record::Snapshot { id: 1, name } if name == "snap"));
         assert!(matches!(&parsed[2], Record::Delete { path } if path == "/b"));
         assert!(matches!(&parsed[3], Record::Rename { old_path, new_path }
@@ -1024,8 +1018,8 @@ mod tests {
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/b\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "").unwrap();
-        fs::write(dir.path().join("staging/2"), "").unwrap();
+        fs::write(dir.path().join("inodes/1"), "").unwrap();
+        fs::write(dir.path().join("inodes/2"), "").unwrap();
 
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 1);
@@ -1040,7 +1034,7 @@ mod tests {
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
         data.extend_from_slice(b"S\01\0build\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "").unwrap();
+        fs::write(dir.path().join("inodes/1"), "").unwrap();
 
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 1);
@@ -1058,9 +1052,9 @@ mod tests {
         data.extend_from_slice(b"S\02\0second\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/c\03\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "").unwrap();
-        fs::write(dir.path().join("staging/2"), "").unwrap();
-        fs::write(dir.path().join("staging/3"), "").unwrap();
+        fs::write(dir.path().join("inodes/1"), "").unwrap();
+        fs::write(dir.path().join("inodes/2"), "").unwrap();
+        fs::write(dir.path().join("inodes/3"), "").unwrap();
 
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 3, "{sections:?}");
@@ -1100,8 +1094,8 @@ mod tests {
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\02\n");
         data.extend_from_slice(b"S\02\0snap2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "v1").unwrap();
-        fs::write(dir.path().join("staging/2"), "v2").unwrap();
+        fs::write(dir.path().join("inodes/1"), "v1").unwrap();
+        fs::write(dir.path().join("inodes/2"), "v2").unwrap();
 
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 2, "{sections:?}");
@@ -1109,15 +1103,15 @@ mod tests {
         // First section: x added
         assert_eq!(sections[0].changes.len(), 1);
         assert!(
-            matches!(&sections[0].changes[0], Change::Added { path, blob_id }
-            if path == "/nonexistent_test_12345/x" && *blob_id == 1)
+            matches!(&sections[0].changes[0], Change::Added { path, ino }
+            if path == "/nonexistent_test_12345/x" && *ino == 1)
         );
 
-        // Second section: x modified (blob changed from 1 to 2)
+        // Second section: x modified (ino changed from 1 to 2)
         assert_eq!(sections[1].changes.len(), 1);
         assert!(
-            matches!(&sections[1].changes[0], Change::Modified { path, blob_id }
-            if path == "/nonexistent_test_12345/x" && *blob_id == 2)
+            matches!(&sections[1].changes[0], Change::Modified { path, ino }
+            if path == "/nonexistent_test_12345/x" && *ino == 2)
         );
     }
 
@@ -1128,7 +1122,7 @@ mod tests {
         data.extend_from_slice(b"S\01\0empty\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "").unwrap();
+        fs::write(dir.path().join("inodes/1"), "").unwrap();
 
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 2);
@@ -1148,7 +1142,7 @@ mod tests {
         data.extend_from_slice(b"D\0/nonexistent_test_12345/x\n");
         data.extend_from_slice(b"S\02\0snap2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "content").unwrap();
+        fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 2, "{sections:?}");
@@ -1177,7 +1171,7 @@ mod tests {
         data.extend_from_slice(b"R\0/nonexistent_test_12345/a\0/nonexistent_test_12345/b\n");
         data.extend_from_slice(b"S\02\0snap2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "content").unwrap();
+        fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 2, "{sections:?}");
@@ -1192,8 +1186,8 @@ mod tests {
         let snap2 = &sections[1].changes;
         assert!(!snap2.is_empty(), "snap2 should have changes: {snap2:?}");
         let has_b = snap2.iter().any(|c| {
-            matches!(c, Change::Added { path, blob_id }
-                if path == "/nonexistent_test_12345/b" && *blob_id == 1)
+            matches!(c, Change::Added { path, ino }
+                if path == "/nonexistent_test_12345/b" && *ino == 1)
         });
         assert!(has_b, "expected /b added in snap2, got: {snap2:?}");
     }
@@ -1211,7 +1205,7 @@ mod tests {
         data.extend_from_slice(b"S\02\0snap2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         for i in 1..=5 {
-            fs::write(dir.path().join(format!("staging/{i}")), "").unwrap();
+            fs::write(dir.path().join(format!("inodes/{i}")), "").unwrap();
         }
 
         let sections = resolve_sections(dir.path()).unwrap();
@@ -1267,7 +1261,7 @@ mod tests {
         data.extend_from_slice(b"S\03\0s3\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         for i in 1..=3 {
-            fs::write(dir.path().join(format!("staging/{i}")), "").unwrap();
+            fs::write(dir.path().join(format!("inodes/{i}")), "").unwrap();
         }
 
         let sections = resolve_sections(dir.path()).unwrap();
@@ -1291,8 +1285,8 @@ mod tests {
         data.extend_from_slice(b"S\02\0snap2\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/x\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "v1").unwrap();
-        fs::write(dir.path().join("staging/2"), "v2").unwrap();
+        fs::write(dir.path().join("inodes/1"), "v1").unwrap();
+        fs::write(dir.path().join("inodes/2"), "v2").unwrap();
 
         let sections = resolve_sections(dir.path()).unwrap();
         // Should have snap1, snap2, and trailing
@@ -1311,8 +1305,8 @@ mod tests {
         let trailing = sections.last().unwrap();
         assert!(trailing.snapshot.is_none() || trailing.snapshot.is_some());
         let has_x = trailing.changes.iter().any(|c| {
-            matches!(c, Change::Added { path, blob_id }
-                if path == "/nonexistent_test_12345/x" && *blob_id == 2)
+            matches!(c, Change::Added { path, ino }
+                if path == "/nonexistent_test_12345/x" && *ino == 2)
         });
         assert!(
             has_x,
@@ -1327,13 +1321,13 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(b"A\0/nonexistent_test_12345/a\01\n");
         data.extend_from_slice(b"S\01\0snap1\n");
-        // Rename a→b then modify b (new blob)
+        // Rename a→b then modify b (new ino)
         data.extend_from_slice(b"R\0/nonexistent_test_12345/a\0/nonexistent_test_12345/b\n");
         data.extend_from_slice(b"A\0/nonexistent_test_12345/b\02\n");
         data.extend_from_slice(b"S\02\0snap2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("staging/1"), "v1").unwrap();
-        fs::write(dir.path().join("staging/2"), "v2").unwrap();
+        fs::write(dir.path().join("inodes/1"), "v1").unwrap();
+        fs::write(dir.path().join("inodes/2"), "v2").unwrap();
 
         let sections = resolve_sections(dir.path()).unwrap();
         assert_eq!(sections.len(), 2, "{sections:?}");
@@ -1343,42 +1337,42 @@ mod tests {
         assert!(!snap2.is_empty(), "snap2 should have changes: {snap2:?}");
     }
 
-    // ── Change::blob_id() tests ──────────────────────────────────────
+    // ── Change::ino() tests ──────────────────────────────────────
 
     #[test]
-    fn change_blob_id() {
+    fn change_ino() {
         assert_eq!(
             Change::Added {
                 path: "/a".into(),
-                blob_id: 42
+                ino: 42
             }
-            .blob_id(),
+            .ino(),
             Some(42)
         );
         assert_eq!(
             Change::Modified {
                 path: "/a".into(),
-                blob_id: 7
+                ino: 7
             }
-            .blob_id(),
+            .ino(),
             Some(7)
         );
         assert_eq!(
             Change::RenamedModified {
                 from: "/a".into(),
                 to: "/b".into(),
-                blob_id: 99
+                ino: 99
             }
-            .blob_id(),
+            .ino(),
             Some(99)
         );
-        assert_eq!(Change::Deleted("/a".into()).blob_id(), None);
+        assert_eq!(Change::Deleted("/a".into()).ino(), None);
         assert_eq!(
             Change::Renamed {
                 from: "/a".into(),
                 to: "/b".into()
             }
-            .blob_id(),
+            .ino(),
             None
         );
     }

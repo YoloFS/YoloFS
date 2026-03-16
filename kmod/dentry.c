@@ -17,7 +17,6 @@ int agfs_new_dentry_private_data(struct dentry *dentry)
 
 	spin_lock_init(&info->lock);
 	info->perm = AGFS_PERM_NONE;
-	info->ovr_buckets = NULL;
 	dentry->d_fsdata = info;
 	return 0;
 }
@@ -25,21 +24,6 @@ int agfs_new_dentry_private_data(struct dentry *dentry)
 void agfs_free_dentry_private_data(struct dentry *dentry)
 {
 	struct agfs_dentry_info *info = AGFS_D(dentry);
-	struct agfs_override *ovr;
-	struct hlist_node *tmp;
-	unsigned int i;
-
-	if (info->ovr_buckets) {
-		for (i = 0; i < AGFS_OVR_BUCKETS; i++) {
-			hlist_for_each_entry_safe(ovr, tmp,
-						  &info->ovr_buckets[i], node) {
-				hlist_del(&ovr->node);
-				kfree(ovr->base_path);
-				kfree(ovr);
-			}
-		}
-		kfree(info->ovr_buckets);
-	}
 	kmem_cache_free(agfs_dentry_cachep, info);
 	dentry->d_fsdata = NULL;
 }

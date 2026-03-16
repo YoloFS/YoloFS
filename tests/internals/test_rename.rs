@@ -1,6 +1,6 @@
 use crate::helpers::AgfsSession;
-use agfs::journal::{Change, Record};
-use super::helpers::{journal, changes, blob_entries, blob_path};
+use agfs::journal::Record;
+use super::helpers::{journal, changes, inos, inode_path, ino_for};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -20,49 +20,43 @@ fn rename_produces_rename_record() {
     );
 }
 
-// ── Staging ──────────────────────────────────────────────────────────────────
+// ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// Pure rename of a base file creates no new blob (only journal R record).
+/// Pure rename of a base file creates no new inode (only journal R record).
 #[test]
-fn pure_rename_creates_no_blob() {
+fn pure_rename_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
 
-    let blobs_before = blob_entries(&s);
+    let inos_before = inos(&s);
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
-    let blobs_after = blob_entries(&s);
+    let inos_after = inos(&s);
 
     assert_eq!(
-        blobs_before, blobs_after,
-        "pure rename should not create new staging blobs"
+        inos_before, inos_after,
+        "pure rename should not create new staged inodes"
     );
 }
 
-/// Rename + modify (write after rename) produces a blob at the new path.
+/// Rename + modify (write after rename) produces an inode at the new path.
 #[test]
-fn rename_then_write_produces_blob() {
+fn rename_then_write_produces_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
     fs::write(s.mnt_path("moved.txt"), "new content\n").expect("write renamed file");
 
     let ch = changes(&s);
-    let blob_id = ch.iter()
-        .find_map(|c| match c {
-            Change::RenamedModified { to, blob_id, .. } if to.ends_with("/moved.txt") => Some(*blob_id),
-            Change::Modified { path, blob_id } if path.ends_with("/moved.txt") => Some(*blob_id),
-            _ => None,
-        })
-        .expect("should have a blob for renamed+modified file");
+    let ino = ino_for(&ch, "/moved.txt");
 
     assert_eq!(
-        fs::read_to_string(blob_path(&s, blob_id)).unwrap(),
+        fs::read_to_string(inode_path(&s, ino)).unwrap(),
         "new content\n"
     );
 }
 
-/// Write then rename: blob content still correct under the new path.
+/// Write then rename: inode content still correct under the new path.
 #[test]
-fn write_then_rename_blob_content() {
+fn write_then_rename_inode_content() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "written first\n").expect("write");
@@ -72,20 +66,9 @@ fn write_then_rename_blob_content() {
     let content = fs::read_to_string(s.mnt_path("final.txt")).unwrap();
     assert_eq!(content, "written first\n");
 
-    // The blob should have the written content — may resolve as RenamedModified
+    // The inode should have the written content — may resolve as RenamedModified
     // or as separate changes depending on the resolver.
     let ch = changes(&s);
-    let blob_id = ch.iter()
-        .find_map(|c| match c {
-            Change::RenamedModified { to, blob_id, .. } if to.ends_with("/final.txt") => Some(*blob_id),
-            Change::Modified { path, blob_id } if path.ends_with("/final.txt") => Some(*blob_id),
-            Change::Added { path, blob_id } if path.ends_with("/final.txt") => Some(*blob_id),
-            _ => None,
-        });
-
-    if let Some(id) = blob_id {
-        assert_eq!(fs::read_to_string(blob_path(&s, id)).unwrap(), "written first\n");
-    }
-    // If no blob (pure Renamed), the content lives in the original blob
-    // referenced by the first write — verify it's readable through mount.
+    let ino = ino_for(&ch, "/final.txt");
+    assert_eq!(fs::read_to_string(inode_path(&s, ino)).unwrap(), "written first\n");
 }

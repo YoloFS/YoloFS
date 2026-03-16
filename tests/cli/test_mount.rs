@@ -25,7 +25,7 @@ fn mount_creates_layout() {
     let session = AgfsSession::new().expect("session setup");
 
     assert!(session.root.join(".agfs").exists());
-    assert!(session.root.join(".agfs/staging").exists());
+    assert!(session.root.join(".agfs/inodes").exists());
     assert!(session.mnt.exists());
 
     drop(session);

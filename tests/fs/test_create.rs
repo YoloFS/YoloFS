@@ -24,11 +24,11 @@ fn create_file_in_new_subdir() {
     assert_eq!(content, "deep new\n");
 }
 
-// ── Staging / base verification (staging.c: agfs_create → staging) ──
+// ── Staging / base verification (staging.c: agfs_create → inode store) ──
 
-/// New file goes to staging, not base.
+/// New file goes to inode store, not base.
 #[test]
-fn create_lands_in_staging() {
+fn create_lands_in_inode_store() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
@@ -47,7 +47,7 @@ fn create_lands_in_staging() {
     );
 }
 
-/// Commit moves newly created file from staging to base.
+/// Commit moves newly created file from inode store to base.
 #[test]
 fn create_commit_moves_to_base() {
     let s = AgfsSession::new().expect("session setup");

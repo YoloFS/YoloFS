@@ -69,9 +69,9 @@ fn status_at_snapshot() {
     );
 }
 
-/// Re-COW: writing after a snapshot preserves the old blob.
+/// Re-COW: writing after a snapshot preserves the old inode.
 #[test]
-fn recow_preserves_snapshot_blob() {
+fn recow_preserves_snapshot_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     // Write v1
@@ -85,7 +85,7 @@ fn recow_preserves_snapshot_blob() {
     let current = fs::read_to_string(s.mnt_path("hello.txt")).expect("read current");
     assert_eq!(current, "version2\n");
 
-    // Re-COW: status --at v1 should show the snapshot state, proving blob preserved
+    // Re-COW: status --at v1 should show the snapshot state, proving inode preserved
     let at_v1 = s.cli(&["status", "--at", "v1"]).expect("status --at v1");
     assert!(
         at_v1.contains("hello.txt"),
@@ -160,7 +160,7 @@ fn two_handles_same_file_no_snapshot() {
     let base = fs::read_to_string(s.base_path("hello.txt")).expect("read base");
     assert_eq!(base, "base content\n");
 
-    // Only one staging blob needed (no snapshot → no re-COW)
+    // Only one staged inode needed (no snapshot → no re-COW)
     let status = s.cli(&["status"]).expect("status");
     assert!(
         status.contains("hello.txt"),
@@ -173,7 +173,7 @@ fn two_handles_same_file_no_snapshot() {
 }
 
 /// After a snapshot, a second handle's write triggers re-COW,
-/// preserving the snapshot blob while both handles produce correct reads.
+/// preserving the snapshot inode while both handles produce correct reads.
 #[test]
 fn two_handles_recow_after_snapshot() {
     let s = AgfsSession::new().expect("session setup");
@@ -184,7 +184,7 @@ fn two_handles_recow_after_snapshot() {
     // Snapshot preserves v1 state
     s.cli(&["snapshot", "s1"]).expect("snapshot");
 
-    // Handle B writes v2 (triggers re-COW: v1 blob preserved, new blob for v2)
+    // Handle B writes v2 (triggers re-COW: v1 inode preserved, new inode for v2)
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
 
     // Current content is v2
@@ -220,9 +220,9 @@ fn second_handle_skips_redundant_recow() {
 
     let status_before = s.cli(&["status"]).expect("status after v2");
 
-    // Handle B opens and writes — should NOT create another blob
-    // because inode->snapshot_gen already matches sbi->snapshot_gen.
-    // O_TRUNC on an already-staged file truncates the blob in-place.
+    // Handle B opens and writes — should NOT create another inode
+    // because override.snapshot_gen already matches sbi->snapshot_gen.
+    // O_TRUNC on an already-staged file truncates the inode in-place.
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
 
     // Content should be correct
@@ -238,7 +238,7 @@ fn second_handle_skips_redundant_recow() {
 }
 
 /// Multiple snapshots with writes interleaved: each snapshot preserves
-/// the correct blob state.
+/// the correct inode state.
 #[test]
 fn multiple_snapshots_interleaved_writes() {
     let s = AgfsSession::new().expect("session setup");
@@ -256,7 +256,7 @@ fn multiple_snapshots_interleaved_writes() {
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
     assert_eq!(content, "v3\n");
 
-    // status --at s1: hello.txt modified (blob has v1)
+    // status --at s1: hello.txt modified (inode has v1)
     let at_s1 = s.cli(&["status", "--at", "s1"]).expect("status --at s1");
     assert!(
         at_s1.contains("hello.txt"),
@@ -267,7 +267,7 @@ fn multiple_snapshots_interleaved_writes() {
         "s1 should be 1 change: {at_s1}"
     );
 
-    // status --at s2: hello.txt modified (blob has v2)
+    // status --at s2: hello.txt modified (inode has v2)
     let at_s2 = s.cli(&["status", "--at", "s2"]).expect("status --at s2");
     assert!(
         at_s2.contains("hello.txt"),
@@ -278,7 +278,7 @@ fn multiple_snapshots_interleaved_writes() {
         "s2 should be 1 change: {at_s2}"
     );
 
-    // Each snapshot state is independently verifiable via CLI — no need to count blobs.
+    // Each snapshot state is independently verifiable via CLI — no need to count inodes.
     // The log should list both snapshots.
     let log = s.cli(&["log"]).expect("log");
     assert!(log.contains("s1"), "log should list s1: {log}");

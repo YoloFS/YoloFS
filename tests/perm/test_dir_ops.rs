@@ -98,7 +98,7 @@ fn create_allowed_under_deny() {
         "write to new file should fail under deny (open is gated)"
     );
 
-    // The file was created in staging (dir op succeeded). Verify via status.
+    // The file was created in inode store (dir op succeeded). Verify via status.
     let status = s.cli(&["status"]).unwrap();
     assert!(
         status.contains("newfile.txt"),
@@ -116,7 +116,7 @@ fn create_allowed_under_deny() {
 ///
 /// Root cause: `agfs_permission` (inode.c:231) delegates directory permission
 /// checks to the lower filesystem instead of going through agfs rules.
-/// Staging blobs are always created under root credentials
+/// Staged inodes are always created under root credentials
 /// (`override_creds(sbi->creator_cred)`), so a directory staged by a
 /// non-root user ends up root-owned — and the creating user cannot write
 /// into it.
@@ -150,7 +150,7 @@ fn non_root_mkdir_then_write_inside() {
                 std::process::exit(1);
             }
             // Write inside — requires write+exec on the new dir.
-            // With the bug the staging blob is root-owned 0700, so
+            // With the bug the staged inode is root-owned 0700, so
             // agfs_permission (delegating dir checks to lower FS) returns EACCES.
             let ok = std::fs::write(newdir.join("file.txt"), "data").is_ok();
             std::process::exit(if ok { 0 } else { 2 });
@@ -160,7 +160,7 @@ fn non_root_mkdir_then_write_inside() {
                 WaitStatus::Exited(_, 0) => {}
                 WaitStatus::Exited(_, 2) => panic!(
                     "non-root user could mkdir but not write inside it: \
-                     staging blob is root-owned, agfs_permission delegates \
+                     staged inode is root-owned, agfs_permission delegates \
                      directory checks to lower FS (inode.c:231)"
                 ),
                 other => panic!("unexpected child status: {other:?}"),

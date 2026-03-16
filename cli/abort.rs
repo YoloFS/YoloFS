@@ -8,12 +8,12 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
-/// Clear staging directory, remove journal, and invalidate kernel caches.
+/// Clear inode store, remove journal, and invalidate kernel caches.
 pub fn reset_staging(agfs: &Path) -> Result<()> {
-    let staging_dir = agfs.join("staging");
-    if staging_dir.exists() {
-        fs::remove_dir_all(&staging_dir).context("removing staging directory")?;
-        fs::create_dir_all(&staging_dir).context("recreating staging directory")?;
+    let inodes_dir = agfs.join("inodes");
+    if inodes_dir.exists() {
+        fs::remove_dir_all(&inodes_dir).context("removing inode store")?;
+        fs::create_dir_all(&inodes_dir).context("recreating inode store")?;
     }
     let journal_path = agfs.join("journal");
     if journal_path.exists() {

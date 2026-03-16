@@ -58,44 +58,114 @@ static int agfs_check_open_perm(struct agfs_sb_info *sbi,
 	return agfs_check_perm(perm, file->f_flags);
 }
 
-/* Open the right file for a staged regular file. */
-static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
-				     struct dentry *dentry,
-				     struct file *file, char *buf)
+/*
+ * Open a staged inode by ino, incrementing staging_fd_count.
+ * On error, decrements the count and returns ERR_PTR.
+ *
+ * dentry_open() does not apply O_TRUNC (that is normally done by the
+ * VFS after f_op->open returns), and agfs_setattr intentionally strips
+ * ATTR_SIZE for staged files.  So we must truncate the lower inode
+ * ourselves before opening.
+ */
+static struct file *agfs_open_staged_ino(struct agfs_sb_info *sbi,
+					 u64 ino, int flags)
 {
-	struct agfs_dentry_info *parent_di = AGFS_D(dentry->d_parent);
-	struct agfs_override *ovr;
-	u64 sid = 0;
+	struct path ino_p;
+	struct file *f;
 	int err;
 
-	if (parent_di) {
-		spin_lock(&parent_di->lock);
-		ovr = agfs_find_override(dentry->d_parent,
-					 dentry->d_name.name,
-					 dentry->d_name.len);
-		if (ovr)
-			sid = ovr->staging_id;
-		spin_unlock(&parent_di->lock);
+	err = agfs_inode_path(sbi, ino, &ino_p);
+	if (err) {
+		atomic_dec(&sbi->staging_fd_count);
+		return ERR_PTR(err);
 	}
-
-	if ((file->f_flags & (O_WRONLY | O_RDWR)) && sid) {
-		struct path blob;
-		struct file *f;
-
-		err = agfs_staging_path(sbi, sid, &blob);
-		if (err)
+	if (flags & O_TRUNC) {
+		err = vfs_truncate(&ino_p, 0);
+		if (err) {
+			path_put(&ino_p);
+			atomic_dec(&sbi->staging_fd_count);
 			return ERR_PTR(err);
-		f = dentry_open(&blob, file->f_flags, current_cred());
-		path_put(&blob);
-		return f;
+		}
+	}
+	f = dentry_open(&ino_p, flags, current_cred());
+	path_put(&ino_p);
+	if (IS_ERR(f))
+		atomic_dec(&sbi->staging_fd_count);
+	return f;
+}
+
+/* Snapshot ino + snapshot_gen from the parent's override table. */
+static void agfs_snapshot_ovr(struct dentry *dentry, u64 *ino, u64 *gen)
+{
+	struct inode *dir = d_inode(dentry->d_parent);
+	struct agfs_inode_info *dii = AGFS_I(dir);
+	struct agfs_override *ovr;
+
+	spin_lock(&dii->ovr_lock);
+	ovr = agfs_find_override(dir, dentry->d_name.name,
+				 dentry->d_name.len);
+	if (ovr) {
+		*ino = ovr->ino;
+		*gen = ovr->snapshot_gen;
+	} else {
+		*ino = 0;
+		*gen = 0;
+	}
+	spin_unlock(&dii->ovr_lock);
+}
+
+/* Open the right file for a staged regular file.
+ * COW is resolved at open time — write_iter and mmap are pure pass-throughs.
+ */
+static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
+				     struct dentry *dentry,
+				     struct file *file)
+{
+	struct file *new_file = NULL;
+	bool truncate;
+	u64 ino, gen;
+	int err;
+
+	agfs_snapshot_ovr(dentry, &ino, &gen);
+
+	if (!(file->f_flags & (O_WRONLY | O_RDWR)))
+		return agfs_open_lower(dentry, file->f_flags);
+
+	/* Fast path: inode is current — open directly */
+	if (ino && gen >= (u64)atomic64_read(&sbi->snapshot_gen)) {
+		down_read(&sbi->staging_sem);
+		/* Re-check under lock — a snapshot may have raced */
+		if (gen >= (u64)atomic64_read(&sbi->snapshot_gen)) {
+			atomic_inc(&sbi->staging_fd_count);
+			up_read(&sbi->staging_sem);
+			return agfs_open_staged_ino(sbi, ino, file->f_flags);
+		}
+		up_read(&sbi->staging_sem);
 	}
 
-	/* Not yet staged → open base; writable opens use O_RDONLY for COW */
-	if (file->f_flags & (O_WRONLY | O_RDWR)) {
-		file->f_flags &= ~O_TRUNC; /* defer truncation to COW */
-		return agfs_open_lower(dentry, O_RDONLY);
+	/* Slow path: needs COW (base file, redirected, or stale inode) */
+	truncate = !!(file->f_flags & O_TRUNC);
+
+	down_write(&sbi->staging_sem);
+
+	/* Re-check under sem — a concurrent open may have COW'd */
+	agfs_snapshot_ovr(dentry, &ino, &gen);
+	if (ino && gen >= (u64)atomic64_read(&sbi->snapshot_gen)) {
+		atomic_inc(&sbi->staging_fd_count);
+		up_write(&sbi->staging_sem);
+		return agfs_open_staged_ino(sbi, ino, file->f_flags);
 	}
-	return agfs_open_lower(dentry, file->f_flags);
+
+	atomic_inc(&sbi->staging_fd_count);
+	err = agfs_do_cow(sbi, dentry, &new_file,
+			  file->f_flags & ~O_TRUNC, truncate);
+	up_write(&sbi->staging_sem);
+
+	if (err) {
+		atomic_dec(&sbi->staging_fd_count);
+		return ERR_PTR(err);
+	}
+	return new_file;
 }
 
 /* ── open (§3.5 + §4.3) ───────────────────────────────────────────── */
@@ -107,8 +177,6 @@ static int agfs_open(struct inode *inode, struct file *file)
 	struct agfs_file_info *fi;
 	const struct cred *old_cred;
 	struct file *lower_file;
-	unsigned int orig_flags = file->f_flags;
-	char buf[AGFS_PATH_MAX];
 	int err;
 
 	fi = kzalloc(sizeof(*fi), GFP_KERNEL);
@@ -116,6 +184,8 @@ static int agfs_open(struct inode *inode, struct file *file)
 		return -ENOMEM;
 
 	if (S_ISREG(inode->i_mode) && sbi->permission) {
+		char buf[AGFS_PATH_MAX];
+
 		err = agfs_check_open_perm(sbi, dentry, file, buf);
 		if (err)
 			goto out_free;
@@ -123,7 +193,7 @@ static int agfs_open(struct inode *inode, struct file *file)
 
 	if (S_ISREG(inode->i_mode) && sbi->staging) {
 		old_cred = override_creds(sbi->creator_cred);
-		lower_file = agfs_open_staged(sbi, dentry, file, buf);
+		lower_file = agfs_open_staged(sbi, dentry, file);
 		revert_creds(old_cred);
 	} else {
 		lower_file = agfs_open_lower(dentry, file->f_flags);
@@ -134,9 +204,6 @@ static int agfs_open(struct inode *inode, struct file *file)
 		goto out_free;
 	}
 
-	/* O_TRUNC on unstaged file: agfs_open_staged stripped it from f_flags;
-	 * defer actual truncation to first write via agfs_cow_if_needed. */
-	fi->truncate = (orig_flags & O_TRUNC) && !(file->f_flags & O_TRUNC);
 	fi->lower_file = lower_file;
 	file->private_data = fi;
 	return 0;
@@ -144,49 +211,6 @@ static int agfs_open(struct inode *inode, struct file *file)
 out_free:
 	kfree(fi);
 	return err;
-}
-
-/*
- * Trigger COW / re-COW if the inode's snapshot_gen is behind the
- * superblock's, or if deferred truncation is pending.
- * Returns 0 on success (or if no COW was needed).
- * Caller must NOT hold staging_sem.
- */
-static int agfs_cow_if_needed(struct file *file)
-{
-	struct agfs_file_info *fi = AGFS_F(file);
-	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
-	struct agfs_inode_info *ii = AGFS_I(file_inode(file));
-	const struct cred *old_cred;
-	struct file *new_file = NULL;
-	bool truncate = fi->truncate;
-	int err;
-
-	if (!truncate &&
-	    ii->snapshot_gen >= (u64)atomic64_read(&sbi->snapshot_gen))
-		return 0;
-
-	old_cred = override_creds(sbi->creator_cred);
-	down_write(&sbi->staging_sem);
-	if (truncate ||
-	    ii->snapshot_gen <
-	    (u64)atomic64_read(&sbi->snapshot_gen)) {
-		err = agfs_do_cow(sbi, file->f_path.dentry,
-				       &new_file,
-				       file->f_flags & ~O_TRUNC, truncate);
-		if (err) {
-			up_write(&sbi->staging_sem);
-			revert_creds(old_cred);
-			return err;
-		}
-		fput(fi->lower_file);
-		fi->lower_file = new_file;
-		fi->truncate = false;
-		/* inode->snapshot_gen updated inside agfs_do_cow */
-	}
-	up_write(&sbi->staging_sem);
-	revert_creds(old_cred);
-	return 0;
 }
 
 /* ── read_iter ─────────────────────────────────────────────────────── */
@@ -213,7 +237,7 @@ static ssize_t agfs_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	return ret;
 }
 
-/* ── write_iter (§3.5) ─────────────────────────────────────────────── */
+/* ── write_iter (pure pass-through — COW resolved at open time) ────── */
 
 static ssize_t agfs_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
@@ -221,13 +245,7 @@ static ssize_t agfs_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 	struct agfs_file_info *fi = AGFS_F(file);
 	struct file *lower_file;
 	ssize_t ret;
-	int err;
 
-	err = agfs_cow_if_needed(file);
-	if (err)
-		return err;
-
-	/* Write to staging blob */
 	lower_file = fi->lower_file;
 	if (!lower_file)
 		return -EIO;
@@ -247,25 +265,13 @@ static ssize_t agfs_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 	return ret;
 }
 
-/* ── mmap ──────────────────────────────────────────────────────────── */
+/* ── mmap (pure pass-through — COW resolved at open time) ──────────── */
 
 static int agfs_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct agfs_file_info *fi = AGFS_F(file);
 	struct file *lower_file;
 	int err;
-
-	/*
-	 * Writable shared mapping needs a writable lower file.
-	 * Trigger COW / re-COW only if the file was opened for writing.
-	 */
-	if ((file->f_flags & (O_WRONLY | O_RDWR)) &&
-	    (vma->vm_flags & (VM_WRITE | VM_SHARED)) ==
-	    (VM_WRITE | VM_SHARED)) {
-		err = agfs_cow_if_needed(file);
-		if (err)
-			return err;
-	}
 
 	lower_file = fi->lower_file;
 	if (!lower_file)
@@ -297,8 +303,10 @@ static int agfs_fsync(struct file *file, loff_t start, loff_t end,
 	if (!lower_file)
 		return -EIO;
 
-	/* COW'd files live in staging and are ephemeral — skip fsync */
-	if (AGFS_I(file_inode(file))->snapshot_gen > 0)
+	/* Staged writable files are ephemeral — skip fsync */
+	if (AGFS_SB(file_inode(file)->i_sb)->staging &&
+	    S_ISREG(file_inode(file)->i_mode) &&
+	    (file->f_mode & FMODE_WRITE))
 		return 0;
 
 	return vfs_fsync_range(lower_file, start, end, datasync);
@@ -309,10 +317,17 @@ static int agfs_fsync(struct file *file, loff_t start, loff_t end,
 static int agfs_release(struct inode *inode, struct file *file)
 {
 	struct agfs_file_info *fi = AGFS_F(file);
+	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
 
 	if (fi) {
-		if (file == READ_ONCE(AGFS_SB(inode->i_sb)->ask_engine.daemon_file))
-			agfs_daemon_cleanup(AGFS_SB(inode->i_sb));
+		if (file == READ_ONCE(sbi->ask_engine.daemon_file))
+			agfs_daemon_cleanup(sbi);
+
+		/* Decrement staging fd count for write-mode opens */
+		if (sbi->staging && S_ISREG(inode->i_mode) &&
+		    (file->f_mode & FMODE_WRITE))
+			atomic_dec(&sbi->staging_fd_count);
+
 		if (fi->lower_file)
 			fput(fi->lower_file);
 		kfree(fi);
@@ -368,7 +383,6 @@ static struct agfs_nameset *agfs_nameset_alloc(unsigned int hint)
 {
 	struct agfs_nameset *ns;
 	unsigned int shift = 4;	/* minimum 16 buckets */
-	unsigned int i;
 
 	while ((1u << shift) < hint * 2 && shift < 16)
 		shift++;
@@ -378,9 +392,6 @@ static struct agfs_nameset *agfs_nameset_alloc(unsigned int hint)
 	if (!ns)
 		return NULL;
 	ns->shift = shift;
-	ns->count = 0;
-	for (i = 0; i < (1u << shift); i++)
-		INIT_HLIST_HEAD(&ns->buckets[i]);
 	return ns;
 }
 
@@ -478,6 +489,82 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 	return true;
 }
 
+/*
+ * Snapshot override entries into a nameset and emit non-deleted ones.
+ * Returns the nameset (caller frees) or ERR_PTR on error.
+ * Sets *done = true when dir_emit signals the buffer is full.
+ */
+static struct agfs_nameset *agfs_emit_overrides(struct inode *dir,
+						struct dir_context *ctx,
+						loff_t *off, bool *done)
+{
+	struct agfs_inode_info *dii = AGFS_I(dir);
+	struct agfs_nameset *ns;
+	struct agfs_override *ovr;
+	struct agfs_nameset_entry *e;
+	unsigned int count = 0, bi, i;
+	int err;
+
+	*done = false;
+
+	if (!dii->ovr_buckets)
+		return NULL;
+
+	/* Count entries under spinlock */
+	spin_lock(&dii->ovr_lock);
+	for (bi = 0; bi < AGFS_OVR_BUCKETS; bi++)
+		hlist_for_each_entry(ovr, &dii->ovr_buckets[bi], node)
+			count++;
+	spin_unlock(&dii->ovr_lock);
+
+	/* Allocate outside spinlock — GFP_KERNEL may sleep */
+	ns = agfs_nameset_alloc(count);
+	if (!ns)
+		return ERR_PTR(-ENOMEM);
+
+	/* Re-acquire and populate; table may have changed */
+	spin_lock(&dii->ovr_lock);
+	if (!dii->ovr_buckets) {
+		spin_unlock(&dii->ovr_lock);
+		return ns;
+	}
+	for (bi = 0; bi < AGFS_OVR_BUCKETS; bi++) {
+		hlist_for_each_entry(ovr, &dii->ovr_buckets[bi], node) {
+			bool deleted = !ovr->ino && !ovr->base_path;
+
+			err = agfs_nameset_add(ns, ovr->name, ovr->name_len,
+					       deleted, ovr->d_type);
+			if (err) {
+				spin_unlock(&dii->ovr_lock);
+				agfs_nameset_free(ns);
+				return ERR_PTR(err);
+			}
+		}
+	}
+	spin_unlock(&dii->ovr_lock);
+
+	/* Emit non-deleted overrides, respecting ctx->pos */
+	for (i = 0; i < (1u << ns->shift); i++) {
+		hlist_for_each_entry(e, &ns->buckets[i], node) {
+			if (e->is_deleted) {
+				(*off)++;
+				continue;
+			}
+			if (*off < ctx->pos) {
+				(*off)++;
+				continue;
+			}
+			if (!dir_emit(ctx, e->name, e->len, 0, e->d_type)) {
+				*done = true;
+				return ns;
+			}
+			(*off)++;
+			ctx->pos++;
+		}
+	}
+	return ns;
+}
+
 /* ── readdir entry point ───────────────────────────────────────────── */
 
 static int agfs_readdir(struct file *file, struct dir_context *ctx)
@@ -485,83 +572,30 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	struct agfs_file_info *fi = AGFS_F(file);
 	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
 	struct file *lower_file = fi->lower_file;
-	struct agfs_dentry_info *di;
-	struct agfs_nameset *ns = NULL;
+	struct agfs_nameset *ns;
 	struct agfs_readdir_data rdd;
 	loff_t off = 0;
+	bool done;
 	int err = 0;
 
 	if (!lower_file)
 		return -EIO;
 
 	/* No staging → simple passthrough */
-	if (!sbi->staging || !sbi->staging_dir.dentry) {
+	if (!sbi->staging || !sbi->inodes_dir.dentry) {
 		lower_file->f_pos = ctx->pos;
 		err = iterate_dir(lower_file, ctx);
 		file->f_pos = lower_file->f_pos;
 		return err;
 	}
 
-	di = AGFS_D(file->f_path.dentry);
-
-	/* Phase 1: snapshot override names into hash set, emit non-deleted */
-	if (di && di->ovr_buckets) {
-		struct agfs_override *ovr;
-		unsigned int count = 0;
-		unsigned int bi;
-
-		spin_lock(&di->lock);
-		for (bi = 0; bi < AGFS_OVR_BUCKETS; bi++)
-			hlist_for_each_entry(ovr, &di->ovr_buckets[bi], node)
-				count++;
-
-		ns = agfs_nameset_alloc(count);
-		if (!ns) {
-			spin_unlock(&di->lock);
-			return -ENOMEM;
-		}
-
-		for (bi = 0; bi < AGFS_OVR_BUCKETS; bi++) {
-			hlist_for_each_entry(ovr, &di->ovr_buckets[bi], node) {
-				bool deleted = !ovr->staging_id && !ovr->base_path;
-
-				err = agfs_nameset_add(ns, ovr->name,
-						       ovr->name_len, deleted,
-						       ovr->d_type);
-				if (err) {
-					spin_unlock(&di->lock);
-					goto out;
-				}
-			}
-		}
-		spin_unlock(&di->lock);
-
-		/* Emit non-deleted overrides, respecting ctx->pos */
-		{
-			unsigned int i;
-
-			for (i = 0; i < (1u << ns->shift); i++) {
-				struct agfs_nameset_entry *e;
-
-				hlist_for_each_entry(e, &ns->buckets[i], node) {
-					if (e->is_deleted) {
-						off++;
-						continue;
-					}
-					if (off < ctx->pos) {
-						off++;
-						continue;
-					}
-					if (!dir_emit(ctx, e->name, e->len,
-						      0, e->d_type)) {
-						err = 0;
-						goto out;
-					}
-					off++;
-					ctx->pos++;
-				}
-			}
-		}
+	/* Phase 1: snapshot overrides, emit non-deleted entries */
+	ns = agfs_emit_overrides(file_inode(file), ctx, &off, &done);
+	if (IS_ERR(ns))
+		return PTR_ERR(ns);
+	if (done) {
+		agfs_nameset_free(ns);
+		return 0;
 	}
 
 	/* Phase 2: read base directory, skip overridden names */
@@ -577,7 +611,6 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	if (!err && rdd.err)
 		err = rdd.err;
 
-out:
 	agfs_nameset_free(ns);
 	return err;
 }

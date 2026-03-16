@@ -24,11 +24,11 @@ fn mkdir_nested() {
     );
 }
 
-// ── Staging verification (inode.c: agfs_mkdir → staging) ──
+// ── Staging verification (inode.c: agfs_mkdir → inode store) ──
 
-/// mkdir creates directory in staging, not base.
+/// mkdir creates directory in inode store, not base.
 #[test]
-fn mkdir_lands_in_staging() {
+fn mkdir_lands_in_inode_store() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");

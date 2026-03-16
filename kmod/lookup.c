@@ -91,7 +91,6 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 			   unsigned int flags)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
-	struct agfs_dentry_info *parent_di;
 	struct dentry *lower_dir_dentry;
 	struct dentry *lower_dentry;
 	struct vfsmount *lower_mnt;
@@ -104,55 +103,56 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 	if (err)
 		return ERR_PTR(err);
 
-	/* 1. Check override list on parent directory (§3.4) */
-	parent_di = AGFS_D(dentry->d_parent);
-	if (sbi->staging && parent_di) {
+	/* 1. Check override list on parent directory inode */
+	if (sbi->staging) {
+		struct inode *parent_inode = d_inode(dentry->d_parent);
+		struct agfs_inode_info *parent_ii = AGFS_I(parent_inode);
 		struct agfs_override *ovr;
-		u64 sid = 0;
+		u64 ino = 0;
 		char *bp = NULL;
 
-		spin_lock(&parent_di->lock);
-		ovr = agfs_find_override(dentry->d_parent,
+		spin_lock(&parent_ii->ovr_lock);
+		ovr = agfs_find_override(parent_inode,
 					 dentry->d_name.name,
 					 dentry->d_name.len);
 		if (ovr) {
-			sid = ovr->staging_id;
+			ino = ovr->ino;
 			if (ovr->base_path) {
 				bp = kstrdup(ovr->base_path, GFP_ATOMIC);
 				if (!bp) {
-					spin_unlock(&parent_di->lock);
+					spin_unlock(&parent_ii->ovr_lock);
 					err = -ENOMEM;
 					goto out_free;
 				}
 			}
 		}
-		spin_unlock(&parent_di->lock);
+		spin_unlock(&parent_ii->ovr_lock);
 
 		if (ovr) {
-			if (sid) {
-				/* Staging blob */
-				struct path blob;
+			if (ino) {
+				/* Staged inode */
+				struct path ino_path;
 				const struct cred *old_cred;
 
 				kfree(bp);
 				old_cred = override_creds(sbi->creator_cred);
-				err = agfs_staging_path(sbi, sid, &blob);
+				err = agfs_inode_path(sbi, ino, &ino_path);
 				revert_creds(old_cred);
 
 				if (!err) {
-					agfs_set_lower_path(dentry, &blob);
+					agfs_set_lower_path(dentry, &ino_path);
 					inode = agfs_iget(dentry->d_sb,
-							  d_inode(blob.dentry));
+							  d_inode(ino_path.dentry));
 					if (IS_ERR(inode)) {
 						err = PTR_ERR(inode);
-						path_put(&blob);
+						path_put(&ino_path);
 						goto out_free;
 					}
 					agfs_cache_perm(inode, dentry);
 					d_add(dentry, inode);
 					return NULL;
 				}
-				/* Blob resolution failed — fall through to base */
+				/* Inode resolution failed — fall through to base */
 			} else if (bp) {
 				/* Redirected base path (zero-copy rename) */
 				struct path base;
@@ -174,7 +174,7 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 				}
 				/* Base path gone — fall through */
 			} else {
-				/* Deleted (staging_id=0, base_path=NULL) */
+				/* Deleted (ino=0, base_path=NULL) */
 				d_add(dentry, NULL);
 				return NULL;
 			}

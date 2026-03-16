@@ -1,6 +1,6 @@
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, blob_entries, blob_path, blob_id_for};
+use super::helpers::{journal, changes, inos, inode_path, ino_for};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -67,27 +67,27 @@ fn rename_dir_produces_rename_record() {
     );
 }
 
-// ── Staging ──────────────────────────────────────────────────────────────────
+// ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// mkdir creates an empty directory blob in staging.
+/// mkdir creates an empty directory inode in inode store.
 #[test]
-fn mkdir_creates_directory_blob() {
+fn mkdir_creates_directory_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
     let ch = changes(&s);
-    let id = blob_id_for(&ch, "/newdir");
-    let blob = blob_path(&s, id);
+    let ino = ino_for(&ch, "/newdir");
+    let path = inode_path(&s, ino);
 
-    assert!(blob.is_dir(), "mkdir blob should be a directory");
-    let entries: Vec<_> = fs::read_dir(&blob).unwrap().collect();
-    assert!(entries.is_empty(), "mkdir blob should be empty (children get their own blobs)");
+    assert!(path.is_dir(), "mkdir inode should be a directory");
+    let entries: Vec<_> = fs::read_dir(&path).unwrap().collect();
+    assert!(entries.is_empty(), "mkdir inode should be empty (children get their own inodes)");
 }
 
-/// mkdir -p with a file inside: both directory and file get blobs.
+/// mkdir -p with a file inside: both directory and file get inodes.
 #[test]
-fn mkdir_with_file_creates_separate_blobs() {
+fn mkdir_with_file_creates_separate_inodes() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::create_dir_all(s.mnt_path("parent/child")).expect("mkdir -p");
@@ -95,55 +95,55 @@ fn mkdir_with_file_creates_separate_blobs() {
 
     let ch = changes(&s);
 
-    // The file should have its own blob
-    let file_id = blob_id_for(&ch, "/data.txt");
-    assert!(blob_path(&s, file_id).is_file(), "file should have its own blob");
-    assert_eq!(fs::read_to_string(blob_path(&s, file_id)).unwrap(), "nested\n");
+    // The file should have its own inode
+    let file_ino = ino_for(&ch, "/data.txt");
+    assert!(inode_path(&s, file_ino).is_file(), "file should have its own inode");
+    assert_eq!(fs::read_to_string(inode_path(&s, file_ino)).unwrap(), "nested\n");
 
-    // Parent directories should also have blob entries
+    // Parent directories should also have inode entries
     let dir_ids: Vec<u64> = ch.iter()
         .filter_map(|c| match c {
-            agfs::journal::Change::Added { path, blob_id } if path.ends_with("/parent") || path.ends_with("/child") => Some(*blob_id),
+            agfs::journal::Change::Added { path, ino } if path.ends_with("/parent") || path.ends_with("/child") => Some(*ino),
             _ => None,
         })
         .collect();
-    for id in &dir_ids {
-        assert!(blob_path(&s, *id).is_dir(), "directory blob {id} should be a dir");
+    for ino in &dir_ids {
+        assert!(inode_path(&s, *ino).is_dir(), "directory inode {ino} should be a dir");
     }
 }
 
-/// rmdir does NOT create a staging blob (only journal D record).
+/// rmdir does NOT create a staged inode (only journal D record).
 #[test]
-fn rmdir_creates_no_blob() {
+fn rmdir_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
-    let blobs_before = blob_entries(&s);
+    let inos_before = inos(&s);
 
     fs::remove_dir(s.mnt_path("tmpdir")).expect("rmdir");
-    let blobs_after = blob_entries(&s);
+    let inos_after = inos(&s);
 
-    // rmdir should not add new blobs (the mkdir blob may be cleaned up or kept,
-    // but no *new* blob should appear for the delete operation).
+    // rmdir should not add new inodes (the mkdir inode may be cleaned up or kept,
+    // but no *new* inode should appear for the delete operation).
     assert!(
-        blobs_after.len() <= blobs_before.len(),
-        "rmdir should not create new staging blobs: before={blobs_before:?} after={blobs_after:?}"
+        inos_after.len() <= inos_before.len(),
+        "rmdir should not create new staged inodes: before={inos_before:?} after={inos_after:?}"
     );
 }
 
-/// Pure directory rename creates no new blob (only journal R record).
+/// Pure directory rename creates no new inode (only journal R record).
 #[test]
-fn rename_dir_creates_no_blob() {
+fn rename_dir_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("olddir")).expect("mkdir");
-    let blobs_after_mkdir = blob_entries(&s);
+    let inos_after_mkdir = inos(&s);
 
     fs::rename(s.mnt_path("olddir"), s.mnt_path("newdir")).expect("rename dir");
-    let blobs_after_rename = blob_entries(&s);
+    let inos_after_rename = inos(&s);
 
     assert_eq!(
-        blobs_after_mkdir, blobs_after_rename,
-        "pure dir rename should not create new staging blobs"
+        inos_after_mkdir, inos_after_rename,
+        "pure dir rename should not create new staged inodes"
     );
 }

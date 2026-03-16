@@ -107,8 +107,9 @@ struct agfs_perm_request {
 
 struct agfs_override {
 	struct hlist_node	node;
-	u64			staging_id;	/* >0 = content in staging/<id> */
+	u64			ino;		/* >0 = content in inodes/<ino> */
 	char			*base_path;	/* non-NULL = content at base path */
+	u64			snapshot_gen;	/* sbi->snapshot_gen when inode was created */
 	unsigned int		name_len;
 	unsigned char		d_type;		/* DT_REG / DT_DIR / DT_LNK for readdir */
 	char			name[];
@@ -139,11 +140,14 @@ struct agfs_sb_info {
 	const struct cred	*creator_cred;	/* mount-time credentials */
 
 	/* Staging */
-	struct path		staging_dir;	/* ./agfs/staging/ (flat blob store) */
+	struct path		inodes_dir;	/* ./agfs/inodes/ (flat inode store) */
 	struct file		*journal_file;	/* ./agfs/journal (append-only, opened lazily) */
 	struct rw_semaphore	staging_sem;	/* protects staging + journal writes */
-	atomic64_t		next_staging_id;/* counter for staging blob IDs */
+	atomic64_t		next_ino;	/* counter for inode store IDs */
 	atomic64_t		snapshot_gen;	/* bumped on each snapshot; triggers re-COW */
+	atomic_t		staging_fd_count;/* open staging write fds */
+	struct list_head	pinned_dirs;	/* igrab()'d directory inodes with overrides */
+	spinlock_t		pinned_dirs_lock;/* protects pinned_dirs */
 
 	/* Permission gating */
 	bool			permission;	/* enable/disable toggle */
@@ -155,34 +159,36 @@ struct agfs_sb_info {
 
 /* ── Per-Inode Info ────────────────────────────────────────────────── */
 
-struct agfs_inode_info {
-	struct inode		*lower_inode;
-	enum agfs_perm		cached_perm;
-	u64			perm_gen;
-	u64			snapshot_gen;	/* sbi->snapshot_gen at last COW; 0 = no COW yet */
-	struct inode		vfs_inode;	/* must be last for container_of */
-};
-
-/* ── Per-Dentry Info ───────────────────────────────────────────────── */
-
 /* override hash table: 64 buckets (shift=6) covers most directories well.
  * Allocated lazily on first agfs_add_override; NULL for leaf files. */
 #define AGFS_OVR_SHIFT		6
 #define AGFS_OVR_BUCKETS	(1u << AGFS_OVR_SHIFT)
 
+struct agfs_inode_info {
+	struct inode		*lower_inode;
+	enum agfs_perm		cached_perm;
+	u64			perm_gen;
+
+	/* Directory override table (lazily allocated) */
+	struct hlist_head	*ovr_buckets;	/* NULL until first override */
+	spinlock_t		ovr_lock;	/* protects ovr_buckets */
+	struct list_head	ovr_pin;	/* node in sbi->pinned_dirs */
+
+	struct inode		vfs_inode;	/* must be last for container_of */
+};
+
+/* ── Per-Dentry Info ───────────────────────────────────────────────── */
+
 struct agfs_dentry_info {
 	spinlock_t		lock;
-	struct path		lower_path;	/* resolved lower path (staging blob or base) */
+	struct path		lower_path;	/* resolved lower path (inode entry or base) */
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
-	struct hlist_head	*ovr_buckets;	/* NULL until first override */
 };
 
 /* ── Per-File Info ─────────────────────────────────────────────────── */
 
 struct agfs_file_info {
 	struct file		*lower_file;
-	const struct vm_operations_struct *lower_vm_ops;
-	bool			truncate;	/* deferred O_TRUNC → empty blob on first write */
 };
 
 /* ── Accessor Macros ───────────────────────────────────────────────── */
@@ -234,6 +240,20 @@ static inline void agfs_set_lower_path(const struct dentry *dentry,
 	spin_lock(&info->lock);
 	info->lower_path = *lower_path;
 	spin_unlock(&info->lock);
+}
+
+static inline void agfs_replace_lower_path(const struct dentry *dentry,
+					    struct path *lower_path)
+{
+	struct agfs_dentry_info *info = AGFS_D(dentry);
+	struct path old;
+
+	spin_lock(&info->lock);
+	old = info->lower_path;
+	info->lower_path = *lower_path;
+	spin_unlock(&info->lock);
+	if (old.dentry)
+		path_put(&old);
 }
 
 static inline void agfs_put_reset_lower_path(const struct dentry *dentry)
@@ -310,19 +330,21 @@ int agfs_interpose(struct dentry *dentry, struct super_block *sb,
 int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen);
 int agfs_base_path(struct agfs_sb_info *sbi, const char *relpath,
 		   struct path *result);
-int agfs_staging_path(struct agfs_sb_info *sbi, u64 id,
-			   struct path *result);
-struct agfs_override *agfs_find_override(struct dentry *dir_dentry,
+int agfs_inode_path(struct agfs_sb_info *sbi, u64 ino,
+		    struct path *result);
+struct agfs_override *agfs_find_override(struct inode *dir,
 					 const char *name,
 					 unsigned int namelen);
-int agfs_add_override(struct dentry *dir_dentry, const char *name,
-		      unsigned int namelen, u64 staging_id,
-		      const char *base_path, unsigned char d_type);
-int agfs_staging_alloc(struct agfs_sb_info *sbi, u64 *out_id,
-		      struct path *blob_path, umode_t mode,
-		      const char *symname);
+int agfs_add_override(struct inode *dir, const char *name,
+		      unsigned int namelen, u64 ino,
+		      const char *base_path, unsigned char d_type,
+		      u64 snapshot_gen);
+int agfs_inode_alloc(struct agfs_sb_info *sbi, u64 *out_ino,
+		     struct path *inode_path, umode_t mode,
+		     const char *symname);
 int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
-		     struct file **new_file, int flags, bool truncate);
+		struct file **new_file, int flags, bool truncate);
+void agfs_release_pinned_dirs(struct agfs_sb_info *sbi);
 
 /* journal.c */
 int agfs_journal_open(struct agfs_sb_info *sbi);

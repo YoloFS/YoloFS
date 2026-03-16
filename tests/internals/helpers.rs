@@ -13,10 +13,10 @@ pub fn changes(s: &AgfsSession) -> Vec<Change> {
     journal::resolve(&s.root.join(".agfs")).expect("resolve journal")
 }
 
-/// List numeric blob entries in the staging directory.
-pub fn blob_entries(s: &AgfsSession) -> Vec<u64> {
-    let mut ids: Vec<u64> = fs::read_dir(s.staging_dir())
-        .expect("read staging dir")
+/// List numeric inode entries in the inode store.
+pub fn inos(s: &AgfsSession) -> Vec<u64> {
+    let mut ids: Vec<u64> = fs::read_dir(s.inodes_dir())
+        .expect("read inode dir")
         .filter_map(|e| e.ok())
         .filter_map(|e| e.file_name().to_string_lossy().parse::<u64>().ok())
         .collect();
@@ -24,18 +24,19 @@ pub fn blob_entries(s: &AgfsSession) -> Vec<u64> {
     ids
 }
 
-/// Get the staging blob path for a given blob id.
-pub fn blob_path(s: &AgfsSession, id: u64) -> PathBuf {
-    s.staging_dir().join(id.to_string())
+/// Get the inode path for a given ino.
+pub fn inode_path(s: &AgfsSession, ino: u64) -> PathBuf {
+    s.inodes_dir().join(ino.to_string())
 }
 
-/// Find the blob id for a change matching a path suffix.
-pub fn blob_id_for(changes: &[Change], suffix: &str) -> u64 {
+/// Find the ino for a change matching a path suffix.
+pub fn ino_for(changes: &[Change], suffix: &str) -> u64 {
     changes.iter()
         .find_map(|c| match c {
-            Change::Added { path, blob_id } if path.ends_with(suffix) => Some(*blob_id),
-            Change::Modified { path, blob_id } if path.ends_with(suffix) => Some(*blob_id),
+            Change::Added { path, .. }
+            | Change::Modified { path, .. } if path.ends_with(suffix) => c.ino(),
+            Change::RenamedModified { to, .. } if to.ends_with(suffix) => c.ino(),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("no blob found for path ending with {suffix}"))
+        .unwrap_or_else(|| panic!("no inode found for path ending with {suffix}"))
 }

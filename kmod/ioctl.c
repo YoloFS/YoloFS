@@ -249,6 +249,7 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case AGFS_IOC_CACHE_INVAL:
 		atomic64_inc(&sbi->perm_gen);
+		agfs_release_pinned_dirs(sbi);
 		shrink_dcache_sb(file_inode(file)->i_sb);
 		/* Reopen journal — CLI deletes it on commit/abort */
 		if (sbi->journal_file) {
@@ -271,6 +272,10 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		snap.name[AGFS_PATH_MAX - 1] = '\0';
 
 		down_write(&sbi->staging_sem);
+		if (atomic_read(&sbi->staging_fd_count) > 0) {
+			up_write(&sbi->staging_sem);
+			return -EBUSY;
+		}
 		gen = atomic64_inc_return(&sbi->snapshot_gen);
 		agfs_journal_append_s(sbi, gen, snap.name);
 		up_write(&sbi->staging_sem);

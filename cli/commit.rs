@@ -25,16 +25,16 @@ fn ensure_parent(path: &Path, cache: &mut HashSet<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// Apply a staging blob to base. Stats the blob to determine type.
-fn apply_blob(
+/// Apply a staged inode to base. Stats the inode to determine type.
+fn apply_inode(
     agfs_dir: &Path,
-    blob_id: u64,
+    ino: u64,
     base_path: &Path,
     ensured: &mut HashSet<PathBuf>,
 ) -> Result<()> {
-    let blob = journal::blob_path(agfs_dir, blob_id);
-    let meta = fs::symlink_metadata(&blob)
-        .with_context(|| format!("stat staging blob {}", blob.display()))?;
+    let staged = journal::inode_path(agfs_dir, ino);
+    let meta = fs::symlink_metadata(&staged)
+        .with_context(|| format!("stat staged inode {}", staged.display()))?;
 
     ensure_parent(base_path, ensured)?;
 
@@ -50,25 +50,24 @@ fn apply_blob(
     }
 
     if meta.file_type().is_symlink() {
-        let target = fs::read_link(&blob)?;
+        let target = fs::read_link(&staged)?;
         std::os::unix::fs::symlink(&target, base_path)
             .with_context(|| format!("creating symlink at {}", base_path.display()))?;
     } else if meta.is_dir() {
         fs::create_dir_all(base_path).with_context(|| format!("mkdir {}", base_path.display()))?;
     } else {
-        fs::rename(&blob, base_path)
+        fs::rename(&staged, base_path)
             .or_else(|_| {
-                fs::copy(&blob, base_path)?;
-                fs::remove_file(&blob)?;
+                fs::copy(&staged, base_path)?;
+                fs::remove_file(&staged)?;
                 Ok::<_, std::io::Error>(())
             })
-            .with_context(|| format!("moving blob to {}", base_path.display()))?;
+            .with_context(|| format!("moving inode to {}", base_path.display()))?;
     }
     Ok(())
 }
 
-fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<usize> {
-    let mut committed = 0;
+fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<()> {
     let mut ensured: HashSet<PathBuf> = HashSet::new();
 
     for change in changes {
@@ -80,7 +79,7 @@ fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<usize> {
                 fs::rename(&base_old, &base_new)
                     .with_context(|| format!("rename {from} → {to}"))?;
             }
-            Change::RenamedModified { from, to, blob_id } => {
+            Change::RenamedModified { from, to, ino } => {
                 let base_old = to_base_path(from);
                 let base_new = to_base_path(to);
                 ensure_parent(&base_new, &mut ensured)?;
@@ -88,7 +87,7 @@ fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<usize> {
                     fs::rename(&base_old, &base_new)
                         .with_context(|| format!("rename {from} → {to}"))?;
                 }
-                apply_blob(agfs, *blob_id, &base_new, &mut ensured)?;
+                apply_inode(agfs, *ino, &base_new, &mut ensured)?;
             }
             Change::Deleted(p) => {
                 let base_file = to_base_path(p);
@@ -101,15 +100,14 @@ fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<usize> {
                     .with_context(|| format!("deleting {p}"))?;
                 }
             }
-            Change::Added { path, blob_id } | Change::Modified { path, blob_id } => {
+            Change::Added { path, ino } | Change::Modified { path, ino } => {
                 let base_file = to_base_path(path);
-                apply_blob(agfs, *blob_id, &base_file, &mut ensured)?;
+                apply_inode(agfs, *ino, &base_file, &mut ensured)?;
             }
         }
-        committed += 1;
     }
 
-    Ok(committed)
+    Ok(())
 }
 
 pub fn run(at: Option<&str>) -> Result<()> {
@@ -129,7 +127,8 @@ fn run_full(agfs: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let committed = apply_changes(agfs, &changes)?;
+    apply_changes(agfs, &changes)?;
+    let committed = changes.len();
 
     crate::abort::reset_staging(agfs)?;
 
@@ -154,14 +153,15 @@ fn run_partial(agfs: &Path, snapshot_name: &str) -> Result<()> {
         return Ok(());
     }
 
-    let committed = apply_changes(agfs, &changes)?;
+    apply_changes(agfs, &changes)?;
+    let committed = changes.len();
 
-    // Clean up staging blobs that weren't moved by apply_blob (dirs, symlinks)
+    // Clean up staged inodes that weren't moved by apply_inode (dirs, symlinks)
     for change in &changes {
-        if let Some(id) = change.blob_id() {
-            let blob = journal::blob_path(agfs, id);
-            if blob.exists() {
-                let _ = fs::remove_file(&blob);
+        if let Some(ino) = change.ino() {
+            let staged = journal::inode_path(agfs, ino);
+            if staged.exists() {
+                let _ = fs::remove_file(&staged);
             }
         }
     }

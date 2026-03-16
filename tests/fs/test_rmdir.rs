@@ -3,12 +3,12 @@ use std::fs;
 
 // ── inode.c: agfs_rmdir — adds DELETED override ──
 
-/// rmdir a directory that was created through the mount (staging dir).
+/// rmdir a directory that was created through the mount (staged dir).
 #[test]
-fn rmdir_staging_dir() {
+fn rmdir_staged_dir() {
     let s = AgfsSession::new().expect("session setup");
 
-    // Create a directory through the mount (goes to staging)
+    // Create a directory through the mount (goes to inode store)
     fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
     assert!(s.mnt_path("tmpdir").is_dir());
 
@@ -40,17 +40,17 @@ fn rmdir_base_dir_adds_override() {
     // rmdir may fail with ENOTEMPTY if the VFS checks emptiness — that's fine
 }
 
-/// rmdir on a non-empty staging directory succeeds because agfs adds a
+/// rmdir on a non-empty staged directory succeeds because agfs adds a
 /// DELETED override without checking directory emptiness.
 #[test]
-fn rmdir_nonempty_staging_dir() {
+fn rmdir_nonempty_staged_dir() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("hasfiles")).expect("mkdir");
     fs::write(s.mnt_path("hasfiles/child.txt"), "data\n").expect("write");
 
     // agfs rmdir adds a DELETED override — the child file becomes unreachable
-    fs::remove_dir(s.mnt_path("hasfiles")).expect("rmdir non-empty staging dir");
+    fs::remove_dir(s.mnt_path("hasfiles")).expect("rmdir non-empty staged dir");
 
     assert!(
         !s.mnt_path("hasfiles").is_dir(),

@@ -2,7 +2,7 @@
 /*
  * agfs — staging layer helpers.
  *
- * Flat blob store, override hash table management, COW.
+ * Flat inode store, override hash table management, COW.
  */
 
 #include "agfs.h"
@@ -43,19 +43,19 @@ int agfs_base_path(struct agfs_sb_info *sbi, const char *relpath,
 	return resolve_subpath(&sbi->base_path, relpath, result);
 }
 
-int agfs_staging_path(struct agfs_sb_info *sbi, u64 id,
-			   struct path *result)
+int agfs_inode_path(struct agfs_sb_info *sbi, u64 ino,
+		    struct path *result)
 {
 	char name[21];
 
-	if (!sbi->staging_dir.dentry)
+	if (!sbi->inodes_dir.dentry)
 		return -ENOENT;
 
-	snprintf(name, sizeof(name), "%llu", (unsigned long long)id);
-	return resolve_subpath(&sbi->staging_dir, name, result);
+	snprintf(name, sizeof(name), "%llu", (unsigned long long)ino);
+	return resolve_subpath(&sbi->inodes_dir, name, result);
 }
 
-/* ── Override Hash Table (§3.4) ─────────────────────────────────────── */
+/* ── Override Hash Table ───────────────────────────────────────────── */
 
 static inline unsigned int agfs_ovr_hash(const char *name, unsigned int len)
 {
@@ -63,21 +63,21 @@ static inline unsigned int agfs_ovr_hash(const char *name, unsigned int len)
 }
 
 /*
- * Find an override by name. Caller must hold di->lock.
+ * Find an override by name. Caller must hold dii->ovr_lock.
  */
-struct agfs_override *agfs_find_override(struct dentry *dir_dentry,
+struct agfs_override *agfs_find_override(struct inode *dir,
 					 const char *name,
 					 unsigned int namelen)
 {
-	struct agfs_dentry_info *di = AGFS_D(dir_dentry);
+	struct agfs_inode_info *dii = AGFS_I(dir);
 	struct agfs_override *ovr;
 	unsigned int idx;
 
-	if (!di || !di->ovr_buckets)
+	if (!dii->ovr_buckets)
 		return NULL;
 
 	idx = agfs_ovr_hash(name, namelen);
-	hlist_for_each_entry(ovr, &di->ovr_buckets[idx], node) {
+	hlist_for_each_entry(ovr, &dii->ovr_buckets[idx], node) {
 		if (ovr->name_len == namelen &&
 		    !memcmp(ovr->name, name, namelen))
 			return ovr;
@@ -86,20 +86,49 @@ struct agfs_override *agfs_find_override(struct dentry *dir_dentry,
 }
 
 /*
- * Add or update an override. staging_id=0 && base_path=NULL means deleted.
+ * Free all override entries and the bucket array on a directory inode.
  */
-int agfs_add_override(struct dentry *dir_dentry, const char *name,
-		      unsigned int namelen, u64 staging_id,
-		      const char *base_path, unsigned char d_type)
+static void agfs_free_ovr_buckets(struct agfs_inode_info *dii)
 {
-	struct agfs_dentry_info *di = AGFS_D(dir_dentry);
+	struct hlist_head *buckets;
+	struct agfs_override *ovr;
+	struct hlist_node *tmp;
+	unsigned int i;
+
+	spin_lock(&dii->ovr_lock);
+	buckets = dii->ovr_buckets;
+	dii->ovr_buckets = NULL;
+	spin_unlock(&dii->ovr_lock);
+
+	if (!buckets)
+		return;
+
+	for (i = 0; i < AGFS_OVR_BUCKETS; i++) {
+		hlist_for_each_entry_safe(ovr, tmp, &buckets[i], node) {
+			hlist_del(&ovr->node);
+			kfree(ovr->base_path);
+			kfree(ovr);
+		}
+	}
+	kfree(buckets);
+}
+
+/*
+ * Add or update an override. ino=0 && base_path=NULL means deleted.
+ * On first override for a directory, pins the inode via igrab().
+ */
+int agfs_add_override(struct inode *dir, const char *name,
+		      unsigned int namelen, u64 ino,
+		      const char *base_path, unsigned char d_type,
+		      u64 snapshot_gen)
+{
+	struct agfs_inode_info *dii = AGFS_I(dir);
+	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
 	struct agfs_override *ovr, *new_ovr = NULL;
 	struct hlist_head *new_buckets = NULL;
 	char *bp_copy = NULL;
 	unsigned int i;
-
-	if (!di)
-		return -EINVAL;
+	bool first_override = false;
 
 	/* Pre-allocate outside the lock (GFP_KERNEL is safe here) */
 	new_ovr = kmalloc(offsetof(struct agfs_override, name) + namelen + 1,
@@ -115,7 +144,7 @@ int agfs_add_override(struct dentry *dir_dentry, const char *name,
 		}
 	}
 
-	if (!di->ovr_buckets) {
+	if (!dii->ovr_buckets) {
 		new_buckets = kmalloc_array(AGFS_OVR_BUCKETS,
 					    sizeof(struct hlist_head),
 					    GFP_KERNEL);
@@ -128,113 +157,122 @@ int agfs_add_override(struct dentry *dir_dentry, const char *name,
 			INIT_HLIST_HEAD(&new_buckets[i]);
 	}
 
-	spin_lock(&di->lock);
+	spin_lock(&dii->ovr_lock);
 
 	/* Install bucket array if we're the first adder */
-	if (!di->ovr_buckets && new_buckets) {
-		di->ovr_buckets = new_buckets;
+	if (!dii->ovr_buckets && new_buckets) {
+		dii->ovr_buckets = new_buckets;
 		new_buckets = NULL;	/* ownership transferred */
+		first_override = true;
 	}
 
-	ovr = agfs_find_override(dir_dentry, name, namelen);
+	ovr = agfs_find_override(dir, name, namelen);
 	if (ovr) {
 		/* Update existing */
 		kfree(ovr->base_path);
-		ovr->staging_id = staging_id;
+		ovr->ino = ino;
 		ovr->base_path = bp_copy;
 		ovr->d_type = d_type;
-		spin_unlock(&di->lock);
+		ovr->snapshot_gen = snapshot_gen;
+		spin_unlock(&dii->ovr_lock);
 		kfree(new_ovr);
 		kfree(new_buckets);
-		return 0;
+	} else {
+		/* Insert new */
+		memcpy(new_ovr->name, name, namelen);
+		new_ovr->name[namelen] = '\0';
+		new_ovr->name_len = namelen;
+		new_ovr->ino = ino;
+		new_ovr->base_path = bp_copy;
+		new_ovr->d_type = d_type;
+		new_ovr->snapshot_gen = snapshot_gen;
+		hlist_add_head(&new_ovr->node,
+			       &dii->ovr_buckets[agfs_ovr_hash(name, namelen)]);
+		spin_unlock(&dii->ovr_lock);
+		kfree(new_buckets);
 	}
 
-	/* Insert new */
-	memcpy(new_ovr->name, name, namelen);
-	new_ovr->name[namelen] = '\0';
-	new_ovr->name_len = namelen;
-	new_ovr->staging_id = staging_id;
-	new_ovr->base_path = bp_copy;
-	new_ovr->d_type = d_type;
-	hlist_add_head(&new_ovr->node,
-		       &di->ovr_buckets[agfs_ovr_hash(name, namelen)]);
-	spin_unlock(&di->lock);
-	kfree(new_buckets);
+	/* Pin the directory inode on first override */
+	if (first_override) {
+		if (!igrab(&dii->vfs_inode)) {
+			agfs_free_ovr_buckets(dii);
+			return -EIO;
+		}
+		spin_lock(&sbi->pinned_dirs_lock);
+		list_add(&dii->ovr_pin, &sbi->pinned_dirs);
+		spin_unlock(&sbi->pinned_dirs_lock);
+	}
 	return 0;
 }
 
-/* ── Staging Blob Allocation ───────────────────────────────────────── */
+/* ── Inode Store Allocation ────────────────────────────────────────── */
 
 /*
- * Allocate a new staging ID, look up and create the blob.
+ * Allocate a new inode ID, create the inode in the store.
  * Regular files get vfs_create; dirs get vfs_mkdir; symlinks get vfs_symlink.
- *
- * @mode: S_IFREG for regular file, S_IFDIR for directory, S_IFLNK for symlink.
- *        Lower bits are the permission mode (used for dirs).
- * @symname: symlink target (only for S_IFLNK, NULL otherwise).
  */
-int agfs_staging_alloc(struct agfs_sb_info *sbi, u64 *out_id,
-		       struct path *blob_path, umode_t mode,
-		       const char *symname)
+int agfs_inode_alloc(struct agfs_sb_info *sbi, u64 *out_ino,
+		     struct path *inode_path, umode_t mode,
+		     const char *symname)
 {
 	char name[21];
-	struct dentry *blob_dentry;
+	struct dentry *ino_dentry;
 	struct inode *dir;
-	u64 id;
+	u64 ino;
 	int err;
 
-	if (!sbi->staging_dir.dentry)
+	if (!sbi->inodes_dir.dentry)
 		return -ENOENT;
 
-	id = atomic64_inc_return(&sbi->next_staging_id);
-	snprintf(name, sizeof(name), "%llu", (unsigned long long)id);
+	ino = atomic64_inc_return(&sbi->next_ino);
+	snprintf(name, sizeof(name), "%llu", (unsigned long long)ino);
 
-	dir = d_inode(sbi->staging_dir.dentry);
+	dir = d_inode(sbi->inodes_dir.dentry);
 	inode_lock(dir);
-	blob_dentry = lookup_one_len(name, sbi->staging_dir.dentry,
-				     strlen(name));
-	if (IS_ERR(blob_dentry)) {
+	ino_dentry = lookup_one_len(name, sbi->inodes_dir.dentry,
+				    strlen(name));
+	if (IS_ERR(ino_dentry)) {
 		inode_unlock(dir);
-		return PTR_ERR(blob_dentry);
+		return PTR_ERR(ino_dentry);
 	}
 
 	if (S_ISDIR(mode))
-		err = vfs_mkdir(mnt_idmap(sbi->staging_dir.mnt),
-				dir, blob_dentry, mode);
+		err = vfs_mkdir(mnt_idmap(sbi->inodes_dir.mnt),
+				dir, ino_dentry, mode);
 	else if (S_ISLNK(mode))
-		err = vfs_symlink(mnt_idmap(sbi->staging_dir.mnt),
-				  dir, blob_dentry, symname);
+		err = vfs_symlink(mnt_idmap(sbi->inodes_dir.mnt),
+				  dir, ino_dentry, symname);
 	else
-		err = vfs_create(mnt_idmap(sbi->staging_dir.mnt),
-				 dir, blob_dentry, mode, true);
+		err = vfs_create(mnt_idmap(sbi->inodes_dir.mnt),
+				 dir, ino_dentry, mode, true);
 
 	inode_unlock(dir);
 	if (err) {
-		dput(blob_dentry);
+		dput(ino_dentry);
 		return err;
 	}
 
-	blob_path->dentry = blob_dentry;
-	blob_path->mnt = mntget(sbi->staging_dir.mnt);
-	*out_id = id;
+	inode_path->dentry = ino_dentry;
+	inode_path->mnt = mntget(sbi->inodes_dir.mnt);
+	*out_ino = ino;
 	return 0;
 }
 
-/* ── Copy-on-Write to Staging Blob ─────────────────────────────────── */
+/* ── Copy-on-Write to Inode Store ──────────────────────────────────── */
 
 int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
-		     struct file **new_file, int flags, bool truncate)
+		struct file **new_file, int flags, bool truncate)
 {
-	struct path blob_path;
-	u64 id;
+	struct path inode_path;
+	u64 ino;
 	int err;
 
-	/* Allocate a new staging blob */
-	err = agfs_staging_alloc(sbi, &id, &blob_path, 0644, NULL);
+	/* Allocate a new inode in the store */
+	err = agfs_inode_alloc(sbi, &ino, &inode_path, 0644, NULL);
 	if (err)
 		return err;
 
-	/* Copy base content to blob (skip when truncating — blob stays empty) */
+	/* Copy base content to inode (skip when truncating — inode stays empty) */
 	if (!truncate) {
 		struct file *src, *dst;
 		struct path lower_path;
@@ -244,15 +282,15 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 		src = dentry_open(&lower_path, O_RDONLY, current_cred());
 		agfs_put_lower_path(dentry, &lower_path);
 		if (IS_ERR(src)) {
-			path_put(&blob_path);
+			path_put(&inode_path);
 			return PTR_ERR(src);
 		}
 
-		dst = dentry_open(&blob_path, O_WRONLY | O_TRUNC,
+		dst = dentry_open(&inode_path, O_WRONLY | O_TRUNC,
 				  current_cred());
 		if (IS_ERR(dst)) {
 			fput(src);
-			path_put(&blob_path);
+			path_put(&inode_path);
 			return PTR_ERR(dst);
 		}
 
@@ -274,7 +312,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 						break;
 					fput(dst);
 					fput(src);
-					path_put(&blob_path);
+					path_put(&inode_path);
 					return copied;
 				}
 				copied_total += copied;
@@ -285,52 +323,62 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	}
 
 	/*
-	 * Add override on parent directory.
+	 * Add override on parent directory inode.
 	 *
-	 * NOTE: if this fails the blob file remains on disk unreferenced
-	 * (the journal was not written yet).  This is a known minor leak;
-	 * orphaned blobs are cleaned up on the next `agfs commit` or
-	 * `agfs abort` because the entire staging directory is removed.
+	 * NOTE: if this fails the inode file remains on disk unreferenced.
+	 * Orphaned inodes are cleaned up on the next `agfs commit` or
+	 * `agfs abort` because the entire inode store is removed.
 	 */
-	err = agfs_add_override(dentry->d_parent,
+	err = agfs_add_override(d_inode(dentry->d_parent),
 				dentry->d_name.name,
 				dentry->d_name.len,
-				id, NULL, DT_REG);
+				ino, NULL, DT_REG,
+				(u64)atomic64_read(&sbi->snapshot_gen));
 	if (err) {
-		path_put(&blob_path);
+		path_put(&inode_path);
 		return err;
 	}
 
-	/* Update dentry lower_path to point at the blob */
-	agfs_set_lower_path(dentry, &blob_path);
+	path_get(&inode_path); /* extra ref for reopen below */
 
-	/* Track COW generation on inode for new handle initialization */
-	AGFS_I(d_inode(dentry))->snapshot_gen =
-		atomic64_read(&sbi->snapshot_gen);
+	/* Update dentry lower_path to point at the inode (consumes original ref) */
+	agfs_replace_lower_path(dentry, &inode_path);
 
 	/* Append journal record (best-effort — override is already set) */
 	{
 		char buf[AGFS_PATH_MAX];
 
 		if (!agfs_dentry_relpath(dentry, buf, sizeof(buf)))
-			agfs_journal_append_a(sbi, buf, id);
+			agfs_journal_append_a(sbi, buf, ino);
 	}
 
 	/* Reopen with requested flags */
 	err = 0;
 	if (new_file) {
-		struct path reopen;
-
-		err = agfs_staging_path(sbi, id, &reopen);
-		if (!err) {
-			*new_file = dentry_open(&reopen, flags,
-						current_cred());
-			path_put(&reopen);
-			if (IS_ERR(*new_file)) {
-				err = PTR_ERR(*new_file);
-				*new_file = NULL;
-			}
+		*new_file = dentry_open(&inode_path, flags, current_cred());
+		if (IS_ERR(*new_file)) {
+			err = PTR_ERR(*new_file);
+			*new_file = NULL;
 		}
 	}
+	path_put(&inode_path); /* drop extra ref */
 	return err;
+}
+
+/* ── Release Pinned Directory Inodes ───────────────────────────────── */
+
+void agfs_release_pinned_dirs(struct agfs_sb_info *sbi)
+{
+	LIST_HEAD(local);
+	struct agfs_inode_info *ii, *tmp;
+
+	spin_lock(&sbi->pinned_dirs_lock);
+	list_splice_init(&sbi->pinned_dirs, &local);
+	spin_unlock(&sbi->pinned_dirs_lock);
+
+	list_for_each_entry_safe(ii, tmp, &local, ovr_pin) {
+		list_del_init(&ii->ovr_pin);
+		agfs_free_ovr_buckets(ii);
+		iput(&ii->vfs_inode);
+	}
 }

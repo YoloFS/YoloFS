@@ -268,7 +268,7 @@ fn is_mountpoint(path: &Path) -> bool {
 }
 
 pub fn setup_agfs_dir(agfs_dir: &Path) -> Result<()> {
-    fs::create_dir_all(agfs_dir.join("staging")).context("creating .agfs/staging/")?;
+    fs::create_dir_all(agfs_dir.join("inodes")).context("creating .agfs/inodes/")?;
     fs::create_dir_all(agfs_dir.join("mnt")).context("creating .agfs/mnt/")?;
     Ok(())
 }
@@ -339,7 +339,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let agfs = tmp.path().join(".agfs");
         setup_agfs_dir(&agfs).unwrap();
-        assert!(agfs.join("staging").is_dir());
+        assert!(agfs.join("inodes").is_dir());
         assert!(agfs.join("mnt").is_dir());
     }
 
@@ -349,7 +349,7 @@ mod tests {
         let agfs = tmp.path().join(".agfs");
         setup_agfs_dir(&agfs).unwrap();
         setup_agfs_dir(&agfs).unwrap(); // second call should not fail
-        assert!(agfs.join("staging").is_dir());
+        assert!(agfs.join("inodes").is_dir());
     }
 
     #[test]

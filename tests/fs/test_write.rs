@@ -186,7 +186,7 @@ fn append_to_file() {
 }
 
 /// Writing to a base file with read-only permissions still triggers COW
-/// (the kernel module uses credential override for staging writes).
+/// (the kernel module uses credential override for inode store writes).
 #[test]
 fn write_to_readonly_base_triggers_cow() {
     let s = AgfsSession::new().expect("session setup");

@@ -48,7 +48,9 @@ static struct inode *agfs_alloc_inode(struct super_block *sb)
 	i->lower_inode = NULL;
 	i->cached_perm = AGFS_PERM_NONE;
 	i->perm_gen = 0;
-	i->snapshot_gen = 0;
+	i->ovr_buckets = NULL;
+	spin_lock_init(&i->ovr_lock);
+	INIT_LIST_HEAD(&i->ovr_pin);
 	return &i->vfs_inode;
 }
 
@@ -59,10 +61,14 @@ static void agfs_free_inode(struct inode *inode)
 
 static void agfs_evict_inode(struct inode *inode)
 {
+	struct agfs_inode_info *ii = AGFS_I(inode);
 	struct inode *lower_inode;
 
 	truncate_inode_pages(&inode->i_data, 0);
 	clear_inode(inode);
+
+	/* Pinned dirs are cleaned by agfs_release_pinned_dirs; warn if leaked */
+	WARN_ON_ONCE(ii->ovr_buckets);
 
 	lower_inode = agfs_lower_inode(inode);
 	if (lower_inode)
@@ -81,8 +87,8 @@ static void agfs_put_super(struct super_block *sb)
 	if (sbi->creator_cred)
 		put_cred(sbi->creator_cred);
 
-	if (sbi->staging_dir.dentry)
-		path_put(&sbi->staging_dir);
+	if (sbi->inodes_dir.dentry)
+		path_put(&sbi->inodes_dir);
 	if (sbi->journal_file)
 		fput(sbi->journal_file);
 	if (sbi->storage_path.dentry)
@@ -169,15 +175,18 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sbi->ask_engine.default_perm = opts->ask_default
 		? opts->ask_default : AGFS_PERM_DENY;
 
-	/* Initialize staging semaphore and blob counter */
+	/* Initialize staging semaphore and inode counter */
 	init_rwsem(&sbi->staging_sem);
-	atomic64_set(&sbi->next_staging_id, 0);
+	atomic64_set(&sbi->next_ino, 0);
 	atomic64_set(&sbi->snapshot_gen, 1);
+	atomic_set(&sbi->staging_fd_count, 0);
+	INIT_LIST_HEAD(&sbi->pinned_dirs);
+	spin_lock_init(&sbi->pinned_dirs_lock);
 
 	/* Resolve base path ("/") */
 	err = kern_path("/", LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &base_path);
 	if (err)
-		goto out_free;
+		goto out_put;
 
 	sbi->base_path = base_path;
 	sbi->lower_sb = base_path.dentry->d_sb;
@@ -186,37 +195,37 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_stack_depth = sbi->lower_sb->s_stack_depth + 1;
 	if (sb->s_stack_depth > FILESYSTEM_MAX_STACK_DEPTH) {
 		err = -EINVAL;
-		goto out_put_base;
+		goto out_put;
 	}
 
 	/* Resolve storage path from mount source (required) */
 	if (!fc->source || !fc->source[0]) {
 		pr_err("agfs: source path is required\n");
 		err = -EINVAL;
-		goto out_put_base;
+		goto out_put;
 	}
 
 	err = kern_path(fc->source, LOOKUP_FOLLOW | LOOKUP_DIRECTORY,
 			&sbi->storage_path);
 	if (err)
-		goto out_put_base;
+		goto out_put;
 
-	/* Resolve staging dir */
+	/* Resolve inodes dir */
 	{
-		struct path staging;
+		struct path inodes;
 		err = vfs_path_lookup(sbi->storage_path.dentry,
 				      sbi->storage_path.mnt,
-				      "staging", LOOKUP_DIRECTORY,
-				      &staging);
+				      "inodes", LOOKUP_DIRECTORY,
+				      &inodes);
 		if (!err)
-			sbi->staging_dir = staging;
-		/* staging may not exist yet — that's ok */
+			sbi->inodes_dir = inodes;
+		/* inodes dir may not exist yet — that's ok */
 	}
 
 	/* Open (or create) the journal file */
 	err = agfs_journal_open(sbi);
 	if (err)
-		goto out_put_base;
+		goto out_put;
 
 	/* Write the implicit initial snapshot (id=1) so userspace can
 	 * reference the mount-time state by id. */
@@ -227,13 +236,13 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	inode = agfs_iget(sb, d_inode(base_path.dentry));
 	if (IS_ERR(inode)) {
 		err = PTR_ERR(inode);
-		goto out_put_base;
+		goto out_put;
 	}
 
 	sb->s_root = d_make_root(inode);
 	if (!sb->s_root) {
 		err = -ENOMEM;
-		goto out_put_base;
+		goto out_put;
 	}
 
 	/* Set up root dentry private data */
@@ -253,12 +262,8 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 out_root:
 	dput(sb->s_root);
 	sb->s_root = NULL;
-out_put_base:
-	path_put(&base_path);
-	atomic_dec(&sbi->lower_sb->s_active);
-out_free:
-	kfree(sbi);
-	sb->s_fs_info = NULL;
+out_put:
+	agfs_put_super(sb);
 	return err;
 }
 
@@ -300,10 +305,7 @@ static int agfs_get_tree(struct fs_context *fc)
 
 static void agfs_free_fc(struct fs_context *fc)
 {
-	struct agfs_fs_opts *opts = fc->fs_private;
-
-	if (opts)
-		kfree(opts);
+	kfree(fc->fs_private);
 }
 
 static const struct fs_context_operations agfs_context_ops = {
@@ -327,6 +329,11 @@ static int agfs_init_fs_context(struct fs_context *fc)
 
 static void agfs_kill_super(struct super_block *sb)
 {
+	struct agfs_sb_info *sbi = AGFS_SB(sb);
+
+	if (sbi)
+		agfs_release_pinned_dirs(sbi);
+
 	/* Pre-prune cached dentries (especially those created by chroot
 	 * lookups through the overlay of "/") so that the aggressive
 	 * shrink_dcache_for_umount() inside kill_anon_super() does not

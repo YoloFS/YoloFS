@@ -15,7 +15,7 @@ fn readdir() {
     assert!(entries.contains(&"subdir".to_string()));
 }
 
-// ── readdir with staging changes (file.c: agfs_readdir) ──
+// ── readdir with staged changes (file.c: agfs_readdir) ──
 
 /// Newly created files should appear in readdir.
 #[test]
@@ -58,8 +58,8 @@ fn readdir_hides_deleted_file() {
 }
 
 /// After rename, readdir shows new name and hides old name.
-/// The kernel creates a staging stub at the new path so readdir
-/// discovers it when merging staging + base.
+/// The kernel creates a staged stub at the new path so readdir
+/// discovers it when merging overrides + base.
 #[test]
 fn readdir_after_rename() {
     let s = AgfsSession::new().expect("session setup");
@@ -77,7 +77,7 @@ fn readdir_after_rename() {
         "readdir should not include old name after rename, got: {entries:?}"
     );
 
-    // New name should appear (staging stub)
+    // New name should appear (staged stub)
     assert!(
         entries.contains(&"renamed.txt".to_string()),
         "readdir should include renamed file, got: {entries:?}"

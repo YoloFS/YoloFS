@@ -1,6 +1,6 @@
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use super::helpers::{journal, changes, blob_entries, blob_path, blob_id_for};
+use super::helpers::{journal, changes, inos, inode_path, ino_for};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -57,65 +57,65 @@ fn abort_clears_journal() {
     assert!(records.is_empty(), "journal should be empty after abort: {records:?}");
 }
 
-// ── Staging ──────────────────────────────────────────────────────────────────
+// ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// After commit, the staging directory is empty.
+/// After commit, the inode store is empty.
 #[test]
-fn commit_empties_staging() {
+fn commit_empties_inode_store() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
-    assert!(!blob_entries(&s).is_empty(), "staging should have blobs before commit");
+    assert!(!inos(&s).is_empty(), "inode store should have entries before commit");
 
     s.cli(&["commit"]).expect("commit");
 
     assert!(
-        blob_entries(&s).is_empty(),
-        "staging should be empty after commit"
+        inos(&s).is_empty(),
+        "inode store should be empty after commit"
     );
 }
 
-/// After abort, the staging directory is empty.
+/// After abort, the inode store is empty.
 #[test]
-fn abort_empties_staging() {
+fn abort_empties_inode_store() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    assert!(!blob_entries(&s).is_empty(), "staging should have blobs before abort");
+    assert!(!inos(&s).is_empty(), "inode store should have entries before abort");
 
     s.cli(&["abort", "--force"]).expect("abort");
 
     assert!(
-        blob_entries(&s).is_empty(),
-        "staging should be empty after abort"
+        inos(&s).is_empty(),
+        "inode store should be empty after abort"
     );
 }
 
-/// Commit --at a snapshot clears pre-snapshot blobs but keeps post-snapshot blobs.
+/// Commit --at a snapshot clears pre-snapshot inodes but keeps post-snapshot inodes.
 #[test]
-fn commit_at_keeps_post_snapshot_blobs() {
+fn commit_at_keeps_post_snapshot_inodes() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "pre-snap\n").expect("write pre");
     s.cli(&["snapshot", "s1"]).expect("snapshot");
     fs::write(s.mnt_path("multi.txt"), "post-snap\n").expect("write post");
 
-    // Grab the post-snapshot blob id before commit
+    // Grab the post-snapshot inode id before commit
     let ch = changes(&s);
-    let post_id = blob_id_for(&ch, "/multi.txt");
+    let post_id = ino_for(&ch, "/multi.txt");
 
     s.cli(&["commit", "--at", "s1"]).expect("commit --at");
 
-    // Post-snapshot blob should still exist
-    let remaining = blob_entries(&s);
+    // Post-snapshot inode should still exist
+    let remaining = inos(&s);
     assert!(
         remaining.contains(&post_id),
-        "post-snapshot blob should survive commit --at: remaining={remaining:?}"
+        "post-snapshot inode should survive commit --at: remaining={remaining:?}"
     );
     assert_eq!(
-        fs::read_to_string(blob_path(&s, post_id)).unwrap(),
+        fs::read_to_string(inode_path(&s, post_id)).unwrap(),
         "post-snap\n",
-        "post-snapshot blob content should be intact"
+        "post-snapshot inode content should be intact"
     );
 }

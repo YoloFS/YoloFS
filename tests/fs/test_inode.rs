@@ -38,7 +38,7 @@ fn seek_and_read_partial() {
 
 /// After writing, file size (as reported by stat) reflects the new content.
 /// Note: agfs_getattr reads from the lower path. After COW, the file data
-/// lives in staging, but the dentry's lower_path may still reference the
+/// lives in the inode store, but the dentry's lower_path may still reference the
 /// base. We verify size through reading, not stat.
 #[test]
 fn file_size_after_write() {
@@ -46,13 +46,13 @@ fn file_size_after_write() {
 
     fs::write(s.mnt_path("hello.txt"), "short\n").expect("write");
 
-    // Verify content is correct (read goes through staging)
+    // Verify content is correct (read goes through inode store)
     let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
     assert_eq!(content, "short\n", "content should match written data");
     assert_eq!(content.len(), 6);
 }
 
-/// Stat a staged (COW'd) file: read returns staging content even if
+/// Stat a staged (COW'd) file: read returns staged content even if
 /// stat may report base size (getattr uses dentry lower_path).
 #[test]
 fn getattr_staged_file() {
@@ -68,10 +68,10 @@ fn getattr_staged_file() {
     // Write shorter content — triggers COW
     fs::write(s.mnt_path("hello.txt"), "x\n").expect("write");
 
-    // The staging file has the new content (via blob)
+    // The staged file has the new content (via inode)
     let content_via_mount = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
     assert_eq!(
         content_via_mount, "x\n",
-        "read should return staging content"
+        "read should return staged content"
     );
 }

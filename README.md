@@ -83,10 +83,10 @@ agfs commit                 # apply changes to the real filesystem
 | Aspect | AgFS | OverlayFS |
 |--------|------|-----------|
 | **Model** | Explicit commit/abort with snapshots | Live union — upper *is* the state |
-| **Truncating write** | Zero-copy (empty blob) | Full copy-up, then truncate |
+| **Truncating write** | Zero-copy (empty inode) | Full copy-up, then truncate |
 | **Rename** | Zero-copy via override metadata | `vfs_rename()` with copy-up |
 | **Lookup** | Override table, then base — one lookup | Upper + lower — two lookups |
-| **On-disk format** | Flat blob store + journal (any lower FS) | Requires whiteout support (ext4/xfs) |
+| **On-disk format** | Flat inode store + journal (any lower FS) | Requires whiteout support (ext4/xfs) |
 
 **Permissions** (vs Landlock):
 

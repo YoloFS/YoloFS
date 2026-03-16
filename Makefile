@@ -94,15 +94,16 @@ test-unit:
 	cargo test --lib
 
 test-e2e: install
-	agfs init
+	agfs reload
 	cargo test --test e2e -- --test-threads=1
+	agfs unload
 
 # ── Bench ─────────────────────────────────────────────────────────────
 
 .PHONY: bench
 
 bench: install
-	agfs load
+	agfs reload
 	cargo build --release --bin agfs-bench
 	./target/release/agfs-bench
 	agfs unload
@@ -119,7 +120,5 @@ vm-%:
 .PHONY: ci
 
 ci: lint install
-	agfs load
 	$(MAKE) test-unit
 	$(MAKE) test-e2e
-	agfs unload

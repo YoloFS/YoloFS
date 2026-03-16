@@ -14,8 +14,8 @@ agfs adds overhead over a native filesystem in two areas:
 2. **Permission gating** — each file access may be resolved from a per-inode
    cache, matched against a rule, or round-tripped through a userspace daemon.
 
-Writes additionally incur staging costs: data is written to a blob in the
-staging directory rather than directly to the base filesystem, and eventually
+Writes additionally incur staging costs: data is written to a staged inode
+rather than directly to the base filesystem, and eventually
 flushed to the base on `commit`.
 
 The benchmark suite produces comprehensive, reproducible results demonstrating
@@ -57,7 +57,7 @@ place agfs in context relative to alternatives.
 | Backend | Mechanism | Needs root? |
 |---|---|---|
 | `native` | Direct ext4 writes, no staging | no |
-| `agfs` | Kernel stackable fs; staging blob + `agfs commit` | no (setuid) |
+| `agfs` | Kernel stackable fs; inode store + `agfs commit` | no (setuid) |
 | `try` | overlayfs sandbox via `unshare`; `try commit` to apply | no (user-ns) |
 | `branchfs` | FUSE copy-on-write branches; `branchfs commit` | no |
 | `btrfs` | btrfs subvolume snapshot; rsync back on commit | yes (cap) |
@@ -274,11 +274,10 @@ kfunctions via BTF (`kfunc`/`kretfunc` probes):
 | `agfs_open` | File open |
 | `agfs_create` | File creation |
 | `agfs_create_staged` | Staging entry allocation for new file |
-| `agfs_read_iter` | Read path (lower fs or staging blob) |
-| `agfs_write_iter` | Write path (always to staging blob) |
-| `agfs_cow_if_needed` | Decides whether COW is needed |
-| `agfs_do_cow` | Actual copy-on-write execution |
-| `agfs_staging_alloc` | Staging blob allocation |
+| `agfs_read_iter` | Read path (lower fs or staged inode) |
+| `agfs_write_iter` | Write path (always to staged inode) |
+| `agfs_do_cow` | Copy-on-write execution (at open time) |
+| `agfs_staging_alloc` | Inode allocation in inode store |
 | `agfs_readdir` | Directory listing merged from base + staging |
 | `agfs_journal_append_a` | Journal write for add |
 | `agfs_journal_append_d` | Journal write for delete |

@@ -10,7 +10,7 @@
 #include <linux/xattr.h>
 #include <linux/mm.h>
 
-/* ── create/mkdir/symlink — allocate staging blob + override ────────── */
+/* ── create/mkdir/symlink — allocate inode + override ───────────────── */
 
 static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 			      umode_t mode, const char *symname)
@@ -18,8 +18,8 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
 	const struct cred *old_cred;
 	char buf[AGFS_PATH_MAX];
-	struct path blob_path;
-	u64 id;
+	struct path inode_path;
+	u64 ino;
 	int err;
 
 	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
@@ -28,24 +28,27 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 
 	old_cred = override_creds(sbi->creator_cred);
 
-	err = agfs_staging_alloc(sbi, &id, &blob_path, mode, symname);
+	err = agfs_inode_alloc(sbi, &ino, &inode_path, mode, symname);
 	if (err)
 		goto out_revert;
 
-	err = agfs_interpose(dentry, dir->i_sb, &blob_path);
+	err = agfs_interpose(dentry, dir->i_sb, &inode_path);
 	if (err) {
-		path_put(&blob_path);
+		path_put(&inode_path);
 		goto out_revert;
 	}
 
-	agfs_set_lower_path(dentry, &blob_path);
-	AGFS_I(d_inode(dentry))->snapshot_gen =
-		atomic64_read(&sbi->snapshot_gen);
-	agfs_add_override(dentry->d_parent, dentry->d_name.name,
-			  dentry->d_name.len, id, NULL,
-			  S_ISDIR(mode) ? DT_DIR :
-			  S_ISLNK(mode) ? DT_LNK : DT_REG);
-	agfs_journal_append_a(sbi, buf, id);
+	agfs_replace_lower_path(dentry, &inode_path);
+	err = agfs_add_override(dir, dentry->d_name.name,
+				dentry->d_name.len, ino, NULL,
+				S_ISDIR(mode) ? DT_DIR :
+				S_ISLNK(mode) ? DT_LNK : DT_REG,
+				(u64)atomic64_read(&sbi->snapshot_gen));
+	if (err) {
+		revert_creds(old_cred);
+		return err;
+	}
+	agfs_journal_append_a(sbi, buf, ino);
 
 	revert_creds(old_cred);
 	return 0;
@@ -82,9 +85,10 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 
 	old_cred = override_creds(sbi->creator_cred);
 
-	err = agfs_add_override(dentry->d_parent,
+	err = agfs_add_override(dir,
 				dentry->d_name.name,
-				dentry->d_name.len, 0, NULL, DT_UNKNOWN);
+				dentry->d_name.len, 0, NULL, DT_UNKNOWN,
+				0);
 	if (err)
 		goto out;
 
@@ -122,11 +126,12 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		       unsigned int flags)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
-	struct agfs_dentry_info *old_parent_di;
+	struct agfs_inode_info *old_parent_ii;
 	const struct cred *old_cred;
 	char old_buf[AGFS_PATH_MAX], new_buf[AGFS_PATH_MAX];
 	struct agfs_override *old_ovr = NULL;
-	u64 old_sid = 0;
+	u64 old_ino = 0;
+	u64 old_gen = 0;
 	char *old_bp = NULL;
 	unsigned char old_dtype = DT_UNKNOWN;
 	int err;
@@ -145,59 +150,59 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	down_write(&sbi->staging_sem);
 
 	/* Check current override state on old name.
-	 * Snapshot base_path while holding the lock (§3.4). */
-	old_parent_di = AGFS_D(old_dentry->d_parent);
-	if (old_parent_di) {
-		spin_lock(&old_parent_di->lock);
-		old_ovr = agfs_find_override(old_dentry->d_parent,
-					     old_dentry->d_name.name,
-					     old_dentry->d_name.len);
-		if (old_ovr) {
-			old_sid = old_ovr->staging_id;
-			old_dtype = old_ovr->d_type;
-			if (old_ovr->base_path) {
-				old_bp = kstrdup(old_ovr->base_path,
-						 GFP_ATOMIC);
-				if (!old_bp) {
-					spin_unlock(&old_parent_di->lock);
-					err = -ENOMEM;
-					goto out;
-				}
+	 * Snapshot base_path while holding the lock. */
+	old_parent_ii = AGFS_I(old_dir);
+	spin_lock(&old_parent_ii->ovr_lock);
+	old_ovr = agfs_find_override(old_dir,
+				     old_dentry->d_name.name,
+				     old_dentry->d_name.len);
+	if (old_ovr) {
+		old_ino = old_ovr->ino;
+		old_gen = old_ovr->snapshot_gen;
+		old_dtype = old_ovr->d_type;
+		if (old_ovr->base_path) {
+			old_bp = kstrdup(old_ovr->base_path,
+					 GFP_ATOMIC);
+			if (!old_bp) {
+				spin_unlock(&old_parent_ii->ovr_lock);
+				err = -ENOMEM;
+				goto out;
 			}
 		}
-		spin_unlock(&old_parent_di->lock);
 	}
+	spin_unlock(&old_parent_ii->ovr_lock);
 
 	/* Derive d_type from old dentry's inode when no override existed */
 	if (!old_ovr && d_inode(old_dentry))
 		old_dtype = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
 
-	if (old_ovr && !old_sid && !old_bp) {
+	if (old_ovr && !old_ino && !old_bp) {
 		/* Source is deleted — cannot rename */
 		err = -ENOENT;
 		goto out;
-	} else if (old_sid) {
-		/* File is in a staging blob — move the override */
-		err = agfs_add_override(new_dentry->d_parent,
+	} else if (old_ino) {
+		/* File has a staged inode — move the override, keep same ino */
+		err = agfs_add_override(new_dir,
 					new_dentry->d_name.name,
 					new_dentry->d_name.len,
-					old_sid, NULL, old_dtype);
+					old_ino, NULL, old_dtype,
+					old_gen);
 	} else {
 		/* Base file or chained rename — redirect by path */
-		err = agfs_add_override(new_dentry->d_parent,
+		err = agfs_add_override(new_dir,
 					new_dentry->d_name.name,
 					new_dentry->d_name.len,
 					0, old_bp ? old_bp : old_buf,
-					old_dtype);
+					old_dtype, 0);
 	}
 	if (err)
 		goto out;
 
 	/* Hide the old name (deleted override) */
-	err = agfs_add_override(old_dentry->d_parent,
+	err = agfs_add_override(old_dir,
 				old_dentry->d_name.name,
 				old_dentry->d_name.len, 0, NULL,
-				DT_UNKNOWN);
+				DT_UNKNOWN, 0);
 	if (err)
 		goto out;
 

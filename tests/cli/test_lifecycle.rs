@@ -40,7 +40,7 @@ fn full_write_abort_cycle() {
     let s = AgfsSession::new().expect("session setup");
 
     // 1. Write changes to existing files only (new file creation
-    //    goes to lower FS, not staging)
+    //    goes to lower FS, not inode store)
     fs::write(s.mnt_path("hello.txt"), "will be aborted\n").unwrap();
     fs::write(s.mnt_path("multi.txt"), "also aborted\n").unwrap();
 
@@ -64,7 +64,7 @@ fn full_write_abort_cycle() {
 }
 
 /// Commit, then verify base is updated.
-/// Note: After commit clears staging, agfs dentries may be stale
+/// Note: After commit clears inode store, agfs dentries may be stale
 /// until cache invalidation. We verify the base FS directly.
 #[test]
 fn double_commit() {
@@ -116,9 +116,9 @@ fn delete_commit_then_verify_base() {
     );
 }
 
-/// After commit, the staging area should be clean.
+/// After commit, the inode store should be clean.
 #[test]
-fn commit_clears_staging_area() {
+fn commit_clears_inode_store() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").unwrap();
