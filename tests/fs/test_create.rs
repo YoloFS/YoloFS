@@ -24,6 +24,27 @@ fn create_file_in_new_subdir() {
     assert_eq!(content, "deep new\n");
 }
 
+// ── umask interaction with inode store ────────────────────────────────────────
+
+/// Creating a file must work even when the caller's umask is 022.
+///
+/// umask 022 causes `agfs mount` to create .agfs/inodes/ as 0755.
+/// After the CLI drops euid to the real user, vfs_create inside the
+/// inode store directory requires write permission. If the inodes dir
+/// is root-owned 0755, the non-root user cannot create blobs and file
+/// creation fails with EACCES.
+#[test]
+fn create_file_under_umask_022() {
+    let old = unsafe { libc::umask(0o022) };
+
+    let s = AgfsSession::new().expect("session setup");
+    let result = fs::write(s.mnt_path("umask-test.txt"), "data");
+
+    unsafe { libc::umask(old) };
+
+    result.expect("create file should succeed under umask 022");
+}
+
 // ── Staging / base verification (staging.c: agfs_create → inode store) ──
 
 /// New file goes to inode store, not base.
