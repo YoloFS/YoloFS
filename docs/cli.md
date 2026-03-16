@@ -79,6 +79,51 @@ AgFS mount. That is why runtime examples use absolute paths like `/src` and
 session root. Files under that session root are typically ruled `allow-rw`;
 everything else defaults to `ask`.
 
+## Privilege Model
+
+The agfs binary is installed setuid root (`install -m 4755 -o root`).
+This is needed because `mount()`, `umount()`, bind-mounting `/proc` `/sys`
+`/dev`, and `chroot()` all require `CAP_SYS_ADMIN`.
+
+### Current behavior (BUG)
+
+The binary runs with euid=0 throughout its entire lifetime. It never drops
+privileges before exec'ing user commands. This means:
+
+- `agfs exec -- make build` runs `make` with euid=0. Build tools see
+  themselves as root and may behave differently (skip permission checks,
+  install to system paths, etc).
+- Files created by the user's command are visible to the kernel module with
+  the process's real uid (1000), but the effective uid (0) can mask
+  permission bugs — operations that should fail with EACCES succeed because
+  euid is root.
+- The staging layer creates blobs under `override_creds(sbi->creator_cred)`,
+  where `creator_cred` captures uid=0 from the setuid binary. This makes
+  staged directories root-owned, causing EACCES for the real user when
+  `agfs_permission` delegates directory checks to the lower filesystem
+  (see `tests/perm/test_dir_ops.rs::non_root_mkdir_then_write_inside`).
+
+### Target behavior
+
+The CLI should hold root only for privileged syscalls and drop before
+running user code:
+
+| Phase | euid | Why |
+|---|---|---|
+| `mount()`, bind-mounts, `chroot()` | 0 | Require `CAP_SYS_ADMIN` |
+| `exec` user command | real uid | User code must not run as root |
+| `commit`, `status`, `diff` | real uid | Operate on user-owned files; kernel module checks real uid |
+| `load`/`unload` | delegates to `sudo` | Already handled correctly |
+
+The drop in `exec` should be permanent (`setgid(real_gid)` then
+`setuid(real_uid)` — order matters because you cannot change gid after
+dropping uid). This goes in the `pre_exec` closure after `chroot()` and
+`chdir()`, before the child calls `execvp()`.
+
+Once the staging ownership bug is fixed (staged blobs owned by the real
+user, not root), the same drop can be applied to `commit` and other
+subcommands that don't need privileged syscalls.
+
 ## TTY / Terminal Ownership
 
 When AgFS runs the default workflow (`agfs` with no subcommand), a
