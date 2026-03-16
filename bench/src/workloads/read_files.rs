@@ -20,6 +20,10 @@ impl Workload for ReadFiles {
         WorkloadKind::Micro
     }
 
+    fn description(&self) -> &'static str {
+        "Read 1,000 pre-existing 4 KiB files (read passthrough / lower fs path)"
+    }
+
     fn work_dir(&self) -> &'static str {
         "read-dest"
     }

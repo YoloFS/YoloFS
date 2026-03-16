@@ -31,6 +31,11 @@ pub fn by_kind(kind: WorkloadKind) -> Vec<Box<dyn Workload>> {
     all().into_iter().filter(|w| w.kind() == kind).collect()
 }
 
+/// Map of workload name → description (for report tooltips).
+pub fn descriptions() -> std::collections::HashMap<&'static str, &'static str> {
+    all().iter().map(|w| (w.name(), w.description())).collect()
+}
+
 /// Create `count` files of `size` bytes each in `dir`, named `file-NNNN.dat`.
 pub fn populate_files(dir: &Path, count: usize, size: usize) -> Result<()> {
     std::fs::create_dir_all(dir).context("creating base work dir")?;

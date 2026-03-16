@@ -35,6 +35,10 @@ impl Workload for Worktree {
         WorkloadKind::Macro
     }
 
+    fn description(&self) -> &'static str {
+        "git worktree add from a Linux kernel clone (~80k files created)"
+    }
+
     fn work_dir(&self) -> &'static str {
         "worktree-dest"
     }

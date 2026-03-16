@@ -20,6 +20,10 @@ impl Workload for OverwriteFiles {
         WorkloadKind::Micro
     }
 
+    fn description(&self) -> &'static str {
+        "Overwrite 1,000 pre-existing 4 KiB files (copy-on-write / copy-up path)"
+    }
+
     fn work_dir(&self) -> &'static str {
         "overwrite-dest"
     }

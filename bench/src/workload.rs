@@ -36,6 +36,9 @@ pub trait Workload: Send + Sync {
     /// Micro (isolated operation) or macro (real-world task).
     fn kind(&self) -> WorkloadKind;
 
+    /// One-line description shown as a tooltip in reports.
+    fn description(&self) -> &'static str;
+
     /// Subdirectory within the session root where the workload operates.
     /// Must be stable across iterations.
     fn work_dir(&self) -> &'static str;

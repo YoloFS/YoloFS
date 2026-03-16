@@ -21,6 +21,10 @@ impl Workload for RenameFiles {
         WorkloadKind::Micro
     }
 
+    fn description(&self) -> &'static str {
+        "Rename 1,000 pre-existing files (directory ops + journal / copy-up)"
+    }
+
     fn work_dir(&self) -> &'static str {
         "rename-dest"
     }

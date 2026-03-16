@@ -26,6 +26,10 @@ impl Workload for WriteFiles {
         WorkloadKind::Micro
     }
 
+    fn description(&self) -> &'static str {
+        "Create 1,000 new 4 KiB files (file creation + sequential write path)"
+    }
+
     fn work_dir(&self) -> &'static str {
         "write-dest"
     }

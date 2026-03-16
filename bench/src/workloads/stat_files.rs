@@ -19,6 +19,10 @@ impl Workload for StatFiles {
         WorkloadKind::Micro
     }
 
+    fn description(&self) -> &'static str {
+        "Stat 1,000 pre-existing files (pure metadata / permission check overhead)"
+    }
+
     fn work_dir(&self) -> &'static str {
         "stat-dest"
     }

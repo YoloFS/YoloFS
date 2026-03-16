@@ -1,8 +1,10 @@
 // HTML report generation using plotly.
 
 use crate::backends;
+use crate::workload::WorkloadKind;
+use crate::workloads;
 use crate::{BenchResults, WorkloadResult};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use plotly::common::{ErrorData, ErrorType, Mode, Title};
 use plotly::layout::{Axis, BarMode};
 use plotly::{Bar, Configuration, Layout, Plot, Scatter};
@@ -12,10 +14,11 @@ pub fn render(results: &BenchResults, out_dir: &Path) -> Result<()> {
     for wl in &results.workloads {
         render_workload(wl, results, out_dir)?;
     }
+    render_index(results, out_dir)?;
     Ok(())
 }
 
-fn render_workload(wl: &WorkloadResult, results: &BenchResults, out_dir: &Path) -> Result<()> {
+fn render_workload(wl: &WorkloadResult, _results: &BenchResults, out_dir: &Path) -> Result<()> {
     let mut plot = Plot::new();
 
     // Sort backends into canonical display order; unknown backends go at the end.
@@ -83,11 +86,7 @@ fn render_workload(wl: &WorkloadResult, results: &BenchResults, out_dir: &Path) 
         }
     }
 
-    let e = &results.env;
-    let title = format!(
-        "{} on {} — {} / {} {} / {} kernel",
-        wl.workload, e.hostname, e.cpu, e.storage_device_model, e.filesystem, e.kernel,
-    );
+    let title = wl.workload.clone();
 
     plot.set_layout(
         Layout::new()
@@ -101,5 +100,92 @@ fn render_workload(wl: &WorkloadResult, results: &BenchResults, out_dir: &Path) 
     let html_path = out_dir.join(format!("report-{}.html", wl.workload));
     plot.write_html(&html_path);
     eprintln!("Report written to {}", html_path.display());
+    Ok(())
+}
+
+/// Generate an index page that embeds all per-workload reports as iframes,
+/// grouped by micro/macro.
+fn render_index(results: &BenchResults, out_dir: &Path) -> Result<()> {
+    // Look up kind and canonical order for each workload in results.
+    let all_workloads = workloads::all();
+    let order: Vec<&str> = all_workloads.iter().map(|w| w.name()).collect();
+    let known: std::collections::HashMap<&str, WorkloadKind> =
+        all_workloads.iter().map(|w| (w.name(), w.kind())).collect();
+
+    let mut micros: Vec<&str> = Vec::new();
+    let mut macros: Vec<&str> = Vec::new();
+    for wl in &results.workloads {
+        let kind = known
+            .get(wl.workload.as_str())
+            .copied()
+            .unwrap_or(WorkloadKind::Micro);
+        match kind {
+            WorkloadKind::Micro => micros.push(&wl.workload),
+            WorkloadKind::Macro => macros.push(&wl.workload),
+        }
+    }
+
+    // Sort by canonical registration order.
+    let pos = |name: &str| order.iter().position(|&n| n == name).unwrap_or(usize::MAX);
+    micros.sort_by_key(|n| pos(n));
+    macros.sort_by_key(|n| pos(n));
+
+    let descriptions = workloads::descriptions();
+    let e = &results.env;
+
+    let mut html = String::new();
+    html.push_str("<!DOCTYPE html>\n<html><head>\n");
+    html.push_str("<meta charset=\"utf-8\">\n");
+    html.push_str(&format!("<title>agfs-bench — {}</title>\n", e.hostname));
+    html.push_str("<style>\n");
+    html.push_str(
+        "  body { font-family: system-ui, sans-serif; margin: 2em; background: #fafafa; }\n",
+    );
+    html.push_str("  h1 { font-size: 1.4em; }\n");
+    html.push_str("  h2 { font-size: 1.1em; margin-top: 2em; color: #555; border-bottom: 1px solid #ddd; padding-bottom: 0.3em; }\n");
+    html.push_str("  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(600px, 1fr)); gap: 1.2em; }\n");
+    html.push_str("  .card { }\n");
+    html.push_str("  .card-label { font-size: 0.95em; font-weight: 600; margin-bottom: 0.3em; cursor: help; }\n");
+    html.push_str("  .card-label .desc { font-weight: 400; color: #888; font-size: 0.85em; }\n");
+    html.push_str("  iframe { width: 100%; height: 420px; border: 1px solid #ddd; border-radius: 4px; background: #fff; }\n");
+    html.push_str("  .env { font-size: 0.85em; color: #777; margin-bottom: 1.5em; }\n");
+    html.push_str("</style>\n");
+    html.push_str("</head><body>\n");
+
+    html.push_str(&format!("<h1>agfs-bench — {}</h1>\n", e.hostname));
+    html.push_str(&format!(
+        "<div class=\"env\">{} &middot; {} GB &middot; {} {} &middot; {} kernel \
+         &middot; <a href=\"results.json\">results.json</a></div>\n",
+        e.cpu, e.memory_gb, e.storage_device_model, e.filesystem, e.kernel,
+    ));
+
+    let emit_section = |html: &mut String, heading: &str, names: &[&str]| {
+        if names.is_empty() {
+            return;
+        }
+        html.push_str(&format!("<h2>{heading}</h2>\n"));
+        html.push_str("<div class=\"grid\">\n");
+        for name in names {
+            let desc = descriptions.get(name).copied().unwrap_or("");
+            let escaped = desc.replace('"', "&quot;");
+            html.push_str(&format!(
+                "  <div class=\"card\">\
+                <div class=\"card-label\" title=\"{escaped}\">{name} \
+                <span class=\"desc\">— {desc}</span></div>\
+                <iframe src=\"report-{name}.html\"></iframe>\
+                </div>\n"
+            ));
+        }
+        html.push_str("</div>\n");
+    };
+
+    emit_section(&mut html, "Microbenchmarks", &micros);
+    emit_section(&mut html, "Macrobenchmarks", &macros);
+
+    html.push_str("</body></html>\n");
+
+    let index_path = out_dir.join("report.html");
+    std::fs::write(&index_path, &html).context("writing index.html")?;
+    eprintln!("Index written to {}", index_path.display());
     Ok(())
 }
