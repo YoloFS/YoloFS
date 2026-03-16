@@ -28,6 +28,12 @@ pub trait Backend: Send + Sync {
         None
     }
 
+    /// If true, this backend is excluded from default runs and only included
+    /// when explicitly requested via `--backend`.
+    fn hidden(&self) -> bool {
+        false
+    }
+
     /// Run one timed iteration: set up, run workload, commit, tear down.
     /// Returns (timing, kernel_messages).
     fn run_one(&self, workload: &dyn Workload, verbose: bool) -> Result<(IterResult, Vec<String>)>;

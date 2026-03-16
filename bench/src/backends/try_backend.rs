@@ -25,6 +25,10 @@ impl Backend for Try {
         }
     }
 
+    fn hidden(&self) -> bool {
+        true
+    }
+
     fn run_one(&self, workload: &dyn Workload, verbose: bool) -> Result<(IterResult, Vec<String>)> {
         let cache = dirs_next::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))

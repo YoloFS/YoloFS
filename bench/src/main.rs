@@ -69,7 +69,7 @@ enum Cmd {
         #[arg(long)]
         no_bpftrace: bool,
     },
-    /// Run a workload at a given path (used internally by the try backend)
+    /// Run a workload at a given path (used internally by all backends)
     ExecWorkload {
         /// Workload name
         #[arg(long)]
@@ -78,6 +78,22 @@ enum Cmd {
         #[arg(long)]
         dest: PathBuf,
         /// Verbose output
+        #[arg(long)]
+        verbose: bool,
+    },
+    /// Mount overlayfs then run a workload (used internally by the overlayfs backend)
+    #[command(hide = true)]
+    ExecOverlayfs {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        lower: PathBuf,
+        #[arg(long)]
+        upper: PathBuf,
+        #[arg(long)]
+        work: PathBuf,
+        #[arg(long)]
+        merged: PathBuf,
         #[arg(long)]
         verbose: bool,
     },
@@ -417,8 +433,13 @@ fn compute_stats(iters: &[IterResult]) -> Stats {
 
 // ── Output ────────────────────────────────────────────────────────────────────
 
+/// Root of the repository, determined at compile time.
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
 fn results_dir(hostname: &str, timestamped: bool) -> PathBuf {
-    let base = PathBuf::from("results-bench").join(hostname);
+    let base = repo_root().join("results-bench").join(hostname);
     if timestamped {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -430,14 +451,15 @@ fn results_dir(hostname: &str, timestamped: bool) -> PathBuf {
     }
 }
 
-fn write_fresh(results: &BenchResults, json_path: &Path) -> Result<()> {
+fn write_fresh(results: &BenchResults, json_path: &Path) -> Result<BenchResults> {
     let json = serde_json::to_string_pretty(results).context("serialising results")?;
     fs::write(json_path, json).context("writing results.json")?;
     eprintln!("Results written to {}", json_path.display());
-    Ok(())
+    Ok(results.clone())
 }
 
-fn write_results(results: &BenchResults, out_dir: &Path) -> Result<()> {
+/// Write results to disk, merging with any existing data. Returns the merged results.
+fn write_results(results: &BenchResults, out_dir: &Path) -> Result<BenchResults> {
     fs::create_dir_all(out_dir).context("creating results dir")?;
     let json_path = out_dir.join("results.json");
 
@@ -495,7 +517,7 @@ fn write_results(results: &BenchResults, out_dir: &Path) -> Result<()> {
     let json = serde_json::to_string_pretty(&merged).context("serialising results")?;
     fs::write(&json_path, json).context("writing results.json")?;
     eprintln!("Results written to {}", json_path.display());
-    Ok(())
+    Ok(merged)
 }
 
 // ── Profile ───────────────────────────────────────────────────────────────────
@@ -553,6 +575,42 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // exec-overlayfs: mount overlayfs inside a user namespace, then run the
+    // workload. Called by the overlayfs backend via unshare(1).
+    if let Some(Cmd::ExecOverlayfs {
+        name,
+        lower,
+        upper,
+        work,
+        merged,
+        verbose,
+    }) = &cli.cmd
+    {
+        use nix::mount::{MsFlags, mount};
+        let opts = format!(
+            "userxattr,lowerdir={},upperdir={},workdir={}",
+            lower.display(),
+            upper.display(),
+            work.display()
+        );
+        mount(
+            Some("overlay"),
+            merged.as_path(),
+            Some("overlay"),
+            MsFlags::empty(),
+            Some(opts.as_str()),
+        )
+        .with_context(|| format!("mounting overlayfs on {}", merged.display()))?;
+
+        let workload = workloads::by_name(name)
+            .with_context(|| format!("unknown workload: {name}"))?;
+        let dest = merged.join(workload.work_dir());
+        std::fs::create_dir_all(&dest)?;
+        println!("{}", backend::READY_MARKER);
+        workload.run(&dest, *verbose)?;
+        return Ok(());
+    }
+
     let env = collect_env();
 
     if let Some(Cmd::Profile {
@@ -578,13 +636,16 @@ fn main() -> Result<()> {
         }
         println!("\nBackends:");
         for b in backends::all() {
-            if b.available() {
-                println!("  {}", b.name());
-            } else {
+            if b.hidden() {
+                // Don't probe availability for hidden backends.
+                println!("  {} (hidden)", b.name());
+            } else if !b.available() {
                 let reason = b
                     .unavailable_reason()
                     .unwrap_or("missing required tools");
                 println!("  {} (unavailable: {})", b.name(), reason);
+            } else {
+                println!("  {}", b.name());
             }
         }
         return Ok(());
@@ -608,6 +669,7 @@ fn main() -> Result<()> {
     };
 
     let selected_backends: Vec<Box<dyn Backend>> = if let Some(name) = &cli.backend {
+        // Explicit --backend: run it even if hidden, just check availability.
         let b = backends::by_name(name).with_context(|| format!("unknown backend: {name}"))?;
         if !b.available() {
             bail!("backend {name} is not available (missing required tools)");
@@ -616,6 +678,9 @@ fn main() -> Result<()> {
     } else {
         let all = backends::all();
         for b in &all {
+            if b.hidden() {
+                continue;
+            }
             if !b.available() {
                 let reason = b
                     .unavailable_reason()
@@ -623,7 +688,9 @@ fn main() -> Result<()> {
                 eprintln!("Skipping backend '{}': {}", b.name(), reason);
             }
         }
-        all.into_iter().filter(|b| b.available()).collect()
+        all.into_iter()
+            .filter(|b| !b.hidden() && b.available())
+            .collect()
     };
 
     let mut workload_results = Vec::new();
@@ -664,8 +731,8 @@ fn main() -> Result<()> {
     };
 
     let out_dir = results_dir(&env.hostname, cli.timestamped_results);
-    write_results(&results, &out_dir)?;
-    report::render(&results, &out_dir)?;
+    let merged = write_results(&results, &out_dir)?;
+    report::render(&merged, &out_dir)?;
 
     Ok(())
 }

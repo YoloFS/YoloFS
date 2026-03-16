@@ -54,18 +54,19 @@ Each workload is run under multiple backends. A backend defines how writes are
 staged and committed. The goal is to isolate the cost of each mechanism and
 place agfs in context relative to alternatives.
 
-| Backend | Mechanism | Needs root? |
-|---|---|---|
-| `native` | Direct ext4 writes, no staging | no |
-| `agfs-allow-all` | Kernel stackable fs; `allow-rw /` rule | no (setuid) |
-| `agfs-realistic` | Kernel stackable fs; workload-defined rules | no (setuid) |
-| `try` | overlayfs sandbox via `unshare`; `try commit` to apply | no (user-ns) |
-| `branchfs` | FUSE copy-on-write branches; `branchfs commit` | no |
-| `btrfs` | btrfs subvolume snapshot; rsync back on commit | yes (cap) |
+| Backend | Mechanism | Needs root? | Default? |
+|---|---|---|---|
+| `native` | Direct ext4 writes, no staging | no | yes |
+| `agfs-allow-all` | Kernel stackable fs; `allow-rw /` rule | no (setuid) | yes |
+| `agfs-realistic` | Kernel stackable fs; workload-defined rules | no (setuid) | yes |
+| `overlayfs` | User-namespace overlayfs; replay upper on commit | no (user-ns) | yes |
+| `branchfs` | FUSE copy-on-write branches; `branchfs commit` | no | yes |
+| `try` | Shell wrapper around overlayfs (`try` tool) | no (user-ns) | **hidden** |
+| `btrfs` | btrfs subvolume snapshot; rsync back on commit | yes (cap) | not yet |
 
 `agfs-bench` does **not** need to run as root. The agfs binary is setuid,
-`try` uses user namespaces, and branchfs runs in userspace. Only the profiler
-(§7) invokes `sudo` internally for `perf` and `bpftrace`.
+overlayfs and `try` use user namespaces, and branchfs runs in userspace. Only
+the profiler (§7) invokes `sudo` internally for `perf` and `bpftrace`.
 
 ### agfs backends
 
@@ -80,18 +81,35 @@ level of gating:
 `agfs-allow-all` is the practical floor for a useful agfs configuration.
 `native` is the absolute floor.
 
-### try
+### overlayfs
 
-`try` wraps a command in a Linux user-namespace with an overlayfs upper layer,
-then offers to commit or discard the changes. Since the workload runs inside
-`try`'s namespace, the adapter uses a self-exec pattern: it invokes
-`try -n -D <sandbox> -- agfs-bench exec-workload --name <name> --dest <dest>`
-(no auto-commit), then calls `try commit <sandbox>` as the commit step.
+The `overlayfs` backend uses Linux overlayfs directly, without any wrapper
+tool. Each iteration:
 
-`try` requires overlayfs to work inside user namespaces. Availability is
-probed at startup by running `try -n -- /bin/true`; if this fails (e.g.
-stale submounts under `/tmp`, or a kernel that rejects unprivileged
-overlayfs), the backend is skipped with a diagnostic message.
+1. Creates a fresh tempdir with `lower/`, `upper/`, `work/`, `merged/`.
+2. Enters a user + mount namespace via `unshare(1)`.
+3. Mounts overlayfs (`mount -t overlay … -o userxattr`).
+4. Runs the workload inside the merged directory.
+5. Commits by replaying the upper dir onto lower: regular files are renamed
+   (O(1) on the same filesystem), whiteout devices (char 0,0) trigger
+   deletions, opaque directories (`user.overlay.opaque` xattr) replace their
+   lower counterparts, and symlinks are recreated.
+
+This gives a clean measurement of overlayfs overhead without shell noise.
+
+### try (hidden)
+
+`try` is a shell script that wraps overlayfs in a user namespace. It is
+**hidden by default** because its shell-based setup (forking ~90 subprocesses,
+exec'ing ~130 commands per invocation) adds ~400ms of overhead unrelated to the
+staging mechanism being measured. The `overlayfs` backend measures the same
+underlying mechanism without this noise.
+
+To include `try` in a run: `agfs-bench --backend try`.
+
+The adapter uses a self-exec pattern: it invokes
+`try -n -D <sandbox> -- agfs-bench exec-workload …` (no auto-commit), then
+calls `try commit <sandbox>` as the commit step.
 
 ### branchfs
 
@@ -150,18 +168,19 @@ total = init_time + staging_time + commit_time
 |---|---|---|---|
 | `native` | — | workload | — |
 | `agfs-*` | `agfs mount` | workload | `agfs commit` |
-| `try` | namespace + overlay setup | workload | `try commit` |
+| `overlayfs` | `unshare` + `mount -t overlay` | workload | replay upper → lower |
+| `try` | shell namespace setup | workload | `try commit` |
 | `branchfs` | `branchfs mount` + `create` | workload | `branchfs commit` |
 | `btrfs` | `btrfs subvolume snapshot` | workload | rsync + delete |
 
 Every backend runs the workload as a subprocess via the `exec-workload`
 subcommand. The subprocess prints a `READY` marker to stdout just before it
 starts the workload. The parent watches for this marker — wall time before it
-arrives is startup overhead (process spawn, or for `try`, full namespace +
-overlayfs setup), wall time after is staging. For backends with a separate
-init step (agfs, branchfs), init is measured in the parent before spawning
-the subprocess; for `try`, init *is* the startup time reported by the
-subprocess protocol.
+arrives is startup overhead (process spawn, or for `try`/`overlayfs`, full
+namespace + overlayfs setup), wall time after is staging. For backends with a
+separate init step (agfs, branchfs), init is measured in the parent before
+spawning the subprocess; for `try` and `overlayfs`, init *is* the startup time
+reported by the subprocess protocol.
 
 All timings are taken with `std::time::Instant` inside the bench binary.
 Each (workload, backend) pair is run `--runs N` times (default 3), preceded
@@ -213,7 +232,8 @@ bench/src/
     mod.rs         — registry (all, by_name)
     native.rs
     agfs.rs        — agfs-allow-all + agfs-realistic + ProfileSession
-    try_backend.rs — try (wraps exec-workload in try namespace)
+    overlayfs.rs   — direct overlayfs in user namespace
+    try_backend.rs — try shell wrapper (hidden)
     branchfs.rs
   workload.rs      — Workload trait + IterResult
   workloads/       — one file per workload
@@ -221,16 +241,16 @@ bench/src/
   report.rs        — plotly HTML report
 ```
 
-### Backend availability
+### Backend availability and visibility
 
-Each backend implements `available()` and `unavailable_reason()`. At startup,
-unavailable backends are skipped with a diagnostic:
+Each backend implements `available()`, `unavailable_reason()`, and `hidden()`.
 
-```
-Skipping backend 'try': 'try -n -- /bin/true' failed (stale mounts under /tmp? overlayfs issue?)
-```
+- **Unavailable** backends are missing required tools; they are always skipped.
+- **Hidden** backends are functional but excluded from default runs because
+  they add noise (e.g. `try`'s shell overhead dominates the overlayfs cost it
+  aims to measure). Use `--backend <name>` to run them explicitly.
 
-`agfs-bench list` shows all backends with availability status.
+`agfs-bench list` shows all backends with their status.
 
 ### Third-party tools
 
@@ -250,8 +270,9 @@ agfs-bench profile [--workload <name>] [--scenario <name>] [--no-bpftrace]
 agfs-bench exec-workload --name <name> --dest <path> [--verbose]
 ```
 
-- With no flags: runs all workloads × all available backends.
-- `--workload` / `--backend`: filter to a specific combination.
+- With no flags: runs all workloads × all available non-hidden backends.
+- `--workload` / `--backend`: filter to a specific combination. `--backend`
+  overrides hidden status, so `--backend try` will run `try`.
 - `--runs N`: number of timed iterations (default 3).
 - `--verbose`: capture detailed logs for all runs, not just failures.
 - `--timestamped-results`: write results into a timestamped subdirectory
@@ -269,7 +290,6 @@ On failure, the failing (workload, backend) combination is automatically rerun
 with verbose logging enabled. Verbose logs include:
 
 - Workload stdout/stderr
-- Kernel messages captured via `kmsg::KmsgCursor`
 - agfs journal contents at the point of failure (agfs backend only)
 
 ### Results
@@ -280,8 +300,9 @@ multiple runs.
 
 Each result records environment metadata (CPU, memory, storage device and model,
 filesystem type, kernel version, distro) so results from different machines are
-not conflated. Running `--workload X` merges only that workload's results into
-the existing `results.json`.
+not conflated. Running `--workload X` or `--backend Y` merges only the
+re-run entries into the existing `results.json`, preserving results for
+workloads and backends that were not part of the current run.
 
 An HTML report (`report-<workload>.html`) is generated per workload using the
 [`plotly`](https://crates.io/crates/plotly) crate:
