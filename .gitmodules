@@ -10,9 +10,6 @@
 [submodule "results-eval"]
 	path = results-eval
 	url = git@github.com:ShawnZhong/Agfs-Eval-Results.git
-[submodule "docs/paper"]
-	path = docs/paper
-	url = https://git.overleaf.com/69b67ded762f515edc805030
 [submodule "third_party/branchfs"]
 	path = third_party/branchfs
 	url = https://github.com/multikernel/branchfs
