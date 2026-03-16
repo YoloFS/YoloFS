@@ -105,8 +105,17 @@ process credentials, not euid.
 |---|---|---|
 | `mount()`, bind-mounts, `chroot()` | 0 | Require `CAP_SYS_ADMIN` |
 | `exec` user command | real uid | User code must not run as root |
-| `commit`, `status`, `diff` | 0 | May need access to root-owned staging blobs (see below) |
+| `commit`, `status`, `diff` | 0 | Need root for ioctl on the mount |
 | `load`/`unload` | delegates to `sudo` | Already handled correctly |
+
+### `.agfs/` directory ownership
+
+`setup_agfs_dir` creates `.agfs/`, `inodes/`, `mnt/`, and `journal` as
+root (euid=0 from setuid), then `chown`s them all to the real user.
+This ensures the user can write staging blobs into `inodes/` and append
+to `journal` after the exec privilege drop. Without the chown, the
+caller's umask (e.g. 022) would leave `inodes/` as root-owned 0755,
+blocking non-root writes.
 
 ### Staging blob ownership
 
@@ -114,10 +123,6 @@ The kernel module creates staging blobs via `vfs_create` / `vfs_mkdir`
 using `current_cred()`. Since user commands inside `agfs exec` run with
 the invoking user's credentials (after the privilege drop), staging blobs
 are owned by the real user.
-
-`mount` runs as root (needed for the `mount()` syscall), so the initial
-`.agfs/` directory structure is root-owned. Only the inodes created by
-user commands inside `agfs exec` need user ownership.
 
 ## TTY / Terminal Ownership
 

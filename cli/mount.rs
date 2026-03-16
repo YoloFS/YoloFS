@@ -277,6 +277,21 @@ pub fn setup_agfs_dir(agfs_dir: &Path) -> Result<()> {
         fs::File::create(&journal).context("creating .agfs/journal")?;
     }
 
+    // Chown .agfs/ and its contents to the real user. The CLI runs setuid
+    // root, so dirs/files created above are root-owned. After exec drops
+    // privileges, the real user needs write access to inodes/ (for staging
+    // blobs) and journal (for appends).
+    let uid = Some(nix::unistd::getuid());
+    let gid = Some(nix::unistd::getgid());
+    for path in [
+        agfs_dir.to_path_buf(),
+        agfs_dir.join("inodes"),
+        agfs_dir.join("mnt"),
+        journal,
+    ] {
+        nix::unistd::chown(&path, uid, gid).with_context(|| format!("chown {}", path.display()))?;
+    }
+
     Ok(())
 }
 
