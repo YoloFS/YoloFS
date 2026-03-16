@@ -101,7 +101,7 @@ O(1) branch creation and atomic commit-to-parent semantics. Each iteration:
 1. Mounts branchfs over a fresh base directory with a per-iteration storage
    directory (`branchfs mount --base <base> --storage <storage> <mnt>`).
 2. Creates a `bench` branch (`branchfs create bench <mnt>`).
-3. Runs the workload directly inside the mount.
+3. Runs the workload inside the mount (via `exec-workload` subprocess).
 4. Commits the branch (`branchfs commit <mnt>`).
 5. Unmounts (`branchfs unmount <mnt>`).
 
@@ -154,10 +154,14 @@ total = init_time + staging_time + commit_time
 | `branchfs` | `branchfs mount` + `create` | workload | `branchfs commit` |
 | `btrfs` | `btrfs subvolume snapshot` | workload | rsync + delete |
 
-For `try`, the init/staging split is measured via a ready signal: the
-`exec-workload` subprocess prints a marker to stdout just before it starts the
-workload. The parent watches for this marker — wall time before it arrives is
-init (namespace + overlayfs setup), wall time after is staging.
+Every backend runs the workload as a subprocess via the `exec-workload`
+subcommand. The subprocess prints a `READY` marker to stdout just before it
+starts the workload. The parent watches for this marker — wall time before it
+arrives is startup overhead (process spawn, or for `try`, full namespace +
+overlayfs setup), wall time after is staging. For backends with a separate
+init step (agfs, branchfs), init is measured in the parent before spawning
+the subprocess; for `try`, init *is* the startup time reported by the
+subprocess protocol.
 
 All timings are taken with `std::time::Instant` inside the bench binary.
 Each (workload, backend) pair is run `--runs N` times (default 3), preceded
@@ -204,12 +208,12 @@ parsing, and kmsg utilities with the CLI via the library crate.
 ```
 bench/src/
   main.rs          — CLI, backend runner, statistics, exec-workload subcommand
-  backend.rs       — Backend trait
+  backend.rs       — Backend trait + exec-workload subprocess helper
   backends/
     mod.rs         — registry (all, by_name)
     native.rs
     agfs.rs        — agfs-allow-all + agfs-realistic + ProfileSession
-    try_backend.rs — try (self-exec via exec-workload)
+    try_backend.rs — try (wraps exec-workload in try namespace)
     branchfs.rs
   workload.rs      — Workload trait + IterResult
   workloads/       — one file per workload
@@ -255,8 +259,9 @@ agfs-bench exec-workload --name <name> --dest <path> [--verbose]
 - `rerender`: regenerate HTML reports from existing `results.json`.
 - `list`: print all registered workloads and backends with availability.
 - `profile`: run the profiling mode (see §7).
-- `exec-workload`: internal subcommand used by the `try` backend to run a
-  workload as a subprocess inside the `try` namespace.
+- `exec-workload`: internal subcommand used by all backends to run a
+  workload as a subprocess. Prints a `READY` marker to stdout before the
+  workload starts, enabling the parent to split init from staging time.
 
 ### Logging and failure handling
 
@@ -281,7 +286,7 @@ the existing `results.json`.
 An HTML report (`report-<workload>.html`) is generated per workload using the
 [`plotly`](https://crates.io/crates/plotly) crate:
 
-- Stacked bar charts: backend × (staging time, commit time).
+- Stacked bar charts: backend × (init time, staging time, commit time).
 - Native rendered as a bar and as a reference line across other backends.
 - Error bars showing total stddev across iterations.
 
