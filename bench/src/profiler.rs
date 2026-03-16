@@ -301,16 +301,18 @@ fn parse_histograms(raw: &str) -> Vec<Histogram> {
         // New histogram header: @agfs_foo:
         if let Some(rest) = line.strip_prefix('@')
             && let Some(name) = rest.trim_end().strip_suffix(':')
-                && !name.is_empty() && !name.contains('[') {
-                    if let Some(current) = current.take() {
-                        hists.push(current);
-                    }
-                    current = Some(Histogram {
-                        name: name.to_string(),
-                        buckets: Vec::new(),
-                    });
-                    continue;
-                }
+            && !name.is_empty()
+            && !name.contains('[')
+        {
+            if let Some(current) = current.take() {
+                hists.push(current);
+            }
+            current = Some(Histogram {
+                name: name.to_string(),
+                buckets: Vec::new(),
+            });
+            continue;
+        }
 
         let Some(ref mut hist) = current else {
             continue;
