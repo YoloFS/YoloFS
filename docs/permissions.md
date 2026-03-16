@@ -35,28 +35,12 @@ enum agfs_op {
 
 ## In-Kernel State
 
-All permission state lives in five per-object structures.
+Permission state is organized by concern into three groups: rule storage,
+per-inode state, and the ask protocol engine.
 
-**Per-superblock** (`agfs_sb_info`) — one instance, lives for the mount:
+### Rule Storage
 
-| Field | Purpose |
-|-------|---------|
-| `permission` | Bool — whether permission gating is enabled at all. When false, all checks are skipped. |
-| `perm_gen` | Atomic generation counter, starts at 1. Bumped on every rule add/remove/invalidation. Compared against per-inode `perm_gen` for O(1) staleness check. |
-| `pending_reqs` | Linked list of `agfs_perm_request` structs waiting for a daemon decision |
-| `pending_lock` | Spinlock protecting `pending_reqs` |
-| `request_waitq` | Wait queue — daemon's `GET_REQUEST` ioctl blocks here |
-| `next_req_id` | Atomic counter for unique request IDs |
-| `has_daemon` | Atomic flag, 1 if a watch daemon fd is connected. Only one daemon allowed. |
-| `ask_timeout_s` | Seconds before an unanswered ask applies the default |
-| `ask_default` | Default decision (`deny` or `allow-ro`) when no daemon or timeout |
-
-**Per-inode** (`agfs_inode_info`) — one per cached inode:
-
-| Field | Purpose |
-|-------|---------|
-| `cached_perm` | Resolved permission (inherited from nearest ancestor rule). Cached at lookup time, re-resolved lazily when `perm_gen` is stale. |
-| `perm_gen` | The `sbi->perm_gen` value when `cached_perm` was computed. If `!= sbi->perm_gen`, the cache is stale. |
+Rules live directly on dentries. One field, one structure.
 
 **Per-dentry** (`agfs_dentry_info`) — one per cached dentry:
 
@@ -64,20 +48,43 @@ All permission state lives in five per-object structures.
 |-------|---------|
 | `perm` | `AGFS_PERM_NONE` unless this dentry has an explicit rule. Set by `AGFS_IOC_RULE_ADD`, cleared by `AGFS_IOC_RULE_REMOVE`. The dentry is pinned (via `dget`) while a rule is attached to prevent eviction. |
 
-**Per-file** (`agfs_file_info`) — one per open fd:
+### Per-Superblock (`agfs_sb_info`)
 
 | Field | Purpose |
 |-------|---------|
-| `ctl` | Non-NULL if this fd is acting as a permission daemon. Points to `agfs_ctl_private`. |
+| `permission` | Bool — whether permission gating is enabled. When false, all checks are skipped. |
+| `perm_gen` | Atomic generation counter, starts at 1. Bumped on every rule add/remove/invalidation. Compared against per-inode `perm_gen` for O(1) staleness check. |
 
-**Per-daemon-fd** (`agfs_ctl_private`) — one per connected daemon:
+### Per-Inode (`agfs_inode_info`)
 
 | Field | Purpose |
 |-------|---------|
-| `dispatched` | Linked list of requests sent to this daemon but not yet answered |
-| `lock` | Spinlock protecting `dispatched` |
+| `cached_perm` | Resolved permission (inherited from nearest ancestor rule). Cached at lookup time, re-resolved lazily when `perm_gen` is stale. |
+| `perm_gen` | The `sbi->perm_gen` value when `cached_perm` was computed. If `!= sbi->perm_gen`, the cache is stale. |
 
-On fd close, all dispatched-but-unanswered requests receive `ask_default`.
+### Ask Protocol Engine
+
+The ask protocol handles files with no matching rule. A thread accessing
+an `ask` file sleeps until a userspace daemon decides. All ask state is
+grouped into `struct agfs_ask_engine` (embedded in `agfs_sb_info` as
+`ask_engine`), plus per-connection and per-request structures.
+
+**Ask engine** (`agfs_ask_engine`) — embedded in `agfs_sb_info`:
+
+| Field | Purpose |
+|-------|---------|
+| `pending_reqs` | Linked list of `agfs_perm_request` structs waiting for a daemon decision |
+| `pending_lock` | Spinlock protecting `pending_reqs` |
+| `request_waitq` | Wait queue — daemon's `GET_REQUEST` ioctl blocks here |
+| `next_req_id` | Atomic counter for unique request IDs |
+| `timeout_s` | Seconds before an unanswered ask applies the default |
+| `default_perm` | Default decision (`deny` or `allow-ro`) when no daemon or timeout |
+| `daemon_file` | Pointer to the daemon's open `struct file`; NULL if no daemon connected. Only one daemon allowed. |
+| `dispatched` | Linked list of requests sent to daemon but not yet answered |
+| `dispatch_lock` | Spinlock protecting `dispatched` and `daemon_file` |
+
+On fd close, if the closing file is `daemon_file`, all dispatched-but-unanswered
+requests receive `default_perm` and `daemon_file` is reset to NULL.
 
 **Per-request** (`agfs_perm_request`) — one per in-flight ask:
 

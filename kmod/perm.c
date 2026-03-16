@@ -78,8 +78,8 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 	}
 
 	/* No daemon connected — apply default immediately */
-	if (!atomic_read(&sbi->has_daemon)) {
-		*result = sbi->ask_default;
+	if (!READ_ONCE(sbi->ask_engine.daemon_file)) {
+		*result = sbi->ask_engine.default_perm;
 		return 0;
 	}
 
@@ -88,7 +88,7 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 		return -ENOMEM;
 
 	kref_init(&req->ref);
-	req->id = atomic64_inc_return(&sbi->next_req_id);
+	req->id = atomic64_inc_return(&sbi->ask_engine.next_req_id);
 	strscpy(req->path, relpath, AGFS_PATH_MAX);
 	req->op = op;
 	req->pid = current->pid;
@@ -98,21 +98,21 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 	INIT_LIST_HEAD(&req->list);
 
 	/* Enqueue */
-	spin_lock(&sbi->pending_lock);
-	list_add_tail(&req->list, &sbi->pending_reqs);
-	spin_unlock(&sbi->pending_lock);
+	spin_lock(&sbi->ask_engine.pending_lock);
+	list_add_tail(&req->list, &sbi->ask_engine.pending_reqs);
+	spin_unlock(&sbi->ask_engine.pending_lock);
 
 	/* Wake daemon */
-	wake_up_interruptible(&sbi->request_waitq);
+	wake_up_interruptible(&sbi->ask_engine.request_waitq);
 
 	/* Wait for decision */
-	if (sbi->ask_timeout_s > 0) {
-		timeout = msecs_to_jiffies(sbi->ask_timeout_s * 1000);
+	if (sbi->ask_engine.timeout_s > 0) {
+		timeout = msecs_to_jiffies(sbi->ask_engine.timeout_s * 1000);
 		timeout = wait_for_completion_interruptible_timeout(&req->done,
 								   timeout);
 		if (timeout == 0) {
 			/* Timed out — apply default */
-			req->decision = sbi->ask_default;
+			req->decision = sbi->ask_engine.default_perm;
 		} else if (timeout < 0) {
 			err = -EINTR;
 		}
@@ -121,10 +121,10 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 	}
 
 	/* Remove from pending list if the daemon hasn't dequeued it yet */
-	spin_lock(&sbi->pending_lock);
+	spin_lock(&sbi->ask_engine.pending_lock);
 	if (!list_empty(&req->list))
 		list_del_init(&req->list);
-	spin_unlock(&sbi->pending_lock);
+	spin_unlock(&sbi->ask_engine.pending_lock);
 
 	if (!err && req->decision == AGFS_PERM_NONE) {
 		/* Shouldn't happen — treat as deny */

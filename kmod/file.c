@@ -311,8 +311,8 @@ static int agfs_release(struct inode *inode, struct file *file)
 	struct agfs_file_info *fi = AGFS_F(file);
 
 	if (fi) {
-		if (fi->ctl)
-			agfs_ctl_cleanup(AGFS_SB(inode->i_sb), fi->ctl);
+		if (file == READ_ONCE(AGFS_SB(inode->i_sb)->ask_engine.daemon_file))
+			agfs_daemon_cleanup(AGFS_SB(inode->i_sb));
 		if (fi->lower_file)
 			fput(fi->lower_file);
 		kfree(fi);

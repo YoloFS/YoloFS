@@ -114,6 +114,22 @@ struct agfs_override {
 	char			name[];
 };
 
+/* ── Ask Protocol Engine ───────────────────────────────────────────── */
+
+struct agfs_ask_engine {
+	struct list_head	pending_reqs;	/* requests waiting for daemon */
+	spinlock_t		pending_lock;	/* protects pending_reqs */
+	wait_queue_head_t	request_waitq;	/* daemon blocks here */
+	atomic64_t		next_req_id;	/* unique request ID counter */
+	unsigned int		timeout_s;	/* seconds before applying default */
+	enum agfs_perm		default_perm;	/* decision when no daemon or timeout */
+
+	/* Daemon connection (at most one) */
+	struct file		*daemon_file;	/* which fd is the daemon; NULL if none */
+	struct list_head	dispatched;	/* requests sent to daemon */
+	spinlock_t		dispatch_lock;	/* protects dispatched + daemon_file */
+};
+
 /* ── Per-Superblock Info ───────────────────────────────────────────── */
 
 struct agfs_sb_info {
@@ -130,15 +146,10 @@ struct agfs_sb_info {
 	atomic64_t		snapshot_gen;	/* bumped on each snapshot; triggers re-COW */
 
 	/* Permission gating */
-	atomic64_t		perm_gen;
-	struct list_head	pending_reqs;
-	spinlock_t		pending_lock;
-	wait_queue_head_t	request_waitq;
-	atomic64_t		next_req_id;
-	atomic_t		has_daemon;	/* 1 if a watch daemon is connected */
-	unsigned int		ask_timeout_s;
-	enum agfs_perm		ask_default;
-	bool			permission;
+	bool			permission;	/* enable/disable toggle */
+	atomic64_t		perm_gen;	/* cache invalidation counter */
+	struct agfs_ask_engine	ask_engine;	/* ask protocol state */
+
 	bool			staging;
 };
 
@@ -166,19 +177,11 @@ struct agfs_dentry_info {
 	struct hlist_head	*ovr_buckets;	/* NULL until first override */
 };
 
-/* ── Per-File Ctl State (for permission daemon fds) ─────────────────── */
-
-struct agfs_ctl_private {
-	struct list_head	dispatched;	/* requests sent to this fd */
-	spinlock_t		lock;
-};
-
 /* ── Per-File Info ─────────────────────────────────────────────────── */
 
 struct agfs_file_info {
 	struct file		*lower_file;
 	const struct vm_operations_struct *lower_vm_ops;
-	struct agfs_ctl_private	*ctl;	/* non-NULL if this fd is a ctl daemon */
 	bool			truncate;	/* deferred O_TRUNC → empty blob on first write */
 };
 
@@ -343,6 +346,6 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 
 /* ioctl.c */
 long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
-void agfs_ctl_cleanup(struct agfs_sb_info *sbi, struct agfs_ctl_private *priv);
+void agfs_daemon_cleanup(struct agfs_sb_info *sbi);
 
 #endif /* _AGFS_H_ */

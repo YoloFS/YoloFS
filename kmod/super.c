@@ -116,8 +116,8 @@ static int agfs_show_options(struct seq_file *m, struct dentry *root)
 
 	seq_printf(m, ",permission=%d", sbi->permission);
 	seq_printf(m, ",staging=%d", sbi->staging);
-	seq_printf(m, ",ask_timeout=%u", sbi->ask_timeout_s);
-	seq_printf(m, ",ask_default=%d", sbi->ask_default);
+	seq_printf(m, ",ask_timeout=%u", sbi->ask_engine.timeout_s);
+	seq_printf(m, ",ask_default=%d", sbi->ask_engine.default_perm);
 	return 0;
 }
 
@@ -152,19 +152,22 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_stack_depth = 0;
 
 	/* Apply mount options */
-	sbi->ask_timeout_s = opts->ask_timeout_s;
-	sbi->ask_default = opts->ask_default ? opts->ask_default : AGFS_PERM_DENY;
 	sbi->permission = opts->permission;
 	sbi->staging = opts->staging;
 	sbi->creator_cred = get_cred(current_cred());
 
 	/* Initialize perm gating state */
 	atomic64_set(&sbi->perm_gen, 1);
-	INIT_LIST_HEAD(&sbi->pending_reqs);
-	spin_lock_init(&sbi->pending_lock);
-	init_waitqueue_head(&sbi->request_waitq);
-	atomic64_set(&sbi->next_req_id, 1);
-	atomic_set(&sbi->has_daemon, 0);
+	INIT_LIST_HEAD(&sbi->ask_engine.pending_reqs);
+	spin_lock_init(&sbi->ask_engine.pending_lock);
+	init_waitqueue_head(&sbi->ask_engine.request_waitq);
+	atomic64_set(&sbi->ask_engine.next_req_id, 1);
+	sbi->ask_engine.daemon_file = NULL;
+	INIT_LIST_HEAD(&sbi->ask_engine.dispatched);
+	spin_lock_init(&sbi->ask_engine.dispatch_lock);
+	sbi->ask_engine.timeout_s = opts->ask_timeout_s;
+	sbi->ask_engine.default_perm = opts->ask_default
+		? opts->ask_default : AGFS_PERM_DENY;
 
 	/* Initialize staging semaphore and blob counter */
 	init_rwsem(&sbi->staging_sem);
