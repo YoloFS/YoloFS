@@ -95,13 +95,19 @@ def create_seed_iso(host_cwd: Path, force: bool = False):
     else:
         keys_yaml = "ssh_authorized_keys: []"
 
-    mount_cmds = [
+    # cloud-init 'mounts' writes /etc/fstab so the 9p share survives reboots.
+    mounts_yaml = (
+        "mounts:\n"
+        f'  - ["hostcwd", "{host_cwd}", "9p",'
+        f' "trans=virtio,version=9p2000.L,rw,nofail", "0", "0"]'
+    )
+
+    setup_cmds = [
         f"mkdir -p {host_cwd}",
         f"chown {DEFAULT_USER}:{DEFAULT_USER} {host_cwd.parent}",
-        f"mount -t 9p -o trans=virtio,version=9p2000.L,rw hostcwd {host_cwd}",
         f'echo "cd {host_cwd}" >> /home/{DEFAULT_USER}/.bashrc',
     ]
-    runcmd_yaml = "runcmd:\n" + "\n".join(f"  - {cmd}" for cmd in mount_cmds)
+    runcmd_yaml = "runcmd:\n" + "\n".join(f"  - {cmd}" for cmd in setup_cmds)
 
     user_data = (
         "#cloud-config\n"
@@ -115,6 +121,7 @@ def create_seed_iso(host_cwd: Path, force: bool = False):
         f'    plain_text_passwd: "{DEFAULT_PASSWORD}"\n'
         f"    {keys_yaml}\n"
         "ssh_pwauth: true\n"
+        f"{mounts_yaml}\n"
         f"{runcmd_yaml}\n"
     )
 
