@@ -27,6 +27,7 @@ serde_json = "1"
 systemd = "0.10"
 plotly = "0.14"
 dirs-next = "2"
+inferno = "0.12"
 
 [dev-dependencies]
 

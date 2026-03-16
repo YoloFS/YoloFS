@@ -24,6 +24,7 @@ BUILD_PKGS=(
     pkg-config
     libsystemd-dev
     git
+    pahole
 )
 
 # ── Installers ────────────────────────────────────────────────────────

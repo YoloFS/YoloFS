@@ -4,7 +4,7 @@ use crate::{BenchResults, WorkloadResult};
 use anyhow::Result;
 use plotly::common::{ErrorData, ErrorType, Mode, Title};
 use plotly::layout::{Axis, BarMode};
-use plotly::{Bar, Layout, Plot, Scatter};
+use plotly::{Bar, Configuration, Layout, Plot, Scatter};
 use std::path::Path;
 
 pub fn render(results: &BenchResults, out_dir: &Path) -> Result<()> {
@@ -81,6 +81,7 @@ fn render_workload(wl: &WorkloadResult, results: &BenchResults, out_dir: &Path) 
             .x_axis(Axis::new().title(Title::with_text("scenario")))
             .y_axis(Axis::new().title(Title::with_text("time (ms)"))),
     );
+    plot.set_configuration(Configuration::new().responsive(true).fill_frame(true));
 
     let html_path = out_dir.join(format!("report-{}.html", wl.workload));
     plot.write_html(&html_path);

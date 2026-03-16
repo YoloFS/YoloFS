@@ -129,7 +129,7 @@ agfs-bench profile [--workload <name>] [--scenario <name>] [--perf]
 - `--workload` / `--scenario`: filter to a single combination.
 - `--verbose`: capture detailed logs for all runs, not just failures.
 - `--timestamped-results`: write results into a timestamped subdirectory
-  (`bench-results/<hostname>/<timestamp>/`) instead of overwriting.
+  (`results-bench/<hostname>/<timestamp>/`) instead of overwriting.
 - `rerender`: regenerate the HTML report from the existing `results.json`
   without re-running any benchmarks. Useful when iterating on the
   visualisation.
@@ -150,7 +150,7 @@ enabled. Verbose logs include:
 
 ### Results
 
-Results are written to `bench-results/<hostname>/`. By default the previous
+Results are written to `results-bench/<hostname>/`. By default the previous
 result for that host is overwritten; pass `--timestamped-results` to retain
 multiple runs from the same machine.
 
@@ -204,32 +204,33 @@ GitHub Actions workflow, or run locally with `make bench` (which handles
 optimization. It runs a single iteration (no warmup, no averaging) with
 profiling tools active alongside the workload.
 
-### What to measure
-
-agfs overhead has three distinct sources, each requiring a different tool:
-
-| Source | Cost | Tool |
-|---|---|---|
-| VFS interposition | Every syscall through agfs stackable ops | bpftrace kprobe latency histograms |
-| Write staging | Each write redirected to a staging blob | `/proc/<pid>/io` write amplification |
-| Permission gating | Per-access cache lookup + rule match | bpftrace on `agfs_permission` separately |
-
-### Tier 1 — bpftrace op latency histograms
+### bpftrace op latency histograms
 
 A bpftrace script runs as a child process for the duration of the workload,
 instrumenting these agfs kfunctions:
+
+The set of functions to instrument is discovered at startup by running
+`bpftrace -l 'kprobe:agfs_*'`, so the script automatically tracks whatever
+the loaded kmod exposes. The current kmod (verified at runtime) exposes:
 
 | Function | What it covers |
 |---|---|
 | `agfs_lookup` | Dentry resolution (every path component) |
 | `agfs_d_revalidate` | Dentry cache validation |
-| `agfs_permission` | Permission check (inode cache + rule match) |
-| `agfs_open` | File open, including COW trigger |
-| `agfs_create` | File creation + staging entry allocation |
+| `agfs_permission` | Permission check — dispatches to `agfs_resolve_perm` |
+| `agfs_resolve_perm` | Rule match + inode cache lookup/store |
+| `agfs_open` | File open |
+| `agfs_create` | File creation |
+| `agfs_create_staged` | Staging entry allocation for new file |
 | `agfs_read_iter` | Read path (lower fs or staging blob) |
 | `agfs_write_iter` | Write path (always to staging blob) |
-| `agfs_cow_if_needed` | First-write copy-on-write trigger |
+| `agfs_cow_if_needed` | Decides whether COW is needed |
+| `agfs_do_cow` | Actual copy-on-write execution |
+| `agfs_staging_alloc` | Staging blob allocation |
 | `agfs_readdir` | Directory listing merged from base + staging |
+| `agfs_journal_append_a` | Journal write for add |
+| `agfs_journal_append_d` | Journal write for delete |
+| `agfs_journal_append_r` | Journal write for rename |
 
 Each function is measured with `hist((nsecs - @start[tid]) / 1000)` on
 kretprobe (microsecond granularity) and a call counter.
@@ -242,38 +243,34 @@ starts the workload. After the workload completes, SIGINT is sent to bpftrace
 No PID filter is needed: the agfs mount is unique to this bench session, so
 all `agfs_*` activity during the window belongs to the workload.
 
-For the `native` scenario, no agfs functions fire, which confirms zero
-interposition overhead and provides a clean baseline for I/O amplification.
+For the `native` scenario, no agfs functions fire, which serves as a zero
+baseline confirming the instrumentation is scoped correctly.
 
-### Tier 2 — I/O amplification via `/proc/self/io`
-
-`rchar`, `wchar`, `read_bytes`, `write_bytes` are read before and after the
-workload. For write-files (1,000 × 4 KiB = 4 MB logical), the ratio
-`write_bytes / logical_writes` shows the staging amplification factor (journal
-appends + blob creation on top of the raw payload).
-
-### Tier 3 — perf flamegraph (optional, `--perf`)
+### Flamegraph
 
 `perf record -g -F 99 -p <self-pid>` runs as a side-car for the duration of
-the workload. The resulting `perf.data` is saved to the profile directory.
-Generate the flamegraph with:
+the workload. The resulting `perf.data` is processed via the `inferno` crate
+(pure-Rust flamegraph generator) to produce two artifacts:
 
-```
-perf script -i perf.data | inferno-collapse-perf | inferno-flamegraph > flamegraph.svg
-```
+- `stacks.txt` — collapsed stack text from `perf script`. Agent-readable:
+  each line is a call stack and sample count, diffable across runs, greppable
+  for specific functions.
+- `flamegraph.svg` — interactive SVG generated from `stacks.txt`. Open in a
+  browser to zoom into hot paths.
 
-Requires `perf_event_paranoid ≤ 1` or root (bench already runs as root for
-kmod operations, so this works on this machine where paranoia=4).
+Both are generated unconditionally (no `--perf` flag needed). Requires root,
+which bench already has for kmod operations.
 
 ### Output
 
-Artifacts are saved to `bench-results/<hostname>/profile-<workload>-<scenario>/`:
+Artifacts are saved to `results-bench/<hostname>/profiling/<workload>/<scenario>/`:
 
-- `bpftrace.txt` — raw bpftrace output: per-op latency histograms and call counts
-- `io.json` — I/O amplification: logical vs actual bytes, amplification factor
-- `perf.data` — (only with `--perf`) raw perf recording
+- `summary.txt` — ranked op table (printed to stdout and saved)
+- `bpftrace.txt` — raw per-op latency histograms and call counts
+- `stacks.txt` — collapsed perf stacks (agent-readable)
+- `flamegraph.svg` — interactive flamegraph (human-readable)
 
-A human-readable summary is printed to stdout:
+The summary is printed to stdout and saved to `summary.txt`:
 
 ```
 Profile: write-files / rules-allow-all  (wall: 1.2s)
@@ -288,35 +285,8 @@ Profile: write-files / rules-allow-all  (wall: 1.2s)
     permission        4024       1       3       5
     readdir             10      20      50       0.2
     d_revalidate      6000       0       1       1
-
-  I/O amplification:
-    logical writes:   4.0 MB
-    actual writes:    5.2 MB
-    factor:           1.30×
 ```
 
-The `total ms` column ranks optimization targets directly: it is the product
-of call count × mean latency and represents each op's contribution to total
-wall time.
+The `total ms` column ranks optimization targets: it is call count × mean
+latency, representing each op's contribution to total wall time.
 
-### Implementation structure
-
-```
-bench/src/profiler.rs        — Profiler: spawn/wait bpftrace, read /proc/self/io
-bench/src/profile_report.rs  — format and save profile artifacts
-```
-
-The `Profiler` struct:
-
-```rust
-struct Profiler {
-    bpftrace: Option<Child>,  // None if bpftrace unavailable
-    output: TempPath,         // bpftrace writes stdout here
-    io_before: ProcIo,
-}
-
-impl Profiler {
-    fn start() -> Self           // spawn bpftrace, poll until "Attaching", snapshot io
-    fn stop(self) -> ProfileData // SIGINT bpftrace, wait, parse output, diff io
-}
-```

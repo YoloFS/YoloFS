@@ -4,6 +4,7 @@
 //   agfs-bench [--workload <name>] [--scenario <name>] [--verbose] [--timestamped-results]
 //   agfs-bench rerender
 
+mod profiler;
 mod report;
 mod workload;
 mod workloads;
@@ -22,10 +23,6 @@ use workload::{IterResult, Workload};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/// Timed iterations per (workload, scenario). One additional warm-up run
-/// precedes these; its result is discarded.
-const N_ITERS: usize = 3;
-
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
@@ -42,6 +39,10 @@ struct Cli {
     #[arg(long)]
     scenario: Option<String>,
 
+    /// Number of timed iterations per (workload, scenario); one warm-up run precedes these
+    #[arg(long, default_value_t = 3)]
+    runs: usize,
+
     /// Capture detailed logs for all runs, not just failures
     #[arg(long)]
     verbose: bool,
@@ -57,6 +58,18 @@ enum Cmd {
     Rerender,
     /// List available workloads
     List,
+    /// Profile a workload with bpftrace and perf (all scenarios if --scenario is omitted)
+    Profile {
+        /// Workload to profile (required)
+        #[arg(long)]
+        workload: String,
+        /// Scenario to profile (default: all scenarios)
+        #[arg(long)]
+        scenario: Option<String>,
+        /// Disable bpftrace op-latency histograms; only run perf for a clean flamegraph
+        #[arg(long)]
+        no_bpftrace: bool,
+    },
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -476,18 +489,19 @@ fn run_scenario(
     scenario: Scenario,
     workload: &dyn Workload,
     verbose: bool,
+    runs: usize,
 ) -> Result<ScenarioResult> {
     eprintln!("  scenario: {}", scenario.name());
 
-    let mut iterations = Vec::with_capacity(N_ITERS);
+    let mut iterations = Vec::with_capacity(runs);
     let mut all_kernel_msgs: Vec<String> = Vec::new();
-    for i in 0..N_ITERS {
-        eprintln!("    iter {}/{}…", i + 1, N_ITERS);
+    for i in 0..runs {
+        eprint!("    iter {}/{}… ", i + 1, runs);
         let session = Session::setup(scenario, workload)?;
         let (result, kernel_msgs) = match run_iteration(&session, workload, verbose) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("    iter {} failed: {e:#}", i + 1);
+                eprintln!("failed: {e:#}");
                 let journal = read_agfs_journal_debug(&session);
                 if !journal.is_empty() {
                     eprintln!("    agfs journal at failure:\n{journal}");
@@ -497,6 +511,10 @@ fn run_scenario(
                     .with_context(|| format!("iter {} (verbose rerun) failed", i + 1))?
             }
         };
+        match (result.staging_ms, result.commit_ms) {
+            (Some(s), Some(c)) => eprintln!("{} ms  (stage {} + commit {})", result.total_ms, s, c),
+            _ => eprintln!("{} ms", result.total_ms),
+        }
         if !kernel_msgs.is_empty() || verbose {
             all_kernel_msgs.extend(kernel_msgs);
         }
@@ -589,7 +607,7 @@ fn compute_stats(iters: &[IterResult]) -> Stats {
 // ── Output ────────────────────────────────────────────────────────────────────
 
 fn results_dir(hostname: &str, timestamped: bool) -> PathBuf {
-    let base = PathBuf::from("bench-results").join(hostname);
+    let base = PathBuf::from("results-bench").join(hostname);
     if timestamped {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -642,12 +660,68 @@ fn write_results(results: &BenchResults, out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+// ── Profile ───────────────────────────────────────────────────────────────────
+
+fn run_profile(env: &Env, workload_name: &str, scenario_name: &str, bpftrace: bool) -> Result<()> {
+    let workload = workloads::by_name(workload_name)
+        .with_context(|| format!("unknown workload: {workload_name}"))?;
+    let scenario = Scenario::from_name(scenario_name)
+        .with_context(|| format!("unknown scenario: {scenario_name}"))?;
+
+    workload.ensure_fixture()?;
+
+    let out_dir = results_dir(&env.hostname, false)
+        .join("profiling")
+        .join(workload_name)
+        .join(scenario_name);
+
+    let session = Session::setup(scenario, workload.as_ref())?;
+    let dest = if scenario.uses_agfs() {
+        session.mnt_path(workload.work_dir())
+    } else {
+        session.root.path().join(workload.work_dir())
+    };
+    std::fs::create_dir_all(&dest).context("creating workload dest dir")?;
+
+    eprintln!("Profiling {workload_name} / {scenario_name}…");
+    let p = profiler::Profiler::start(&out_dir, bpftrace)?;
+    let t0 = std::time::Instant::now();
+    workload.run(&dest, false)?;
+    if scenario.uses_agfs() {
+        let out = Command::new("agfs")
+            .arg("commit")
+            .current_dir(session.root.path())
+            .env("NO_COLOR", "1")
+            .stdout(Stdio::null())
+            .output()
+            .context("running agfs commit")?;
+        if !out.status.success() {
+            bail!("agfs commit failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+    let wall_ms = t0.elapsed().as_millis() as u64;
+    p.stop(wall_ms)?;
+
+    Ok(())
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let env = collect_env();
+
+    if let Some(Cmd::Profile { workload: wname, scenario: sname, no_bpftrace }) = cli.cmd {
+        let scenarios: Vec<&str> = match sname.as_deref() {
+            Some(s) => vec![s],
+            None => Scenario::all().iter().map(|s| s.name()).collect(),
+        };
+        for sname in scenarios {
+            run_profile(&env, &wname, sname, !no_bpftrace)?;
+        }
+        return Ok(());
+    }
 
     if let Some(Cmd::List) = cli.cmd {
         for w in workloads::all() {
@@ -695,7 +769,7 @@ fn main() -> Result<()> {
 
         let mut scenario_results = Vec::new();
         for &sc in &scenarios {
-            let result = run_scenario(sc, workload.as_ref(), cli.verbose)?;
+            let result = run_scenario(sc, workload.as_ref(), cli.verbose, cli.runs)?;
             scenario_results.push(result);
         }
 

@@ -9,6 +9,9 @@ TARGET_DIR       := $(CURDIR)-target
 
 .PHONY: build clean cli kmod lint fix
 
+BTF_SRC  := /sys/kernel/btf/vmlinux
+BTF_DEST := /usr/lib/modules/$(shell uname -r)/build/vmlinux
+
 build: cli kmod
 
 $(TARGET_DIR):
@@ -17,12 +20,15 @@ $(TARGET_DIR):
 cli: | $(TARGET_DIR)
 	cargo build --release
 
-kmod: $(KMOD_OUT)
+kmod: $(BTF_DEST) $(KMOD_OUT)
 
 $(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(TARGET_DIR)
 	mkdir -p $(TARGET_DIR)/kmod
 	cp kmod/Kbuild $(TARGET_DIR)/kmod/Kbuild
 	$(MAKE) -j$(nproc) -C $(KDIR) M=$(TARGET_DIR)/kmod KBUILD_KMOD_SRC=$(CURDIR)/kmod modules
+
+$(BTF_DEST): $(BTF_SRC)
+	sudo cp $(BTF_SRC) $(BTF_DEST)
 
 clean:
 	rm -rf $(TARGET_DIR)
