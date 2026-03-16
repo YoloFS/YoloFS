@@ -8,32 +8,23 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Cache cargo
-        uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-
+          submodules: false
 
       - name: Install dependencies
         run: ./install_deps.sh
 
+      - name: Create build directories
+        run: mkdir -p "$(pwd)-target"
+
       - name: Lint
         run: make lint
+
+      - name: Build and install
+        run: make install
 
       - name: Unit tests
         run: make test-unit
 
-      - name: Load kernel module
-        run: make load-kmod
-
       - name: Integration tests
-        run: make test-integration
-
-      - name: Unload kernel module
-        if: always()
-        run: make unload-kmod
+        run: make test-e2e
