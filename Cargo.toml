@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "bench"]
+
 [package]
 name = "agfs"
 version = "0.1.0"
@@ -6,10 +9,6 @@ edition = "2024"
 [[bin]]
 name = "agfs"
 path = "cli/main.rs"
-
-[[bin]]
-name = "agfs-bench"
-path = "bench/src/main.rs"
 
 [lib]
 path = "cli/lib.rs"
@@ -24,11 +23,6 @@ similar = "2"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-plotly = "0.14"
-dirs-next = "2"
-inferno = "0.12"
+tempfile = "3"
 
 [dev-dependencies]
-
-[dependencies.tempfile]
-version = "3"

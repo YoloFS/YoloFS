@@ -16,7 +16,7 @@ $(TARGET_DIR):
 	mkdir -p $@
 
 cli: | $(TARGET_DIR)
-	cargo build --release
+	cargo build --release -p agfs
 
 kmod: $(BTF_VMLINUX) $(KMOD_OUT)
 
@@ -89,11 +89,11 @@ install-branchfs: $(BRANCHFS_OUT)
 test: test-unit test-e2e
 
 test-unit:
-	cargo test --lib
+	cargo test -p agfs --lib
 
 test-e2e: install
 	agfs reload
-	cargo test --test e2e -- --test-threads=1
+	cargo test -p agfs --test e2e -- --test-threads=1
 	agfs unload
 
 # ── Bench ─────────────────────────────────────────────────────────────
@@ -102,19 +102,19 @@ test-e2e: install
 
 bench: install
 	agfs reload
-	cargo build --release --bin agfs-bench
+	cargo build --release -p agfs-bench
 	./target/release/agfs-bench
 	agfs unload
 
 bench-micro: install
 	agfs reload
-	cargo build --release --bin agfs-bench
+	cargo build --release -p agfs-bench
 	./target/release/agfs-bench --micro
 	agfs unload
 
 bench-macro: install
 	agfs reload
-	cargo build --release --bin agfs-bench
+	cargo build --release -p agfs-bench
 	./target/release/agfs-bench --macro
 	agfs unload
 

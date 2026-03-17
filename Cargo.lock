@@ -9,6 +9,22 @@ dependencies = [
  "anyhow",
  "clap",
  "colored",
+ "libc",
+ "nix",
+ "serde",
+ "serde_json",
+ "similar",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "agfs-bench"
+version = "0.1.0"
+dependencies = [
+ "agfs",
+ "anyhow",
+ "clap",
  "dirs-next",
  "inferno",
  "libc",
@@ -16,9 +32,7 @@ dependencies = [
  "plotly",
  "serde",
  "serde_json",
- "similar",
  "tempfile",
- "toml",
 ]
 
 [[package]]

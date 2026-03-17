@@ -444,6 +444,9 @@ fn compute_stats(iters: &[IterResult]) -> Stats {
 /// Root of the repository, determined at compile time.
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("bench crate should be inside repo")
+        .to_path_buf()
 }
 
 fn results_dir(hostname: &str, timestamped: bool) -> PathBuf {
