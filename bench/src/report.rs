@@ -148,16 +148,52 @@ fn render_index(results: &BenchResults, out_dir: &Path) -> Result<()> {
     html.push_str("  .card-label { font-size: 0.95em; font-weight: 600; margin-bottom: 0.3em; cursor: help; }\n");
     html.push_str("  .card-label .desc { font-weight: 400; color: #888; font-size: 0.85em; }\n");
     html.push_str("  iframe { width: 100%; height: 420px; border: 1px solid #ddd; border-radius: 4px; background: #fff; }\n");
-    html.push_str("  .env { font-size: 0.85em; color: #777; margin-bottom: 1.5em; }\n");
+    html.push_str("  .env { font-size: 0.85em; color: #666; margin-bottom: 1.5em; }\n");
+    html.push_str("  .env table { border-collapse: collapse; }\n");
+    html.push_str("  .env td { padding: 0.15em 0; }\n");
+    html.push_str("  .env td:first-child { color: #999; padding-right: 1em; white-space: nowrap; }\n");
     html.push_str("</style>\n");
     html.push_str("</head><body>\n");
 
-    html.push_str(&format!("<h1>agfs-bench — {}</h1>\n", e.hostname));
+    let title = match (&e.cloudlab_hardware, &e.cloudlab_cluster) {
+        (Some(hw), Some(cluster)) => format!("{hw} @ {cluster}"),
+        _ => e.hostname.clone(),
+    };
+    html.push_str(&format!("<h1>agfs-bench &mdash; {title}</h1>\n"));
+
+    html.push_str("<div class=\"env\"><table>\n");
+    if let (Some(hw), Some(cluster)) = (&e.cloudlab_hardware, &e.cloudlab_cluster) {
+        html.push_str(&format!(
+            "<tr><td>cloudlab</td><td>{hw} @ {cluster}</td></tr>\n"
+        ));
+    }
     html.push_str(&format!(
-        "<div class=\"env\">{} &middot; {} GB &middot; {} {} &middot; {} kernel \
-         &middot; <a href=\"results.json\">results.json</a></div>\n",
-        e.cpu, e.memory_gb, e.storage_device_model, e.filesystem, e.kernel,
+        "<tr><td>host</td><td>{}</td></tr>\n", e.hostname
     ));
+    html.push_str(&format!(
+        "<tr><td>cpu</td><td>{}</td></tr>\n", e.cpu
+    ));
+    html.push_str(&format!(
+        "<tr><td>memory</td><td>{} GB</td></tr>\n", e.memory_gb
+    ));
+    html.push_str(&format!(
+        "<tr><td>storage</td><td>{} &mdash; {} ({})</td></tr>\n",
+        e.storage_device_model, e.storage, e.storage_device
+    ));
+    html.push_str(&format!(
+        "<tr><td>filesystem</td><td>{} &mdash; {} GB total, {} GB free</td></tr>\n",
+        e.filesystem, e.filesystem_size_gb, e.filesystem_free_gb
+    ));
+    html.push_str(&format!(
+        "<tr><td>kernel</td><td>{}</td></tr>\n", e.kernel
+    ));
+    html.push_str(&format!(
+        "<tr><td>distro</td><td>{}</td></tr>\n", e.distro
+    ));
+    html.push_str(&format!(
+        "<tr><td></td><td><a href=\"results.json\">results.json</a></td></tr>\n"
+    ));
+    html.push_str("</table></div>\n");
 
     let emit_section = |html: &mut String, heading: &str, names: &[&str]| {
         if names.is_empty() {

@@ -123,6 +123,10 @@ struct Env {
     mount_options: String,
     kernel: String,
     distro: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cloudlab_cluster: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cloudlab_hardware: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -160,6 +164,8 @@ fn collect_env() -> Env {
     let (storage_device, filesystem, filesystem_size_gb, filesystem_free_gb, mount_options) =
         read_fs_info(&cache_dir);
 
+    let (cloudlab_cluster, cloudlab_hardware) = read_cloudlab_info();
+
     Env {
         hostname: read_hostname(),
         cpu: read_cpu_model(),
@@ -173,6 +179,8 @@ fn collect_env() -> Env {
         mount_options,
         kernel: read_kernel_version(),
         distro: read_distro(),
+        cloudlab_cluster,
+        cloudlab_hardware,
     }
 }
 
@@ -322,6 +330,37 @@ fn read_distro() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// If running on CloudLab, return (cluster, hardware_type) from `geni-get`.
+fn read_cloudlab_info() -> (Option<String>, Option<String>) {
+    use std::process::Command;
+
+    let manifest = Command::new("geni-get")
+        .arg("manifest")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+
+    let manifest = match manifest {
+        Some(m) => m,
+        None => return (None, None),
+    };
+
+    let cluster = manifest
+        .split("IDN+")
+        .nth(1)
+        .and_then(|s| s.split('+').next())
+        .map(|s| s.to_string());
+
+    let hardware = manifest
+        .split("hardware_type name=\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .map(|s| s.to_string());
+
+    (cluster, hardware)
+}
+
 // ── Backend runner ───────────────────────────────────────────────────────────
 
 fn run_backend(
@@ -449,8 +488,12 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn results_dir(hostname: &str, timestamped: bool) -> PathBuf {
-    let base = repo_root().join("results-bench").join(hostname);
+fn results_dir(env: &Env, timestamped: bool) -> PathBuf {
+    let dir_name = match (&env.cloudlab_hardware, &env.cloudlab_cluster) {
+        (Some(hw), Some(cluster)) => format!("{hw}@{cluster}"),
+        _ => env.hostname.clone(),
+    };
+    let base = repo_root().join("results-bench").join(dir_name);
     if timestamped {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -542,7 +585,7 @@ fn run_profile(env: &Env, workload_name: &str, scenario_name: &str, bpftrace: bo
 
     workload.ensure_fixture()?;
 
-    let out_dir = results_dir(&env.hostname, false)
+    let out_dir = results_dir(&env, false)
         .join("profiling")
         .join(workload_name)
         .join(scenario_name);
@@ -662,7 +705,7 @@ fn main() -> Result<()> {
     }
 
     if let Some(Cmd::Rerender) = cli.cmd {
-        let out_dir = results_dir(&env.hostname, false);
+        let out_dir = results_dir(&env, false);
         let results_path = out_dir.join("results.json");
         let json = fs::read_to_string(&results_path)
             .with_context(|| format!("reading {}", results_path.display()))?;
@@ -743,7 +786,7 @@ fn main() -> Result<()> {
         workloads: workload_results,
     };
 
-    let out_dir = results_dir(&env.hostname, cli.timestamped_results);
+    let out_dir = results_dir(&env, cli.timestamped_results);
     let merged = write_results(&results, &out_dir)?;
     report::render(&merged, &out_dir)?;
 
