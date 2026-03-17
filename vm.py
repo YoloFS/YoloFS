@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import secrets
 import subprocess
 import sys
 import textwrap
@@ -27,7 +28,7 @@ DEFAULT_RAM = "32G"
 DEFAULT_CPUS = os.cpu_count()
 DEFAULT_SSH_PORT = 2222
 DEFAULT_USER = "ubuntu"
-DEFAULT_PASSWORD = "ubuntu"
+PASSWORD_PATH = DATA_DIR / "password"
 
 
 def download_image():
@@ -73,6 +74,15 @@ def create_disk(disk_size: str, reset: bool = False):
     )
 
 
+def _ensure_password() -> str:
+    """Ensure a VM password file exists under DATA_DIR, return the password."""
+    if not PASSWORD_PATH.exists():
+        password = secrets.token_urlsafe(16)
+        PASSWORD_PATH.write_text(password)
+        PASSWORD_PATH.chmod(0o600)
+    return PASSWORD_PATH.read_text().strip()
+
+
 def _ensure_ssh_keypair() -> str:
     """Ensure a VM-specific SSH keypair exists under DATA_DIR, return the public key."""
     if not SSH_KEY_PATH.exists():
@@ -106,6 +116,7 @@ def create_seed_iso(host_cwd: Path, reset: bool = False):
 
     pubkey = _ensure_ssh_keypair()
     _ensure_ssh_config()
+    password = _ensure_password()
     keys_yaml = f"ssh_authorized_keys:\n        - {pubkey}"
 
     # cloud-init 'mounts' writes /etc/fstab so the 9p share survives reboots.
@@ -131,7 +142,7 @@ def create_seed_iso(host_cwd: Path, reset: bool = False):
         "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
         "    shell: /bin/bash\n"
         "    lock_passwd: false\n"
-        f'    plain_text_passwd: "{DEFAULT_PASSWORD}"\n'
+        f'    plain_text_passwd: "{password}"\n'
         f"    {keys_yaml}\n"
         "ssh_pwauth: true\n"
         f"{mounts_yaml}\n"
@@ -167,9 +178,10 @@ def _ssh_cmd() -> list[str]:
 
 def _print_vm_info():
     """Print VM connection info."""
-    print(f"  SSH:  {' '.join(_ssh_cmd())}")
-    print(f"  Log:  {LOG_PATH}")
-    print(f"  Stop: ./vm.py stop")
+    print(f"  SSH:      {' '.join(_ssh_cmd())}")
+    print(f"  Password: {PASSWORD_PATH}")
+    print(f"  Log:      {LOG_PATH}")
+    print(f"  Stop:     ./vm.py stop")
 
 
 def is_vm_running():
@@ -233,7 +245,7 @@ def run_vm(
         "-drive", f"file={DISK_PATH},format=qcow2,if=virtio",
         "-drive", f"file={SEED_PATH},format=raw,if=virtio",
         "-net", "nic,model=virtio",
-        "-net", f"user,hostfwd=tcp::{DEFAULT_SSH_PORT}-:22",
+        "-net", f"user,hostfwd=tcp:127.0.0.1:{DEFAULT_SSH_PORT}-:22",
         "-virtfs", f"local,path={Path.cwd()},mount_tag=hostcwd,security_model=none",
     ]
 
@@ -337,6 +349,7 @@ def main():
         stop_vm()
         download_image()
         create_disk(DEFAULT_DISK_SIZE, reset=True)
+        PASSWORD_PATH.unlink(missing_ok=True)
         create_seed_iso(Path.cwd(), reset=True)
         SSH_KNOWN_HOSTS.unlink(missing_ok=True)
         print("Reset complete. Run './vm.py start' to boot.")
