@@ -12,16 +12,21 @@ pub fn to_base_path(rel: &str) -> PathBuf {
 }
 
 /// Normalize a user-supplied path to match the absolute-path format used in the
-/// journal. Relative paths are resolved against the current working directory
+/// journal. Relative paths are resolved against `cwd`
 /// (e.g. "hello.txt" → "<cwd>/hello.txt"). Absolute paths are kept as-is.
-pub fn normalize_path(p: &str) -> String {
+pub fn normalize_path_with_cwd(p: &str, cwd: &Path) -> String {
     let stripped = p.strip_prefix("./").unwrap_or(p);
     if stripped.starts_with('/') {
         stripped.to_string()
     } else {
-        let cwd = std::env::current_dir().unwrap_or_default();
         cwd.join(stripped).to_string_lossy().to_string()
     }
+}
+
+/// Convenience wrapper that resolves against the real working directory.
+pub fn normalize_path(p: &str) -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    normalize_path_with_cwd(p, &cwd)
 }
 
 /// Locate the agfs session directory.
@@ -79,6 +84,15 @@ mod tests {
     // default parallel test runner.
     #[test]
     fn session_dir_env_and_dotdir() {
+        // Ensure we start from a valid cwd (the test runner may have been
+        // started from a directory that no longer exists inside the VM).
+        let guard = tempfile::tempdir().unwrap();
+        // SAFETY: no other test mutates the cwd concurrently (all
+        // cwd-dependent tests are consolidated here or use _with_cwd).
+        unsafe {
+            std::env::set_current_dir(guard.path()).unwrap();
+        }
+
         // ── Part 1: AGFS_SESSION env var takes precedence ──
         let dir = "/tmp/agfs-test-session";
         // SAFETY: no other thread reads this var during this test.
@@ -95,51 +109,54 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let agfs_dir = tmp.path().join(".agfs");
         std::fs::create_dir(&agfs_dir).unwrap();
-        let orig = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
+        unsafe {
+            std::env::set_current_dir(tmp.path()).unwrap();
+        }
         let result = session_dir().unwrap();
         assert_eq!(result, agfs_dir);
-        std::env::set_current_dir(orig).unwrap();
     }
 
     #[test]
     fn normalize_path_relative() {
-        let cwd = std::env::current_dir().unwrap();
+        let cwd = PathBuf::from("/fake/cwd");
         assert_eq!(
-            normalize_path("hello.txt"),
-            cwd.join("hello.txt").to_string_lossy()
+            normalize_path_with_cwd("hello.txt", &cwd),
+            "/fake/cwd/hello.txt"
         );
     }
 
     #[test]
     fn normalize_path_absolute() {
-        assert_eq!(normalize_path("/src/main.rs"), "/src/main.rs");
+        assert_eq!(
+            normalize_path_with_cwd("/src/main.rs", &PathBuf::from("/unused")),
+            "/src/main.rs"
+        );
     }
 
     #[test]
     fn normalize_path_nested() {
-        let cwd = std::env::current_dir().unwrap();
+        let cwd = PathBuf::from("/fake/cwd");
         assert_eq!(
-            normalize_path("src/lib.rs"),
-            cwd.join("src/lib.rs").to_string_lossy()
+            normalize_path_with_cwd("src/lib.rs", &cwd),
+            "/fake/cwd/src/lib.rs"
         );
     }
 
     #[test]
     fn normalize_path_dot_slash() {
-        let cwd = std::env::current_dir().unwrap();
+        let cwd = PathBuf::from("/fake/cwd");
         assert_eq!(
-            normalize_path("./hello.txt"),
-            cwd.join("hello.txt").to_string_lossy()
+            normalize_path_with_cwd("./hello.txt", &cwd),
+            "/fake/cwd/hello.txt"
         );
     }
 
     #[test]
     fn normalize_path_dot_slash_nested() {
-        let cwd = std::env::current_dir().unwrap();
+        let cwd = PathBuf::from("/fake/cwd");
         assert_eq!(
-            normalize_path("./src/main.rs"),
-            cwd.join("src/main.rs").to_string_lossy()
+            normalize_path_with_cwd("./src/main.rs", &cwd),
+            "/fake/cwd/src/main.rs"
         );
     }
 }
