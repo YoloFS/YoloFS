@@ -12,10 +12,16 @@ from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "vm"
 IMAGE_NAME = "ubuntu-24.04-minimal-cloudimg-amd64.img"
+IMAGE_PATH = DATA_DIR / IMAGE_NAME
 IMAGE_URL = f"https://cloud-images.ubuntu.com/minimal/releases/noble/release/{IMAGE_NAME}"
-DISK_NAME = "disk.qcow2"
-SEED_NAME = "seed.iso"
-LOG_NAME = "vm.log"
+DISK_PATH = DATA_DIR / "disk.qcow2"
+SEED_PATH = DATA_DIR / "seed.iso"
+LOG_PATH = DATA_DIR / "vm.log"
+PID_PATH = DATA_DIR / "vm.pid"
+SSH_KEY_PATH = DATA_DIR / "id_ed25519"
+SSH_PUBKEY_PATH = DATA_DIR / "id_ed25519.pub"
+SSH_KNOWN_HOSTS = DATA_DIR / "known_hosts"
+SSH_CONFIG_PATH = DATA_DIR / "ssh_config"
 DEFAULT_DISK_SIZE = "20G"
 DEFAULT_RAM = "8G"
 DEFAULT_CPUS = os.cpu_count()
@@ -25,33 +31,30 @@ DEFAULT_PASSWORD = "ubuntu"
 
 
 def download_image():
-    image_path = DATA_DIR / IMAGE_NAME
-    if image_path.exists():
-        print(f"Base image already exists: {image_path}")
-        return image_path
+    if IMAGE_PATH.exists():
+        print(f"Base image already exists: {IMAGE_PATH}")
+        return
     print(f"Downloading Ubuntu 24.04 cloud image...")
     subprocess.run(
-        ["wget", "-q", "--show-progress", "-O", str(image_path), IMAGE_URL],
+        ["wget", "-q", "--show-progress", "-O", str(IMAGE_PATH), IMAGE_URL],
         check=True,
     )
-    print(f"Downloaded to {image_path}")
-    return image_path
+    print(f"Downloaded to {IMAGE_PATH}")
 
 
-def _detect_image_format(image_path: Path) -> str:
+def _detect_image_format() -> str:
     result = subprocess.run(
-        ["qemu-img", "info", "--output=json", str(image_path)],
+        ["qemu-img", "info", "--output=json", str(IMAGE_PATH)],
         check=True, capture_output=True, text=True,
     )
     return json.loads(result.stdout)["format"]
 
 
-def create_disk(image_path: Path, disk_size: str, force: bool = False):
-    disk_path = DATA_DIR / DISK_NAME
-    if disk_path.exists() and not force:
-        print(f"Disk image already exists: {disk_path}")
-        return disk_path
-    backing_fmt = _detect_image_format(image_path)
+def create_disk(disk_size: str, reset: bool = False):
+    if DISK_PATH.exists() and not reset:
+        print(f"Disk image already exists: {DISK_PATH}")
+        return
+    backing_fmt = _detect_image_format()
     print(f"Creating disk image ({disk_size}, backing format: {backing_fmt})...")
     subprocess.run(
         [
@@ -60,40 +63,48 @@ def create_disk(image_path: Path, disk_size: str, force: bool = False):
             "-f",
             "qcow2",
             "-b",
-            str(image_path),
+            str(IMAGE_PATH),
             "-F",
             backing_fmt,
-            str(disk_path),
+            str(DISK_PATH),
             disk_size,
         ],
         check=True,
     )
-    return disk_path
 
 
-def _read_ssh_pubkeys():
-    """Read all public SSH keys from ~/.ssh/."""
-    ssh_dir = Path.home() / ".ssh"
-    keys = []
-    for p in sorted(ssh_dir.glob("id_*.pub")):
-        key = p.read_text().strip()
-        if key:
-            keys.append(key)
-    return keys
+def _ensure_ssh_keypair() -> str:
+    """Ensure a VM-specific SSH keypair exists under DATA_DIR, return the public key."""
+    if not SSH_KEY_PATH.exists():
+        print("Generating VM SSH keypair...")
+        subprocess.run(
+            ["ssh-keygen", "-t", "ed25519", "-f", str(SSH_KEY_PATH), "-N", "", "-C", "vm"],
+            check=True, capture_output=True,
+        )
+    return SSH_PUBKEY_PATH.read_text().strip()
 
 
-def create_seed_iso(host_cwd: Path, force: bool = False):
-    seed_path = DATA_DIR / SEED_NAME
-    if seed_path.exists() and not force:
-        print(f"Seed ISO already exists: {seed_path}")
-        return seed_path
+def _ensure_ssh_config():
+    """Write an SSH config file for the VM."""
+    SSH_CONFIG_PATH.write_text(
+        f"Host vm\n"
+        f"    HostName localhost\n"
+        f"    Port {DEFAULT_SSH_PORT}\n"
+        f"    User {DEFAULT_USER}\n"
+        f"    IdentityFile {SSH_KEY_PATH}\n"
+        f"    UserKnownHostsFile {SSH_KNOWN_HOSTS}\n"
+        f"    StrictHostKeyChecking accept-new\n"
+    )
 
-    pubkeys = _read_ssh_pubkeys()
-    if pubkeys:
-        keys_lines = "\n".join(f"        - {k}" for k in pubkeys)
-        keys_yaml = f"ssh_authorized_keys:\n{keys_lines}"
-    else:
-        keys_yaml = "ssh_authorized_keys: []"
+
+def create_seed_iso(host_cwd: Path, reset: bool = False):
+    if SEED_PATH.exists() and not reset:
+        print(f"Seed ISO already exists: {SEED_PATH}")
+        return
+
+    pubkey = _ensure_ssh_keypair()
+    _ensure_ssh_config()
+    keys_yaml = f"ssh_authorized_keys:\n        - {pubkey}"
 
     # cloud-init 'mounts' writes /etc/fstab so the 9p share survives reboots.
     mounts_yaml = (
@@ -139,48 +150,36 @@ def create_seed_iso(host_cwd: Path, force: bool = False):
     subprocess.run(
         [
             "cloud-localds",
-            str(seed_path),
+            str(SEED_PATH),
             str(user_data_path),
             str(meta_data_path),
         ],
         check=True,
     )
-    return seed_path
 
 
 def _ssh_cmd() -> list[str]:
     """Base SSH command with common options."""
-    return [
-        "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        "-o", "PasswordAuthentication=no",
-        "-o", "BatchMode=yes",
-        "-p", str(DEFAULT_SSH_PORT),
-        f"{DEFAULT_USER}@localhost",
-    ]
+    return ["ssh", "-F", str(SSH_CONFIG_PATH), "vm"]
 
 
 def _print_vm_info():
     """Print VM connection info."""
-    log_path = DATA_DIR / LOG_NAME
-    print(f"  SSH:  ssh -p {DEFAULT_SSH_PORT} {DEFAULT_USER}@localhost")
-    print(f"  Log:  {log_path}")
+    print(f"  SSH:  {' '.join(_ssh_cmd())}")
+    print(f"  Log:  {LOG_PATH}")
     print(f"  Stop: ./vm.py stop")
 
 
 def is_vm_running():
     """Check if the VM is running via pidfile."""
-    pidfile = DATA_DIR / "vm.pid"
-    if not pidfile.exists():
+    if not PID_PATH.exists():
         return False
-    pid = int(pidfile.read_text().strip())
+    pid = int(PID_PATH.read_text().strip())
     try:
         os.kill(pid, 0)
         return True
     except ProcessLookupError:
-        pidfile.unlink(missing_ok=True)
+        PID_PATH.unlink(missing_ok=True)
         return False
 
 
@@ -196,7 +195,7 @@ def wait_for_vm(mount_path: str, timeout: int = 120):
         if result.returncode == 0:
             return
         time.sleep(2)
-    print(f"Error: VM not ready after {timeout}s. Check log: {DATA_DIR / LOG_NAME}")
+    print(f"Error: VM not ready after {timeout}s. Check log: {LOG_PATH}")
     sys.exit(1)
 
 
@@ -207,23 +206,19 @@ def ensure_vm_started():
         _print_vm_info()
         return
     print("VM not running, starting...")
-    image_path = download_image()
-    disk_path = create_disk(image_path, DEFAULT_DISK_SIZE)
-    seed_path = create_seed_iso(Path.cwd())
-    run_vm(disk_path, seed_path, DEFAULT_RAM, DEFAULT_CPUS, [])
+    download_image()
+    create_disk(DEFAULT_DISK_SIZE)
+    create_seed_iso(Path.cwd())
+    run_vm(DEFAULT_RAM, DEFAULT_CPUS, [])
     wait_for_vm(str(Path.cwd()))
 
 
 def run_vm(
-    disk_path: Path,
-    seed_path: Path,
     ram: str,
     cpus: int,
     extra_args: list[str],
     foreground: bool = False,
 ):
-    pidfile = DATA_DIR / "vm.pid"
-    log_path = DATA_DIR / LOG_NAME
     cmd = [
         "qemu-system-x86_64",
         "-enable-kvm",
@@ -231,8 +226,8 @@ def run_vm(
         "-cpu", "host",
         "-m", ram,
         "-smp", str(cpus),
-        "-drive", f"file={disk_path},format=qcow2,if=virtio",
-        "-drive", f"file={seed_path},format=raw,if=virtio",
+        "-drive", f"file={DISK_PATH},format=qcow2,if=virtio",
+        "-drive", f"file={SEED_PATH},format=raw,if=virtio",
         "-net", "nic,model=virtio",
         "-net", f"user,hostfwd=tcp::{DEFAULT_SSH_PORT}-:22",
         "-virtfs", f"local,path={Path.cwd()},mount_tag=hostcwd,security_model=none",
@@ -241,17 +236,17 @@ def run_vm(
     if foreground:
         cmd += ["-nographic"]
         cmd += extra_args
-        print(f"Starting VM (ssh: ssh -p {DEFAULT_SSH_PORT} {DEFAULT_USER}@localhost)...")
+        print(f"Starting VM ({' '.join(_ssh_cmd())})...")
         print(f"  RAM={ram}  CPUs={cpus}")
         print("Press Ctrl-A X to exit QEMU console.\n")
         os.execvp(cmd[0], cmd)
 
     cmd += [
         "-display", "none",
-        "-serial", f"file:{log_path}",
+        "-serial", f"file:{LOG_PATH}",
         "-monitor", "none",
         "-daemonize",
-        "-pidfile", str(pidfile),
+        "-pidfile", str(PID_PATH),
     ]
     cmd += extra_args
     print(f"Starting VM in background...")
@@ -260,11 +255,10 @@ def run_vm(
 
 
 def stop_vm():
-    pidfile = DATA_DIR / "vm.pid"
-    if not pidfile.exists():
+    if not PID_PATH.exists():
         print("No pidfile found; VM may not be running.")
         return
-    pid = int(pidfile.read_text().strip())
+    pid = int(PID_PATH.read_text().strip())
     print(f"Stopping VM (pid {pid})...")
     try:
         os.kill(pid, 15)
@@ -277,7 +271,7 @@ def stop_vm():
                 break
     except ProcessLookupError:
         print("Process not found; cleaning up pidfile.")
-    pidfile.unlink(missing_ok=True)
+    PID_PATH.unlink(missing_ok=True)
 
 
 def ssh_vm(ssh_args: list[str]):
@@ -307,7 +301,6 @@ def main():
         p.add_argument("--ram", default=DEFAULT_RAM, help=f"RAM (default: {DEFAULT_RAM})")
         p.add_argument("--cpus", type=int, default=DEFAULT_CPUS, help=f"CPUs (default: {DEFAULT_CPUS})")
         p.add_argument("--disk-size", default=DEFAULT_DISK_SIZE, help=f"Disk size (default: {DEFAULT_DISK_SIZE})")
-        p.add_argument("--force", action="store_true", help="Recreate disk and seed images")
         p.add_argument("--foreground", "-f", action="store_true", help="Run VM in foreground (interactive)")
         p.add_argument("extra", nargs="*", help="Extra QEMU arguments")
 
@@ -322,6 +315,9 @@ def main():
     p_restart = sub.add_parser("restart", help="Stop and re-start the VM")
     _add_vm_args(p_restart)
 
+    # --- reset ---
+    sub.add_parser("reset", help="Stop VM and recreate disk and seed images")
+
     # --- download ---
     sub.add_parser("download", help="Download the base cloud image only")
 
@@ -333,6 +329,13 @@ def main():
         download_image()
     elif args.command == "stop":
         stop_vm()
+    elif args.command == "reset":
+        stop_vm()
+        download_image()
+        create_disk(DEFAULT_DISK_SIZE, reset=True)
+        create_seed_iso(Path.cwd(), reset=True)
+        SSH_KNOWN_HOSTS.unlink(missing_ok=True)
+        print("Reset complete. Run './vm.py start' to boot.")
     elif args.command in ("start", "restart"):
         if args.command == "restart":
             stop_vm()
@@ -340,10 +343,10 @@ def main():
             print(f"VM is already running.")
             _print_vm_info()
             sys.exit(1)
-        image_path = download_image()
-        disk_path = create_disk(image_path, args.disk_size, force=args.force)
-        seed_path = create_seed_iso(Path.cwd(), force=args.force)
-        run_vm(disk_path, seed_path, args.ram, args.cpus, args.extra, foreground=args.foreground)
+        download_image()
+        create_disk(args.disk_size)
+        create_seed_iso(Path.cwd())
+        run_vm(args.ram, args.cpus, args.extra, foreground=args.foreground)
 
 
 if __name__ == "__main__":
