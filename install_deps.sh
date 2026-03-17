@@ -66,4 +66,5 @@ fi
 if [ "$(cat /proc/sys/kernel/dmesg_restrict 2>/dev/null)" != "0" ]; then
     info "Setting kernel.dmesg_restrict=0 for /dev/kmsg access"
     sudo sysctl -w kernel.dmesg_restrict=0 >/dev/null
+    echo 'kernel.dmesg_restrict=0' | sudo tee /etc/sysctl.d/99-agfs.conf >/dev/null
 fi
