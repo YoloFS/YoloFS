@@ -10,53 +10,21 @@ is_vm() { systemd-detect-virt -q 2>/dev/null; }
 # ── Package lists ─────────────────────────────────────────────────────
 
 QEMU_PKGS=(
-    qemu-system-x86
-    qemu-utils
-    cloud-image-utils
-    wget
+    qemu-system-x86   # VM emulation (vm.py)
+    qemu-utils        # qemu-img for disk image management
+    cloud-image-utils  # cloud-localds for VM cloud-init
+    wget              # download Ubuntu cloud images
 )
 
 BUILD_PKGS=(
-    build-essential
-    "linux-headers-$(uname -r)"
-    "linux-tools-$(uname -r)"
-    bc
-    kmod
-    pkg-config
-    git
-    pahole
-    bpftrace
-    # try build deps
-    autoconf
-    attr
-    pandoc
-    # branchfs build deps
-    fuse3
-    libfuse3-dev
-    # btrfs backend
-    btrfs-progs
-    rsync
+    build-essential                # gcc, make — kernel module compilation
+    "linux-headers-$(uname -r)"   # kernel headers for kmod build
+    bc                             # kernel build arithmetic
+    kmod                           # insmod/rmmod for loading agfs.ko
+    pahole                         # BTF generation for kernel module
 )
 
-# ── Installers ────────────────────────────────────────────────────────
-
-install_apt() {
-    local pkgs=("$@")
-    sudo apt-get update -qq
-    sudo apt-get install -y --no-install-recommends "${pkgs[@]}"
-}
-
-install_rust() {
-    if command -v rustc &>/dev/null; then
-        info "Rust already installed: $(rustc --version)"
-    else
-        info "Installing Rust via rustup"
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q
-        . "$HOME/.cargo/env"
-    fi
-}
-
-# ── Main ─────────────────────────────────────────────────────────────
+# ── APT packages ──────────────────────────────────────────────────────
 
 pkgs=("${BUILD_PKGS[@]}")
 
@@ -67,11 +35,27 @@ else
     pkgs+=("${QEMU_PKGS[@]}")
 fi
 
-install_apt "${pkgs[@]}"
-install_rust
+missing=()
+for pkg in "${pkgs[@]}"; do
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
+        missing+=("$pkg")
+    fi
+done
 
-# ── Kernel settings required by try ──────────────────────────────────
+if (( ${#missing[@]} > 0 )); then
+    info "Installing missing packages: ${missing[*]}"
+    sudo apt-get update -qq
+    sudo apt-get install -y --no-install-recommends "${missing[@]}"
+else
+    info "All APT packages already installed: ${pkgs[*]}"
+fi
 
-info "Configuring kernel settings for try (overlay + unprivileged userns)"
-sudo modprobe overlay
-sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+# ── Rust toolchain ────────────────────────────────────────────────────
+
+if command -v rustc &>/dev/null; then
+    info "Rust already installed: $(rustc --version)"
+else
+    info "Installing Rust via rustup"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q
+    . "$HOME/.cargo/env"
+fi

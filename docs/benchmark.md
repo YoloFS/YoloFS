@@ -126,7 +126,7 @@ calls `try commit <sandbox>` as the commit step.
 
 ### branchfs
 
-`branchfs` is a FUSE filesystem (from `third_party/branchfs`) that provides
+`branchfs` is a FUSE filesystem (from `bench/third_party/branchfs`) that provides
 O(1) branch creation and atomic commit-to-parent semantics. Each iteration:
 
 1. Mounts branchfs over a fresh base directory with a per-iteration storage
@@ -269,8 +269,8 @@ Each backend implements `available()`, `unavailable_reason()`, and `hidden()`.
 
 | Tool | Source | Install |
 |---|---|---|
-| `try` | `third_party/try/` | `make install-third-party` |
-| `branchfs` | `third_party/branchfs/` | `make install-third-party` |
+| `try` | `bench/third_party/try/` | `make -C bench install-try` |
+| `branchfs` | `bench/third_party/branchfs/` | `make -C bench install-branchfs` |
 
 ### CLI
 

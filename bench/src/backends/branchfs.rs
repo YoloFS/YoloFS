@@ -18,7 +18,7 @@ impl Backend for BranchFs {
 
     fn unavailable_reason(&self) -> Option<&'static str> {
         if !which("branchfs") {
-            Some("'branchfs' not found in PATH (install with: make install-third-party)")
+            Some("'branchfs' not found in PATH (install with: make -C bench install)")
         } else {
             None
         }

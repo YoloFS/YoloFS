@@ -8,36 +8,28 @@ TARGET_DIR       := $(CURDIR)-target
 
 # ── Build ─────────────────────────────────────────────────────────────
 
-.PHONY: build clean cli kmod lint fix
+.PHONY: build cli kmod clean
 
 build: cli kmod
 
 $(TARGET_DIR):
 	mkdir -p $@
 
+clean:
+	rm -rf $(TARGET_DIR)
+
 cli: | $(TARGET_DIR)
 	cargo build --release -p agfs
 
-kmod: $(BTF_VMLINUX) $(KMOD_OUT)
+kmod: $(KMOD_OUT)
 
-$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(TARGET_DIR)
+$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) $(BTF_VMLINUX) | $(TARGET_DIR)
 	mkdir -p $(TARGET_DIR)/kmod
 	cp kmod/Kbuild $(TARGET_DIR)/kmod/Kbuild
 	$(MAKE) -j$(nproc) -C $(KDIR)/build M=$(TARGET_DIR)/kmod KBUILD_KMOD_SRC=$(CURDIR)/kmod modules
 
 $(BTF_VMLINUX): /sys/kernel/btf/vmlinux
 	sudo cp $< $@
-
-clean:
-	rm -rf $(TARGET_DIR)
-
-lint:
-	cargo fmt --check
-	cargo clippy -- -D warnings
-
-fix:
-	cargo fmt
-	cargo clippy --fix --allow-dirty
 
 # ── Install ───────────────────────────────────────────────────────────
 
@@ -50,37 +42,7 @@ install: cli kmod
 
 uninstall:
 	sudo rm -f /usr/local/bin/agfs
-	sudo rm -f /usr/local/bin/try
-	sudo rm -f /usr/local/bin/try-summary
-	sudo rm -f /usr/local/bin/try-commit
-	sudo rm -f /usr/local/bin/branchfs
 	sudo rm -f $(KMOD_INSTALL_DIR)/agfs.ko
-
-# ── Third-party ────────────────────────────────────────────────────────
-
-BRANCHFS_OUT := third_party/branchfs/target/release/branchfs
-TRY_DIR      := third_party/try
-TRY_COMMIT   := $(TRY_DIR)/utils/try-commit
-
-.PHONY: install-third-party install-try install-branchfs
-
-install-third-party: install-try install-branchfs
-
-$(TRY_DIR)/configure: $(TRY_DIR)/configure.ac
-	cd $(TRY_DIR) && autoconf
-
-$(TRY_COMMIT): $(TRY_DIR)/configure $(wildcard $(TRY_DIR)/utils/*.c)
-	cd $(TRY_DIR) && ./configure --prefix=/usr/local
-	$(MAKE) -C $(TRY_DIR)
-
-install-try: $(TRY_COMMIT)
-	sudo $(MAKE) -C $(TRY_DIR) install
-
-$(BRANCHFS_OUT): $(wildcard third_party/branchfs/src/**/*.rs third_party/branchfs/Cargo.toml)
-	cargo build --release --manifest-path third_party/branchfs/Cargo.toml
-
-install-branchfs: $(BRANCHFS_OUT)
-	sudo install -m 755 $(BRANCHFS_OUT) /usr/local/bin/branchfs
 
 # ── Test ──────────────────────────────────────────────────────────────
 
@@ -95,6 +57,18 @@ test-e2e: install
 	agfs reload
 	cargo test -p agfs --test e2e -- --test-threads=1
 	agfs unload
+
+# ── Lint ──────────────────────────────────────────────────────────────
+
+.PHONY: lint fix
+
+lint:
+	cargo fmt --check
+	cargo clippy -- -D warnings
+
+fix:
+	cargo fmt
+	cargo clippy --fix --allow-dirty
 
 # ── Bench ─────────────────────────────────────────────────────────────
 
@@ -124,11 +98,3 @@ bench-macro: install
 
 vm-%:
 	./vm.py -- make $*
-
-# ── CI ────────────────────────────────────────────────────────────────
-
-.PHONY: ci
-
-ci: lint install
-	$(MAKE) test-unit
-	$(MAKE) test-e2e

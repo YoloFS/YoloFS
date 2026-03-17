@@ -10,9 +10,9 @@
 [submodule "results-eval"]
 	path = results-eval
 	url = git@github.com:ShawnZhong/Agfs-Eval-Results.git
-[submodule "third_party/branchfs"]
-	path = third_party/branchfs
+[submodule "bench/third_party/branchfs"]
+	path = bench/third_party/branchfs
 	url = https://github.com/multikernel/branchfs
-[submodule "third_party/try"]
-	path = third_party/try
+[submodule "bench/third_party/try"]
+	path = bench/third_party/try
 	url = https://github.com/binpash/try

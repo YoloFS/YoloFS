@@ -17,7 +17,7 @@ impl Backend for Try {
 
     fn unavailable_reason(&self) -> Option<&'static str> {
         if !which("try") {
-            Some("'try' not found in PATH (install with: make install-third-party)")
+            Some("'try' not found in PATH (install with: make -C bench install)")
         } else if !try_smoke_test() {
             Some("'try -n -- /bin/true' failed (stale mounts under /tmp? overlayfs issue?)")
         } else {
