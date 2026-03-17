@@ -92,8 +92,10 @@ def _ensure_ssh_config():
         f"    Port {DEFAULT_SSH_PORT}\n"
         f"    User {DEFAULT_USER}\n"
         f"    IdentityFile {SSH_KEY_PATH}\n"
+        f"    IdentitiesOnly yes\n"
         f"    UserKnownHostsFile {SSH_KNOWN_HOSTS}\n"
         f"    StrictHostKeyChecking accept-new\n"
+        f"    PasswordAuthentication no\n"
     )
 
 
@@ -201,6 +203,8 @@ def wait_for_vm(mount_path: str, timeout: int = 120):
 
 def ensure_vm_started():
     """Start the VM with defaults if not already running, and wait until ready."""
+    _ensure_ssh_keypair()
+    _ensure_ssh_config()
     if is_vm_running():
         print("VM already running.")
         _print_vm_info()
