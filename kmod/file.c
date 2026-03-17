@@ -420,18 +420,14 @@ static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
 
 			/*
 			 * For staged inodes, use the inode store ID.
-			 * For base_path redirects (zero-copy rename),
-			 * resolve the lower inode number.
+			 * For base_path redirects (zero-copy rename), use a
+			 * non-zero placeholder — the real ino comes from
+			 * stat(), readdir only needs it non-zero so that
+			 * glibc/kernels don't silently skip the entry.
 			 */
 			emit_ino = de->ino;
-			if (!emit_ino && de->base_path) {
-				struct path bp;
-
-				if (!kern_path(de->base_path, LOOKUP_FOLLOW, &bp)) {
-					emit_ino = d_inode(bp.dentry)->i_ino;
-					path_put(&bp);
-				}
-			}
+			if (!emit_ino && de->base_path)
+				emit_ino = (u64)-1;
 
 			if (!dir_emit(ctx, de->name, de->name_len,
 				      emit_ino, de->d_type))
