@@ -22,7 +22,7 @@ the kernel, not merely assumed.
    on its inode, preventing eviction regardless of memory pressure.
    The dirent hash table lives on the inode (not the dentry), so it
    survives dentry eviction naturally. Pins are released in bulk by
-   `AGFS_IOC_CACHE_INVAL` (called by commit/abort) and during
+   `AGFS_IOC_RESTORE` (called by commit/abort/restore) and during
    `kill_sb` (unmount). Directories are never COW'd, so their inode
    identity (keyed by `lower_inode` in `iget5_locked`) is stable for
    the entire staging session.
@@ -470,8 +470,8 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
    - **Add/Modify**: move `inodes/<ino> -> base/path` (stat inode to
      determine type: regular file -> copy/rename, symlink -> recreate,
      directory -> mkdir), creating parent dirs as needed.
-3. Clean up: remove journal + inode store.
-4. Signal kernel to invalidate caches and release pinned directory inodes (`AGFS_IOC_CACHE_INVAL`).
+3. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
+4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `entry_count=0`, `checkpoint_gen=1`).
 
 Since step 1 resolves all cross-dependencies, no particular ordering
 between renames, deletes, and adds is required — each resolved
@@ -481,8 +481,8 @@ operation targets a distinct path.
 
 1. Count staged changes; if none, print "nothing to discard" and exit.
 2. Prompt for confirmation: `Discard N staged changes? [y/N]`.
-3. `rm -rf .agfs/inodes/` and `rm .agfs/journal`.
-4. Signal kernel to invalidate caches and release pinned directory inodes.
+3. Remove all files under `.agfs/inodes/` and truncate `.agfs/journal`.
+4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `entry_count=0`, `checkpoint_gen=1`).
 
 **Status** (`agfs status`):
 
@@ -541,7 +541,7 @@ is bumped (open-for-write holds at least a read lock while incrementing
 
 The name defaults to `"after <cmd>"` when auto-checkpointing via `agfs exec`
 (e.g., `"after make build"`), or a human-readable timestamp like
-`snap-20260315-043807` when run via `agfs checkpoint` with no argument. Names need
+`chk-20260315-043807` when run via `agfs checkpoint` with no argument. Names need
 not be unique; checkpoints can also be addressed by their numeric ID. When
 looking up by name, `--at` and `--from` match the latest one.
 
@@ -602,21 +602,35 @@ State at each point:
 **`agfs diff --from <name|id>`**: Diff changes since the named checkpoint
 (resolve at checkpoint vs resolve at current, then diff the two states).
 
-**`agfs commit --at <name|id>`**: Commit only changes up to the named
-checkpoint. Thanks to re-COW, post-checkpoint inodes are independent copies —
-committing pre-checkpoint changes does not affect them:
+**`agfs restore <name|id>`**: Restore the mounted view to the state at the
+named checkpoint. Post-checkpoint changes are discarded. The kernel's
+staging state is atomically replaced with the checkpoint's resolved state
+via `AGFS_IOC_RESTORE`:
 
-1. Resolve journal up to the checkpoint -> resolved changes.
-2. Apply those changes to base (same as full commit).
-3. Rewrite the journal atomically: write remaining post-checkpoint records
-   to a temporary file, fsync, then rename over the journal. The kernel's
-   old journal fd (O_APPEND) continues appending to the unlinked old
-   file harmlessly; `AGFS_IOC_CACHE_INVAL` in step 4 reopens it.
-4. `AGFS_IOC_CACHE_INVAL` (releases pinned directory inodes, invalidates caches, reopens journal).
+1. CLI resolves journal up to the checkpoint → resolved changes.
+2. CLI converts changes to dirent entries (path, ino, base_path, d_type).
+   Entries are sorted by path — parents before children — so that
+   `vfs_path_lookup` in the kernel can find staged parent directories
+   when injecting child dirents.
+3. `AGFS_IOC_RESTORE(checkpoint_gen=N, entries=[...])`:
+   kernel wipes all dirents, shrinks dcache, injects entries, and sets
+   `checkpoint_gen` to N. Done before truncating so the journal is intact
+   if the ioctl fails (e.g. `EBUSY`).
+4. Truncate journal after the `K` marker (`set_len` to the byte offset
+   past the checkpoint record). The inode is preserved so the kernel's
+   `O_APPEND` fd stays valid.
+5. Orphaned inodes (from post-checkpoint mutations) remain in the inode
+   store — cleaned up on the next `commit` or `abort`.
 
-Orphaned inodes (referenced only by committed pre-checkpoint records)
-are left in place — they are cleaned up on the next full `commit` or
-`abort`, which removes the entire inode store.
+After restore, future writes trigger re-COW only if a new checkpoint is
+taken (since `checkpoint_gen` is set to the restored checkpoint's
+generation). Editing files without a new checkpoint reuses the
+existing inodes in place.
+
+Restoring to `(initial)` (checkpoint ID 1) produces the same mounted view
+as abort — all dirents are cleared and the mount shows the clean base
+state. Orphaned inodes remain in the store until the next `commit` or
+`abort`.
 
 **`agfs log`**: List all checkpoints with their names and the
 number of changes since the previous checkpoint.

@@ -4,6 +4,7 @@ mod test_commit;
 mod test_diff;
 mod test_lifecycle;
 mod test_mount;
+mod test_restore;
 mod test_rules;
 mod test_run;
 mod test_status;

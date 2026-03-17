@@ -105,7 +105,10 @@ mod tests {
     #[test]
     fn normalize_path_relative() {
         let cwd = std::env::current_dir().unwrap();
-        assert_eq!(normalize_path("hello.txt"), cwd.join("hello.txt").to_string_lossy());
+        assert_eq!(
+            normalize_path("hello.txt"),
+            cwd.join("hello.txt").to_string_lossy()
+        );
     }
 
     #[test]
@@ -116,18 +119,27 @@ mod tests {
     #[test]
     fn normalize_path_nested() {
         let cwd = std::env::current_dir().unwrap();
-        assert_eq!(normalize_path("src/lib.rs"), cwd.join("src/lib.rs").to_string_lossy());
+        assert_eq!(
+            normalize_path("src/lib.rs"),
+            cwd.join("src/lib.rs").to_string_lossy()
+        );
     }
 
     #[test]
     fn normalize_path_dot_slash() {
         let cwd = std::env::current_dir().unwrap();
-        assert_eq!(normalize_path("./hello.txt"), cwd.join("hello.txt").to_string_lossy());
+        assert_eq!(
+            normalize_path("./hello.txt"),
+            cwd.join("hello.txt").to_string_lossy()
+        );
     }
 
     #[test]
     fn normalize_path_dot_slash_nested() {
         let cwd = std::env::current_dir().unwrap();
-        assert_eq!(normalize_path("./src/main.rs"), cwd.join("src/main.rs").to_string_lossy());
+        assert_eq!(
+            normalize_path("./src/main.rs"),
+            cwd.join("src/main.rs").to_string_lossy()
+        );
     }
 }

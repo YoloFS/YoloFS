@@ -26,22 +26,7 @@ int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen)
 	return 0;
 }
 
-/* ── Resolve a sub-path under a given root ─────────────────────────── */
-
-static int resolve_subpath(const struct path *root, const char *relpath,
-			   struct path *result)
-{
-	return vfs_path_lookup(root->dentry, root->mnt, relpath,
-			       LOOKUP_FOLLOW, result);
-}
-
 /* ── Public Helpers ────────────────────────────────────────────────── */
-
-int agfs_base_path(struct agfs_sb_info *sbi, const char *relpath,
-		   struct path *result)
-{
-	return resolve_subpath(&sbi->base_path, relpath, result);
-}
 
 int agfs_inode_path(struct agfs_sb_info *sbi, u64 ino,
 		    struct path *result)
@@ -52,7 +37,9 @@ int agfs_inode_path(struct agfs_sb_info *sbi, u64 ino,
 		return -ENOENT;
 
 	snprintf(name, sizeof(name), "%llu", (unsigned long long)ino);
-	return resolve_subpath(&sbi->inodes_dir, name, result);
+	/* No LOOKUP_FOLLOW — symlink inodes must not be dereferenced */
+	return vfs_path_lookup(sbi->inodes_dir.dentry, sbi->inodes_dir.mnt,
+			       name, 0, result);
 }
 
 /* ── Stage Dirent Hash Table ───────────────────────────────────────────── */

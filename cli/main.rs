@@ -1,6 +1,6 @@
 // agfs CLI — main.rs
 
-use agfs::{abort, checkpoint, commit, config, diff, exec, kmod, mount, watch};
+use agfs::{abort, checkpoint, commit, config, diff, exec, kmod, mount, restore, watch};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
@@ -64,25 +64,25 @@ enum Command {
         path: Option<String>,
     },
     /// Apply staged changes to base
-    Commit {
-        /// Commit only changes up to a named checkpoint
-        #[arg(long)]
-        at: Option<String>,
-    },
+    Commit,
     /// Discard staged changes
     Abort {
         /// Skip confirmation prompt
         #[arg(long, short)]
         force: bool,
     },
-    /// Show checkpoint log
-    Log,
     /// Create a checkpoint
     Checkpoint {
-        /// Checkpoint name
-        #[arg(trailing_var_arg = true)]
-        name: Vec<String>,
+        /// Checkpoint name (defaults to timestamp)
+        name: Option<String>,
     },
+    /// Restore to a previous checkpoint
+    Restore {
+        /// Checkpoint name or numeric ID
+        name: String,
+    },
+    /// Show checkpoint log
+    Log,
     /// Manage permission rules
     Rule {
         #[command(subcommand)]
@@ -127,29 +127,25 @@ fn run_cli() -> anyhow::Result<u8> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
-        Some(Command::Init) => config::init()?,
         Some(Command::Load) => kmod::load()?,
         Some(Command::Unload) => kmod::unload()?,
         Some(Command::Reload) => kmod::reload()?,
+        Some(Command::Init) => config::init()?,
         Some(Command::Mount) => mount::mount()?,
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,
+        Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
         Some(Command::Status { at }) => diff::run_status(at.as_deref())?,
         Some(Command::Diff { from, path }) => {
             diff::run_diff(from.as_deref(), path.as_deref())?;
         }
-        Some(Command::Commit { at }) => commit::run(at.as_deref())?,
+        Some(Command::Commit) => commit::run()?,
         Some(Command::Abort { force }) => abort::run(force)?,
-        Some(Command::Log) => checkpoint::list()?,
         Some(Command::Checkpoint { name }) => {
-            let chk_name = if name.is_empty() {
-                None
-            } else {
-                Some(name.join(" "))
-            };
-            checkpoint::create(chk_name.as_deref())?;
+            checkpoint::create(name.as_deref())?;
         }
+        Some(Command::Restore { name }) => restore::run(&name)?,
+        Some(Command::Log) => checkpoint::list()?,
         Some(Command::Rule { action }) => match action {
             RuleAction::Add { path, perm } => config::add_rule(&path, &perm)?,
             RuleAction::Remove { path } => config::remove_rule(&path)?,
@@ -197,7 +193,7 @@ fn run(exec_args: &[String]) -> anyhow::Result<u8> {
     io::stdin().lock().read_line(&mut line)?;
 
     match line.trim().to_ascii_lowercase().as_str() {
-        "c" | "commit" => commit::run(None)?,
+        "c" | "commit" => commit::run()?,
         "a" | "abort" => abort::run(true)?,
         _ => {
             eprintln!(

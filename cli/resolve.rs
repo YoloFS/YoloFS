@@ -64,7 +64,7 @@ pub fn resolve(records: &[Record]) -> Result<Vec<Change>> {
 /// Find the record index of a checkpoint by name or numeric ID.
 /// Tries parsing as a numeric ID first, then falls back to name match
 /// (using the latest occurrence if names are duplicated).
-fn find_checkpoint_index(records: &[Record], name_or_id: &str) -> Result<usize> {
+pub fn find_checkpoint_index(records: &[Record], name_or_id: &str) -> Result<usize> {
     // Try numeric ID first
     if let Ok(target_id) = name_or_id.parse::<u64>() {
         for (i, record) in records.iter().enumerate() {
@@ -98,7 +98,10 @@ pub fn resolve_at(records: &[Record], checkpoint_name: &str) -> Result<Vec<Chang
 /// Resolve journal from after the named checkpoint to the end.
 /// Returns the diff between checkpoint state and current state as two
 /// resolved states: (at_checkpoint, current).
-pub fn resolve_from(records: &[Record], checkpoint_name: &str) -> Result<(Vec<Change>, Vec<Change>)> {
+pub fn resolve_from(
+    records: &[Record],
+    checkpoint_name: &str,
+) -> Result<(Vec<Change>, Vec<Change>)> {
     let chk_idx = find_checkpoint_index(records, checkpoint_name)?;
     let at_chk = resolve(&records[..=chk_idx])?;
     let current = resolve(records)?;
@@ -234,7 +237,6 @@ pub struct Section {
 ///
 /// When there are no checkpoints, returns a single section with checkpoint=None.
 pub fn resolve_sections(records: &[Record]) -> Result<Vec<Section>> {
-
     // Collect checkpoint boundary indices
     let chk_indices: Vec<(usize, u64, String)> = records
         .iter()
@@ -424,18 +426,6 @@ impl ChangesState {
     }
 }
 
-/// Split the journal at a named checkpoint: resolve changes up to the checkpoint,
-/// and return remaining records after it. Reads the journal once.
-pub fn split_at_checkpoint(
-    records: &[Record],
-    checkpoint_name: &str,
-) -> Result<(Vec<Change>, Vec<Record>)> {
-    let chk_idx = find_checkpoint_index(records, checkpoint_name)?;
-    let changes = resolve(&records[..=chk_idx])?;
-    let remaining = records[chk_idx + 1..].to_vec();
-    Ok((changes, remaining))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,7 +439,7 @@ mod tests {
     }
 
     fn read(dir: &Path) -> Vec<Record> {
-        crate::journal::read(dir).unwrap()
+        crate::journal::read(dir).unwrap().records
     }
 
     #[test]
@@ -630,23 +620,6 @@ mod tests {
     // ── Checkpoint tests ───────────────────────────────────────────────
 
     #[test]
-    fn split_at_checkpoint_basic() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/a\01\n");
-        data.extend_from_slice(b"K\01\0first\n");
-        data.extend_from_slice(b"A\0/a\02\n");
-        data.extend_from_slice(b"K\02\0second\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "").unwrap();
-        fs::write(dir.path().join("inodes/2"), "").unwrap();
-
-        let (changes, remaining) = split_at_checkpoint(&read(dir.path()), "first").unwrap();
-        assert_eq!(changes.len(), 1);
-        assert_eq!(remaining.len(), 2); // A + S
-    }
-
-    #[test]
     fn resolve_at_checkpoint() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
@@ -763,21 +736,6 @@ mod tests {
     }
 
     #[test]
-    fn split_at_checkpoint_by_id() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/a\01\n");
-        data.extend_from_slice(b"K\07\0snap\n");
-        data.extend_from_slice(b"A\0/b\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-
-        // Split by numeric ID
-        let (changes, remaining) = split_at_checkpoint(&read(dir.path()), "7").unwrap();
-        assert_eq!(changes.len(), 1);
-        assert_eq!(remaining.len(), 1);
-    }
-
-    #[test]
     fn resolve_from_by_id() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
@@ -805,22 +763,6 @@ mod tests {
         let changes = resolve(&read(dir.path())).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(matches!(&changes[0], Change::Added { .. }));
-    }
-
-    #[test]
-    fn split_at_checkpoint_remaining() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/a\01\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
-        data.extend_from_slice(b"A\0/b\02\n");
-        data.extend_from_slice(b"D\0/c\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-
-        let (_changes, remaining) = split_at_checkpoint(&read(dir.path()), "snap1").unwrap();
-        assert_eq!(remaining.len(), 2);
-        assert!(matches!(&remaining[0], Record::Add { path, ino } if path == "/b" && *ino == 2));
-        assert!(matches!(&remaining[1], Record::Delete { path } if path == "/c"));
     }
 
     // ── resolve_sections tests ───────────────────────────────────────

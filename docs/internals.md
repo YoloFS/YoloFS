@@ -90,17 +90,24 @@ descriptor (typically `.agfs/mnt`). Ioctl command macros are defined in
 | `AGFS_IOC_PUT_RESPONSE`    | Submit a decision: one `struct agfs_ctl_response` (fixed-size binary). Wakes the sleeping thread.                                                                               |
 | `AGFS_IOC_RULE_ADD`     | Add a permission rule to a dentry. Kernel resolves the path, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps `perm_gen`.                                                |
 | `AGFS_IOC_RULE_REMOVE`  | Remove a rule from a dentry. Kernel sets `perm = NONE`, unpins the dentry, and bumps `perm_gen`.                                                                                |
-| `AGFS_IOC_CACHE_INVAL`  | Bump `perm_gen`, release pinned directory inodes, shrink dentry/inode caches, and reopen the journal file. Called by userspace after commit/abort.                                                           |
+| `AGFS_IOC_RESTORE`    | Atomically reset staging state and optionally inject dirent entries. Called by userspace after commit/abort (with `entry_count=0`) and for restore (with entries). Rejects with `-EBUSY` if staging fds are open. See detailed steps below and [staging.md — Restore](staging.md#checkpoint-aware-cli-operations). |
 | `AGFS_IOC_CHECKPOINT`     | Bump `checkpoint_gen`, append `K` record to journal, return checkpoint ID. Rejects with `-EBUSY` if staging fds are open. Triggers re-COW on next open-for-write to any staged file (see [staging.md — Checkpoints](staging.md#checkpoint-mechanism)). |
 
-`AGFS_IOC_CACHE_INVAL` is called by userspace after commit/abort. It:
-1. Bumps `perm_gen` to invalidate all cached inode permissions.
-2. Walks `pinned_dirs`, frees dirent tables, and calls `iput()` on each
+`AGFS_IOC_RESTORE` is called by userspace after commit/abort (with
+`entry_count=0`, `checkpoint_gen=1` to reset to initial state) and for
+restore (with entries to rebuild the staging view at a given checkpoint).
+It:
+1. Takes `staging_sem` write lock; rejects with `-EBUSY` if
+   `staging_fd_count > 0`.
+2. Bumps `perm_gen` to invalidate all cached inode permissions.
+3. Walks `pinned_dirs`, frees dirent tables, and calls `iput()` on each
    pinned directory inode.
-3. Calls `shrink_dcache_sb()` to drop stale dentry caches so the mount
+4. Calls `shrink_dcache_sb()` to drop stale dentry caches so the mount
    reflects the new base state.
-4. Closes and reopens the journal file (the CLI deletes it on
-   commit/abort, so the old fd is stale).
+5. For each entry in the userspace array: resolves the parent path
+   via `vfs_path_lookup` on the mount root, takes `inode_lock(parent)`,
+   calls `agfs_add_dirent()` to install the dirent, then releases.
+6. Sets `checkpoint_gen` to the requested value (only on success).
 
 On the first `AGFS_IOC_GET_REQUEST`, a per-fd `agfs_ctl_private` is lazily
 allocated to track dispatched requests. Only one daemon is allowed at a time;
@@ -113,7 +120,7 @@ resolved immediately using `ask_default`.
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + `dirent.checkpoint_gen`) | `rw_semaphore` (write for COW/checkpoint). Create/mkdir/symlink/unlink/rmdir/rename are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
+| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + `dirent.checkpoint_gen`). Also serializes restore. | `rw_semaphore` (write for COW/checkpoint/restore). Create/mkdir/symlink/unlink/rmdir/rename are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
 | `inode->i_rwsem` (VFS) | Per-directory dirent table | `rw_semaphore` (held by VFS for lookup/readdir/mutations) |
 | `dentry_info->lock` | Cached lower path | `spinlock` |

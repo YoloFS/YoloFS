@@ -25,7 +25,7 @@ pub fn create(name: Option<&str>) -> Result<()> {
 /// List all checkpoints in the journal.
 pub fn list() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
-    let records = journal::read(&agfs)?;
+    let records = journal::read(&agfs)?.records;
 
     // Collect checkpoint positions in a single pass
     let checkpoints: Vec<(usize, &journal::Record)> = records

@@ -97,9 +97,9 @@ fn recow_preserves_checkpoint_inode() {
     );
 }
 
-/// Commit --at only commits changes up to the checkpoint.
+/// Restore to a checkpoint reverts the mount to the checkpoint state.
 #[test]
-fn commit_at_checkpoint() {
+fn restore_to_checkpoint() {
     let s = AgfsSession::new().expect("session setup");
 
     // Write a file, checkpoint, write another
@@ -109,20 +109,17 @@ fn commit_at_checkpoint() {
     // Create a new file after checkpoint
     fs::write(s.mnt_path("new_after.txt"), "staged only\n").expect("write new");
 
-    // Commit only up to the checkpoint
-    s.cli(&["commit", "--at", "checkpoint"])
-        .expect("commit --at");
+    // Restore to the checkpoint
+    s.cli(&["restore", "checkpoint"]).expect("restore");
 
-    // hello.txt should be committed to base
-    let base_content = fs::read_to_string(s.base_path("hello.txt")).expect("read base");
-    assert_eq!(base_content, "committed version\n");
+    // hello.txt should still be staged (visible through mount)
+    let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read through mount");
+    assert_eq!(content, "committed version\n");
 
-    // new_after.txt should still be staged (not in base from a fresh write)
-    // Status should show remaining post-checkpoint changes
-    let remaining_status = s.cli(&["status"]).expect("status after partial commit");
+    // new_after.txt should no longer be visible through the mount
     assert!(
-        remaining_status.contains("new_after.txt") || remaining_status.contains("staged"),
-        "should have remaining changes after partial commit: {remaining_status}"
+        !s.mnt_path("new_after.txt").exists(),
+        "post-checkpoint file should not be visible after restore"
     );
 }
 

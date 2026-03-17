@@ -63,9 +63,10 @@ impl AgfsSession {
         // Checkpoint the kernel ring buffer before mounting so we can detect any
         // kernel messages (warnings, errors, BUG/WARN traces) produced by this
         // session.
-        self.cursor = Some(kmsg::KmsgCursor::now().context(
-            "could not open /dev/kmsg — set kernel.dmesg_restrict=0",
-        )?);
+        self.cursor = Some(
+            kmsg::KmsgCursor::now()
+                .context("could not open /dev/kmsg — set kernel.dmesg_restrict=0")?,
+        );
 
         let output = Command::new(AGFS_BIN)
             .arg("mount")

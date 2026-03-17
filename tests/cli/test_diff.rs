@@ -71,7 +71,10 @@ fn diff_single_file_shows_only_that_file() {
     fs::write(s.mnt_path("other.txt"), "also changed\n").unwrap();
 
     let output = s.cli(&["diff", "hello.txt"]).expect("diff hello.txt");
-    assert!(output.contains("hello.txt"), "should show hello.txt: {output}");
+    assert!(
+        output.contains("hello.txt"),
+        "should show hello.txt: {output}"
+    );
     assert!(
         !output.contains("other.txt"),
         "should NOT show other.txt: {output}"

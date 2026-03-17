@@ -41,7 +41,7 @@ interposition (the wrapfs pattern). It adds two orthogonal capabilities:
  │    ← AGFS_IOC_GET_REQUEST:  dequeue perm request │
  │    → AGFS_IOC_PUT_RESPONSE: post decision        │
  │    → AGFS_IOC_RULE_ADD/REMOVE: manage rules      │
- │    → AGFS_IOC_CACHE_INVAL: invalidate caches     │
+ │    → AGFS_IOC_RESTORE: reset staging / restore    │
  │    → AGFS_IOC_CHECKPOINT: create checkpoint           │
  └──────────────────────────────────────────────────┘
 ```
@@ -169,8 +169,8 @@ $ echo x >> /etc/hosts
 # 7. Commit all staged changes to the real filesystem (userspace)
 $ agfs commit
    -> userspace: replay journal -- apply renames, deletes, move inodes to base
-   -> userspace: ioctl(AGFS_IOC_CACHE_INVAL) on .agfs/mnt
-   -> kernel: invalidate dentry + inode caches
+   -> userspace: ioctl(AGFS_IOC_RESTORE) with entry_count=0 on .agfs/mnt
+   -> kernel: release dirents, invalidate dentry + inode caches
    -> umount .agfs/mnt
 ```
 

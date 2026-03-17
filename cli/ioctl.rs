@@ -26,15 +26,12 @@ pub const AGFS_PERM_ALLOW_RX: u8 = 5;
 pub const AGFS_PERM_DENY: u8 = 6;
 
 // Ioctl command numbers — must match kmod/agfs.h
-// _IOW('A', 10, struct agfs_ioc_rule)  -> direction=1, type='A'=0x41, nr=10, size=264
-// _IOW('A', 11, struct agfs_ioc_rule)
-// _IO('A', 20)
 nix::ioctl_write_ptr!(ioctl_rule_add, b'A', 10, AgfsIocRule);
 nix::ioctl_write_ptr!(ioctl_rule_remove, b'A', 11, AgfsIocRule);
-nix::ioctl_none!(ioctl_cache_inval, b'A', 20);
 nix::ioctl_read!(ioctl_get_request, b'A', 30, AgfsCtlRequest);
 nix::ioctl_write_ptr!(ioctl_put_response, b'A', 31, AgfsCtlResponse);
 nix::ioctl_readwrite!(ioctl_checkpoint, b'A', 40, AgfsIocCheckpoint);
+nix::ioctl_write_ptr!(ioctl_restore, b'A', 41, AgfsIocRestore);
 
 /// Matches `struct agfs_ioc_rule` in the kernel.
 #[repr(C)]
@@ -68,6 +65,45 @@ pub struct AgfsCtlResponse {
 pub struct AgfsIocCheckpoint {
     pub id: u64,
     pub name: [u8; AGFS_PATH_MAX],
+}
+
+/// Matches `struct agfs_ioc_restore_entry` in the kernel.
+#[repr(C)]
+pub struct AgfsIocRestoreEntry {
+    pub path: [u8; AGFS_PATH_MAX],
+    pub ino: u64,
+    pub base_path: [u8; AGFS_PATH_MAX],
+    pub d_type: u8,
+    pub _pad: [u8; 7],
+}
+
+impl AgfsIocRestoreEntry {
+    pub fn new(path: &str, ino: u64, base_path: &str, d_type: u8) -> Self {
+        let mut entry = Self {
+            path: [0u8; AGFS_PATH_MAX],
+            ino,
+            base_path: [0u8; AGFS_PATH_MAX],
+            d_type,
+            _pad: [0u8; 7],
+        };
+        let pbytes = path.as_bytes();
+        let plen = pbytes.len().min(AGFS_PATH_MAX - 1);
+        entry.path[..plen].copy_from_slice(&pbytes[..plen]);
+
+        let bbytes = base_path.as_bytes();
+        let blen = bbytes.len().min(AGFS_PATH_MAX - 1);
+        entry.base_path[..blen].copy_from_slice(&bbytes[..blen]);
+
+        entry
+    }
+}
+
+/// Matches `struct agfs_ioc_restore` in the kernel.
+#[repr(C)]
+pub struct AgfsIocRestore {
+    pub checkpoint_gen: u64,
+    pub entry_count: u64,
+    pub entries: *const AgfsIocRestoreEntry,
 }
 
 impl AgfsIocRule {
@@ -158,9 +194,19 @@ pub fn remove_rule(fd: &File, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Send AGFS_IOC_CACHE_INVAL ioctl.
-pub fn invalidate_cache(fd: &File) -> Result<()> {
-    unsafe { ioctl_cache_inval(fd.as_raw_fd()) }.context("ioctl CACHE_INVAL")?;
+/// Send AGFS_IOC_RESTORE ioctl. Resets staging state and optionally injects
+/// dirent entries. For commit/abort, pass empty entries with checkpoint_gen=1.
+pub fn restore(fd: &File, checkpoint_gen: u64, entries: &[AgfsIocRestoreEntry]) -> Result<()> {
+    let hdr = AgfsIocRestore {
+        checkpoint_gen,
+        entry_count: entries.len() as u64,
+        entries: if entries.is_empty() {
+            std::ptr::null()
+        } else {
+            entries.as_ptr()
+        },
+    };
+    unsafe { ioctl_restore(fd.as_raw_fd(), &hdr) }.context("ioctl RESTORE")?;
     Ok(())
 }
 
@@ -233,5 +279,7 @@ mod tests {
         assert_eq!(size_of::<AgfsCtlResponse>(), 16);
         assert_eq!(size_of::<AgfsIocRule>(), 264);
         assert_eq!(size_of::<AgfsIocCheckpoint>(), 264);
+        assert_eq!(size_of::<AgfsIocRestoreEntry>(), 528);
+        assert_eq!(size_of::<AgfsIocRestore>(), 24);
     }
 }

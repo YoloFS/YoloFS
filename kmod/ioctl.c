@@ -7,7 +7,7 @@
  *   ioctl(fd, AGFS_IOC_PUT_RESPONSE, &resp) — submit decision
  *   ioctl(fd, AGFS_IOC_RULE_ADD, &rule)   — add permission rule
  *   ioctl(fd, AGFS_IOC_RULE_REMOVE, &rule)
- *   ioctl(fd, AGFS_IOC_CACHE_INVAL)
+ *   ioctl(fd, AGFS_IOC_RESTORE)     — reset staging / restore to checkpoint
  *
  * On close, any dispatched-but-unanswered requests get the default decision.
  */
@@ -316,12 +316,128 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 	return 0;
 }
 
+/* ── Restore ioctl handler ─────────────────────────────────────────── */
+
+/*
+ * Split an absolute path into parent directory and child name.
+ * Returns pointer to the child name within path. Sets *parent_len
+ * to the byte length of the parent portion (excluding NUL).
+ * E.g. "/src/main.rs" → parent_len=4 ("/src"), child="main.rs".
+ *       "/README" → parent_len=1 ("/"), child="README".
+ */
+static const char *split_parent_child(const char *path, int *parent_len)
+{
+	const char *last_slash;
+
+	last_slash = strrchr(path, '/');
+	if (!last_slash || last_slash == path) {
+		*parent_len = 1; /* "/" */
+		return last_slash ? last_slash + 1 : path;
+	}
+	*parent_len = last_slash - path;
+	return last_slash + 1;
+}
+
+static long agfs_restore_ioctl(struct file *file, unsigned long arg)
+{
+	struct super_block *sb = file_inode(file)->i_sb;
+	struct agfs_sb_info *sbi = AGFS_SB(sb);
+	struct agfs_ioc_restore hdr;
+	struct agfs_ioc_restore_entry ent;
+	u64 i;
+	int err = 0;
+
+	if (!sbi->staging)
+		return -EOPNOTSUPP;
+
+	if (copy_from_user(&hdr, (void __user *)arg, sizeof(hdr)))
+		return -EFAULT;
+
+	down_write(&sbi->staging_sem);
+	if (atomic_read(&sbi->staging_fd_count) > 0) {
+		up_write(&sbi->staging_sem);
+		return -EBUSY;
+	}
+
+	/* Reset: perm caches, dirents, dentry cache */
+	atomic64_inc(&sbi->perm_gen);
+	agfs_release_pinned_dirs(sbi);
+	shrink_dcache_sb(sb);
+
+	/*
+	 * Inject dirent entries.  On failure midway, the mount is left
+	 * with a partial set of dirents — the CLI can retry or abort.
+	 */
+	for (i = 0; i < hdr.entry_count; i++) {
+		struct agfs_ioc_restore_entry __user *uent =
+			&hdr.entries[i];
+		const char *child;
+		int parent_len;
+		char saved;
+		struct path parent_path;
+		struct inode *dir;
+		char *bp;
+
+		if (copy_from_user(&ent, uent, sizeof(ent))) {
+			err = -EFAULT;
+			break;
+		}
+		ent.path[AGFS_PATH_MAX - 1] = '\0';
+		ent.base_path[AGFS_PATH_MAX - 1] = '\0';
+
+		child = split_parent_child(ent.path, &parent_len);
+		if (!*child) {
+			err = -EINVAL;
+			break;
+		}
+
+		if (parent_len >= AGFS_PATH_MAX) {
+			err = -ENAMETOOLONG;
+			break;
+		}
+
+		/* NUL-terminate ent.path at the parent boundary in-place */
+		saved = ent.path[parent_len];
+		ent.path[parent_len] = '\0';
+
+		err = vfs_path_lookup(sb->s_root, file->f_path.mnt,
+				      ent.path,
+				      LOOKUP_FOLLOW | LOOKUP_DIRECTORY,
+				      &parent_path);
+
+		ent.path[parent_len] = saved;
+
+		if (err)
+			break;
+
+		dir = d_inode(parent_path.dentry);
+		bp = ent.base_path[0] ? ent.base_path : NULL;
+
+		inode_lock(dir);
+		err = agfs_add_dirent(dir, child, strlen(child),
+				      &(struct agfs_dirent){
+					      .ino = ent.ino,
+					      .base_path = bp,
+					      .d_type = ent.d_type,
+					      .checkpoint_gen = hdr.checkpoint_gen,
+				      });
+		inode_unlock(dir);
+		path_put(&parent_path);
+
+		if (err)
+			break;
+	}
+
+	if (!err)
+		atomic64_set(&sbi->checkpoint_gen, hdr.checkpoint_gen);
+	up_write(&sbi->staging_sem);
+	return err;
+}
+
 /* ── Unified ioctl handler (rules + ctl) ───────────────────────────── */
 
 long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
-
 	switch (cmd) {
 	case AGFS_IOC_GET_REQUEST:
 		return agfs_get_request_ioctl(file, arg);
@@ -335,17 +451,8 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case AGFS_IOC_RULE_REMOVE:
 		return agfs_rule_remove_ioctl(file, arg);
 
-	case AGFS_IOC_CACHE_INVAL:
-		atomic64_inc(&sbi->perm_gen);
-		agfs_release_pinned_dirs(sbi);
-		shrink_dcache_sb(file_inode(file)->i_sb);
-		/* Reopen journal — CLI deletes it on commit/abort */
-		if (sbi->journal_file) {
-			fput(sbi->journal_file);
-			sbi->journal_file = NULL;
-		}
-		agfs_journal_open(sbi);
-		return 0;
+	case AGFS_IOC_RESTORE:
+		return agfs_restore_ioctl(file, arg);
 
 	case AGFS_IOC_CHECKPOINT:
 		return agfs_checkpoint_ioctl(file, arg);

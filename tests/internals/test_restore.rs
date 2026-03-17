@@ -1,0 +1,375 @@
+use super::helpers::{changes, ino_for, inode_path, inos, journal};
+use crate::helpers::AgfsSession;
+use agfs::journal::Record;
+use std::fs;
+use std::os::unix::fs::MetadataExt;
+
+// ── Journal state after restore ──────────────────────────────────────────
+
+/// Restore keeps journal records up to and including the checkpoint marker.
+#[test]
+fn restore_journal_contains_checkpoint_marker() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    let records = journal(&s);
+    assert!(
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "chk1")),
+        "chk1 marker should be in journal: {records:?}"
+    );
+}
+
+/// Restore removes all journal records after the checkpoint.
+#[test]
+fn restore_journal_has_no_post_checkpoint_records() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+    fs::remove_file(s.mnt_path("a.txt")).expect("rm a");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    let records = journal(&s);
+    // Find the checkpoint index
+    let chk_idx = records
+        .iter()
+        .position(|r| matches!(r, Record::Checkpoint { name, .. } if name == "chk1"))
+        .expect("chk1 should exist");
+
+    assert_eq!(
+        chk_idx,
+        records.len() - 1,
+        "checkpoint should be the last record: {records:?}"
+    );
+}
+
+// ── Inode store after restore ────────────────────────────────────────────
+
+/// Pre-checkpoint inodes are preserved after restore.
+#[test]
+fn restore_keeps_pre_checkpoint_inodes() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    let pre_ino = ino_for(&changes(&s), "/a.txt");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    assert!(
+        inode_path(&s, pre_ino).exists(),
+        "pre-checkpoint inode {pre_ino} should still exist on disk"
+    );
+    assert_eq!(
+        fs::read_to_string(inode_path(&s, pre_ino)).unwrap(),
+        "a\n",
+        "pre-checkpoint inode content should be intact"
+    );
+}
+
+/// Post-checkpoint inodes are orphaned but still on disk after restore.
+#[test]
+fn restore_orphans_post_checkpoint_inodes() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+    let post_ino = ino_for(&changes(&s), "/b.txt");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    // Inode file still on disk (orphaned)
+    assert!(
+        inode_path(&s, post_ino).exists(),
+        "orphaned inode should still be on disk"
+    );
+
+    // But not referenced by any resolved change
+    let ch = changes(&s);
+    assert!(
+        !ch.iter().any(|c| c.ino() == Some(post_ino)),
+        "orphaned inode should not appear in resolved changes"
+    );
+}
+
+/// Abort after restore cleans up all inodes including orphans.
+#[test]
+fn abort_after_restore_cleans_orphans() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["abort", "--force"]).expect("abort");
+
+    assert!(
+        inos(&s).is_empty(),
+        "abort should clear all inodes including orphans"
+    );
+}
+
+// ── Re-COW behavior after restore ────────────────────────────────────────
+
+/// Writing to a restored file without a new checkpoint reuses the inode.
+#[test]
+fn write_after_restore_without_checkpoint_reuses_inode() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2");
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    // checkpoint_gen is now set to chk1's gen, and the dirent's
+    // checkpoint_gen matches. So writing should open the inode directly
+    // (truncate in place), not allocate a new one.
+    let inos_before = inos(&s);
+    fs::write(s.mnt_path("file.txt"), "v1-modified\n").expect("write after restore");
+    let inos_after = inos(&s);
+
+    assert_eq!(
+        inos_before.len(),
+        inos_after.len(),
+        "no new inode should be allocated: before={inos_before:?}, after={inos_after:?}"
+    );
+}
+
+/// Writing after restore + new checkpoint triggers re-COW (new inode).
+#[test]
+fn write_after_restore_and_checkpoint_triggers_recow() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["checkpoint", "post-restore"])
+        .expect("new checkpoint");
+
+    let inos_before = inos(&s);
+    fs::write(s.mnt_path("file.txt"), "v3\n").expect("write triggers re-COW");
+    let inos_after = inos(&s);
+
+    assert_eq!(
+        inos_after.len(),
+        inos_before.len() + 1,
+        "re-COW should allocate new inode: before={inos_before:?}, after={inos_after:?}"
+    );
+    assert_eq!(fs::read_to_string(s.mnt_path("file.txt")).unwrap(), "v3\n");
+}
+
+/// Re-COW after restore preserves the pre-checkpoint inode content.
+#[test]
+fn recow_after_restore_preserves_old_inode() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
+    let v1_ino = ino_for(&changes(&s), "/file.txt");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2 (re-COW)");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["checkpoint", "post-restore"])
+        .expect("new checkpoint");
+
+    fs::write(s.mnt_path("file.txt"), "v3\n").expect("write v3 (re-COW)");
+
+    // The v1 inode should still have the original content
+    assert_eq!(
+        fs::read_to_string(inode_path(&s, v1_ino)).unwrap(),
+        "v1\n",
+        "original inode should be untouched after re-COW"
+    );
+}
+
+// ── Resolved state correctness after restore ─────────────────────────────
+
+/// Resolved changes after restore exactly match the checkpoint state.
+#[test]
+fn resolved_changes_match_checkpoint_state() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    fs::write(s.mnt_path("c.txt"), "c\n").expect("write c");
+    fs::remove_file(s.mnt_path("a.txt")).expect("delete a");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    let ch = changes(&s);
+    assert_eq!(ch.len(), 2, "exactly 2 changes: {ch:?}");
+
+    let debug = format!("{ch:?}");
+    assert!(
+        debug.contains("a.txt"),
+        "a.txt should be in changes: {debug}"
+    );
+    assert!(
+        debug.contains("b.txt"),
+        "b.txt should be in changes: {debug}"
+    );
+    assert!(
+        !debug.contains("c.txt"),
+        "c.txt should NOT be in changes: {debug}"
+    );
+}
+
+// ── Renamed d_type correctness after restore ─────────────────────────────
+
+/// Renamed directory resolves to a Renamed change after restore.
+#[test]
+fn restore_renamed_directory_in_resolved_changes() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // Create directory in base first via commit
+    fs::create_dir(s.mnt_path("old_dir")).expect("mkdir");
+    fs::write(s.mnt_path("old_dir/inner.txt"), "inner\n").expect("write");
+    s.cli(&["commit"]).expect("commit to base");
+
+    // Now rename the base directory through the mount
+    fs::rename(s.mnt_path("old_dir"), s.mnt_path("new_dir")).expect("rename dir");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write post");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    let ch = changes(&s);
+    let debug = format!("{ch:?}");
+
+    // The rename should survive restore
+    assert!(
+        debug.contains("new_dir"),
+        "new_dir should be in changes: {debug}"
+    );
+    assert!(
+        !debug.contains("extra.txt"),
+        "post-checkpoint file should NOT be in changes: {debug}"
+    );
+
+    // Verify the directory is accessible and d_type is dir via symlink_metadata
+    let meta = fs::symlink_metadata(s.mnt_path("new_dir")).expect("lstat new_dir");
+    assert!(
+        meta.file_type().is_dir(),
+        "new_dir should be a directory after restore"
+    );
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("new_dir/inner.txt")).unwrap(),
+        "inner\n"
+    );
+}
+
+/// Renamed symlink resolves correctly after restore and inode store is consistent.
+#[test]
+fn restore_renamed_symlink_in_resolved_changes() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("target.txt"), "target\n").expect("write target");
+    std::os::unix::fs::symlink("target.txt", s.mnt_path("old_link")).expect("symlink");
+    fs::rename(s.mnt_path("old_link"), s.mnt_path("new_link")).expect("rename symlink");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    fs::write(s.mnt_path("post.txt"), "post\n").expect("write post");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    let ch = changes(&s);
+    let debug = format!("{ch:?}");
+
+    assert!(
+        debug.contains("new_link"),
+        "new_link should be in changes: {debug}"
+    );
+    assert!(
+        !debug.contains("post.txt"),
+        "post-checkpoint file should NOT be in changes: {debug}"
+    );
+
+    // Verify d_type is symlink via lstat through the mount
+    let meta = fs::symlink_metadata(s.mnt_path("new_link")).expect("lstat new_link");
+    assert!(
+        meta.file_type().is_symlink(),
+        "new_link should be a symlink after restore"
+    );
+
+    // Journal should have the checkpoint marker and records up to it
+    let records = journal(&s);
+    assert!(
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "chk1")),
+        "chk1 should be in journal: {records:?}"
+    );
+}
+
+// ── Journal inode and byte-level invariants ──────────────────────────────
+
+/// The journal file inode must be preserved across restore (set_len, not replace).
+#[test]
+fn restore_preserves_journal_inode() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let journal_path = s.root.join(".agfs/journal");
+
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+
+    let ino_before = fs::metadata(&journal_path).expect("stat before").ino();
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    let ino_after = fs::metadata(&journal_path).expect("stat after").ino();
+    assert_eq!(
+        ino_before, ino_after,
+        "journal inode must be preserved across restore"
+    );
+}
+
+/// After restore, the journal bytes are an exact prefix of the original.
+#[test]
+fn restore_journal_is_byte_prefix() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let journal_path = s.root.join(".agfs/journal");
+
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+
+    let bytes_before = fs::read(&journal_path).expect("read before");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    let bytes_after = fs::read(&journal_path).expect("read after");
+    assert!(
+        bytes_after.len() < bytes_before.len(),
+        "journal should be shorter after restore: before={} after={}",
+        bytes_before.len(),
+        bytes_after.len()
+    );
+    assert_eq!(
+        &bytes_before[..bytes_after.len()],
+        &bytes_after[..],
+        "post-restore journal must be a byte-exact prefix of the original"
+    );
+}

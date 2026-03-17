@@ -35,7 +35,6 @@ $ agfs diff <path>       # diff a single file
 $ agfs diff --from <name|id> # diff changes since checkpoint
 $ agfs diff --from <name|id> <path> # diff a single file since checkpoint
 $ agfs commit            # apply staged changes to base
-$ agfs commit --at <name|id> # commit only changes up to a checkpoint
 $ agfs abort             # discard staged changes (prompts for confirmation)
 $ agfs unmount           # tear down session (prompts if staged changes exist)
 $ agfs remount           # unmount then remount (prompts if staged changes exist)
@@ -45,8 +44,9 @@ $ agfs remount           # unmount then remount (prompts if staged changes exist
 
 ```bash
 $ agfs checkpoint              # checkpoint with timestamp as name
-$ agfs checkpoint "checkpoint" # checkpoint with explicit name
-$ agfs log                   # show checkpoint log with change counts
+$ agfs checkpoint "my label"   # checkpoint with explicit name
+$ agfs restore <name|id>       # restore to a previous checkpoint (discards later changes)
+$ agfs log                     # show checkpoint log with change counts
 ```
 
 **Permission rules and diagnostics:**
@@ -107,7 +107,7 @@ process credentials, not euid.
 |---|---|---|
 | `mount()`, bind-mounts, `chroot()` | 0 | Require `CAP_SYS_ADMIN` |
 | `exec` user command | real uid | User code must not run as root |
-| `commit`, `status`, `diff` | 0 | Need root for ioctl on the mount |
+| `commit`, `restore`, `status`, `diff` | 0 | Need root for ioctl on the mount |
 | `load`/`unload` | delegates to `sudo` | Already handled correctly |
 
 ### `.agfs/` directory ownership

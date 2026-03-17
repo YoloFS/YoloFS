@@ -1,10 +1,8 @@
 // agfs CLI — commit.rs
 //
 // `agfs commit` — apply staged changes to base.
-// `agfs commit --at <name>` — partial commit up to a checkpoint.
 // Journal is resolved first, then changes are applied sequentially.
 
-use crate::ioctl;
 use crate::journal;
 use crate::resolve::{self, Change};
 use crate::utils::to_base_path;
@@ -126,17 +124,10 @@ fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<()> {
     Ok(())
 }
 
-pub fn run(at: Option<&str>) -> Result<()> {
+pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
-    match at {
-        Some(name) => run_partial(&agfs, name),
-        None => run_full(&agfs),
-    }
-}
-
-fn run_full(agfs: &Path) -> Result<()> {
-    let records = journal::read(agfs)?;
+    let records = journal::read(&agfs)?.records;
     let changes = resolve::resolve(&records)?;
 
     if changes.is_empty() {
@@ -144,60 +135,15 @@ fn run_full(agfs: &Path) -> Result<()> {
         return Ok(());
     }
 
-    apply_changes(agfs, &changes)?;
+    apply_changes(&agfs, &changes)?;
     let committed = changes.len();
 
-    crate::abort::reset_staging(agfs)?;
+    crate::abort::reset_staging(&agfs)?;
 
     println!(
         "{}",
         format!(
             "Committed {committed} change{}.",
-            crate::utils::plural(committed)
-        )
-        .green()
-        .bold()
-    );
-
-    Ok(())
-}
-
-fn run_partial(agfs: &Path, checkpoint_name: &str) -> Result<()> {
-    let records = journal::read(agfs)?;
-    let (changes, remaining) = resolve::split_at_checkpoint(&records, checkpoint_name)?;
-
-    if changes.is_empty() {
-        println!("{}", "Nothing to commit at this checkpoint.".yellow());
-        return Ok(());
-    }
-
-    apply_changes(agfs, &changes)?;
-    let committed = changes.len();
-
-    // Clean up staged inodes that weren't moved by apply_inode (dirs, symlinks)
-    for change in &changes {
-        if let Some(ino) = change.ino() {
-            let staged = journal::inode_path(agfs, ino);
-            if staged.exists() {
-                let _ = fs::remove_file(&staged);
-            }
-        }
-    }
-
-    // Rewrite journal: keep only records after the checkpoint
-    let journal_path = agfs.join("journal");
-    let tmp_path = agfs.join("journal.tmp");
-    journal::write_records(&tmp_path, &remaining)?;
-    fs::rename(&tmp_path, &journal_path).context("replacing journal")?;
-
-    // Signal kernel to invalidate caches (reopens journal fd)
-    let ctl_file = ioctl::open(agfs).context("opening ctl for cache invalidation")?;
-    ioctl::invalidate_cache(&ctl_file).context("invalidating cache")?;
-
-    println!(
-        "{}",
-        format!(
-            "Committed {committed} change{} (up to checkpoint \"{checkpoint_name}\").",
             crate::utils::plural(committed)
         )
         .green()

@@ -137,7 +137,7 @@ pub fn run_status(at: Option<&str>) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     if let Some(name) = at {
-        let records = journal::read(&agfs)?;
+        let records = journal::read(&agfs)?.records;
         let changes = resolve::resolve_at(&records, name)?;
         if changes.is_empty() {
             println!("{}", "No changes staged.".yellow());
@@ -172,7 +172,7 @@ pub fn run_diff(from: Option<&str>, path: Option<&str>) -> Result<bool> {
 // ── Shared implementation ────────────────────────────────────────────
 
 fn run_sections(agfs: &Path, verbose: bool, path: Option<&str>) -> Result<bool> {
-    let records = journal::read(agfs)?;
+    let records = journal::read(agfs)?.records;
     let sections = resolve::resolve_sections(&records)?;
 
     let total: usize = match path {
@@ -265,7 +265,7 @@ fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>
 
 /// Diff between checkpoint state and current state.
 fn run_from_checkpoint(agfs: &Path, chk_name: &str, filter: Option<&str>) -> Result<bool> {
-    let records = journal::read(agfs)?;
+    let records = journal::read(agfs)?.records;
     let (chk_changes, current_changes) = resolve::resolve_from(&records, chk_name)?;
 
     let chk_state = state_map(agfs, &chk_changes);

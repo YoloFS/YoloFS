@@ -223,7 +223,9 @@ pub fn remount(force: bool) -> Result<()> {
 
 /// If there are staged changes, ask the user to commit or abort before proceeding.
 fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
-    let records = crate::journal::read(agfs_dir).unwrap_or_default();
+    let records = crate::journal::read(agfs_dir)
+        .map(|j| j.records)
+        .unwrap_or_default();
     let changes = crate::resolve::resolve(&records).unwrap_or_default();
     if changes.is_empty() {
         return Ok(());
@@ -249,7 +251,7 @@ fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
     io::stdin().lock().read_line(&mut line)?;
 
     match line.trim().to_ascii_lowercase().as_str() {
-        "c" | "commit" => crate::commit::run(None)?,
+        "c" | "commit" => crate::commit::run()?,
         "a" | "abort" => crate::abort::reset_staging(agfs_dir)?,
         _ => anyhow::bail!("unmount cancelled"),
     }

@@ -63,12 +63,28 @@ struct agfs_ioc_checkpoint {
 	char	name[AGFS_PATH_MAX];	/* in: human-readable name (NUL-terminated) */
 };
 
+/* userspace → kernel: one entry in AGFS_IOC_RESTORE */
+struct agfs_ioc_restore_entry {
+	char	path[AGFS_PATH_MAX];		/* absolute child path */
+	__u64	ino;				/* inode store ID; 0 = deleted */
+	char	base_path[AGFS_PATH_MAX];	/* redirect target; NUL = none */
+	__u8	d_type;				/* DT_REG / DT_DIR / DT_LNK */
+	__u8	_pad[7];
+};
+
+/* userspace → kernel: AGFS_IOC_RESTORE */
+struct agfs_ioc_restore {
+	__u64	checkpoint_gen;			/* target generation to set */
+	__u64	entry_count;			/* 0 for commit/abort reset */
+	struct agfs_ioc_restore_entry __user *entries;
+};
+
 #define AGFS_IOC_RULE_ADD	_IOW('A', 10, struct agfs_ioc_rule)
 #define AGFS_IOC_RULE_REMOVE	_IOW('A', 11, struct agfs_ioc_rule)
-#define AGFS_IOC_CACHE_INVAL	_IO('A', 20)
 #define AGFS_IOC_GET_REQUEST	_IOR('A', 30, struct agfs_ctl_request)
 #define AGFS_IOC_PUT_RESPONSE	_IOW('A', 31, struct agfs_ctl_response)
 #define AGFS_IOC_CHECKPOINT	_IOWR('A', 40, struct agfs_ioc_checkpoint)
+#define AGFS_IOC_RESTORE	_IOW('A', 41, struct agfs_ioc_restore)
 
 /* ── Control-File Protocol (binary, fixed-size) ────────────────────── */
 
@@ -330,8 +346,6 @@ int agfs_interpose(struct dentry *dentry, struct super_block *sb,
 
 /* staging.c */
 int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen);
-int agfs_base_path(struct agfs_sb_info *sbi, const char *relpath,
-		   struct path *result);
 int agfs_inode_path(struct agfs_sb_info *sbi, u64 ino,
 		    struct path *result);
 struct agfs_dirent *agfs_find_dirent(struct inode *dir,

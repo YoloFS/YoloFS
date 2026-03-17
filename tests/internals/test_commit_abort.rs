@@ -2,34 +2,35 @@ use super::helpers::{changes, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Commit --at a checkpoint clears records up to the checkpoint, keeps the rest.
+/// Restore to a checkpoint resets the journal to records up to the checkpoint.
 #[test]
-fn commit_at_checkpoint_preserves_trailing_records() {
+fn restore_to_checkpoint_truncates_journal() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::write(s.mnt_path("multi.txt"), "post-chk\n").expect("write after checkpoint");
 
-    s.cli(&["commit", "--at", "s1"]).expect("commit --at");
+    s.cli(&["restore", "s1"]).expect("restore");
 
     let records = journal(&s);
-    // Pre-checkpoint records and the checkpoint itself should be gone
+    // Post-checkpoint records should be gone
     assert!(
         !records
             .iter()
-            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1")),
-        "s1 checkpoint should be cleared after commit --at: {records:?}"
+            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/multi.txt"))),
+        "post-checkpoint Add should be removed: {records:?}"
     );
-    // Post-checkpoint write should remain
+    // The s1 checkpoint itself should still be present
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/multi.txt"))),
-        "post-checkpoint Add should remain: {records:?}"
+            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1")),
+        "s1 checkpoint should be preserved: {records:?}"
     );
 }
 
@@ -73,6 +74,48 @@ fn abort_clears_journal() {
     );
 }
 
+/// Commit preserves the journal file inode (truncates, doesn't delete+recreate).
+/// The kernel holds an O_APPEND fd to the journal; deleting would make it stale.
+#[test]
+fn commit_preserves_journal_inode() {
+    let s = AgfsSession::new().expect("session setup");
+    let journal_path = s.root.join(".agfs/journal");
+
+    fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
+    let ino_before = fs::metadata(&journal_path).expect("stat before").ino();
+
+    s.cli(&["commit"]).expect("commit");
+
+    let meta = fs::metadata(&journal_path).expect("journal file should still exist");
+    assert_eq!(
+        meta.ino(),
+        ino_before,
+        "journal inode must be preserved across commit"
+    );
+    assert_eq!(meta.len(), 0, "journal should be truncated to zero length");
+}
+
+/// Abort preserves the journal file inode (truncates, doesn't delete+recreate).
+/// The kernel holds an O_APPEND fd to the journal; deleting would make it stale.
+#[test]
+fn abort_preserves_journal_inode() {
+    let s = AgfsSession::new().expect("session setup");
+    let journal_path = s.root.join(".agfs/journal");
+
+    fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
+    let ino_before = fs::metadata(&journal_path).expect("stat before").ino();
+
+    s.cli(&["abort", "--force"]).expect("abort");
+
+    let meta = fs::metadata(&journal_path).expect("journal file should still exist");
+    assert_eq!(
+        meta.ino(),
+        ino_before,
+        "journal inode must be preserved across abort"
+    );
+    assert_eq!(meta.len(), 0, "journal should be truncated to zero length");
+}
+
 // ── Inode Store ──────────────────────────────────────────────────────────────────
 
 /// After commit, the inode store is empty.
@@ -114,26 +157,64 @@ fn abort_empties_inode_store() {
     );
 }
 
-/// Commit --at a checkpoint clears pre-checkpoint inodes but keeps post-checkpoint inodes.
+/// Commit preserves the inodes directory inode (removes entries individually,
+/// doesn't rm -rf + mkdir). This keeps the directory inode stable.
 #[test]
-fn commit_at_keeps_post_checkpoint_inodes() {
+fn commit_preserves_inodes_dir_inode() {
+    let s = AgfsSession::new().expect("session setup");
+    let inodes_dir = s.root.join(".agfs/inodes");
+
+    fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
+    let ino_before = fs::metadata(&inodes_dir).expect("stat before").ino();
+
+    s.cli(&["commit"]).expect("commit");
+
+    let ino_after = fs::metadata(&inodes_dir).expect("inodes dir should still exist").ino();
+    assert_eq!(
+        ino_before, ino_after,
+        "inodes directory inode must be preserved across commit"
+    );
+}
+
+/// Abort preserves the inodes directory inode (removes entries individually,
+/// doesn't rm -rf + mkdir). This keeps the directory inode stable.
+#[test]
+fn abort_preserves_inodes_dir_inode() {
+    let s = AgfsSession::new().expect("session setup");
+    let inodes_dir = s.root.join(".agfs/inodes");
+
+    fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
+    let ino_before = fs::metadata(&inodes_dir).expect("stat before").ino();
+
+    s.cli(&["abort", "--force"]).expect("abort");
+
+    let ino_after = fs::metadata(&inodes_dir).expect("inodes dir should still exist").ino();
+    assert_eq!(
+        ino_before, ino_after,
+        "inodes directory inode must be preserved across abort"
+    );
+}
+
+/// Restore to a checkpoint preserves all inodes (orphans cleaned up on commit/abort).
+#[test]
+fn restore_preserves_all_inodes() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "pre-chk\n").expect("write pre");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::write(s.mnt_path("multi.txt"), "post-chk\n").expect("write post");
 
-    // Grab the post-checkpoint inode id before commit
+    // Grab the post-checkpoint inode id before restore
     let ch = changes(&s);
     let post_id = ino_for(&ch, "/multi.txt");
 
-    s.cli(&["commit", "--at", "s1"]).expect("commit --at");
+    s.cli(&["restore", "s1"]).expect("restore");
 
-    // Post-checkpoint inode should still exist
+    // Post-checkpoint inode should still exist on disk (orphaned)
     let remaining = inos(&s);
     assert!(
         remaining.contains(&post_id),
-        "post-checkpoint inode should survive commit --at: remaining={remaining:?}"
+        "post-checkpoint inode should survive restore: remaining={remaining:?}"
     );
     assert_eq!(
         fs::read_to_string(inode_path(&s, post_id)).unwrap(),

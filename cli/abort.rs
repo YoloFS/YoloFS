@@ -8,26 +8,39 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
-/// Clear inode store, remove journal, and invalidate kernel caches.
+/// Clear inode store, truncate journal, and reset kernel staging state.
 pub fn reset_staging(agfs: &Path) -> Result<()> {
     let inodes_dir = agfs.join("inodes");
     if inodes_dir.exists() {
-        fs::remove_dir_all(&inodes_dir).context("removing inode store")?;
-        fs::create_dir_all(&inodes_dir).context("recreating inode store")?;
+        for entry in fs::read_dir(&inodes_dir).context("reading inode store")? {
+            let entry = entry.context("reading directory entry")?;
+            let path = entry.path();
+            if entry.file_type().context("reading file type")?.is_dir() {
+                fs::remove_dir_all(&path).context("removing staged directory")?;
+            } else {
+                fs::remove_file(&path).context("removing staged inode")?;
+            }
+        }
     }
     let journal_path = agfs.join("journal");
     if journal_path.exists() {
-        fs::remove_file(&journal_path).context("removing journal file")?;
+        // OpenOptions with truncate(true) clears the file to zero length
+        // while keeping the inode, so the kernel's O_APPEND fd stays valid.
+        fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&journal_path)
+            .context("truncating journal")?;
     }
-    let ctl_file = crate::ioctl::open(agfs).context("opening ctl for cache invalidation")?;
-    crate::ioctl::invalidate_cache(&ctl_file).context("invalidating cache")?;
+    let ctl_file = crate::ioctl::open(agfs).context("opening ctl for restore")?;
+    crate::ioctl::restore(&ctl_file, 1, &[]).context("ioctl RESTORE")?;
     Ok(())
 }
 
 pub fn run(force: bool) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
-    let records = crate::journal::read(&agfs)?;
+    let records = crate::journal::read(&agfs)?.records;
     let changes = crate::resolve::resolve(&records)?;
     if changes.is_empty() {
         println!("{}", "Nothing to discard.".yellow());

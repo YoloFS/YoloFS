@@ -1,12 +1,14 @@
+use crate::helpers::AgfsSession;
 use agfs::journal::{self, Record};
 use agfs::resolve::{self, Change};
-use crate::helpers::AgfsSession;
 use std::fs;
 use std::path::PathBuf;
 
 /// Read parsed journal records for a session.
 pub fn journal(s: &AgfsSession) -> Vec<Record> {
-    journal::read(&s.root.join(".agfs")).expect("read journal")
+    journal::read(&s.root.join(".agfs"))
+        .expect("read journal")
+        .records
 }
 
 /// Resolve the journal to get the final Change list.

@@ -355,11 +355,11 @@ longest-prefix-match for free. This satisfies all three principles:
 - On rule add/remove: `atomic_inc(&sb->perm_gen)`. All inode caches go
   stale; next `permission()` call re-resolves lazily via `d_find_alias()` +
   walk up. O(1) invalidation.
-- On `AGFS_IOC_CACHE_INVAL` (after userspace commit/abort): bumps perm_gen,
-  shrinks the dentry cache, and reopens the journal file.
+- On `AGFS_IOC_RESTORE` (after userspace commit/abort/restore): bumps perm_gen
+  and shrinks the dentry cache, so permission re-resolution picks up changes.
 - On `rename`: pure renames do **not** bump `perm_gen`. The inode keeps its
   `cached_perm` until some later invalidation event (rule add/remove or
-  `AGFS_IOC_CACHE_INVAL`). This is intentional: rename is treated as a path
+  `AGFS_IOC_RESTORE`). This is intentional: rename is treated as a path
   move, not an immediate permission re-resolution point. A file moved from
   `src` under `/etc` may therefore continue to use its pre-rename effective
   permission until the next generation bump. This trades strict

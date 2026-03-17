@@ -21,21 +21,36 @@ pub enum Record {
     Checkpoint { id: u64, name: String },
 }
 
+/// A parsed journal: records and the byte offset after each record.
+pub struct Journal {
+    pub records: Vec<Record>,
+    /// `offsets[i]` is the byte offset in the file just past record `i`.
+    offsets: Vec<u64>,
+}
+
 /// Read and parse the journal file.
-pub fn read(agfs_dir: &Path) -> Result<Vec<Record>> {
+pub fn read(agfs_dir: &Path) -> Result<Journal> {
     let journal_path = agfs_dir.join("journal");
     if !journal_path.exists() {
-        return Ok(Vec::new());
+        return Ok(Journal {
+            records: Vec::new(),
+            offsets: Vec::new(),
+        });
     }
     let data = fs::read(&journal_path).context("reading journal file")?;
     let mut records = Vec::new();
+    let mut offsets = Vec::new();
+    let mut pos: u64 = 0;
 
     for line in data.split(|&b| b == b'\n') {
+        let line_end = pos + line.len() as u64 + 1; // +1 for the \n
         if line.is_empty() {
+            pos = line_end;
             continue;
         }
         let fields: Vec<&[u8]> = line.split(|&b| b == 0).collect();
         if fields.is_empty() {
+            pos = line_end;
             continue;
         }
         let tag = fields[0];
@@ -45,28 +60,33 @@ pub fn read(agfs_dir: &Path) -> Result<Vec<Record>> {
                 let ino_str = String::from_utf8_lossy(fields[2]);
                 if let Ok(ino) = ino_str.parse::<u64>() {
                     records.push(Record::Add { path, ino });
+                    offsets.push(line_end);
                 }
             }
             b"D" if fields.len() >= 2 => {
                 let path = String::from_utf8_lossy(fields[1]).to_string();
                 records.push(Record::Delete { path });
+                offsets.push(line_end);
             }
             b"R" if fields.len() >= 3 => {
                 let old_path = String::from_utf8_lossy(fields[1]).to_string();
                 let new_path = String::from_utf8_lossy(fields[2]).to_string();
                 records.push(Record::Rename { old_path, new_path });
+                offsets.push(line_end);
             }
             b"K" if fields.len() >= 3 => {
                 let id_str = String::from_utf8_lossy(fields[1]);
                 let name = String::from_utf8_lossy(fields[2]).to_string();
                 if let Ok(id) = id_str.parse::<u64>() {
                     records.push(Record::Checkpoint { id, name });
+                    offsets.push(line_end);
                 }
             }
             _ => {}
         }
+        pos = line_end;
     }
-    Ok(records)
+    Ok(Journal { records, offsets })
 }
 
 /// Get the staged inode path for a given ino.
@@ -74,44 +94,19 @@ pub fn inode_path(agfs_dir: &Path, ino: u64) -> PathBuf {
     agfs_dir.join("inodes").join(ino.to_string())
 }
 
-/// Write raw records back to a journal file (for partial commit rewriting).
-pub fn write_records(journal_path: &Path, records: &[Record]) -> Result<()> {
-    let mut data = Vec::new();
-    for record in records {
-        match record {
-            Record::Add { path, ino } => {
-                data.push(b'A');
-                data.push(0);
-                data.extend_from_slice(path.as_bytes());
-                data.push(0);
-                data.extend_from_slice(ino.to_string().as_bytes());
-                data.push(b'\n');
-            }
-            Record::Delete { path } => {
-                data.push(b'D');
-                data.push(0);
-                data.extend_from_slice(path.as_bytes());
-                data.push(b'\n');
-            }
-            Record::Rename { old_path, new_path } => {
-                data.push(b'R');
-                data.push(0);
-                data.extend_from_slice(old_path.as_bytes());
-                data.push(0);
-                data.extend_from_slice(new_path.as_bytes());
-                data.push(b'\n');
-            }
-            Record::Checkpoint { id, name } => {
-                data.push(b'K');
-                data.push(0);
-                data.extend_from_slice(id.to_string().as_bytes());
-                data.push(0);
-                data.extend_from_slice(name.as_bytes());
-                data.push(b'\n');
-            }
-        }
-    }
-    fs::write(journal_path, &data).context("writing journal")
+/// Truncate the journal after record `record_idx`.
+/// Preserves the inode so the kernel's O_APPEND fd stays valid.
+pub fn truncate(journal: &Journal, agfs_dir: &Path, record_idx: usize) -> Result<()> {
+    let offset = *journal
+        .offsets
+        .get(record_idx)
+        .context("record index out of bounds")?;
+    let journal_path = agfs_dir.join("journal");
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .open(&journal_path)
+        .context("opening journal")?;
+    f.set_len(offset).context("truncating journal")
 }
 
 #[cfg(test)]
@@ -128,8 +123,8 @@ mod tests {
     #[test]
     fn read_empty() {
         let dir = setup_test_dir();
-        let records = read(dir.path()).unwrap();
-        assert!(records.is_empty());
+        let journal = read(dir.path()).unwrap();
+        assert!(journal.records.is_empty());
     }
 
     #[test]
@@ -141,12 +136,16 @@ mod tests {
         data.extend_from_slice(b"R\0/c\0/d\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
-        let records = read(dir.path()).unwrap();
-        assert_eq!(records.len(), 3);
-        assert!(matches!(&records[0], Record::Add { path, ino } if path == "/a" && *ino == 1));
-        assert!(matches!(&records[1], Record::Delete { path } if path == "/b"));
-        assert!(matches!(&records[2], Record::Rename { old_path, new_path }
-            if old_path == "/c" && new_path == "/d"));
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(journal.records.len(), 3);
+        assert!(
+            matches!(&journal.records[0], Record::Add { path, ino } if path == "/a" && *ino == 1)
+        );
+        assert!(matches!(&journal.records[1], Record::Delete { path } if path == "/b"));
+        assert!(
+            matches!(&journal.records[2], Record::Rename { old_path, new_path }
+            if old_path == "/c" && new_path == "/d")
+        );
     }
 
     #[test]
@@ -167,38 +166,74 @@ mod tests {
         data.extend_from_slice(b"A\0/a\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
-        let records = read(dir.path()).unwrap();
-        assert_eq!(records.len(), 3);
-        assert!(matches!(&records[1], Record::Checkpoint { id: 1, name } if name == "build"));
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(journal.records.len(), 3);
+        assert!(
+            matches!(&journal.records[1], Record::Checkpoint { id: 1, name } if name == "build")
+        );
     }
 
     #[test]
-    fn write_records_roundtrip() {
+    fn truncate_drops_trailing_records() {
         let dir = setup_test_dir();
-        let records = vec![
-            Record::Add {
-                path: "/a".into(),
-                ino: 1,
-            },
-            Record::Checkpoint {
-                id: 1,
-                name: "snap".into(),
-            },
-            Record::Delete { path: "/b".into() },
-            Record::Rename {
-                old_path: "/c".into(),
-                new_path: "/d".into(),
-            },
-        ];
-        let path = dir.path().join("journal");
-        write_records(&path, &records).unwrap();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/a\01\n");
+        data.extend_from_slice(b"K\01\0snap\n");
+        data.extend_from_slice(b"A\0/b\02\n");
+        data.extend_from_slice(b"D\0/c\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
 
-        let parsed = read(dir.path()).unwrap();
-        assert_eq!(parsed.len(), 4);
-        assert!(matches!(&parsed[0], Record::Add { path, ino } if path == "/a" && *ino == 1));
-        assert!(matches!(&parsed[1], Record::Checkpoint { id: 1, name } if name == "snap"));
-        assert!(matches!(&parsed[2], Record::Delete { path } if path == "/b"));
-        assert!(matches!(&parsed[3], Record::Rename { old_path, new_path }
-            if old_path == "/c" && new_path == "/d"));
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(journal.records.len(), 4);
+
+        // Truncate after the checkpoint (record index 1)
+        truncate(&journal, dir.path(), 1).unwrap();
+
+        let after = read(dir.path()).unwrap();
+        assert_eq!(after.records.len(), 2);
+        assert!(matches!(&after.records[0], Record::Add { path, .. } if path == "/a"));
+        assert!(matches!(&after.records[1], Record::Checkpoint { id: 1, name } if name == "snap"));
+    }
+
+    #[test]
+    fn truncate_at_last_record_is_noop() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/a\01\n");
+        data.extend_from_slice(b"K\01\0snap\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(journal.records.len(), 2);
+
+        let size_before = fs::metadata(dir.path().join("journal")).unwrap().len();
+        truncate(&journal, dir.path(), 1).unwrap();
+        let size_after = fs::metadata(dir.path().join("journal")).unwrap().len();
+
+        assert_eq!(
+            size_before, size_after,
+            "truncating at last record should not change file size"
+        );
+        let after = read(dir.path()).unwrap();
+        assert_eq!(after.records.len(), 2);
+    }
+
+    #[test]
+    fn offsets_are_byte_accurate() {
+        let dir = setup_test_dir();
+        let r0 = b"A\0/a\01\n";
+        let r1 = b"K\01\0snap\n";
+        let r2 = b"D\0/longpath\n";
+        let mut data = Vec::new();
+        data.extend_from_slice(r0);
+        data.extend_from_slice(r1);
+        data.extend_from_slice(r2);
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(journal.records.len(), 3);
+        assert_eq!(journal.offsets[0], r0.len() as u64);
+        assert_eq!(journal.offsets[1], (r0.len() + r1.len()) as u64);
+        assert_eq!(journal.offsets[2], (r0.len() + r1.len() + r2.len()) as u64);
     }
 }
