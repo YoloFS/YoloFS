@@ -92,14 +92,15 @@ fn diff_single_file_not_changed() {
 }
 
 #[test]
-fn diff_single_file_with_leading_slash() {
+fn diff_single_file_with_absolute_path() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
 
-    let output = s.cli(&["diff", "/hello.txt"]).expect("diff /hello.txt");
+    let abs = format!("{}/hello.txt", s.root.display());
+    let output = s.cli(&["diff", &abs]).expect("diff absolute path");
     assert!(
         output.contains("hello.txt"),
-        "should find with leading slash: {output}"
+        "should find with absolute path: {output}"
     );
 }

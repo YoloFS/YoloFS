@@ -448,7 +448,7 @@ mod tests {
         dir
     }
 
-    fn read(dir: &std::path::Path) -> Vec<Record> {
+    fn read(dir: &Path) -> Vec<Record> {
         crate::journal::read(dir).unwrap()
     }
 

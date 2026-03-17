@@ -12,13 +12,15 @@ pub fn to_base_path(rel: &str) -> PathBuf {
 }
 
 /// Normalize a user-supplied path to match the absolute-path format used in the
-/// journal (e.g. "hello.txt" → "/hello.txt", "./src/main.rs" → "/src/main.rs").
+/// journal. Relative paths are resolved against the current working directory
+/// (e.g. "hello.txt" → "<cwd>/hello.txt"). Absolute paths are kept as-is.
 pub fn normalize_path(p: &str) -> String {
     let stripped = p.strip_prefix("./").unwrap_or(p);
     if stripped.starts_with('/') {
         stripped.to_string()
     } else {
-        format!("/{stripped}")
+        let cwd = std::env::current_dir().unwrap_or_default();
+        cwd.join(stripped).to_string_lossy().to_string()
     }
 }
 
@@ -102,7 +104,8 @@ mod tests {
 
     #[test]
     fn normalize_path_relative() {
-        assert_eq!(normalize_path("hello.txt"), "/hello.txt");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(normalize_path("hello.txt"), cwd.join("hello.txt").to_string_lossy());
     }
 
     #[test]
@@ -112,16 +115,19 @@ mod tests {
 
     #[test]
     fn normalize_path_nested() {
-        assert_eq!(normalize_path("src/lib.rs"), "/src/lib.rs");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(normalize_path("src/lib.rs"), cwd.join("src/lib.rs").to_string_lossy());
     }
 
     #[test]
     fn normalize_path_dot_slash() {
-        assert_eq!(normalize_path("./hello.txt"), "/hello.txt");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(normalize_path("./hello.txt"), cwd.join("hello.txt").to_string_lossy());
     }
 
     #[test]
     fn normalize_path_dot_slash_nested() {
-        assert_eq!(normalize_path("./src/main.rs"), "/src/main.rs");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(normalize_path("./src/main.rs"), cwd.join("src/main.rs").to_string_lossy());
     }
 }
