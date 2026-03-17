@@ -9,11 +9,9 @@ jobs:
   ci:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: false
-
-      - uses: Swatinem/rust-cache@v2
 
       - name: Install dependencies
         run: ./install_deps.sh
