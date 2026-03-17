@@ -223,7 +223,8 @@ pub fn remount(force: bool) -> Result<()> {
 
 /// If there are staged changes, ask the user to commit or abort before proceeding.
 fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
-    let changes = crate::journal::resolve(agfs_dir).unwrap_or_default();
+    let records = crate::journal::read(agfs_dir).unwrap_or_default();
+    let changes = crate::resolve::resolve(&records).unwrap_or_default();
     if changes.is_empty() {
         return Ok(());
     }

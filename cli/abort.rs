@@ -27,7 +27,8 @@ pub fn reset_staging(agfs: &Path) -> Result<()> {
 pub fn run(force: bool) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
-    let changes = crate::journal::resolve(&agfs)?;
+    let records = crate::journal::read(&agfs)?;
+    let changes = crate::resolve::resolve(&records)?;
     if changes.is_empty() {
         println!("{}", "Nothing to discard.".yellow());
         return Ok(());

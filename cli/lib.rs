@@ -7,6 +7,7 @@ pub mod exec;
 pub mod ioctl;
 pub mod journal;
 pub mod kmod;
+pub mod resolve;
 pub mod kmsg;
 pub mod mount;
 pub mod utils;

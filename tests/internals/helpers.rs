@@ -1,5 +1,6 @@
+use agfs::journal::{self, Record};
+use agfs::resolve::{self, Change};
 use crate::helpers::AgfsSession;
-use agfs::journal::{self, Change, Record};
 use std::fs;
 use std::path::PathBuf;
 
@@ -10,7 +11,7 @@ pub fn journal(s: &AgfsSession) -> Vec<Record> {
 
 /// Resolve the journal to get the final Change list.
 pub fn changes(s: &AgfsSession) -> Vec<Change> {
-    journal::resolve(&s.root.join(".agfs")).expect("resolve journal")
+    resolve::resolve(&journal(s)).expect("resolve journal")
 }
 
 /// List numeric inode entries in the inode store.

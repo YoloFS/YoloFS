@@ -3,10 +3,11 @@
 ## Principles
 
 - Keep code simple and easy to understand.
-- No backwards compatibility needed — remove deprecated code.
+- No backwards compatibility needed — remove deprecated code. Freely change interfaces and update all callers.
 - Do not repeat the same code — extract shared logic.
 - Think through problems and implement the best solution; avoid fallbacks.
 - Keep functions short. Extract helpers when a function does multiple distinct things.
+- Do not change or remove existing comments unless they are outdated.
 
 ## Workflow
 

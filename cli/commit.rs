@@ -5,7 +5,8 @@
 // Journal is resolved first, then changes are applied sequentially.
 
 use crate::ioctl;
-use crate::journal::{self, Change};
+use crate::journal;
+use crate::resolve::{self, Change};
 use crate::utils::to_base_path;
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -135,7 +136,8 @@ pub fn run(at: Option<&str>) -> Result<()> {
 }
 
 fn run_full(agfs: &Path) -> Result<()> {
-    let changes = journal::resolve(agfs)?;
+    let records = journal::read(agfs)?;
+    let changes = resolve::resolve(&records)?;
 
     if changes.is_empty() {
         println!("{}", "Nothing to commit.".yellow());
@@ -161,7 +163,8 @@ fn run_full(agfs: &Path) -> Result<()> {
 }
 
 fn run_partial(agfs: &Path, checkpoint_name: &str) -> Result<()> {
-    let (changes, remaining) = journal::split_at_checkpoint(agfs, checkpoint_name)?;
+    let records = journal::read(agfs)?;
+    let (changes, remaining) = resolve::split_at_checkpoint(&records, checkpoint_name)?;
 
     if changes.is_empty() {
         println!("{}", "Nothing to commit at this checkpoint.".yellow());

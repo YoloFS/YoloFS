@@ -5,7 +5,8 @@
 // `--at <name>` — show state at a checkpoint.
 // `--from <name>` — diff changes since a checkpoint.
 
-use crate::journal::{self, Change, Section};
+use crate::journal;
+use crate::resolve::{self, Change, Section};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -136,7 +137,8 @@ pub fn run_status(at: Option<&str>) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     if let Some(name) = at {
-        let changes = journal::resolve_at(&agfs, name)?;
+        let records = journal::read(&agfs)?;
+        let changes = resolve::resolve_at(&records, name)?;
         if changes.is_empty() {
             println!("{}", "No changes staged.".yellow());
         } else {
@@ -170,7 +172,8 @@ pub fn run_diff(from: Option<&str>, path: Option<&str>) -> Result<bool> {
 // ── Shared implementation ────────────────────────────────────────────
 
 fn run_sections(agfs: &Path, verbose: bool, path: Option<&str>) -> Result<bool> {
-    let sections = journal::resolve_sections(agfs)?;
+    let records = journal::read(agfs)?;
+    let sections = resolve::resolve_sections(&records)?;
 
     let total: usize = match path {
         Some(target) => sections
@@ -262,7 +265,8 @@ fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>
 
 /// Diff between checkpoint state and current state.
 fn run_from_checkpoint(agfs: &Path, chk_name: &str, filter: Option<&str>) -> Result<bool> {
-    let (chk_changes, current_changes) = journal::resolve_from(agfs, chk_name)?;
+    let records = journal::read(agfs)?;
+    let (chk_changes, current_changes) = resolve::resolve_from(&records, chk_name)?;
 
     let chk_state = state_map(agfs, &chk_changes);
     let current_state = state_map(agfs, &current_changes);
@@ -322,7 +326,7 @@ fn run_from_checkpoint(agfs: &Path, chk_name: &str, filter: Option<&str>) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::Change;
+    use crate::resolve::Change;
     use std::fs;
     use tempfile::TempDir;
 
