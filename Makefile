@@ -47,10 +47,10 @@ uninstall:
 
 test: test-unit test-e2e
 
-test-unit:
+test-unit: | $(TARGET_DIR)
 	cargo test --release -p agfs --lib
 
-test-e2e: install
+test-e2e: install | $(TARGET_DIR)
 	agfs reload
 	cargo test --release -p agfs --test e2e -- --test-threads=1
 	agfs unload
@@ -59,11 +59,11 @@ test-e2e: install
 
 .PHONY: lint fix
 
-lint:
+lint: | $(TARGET_DIR)
 	cargo fmt --check
 	cargo clippy -- -D warnings
 
-fix:
+fix: | $(TARGET_DIR)
 	cargo fmt
 	cargo clippy --fix --allow-dirty
 
@@ -71,19 +71,19 @@ fix:
 
 .PHONY: bench bench-micro bench-macro
 
-bench: install
+bench: install | $(TARGET_DIR)
 	agfs reload
 	cargo build --release -p agfs-bench
 	./target/release/agfs-bench
 	agfs unload
 
-bench-micro: install
+bench-micro: install | $(TARGET_DIR)
 	agfs reload
 	cargo build --release -p agfs-bench
 	./target/release/agfs-bench --micro
 	agfs unload
 
-bench-macro: install
+bench-macro: install | $(TARGET_DIR)
 	agfs reload
 	cargo build --release -p agfs-bench
 	./target/release/agfs-bench --macro
