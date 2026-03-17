@@ -407,6 +407,8 @@ static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
 
 	for (bi = 0; bi < AGFS_DE_BUCKETS; bi++) {
 		hlist_for_each_entry(de, &dii->de_buckets[bi], node) {
+			u64 emit_ino;
+
 			if (!de->ino && !de->base_path) {
 				(*off)++;
 				continue;
@@ -415,8 +417,24 @@ static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
 				(*off)++;
 				continue;
 			}
+
+			/*
+			 * For staged inodes, use the inode store ID.
+			 * For base_path redirects (zero-copy rename),
+			 * resolve the lower inode number.
+			 */
+			emit_ino = de->ino;
+			if (!emit_ino && de->base_path) {
+				struct path bp;
+
+				if (!kern_path(de->base_path, LOOKUP_FOLLOW, &bp)) {
+					emit_ino = d_inode(bp.dentry)->i_ino;
+					path_put(&bp);
+				}
+			}
+
 			if (!dir_emit(ctx, de->name, de->name_len,
-				      0, de->d_type))
+				      emit_ino, de->d_type))
 				return true;
 			(*off)++;
 			ctx->pos++;

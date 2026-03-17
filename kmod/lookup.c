@@ -186,9 +186,11 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 		goto out_free;
 	}
 
+	inode_lock_shared(d_inode(lower_dir_dentry));
 	lower_dentry = lookup_one_len(dentry->d_name.name,
 				      lower_dir_dentry,
 				      dentry->d_name.len);
+	inode_unlock_shared(d_inode(lower_dir_dentry));
 	if (IS_ERR(lower_dentry)) {
 		err = PTR_ERR(lower_dentry);
 		goto out_free;

@@ -1,5 +1,6 @@
 use crate::helpers::AgfsSession;
 use std::fs;
+use std::os::unix::fs::DirEntryExt;
 
 #[test]
 fn readdir() {
@@ -235,4 +236,46 @@ fn readdir_many_files() {
         let name = format!("file_{i:03}.txt");
         assert!(entries.contains(&name), "missing {name} in readdir");
     }
+}
+
+// ── readdir inode number correctness ──
+
+/// A newly created file must have a non-zero inode number in readdir.
+/// Regression: agfs_emit_dirents passed ino=0 to dir_emit for staged
+/// entries, which caused some kernels to silently drop the entry.
+#[test]
+fn readdir_created_file_has_nonzero_ino() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("newfile.txt"), "data\n").expect("create");
+
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "newfile.txt" {
+            let ino = entry.ino();
+            assert_ne!(ino, 0, "staged file should have non-zero ino in readdir");
+            return;
+        }
+    }
+    panic!("newfile.txt not found in readdir");
+}
+
+/// A renamed file must have a non-zero inode number in readdir.
+/// Regression: renamed entries (base_path redirects) had ino=0 in
+/// dir_emit because de->ino is 0 for redirects.
+#[test]
+fn readdir_renamed_file_has_nonzero_ino() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt")).expect("rename");
+
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "renamed.txt" {
+            let ino = entry.ino();
+            assert_ne!(ino, 0, "renamed file should have non-zero ino in readdir");
+            return;
+        }
+    }
+    panic!("renamed.txt not found in readdir");
 }
