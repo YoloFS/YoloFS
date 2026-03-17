@@ -1,5 +1,11 @@
 /data/*
 !/data/README.md
-__pycache__
 third_party/linux*
 .agfs
+
+# clangd
+compile_commands.json
+.cache/
+
+# Python
+__pycache__/

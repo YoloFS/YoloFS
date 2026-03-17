@@ -13,7 +13,7 @@ avoiding the 512-byte allocation. See [staging.md — Path Resolution](staging.m
 
 No per-fd checkpoint state is needed. The COW check uses
 `dirent.checkpoint_gen < sbi->checkpoint_gen` (purely per-dirent). The fsync
-optimization uses `dirent.ino > 0`. The CLI enforces that
+optimization uses `agfs_ino_is_staged(de->ino)`. The CLI enforces that
 checkpoints are only taken when no staging file handles are open
 (see [staging.md — Re-COW](staging.md#re-cow-on-first-open-for-write-after-checkpoint)),
 so there are no stale cross-checkpoint handles to track.
@@ -51,12 +51,12 @@ the ioctl wire format.
 | Operation    | Perm check                                                   | Staging layer                                                                     | Passthrough                               |
 | ------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------- |
 | `lookup`     | --                                                           | Check dirent table first (deleted -> ENOENT, ino -> staged inode, base_path -> redirect); fall back to base. | `lookup_one_len()` on base dir. |
-| `create`     | -- (dir perm via lower FS)                                   | Allocate inode, add dirent + journal append.                                  | `vfs_create()` on inode store.  |
-| `mkdir`      | -- (dir perm via lower FS)                                   | Allocate directory inode, add dirent + journal append.                        | --                               |
-| `unlink`     | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal append.                                           | --                                         |
-| `rmdir`      | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal append.                                           | --                                         |
-| `rename`     | -- (dir perm via lower FS)                                   | See [Rename Handling](staging.md#rename-handling).                               | --                                         |
-| `symlink`    | -- (dir perm via lower FS)                                   | Allocate inode (symlink), add dirent + journal append.                        | `vfs_symlink()`.                          |
+| `create`     | -- (dir perm via lower FS)                                   | Allocate inode, add dirent + journal E record.                                  | `vfs_create()` on inode store.  |
+| `mkdir`      | -- (dir perm via lower FS)                                   | Allocate directory inode, add dirent + journal E record.                        | --                               |
+| `unlink`     | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal E record.                                           | --                                         |
+| `rmdir`      | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal E record.                                           | --                                         |
+| `rename`     | -- (dir perm via lower FS)                                   | See [Rename Handling](staging.md#rename-handling). Emits 2 E records.             | --                                         |
+| `symlink`    | -- (dir perm via lower FS)                                   | Allocate inode (symlink), add dirent + journal E record.                        | `vfs_symlink()`.                          |
 | `permission` | **Gating for regular files (O(1) cached); delegate to lower FS for dirs.** | --                                                                                 | `inode_permission()` on lower inode.      |
 | `setattr`    | Gated (regular files only).                                  | Setattr on resolved lower file (staged inode or base). No COW triggered.           | `notify_change()` on lower.               |
 | `getattr`    | Gated (regular files only).                                  | Stat from resolved path (staged inode or base).                                   | `vfs_getattr()` on lower.                 |
@@ -69,7 +69,7 @@ the ioctl wire format.
 | `read_iter`  | Swap `kiocb->ki_filp` to lower file, call `lower->read_iter()`.                                                                                                                                   |
 | `write_iter` | Pure pass-through — COW already resolved at open time. Delegate to `lower->write_iter()`. |
 | `mmap`       | Pure pass-through — COW already resolved at open time. Delegate to lower file. |
-| `fsync`      | If dirent has `ino > 0`: return 0 (staged inodes are ephemeral). Otherwise delegate to lower.                                                            |
+| `fsync`      | If `agfs_ino_is_staged(de->ino)`: return 0 (staged inodes are ephemeral). Otherwise delegate to lower.                                                            |
 | `release`    | Decrement `staging_fd_count` if write-mode. `fput()` lower file. Free `agfs_file_info`.                                                                                                           |
 | `llseek`     | Delegate to lower.                                                                                                                                                                                |
 

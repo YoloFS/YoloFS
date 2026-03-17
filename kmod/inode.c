@@ -15,14 +15,9 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 			      umode_t mode, const char *symname)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
-	char buf[AGFS_PATH_MAX];
 	struct path inode_path;
 	u64 ino;
 	int err;
-
-	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
-	if (err)
-		return err;
 
 	err = agfs_inode_alloc(sbi, &ino, &inode_path, mode, symname);
 	if (err)
@@ -35,19 +30,20 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	}
 
 	agfs_replace_lower_path(dentry, &inode_path);
+	unsigned char dt = S_ISDIR(mode) ? DT_DIR :
+			   S_ISLNK(mode) ? DT_LNK : DT_REG;
+
 	err = agfs_add_dirent(dir, dentry->d_name.name,
 				dentry->d_name.len,
 				&(struct agfs_dirent){
 					.ino = ino,
-					.d_type = S_ISDIR(mode) ? DT_DIR :
-						  S_ISLNK(mode) ? DT_LNK :
-						  DT_REG,
+					.d_type = dt,
 					.checkpoint_gen = (u64)atomic64_read(
 							&sbi->checkpoint_gen),
 				});
 	if (err)
 		return err;
-	agfs_journal_append_a(sbi, buf, ino);
+	agfs_journal_append(sbi, dentry, ino, dt, NULL);
 
 	return 0;
 }
@@ -69,12 +65,7 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
-	char buf[AGFS_PATH_MAX];
 	int err;
-
-	err = agfs_dentry_relpath(dentry, buf, sizeof(buf));
-	if (err)
-		return err;
 
 	err = agfs_del_dirent(dir,
 				dentry->d_name.name,
@@ -82,7 +73,7 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 	if (err)
 		return err;
 
-	err = agfs_journal_append_d(sbi, buf);
+	err = agfs_journal_append(sbi, dentry, AGFS_INO_DELETED, 0, NULL);
 	if (!err)
 		d_drop(dentry);
 	return err;
@@ -138,7 +129,7 @@ static int agfs_rename_read_src(struct inode *old_dir,
 		ctx->ino = de->ino;
 		ctx->gen = de->checkpoint_gen;
 		ctx->d_type = de->d_type;
-		if (de->base_path) {
+		if (agfs_ino_is_redirect(de->ino)) {
 			ctx->base_path = kstrdup(de->base_path, GFP_KERNEL);
 			if (!ctx->base_path)
 				return -ENOMEM;
@@ -159,9 +150,9 @@ static int agfs_rename_read_src(struct inode *old_dir,
 static int agfs_rename_add_dst(struct inode *new_dir,
 			       struct dentry *new_dentry,
 			       const struct agfs_rename_ctx *ctx,
-			       char *old_buf)
+			       const char *redirect_path)
 {
-	if (ctx->ino) {
+	if (agfs_ino_is_staged(ctx->ino)) {
 		return agfs_add_dirent(new_dir,
 					new_dentry->d_name.name,
 					new_dentry->d_name.len,
@@ -176,9 +167,8 @@ static int agfs_rename_add_dst(struct inode *new_dir,
 				new_dentry->d_name.name,
 				new_dentry->d_name.len,
 				&(struct agfs_dirent){
-					.base_path = ctx->base_path
-						     ? ctx->base_path
-						     : old_buf,
+					.ino = AGFS_INO_REDIRECT,
+					.base_path = (char *)redirect_path,
 					.d_type = ctx->d_type,
 				});
 }
@@ -192,16 +182,15 @@ static int agfs_rename(struct mnt_idmap *idmap,
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
 	struct agfs_rename_ctx ctx;
-	char old_buf[AGFS_PATH_MAX], new_buf[AGFS_PATH_MAX];
+	const char *redirect_path;
+	char old_buf[AGFS_PATH_MAX];
 	int err;
 
 	if (flags)
 		return -EINVAL;
 
+	/* old_buf is needed as the redirect base_path for base-only renames */
 	err = agfs_dentry_relpath(old_dentry, old_buf, sizeof(old_buf));
-	if (err)
-		return err;
-	err = agfs_dentry_relpath(new_dentry, new_buf, sizeof(new_buf));
 	if (err)
 		return err;
 
@@ -213,13 +202,15 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (err)
 		goto out;
 
-	if (ctx.found && !ctx.ino && !ctx.base_path) {
+	if (ctx.found && agfs_ino_is_deleted(ctx.ino)) {
 		/* Source is deleted — cannot rename */
 		err = -ENOENT;
 		goto out;
 	}
 
-	err = agfs_rename_add_dst(new_dir, new_dentry, &ctx, old_buf);
+	redirect_path = ctx.base_path ? ctx.base_path : old_buf;
+
+	err = agfs_rename_add_dst(new_dir, new_dentry, &ctx, redirect_path);
 	if (err)
 		goto out;
 
@@ -229,7 +220,17 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (err)
 		goto out;
 
-	err = agfs_journal_append_r(sbi, old_buf, new_buf);
+	/* Emit two E records: delete old + add new */
+	err = agfs_journal_append(sbi, old_dentry, AGFS_INO_DELETED, 0, NULL);
+	if (!err) {
+		if (agfs_ino_is_staged(ctx.ino))
+			err = agfs_journal_append(sbi, new_dentry, ctx.ino,
+						  ctx.d_type, NULL);
+		else
+			err = agfs_journal_append(sbi, new_dentry,
+						  AGFS_INO_REDIRECT,
+						  ctx.d_type, redirect_path);
+	}
 
 	/* Invalidate dcache for both names so next lookup uses dirents */
 	d_drop(old_dentry);

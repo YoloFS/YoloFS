@@ -117,11 +117,10 @@ time is valid for the lifetime of the fd.
 
 | Field | Purpose |
 |-------|---------|
-| `ino` | `>0` → content lives in `inodes/<ino>` |
-| `base_path` | Non-NULL → redirected to this absolute base path (zero-copy rename) |
+| `ino` | Discriminant: `>0` → staged in `inodes/<ino>`, `0` → deleted, `AGFS_INO_REDIRECT` → content at `base_path` |
+| `base_path` | *(redirect only)* Absolute base path for zero-copy rename |
 | `d_type` | File type (`DT_REG` / `DT_DIR` / `DT_LNK`) for correct readdir emission |
 | `checkpoint_gen` | `sbi->checkpoint_gen` at the time this inode was created. Used at open time: if `checkpoint_gen < sbi->checkpoint_gen`, a re-COW is needed. |
-| All zero/NULL | Entry is deleted (lookup returns negative dentry) |
 
 ## Path Resolution
 
@@ -130,10 +129,13 @@ Each directory inode holds a **dirent hash table** of child dirents
 current state of a child name:
 
 ```c
+#define AGFS_INO_DELETED   0ULL
+#define AGFS_INO_REDIRECT  ((u64)-1)
+
 struct agfs_dirent {
     struct hlist_node node;
-    u64               ino;        /* >0 = content/dir in inodes/<ino> */
-    char              *base_path; /* non-NULL = content at this base path */
+    u64               ino;        /* >0 = staged, 0 = deleted, (u64)-1 = redirect */
+    char              *base_path; /* redirect only: content at this base path */
     u64               checkpoint_gen;    /* sbi->checkpoint_gen when inode was created */
     unsigned int      name_len;
     unsigned char     d_type;     /* DT_REG / DT_DIR / DT_LNK for readdir */
@@ -141,13 +143,13 @@ struct agfs_dirent {
 };
 ```
 
-Interpretation:
-- `ino > 0` → file, symlink, or directory in `inodes/<ino>`.
-  `checkpoint_gen` records when the inode was created; if `checkpoint_gen < sbi->checkpoint_gen`,
-  a re-COW is needed on the next open-for-write.
-- `base_path != NULL` → file with content at this mirrored absolute base path
-  (same namespace used in the journal)
-- all zero/NULL → deleted (lookup returns negative dentry)
+Discrimination is by `ino` alone:
+- `ino > 0` (and `!= AGFS_INO_REDIRECT`) → staged file, symlink, or directory
+  in `inodes/<ino>`. `checkpoint_gen` records when the inode was created; if
+  `checkpoint_gen < sbi->checkpoint_gen`, a re-COW is needed on the next
+  open-for-write.
+- `ino == AGFS_INO_REDIRECT` → redirect to `base_path` (zero-copy rename)
+- `ino == 0` → deleted (lookup returns negative dentry)
 - no entry at all → fall through to base filesystem
 
 **`find_dirent`** — hash lookup in the parent directory's dirent table:
@@ -182,7 +184,7 @@ add_dirent(dir, name, ino=0, base_path=NULL, checkpoint_gen=0):
         dir.de_buckets[bucket].add(de)
 ```
 
-A dirent is **deleted** when `ino == 0 && base_path == NULL`
+A dirent is **deleted** when `ino == 0`
 (i.e. `add_dirent(dir, name)` with no other arguments).
 
 **Lookup** (`agfs_lookup`) — called by the VFS when a name is first
@@ -192,10 +194,11 @@ accessed in a directory:
 agfs_lookup(dir, name):
     de = find_dirent(dir, name)
     if de:
-        ino, base_path = de.ino, de.base_path   # stable under i_rwsem
-        if ino:            return inode for inodes/<ino>
-        if base_path:      return inode for base/<path>
-        return negative dentry  # deleted
+        if de.ino > 0 and de.ino != AGFS_INO_REDIRECT:
+            return inode for inodes/<de.ino>   # staged
+        if de.ino == AGFS_INO_REDIRECT:
+            return inode for base/<de.base_path>  # redirect
+        return negative dentry  # deleted (ino == 0)
     return base_lookup(dir, name)   # fall through to base
 ```
 
@@ -237,7 +240,7 @@ agfs_open(inode, file):
     de = find_dirent(parent, name)
 
     if file->f_flags & (O_WRONLY | O_RDWR):
-        if de and de.ino and de.checkpoint_gen >= sbi->checkpoint_gen:
+        if de and agfs_ino_is_staged(de.ino) and de.checkpoint_gen >= sbi->checkpoint_gen:
             // Inode is current — open it directly (O_TRUNC truncates in place).
             down_read(staging_sem)
             atomic_inc(staging_fd_count)
@@ -302,19 +305,19 @@ agfs_create(dir, name, mode):
     ino = next_ino++
     create file inodes/<ino>
     add_dirent(dir, name, ino=ino, checkpoint_gen=sbi->checkpoint_gen)
-    journal(A, abs_path, ino)
+    journal(E, dir_path, name, ino, dtype)
 
 agfs_mkdir(dir, name, mode):
     ino = next_ino++
     create dir inodes/<ino>/
     add_dirent(dir, name, ino=ino, checkpoint_gen=sbi->checkpoint_gen)
-    journal(A, abs_path, ino)
+    journal(E, dir_path, name, ino, dtype)
 
 agfs_symlink(dir, name, target):
     ino = next_ino++
     create symlink inodes/<ino> -> target
     add_dirent(dir, name, ino=ino, checkpoint_gen=sbi->checkpoint_gen)
-    journal(A, abs_path, ino)
+    journal(E, dir_path, name, ino, dtype)
 ```
 
 `touch` (create + close, no write) produces an empty inode in the store —
@@ -322,17 +325,16 @@ visible in `agfs status` / `agfs diff` and cleanly discarded by abort.
 
 ## Delete / Rmdir Path
 
-Delete adds a "deleted" dirent (all fields zero/NULL) and appends
-to the journal:
+Delete adds a "deleted" dirent (`ino = 0`) and appends to the journal:
 
 ```
 agfs_unlink(dir, name):
-    add_dirent(dir, name)   # all zero = deleted
-    journal(D, abs_path)
+    add_dirent(dir, name)   # ino=0 = deleted
+    journal(E, dir_path, name, 0, 0)
 
 agfs_rmdir(dir, name):
-    add_dirent(dir, name)   # all zero = deleted
-    journal(D, abs_path)
+    add_dirent(dir, name)   # ino=0 = deleted
+    journal(E, dir_path, name, 0, 0)
 ```
 
 Subsequent lookup of the name finds the dirent and returns a negative
@@ -342,26 +344,32 @@ dentry. The base file is untouched until commit.
 
 Rename is decomposed into a delete of the old name + creation at the new
 name. No file content is copied — only dirent metadata changes.
+Two `E` records are emitted: one to delete the old name, one to add the
+new name (as a staged inode or redirect).
 
 ```
 agfs_rename(old_parent, old_name, new_parent, new_name):
     old_de = find_dirent(old_parent, old_name)
 
-    if old_de and old_de.ino:
+    if old_de and old_de.ino > 0 and old_de.ino != AGFS_INO_REDIRECT:
         # File has a staged inode -- move the dirent, keep same ino.
         add_dirent(new_parent, new_name, ino=old_de.ino,
                      checkpoint_gen=old_de.checkpoint_gen)
-    elif old_de and old_de.base_path:
+    elif old_de and old_de.ino == AGFS_INO_REDIRECT:
         # Already redirected (chained rename) -- follow the chain.
-        add_dirent(new_parent, new_name, base_path=old_de.base_path)
+        add_dirent(new_parent, new_name, ino=AGFS_INO_REDIRECT,
+                     base_path=old_de.base_path)
     else:
         # File only in base -- redirect without copying.
-        add_dirent(new_parent, new_name,
+        add_dirent(new_parent, new_name, ino=AGFS_INO_REDIRECT,
                      base_path=abs_base_path(old_parent, old_name))
 
-    # Hide the old name (all fields zero/NULL = deleted).
+    # Hide the old name (ino=0 = deleted).
     add_dirent(old_parent, old_name)
-    journal(R, old_abs_path, new_abs_path)
+
+    # Emit two E records: delete old + add new
+    journal(E, old_dir_path, old_name, 0, 0)      # deleted
+    journal(E, new_dir_path, new_name, ...)        # staged or redirect
 ```
 
 **Rename chains** (`mv a->b`, then `mv b->c`) work naturally: the second
@@ -401,8 +409,9 @@ agfs_readdir(dir, ctx):
 ```
 
 Dirent entries are emitted with the correct `d_type` (DT_REG, DT_DIR,
-DT_LNK) stored in each dirent. The `ino` passed to `dir_emit` is 0
-(unknown); callers that need the real inode number should `stat()` the entry.
+DT_LNK) stored in each dirent. The `ino` passed to `dir_emit` is
+`de->ino` directly — staged inodes use their inode-store ID, redirects
+use `AGFS_INO_REDIRECT` (non-zero, so entries are never silently skipped).
 
 The merged list is built fresh on every `readdir` call — no caching.
 This ensures creates, deletes, and renames between `getdents64` calls
@@ -421,7 +430,7 @@ triggered by setattr itself.
 **`getattr`** (e.g., `stat`): Stats from the resolved path — the staged
 inode if the file has been modified, otherwise the base file.
 
-**`fsync`**: If the file is in staging (the dirent has `ino > 0`),
+**`fsync`**: If the file is staged (`agfs_ino_is_staged(de->ino)`),
 returns 0 immediately — staged inodes are ephemeral and will be committed or
 discarded as a batch. For base files opened read-only, fsync is delegated to
 the lower filesystem as usual.
@@ -429,21 +438,27 @@ the lower filesystem as usual.
 ## Journal Format
 
 The journal is an append-only file at `.agfs/journal`. Each record is a
-sequence of NUL-terminated fields, covering ALL mutations (not just
-renames). Fields within a record are separated by `\0`; records are
-separated by `\n` (newline after the last `\0`).
+sequence of NUL-separated fields terminated by a newline.
 
 ```
-A\0<path>\0<ino>\n             # content/dir in inodes/<ino>
-D\0<path>\n                    # deleted
-R\0<old_path>\0<new_path>\n    # rename
-K\0<id>\0<name>\n              # checkpoint marker (id is monotonic u64, name is human label)
+E\0<dir>\0<name>\0<ino>\0<dtype>\0<base>\n    # entry (staged/deleted/redirect)
+K\0<id>\0<name>\n                              # checkpoint marker
 ```
 
-`A` covers creates, modifies, symlinks, and mkdirs. The CLI determines
-the type by stat'ing `inodes/<ino>` (regular file, symlink, or directory).
-`D` records a deletion of a file or directory.
-`R` records a rename from `old_path` to `new_path`.
+`E` is a unified entry record that captures all three dirent states.
+Discrimination is by `ino` alone:
+
+| ino | dtype | base | Meaning |
+|-----|-------|------|---------|
+| > 0 | `f`/`d`/`l` | (empty) | Staged: content in `inodes/<ino>` |
+| 0 | (empty) | (empty) | Deleted |
+| -1 | `f`/`d`/`l` | base path | Redirect: content at base path (zero-copy rename) |
+
+`<dir>` is the parent directory path (empty string for root).
+`<name>` is the entry name within that directory.
+`<dtype>` is `f` (regular file), `d` (directory), or `l` (symlink).
+`<base>` is a full path for redirects, empty otherwise.
+
 `K` records a checkpoint. The CLI resolves the journal up to a given `K`
 marker to reconstruct the staged state at that point in time.
 
@@ -460,10 +475,10 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 1. Replay journal in order to build a resolved operation list. Each path
    is tracked through its lifetime of mutations so that intermediate
    operations collapse into their final effect:
-   - `A(x) -> R(x,y)` collapses to `Add(y)` (staged inode, no base rename).
-   - `R(a,b) -> R(b,c)` collapses to `Rename(a,c)`.
-   - `A(x) -> D(x)` cancels out (path never existed in base).
-   - `R(a,b) -> A(a)` produces `Rename(a,b) + Add(a)`.
+   - Staged + Delete collapses (path never existed in base).
+   - Delete + Redirect at a new path collapses to `Rename`.
+   - Redirect chains collapse: `Redirect(a→b)` then `Redirect(b→c)` → `Rename(a,c)`.
+   - Multiple `E` records for the same path keep only the final ino.
 2. Apply resolved changes sequentially. For each change:
    - **Rename**: `rename(base/old, base/new)`.
    - **Delete**: `rm base/path`.
@@ -575,15 +590,15 @@ The generation counter collapses consecutive checkpoints.
 ### Example Journal with Checkpoints
 
 ```
-K\01\0(initial)\n                 # implicit checkpoint at mount time
-A\0/src/main.rs\01\n          # COW: main.rs -> ino 1
-A\0/src/lib.rs\02\n           # create lib.rs -> ino 2
-K\02\0after make build\n       # checkpoint 2: "after make build"
-A\0/src/main.rs\03\n          # re-COW: main.rs -> ino 3 (ino 1 preserved)
-D\0/src/lib.rs\n              # delete lib.rs
-A\0/src/new.rs\04\n           # create new.rs
-K\03\0after make test\n        # checkpoint 3: "after make test"
-A\0/src/new.rs\05\n           # re-COW: new.rs -> ino 5 (ino 4 preserved)
+K\01\0(initial)\n                                 # implicit checkpoint at mount
+E\0/src\0main.rs\01\0f\0\n                        # COW: main.rs -> ino 1
+E\0/src\0lib.rs\02\0f\0\n                         # create lib.rs -> ino 2
+K\02\0after make build\n                           # checkpoint 2
+E\0/src\0main.rs\03\0f\0\n                        # re-COW: main.rs -> ino 3
+E\0/src\0lib.rs\00\0\0\n                          # delete lib.rs
+E\0/src\0new.rs\04\0f\0\n                         # create new.rs
+K\03\0after make test\n                            # checkpoint 3
+E\0/src\0new.rs\05\0f\0\n                         # re-COW: new.rs -> ino 5
 ```
 
 State at each point:

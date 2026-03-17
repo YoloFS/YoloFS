@@ -3,21 +3,57 @@
 // Parse the append-only journal and define its record types.
 //
 // Record format (NUL-separated fields, newline-terminated):
-//   A\0<path>\0<ino>\n   — content/dir in inodes/<ino>
-//   D\0<path>\n          — deleted
-//   R\0<old>\0<new>\n    — rename
-//   K\0<id>\0<name>\n    — checkpoint marker
+//   E\0<dir>\0<name>\0<ino>\0<dtype>\0<base>\n   — entry (staged/deleted/redirect)
+//   K\0<id>\0<name>\n                             — checkpoint marker
 
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// A raw journal record.
+pub const INO_DELETED: u64 = 0;
+pub const INO_REDIRECT: u64 = u64::MAX;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DType {
+    File,
+    Dir,
+    Link,
+}
+
+impl DType {
+    pub fn from_char(c: u8) -> Option<DType> {
+        match c {
+            b'f' => Some(DType::File),
+            b'd' => Some(DType::Dir),
+            b'l' => Some(DType::Link),
+            _ => None,
+        }
+    }
+
+    pub fn to_libc(&self) -> u8 {
+        match self {
+            DType::File => libc::DT_REG,
+            DType::Dir => libc::DT_DIR,
+            DType::Link => libc::DT_LNK,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Target {
+    Staged(u64),
+    Redirect(String),
+    Deleted,
+}
+
+/// A journal record: either an entry (dirent mutation) or a checkpoint.
 #[derive(Debug, Clone)]
 pub enum Record {
-    Add { path: String, ino: u64 },
-    Delete { path: String },
-    Rename { old_path: String, new_path: String },
+    Entry {
+        path: String,
+        target: Target,
+        dtype: Option<DType>,
+    },
     Checkpoint { id: u64, name: String },
 }
 
@@ -55,24 +91,45 @@ pub fn read(agfs_dir: &Path) -> Result<Journal> {
         }
         let tag = fields[0];
         match tag {
-            b"A" if fields.len() >= 3 => {
-                let path = String::from_utf8_lossy(fields[1]).to_string();
-                let ino_str = String::from_utf8_lossy(fields[2]);
-                if let Ok(ino) = ino_str.parse::<u64>() {
-                    records.push(Record::Add { path, ino });
+            b"E" if fields.len() >= 6 => {
+                let dir = String::from_utf8_lossy(fields[1]);
+                let name = String::from_utf8_lossy(fields[2]);
+                let ino_str = String::from_utf8_lossy(fields[3]);
+                let dtype_field = fields[4];
+                let base = String::from_utf8_lossy(fields[5]).to_string();
+
+                let path = if dir.is_empty() {
+                    format!("/{name}")
+                } else {
+                    format!("{dir}/{name}")
+                };
+
+                let dtype = if dtype_field.len() == 1 {
+                    DType::from_char(dtype_field[0])
+                } else {
+                    None
+                };
+
+                if ino_str == "-1" {
+                    records.push(Record::Entry {
+                        path,
+                        target: Target::Redirect(base),
+                        dtype,
+                    });
+                    offsets.push(line_end);
+                } else if let Ok(ino) = ino_str.parse::<u64>() {
+                    let target = if ino == INO_DELETED {
+                        Target::Deleted
+                    } else {
+                        Target::Staged(ino)
+                    };
+                    records.push(Record::Entry {
+                        path,
+                        target,
+                        dtype,
+                    });
                     offsets.push(line_end);
                 }
-            }
-            b"D" if fields.len() >= 2 => {
-                let path = String::from_utf8_lossy(fields[1]).to_string();
-                records.push(Record::Delete { path });
-                offsets.push(line_end);
-            }
-            b"R" if fields.len() >= 3 => {
-                let old_path = String::from_utf8_lossy(fields[1]).to_string();
-                let new_path = String::from_utf8_lossy(fields[2]).to_string();
-                records.push(Record::Rename { old_path, new_path });
-                offsets.push(line_end);
             }
             b"K" if fields.len() >= 3 => {
                 let id_str = String::from_utf8_lossy(fields[1]);
@@ -131,20 +188,24 @@ mod tests {
     fn read_multiple() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/a\01\n");
-        data.extend_from_slice(b"D\0/b\n");
-        data.extend_from_slice(b"R\0/c\0/d\n");
+        // E: staged file "a" at root with ino=1, dtype=f
+        data.extend_from_slice(b"E\0\0a\01\0f\0\n");
+        // E: deleted "b" at root
+        data.extend_from_slice(b"E\0\0b\00\0\0\n");
+        // E: redirect "d" at root from /c
+        data.extend_from_slice(b"E\0\0d\0-1\0f\0/c\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let journal = read(dir.path()).unwrap();
         assert_eq!(journal.records.len(), 3);
         assert!(
-            matches!(&journal.records[0], Record::Add { path, ino } if path == "/a" && *ino == 1)
+            matches!(&journal.records[0], Record::Entry { path, target: Target::Staged(1), dtype: Some(DType::File) } if path == "/a")
         );
-        assert!(matches!(&journal.records[1], Record::Delete { path } if path == "/b"));
         assert!(
-            matches!(&journal.records[2], Record::Rename { old_path, new_path }
-            if old_path == "/c" && new_path == "/d")
+            matches!(&journal.records[1], Record::Entry { path, target: Target::Deleted, .. } if path == "/b")
+        );
+        assert!(
+            matches!(&journal.records[2], Record::Entry { path, target: Target::Redirect(base), dtype: Some(DType::File) } if path == "/d" && base == "/c")
         );
     }
 
@@ -161,9 +222,9 @@ mod tests {
     fn read_checkpoint_record() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/a\01\n");
+        data.extend_from_slice(b"E\0\0a\01\0f\0\n");
         data.extend_from_slice(b"K\01\0build\n");
-        data.extend_from_slice(b"A\0/a\02\n");
+        data.extend_from_slice(b"E\0\0a\02\0f\0\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let journal = read(dir.path()).unwrap();
@@ -177,10 +238,10 @@ mod tests {
     fn truncate_drops_trailing_records() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/a\01\n");
+        data.extend_from_slice(b"E\0\0a\01\0f\0\n");
         data.extend_from_slice(b"K\01\0snap\n");
-        data.extend_from_slice(b"A\0/b\02\n");
-        data.extend_from_slice(b"D\0/c\n");
+        data.extend_from_slice(b"E\0\0b\02\0f\0\n");
+        data.extend_from_slice(b"E\0\0c\00\0\0\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let journal = read(dir.path()).unwrap();
@@ -191,7 +252,7 @@ mod tests {
 
         let after = read(dir.path()).unwrap();
         assert_eq!(after.records.len(), 2);
-        assert!(matches!(&after.records[0], Record::Add { path, .. } if path == "/a"));
+        assert!(matches!(&after.records[0], Record::Entry { path, target: Target::Staged(_), .. } if path == "/a"));
         assert!(matches!(&after.records[1], Record::Checkpoint { id: 1, name } if name == "snap"));
     }
 
@@ -199,7 +260,7 @@ mod tests {
     fn truncate_at_last_record_is_noop() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/a\01\n");
+        data.extend_from_slice(b"E\0\0a\01\0f\0\n");
         data.extend_from_slice(b"K\01\0snap\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
@@ -221,9 +282,9 @@ mod tests {
     #[test]
     fn offsets_are_byte_accurate() {
         let dir = setup_test_dir();
-        let r0 = b"A\0/a\01\n";
+        let r0 = b"E\0\0a\01\0f\0\n";
         let r1 = b"K\01\0snap\n";
-        let r2 = b"D\0/longpath\n";
+        let r2 = b"E\0\0longpath\00\0\0\n";
         let mut data = Vec::new();
         data.extend_from_slice(r0);
         data.extend_from_slice(r1);
@@ -235,5 +296,75 @@ mod tests {
         assert_eq!(journal.offsets[0], r0.len() as u64);
         assert_eq!(journal.offsets[1], (r0.len() + r1.len()) as u64);
         assert_eq!(journal.offsets[2], (r0.len() + r1.len() + r2.len()) as u64);
+    }
+
+    #[test]
+    fn read_entry_in_subdirectory() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // File "main.rs" in directory "/src"
+        data.extend_from_slice(b"E\0/src\0main.rs\01\0f\0\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(journal.records.len(), 1);
+        assert!(
+            matches!(&journal.records[0], Record::Entry { path, target: Target::Staged(1), dtype: Some(DType::File) } if path == "/src/main.rs")
+        );
+    }
+
+    #[test]
+    fn read_directory_and_symlink_dtypes() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"E\0\0mydir\01\0d\0\n");
+        data.extend_from_slice(b"E\0\0mylink\02\0l\0\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(journal.records.len(), 2);
+        assert!(
+            matches!(&journal.records[0], Record::Entry { dtype: Some(DType::Dir), .. })
+        );
+        assert!(
+            matches!(&journal.records[1], Record::Entry { dtype: Some(DType::Link), .. })
+        );
+    }
+
+    #[test]
+    fn dtype_to_libc() {
+        assert_eq!(DType::File.to_libc(), libc::DT_REG);
+        assert_eq!(DType::Dir.to_libc(), libc::DT_DIR);
+        assert_eq!(DType::Link.to_libc(), libc::DT_LNK);
+    }
+
+    #[test]
+    fn read_entry_missing_dtype_is_none() {
+        let dir = setup_test_dir();
+        // E record with empty dtype field
+        fs::write(dir.path().join("journal"), b"E\0\0file\01\0\0\n").unwrap();
+
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(journal.records.len(), 1);
+        assert!(
+            matches!(&journal.records[0], Record::Entry { dtype: None, .. }),
+            "empty dtype field should parse as None, got: {:?}",
+            journal.records[0]
+        );
+    }
+
+    #[test]
+    fn read_entry_invalid_dtype_is_none() {
+        let dir = setup_test_dir();
+        // E record with invalid dtype char 'x'
+        fs::write(dir.path().join("journal"), b"E\0\0file\01\0x\0\n").unwrap();
+
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(journal.records.len(), 1);
+        assert!(
+            matches!(&journal.records[0], Record::Entry { dtype: None, .. }),
+            "invalid dtype char should parse as None, got: {:?}",
+            journal.records[0]
+        );
     }
 }

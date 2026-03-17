@@ -6,10 +6,8 @@
  * commit/abort/status/diff. The kernel never reads it back.
  *
  * Record format (NUL-separated fields, newline-terminated):
- *   A\0<path>\0<id>\n    — content/dir in staging/<id>
- *   D\0<path>\n          — deleted
- *   R\0<old>\0<new>\n    — rename hint
- *   K\0<id>\0<name>\n    — checkpoint marker
+ *   E\0<dir>\0<name>\0<ino>\0<dtype>\0<base>\n    — entry (staged/deleted/redirect)
+ *   K\0<id>\0<name>\n                              — checkpoint marker
  */
 
 #include "agfs.h"
@@ -45,7 +43,7 @@ int agfs_journal_open(struct agfs_sb_info *sbi)
 static int journal_write(struct agfs_sb_info *sbi, char tag,
 			 const char **fields)
 {
-	char buf[2 * AGFS_PATH_MAX + 32];
+	char buf[3 * AGFS_PATH_MAX + 64];
 	size_t off = 0;
 	const char **fp;
 	struct file *f = sbi->journal_file;
@@ -72,31 +70,53 @@ static int journal_write(struct agfs_sb_info *sbi, char tag,
 	return err < 0 ? err : 0;
 }
 
-/* ── Public append helpers ─────────────────────────────────────────── */
+/* ── Public helpers ────────────────────────────────────────────────── */
 
-int agfs_journal_append_a(struct agfs_sb_info *sbi, const char *path, u64 id)
+static char dtype_to_char(unsigned char d_type)
 {
-	char id_str[21];
-
-	snprintf(id_str, sizeof(id_str), "%llu", (unsigned long long)id);
-	return journal_write(sbi, 'A',
-			     (const char *[]){ path, id_str, NULL });
+	switch (d_type) {
+	case DT_DIR: return 'd';
+	case DT_LNK: return 'l';
+	case DT_REG: return 'f';
+	default:     return '\0';
+	}
 }
 
-int agfs_journal_append_d(struct agfs_sb_info *sbi, const char *path)
+int agfs_journal_append(struct agfs_sb_info *sbi, struct dentry *dentry,
+			u64 ino, unsigned char d_type, const char *base)
 {
-	return journal_write(sbi, 'D',
-			     (const char *[]){ path, NULL });
+	char dir_buf[AGFS_PATH_MAX];
+	char ino_str[21];
+	char dtype_str[2] = { '\0', '\0' };
+	char *p;
+
+	/* dir = relpath of parent */
+	p = dentry_path_raw(dentry->d_parent, dir_buf, sizeof(dir_buf));
+	if (IS_ERR(p))
+		return PTR_ERR(p);
+	if (p != dir_buf)
+		memmove(dir_buf, p, strlen(p) + 1);
+	/* Root parent shows as "/" — normalize to "" */
+	if (dir_buf[0] == '/' && dir_buf[1] == '\0')
+		dir_buf[0] = '\0';
+
+	if (ino == AGFS_INO_REDIRECT)
+		snprintf(ino_str, sizeof(ino_str), "-1");
+	else
+		snprintf(ino_str, sizeof(ino_str), "%llu",
+			 (unsigned long long)ino);
+
+	dtype_str[0] = dtype_to_char(d_type);
+
+	return journal_write(sbi, 'E',
+			     (const char *[]){ dir_buf,
+					       dentry->d_name.name,
+					       ino_str, dtype_str,
+					       base ? base : "",
+					       NULL });
 }
 
-int agfs_journal_append_r(struct agfs_sb_info *sbi, const char *old_path,
-			  const char *new_path)
-{
-	return journal_write(sbi, 'R',
-			     (const char *[]){ old_path, new_path, NULL });
-}
-
-int agfs_journal_append_k(struct agfs_sb_info *sbi, u64 id, const char *name)
+int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name)
 {
 	char id_str[21];
 

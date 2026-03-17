@@ -30,6 +30,10 @@
 #define AGFS_SUPER_MAGIC	0xA6F5
 #define AGFS_PATH_MAX		256
 
+/* Dirent ino discrimination */
+#define AGFS_INO_DELETED	0ULL
+#define AGFS_INO_REDIRECT	((u64)-1)
+
 /* Operations passed in ask requests */
 enum agfs_op {
 	AGFS_OP_READ		= 1,
@@ -142,13 +146,28 @@ struct agfs_perm_request {
 
 struct agfs_dirent {
 	struct hlist_node	node;
-	u64			ino;		/* >0 = content in inodes/<ino> */
-	char			*base_path;	/* non-NULL = content at base path */
+	u64			ino;		/* >0 = staged, 0 = deleted, (u64)-1 = redirect */
+	char			*base_path;	/* redirect only: content at base path */
 	u64			checkpoint_gen;	/* sbi->checkpoint_gen when inode was created */
 	unsigned int		name_len;
 	unsigned char		d_type;		/* DT_REG / DT_DIR / DT_LNK for readdir */
 	char			name[];
 };
+
+static inline bool agfs_ino_is_staged(u64 ino)
+{
+	return ino != AGFS_INO_DELETED && ino != AGFS_INO_REDIRECT;
+}
+
+static inline bool agfs_ino_is_redirect(u64 ino)
+{
+	return ino == AGFS_INO_REDIRECT;
+}
+
+static inline bool agfs_ino_is_deleted(u64 ino)
+{
+	return ino == AGFS_INO_DELETED;
+}
 
 /* ── Ask Protocol Engine ───────────────────────────────────────────── */
 
@@ -384,11 +403,9 @@ void agfs_release_pinned_dirs(struct agfs_sb_info *sbi);
 
 /* journal.c */
 int agfs_journal_open(struct agfs_sb_info *sbi);
-int agfs_journal_append_a(struct agfs_sb_info *sbi, const char *path, u64 id);
-int agfs_journal_append_d(struct agfs_sb_info *sbi, const char *path);
-int agfs_journal_append_r(struct agfs_sb_info *sbi, const char *old_path,
-			  const char *new_path);
-int agfs_journal_append_k(struct agfs_sb_info *sbi, u64 id, const char *name);
+int agfs_journal_append(struct agfs_sb_info *sbi, struct dentry *dentry,
+			  u64 ino, unsigned char d_type, const char *base);
+int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name);
 
 /* perm.c */
 static inline void agfs_perm_request_release(struct kref *kref)

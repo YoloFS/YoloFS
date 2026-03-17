@@ -215,7 +215,7 @@ static int agfs_resolve_paths(struct agfs_sb_info *sbi,
 	/* Write the implicit initial checkpoint (id=1) so userspace can
 	 * reference the mount-time state by id. */
 	if (sbi->staging)
-		agfs_journal_append_k(sbi, 1, "(initial)");
+		agfs_journal_checkpoint(sbi, 1, "(initial)");
 
 	return 0;
 }

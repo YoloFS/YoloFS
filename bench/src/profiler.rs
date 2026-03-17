@@ -200,9 +200,8 @@ const INTERESTING: &[&str] = &[
     "agfs_do_cow",
     "agfs_staging_alloc",
     "agfs_readdir",
-    "agfs_journal_append_a",
-    "agfs_journal_append_d",
-    "agfs_journal_append_r",
+    "agfs_journal_append",
+    "agfs_journal_checkpoint",
     "agfs_release",
     "agfs_find_dirent",
 ];

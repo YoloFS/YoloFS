@@ -105,7 +105,7 @@ static int agfs_lookup_staged(struct agfs_sb_info *sbi, struct dentry *dentry)
 	if (!de)
 		return 0;
 
-	if (de->ino) {
+	if (agfs_ino_is_staged(de->ino)) {
 		/* Staged inode */
 		struct inode *inode;
 		struct path ino_path;
@@ -126,7 +126,7 @@ static int agfs_lookup_staged(struct agfs_sb_info *sbi, struct dentry *dentry)
 		return 1;
 	}
 
-	if (de->base_path) {
+	if (agfs_ino_is_redirect(de->ino)) {
 		/* Redirected base path (zero-copy rename) */
 		struct inode *inode;
 		struct path base;
@@ -147,7 +147,7 @@ static int agfs_lookup_staged(struct agfs_sb_info *sbi, struct dentry *dentry)
 		return 1;
 	}
 
-	/* Deleted (ino=0, base_path=NULL) */
+	/* Deleted (ino==0) */
 	d_add(dentry, NULL);
 	return 1;
 }

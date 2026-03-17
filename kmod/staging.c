@@ -367,12 +367,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	agfs_replace_lower_path(dentry, &inode_path);
 
 	/* Append journal record (best-effort — dirent is already set) */
-	{
-		char buf[AGFS_PATH_MAX];
-
-		if (!agfs_dentry_relpath(dentry, buf, sizeof(buf)))
-			agfs_journal_append_a(sbi, buf, ino);
-	}
+	agfs_journal_append(sbi, dentry, ino, DT_REG, NULL);
 
 	/* Reopen with requested flags */
 	err = 0;

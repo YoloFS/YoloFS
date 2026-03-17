@@ -5,5 +5,11 @@
   "files.watcherExclude": {
     "**/.agfs/**": true
   },
-  "rust-analyzer.files.excludeDirs": [".agfs"]
+  "rust-analyzer.files.excludeDirs": [".agfs"],
+  "[c]": {
+    "editor.tabSize": 8
+  },
+  "[cpp]": {
+    "editor.tabSize": 8
+  }
 }

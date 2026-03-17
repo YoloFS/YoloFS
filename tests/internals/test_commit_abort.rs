@@ -22,7 +22,7 @@ fn restore_to_checkpoint_truncates_journal() {
     assert!(
         !records
             .iter()
-            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/multi.txt"))),
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/multi.txt"))),
         "post-checkpoint Add should be removed: {records:?}"
     );
     // The s1 checkpoint itself should still be present

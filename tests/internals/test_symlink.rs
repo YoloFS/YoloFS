@@ -5,7 +5,7 @@ use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Creating a symlink produces an Add record.
+/// Creating a symlink produces an Entry record with dtype=Link.
 #[test]
 fn symlink_produces_add_record() {
     let s = AgfsSession::new().expect("session setup");
@@ -16,8 +16,8 @@ fn symlink_produces_add_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/link.txt"))),
-        "journal should have an A record for link.txt: {records:?}"
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), dtype: Some(agfs::journal::DType::Link), .. } if path.ends_with("/link.txt"))),
+        "journal should have an Entry(Staged, dtype=Link) for link.txt: {records:?}"
     );
 }
 

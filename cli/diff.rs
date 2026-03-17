@@ -71,13 +71,13 @@ fn print_section_footer(section: &Section) {
 fn print_change(agfs: &Path, change: &Change, verbose: bool) {
     let indent = if verbose { "" } else { "  " };
     match change {
-        Change::Added { path, ino } => {
+        Change::Added { path, ino, .. } => {
             println!("{indent}{} {}", path.bold(), "(added)".green());
             if verbose {
                 print_unified_diff("", &read_inode(agfs, *ino));
             }
         }
-        Change::Modified { path, ino } => {
+        Change::Modified { path, ino, .. } => {
             if verbose {
                 let old_text = read_base(path);
                 let new_text = read_inode(agfs, *ino);
@@ -95,7 +95,7 @@ fn print_change(agfs: &Path, change: &Change, verbose: bool) {
                 print_unified_diff(&read_base(p), "");
             }
         }
-        Change::Renamed { from, to } => {
+        Change::Renamed { from, to, .. } => {
             println!(
                 "{indent}{} → {} {}",
                 from.bold(),
@@ -103,7 +103,7 @@ fn print_change(agfs: &Path, change: &Change, verbose: bool) {
                 "(renamed)".cyan()
             );
         }
-        Change::RenamedModified { from, to, ino } => {
+        Change::RenamedModified { from, to, ino, .. } => {
             println!(
                 "{indent}{} → {} {}",
                 from.bold(),
@@ -244,17 +244,17 @@ fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>
     let mut map = BTreeMap::new();
     for change in changes {
         match change {
-            Change::Added { path, ino } | Change::Modified { path, ino } => {
+            Change::Added { path, ino, .. } | Change::Modified { path, ino, .. } => {
                 map.insert(path.clone(), Some(read_inode(agfs, *ino)));
             }
             Change::Deleted(path) => {
                 map.insert(path.clone(), None);
             }
-            Change::Renamed { from, to } => {
+            Change::Renamed { from, to, .. } => {
                 map.insert(from.clone(), None);
                 map.insert(to.clone(), Some(read_base(from)));
             }
-            Change::RenamedModified { from, to, ino } => {
+            Change::RenamedModified { from, to, ino, .. } => {
                 map.insert(from.clone(), None);
                 map.insert(to.clone(), Some(read_inode(agfs, *ino)));
             }
@@ -355,6 +355,7 @@ mod tests {
         let changes = vec![Change::Added {
             path: "/src/main.rs".into(),
             ino: 1,
+            dtype: crate::journal::DType::File,
         }];
         let map = state_map(tmp.path(), &changes);
         assert_eq!(map.len(), 1);
@@ -367,6 +368,7 @@ mod tests {
         let changes = vec![Change::Modified {
             path: "/etc/config".into(),
             ino: 5,
+            dtype: crate::journal::DType::File,
         }];
         let map = state_map(tmp.path(), &changes);
         assert_eq!(map.len(), 1);
@@ -390,6 +392,7 @@ mod tests {
         let changes = vec![Change::Renamed {
             from: "/nonexistent/old.rs".into(),
             to: "/nonexistent/new.rs".into(),
+            dtype: crate::journal::DType::File,
         }];
         let map = state_map(tmp.path(), &changes);
         assert_eq!(map.len(), 2);
@@ -405,6 +408,7 @@ mod tests {
             from: "/nonexistent/old.rs".into(),
             to: "/nonexistent/new.rs".into(),
             ino: 7,
+            dtype: crate::journal::DType::File,
         }];
         let map = state_map(tmp.path(), &changes);
         assert_eq!(map.len(), 2);
@@ -419,10 +423,12 @@ mod tests {
             Change::Added {
                 path: "/a.txt".into(),
                 ino: 1,
+                dtype: crate::journal::DType::File,
             },
             Change::Modified {
                 path: "/b.txt".into(),
                 ino: 2,
+                dtype: crate::journal::DType::File,
             },
             Change::Deleted("/c.txt".into()),
         ];

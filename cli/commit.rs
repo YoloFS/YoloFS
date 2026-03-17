@@ -86,14 +86,14 @@ fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<()> {
 
     for change in changes {
         match change {
-            Change::Renamed { from, to } => {
+            Change::Renamed { from, to, .. } => {
                 let base_old = to_base_path(from);
                 let base_new = to_base_path(to);
                 ensure_parent(&base_new, &mut ensured)?;
                 fs::rename(&base_old, &base_new)
                     .with_context(|| format!("rename {from} → {to}"))?;
             }
-            Change::RenamedModified { from, to, ino } => {
+            Change::RenamedModified { from, to, ino, .. } => {
                 let base_old = to_base_path(from);
                 let base_new = to_base_path(to);
                 ensure_parent(&base_new, &mut ensured)?;
@@ -114,7 +114,7 @@ fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<()> {
                     .with_context(|| format!("deleting {p}"))?;
                 }
             }
-            Change::Added { path, ino } | Change::Modified { path, ino } => {
+            Change::Added { path, ino, .. } | Change::Modified { path, ino, .. } => {
                 let base_file = to_base_path(path);
                 apply_inode(agfs, *ino, &base_file, &mut ensured)?;
             }

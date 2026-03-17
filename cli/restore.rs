@@ -2,24 +2,9 @@
 //
 // `agfs restore <name|id>` — restore to a previous checkpoint.
 
-use crate::utils::to_base_path;
 use crate::{ioctl, journal, resolve};
 use anyhow::{Context, Result};
 use colored::Colorize;
-use std::fs;
-use std::path::Path;
-
-/// Determine d_type from a filesystem path.
-fn d_type_from_path(path: &Path) -> Result<u8> {
-    let m = fs::symlink_metadata(path).with_context(|| format!("stat {}", path.display()))?;
-    Ok(if m.file_type().is_symlink() {
-        libc::DT_LNK
-    } else if m.is_dir() {
-        libc::DT_DIR
-    } else {
-        libc::DT_REG
-    })
-}
 
 /// Intermediate representation of a restore entry with owned path data.
 struct RestoreItem {
@@ -29,63 +14,63 @@ struct RestoreItem {
     d_type: u8,
 }
 
+impl RestoreItem {
+    fn deleted(path: String) -> Self {
+        Self {
+            path,
+            ino: 0,
+            base_path: String::new(),
+            d_type: 0,
+        }
+    }
+}
+
 /// Convert a resolved Change list into restore items (owned data, sortable).
-fn changes_to_items(agfs_dir: &Path, changes: &[resolve::Change]) -> Result<Vec<RestoreItem>> {
+fn changes_to_items(changes: &[resolve::Change]) -> Vec<RestoreItem> {
     let mut items = Vec::new();
 
     for change in changes {
         match change {
-            resolve::Change::Added { path, ino } | resolve::Change::Modified { path, ino } => {
-                let staged = journal::inode_path(agfs_dir, *ino);
+            resolve::Change::Added { path, ino, dtype }
+            | resolve::Change::Modified { path, ino, dtype } => {
                 items.push(RestoreItem {
                     path: path.clone(),
                     ino: *ino,
                     base_path: String::new(),
-                    d_type: d_type_from_path(&staged)?,
+                    d_type: dtype.to_libc(),
                 });
             }
             resolve::Change::Deleted(path) => {
-                items.push(RestoreItem {
-                    path: path.clone(),
-                    ino: 0,
-                    base_path: String::new(),
-                    d_type: 0,
-                });
+                items.push(RestoreItem::deleted(path.clone()));
             }
-            resolve::Change::Renamed { from, to } => {
-                items.push(RestoreItem {
-                    path: from.clone(),
-                    ino: 0,
-                    base_path: String::new(),
-                    d_type: 0,
-                });
+            resolve::Change::Renamed { from, to, dtype } => {
+                items.push(RestoreItem::deleted(from.clone()));
                 items.push(RestoreItem {
                     path: to.clone(),
-                    ino: 0,
+                    ino: journal::INO_REDIRECT,
                     base_path: from.clone(),
-                    d_type: d_type_from_path(&to_base_path(from))?,
+                    d_type: dtype.to_libc(),
                 });
             }
-            resolve::Change::RenamedModified { from, to, ino } => {
-                let staged = journal::inode_path(agfs_dir, *ino);
-                items.push(RestoreItem {
-                    path: from.clone(),
-                    ino: 0,
-                    base_path: String::new(),
-                    d_type: 0,
-                });
+            resolve::Change::RenamedModified {
+                from,
+                to,
+                ino,
+                dtype,
+            } => {
+                items.push(RestoreItem::deleted(from.clone()));
                 items.push(RestoreItem {
                     path: to.clone(),
                     ino: *ino,
                     base_path: String::new(),
-                    d_type: d_type_from_path(&staged)?,
+                    d_type: dtype.to_libc(),
                 });
             }
         }
     }
 
     items.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(items)
+    items
 }
 
 /// Convert owned RestoreItems into ioctl entries with pointers into items.
@@ -130,7 +115,7 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     };
 
     let changes = resolve::resolve(&journal.records[..=chk_idx])?;
-    let items = changes_to_items(&agfs, &changes)?;
+    let items = changes_to_items(&changes);
     let entries = items_to_entries(&items)?;
 
     // Restore kernel state first — if this fails (e.g. EBUSY), the
@@ -159,20 +144,17 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::journal::DType;
     use crate::resolve::Change;
 
     #[test]
     fn added_produces_single_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let inodes = dir.path().join("inodes");
-        fs::create_dir(&inodes).unwrap();
-        fs::write(inodes.join("1"), "content").unwrap();
-
         let changes = vec![Change::Added {
             path: "/src/main.rs".into(),
             ino: 1,
+            dtype: DType::File,
         }];
-        let items = changes_to_items(dir.path(), &changes).unwrap();
+        let items = changes_to_items(&changes);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].path, "/src/main.rs");
         assert_eq!(items[0].ino, 1);
@@ -182,11 +164,8 @@ mod tests {
 
     #[test]
     fn deleted_produces_zero_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir(dir.path().join("inodes")).unwrap();
-
         let changes = vec![Change::Deleted("/old.txt".into())];
-        let items = changes_to_items(dir.path(), &changes).unwrap();
+        let items = changes_to_items(&changes);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].path, "/old.txt");
         assert_eq!(items[0].ino, 0);
@@ -195,41 +174,32 @@ mod tests {
 
     #[test]
     fn renamed_produces_delete_and_redirect() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir(dir.path().join("inodes")).unwrap();
-
-        // Use a real existing file so d_type_from_path can stat it
-        let base = tempfile::NamedTempFile::new().unwrap();
-        let from = base.path().to_str().unwrap().to_string();
-
         let changes = vec![Change::Renamed {
-            from: from.clone(),
+            from: "/a.txt".into(),
             to: "/b.txt".into(),
+            dtype: DType::File,
         }];
-        let items = changes_to_items(dir.path(), &changes).unwrap();
+        let items = changes_to_items(&changes);
         assert_eq!(items.len(), 2);
 
-        let del = items.iter().find(|e| e.path == from).unwrap();
+        let del = items.iter().find(|e| e.path == "/a.txt").unwrap();
         assert_eq!(del.ino, 0);
 
         let redirect = items.iter().find(|e| e.path == "/b.txt").unwrap();
-        assert_eq!(redirect.ino, 0);
-        assert_eq!(redirect.base_path, from);
+        assert_eq!(redirect.ino, journal::INO_REDIRECT);
+        assert_eq!(redirect.base_path, "/a.txt");
+        assert_eq!(redirect.d_type, libc::DT_REG);
     }
 
     #[test]
     fn renamed_modified_produces_delete_and_ino() {
-        let dir = tempfile::tempdir().unwrap();
-        let inodes = dir.path().join("inodes");
-        fs::create_dir(&inodes).unwrap();
-        fs::write(inodes.join("5"), "new content").unwrap();
-
         let changes = vec![Change::RenamedModified {
             from: "/old.rs".into(),
             to: "/new.rs".into(),
             ino: 5,
+            dtype: DType::File,
         }];
-        let items = changes_to_items(dir.path(), &changes).unwrap();
+        let items = changes_to_items(&changes);
         assert_eq!(items.len(), 2);
 
         // Sorted: /new.rs before /old.rs
@@ -243,28 +213,24 @@ mod tests {
 
     #[test]
     fn entries_sorted_by_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let inodes = dir.path().join("inodes");
-        fs::create_dir(&inodes).unwrap();
-        fs::write(inodes.join("1"), "").unwrap();
-        fs::write(inodes.join("2"), "").unwrap();
-        fs::create_dir(inodes.join("3")).unwrap();
-
         let changes = vec![
             Change::Added {
                 path: "/z/file.rs".into(),
                 ino: 1,
+                dtype: DType::File,
             },
             Change::Added {
                 path: "/a/file.rs".into(),
                 ino: 2,
+                dtype: DType::File,
             },
             Change::Added {
                 path: "/a".into(),
                 ino: 3,
+                dtype: DType::Dir,
             },
         ];
-        let items = changes_to_items(dir.path(), &changes).unwrap();
+        let items = changes_to_items(&changes);
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].path, "/a");
         assert_eq!(items[1].path, "/a/file.rs");
@@ -273,31 +239,23 @@ mod tests {
 
     #[test]
     fn directory_inode_gets_dt_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let inodes = dir.path().join("inodes");
-        fs::create_dir(&inodes).unwrap();
-        fs::create_dir(inodes.join("1")).unwrap();
-
         let changes = vec![Change::Added {
             path: "/newdir".into(),
             ino: 1,
+            dtype: DType::Dir,
         }];
-        let items = changes_to_items(dir.path(), &changes).unwrap();
+        let items = changes_to_items(&changes);
         assert_eq!(items[0].d_type, libc::DT_DIR);
     }
 
     #[test]
     fn symlink_inode_gets_dt_lnk() {
-        let dir = tempfile::tempdir().unwrap();
-        let inodes = dir.path().join("inodes");
-        fs::create_dir(&inodes).unwrap();
-        std::os::unix::fs::symlink("target", inodes.join("1")).unwrap();
-
         let changes = vec![Change::Added {
             path: "/link".into(),
             ino: 1,
+            dtype: DType::Link,
         }];
-        let items = changes_to_items(dir.path(), &changes).unwrap();
+        let items = changes_to_items(&changes);
         assert_eq!(items[0].d_type, libc::DT_LNK);
     }
 
@@ -341,33 +299,21 @@ mod tests {
 
     #[test]
     fn empty_changes_produces_no_entries() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir(dir.path().join("inodes")).unwrap();
-
-        let items = changes_to_items(dir.path(), &[]).unwrap();
+        let items = changes_to_items(&[]);
         assert!(items.is_empty());
     }
 
     /// Renamed directory must produce DT_DIR, not DT_REG.
     #[test]
     fn renamed_directory_gets_dt_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir(dir.path().join("inodes")).unwrap();
-
-        // Create the "base" directory that the rename came from.
-        // to_base_path("/mydir") resolves to "/mydir" on the host,
-        // so we create a real temp dir and use its path as `from`.
-        let base_dir = tempfile::tempdir().unwrap();
-        let from = base_dir.path().to_str().unwrap().to_string();
-
         let changes = vec![Change::Renamed {
-            from: from.clone(),
+            from: "/mydir".into(),
             to: "/newdir".into(),
+            dtype: DType::Dir,
         }];
-        let items = changes_to_items(dir.path(), &changes).unwrap();
+        let items = changes_to_items(&changes);
 
-        // Find the "to" entry (the one with base_path set)
-        let to_item = items.iter().find(|e| e.base_path == from).unwrap();
+        let to_item = items.iter().find(|e| e.path == "/newdir").unwrap();
         assert_eq!(
             to_item.d_type,
             libc::DT_DIR,
@@ -379,42 +325,19 @@ mod tests {
     /// Renamed symlink must produce DT_LNK, not DT_REG.
     #[test]
     fn renamed_symlink_gets_dt_lnk() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir(dir.path().join("inodes")).unwrap();
-
-        // Create a real symlink to use as the rename source
-        let base_dir = tempfile::tempdir().unwrap();
-        let link_path = base_dir.path().join("mylink");
-        std::os::unix::fs::symlink("target", &link_path).unwrap();
-        let from = link_path.to_str().unwrap().to_string();
-
         let changes = vec![Change::Renamed {
-            from: from.clone(),
+            from: "/mylink".into(),
             to: "/newlink".into(),
+            dtype: DType::Link,
         }];
-        let items = changes_to_items(dir.path(), &changes).unwrap();
+        let items = changes_to_items(&changes);
 
-        let to_item = items.iter().find(|e| e.base_path == from).unwrap();
+        let to_item = items.iter().find(|e| e.path == "/newlink").unwrap();
         assert_eq!(
             to_item.d_type,
             libc::DT_LNK,
             "renamed symlink should have DT_LNK, got {}",
             to_item.d_type
         );
-    }
-
-    /// Missing staged inode must produce an error, not silently default to DT_REG.
-    #[test]
-    fn missing_inode_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir(dir.path().join("inodes")).unwrap();
-        // Do NOT create inodes/99 — it's missing
-
-        let changes = vec![Change::Added {
-            path: "/ghost.txt".into(),
-            ino: 99,
-        }];
-        let result = changes_to_items(dir.path(), &changes);
-        assert!(result.is_err(), "missing inode should produce an error");
     }
 }

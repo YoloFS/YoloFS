@@ -350,7 +350,7 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 		return -EBUSY;
 	}
 	gen = atomic64_inc_return(&sbi->checkpoint_gen);
-	agfs_journal_append_k(sbi, gen, name_buf);
+	agfs_journal_checkpoint(sbi, gen, name_buf);
 	up_write(&sbi->staging_sem);
 
 	/* Best-effort: checkpoint is already committed to the journal,

@@ -5,7 +5,7 @@ use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Creating a brand-new file produces an Add record.
+/// Creating a brand-new file produces an Entry record with dtype=File.
 #[test]
 fn create_produces_add_record() {
     let s = AgfsSession::new().expect("session setup");
@@ -16,8 +16,8 @@ fn create_produces_add_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/brandnew.txt"))),
-        "journal should have an A record for brandnew.txt: {records:?}"
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), dtype: Some(agfs::journal::DType::File), .. } if path.ends_with("/brandnew.txt"))),
+        "journal should have an Entry(Staged, dtype=File) for brandnew.txt: {records:?}"
     );
 }
 

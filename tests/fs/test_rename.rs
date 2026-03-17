@@ -193,3 +193,162 @@ fn rename_nonexistent_fails() {
     let result = fs::rename(s.mnt_path("no_such_file.txt"), s.mnt_path("dest.txt"));
     assert!(result.is_err(), "renaming nonexistent file should fail");
 }
+
+/// Rename a→b then b→a: file ends up back at original path.
+#[test]
+fn rename_back_and_forth() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("rename a→b");
+    fs::rename(s.mnt_path("temp.txt"), s.mnt_path("hello.txt")).expect("rename b→a");
+
+    // File should be back at original path with original content
+    let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
+    assert_eq!(content, "base content\n");
+
+    // Temp name should not exist
+    assert!(
+        fs::read_to_string(s.mnt_path("temp.txt")).is_err(),
+        "temp name should not exist"
+    );
+}
+
+/// Rename back and forth then commit: base should be unchanged.
+#[test]
+fn rename_back_and_forth_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("rename a→b");
+    fs::rename(s.mnt_path("temp.txt"), s.mnt_path("hello.txt")).expect("rename b→a");
+
+    s.cli(&["commit"]).expect("commit");
+
+    // Base should still have the file at original path
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        "base content\n"
+    );
+    assert!(
+        !s.base_path("temp.txt").exists(),
+        "temp path should not exist in base"
+    );
+}
+
+/// Rename onto an existing file (overwrite target).
+#[test]
+fn rename_overwrite_existing() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // hello.txt and subdir/deep.txt both exist in base
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("subdir/deep.txt")).expect("rename overwrite");
+
+    // New location has old content (hello.txt's content)
+    let content = fs::read_to_string(s.mnt_path("subdir/deep.txt")).expect("read");
+    assert_eq!(content, "base content\n");
+
+    // Old name is gone
+    assert!(
+        fs::read_to_string(s.mnt_path("hello.txt")).is_err(),
+        "old name should not exist"
+    );
+}
+
+/// Rename overwrite + commit: target gets source content, source is gone.
+#[test]
+fn rename_overwrite_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("subdir/deep.txt")).expect("rename overwrite");
+    s.cli(&["commit"]).expect("commit");
+
+    assert_eq!(
+        fs::read_to_string(s.base_path("subdir/deep.txt")).unwrap(),
+        "base content\n",
+        "target should have source content after commit"
+    );
+    assert!(
+        !s.base_path("hello.txt").exists(),
+        "source should be gone from base after commit"
+    );
+}
+
+/// Rename chain: a→b→c through the mount.
+#[test]
+fn rename_chain() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("step1.txt")).expect("a→b");
+    fs::rename(s.mnt_path("step1.txt"), s.mnt_path("step2.txt")).expect("b→c");
+
+    let content = fs::read_to_string(s.mnt_path("step2.txt")).expect("read");
+    assert_eq!(content, "base content\n");
+    assert!(fs::read_to_string(s.mnt_path("hello.txt")).is_err());
+    assert!(fs::read_to_string(s.mnt_path("step1.txt")).is_err());
+}
+
+/// Rename chain + commit: only final name in base.
+#[test]
+fn rename_chain_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("step1.txt")).expect("a→b");
+    fs::rename(s.mnt_path("step1.txt"), s.mnt_path("step2.txt")).expect("b→c");
+    s.cli(&["commit"]).expect("commit");
+
+    assert_eq!(
+        fs::read_to_string(s.base_path("step2.txt")).unwrap(),
+        "base content\n"
+    );
+    assert!(!s.base_path("hello.txt").exists());
+    assert!(!s.base_path("step1.txt").exists());
+}
+
+/// Rename a directory and verify contents are accessible through new name.
+#[test]
+fn rename_directory_with_contents() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("subdir"), s.mnt_path("moved_dir")).expect("rename dir");
+
+    // Contents readable through new name
+    let content = fs::read_to_string(s.mnt_path("moved_dir/deep.txt")).expect("read nested");
+    assert_eq!(content, "nested\n");
+
+    // Old name is gone
+    assert!(
+        !s.mnt_path("subdir").exists(),
+        "old directory name should not exist"
+    );
+}
+
+/// Rename a directory + commit: directory and contents end up in base.
+#[test]
+fn rename_directory_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("subdir"), s.mnt_path("moved_dir")).expect("rename dir");
+    s.cli(&["commit"]).expect("commit");
+
+    assert_eq!(
+        fs::read_to_string(s.base_path("moved_dir/deep.txt")).unwrap(),
+        "nested\n"
+    );
+    assert!(!s.base_path("subdir").exists());
+}
+
+/// Rename a symlink and verify the target is preserved.
+#[test]
+fn rename_symlink_preserves_target() {
+    let s = AgfsSession::new().expect("session setup");
+
+    std::os::unix::fs::symlink("hello.txt", s.mnt_path("link")).expect("create symlink");
+    fs::rename(s.mnt_path("link"), s.mnt_path("moved_link")).expect("rename symlink");
+
+    let target = std::fs::read_link(s.mnt_path("moved_link")).expect("read link target");
+    assert_eq!(target, std::path::Path::new("hello.txt"));
+
+    assert!(
+        !s.mnt_path("link").exists(),
+        "old symlink name should not exist"
+    );
+}

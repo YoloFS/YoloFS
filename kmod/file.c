@@ -132,7 +132,8 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 		return agfs_open_lower(dentry, file->f_flags);
 
 	/* Fast path: inode is current — open directly */
-	if (ino && gen >= (u64)atomic64_read(&sbi->checkpoint_gen)) {
+	if (agfs_ino_is_staged(ino) &&
+	    gen >= (u64)atomic64_read(&sbi->checkpoint_gen)) {
 		down_read(&sbi->staging_sem);
 		/* Re-check under lock — a checkpoint may have raced */
 		if (gen >= (u64)atomic64_read(&sbi->checkpoint_gen)) {
@@ -150,7 +151,8 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 
 	/* Re-check under sem — a concurrent open may have COW'd */
 	agfs_read_dirent(dentry, &ino, &gen);
-	if (ino && gen >= (u64)atomic64_read(&sbi->checkpoint_gen)) {
+	if (agfs_ino_is_staged(ino) &&
+	    gen >= (u64)atomic64_read(&sbi->checkpoint_gen)) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_write(&sbi->staging_sem);
 		return agfs_open_staged_ino(sbi, ino, file->f_flags);
@@ -407,9 +409,7 @@ static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
 
 	for (bi = 0; bi < AGFS_DE_BUCKETS; bi++) {
 		hlist_for_each_entry(de, &dii->de_buckets[bi], node) {
-			u64 emit_ino;
-
-			if (!de->ino && !de->base_path) {
+			if (agfs_ino_is_deleted(de->ino)) {
 				(*off)++;
 				continue;
 			}
@@ -418,19 +418,8 @@ static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
 				continue;
 			}
 
-			/*
-			 * For staged inodes, use the inode store ID.
-			 * For base_path redirects (zero-copy rename), use a
-			 * non-zero placeholder — the real ino comes from
-			 * stat(), readdir only needs it non-zero so that
-			 * glibc/kernels don't silently skip the entry.
-			 */
-			emit_ino = de->ino;
-			if (!emit_ino && de->base_path)
-				emit_ino = (u64)-1;
-
 			if (!dir_emit(ctx, de->name, de->name_len,
-				      emit_ino, de->d_type))
+				      de->ino, de->d_type))
 				return true;
 			(*off)++;
 			ctx->pos++;

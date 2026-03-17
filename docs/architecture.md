@@ -209,7 +209,9 @@ agfs/
 │   ├── commit.rs
 │   ├── abort.rs
 │   ├── diff.rs                # `agfs status` + `agfs diff` (summary and verbose views)
-│   ├── journal.rs             # journal parsing + resolution + checkpoint sections
+│   ├── journal.rs             # journal parsing + checkpoint sections
+│   ├── resolve.rs             # journal resolution (collapse E records into final ops)
+│   ├── restore.rs             # `agfs restore` -- restore to a previous checkpoint
 │   ├── checkpoint.rs            # checkpoint create, log
 │   ├── watch.rs               # permission prompt daemon (handles TTY ownership)
 │   ├── ioctl.rs               # binary protocol structs + ioctl helpers

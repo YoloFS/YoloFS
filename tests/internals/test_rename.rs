@@ -5,7 +5,7 @@ use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Renaming a file produces a Rename record.
+/// Renaming a file produces a Redirect record with dtype=File.
 #[test]
 fn rename_produces_rename_record() {
     let s = AgfsSession::new().expect("session setup");
@@ -16,9 +16,9 @@ fn rename_produces_rename_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Rename { old_path, new_path }
-            if old_path.ends_with("/hello.txt") && new_path.ends_with("/moved.txt"))),
-        "journal should have an R record for hello.txt → moved.txt: {records:?}"
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Redirect(base), dtype: Some(agfs::journal::DType::File), .. }
+            if path.ends_with("/moved.txt") && base.ends_with("/hello.txt"))),
+        "journal should have an Entry(Redirect, dtype=File) for hello.txt → moved.txt: {records:?}"
     );
 }
 
@@ -75,5 +75,77 @@ fn write_then_rename_inode_content() {
     assert_eq!(
         fs::read_to_string(inode_path(&s, ino)).unwrap(),
         "written first\n"
+    );
+}
+
+/// Rename chain: a→b→c. Journal should show Delete + Redirect for each step.
+/// The kernel follows redirect chains (b's base_path points to a, so c's
+/// redirect also points to a).
+#[test]
+fn rename_chain_journal_records() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("step1.txt")).expect("a→b");
+    fs::rename(s.mnt_path("step1.txt"), s.mnt_path("step2.txt")).expect("b→c");
+
+    let records = journal(&s);
+
+    // Both renames should produce Redirect records (base-file renames)
+    let redirects: Vec<_> = records
+        .iter()
+        .filter(|r| {
+            matches!(r, Record::Entry {
+                target: agfs::journal::Target::Redirect(_), ..
+            })
+        })
+        .collect();
+    assert_eq!(
+        redirects.len(),
+        2,
+        "chain should produce 2 Redirect records: {records:?}"
+    );
+}
+
+/// Rename onto an existing base file (overwrite): the old target
+/// is implicitly replaced. No explicit delete record for the target
+/// — the rename dirent overwrites whatever was there.
+#[test]
+fn rename_overwrite_journal() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // hello.txt overwrites subdir/deep.txt
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("subdir/deep.txt")).expect("overwrite");
+
+    let records = journal(&s);
+
+    // Should have Delete(hello.txt) + Redirect(subdir/deep.txt, base=hello.txt)
+    let has_delete = records.iter().any(|r| {
+        matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. }
+        if path.ends_with("/hello.txt"))
+    });
+    let has_redirect = records.iter().any(|r| {
+        matches!(r, Record::Entry { path, target: agfs::journal::Target::Redirect(base), .. }
+        if path.ends_with("/deep.txt") && base.ends_with("/hello.txt"))
+    });
+    assert!(has_delete, "should have Delete for hello.txt: {records:?}");
+    assert!(
+        has_redirect,
+        "should have Redirect for deep.txt: {records:?}"
+    );
+}
+
+/// Rename back and forth: a→b→a. After resolution, no staged changes
+/// should remain (the rename cancels out).
+#[test]
+fn rename_back_and_forth_no_changes() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("a→b");
+    fs::rename(s.mnt_path("temp.txt"), s.mnt_path("hello.txt")).expect("b→a");
+
+    let ch = changes(&s);
+    assert!(
+        ch.is_empty(),
+        "rename back and forth should produce no changes, got: {ch:?}"
     );
 }

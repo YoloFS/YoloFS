@@ -34,7 +34,7 @@ fn recow_after_checkpoint_produces_new_add() {
     let records = journal(&s);
     let adds: Vec<_> = records
         .iter()
-        .filter(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
+        .filter(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/hello.txt")))
         .collect();
     assert!(
         adds.len() >= 2,
@@ -42,7 +42,7 @@ fn recow_after_checkpoint_produces_new_add() {
     );
 
     // The two adds should have different ino values (re-COW allocates a new inode)
-    if let (Record::Add { ino: ino1, .. }, Record::Add { ino: ino2, .. }) = (adds[0], adds[1]) {
+    if let (Record::Entry { target: agfs::journal::Target::Staged(ino1), .. }, Record::Entry { target: agfs::journal::Target::Staged(ino2), .. }) = (adds[0], adds[1]) {
         assert_ne!(ino1, ino2, "re-COW ino values should differ: {records:?}");
     }
 
@@ -53,11 +53,11 @@ fn recow_after_checkpoint_produces_new_add() {
         .unwrap();
     let first_add = records
         .iter()
-        .position(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
+        .position(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/hello.txt")))
         .unwrap();
     let last_add = records
         .iter()
-        .rposition(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
+        .rposition(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/hello.txt")))
         .unwrap();
     assert!(
         first_add < chk_pos,
@@ -97,7 +97,8 @@ fn multiple_checkpoints_have_distinct_ids() {
     assert_eq!(snaps[1].1, "s2");
 }
 
-/// Rename after checkpoint: the R record appears after the S record.
+/// Rename after checkpoint: the Delete + Staged records appear after the K record.
+/// Writing to a base file triggers COW (staged inode), then renaming keeps the ino.
 #[test]
 fn rename_after_checkpoint() {
     let s = AgfsSession::new().expect("session setup");
@@ -111,13 +112,22 @@ fn rename_after_checkpoint() {
         .iter()
         .position(|r| matches!(r, Record::Checkpoint { .. }))
         .unwrap();
-    let ren_pos = records
+    // After COW, hello.txt has a staged ino — rename emits Delete + Staged
+    let del_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Rename { .. }))
-        .unwrap();
+        .position(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. } if path.ends_with("/hello.txt")))
+        .expect("should have Delete for hello.txt");
+    let staged_pos = records
+        .iter()
+        .position(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/moved.txt")))
+        .expect("should have Staged for moved.txt");
     assert!(
-        chk_pos < ren_pos,
-        "Checkpoint should precede Rename: {records:?}"
+        chk_pos < del_pos,
+        "Checkpoint should precede Delete: {records:?}"
+    );
+    assert!(
+        del_pos < staged_pos,
+        "Delete should precede Staged at new name: {records:?}"
     );
 }
 
@@ -137,7 +147,7 @@ fn delete_after_checkpoint() {
         .unwrap();
     let del_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Delete { .. }))
+        .position(|r| matches!(r, Record::Entry { target: agfs::journal::Target::Deleted, .. }))
         .unwrap();
     assert!(
         chk_pos < del_pos,

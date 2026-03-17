@@ -24,7 +24,7 @@ fn operations_produce_ordered_records() {
 
     // Verify each type is present
     assert!(
-        records.iter().any(|r| matches!(r, Record::Add { .. })),
+        records.iter().any(|r| matches!(r, Record::Entry { target: agfs::journal::Target::Staged(_), .. })),
         "missing A: {records:?}"
     );
     assert!(
@@ -34,11 +34,11 @@ fn operations_produce_ordered_records() {
         "missing S: {records:?}"
     );
     assert!(
-        records.iter().any(|r| matches!(r, Record::Delete { .. })),
+        records.iter().any(|r| matches!(r, Record::Entry { target: agfs::journal::Target::Deleted, .. })),
         "missing D: {records:?}"
     );
     assert!(
-        records.iter().any(|r| matches!(r, Record::Rename { .. })),
+        records.iter().any(|r| matches!(r, Record::Entry { target: agfs::journal::Target::Redirect(_), .. })),
         "missing R: {records:?}"
     );
 
@@ -49,11 +49,11 @@ fn operations_produce_ordered_records() {
         .unwrap();
     let add_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
+        .position(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/hello.txt")))
         .unwrap();
     let del_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Delete { .. }))
+        .position(|r| matches!(r, Record::Entry { target: agfs::journal::Target::Deleted, .. }))
         .unwrap();
     assert!(add_pos < chk_pos, "Add should precede Checkpoint s1");
     assert!(chk_pos < del_pos, "Checkpoint s1 should precede Delete");
@@ -71,30 +71,31 @@ fn write_after_rename() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Rename { old_path, new_path }
-            if old_path.ends_with("/hello.txt") && new_path.ends_with("/moved.txt"))),
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Redirect(base), .. }
+            if path.ends_with("/moved.txt") && base.ends_with("/hello.txt"))),
         "should have R record: {records:?}"
     );
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/moved.txt"))),
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/moved.txt"))),
         "should have A record at new path: {records:?}"
     );
 
     // The rename should precede the write
     let r_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Rename { .. }))
+        .position(|r| matches!(r, Record::Entry { target: agfs::journal::Target::Redirect(_), .. }))
         .unwrap();
     let a_pos = records
         .iter()
-        .rposition(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/moved.txt")))
+        .rposition(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/moved.txt")))
         .unwrap();
     assert!(r_pos < a_pos, "Rename should precede the Add at new path");
 }
 
 /// Create a new file, then rename it.
+/// Staged file rename produces Delete + Staged (same ino), not Redirect.
 #[test]
 fn create_then_rename() {
     let s = AgfsSession::new().expect("session setup");
@@ -106,15 +107,15 @@ fn create_then_rename() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/temp.txt"))),
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/temp.txt"))),
         "should have A record for original path: {records:?}"
     );
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Rename { old_path, new_path }
-            if old_path.ends_with("/temp.txt") && new_path.ends_with("/final.txt"))),
-        "should have R record: {records:?}"
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. }
+            if path.ends_with("/final.txt"))),
+        "should have Staged record at new path: {records:?}"
     );
 }
 
@@ -130,13 +131,13 @@ fn create_then_delete() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/ephemeral.txt"))),
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/ephemeral.txt"))),
         "should have A record: {records:?}"
     );
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Delete { path } if path.ends_with("/ephemeral.txt"))),
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. } if path.ends_with("/ephemeral.txt"))),
         "should have D record: {records:?}"
     );
 }
@@ -152,11 +153,11 @@ fn modify_then_delete() {
     let records = journal(&s);
     let a_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
+        .position(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/hello.txt")))
         .expect("missing A");
     let d_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Delete { path } if path.ends_with("/hello.txt")))
+        .position(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. } if path.ends_with("/hello.txt")))
         .expect("missing D");
     assert!(a_pos < d_pos, "Add should precede Delete: {records:?}");
 }
@@ -173,24 +174,24 @@ fn rename_then_delete() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Rename { old_path, new_path }
-            if old_path.ends_with("/hello.txt") && new_path.ends_with("/moved.txt"))),
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Redirect(base), .. }
+            if path.ends_with("/moved.txt") && base.ends_with("/hello.txt"))),
         "should have R record: {records:?}"
     );
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Delete { path } if path.ends_with("/moved.txt"))),
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. } if path.ends_with("/moved.txt"))),
         "should have D record at new path: {records:?}"
     );
 
     let r_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Rename { .. }))
+        .position(|r| matches!(r, Record::Entry { target: agfs::journal::Target::Redirect(_), .. }))
         .expect("missing R");
     let d_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Delete { path } if path.ends_with("/moved.txt")))
+        .position(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. } if path.ends_with("/moved.txt")))
         .expect("missing D");
     assert!(r_pos < d_pos, "Rename should precede Delete: {records:?}");
 }

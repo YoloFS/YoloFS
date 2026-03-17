@@ -18,7 +18,7 @@ fn modify_produces_add_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt"))),
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/hello.txt"))),
         "journal should have an A record for hello.txt: {records:?}"
     );
 }
@@ -36,7 +36,7 @@ fn multiple_writes_produce_multiple_adds() {
     let records = journal(&s);
     let add_count = records
         .iter()
-        .filter(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/hello.txt")))
+        .filter(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. } if path.ends_with("/hello.txt")))
         .count();
     // At least 1 A record; the kernel may coalesce O_TRUNC reopens on the
     // same inode, but the first COW always produces one.

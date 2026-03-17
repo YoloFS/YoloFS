@@ -5,7 +5,7 @@ use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Creating a directory produces an Add record.
+/// Creating a directory produces an Entry record with dtype=Dir.
 #[test]
 fn mkdir_produces_add_record() {
     let s = AgfsSession::new().expect("session setup");
@@ -16,8 +16,8 @@ fn mkdir_produces_add_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Add { path, .. } if path.ends_with("/newdir"))),
-        "journal should have an A record for newdir: {records:?}"
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), dtype: Some(agfs::journal::DType::Dir), .. } if path.ends_with("/newdir"))),
+        "journal should have an Entry(Staged, dtype=Dir) for newdir: {records:?}"
     );
 }
 
@@ -34,7 +34,7 @@ fn rmdir_produces_delete_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Delete { path } if path.ends_with("/tmpdir"))),
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. } if path.ends_with("/tmpdir"))),
         "journal should have a D record for tmpdir: {records:?}"
     );
 }
@@ -52,12 +52,12 @@ fn rmdir_base_dir_produces_delete_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Delete { path } if path.ends_with("/subdir"))),
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. } if path.ends_with("/subdir"))),
         "journal should have a D record for base dir: {records:?}"
     );
 }
 
-/// Renaming a directory produces a Rename record.
+/// Renaming a staged directory produces Delete + Staged (same ino) records.
 #[test]
 fn rename_dir_produces_rename_record() {
     let s = AgfsSession::new().expect("session setup");
@@ -69,9 +69,16 @@ fn rename_dir_produces_rename_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Rename { old_path, new_path }
-            if old_path.ends_with("/olddir") && new_path.ends_with("/newdir"))),
-        "journal should have an R record for olddir → newdir: {records:?}"
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. }
+            if path.ends_with("/olddir"))),
+        "journal should have a Delete record for olddir: {records:?}"
+    );
+    assert!(
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. }
+            if path.ends_with("/newdir"))),
+        "journal should have a Staged record for newdir: {records:?}"
     );
 }
 
@@ -121,7 +128,7 @@ fn mkdir_with_file_creates_separate_inodes() {
     let dir_ids: Vec<u64> = ch
         .iter()
         .filter_map(|c| match c {
-            agfs::resolve::Change::Added { path, ino }
+            agfs::resolve::Change::Added { path, ino, .. }
                 if path.ends_with("/parent") || path.ends_with("/child") =>
             {
                 Some(*ino)
