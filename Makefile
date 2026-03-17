@@ -48,11 +48,11 @@ uninstall:
 test: test-unit test-e2e
 
 test-unit:
-	cargo test -p agfs --lib
+	cargo test --release -p agfs --lib
 
 test-e2e: install
 	agfs reload
-	cargo test -p agfs --test e2e -- --test-threads=1
+	cargo test --release -p agfs --test e2e -- --test-threads=1
 	agfs unload
 
 # ── Lint ──────────────────────────────────────────────────────────────
