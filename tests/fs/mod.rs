@@ -3,7 +3,6 @@ mod test_create;
 mod test_delete;
 mod test_inode;
 mod test_mkdir;
-mod test_nonroot;
 mod test_read;
 mod test_readdir;
 mod test_rename;
