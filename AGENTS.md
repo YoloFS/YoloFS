@@ -15,6 +15,7 @@
 - Always run tests (unit and e2e) to verify changes.
 - To fix a bug, first write a failing test, then fix it.
 - Do not modify existing tests when fixing a bug. If you are unsure, ask.
+- When adding new features or making changes, add tests if applicable: unit tests (inline `#[cfg(test)]`), white-box tests (`tests/internals/`), and black-box tests (`tests/fs/`, `tests/cli/`, `tests/perm/`).
 - Do not use git (commit, push, rebase, etc.) unless explicitly asked.
 
 ## Project Structure
