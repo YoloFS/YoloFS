@@ -13,6 +13,8 @@ jobs:
         with:
           submodules: false
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Install dependencies
         run: ./install_deps.sh
 
