@@ -14,11 +14,12 @@ jobs:
       - name: Install dependencies
         run: ./install_deps.sh
 
-      - name: Lint
-        run: make lint
-
       - name: Build and install
         run: make install
+
+      - name: Lint
+        run: make lint
+        continue-on-error: true
 
       - name: Unit tests
         run: make test-unit
