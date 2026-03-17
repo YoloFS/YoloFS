@@ -20,14 +20,18 @@ so there are no stale cross-checkpoint handles to track.
 
 ## Control Protocol
 
-The ioctl-based control interface uses fixed-size binary structs (see
-`agfs_ctl_request`, `agfs_ctl_response`, and `agfs_ioc_checkpoint` in
-[`agfs.h`](../kmod/agfs.h)) — no parsing, just `copy_to_user()` /
-`copy_from_user()`.
+The ioctl-based control interface uses small fixed-size binary headers
+with pointer+length fields for variable-length paths (see struct
+definitions in [`agfs.h`](../kmod/agfs.h)). Path data is transferred
+via secondary `copy_from_user()` / `copy_to_user()` calls, keeping the
+ioctl structs compact regardless of path length. Paths are limited to
+`AGFS_PATH_MAX` (256) bytes including the terminating NUL.
 
 `path` is never truncated in-kernel. If the resolved mounted-view path does
-not fit in `AGFS_PATH_MAX` bytes including the terminating NUL, the access
-fails with `-ENAMETOOLONG` and no ask request is enqueued.
+not fit in `AGFS_PATH_MAX` (256) bytes including the terminating NUL, the
+access fails with `-ENAMETOOLONG` and no ask request is enqueued. Note that
+the internal kernel path buffer is smaller than the `PATH_MAX` limit used by
+the ioctl wire format.
 
 ## VFS Operations Map
 
@@ -86,8 +90,8 @@ descriptor (typically `.agfs/mnt`). Ioctl command macros are defined in
 
 | Ioctl                    | Behavior                                                                                                                                                                       |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `AGFS_IOC_GET_REQUEST`     | Dequeue the oldest pending permission request. Returns one `struct agfs_ctl_request` (fixed-size binary). Blocks if queue is empty (or returns `-EAGAIN` for `O_NONBLOCK`).     |
-| `AGFS_IOC_PUT_RESPONSE`    | Submit a decision: one `struct agfs_ctl_response` (fixed-size binary). Wakes the sleeping thread.                                                                               |
+| `AGFS_IOC_GET_REQUEST`     | Dequeue the oldest pending permission request. Userspace passes a `struct agfs_ctl_request` with a path buffer pointer and capacity; kernel fills in the request fields and writes the path into the buffer. Blocks if queue is empty (or returns `-EAGAIN` for `O_NONBLOCK`). |
+| `AGFS_IOC_PUT_RESPONSE`    | Submit a decision: one `struct agfs_ctl_response`. Wakes the sleeping thread.                                                                               |
 | `AGFS_IOC_RULE_ADD`     | Add a permission rule to a dentry. Kernel resolves the path, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps `perm_gen`.                                                |
 | `AGFS_IOC_RULE_REMOVE`  | Remove a rule from a dentry. Kernel sets `perm = NONE`, unpins the dentry, and bumps `perm_gen`.                                                                                |
 | `AGFS_IOC_RESTORE`    | Atomically reset staging state and optionally inject dirent entries. Called by userspace after commit/abort (with `entry_count=0`) and for restore (with entries). Rejects with `-EBUSY` if staging fds are open. See detailed steps below and [staging.md — Restore](staging.md#checkpoint-aware-cli-operations). |

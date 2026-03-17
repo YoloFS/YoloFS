@@ -151,7 +151,9 @@ fn render_index(results: &BenchResults, out_dir: &Path) -> Result<()> {
     html.push_str("  .env { font-size: 0.85em; color: #666; margin-bottom: 1.5em; }\n");
     html.push_str("  .env table { border-collapse: collapse; }\n");
     html.push_str("  .env td { padding: 0.15em 0; }\n");
-    html.push_str("  .env td:first-child { color: #999; padding-right: 1em; white-space: nowrap; }\n");
+    html.push_str(
+        "  .env td:first-child { color: #999; padding-right: 1em; white-space: nowrap; }\n",
+    );
     html.push_str("</style>\n");
     html.push_str("</head><body>\n");
 
@@ -167,14 +169,11 @@ fn render_index(results: &BenchResults, out_dir: &Path) -> Result<()> {
             "<tr><td>cloudlab</td><td>{hw} @ {cluster}</td></tr>\n"
         ));
     }
+    html.push_str(&format!("<tr><td>host</td><td>{}</td></tr>\n", e.hostname));
+    html.push_str(&format!("<tr><td>cpu</td><td>{}</td></tr>\n", e.cpu));
     html.push_str(&format!(
-        "<tr><td>host</td><td>{}</td></tr>\n", e.hostname
-    ));
-    html.push_str(&format!(
-        "<tr><td>cpu</td><td>{}</td></tr>\n", e.cpu
-    ));
-    html.push_str(&format!(
-        "<tr><td>memory</td><td>{} GB</td></tr>\n", e.memory_gb
+        "<tr><td>memory</td><td>{} GB</td></tr>\n",
+        e.memory_gb
     ));
     html.push_str(&format!(
         "<tr><td>storage</td><td>{} &mdash; {} ({})</td></tr>\n",
@@ -184,12 +183,8 @@ fn render_index(results: &BenchResults, out_dir: &Path) -> Result<()> {
         "<tr><td>filesystem</td><td>{} &mdash; {} GB total, {} GB free</td></tr>\n",
         e.filesystem, e.filesystem_size_gb, e.filesystem_free_gb
     ));
-    html.push_str(&format!(
-        "<tr><td>kernel</td><td>{}</td></tr>\n", e.kernel
-    ));
-    html.push_str(&format!(
-        "<tr><td>distro</td><td>{}</td></tr>\n", e.distro
-    ));
+    html.push_str(&format!("<tr><td>kernel</td><td>{}</td></tr>\n", e.kernel));
+    html.push_str(&format!("<tr><td>distro</td><td>{}</td></tr>\n", e.distro));
     html.push_str(&format!(
         "<tr><td></td><td><a href=\"results.json\">results.json</a></td></tr>\n"
     ));

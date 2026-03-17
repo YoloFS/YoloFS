@@ -40,12 +40,17 @@ static long agfs_get_request_ioctl(struct file *file, unsigned long arg)
 	struct agfs_perm_request *req;
 	struct agfs_ctl_request out;
 	int err;
+	__u16 path_len;
 
 	if (READ_ONCE(eng->daemon_file) != file) {
 		err = agfs_daemon_connect(file);
 		if (err)
 			return err;
 	}
+
+	/* Read buffer info from userspace */
+	if (copy_from_user(&out, (void __user *)arg, sizeof(out)))
+		return -EFAULT;
 
 	/* Wait for a pending request */
 	if (file->f_flags & O_NONBLOCK) {
@@ -72,31 +77,48 @@ static long agfs_get_request_ioctl(struct file *file, unsigned long arg)
 	kref_get(&req->ref); /* daemon takes a reference */
 	spin_unlock(&eng->pending_lock);
 
-	memset(&out, 0, sizeof(out));
+	path_len = strlen(req->path);
+
+	if (path_len > out.path_buf_len) {
+		err = -EOVERFLOW;
+		goto requeue_pending;
+	}
+
 	out.id = req->id;
 	out.op = req->op;
 	out.pid = req->pid;
 	strscpy(out.comm, req->comm, sizeof(out.comm));
-	strscpy(out.path, req->path, sizeof(out.path));
+	out.path_len = path_len;
 
 	spin_lock(&eng->dispatch_lock);
 	list_add_tail(&req->list, &eng->dispatched);
 	spin_unlock(&eng->dispatch_lock);
 
-	if (copy_to_user((void __user *)arg, &out, sizeof(out))) {
-		spin_lock(&eng->dispatch_lock);
-		list_del_init(&req->list);
-		spin_unlock(&eng->dispatch_lock);
+	/* Write path data to user buffer */
+	if (copy_to_user((void __user *)out.path_ptr, req->path, path_len)) {
+		err = -EFAULT;
+		goto requeue_dispatched;
+	}
 
-		spin_lock(&eng->pending_lock);
-		list_add(&req->list, &eng->pending_reqs);
-		spin_unlock(&eng->pending_lock);
-		wake_up_interruptible(&eng->request_waitq);
-		kref_put(&req->ref, agfs_perm_request_release);
-		return -EFAULT;
+	/* Write header back to userspace */
+	if (copy_to_user((void __user *)arg, &out, sizeof(out))) {
+		err = -EFAULT;
+		goto requeue_dispatched;
 	}
 
 	return 0;
+
+requeue_dispatched:
+	spin_lock(&eng->dispatch_lock);
+	list_del_init(&req->list);
+	spin_unlock(&eng->dispatch_lock);
+requeue_pending:
+	spin_lock(&eng->pending_lock);
+	list_add(&req->list, &eng->pending_reqs);
+	spin_unlock(&eng->pending_lock);
+	wake_up_interruptible(&eng->request_waitq);
+	kref_put(&req->ref, agfs_perm_request_release);
+	return err;
 }
 
 /* ── PUT_RESPONSE: submit decision ─────────────────────────────────── */
@@ -177,21 +199,41 @@ void agfs_release_pinned_rules(struct agfs_sb_info *sbi)
 	}
 }
 
-/* ── Rule ioctl helpers ─────────────────────────────────────────────── */
+/* ── Path copy helper ──────────────────────────────────────────────── */
+
+/*
+ * Copy a variable-length path from userspace into a caller-provided buffer.
+ * The buffer must be at least AGFS_PATH_MAX bytes.
+ * Paths are limited to AGFS_PATH_MAX-1 bytes (same as internal buffers).
+ */
+static int agfs_copy_user_path(__u64 ptr, __u16 len, char *buf)
+{
+	if (!ptr || len == 0 || len >= AGFS_PATH_MAX)
+		return -EINVAL;
+
+	if (copy_from_user(buf, (const void __user *)ptr, len))
+		return -EFAULT;
+	buf[len] = '\0';
+
+	return 0;
+}
 
 static int agfs_resolve_rule(struct file *file, unsigned long arg,
 			     struct agfs_ioc_rule *rule,
 			     struct path *rule_path,
 			     struct agfs_dentry_info **di_out)
 {
+	char path_buf[AGFS_PATH_MAX];
 	int err;
 
 	if (copy_from_user(rule, (void __user *)arg, sizeof(*rule)))
 		return -EFAULT;
 
-	rule->path[AGFS_PATH_MAX - 1] = '\0';
+	err = agfs_copy_user_path(rule->path_ptr, rule->path_len, path_buf);
+	if (err)
+		return err;
 
-	err = kern_path(rule->path, LOOKUP_FOLLOW, rule_path);
+	err = kern_path(path_buf, LOOKUP_FOLLOW, rule_path);
 	if (err)
 		return err;
 
@@ -288,7 +330,9 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
 	struct agfs_ioc_checkpoint chk;
+	char name_buf[AGFS_PATH_MAX];
 	u64 gen;
+	int err;
 
 	if (!sbi->staging)
 		return -EOPNOTSUPP;
@@ -296,7 +340,9 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 	if (copy_from_user(&chk, (void __user *)arg, sizeof(chk)))
 		return -EFAULT;
 
-	chk.name[AGFS_PATH_MAX - 1] = '\0';
+	err = agfs_copy_user_path(chk.name_ptr, chk.name_len, name_buf);
+	if (err)
+		return err;
 
 	down_write(&sbi->staging_sem);
 	if (atomic_read(&sbi->staging_fd_count) > 0) {
@@ -304,7 +350,7 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 		return -EBUSY;
 	}
 	gen = atomic64_inc_return(&sbi->checkpoint_gen);
-	agfs_journal_append_k(sbi, gen, chk.name);
+	agfs_journal_append_k(sbi, gen, name_buf);
 	up_write(&sbi->staging_sem);
 
 	/* Best-effort: checkpoint is already committed to the journal,
@@ -371,6 +417,8 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	for (i = 0; i < hdr.entry_count; i++) {
 		struct agfs_ioc_restore_entry __user *uent =
 			&hdr.entries[i];
+		char path_buf[AGFS_PATH_MAX];
+		char bp_buf[AGFS_PATH_MAX];
 		const char *child;
 		int parent_len;
 		char saved;
@@ -382,10 +430,22 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 			err = -EFAULT;
 			break;
 		}
-		ent.path[AGFS_PATH_MAX - 1] = '\0';
-		ent.base_path[AGFS_PATH_MAX - 1] = '\0';
 
-		child = split_parent_child(ent.path, &parent_len);
+		err = agfs_copy_user_path(ent.path_ptr, ent.path_len,
+					  path_buf);
+		if (err)
+			break;
+
+		bp = NULL;
+		if (ent.base_path_len > 0) {
+			err = agfs_copy_user_path(ent.base_path_ptr,
+						  ent.base_path_len, bp_buf);
+			if (err)
+				break;
+			bp = bp_buf;
+		}
+
+		child = split_parent_child(path_buf, &parent_len);
 		if (!*child) {
 			err = -EINVAL;
 			break;
@@ -396,22 +456,21 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 			break;
 		}
 
-		/* NUL-terminate ent.path at the parent boundary in-place */
-		saved = ent.path[parent_len];
-		ent.path[parent_len] = '\0';
+		/* NUL-terminate path_buf at the parent boundary in-place */
+		saved = path_buf[parent_len];
+		path_buf[parent_len] = '\0';
 
 		err = vfs_path_lookup(sb->s_root, file->f_path.mnt,
-				      ent.path,
+				      path_buf,
 				      LOOKUP_FOLLOW | LOOKUP_DIRECTORY,
 				      &parent_path);
 
-		ent.path[parent_len] = saved;
+		path_buf[parent_len] = saved;
 
 		if (err)
 			break;
 
 		dir = d_inode(parent_path.dentry);
-		bp = ent.base_path[0] ? ent.base_path : NULL;
 
 		inode_lock(dir);
 		err = agfs_add_dirent(dir, child, strlen(child),

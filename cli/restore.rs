@@ -21,51 +21,101 @@ fn d_type_from_path(path: &Path) -> Result<u8> {
     })
 }
 
-/// Convert a resolved Change list into restore entries for the ioctl.
-fn changes_to_entries(
-    agfs_dir: &Path,
-    changes: &[resolve::Change],
-) -> Result<Vec<ioctl::AgfsIocRestoreEntry>> {
-    let mut entries = Vec::new();
+/// Intermediate representation of a restore entry with owned path data.
+struct RestoreItem {
+    path: String,
+    ino: u64,
+    base_path: String,
+    d_type: u8,
+}
+
+/// Convert a resolved Change list into restore items (owned data, sortable).
+fn changes_to_items(agfs_dir: &Path, changes: &[resolve::Change]) -> Result<Vec<RestoreItem>> {
+    let mut items = Vec::new();
 
     for change in changes {
         match change {
             resolve::Change::Added { path, ino } | resolve::Change::Modified { path, ino } => {
                 let staged = journal::inode_path(agfs_dir, *ino);
-                entries.push(ioctl::AgfsIocRestoreEntry::new(
-                    path,
-                    *ino,
-                    "",
-                    d_type_from_path(&staged)?,
-                ));
+                items.push(RestoreItem {
+                    path: path.clone(),
+                    ino: *ino,
+                    base_path: String::new(),
+                    d_type: d_type_from_path(&staged)?,
+                });
             }
             resolve::Change::Deleted(path) => {
-                entries.push(ioctl::AgfsIocRestoreEntry::new(path, 0, "", 0));
+                items.push(RestoreItem {
+                    path: path.clone(),
+                    ino: 0,
+                    base_path: String::new(),
+                    d_type: 0,
+                });
             }
             resolve::Change::Renamed { from, to } => {
-                entries.push(ioctl::AgfsIocRestoreEntry::new(from, 0, "", 0));
-                entries.push(ioctl::AgfsIocRestoreEntry::new(
-                    to,
-                    0,
-                    from,
-                    d_type_from_path(&to_base_path(from))?,
-                ));
+                items.push(RestoreItem {
+                    path: from.clone(),
+                    ino: 0,
+                    base_path: String::new(),
+                    d_type: 0,
+                });
+                items.push(RestoreItem {
+                    path: to.clone(),
+                    ino: 0,
+                    base_path: from.clone(),
+                    d_type: d_type_from_path(&to_base_path(from))?,
+                });
             }
             resolve::Change::RenamedModified { from, to, ino } => {
                 let staged = journal::inode_path(agfs_dir, *ino);
-                entries.push(ioctl::AgfsIocRestoreEntry::new(from, 0, "", 0));
-                entries.push(ioctl::AgfsIocRestoreEntry::new(
-                    to,
-                    *ino,
-                    "",
-                    d_type_from_path(&staged)?,
-                ));
+                items.push(RestoreItem {
+                    path: from.clone(),
+                    ino: 0,
+                    base_path: String::new(),
+                    d_type: 0,
+                });
+                items.push(RestoreItem {
+                    path: to.clone(),
+                    ino: *ino,
+                    base_path: String::new(),
+                    d_type: d_type_from_path(&staged)?,
+                });
             }
         }
     }
 
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(entries)
+    items.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(items)
+}
+
+/// Convert owned RestoreItems into ioctl entries with pointers into items.
+/// The returned entries are valid as long as `items` is alive.
+fn items_to_entries(items: &[RestoreItem]) -> Result<Vec<ioctl::AgfsIocRestoreEntry>> {
+    items
+        .iter()
+        .map(|item| {
+            let path_len: u16 = item
+                .path
+                .len()
+                .try_into()
+                .context("restore path too long")?;
+            let base_path_len: u16 = item
+                .base_path
+                .len()
+                .try_into()
+                .context("restore base_path too long")?;
+            Ok(ioctl::AgfsIocRestoreEntry {
+                path_ptr: item.path.as_ptr() as u64,
+                path_len,
+                d_type: item.d_type,
+                _pad1: [0u8; 5],
+                ino: item.ino,
+                base_path_ptr: item.base_path.as_ptr() as u64,
+                base_path_len,
+                _pad2: [0u8; 6],
+            })
+        })
+        .collect()
 }
 
 pub fn run(checkpoint_name: &str) -> Result<()> {
@@ -80,7 +130,8 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     };
 
     let changes = resolve::resolve(&journal.records[..=chk_idx])?;
-    let entries = changes_to_entries(&agfs, &changes)?;
+    let items = changes_to_items(&agfs, &changes)?;
+    let entries = items_to_entries(&items)?;
 
     // Restore kernel state first — if this fails (e.g. EBUSY), the
     // journal is still intact and the operation can be retried.
@@ -108,22 +159,7 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ioctl::AGFS_PATH_MAX;
     use crate::resolve::Change;
-
-    fn entry_path(e: &ioctl::AgfsIocRestoreEntry) -> &str {
-        let end = e.path.iter().position(|&b| b == 0).unwrap_or(AGFS_PATH_MAX);
-        std::str::from_utf8(&e.path[..end]).unwrap()
-    }
-
-    fn entry_base_path(e: &ioctl::AgfsIocRestoreEntry) -> &str {
-        let end = e
-            .base_path
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(AGFS_PATH_MAX);
-        std::str::from_utf8(&e.base_path[..end]).unwrap()
-    }
 
     #[test]
     fn added_produces_single_entry() {
@@ -136,12 +172,12 @@ mod tests {
             path: "/src/main.rs".into(),
             ino: 1,
         }];
-        let entries = changes_to_entries(dir.path(), &changes).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entry_path(&entries[0]), "/src/main.rs");
-        assert_eq!(entries[0].ino, 1);
-        assert_eq!(entries[0].d_type, libc::DT_REG);
-        assert_eq!(entry_base_path(&entries[0]), "");
+        let items = changes_to_items(dir.path(), &changes).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].path, "/src/main.rs");
+        assert_eq!(items[0].ino, 1);
+        assert_eq!(items[0].d_type, libc::DT_REG);
+        assert_eq!(items[0].base_path, "");
     }
 
     #[test]
@@ -150,11 +186,11 @@ mod tests {
         fs::create_dir(dir.path().join("inodes")).unwrap();
 
         let changes = vec![Change::Deleted("/old.txt".into())];
-        let entries = changes_to_entries(dir.path(), &changes).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entry_path(&entries[0]), "/old.txt");
-        assert_eq!(entries[0].ino, 0);
-        assert_eq!(entry_base_path(&entries[0]), "");
+        let items = changes_to_items(dir.path(), &changes).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].path, "/old.txt");
+        assert_eq!(items[0].ino, 0);
+        assert_eq!(items[0].base_path, "");
     }
 
     #[test]
@@ -170,15 +206,15 @@ mod tests {
             from: from.clone(),
             to: "/b.txt".into(),
         }];
-        let entries = changes_to_entries(dir.path(), &changes).unwrap();
-        assert_eq!(entries.len(), 2);
+        let items = changes_to_items(dir.path(), &changes).unwrap();
+        assert_eq!(items.len(), 2);
 
-        let del = entries.iter().find(|e| entry_path(e) == from).unwrap();
+        let del = items.iter().find(|e| e.path == from).unwrap();
         assert_eq!(del.ino, 0);
 
-        let redirect = entries.iter().find(|e| entry_path(e) == "/b.txt").unwrap();
+        let redirect = items.iter().find(|e| e.path == "/b.txt").unwrap();
         assert_eq!(redirect.ino, 0);
-        assert_eq!(entry_base_path(redirect), from);
+        assert_eq!(redirect.base_path, from);
     }
 
     #[test]
@@ -193,16 +229,16 @@ mod tests {
             to: "/new.rs".into(),
             ino: 5,
         }];
-        let entries = changes_to_entries(dir.path(), &changes).unwrap();
-        assert_eq!(entries.len(), 2);
+        let items = changes_to_items(dir.path(), &changes).unwrap();
+        assert_eq!(items.len(), 2);
 
         // Sorted: /new.rs before /old.rs
-        assert_eq!(entry_path(&entries[0]), "/new.rs");
-        assert_eq!(entries[0].ino, 5);
-        assert_eq!(entry_base_path(&entries[0]), "");
+        assert_eq!(items[0].path, "/new.rs");
+        assert_eq!(items[0].ino, 5);
+        assert_eq!(items[0].base_path, "");
 
-        assert_eq!(entry_path(&entries[1]), "/old.rs");
-        assert_eq!(entries[1].ino, 0);
+        assert_eq!(items[1].path, "/old.rs");
+        assert_eq!(items[1].ino, 0);
     }
 
     #[test]
@@ -228,11 +264,11 @@ mod tests {
                 ino: 3,
             },
         ];
-        let entries = changes_to_entries(dir.path(), &changes).unwrap();
-        assert_eq!(entries.len(), 3);
-        assert_eq!(entry_path(&entries[0]), "/a");
-        assert_eq!(entry_path(&entries[1]), "/a/file.rs");
-        assert_eq!(entry_path(&entries[2]), "/z/file.rs");
+        let items = changes_to_items(dir.path(), &changes).unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].path, "/a");
+        assert_eq!(items[1].path, "/a/file.rs");
+        assert_eq!(items[2].path, "/z/file.rs");
     }
 
     #[test]
@@ -246,8 +282,8 @@ mod tests {
             path: "/newdir".into(),
             ino: 1,
         }];
-        let entries = changes_to_entries(dir.path(), &changes).unwrap();
-        assert_eq!(entries[0].d_type, libc::DT_DIR);
+        let items = changes_to_items(dir.path(), &changes).unwrap();
+        assert_eq!(items[0].d_type, libc::DT_DIR);
     }
 
     #[test]
@@ -261,16 +297,46 @@ mod tests {
             path: "/link".into(),
             ino: 1,
         }];
-        let entries = changes_to_entries(dir.path(), &changes).unwrap();
-        assert_eq!(entries[0].d_type, libc::DT_LNK);
+        let items = changes_to_items(dir.path(), &changes).unwrap();
+        assert_eq!(items[0].d_type, libc::DT_LNK);
     }
 
     #[test]
-    fn new_entry_truncates_long_path() {
-        let long = "/".to_string() + &"a".repeat(300);
-        let entry = ioctl::AgfsIocRestoreEntry::new(&long, 1, "", libc::DT_REG);
-        assert_eq!(entry.path[AGFS_PATH_MAX - 1], 0);
-        assert_eq!(entry.path[AGFS_PATH_MAX - 2], b'a');
+    fn items_to_entries_sets_pointers() {
+        let items = vec![RestoreItem {
+            path: "/src/main.rs".into(),
+            ino: 1,
+            base_path: String::new(),
+            d_type: libc::DT_REG,
+        }];
+        let entries = items_to_entries(&items).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path_len, 12);
+        assert_eq!(entries[0].ino, 1);
+        assert_eq!(entries[0].d_type, libc::DT_REG);
+        assert_eq!(entries[0].base_path_len, 0);
+    }
+
+    #[test]
+    fn items_to_entries_rejects_oversized_path() {
+        let items = vec![RestoreItem {
+            path: "a".repeat(u16::MAX as usize + 1),
+            ino: 0,
+            base_path: String::new(),
+            d_type: 0,
+        }];
+        assert!(items_to_entries(&items).is_err());
+    }
+
+    #[test]
+    fn items_to_entries_rejects_oversized_base_path() {
+        let items = vec![RestoreItem {
+            path: "/ok".into(),
+            ino: 0,
+            base_path: "a".repeat(u16::MAX as usize + 1),
+            d_type: 0,
+        }];
+        assert!(items_to_entries(&items).is_err());
     }
 
     #[test]
@@ -278,8 +344,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("inodes")).unwrap();
 
-        let entries = changes_to_entries(dir.path(), &[]).unwrap();
-        assert!(entries.is_empty());
+        let items = changes_to_items(dir.path(), &[]).unwrap();
+        assert!(items.is_empty());
     }
 
     /// Renamed directory must produce DT_DIR, not DT_REG.
@@ -298,15 +364,15 @@ mod tests {
             from: from.clone(),
             to: "/newdir".into(),
         }];
-        let entries = changes_to_entries(dir.path(), &changes).unwrap();
+        let items = changes_to_items(dir.path(), &changes).unwrap();
 
         // Find the "to" entry (the one with base_path set)
-        let to_entry = entries.iter().find(|e| entry_base_path(e) == from).unwrap();
+        let to_item = items.iter().find(|e| e.base_path == from).unwrap();
         assert_eq!(
-            to_entry.d_type,
+            to_item.d_type,
             libc::DT_DIR,
             "renamed directory should have DT_DIR, got {}",
-            to_entry.d_type
+            to_item.d_type
         );
     }
 
@@ -326,14 +392,14 @@ mod tests {
             from: from.clone(),
             to: "/newlink".into(),
         }];
-        let entries = changes_to_entries(dir.path(), &changes).unwrap();
+        let items = changes_to_items(dir.path(), &changes).unwrap();
 
-        let to_entry = entries.iter().find(|e| entry_base_path(e) == from).unwrap();
+        let to_item = items.iter().find(|e| e.base_path == from).unwrap();
         assert_eq!(
-            to_entry.d_type,
+            to_item.d_type,
             libc::DT_LNK,
             "renamed symlink should have DT_LNK, got {}",
-            to_entry.d_type
+            to_item.d_type
         );
     }
 
@@ -348,7 +414,7 @@ mod tests {
             path: "/ghost.txt".into(),
             ino: 99,
         }];
-        let result = changes_to_entries(dir.path(), &changes);
+        let result = changes_to_items(dir.path(), &changes);
         assert!(result.is_err(), "missing inode should produce an error");
     }
 }

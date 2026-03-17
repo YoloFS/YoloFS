@@ -9,6 +9,7 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
+/// Maximum path length (including NUL) — must match kmod/agfs.h.
 pub const AGFS_PATH_MAX: usize = 256;
 
 // Operation types
@@ -28,7 +29,7 @@ pub const AGFS_PERM_DENY: u8 = 6;
 // Ioctl command numbers — must match kmod/agfs.h
 nix::ioctl_write_ptr!(ioctl_rule_add, b'A', 10, AgfsIocRule);
 nix::ioctl_write_ptr!(ioctl_rule_remove, b'A', 11, AgfsIocRule);
-nix::ioctl_read!(ioctl_get_request, b'A', 30, AgfsCtlRequest);
+nix::ioctl_readwrite!(ioctl_get_request, b'A', 30, AgfsCtlRequest);
 nix::ioctl_write_ptr!(ioctl_put_response, b'A', 31, AgfsCtlResponse);
 nix::ioctl_readwrite!(ioctl_checkpoint, b'A', 40, AgfsIocCheckpoint);
 nix::ioctl_write_ptr!(ioctl_restore, b'A', 41, AgfsIocRestore);
@@ -36,12 +37,14 @@ nix::ioctl_write_ptr!(ioctl_restore, b'A', 41, AgfsIocRestore);
 /// Matches `struct agfs_ioc_rule` in the kernel.
 #[repr(C)]
 pub struct AgfsIocRule {
-    pub path: [u8; AGFS_PATH_MAX],
+    pub path_ptr: u64,
+    pub path_len: u16,
     pub perm: u8,
-    pub _pad: [u8; 7],
+    pub _pad: [u8; 5],
 }
 
 /// Matches `struct agfs_ctl_request` in the kernel (kernel → userspace).
+/// Userspace provides path_ptr + path_buf_len; kernel fills the rest.
 #[repr(C)]
 #[derive(Clone)]
 pub struct AgfsCtlRequest {
@@ -49,7 +52,10 @@ pub struct AgfsCtlRequest {
     pub op: u32,
     pub pid: u32,
     pub comm: [u8; 16],
-    pub path: [u8; AGFS_PATH_MAX],
+    pub path_ptr: u64,
+    pub path_buf_len: u16,
+    pub path_len: u16,
+    pub _pad: [u8; 4],
 }
 
 /// Matches `struct agfs_ctl_response` in the kernel (userspace → kernel).
@@ -64,38 +70,22 @@ pub struct AgfsCtlResponse {
 #[repr(C)]
 pub struct AgfsIocCheckpoint {
     pub id: u64,
-    pub name: [u8; AGFS_PATH_MAX],
+    pub name_ptr: u64,
+    pub name_len: u16,
+    pub _pad: [u8; 6],
 }
 
 /// Matches `struct agfs_ioc_restore_entry` in the kernel.
 #[repr(C)]
 pub struct AgfsIocRestoreEntry {
-    pub path: [u8; AGFS_PATH_MAX],
-    pub ino: u64,
-    pub base_path: [u8; AGFS_PATH_MAX],
+    pub path_ptr: u64,
+    pub path_len: u16,
     pub d_type: u8,
-    pub _pad: [u8; 7],
-}
-
-impl AgfsIocRestoreEntry {
-    pub fn new(path: &str, ino: u64, base_path: &str, d_type: u8) -> Self {
-        let mut entry = Self {
-            path: [0u8; AGFS_PATH_MAX],
-            ino,
-            base_path: [0u8; AGFS_PATH_MAX],
-            d_type,
-            _pad: [0u8; 7],
-        };
-        let pbytes = path.as_bytes();
-        let plen = pbytes.len().min(AGFS_PATH_MAX - 1);
-        entry.path[..plen].copy_from_slice(&pbytes[..plen]);
-
-        let bbytes = base_path.as_bytes();
-        let blen = bbytes.len().min(AGFS_PATH_MAX - 1);
-        entry.base_path[..blen].copy_from_slice(&bbytes[..blen]);
-
-        entry
-    }
+    pub _pad1: [u8; 5],
+    pub ino: u64,
+    pub base_path_ptr: u64,
+    pub base_path_len: u16,
+    pub _pad2: [u8; 6],
 }
 
 /// Matches `struct agfs_ioc_restore` in the kernel.
@@ -106,28 +96,18 @@ pub struct AgfsIocRestore {
     pub entries: *const AgfsIocRestoreEntry,
 }
 
-impl AgfsIocRule {
-    pub fn new(path: &str, perm: u8) -> Self {
-        let mut rule = Self {
-            path: [0u8; AGFS_PATH_MAX],
-            perm,
-            _pad: [0u8; 7],
-        };
-        let bytes = path.as_bytes();
-        let len = bytes.len().min(AGFS_PATH_MAX - 1);
-        rule.path[..len].copy_from_slice(&bytes[..len]);
-        rule
-    }
+/// A dequeued permission request with owned path data.
+pub struct PermRequest {
+    pub id: u64,
+    pub op: u32,
+    pub pid: u32,
+    pub comm: [u8; 16],
+    pub path: String,
 }
 
-impl AgfsCtlRequest {
+impl PermRequest {
     pub fn path_str(&self) -> &str {
-        let end = self
-            .path
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(AGFS_PATH_MAX);
-        std::str::from_utf8(&self.path[..end]).unwrap_or("<invalid>")
+        &self.path
     }
 
     pub fn comm_str(&self) -> &str {
@@ -145,17 +125,31 @@ impl AgfsCtlRequest {
     }
 }
 
-/// Read one `AgfsCtlRequest` via ioctl on a directory fd.
-pub fn read_request(fd: &File) -> std::result::Result<AgfsCtlRequest, nix::errno::Errno> {
+/// Read one permission request via ioctl. Returns a `PermRequest` with
+/// owned path data.
+pub fn read_request(fd: &File) -> std::result::Result<PermRequest, nix::errno::Errno> {
+    let mut path_buf = [0u8; AGFS_PATH_MAX];
     let mut req = AgfsCtlRequest {
         id: 0,
         op: 0,
         pid: 0,
         comm: [0u8; 16],
-        path: [0u8; AGFS_PATH_MAX],
+        path_ptr: path_buf.as_mut_ptr() as u64,
+        path_buf_len: AGFS_PATH_MAX as u16,
+        path_len: 0,
+        _pad: [0u8; 4],
     };
     unsafe { ioctl_get_request(fd.as_raw_fd(), &mut req) }?;
-    Ok(req)
+    let path = std::str::from_utf8(&path_buf[..req.path_len as usize])
+        .unwrap_or("<invalid>")
+        .to_string();
+    Ok(PermRequest {
+        id: req.id,
+        op: req.op,
+        pid: req.pid,
+        comm: req.comm,
+        path,
+    })
 }
 
 /// Write one `AgfsCtlResponse` via ioctl on a directory fd.
@@ -178,9 +172,20 @@ pub fn open(agfs_dir: &Path) -> Result<File> {
         .context("opening .agfs/mnt for ioctl")
 }
 
+fn make_rule(path: &str, perm: u8) -> Result<AgfsIocRule> {
+    let bytes = path.as_bytes();
+    let path_len: u16 = bytes.len().try_into().context("path too long")?;
+    Ok(AgfsIocRule {
+        path_ptr: bytes.as_ptr() as u64,
+        path_len,
+        perm,
+        _pad: [0u8; 5],
+    })
+}
+
 /// Send AGFS_IOC_RULE_ADD ioctl.
 pub fn add_rule(fd: &File, path: &str, perm: u8) -> Result<()> {
-    let rule = AgfsIocRule::new(path, perm);
+    let rule = make_rule(path, perm)?;
     unsafe { ioctl_rule_add(fd.as_raw_fd(), &rule) }
         .with_context(|| format!("ioctl RULE_ADD for {path}"))?;
     Ok(())
@@ -188,7 +193,7 @@ pub fn add_rule(fd: &File, path: &str, perm: u8) -> Result<()> {
 
 /// Send AGFS_IOC_RULE_REMOVE ioctl.
 pub fn remove_rule(fd: &File, path: &str) -> Result<()> {
-    let rule = AgfsIocRule::new(path, AGFS_PERM_NONE);
+    let rule = make_rule(path, AGFS_PERM_NONE)?;
     unsafe { ioctl_rule_remove(fd.as_raw_fd(), &rule) }
         .with_context(|| format!("ioctl RULE_REMOVE for {path}"))?;
     Ok(())
@@ -212,13 +217,17 @@ pub fn restore(fd: &File, checkpoint_gen: u64, entries: &[AgfsIocRestoreEntry]) 
 
 /// Send AGFS_IOC_CHECKPOINT ioctl. Returns the assigned checkpoint ID.
 pub fn create_checkpoint(fd: &File, name: &str) -> Result<u64> {
+    let name_bytes = name.as_bytes();
+    let name_len: u16 = name_bytes
+        .len()
+        .try_into()
+        .context("checkpoint name too long")?;
     let mut chk = AgfsIocCheckpoint {
         id: 0,
-        name: [0u8; AGFS_PATH_MAX],
+        name_ptr: name_bytes.as_ptr() as u64,
+        name_len,
+        _pad: [0u8; 6],
     };
-    let bytes = name.as_bytes();
-    let len = bytes.len().min(AGFS_PATH_MAX - 1);
-    chk.name[..len].copy_from_slice(&bytes[..len]);
     unsafe { ioctl_checkpoint(fd.as_raw_fd(), &mut chk) }.context("ioctl CHECKPOINT")?;
     Ok(chk.id)
 }
@@ -228,43 +237,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ioc_rule_new_basic() {
-        let rule = AgfsIocRule::new("/foo/bar", AGFS_PERM_ALLOW);
-        assert_eq!(rule.perm, AGFS_PERM_ALLOW);
-        assert_eq!(&rule.path[..8], b"/foo/bar");
-        assert_eq!(rule.path[8], 0);
+    fn struct_sizes() {
+        // Must match the kernel struct sizes for binary protocol compat
+        assert_eq!(size_of::<AgfsCtlRequest>(), 48);
+        assert_eq!(size_of::<AgfsCtlResponse>(), 16);
+        assert_eq!(size_of::<AgfsIocRule>(), 16);
+        assert_eq!(size_of::<AgfsIocCheckpoint>(), 24);
+        assert_eq!(size_of::<AgfsIocRestoreEntry>(), 40);
+        assert_eq!(size_of::<AgfsIocRestore>(), 24);
     }
 
     #[test]
-    fn ioc_rule_new_truncates_long_path() {
-        let long = "a".repeat(300);
-        let rule = AgfsIocRule::new(&long, AGFS_PERM_DENY);
-        // Path is truncated to AGFS_PATH_MAX - 1 = 255 bytes
-        assert_eq!(rule.path[AGFS_PATH_MAX - 1], 0);
-        assert_eq!(rule.path[AGFS_PATH_MAX - 2], b'a');
-    }
-
-    #[test]
-    fn ctl_request_path_str() {
-        let mut req = AgfsCtlRequest {
+    fn perm_request_helpers() {
+        let req = PermRequest {
             id: 1,
             op: AGFS_OP_READ,
             pid: 42,
-            comm: [0u8; 16],
-            path: [0u8; AGFS_PATH_MAX],
+            comm: {
+                let mut c = [0u8; 16];
+                c[..4].copy_from_slice(b"bash");
+                c
+            },
+            path: "hello".into(),
         };
-        req.path[..5].copy_from_slice(b"hello");
         assert_eq!(req.path_str(), "hello");
+        assert_eq!(req.comm_str(), "bash");
+        assert_eq!(req.op_str(), "read");
     }
 
     #[test]
-    fn ctl_request_op_str() {
-        let mk = |op| AgfsCtlRequest {
+    fn op_str_all_variants() {
+        let mk = |op| PermRequest {
             id: 0,
             op,
             pid: 0,
             comm: [0u8; 16],
-            path: [0u8; AGFS_PATH_MAX],
+            path: String::new(),
         };
         assert_eq!(mk(AGFS_OP_READ).op_str(), "read");
         assert_eq!(mk(AGFS_OP_WRITE).op_str(), "write");
@@ -273,13 +281,16 @@ mod tests {
     }
 
     #[test]
-    fn struct_sizes() {
-        // Must match the kernel struct sizes for binary protocol compat
-        assert_eq!(size_of::<AgfsCtlRequest>(), 288);
-        assert_eq!(size_of::<AgfsCtlResponse>(), 16);
-        assert_eq!(size_of::<AgfsIocRule>(), 264);
-        assert_eq!(size_of::<AgfsIocCheckpoint>(), 264);
-        assert_eq!(size_of::<AgfsIocRestoreEntry>(), 528);
-        assert_eq!(size_of::<AgfsIocRestore>(), 24);
+    fn make_rule_basic() {
+        let rule = make_rule("/foo/bar", AGFS_PERM_ALLOW).unwrap();
+        assert_eq!(rule.path_len, 8);
+        assert_eq!(rule.perm, AGFS_PERM_ALLOW);
+        assert_eq!(rule.path_ptr, "/foo/bar".as_ptr() as u64);
+    }
+
+    #[test]
+    fn make_rule_rejects_oversized_path() {
+        let long = "a".repeat(u16::MAX as usize + 1);
+        assert!(make_rule(&long, AGFS_PERM_DENY).is_err());
     }
 }

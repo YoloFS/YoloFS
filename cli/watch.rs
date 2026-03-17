@@ -11,7 +11,7 @@
 // it back to the previous foreground group.
 
 use crate::config::Perm;
-use crate::ioctl::{self, AgfsCtlRequest};
+use crate::ioctl::{self, PermRequest};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use nix::sys::signal::{SigHandler, Signal, signal};
@@ -69,7 +69,7 @@ fn release_tty(prev: Option<Pid>) {
     }
 }
 
-fn prompt_decision(req: &AgfsCtlRequest) -> Perm {
+fn prompt_decision(req: &PermRequest) -> Perm {
     let _guard = claim_tty();
 
     eprintln!(

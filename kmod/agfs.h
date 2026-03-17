@@ -51,25 +51,37 @@ enum agfs_perm {
 
 /* ── Ioctl Structures ──────────────────────────────────────────────── */
 
+/*
+ * All path fields use pointer + length instead of fixed-size arrays.
+ * Paths are limited to AGFS_PATH_MAX-1 bytes (matching internal buffers).
+ * The kernel copies path data via secondary copy_from_user / copy_to_user.
+ */
+
 struct agfs_ioc_rule {
-	char	path[AGFS_PATH_MAX];
+	__u64	path_ptr;		/* userspace pointer to path string */
+	__u16	path_len;		/* length excluding NUL */
 	__u8	perm;			/* enum agfs_perm value */
-	__u8	_pad[7];
+	__u8	_pad[5];
 };
 
 /* userspace ↔ kernel: AGFS_IOC_CHECKPOINT (name in, id out) */
 struct agfs_ioc_checkpoint {
 	__u64	id;			/* out: assigned checkpoint ID */
-	char	name[AGFS_PATH_MAX];	/* in: human-readable name (NUL-terminated) */
+	__u64	name_ptr;		/* in: userspace pointer to name string */
+	__u16	name_len;		/* in: length excluding NUL */
+	__u8	_pad[6];
 };
 
 /* userspace → kernel: one entry in AGFS_IOC_RESTORE */
 struct agfs_ioc_restore_entry {
-	char	path[AGFS_PATH_MAX];		/* absolute child path */
-	__u64	ino;				/* inode store ID; 0 = deleted */
-	char	base_path[AGFS_PATH_MAX];	/* redirect target; NUL = none */
-	__u8	d_type;				/* DT_REG / DT_DIR / DT_LNK */
-	__u8	_pad[7];
+	__u64	path_ptr;		/* userspace pointer to path string */
+	__u16	path_len;		/* length excluding NUL */
+	__u8	d_type;			/* DT_REG / DT_DIR / DT_LNK */
+	__u8	_pad1[5];
+	__u64	ino;			/* inode store ID; 0 = deleted */
+	__u64	base_path_ptr;		/* userspace pointer to base_path string */
+	__u16	base_path_len;		/* length excluding NUL; 0 = none */
+	__u8	_pad2[6];
 };
 
 /* userspace → kernel: AGFS_IOC_RESTORE */
@@ -81,20 +93,27 @@ struct agfs_ioc_restore {
 
 #define AGFS_IOC_RULE_ADD	_IOW('A', 10, struct agfs_ioc_rule)
 #define AGFS_IOC_RULE_REMOVE	_IOW('A', 11, struct agfs_ioc_rule)
-#define AGFS_IOC_GET_REQUEST	_IOR('A', 30, struct agfs_ctl_request)
+#define AGFS_IOC_GET_REQUEST	_IOWR('A', 30, struct agfs_ctl_request)
 #define AGFS_IOC_PUT_RESPONSE	_IOW('A', 31, struct agfs_ctl_response)
 #define AGFS_IOC_CHECKPOINT	_IOWR('A', 40, struct agfs_ioc_checkpoint)
 #define AGFS_IOC_RESTORE	_IOW('A', 41, struct agfs_ioc_restore)
 
-/* ── Control-File Protocol (binary, fixed-size) ────────────────────── */
+/* ── Control-File Protocol (binary) ───────────────────────────────── */
 
-/* kernel → userspace: read() returns one of these */
+/*
+ * kernel → userspace: dequeued permission request.
+ * Userspace provides path_ptr + path_buf_len; kernel writes path into
+ * the buffer and sets path_len to the actual length.
+ */
 struct agfs_ctl_request {
 	__u64	id;
 	__u32	op;			/* AGFS_OP_READ / WRITE / EXEC */
 	__u32	pid;
 	char	comm[16];
-	char	path[AGFS_PATH_MAX];
+	__u64	path_ptr;		/* in: userspace buffer for path */
+	__u16	path_buf_len;		/* in: buffer capacity */
+	__u16	path_len;		/* out: actual path length written */
+	__u8	_pad[4];
 };
 
 /* userspace → kernel: write() accepts one of these */
