@@ -58,3 +58,12 @@ else
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q
     . "$HOME/.cargo/env"
 fi
+
+# ── /dev/kmsg access ──────────────────────────────────────────────────
+# Tests and benchmarks read /dev/kmsg to capture kernel messages.
+# By default dmesg_restrict=1 blocks non-root reads.
+
+if [ "$(cat /proc/sys/kernel/dmesg_restrict 2>/dev/null)" != "0" ]; then
+    info "Setting kernel.dmesg_restrict=0 for /dev/kmsg access"
+    sudo sysctl -w kernel.dmesg_restrict=0 >/dev/null
+fi
