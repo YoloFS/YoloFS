@@ -147,29 +147,39 @@ pub fn run_status(at: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    run_sections(&agfs, false)?;
+    run_sections(&agfs, false, None)?;
     Ok(())
 }
 
 /// `agfs diff` — verbose diff view. Returns true if there were changes.
-pub fn run_diff(from: Option<&str>) -> Result<bool> {
+pub fn run_diff(from: Option<&str>, path: Option<&str>) -> Result<bool> {
     let agfs = crate::utils::session_dir()?;
     if !agfs.exists() {
         anyhow::bail!("no agfs session found (no .agfs/ directory)");
     }
 
+    let path = path.map(crate::utils::normalize_path);
+
     if let Some(chk_name) = from {
-        return run_from_checkpoint(&agfs, chk_name);
+        return run_from_checkpoint(&agfs, chk_name, path.as_deref());
     }
 
-    run_sections(&agfs, true)
+    run_sections(&agfs, true, path.as_deref())
 }
 
 // ── Shared implementation ────────────────────────────────────────────
 
-fn run_sections(agfs: &Path, verbose: bool) -> Result<bool> {
+fn run_sections(agfs: &Path, verbose: bool, path: Option<&str>) -> Result<bool> {
     let sections = journal::resolve_sections(agfs)?;
-    let total: usize = sections.iter().map(|s| s.changes.len()).sum();
+
+    let total: usize = match path {
+        Some(target) => sections
+            .iter()
+            .flat_map(|s| &s.changes)
+            .filter(|c| c.matches_path(target))
+            .count(),
+        None => sections.iter().map(|s| s.changes.len()).sum(),
+    };
 
     if total == 0 {
         println!("{}", "No changes staged.".yellow());
@@ -179,16 +189,32 @@ fn run_sections(agfs: &Path, verbose: bool) -> Result<bool> {
     let has_checkpoints = sections.iter().any(|s| s.checkpoint.is_some());
 
     for section in &sections {
+        let changes: Vec<&Change> = match path {
+            Some(target) => section
+                .changes
+                .iter()
+                .filter(|c| c.matches_path(target))
+                .collect(),
+            None => section.changes.iter().collect(),
+        };
+
         if has_checkpoints {
+            if changes.is_empty() && path.is_some() {
+                continue;
+            }
             if section.checkpoint.is_none() {
                 println!("{}", "── (unsaved changes) ──".dimmed());
             }
-            if section.changes.is_empty() {
+            if changes.is_empty() {
                 print_section_footer(section);
                 continue;
             }
         }
-        print_changes(agfs, &section.changes, verbose);
+
+        for change in &changes {
+            print_change(agfs, change, verbose);
+        }
+
         if has_checkpoints {
             print_section_footer(section);
         }
@@ -235,7 +261,7 @@ fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>
 }
 
 /// Diff between checkpoint state and current state.
-fn run_from_checkpoint(agfs: &Path, chk_name: &str) -> Result<bool> {
+fn run_from_checkpoint(agfs: &Path, chk_name: &str, filter: Option<&str>) -> Result<bool> {
     let (chk_changes, current_changes) = journal::resolve_from(agfs, chk_name)?;
 
     let chk_state = state_map(agfs, &chk_changes);
@@ -245,6 +271,10 @@ fn run_from_checkpoint(agfs: &Path, chk_name: &str) -> Result<bool> {
     let mut all_paths: Vec<&String> = chk_state.keys().chain(current_state.keys()).collect();
     all_paths.sort();
     all_paths.dedup();
+
+    if let Some(target) = filter {
+        all_paths.retain(|p| p.as_str() == target);
+    }
 
     let mut has_diff = false;
 

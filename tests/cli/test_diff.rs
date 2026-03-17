@@ -62,3 +62,44 @@ fn diff_renamed_file() {
         "diff should mention new name: {output}"
     );
 }
+
+#[test]
+fn diff_single_file_shows_only_that_file() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
+    fs::write(s.mnt_path("other.txt"), "also changed\n").unwrap();
+
+    let output = s.cli(&["diff", "hello.txt"]).expect("diff hello.txt");
+    assert!(output.contains("hello.txt"), "should show hello.txt: {output}");
+    assert!(
+        !output.contains("other.txt"),
+        "should NOT show other.txt: {output}"
+    );
+}
+
+#[test]
+fn diff_single_file_not_changed() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
+
+    let output = s.cli(&["diff", "other.txt"]).expect("diff other.txt");
+    assert!(
+        output.contains("No changes staged"),
+        "no matching changes: {output}"
+    );
+}
+
+#[test]
+fn diff_single_file_with_leading_slash() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
+
+    let output = s.cli(&["diff", "/hello.txt"]).expect("diff /hello.txt");
+    assert!(
+        output.contains("hello.txt"),
+        "should find with leading slash: {output}"
+    );
+}

@@ -42,6 +42,17 @@ impl Change {
             _ => None,
         }
     }
+
+    /// True if this change involves the given path (as source or destination).
+    pub fn matches_path(&self, target: &str) -> bool {
+        match self {
+            Change::Added { path, .. } | Change::Modified { path, .. } => path == target,
+            Change::Deleted(path) => path == target,
+            Change::Renamed { from, to } | Change::RenamedModified { from, to, .. } => {
+                from == target || to == target
+            }
+        }
+    }
 }
 
 /// Read and parse the journal file.
@@ -1362,5 +1373,55 @@ mod tests {
             .ino(),
             None
         );
+    }
+
+    #[test]
+    fn matches_path_added() {
+        let c = Change::Added {
+            path: "/src/main.rs".into(),
+            ino: 1,
+        };
+        assert!(c.matches_path("/src/main.rs"));
+        assert!(!c.matches_path("/src/lib.rs"));
+    }
+
+    #[test]
+    fn matches_path_modified() {
+        let c = Change::Modified {
+            path: "/etc/config".into(),
+            ino: 5,
+        };
+        assert!(c.matches_path("/etc/config"));
+        assert!(!c.matches_path("/etc/other"));
+    }
+
+    #[test]
+    fn matches_path_deleted() {
+        let c = Change::Deleted("/old/file.txt".into());
+        assert!(c.matches_path("/old/file.txt"));
+        assert!(!c.matches_path("/old/other.txt"));
+    }
+
+    #[test]
+    fn matches_path_renamed_from() {
+        let c = Change::Renamed {
+            from: "/a.txt".into(),
+            to: "/b.txt".into(),
+        };
+        assert!(c.matches_path("/a.txt"));
+        assert!(c.matches_path("/b.txt"));
+        assert!(!c.matches_path("/c.txt"));
+    }
+
+    #[test]
+    fn matches_path_renamed_modified() {
+        let c = Change::RenamedModified {
+            from: "/old.rs".into(),
+            to: "/new.rs".into(),
+            ino: 7,
+        };
+        assert!(c.matches_path("/old.rs"));
+        assert!(c.matches_path("/new.rs"));
+        assert!(!c.matches_path("/other.rs"));
     }
 }

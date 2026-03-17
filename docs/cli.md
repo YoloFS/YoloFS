@@ -31,7 +31,9 @@ $ agfs exec -- make build
 $ agfs status            # show staged changes (grouped by checkpoint when present)
 $ agfs status --at <name|id> # show state at a checkpoint
 $ agfs diff              # git-style diff of staged vs base (grouped by checkpoint)
+$ agfs diff <path>       # diff a single file
 $ agfs diff --from <name|id> # diff changes since checkpoint
+$ agfs diff --from <name|id> <path> # diff a single file since checkpoint
 $ agfs commit            # apply staged changes to base
 $ agfs commit --at <name|id> # commit only changes up to a checkpoint
 $ agfs abort             # discard staged changes (prompts for confirmation)

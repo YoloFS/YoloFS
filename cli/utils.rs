@@ -11,6 +11,17 @@ pub fn to_base_path(rel: &str) -> PathBuf {
     Path::new("/").join(rel.trim_start_matches('/'))
 }
 
+/// Normalize a user-supplied path to match the absolute-path format used in the
+/// journal (e.g. "hello.txt" → "/hello.txt", "./src/main.rs" → "/src/main.rs").
+pub fn normalize_path(p: &str) -> String {
+    let stripped = p.strip_prefix("./").unwrap_or(p);
+    if stripped.starts_with('/') {
+        stripped.to_string()
+    } else {
+        format!("/{stripped}")
+    }
+}
+
 /// Locate the agfs session directory.
 /// Checks AGFS_SESSION env var first, then falls back to .agfs/.
 pub fn session_dir() -> Result<PathBuf> {
@@ -87,5 +98,30 @@ mod tests {
         let result = session_dir().unwrap();
         assert_eq!(result, agfs_dir);
         std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    fn normalize_path_relative() {
+        assert_eq!(normalize_path("hello.txt"), "/hello.txt");
+    }
+
+    #[test]
+    fn normalize_path_absolute() {
+        assert_eq!(normalize_path("/src/main.rs"), "/src/main.rs");
+    }
+
+    #[test]
+    fn normalize_path_nested() {
+        assert_eq!(normalize_path("src/lib.rs"), "/src/lib.rs");
+    }
+
+    #[test]
+    fn normalize_path_dot_slash() {
+        assert_eq!(normalize_path("./hello.txt"), "/hello.txt");
+    }
+
+    #[test]
+    fn normalize_path_dot_slash_nested() {
+        assert_eq!(normalize_path("./src/main.rs"), "/src/main.rs");
     }
 }

@@ -60,6 +60,8 @@ enum Command {
         /// Diff changes since a named checkpoint
         #[arg(long)]
         from: Option<String>,
+        /// Show diff for a single file
+        path: Option<String>,
     },
     /// Apply staged changes to base
     Commit {
@@ -134,8 +136,8 @@ fn run_cli() -> anyhow::Result<u8> {
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,
         Some(Command::Status { at }) => diff::run_status(at.as_deref())?,
-        Some(Command::Diff { from }) => {
-            diff::run_diff(from.as_deref())?;
+        Some(Command::Diff { from, path }) => {
+            diff::run_diff(from.as_deref(), path.as_deref())?;
         }
         Some(Command::Commit { at }) => commit::run(at.as_deref())?,
         Some(Command::Abort { force }) => abort::run(force)?,
@@ -178,7 +180,7 @@ fn run(exec_args: &[String]) -> anyhow::Result<u8> {
     let cmd_exit_code = exec::run(exec_args).unwrap_or(1);
 
     // 4. Show diff
-    let has_changes = diff::run_diff(None)?;
+    let has_changes = diff::run_diff(None, None)?;
 
     if !has_changes {
         return Ok(cmd_exit_code);
