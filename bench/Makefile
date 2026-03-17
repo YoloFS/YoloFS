@@ -33,11 +33,11 @@ uninstall-try:
 
 .PHONY: install-branchfs uninstall-branchfs
 
-$(BRANCHFS_OUT): $(wildcard third_party/branchfs/src/**/*.rs third_party/branchfs/Cargo.toml)
-	cargo build --release --manifest-path third_party/branchfs/Cargo.toml
-
-install-branchfs: $(BRANCHFS_OUT)
-	sudo install -m 755 $(BRANCHFS_OUT) /usr/local/bin/branchfs
+install-branchfs:
+	tmp=$$(mktemp -d) && cp -a third_party/branchfs/. "$$tmp" && \
+	cargo build --release --manifest-path "$$tmp/Cargo.toml" && \
+	sudo install -m 755 "$$tmp/target/release/branchfs" /usr/local/bin/branchfs && \
+	rm -rf "$$tmp"
 
 uninstall-branchfs:
 	sudo rm -f /usr/local/bin/branchfs

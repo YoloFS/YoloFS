@@ -1,5 +1,6 @@
 [workspace]
 members = [".", "bench"]
+exclude = ["bench/third_party/branchfs"]
 
 [package]
 name = "agfs"
