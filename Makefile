@@ -3,7 +3,6 @@
 KDIR             := /lib/modules/$(shell uname -r)
 KMOD_OUT         := target/kmod/agfs.ko
 KMOD_INSTALL_DIR := $(KDIR)/extra
-BTF_VMLINUX      := $(KDIR)/build/vmlinux
 TARGET_DIR       := $(CURDIR)-target
 
 # ── Build ─────────────────────────────────────────────────────────────
@@ -23,13 +22,11 @@ cli: | $(TARGET_DIR)
 
 kmod: $(KMOD_OUT)
 
-$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) $(BTF_VMLINUX) | $(TARGET_DIR)
+$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(TARGET_DIR)
 	mkdir -p $(TARGET_DIR)/kmod
 	cp kmod/Kbuild $(TARGET_DIR)/kmod/Kbuild
-	$(MAKE) -j$(nproc) -C $(KDIR)/build M=$(TARGET_DIR)/kmod KBUILD_KMOD_SRC=$(CURDIR)/kmod modules
-
-$(BTF_VMLINUX): /sys/kernel/btf/vmlinux
-	sudo cp $< $@
+	$(MAKE) -j$(nproc) -C $(KDIR)/build M=$(TARGET_DIR)/kmod KBUILD_KMOD_SRC=$(CURDIR)/kmod \
+		CONFIG_DEBUG_INFO_BTF_MODULES= modules
 
 # ── Install ───────────────────────────────────────────────────────────
 

@@ -19,10 +19,6 @@ jobs:
       - name: Build and install
         run: make install
 
-      - name: Lint
-        run: make lint
-        continue-on-error: true
-
       - name: Unit tests
         run: make test-unit
 

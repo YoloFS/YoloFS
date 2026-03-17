@@ -21,7 +21,6 @@ BUILD_PKGS=(
     "linux-headers-$(uname -r)"   # kernel headers for kmod build
     bc                             # kernel build arithmetic
     kmod                           # insmod/rmmod for loading agfs.ko
-    pahole                         # BTF generation for kernel module
 )
 
 # ── APT packages ──────────────────────────────────────────────────────
