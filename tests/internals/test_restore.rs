@@ -122,6 +122,52 @@ fn abort_after_restore_cleans_orphans() {
     );
 }
 
+/// After a restore, newly created files must receive fresh (monotonically
+/// increasing) inode numbers — orphaned post-checkpoint inodes must never
+/// be recycled.
+#[test]
+fn restore_new_files_get_fresh_inodes() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // Create a file and checkpoint.
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    // Post-checkpoint: create another file.
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+    let inos_before = inos(&s);
+    let max_ino_before = *inos_before.last().expect("should have inodes");
+
+    // Restore — b.txt's inode becomes orphaned.
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    // Create new files after restore.
+    fs::write(s.mnt_path("c.txt"), "c\n").expect("write c");
+    fs::write(s.mnt_path("d.txt"), "d\n").expect("write d");
+
+    // Identify inodes allocated after restore.
+    let inos_after = inos(&s);
+    let fresh: Vec<u64> = inos_after
+        .iter()
+        .copied()
+        .filter(|ino| !inos_before.contains(ino))
+        .collect();
+
+    // Must have at least 2 new inodes (for c.txt and d.txt).
+    assert!(
+        fresh.len() >= 2,
+        "expected at least 2 fresh inodes, got {fresh:?}"
+    );
+
+    // Every new inode must be strictly greater than any pre-restore inode.
+    for ino in &fresh {
+        assert!(
+            *ino > max_ino_before,
+            "inode {ino} should be > {max_ino_before} (inodes must not be recycled)"
+        );
+    }
+}
+
 // ── Re-COW behavior after restore ────────────────────────────────────────
 
 /// Writing to a restored file without a new checkpoint reuses the inode.

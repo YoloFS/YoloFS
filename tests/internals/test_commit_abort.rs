@@ -169,7 +169,9 @@ fn commit_preserves_inodes_dir_inode() {
 
     s.cli(&["commit"]).expect("commit");
 
-    let ino_after = fs::metadata(&inodes_dir).expect("inodes dir should still exist").ino();
+    let ino_after = fs::metadata(&inodes_dir)
+        .expect("inodes dir should still exist")
+        .ino();
     assert_eq!(
         ino_before, ino_after,
         "inodes directory inode must be preserved across commit"
@@ -188,7 +190,9 @@ fn abort_preserves_inodes_dir_inode() {
 
     s.cli(&["abort", "--force"]).expect("abort");
 
-    let ino_after = fs::metadata(&inodes_dir).expect("inodes dir should still exist").ino();
+    let ino_after = fs::metadata(&inodes_dir)
+        .expect("inodes dir should still exist")
+        .ino();
     assert_eq!(
         ino_before, ino_after,
         "inodes directory inode must be preserved across abort"
