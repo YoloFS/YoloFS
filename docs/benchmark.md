@@ -28,17 +28,24 @@ it against alternative staging/sandboxing approaches.
 
 The suite defines multiple workloads to avoid overfitting to a single access
 pattern. Each workload is a self-contained Rust function that performs a
-specific operation on the mounted filesystem. Workloads are categorised as
-**micro** (isolate a single operation) or **macro** (real-world task).
+specific operation on the mounted filesystem. Workloads are categorised into
+three kinds:
 
-Workloads that need pre-existing files (read, stat, overwrite, rename)
-implement `populate_base()`. Each backend calls this to populate the base
-directory *before* mounting, so that operations correctly exercise copy-up /
-passthrough behaviour.
+- **Session** (`--micro` / `--macro`): measure the full staging cycle
+  (mount → work → commit). Report wall time decomposed into init, staging,
+  and commit phases. Answer: "how long does an agfs session take?"
+- **Op** (`--op`): measure per-operation throughput inside a single mounted
+  session. Report IOPS, throughput, and latency percentiles. Answer: "what
+  is the per-syscall overhead of agfs interposition?"
 
-### Microbenchmarks
+Workloads that need pre-existing files implement `populate_base()`. Each
+backend calls this to populate the base directory *before* mounting, so that
+operations correctly exercise copy-up / passthrough behaviour.
 
-Each micro workload operates on 1,000 files of 4 KiB.
+### Session microbenchmarks
+
+Each session micro workload operates on 1,000 files of 4 KiB. The runner
+measures the full lifecycle: mount → workload → commit.
 
 | Workload | Operation | What it exercises |
 |---|---|---|
@@ -48,7 +55,7 @@ Each micro workload operates on 1,000 files of 4 KiB.
 | `overwrite-files` | Overwrite 1,000 existing files | Copy-on-write / copy-up path |
 | `rename-files` | Rename 1,000 existing files | Directory ops + journal (agfs) or copy-up (overlayfs) |
 
-### Macrobenchmarks
+### Session macrobenchmarks
 
 #### Worktree (`worktree`)
 
@@ -58,6 +65,108 @@ reads thousands of objects from the base repository and writes a new working
 tree into the mount. The fixture (initial clone) is constructed once and
 reused; subsequent runs use `git worktree prune` to clean up stale entries
 before each `worktree add`.
+
+### Per-operation benchmarks
+
+Op benchmarks measure per-syscall throughput and latency inside a mounted
+session. The backend mounts once, the workload runs, and results are
+self-reported by the subprocess (IOPS, MB/s, latency percentiles). No
+init/commit timing is reported — the goal is to isolate the steady-state
+overhead of the interposition layer.
+
+#### I/O benchmarks (fio)
+
+Large-file I/O using [fio](https://github.com/axboe/fio). Each workload
+generates a jobfile, runs `fio --output-format=json`, and parses the result.
+Buffered I/O (`direct=0`) is used because agfs operates at the VFS level and
+real agent workloads use the page cache.
+
+Read workloads come in **cold** and **warm** variants. Cold drops the page
+cache via `sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'` before the run;
+warm pre-reads the file so all I/O hits the page cache. This matters because warm-cache
+reads isolate pure VFS interposition overhead, while cold-cache reads include
+actual disk I/O amplified by interposition. Writes always go to the page
+cache regardless, so they have no cold/warm split.
+
+| Workload | Operation | Cache | What it measures |
+|---|---|---|---|
+| `fio-seq-read-cold` | Sequential 4K read, 1 GB | cold | Disk read + agfs lookup overhead |
+| `fio-seq-read-warm` | Sequential 4K read, 1 GB | warm | Pure VFS interposition overhead |
+| `fio-seq-write` | Sequential 4K write, 1 GB | — | Write path + staging overhead |
+| `fio-rand-read-cold` | Random 4K read, 1 GB | cold | Random disk + agfs overhead |
+| `fio-rand-read-warm` | Random 4K read, 1 GB | warm | Random read interposition overhead |
+| `fio-rand-write` | Random 4K write, 1 GB | — | Random write + staging overhead |
+| `fio-randrw-cold` | 70/30 read/write mix, 4K, 1 GB | cold | Mixed I/O, first-access pattern |
+| `fio-randrw-warm` | 70/30 read/write mix, 4K, 1 GB | warm | Mixed I/O, steady-state |
+
+fio must be installed (`apt install fio`). If absent, fio workloads are
+skipped with a warning.
+
+#### Metadata benchmarks (custom)
+
+Small-file metadata operations, implemented in Rust. Each workload operates
+on 10,000 files, records per-operation latency, and computes IOPS and
+percentiles.
+
+Read-path metadata ops (stat, readdir) have cold/warm variants for the same
+reason as fio reads: cold stat hits disk for inode reads, warm stat is pure
+dcache/icache. Write-path ops (create, rename, unlink) are always writes and
+have no cold/warm split.
+
+| Workload | Operation | Cache | What it measures |
+|---|---|---|---|
+| `meta-create` | Create 10,000 empty files | — | File creation throughput |
+| `meta-append` | Append 4K to 10,000 files | — | Append + COW throughput |
+| `meta-stat-cold` | Stat 10,000 files | cold | Inode read from disk |
+| `meta-stat-warm` | Stat 10,000 files | warm | Dcache/icache lookup overhead |
+| `meta-readdir-cold` | Readdir (10,000 entries) | cold | Directory read from disk |
+| `meta-readdir-warm` | Readdir (10,000 entries) | warm | Cached directory listing overhead |
+| `meta-rename` | Rename 10,000 files | — | Rename + journal overhead |
+| `meta-unlink` | Unlink 10,000 files | — | Delete + journal overhead |
+
+#### Op result model
+
+Op workloads report per-operation metrics instead of wall time:
+
+```
+OpResult {
+    iops:              f64,          // operations per second
+    throughput_kbps:   Option<u64>,  // KB/s (fio workloads only)
+    lat_us_p50:        f64,          // median latency in microseconds
+    lat_us_p99:        f64,
+    lat_us_p999:       f64,
+}
+```
+
+#### Subprocess protocol for op workloads
+
+The existing subprocess protocol (print `READY`, do work, exit) is extended.
+Op workloads print a JSON results line after the work completes:
+
+```
+AGFS_BENCH_READY
+<work happens>
+AGFS_BENCH_RESULTS
+{"iops": 125000, "throughput_kbps": 500000, "lat_us_p50": 3.2, "lat_us_p99": 18.5, "lat_us_p999": 142.0}
+```
+
+The parent checks `workload.kind()`: for `Op` workloads it parses the JSON
+instead of measuring wall time.
+
+#### Visualization
+
+Op benchmarks run across all backends (native, agfs, overlayfs, branchfs).
+A per-workload timeout (default 120 s) prevents FUSE-heavy backends from
+blocking the entire suite indefinitely.
+
+Op benchmarks are rendered as bar charts with backends on the x-axis and
+IOPS on the y-axis. Native is shown as a baseline reference line. For fio
+workloads, a secondary axis shows throughput (MB/s). Latency percentiles
+(p50/p99) are shown in a table below each chart.
+
+The report index page groups results into three sections: Session Micro,
+Session Macro, and Per-Operation. Op benchmarks are included in the default
+(no-flags) run alongside session benchmarks.
 
 ---
 
@@ -162,7 +271,9 @@ Each iteration:
 
 ---
 
-## 4. Timing Model
+## 4. Measurement Models
+
+### Session workloads (micro / macro)
 
 Time is decomposed into three phases:
 
@@ -202,6 +313,28 @@ Each iteration prints its result inline:
 
 ```
     iter 1/3… 489 ms  (init 5 + stage 389 + commit 95)
+```
+
+### Op workloads (per-operation)
+
+Op workloads are **self-timing**: the subprocess measures its own metrics and
+reports them as JSON. The parent orchestrates backend setup/teardown but does
+not measure wall time.
+
+Reported metrics:
+- **IOPS** — operations per second.
+- **Throughput** (KB/s) — for I/O workloads only.
+- **Latency percentiles** — p50, p99, p99.9 in microseconds.
+
+For fio workloads, these come directly from fio's JSON output. For metadata
+workloads, the subprocess records a `Vec<Duration>` of per-op latencies and
+computes IOPS = count / total_time, with percentiles from the sorted vector.
+
+Each (workload, backend) pair is still run `--runs N` times. Mean ± stddev
+of IOPS across iterations is reported.
+
+```
+    iter 1/3… 124,502 IOPS  (p50 3.2 µs, p99 18.5 µs)
 ```
 
 ---
@@ -275,8 +408,8 @@ Each backend implements `available()`, `unavailable_reason()`, and `hidden()`.
 ### CLI
 
 ```
-agfs-bench [--workload <name>] [--backend <name>] [--runs N] [--verbose]
-           [--timestamped-results]
+agfs-bench [--workload <name>] [--backend <name>] [--micro] [--macro] [--op]
+           [--runs N] [--verbose] [--timestamped-results]
 agfs-bench rerender
 agfs-bench list
 agfs-bench profile [--workload <name>] [--scenario <name>] [--no-bpftrace]
@@ -284,6 +417,8 @@ agfs-bench exec-workload --name <name> --dest <path> [--verbose]
 ```
 
 - With no flags: runs all workloads × all available non-hidden backends.
+- `--micro` / `--macro` / `--op`: run only session micro, session macro, or
+  per-operation benchmarks respectively.
 - `--workload` / `--backend`: filter to a specific combination. `--backend`
   overrides hidden status, so `--backend try` will run `try`.
 - `--runs N`: number of timed iterations (default 3).
@@ -320,9 +455,16 @@ workloads and backends that were not part of the current run.
 An HTML report (`report-<workload>.html`) is generated per workload using the
 [`plotly`](https://crates.io/crates/plotly) crate:
 
-- Stacked bar charts: backend × (init time, staging time, commit time).
-- Native rendered as a bar and as a reference line across other backends.
-- Error bars showing total stddev across iterations.
+- **Session workloads**: stacked bar charts showing backend × (init, staging,
+  commit) time. Native rendered as a bar and as a reference line. Error bars
+  showing total stddev across iterations.
+- **Op workloads**: bar charts with backends on the x-axis and IOPS on the
+  y-axis. For fio workloads, throughput (MB/s) on a secondary axis. Latency
+  percentiles (p50/p99) in a table below each chart. Native as baseline
+  reference line.
+
+The index page groups results into three sections: Session Micro, Session
+Macro, and Per-Operation.
 
 ---
 
