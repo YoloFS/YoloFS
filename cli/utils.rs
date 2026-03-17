@@ -87,11 +87,7 @@ mod tests {
         // Ensure we start from a valid cwd (the test runner may have been
         // started from a directory that no longer exists inside the VM).
         let guard = tempfile::tempdir().unwrap();
-        // SAFETY: no other test mutates the cwd concurrently (all
-        // cwd-dependent tests are consolidated here or use _with_cwd).
-        unsafe {
-            std::env::set_current_dir(guard.path()).unwrap();
-        }
+        std::env::set_current_dir(guard.path()).unwrap();
 
         // ── Part 1: AGFS_SESSION env var takes precedence ──
         let dir = "/tmp/agfs-test-session";
@@ -109,9 +105,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let agfs_dir = tmp.path().join(".agfs");
         std::fs::create_dir(&agfs_dir).unwrap();
-        unsafe {
-            std::env::set_current_dir(tmp.path()).unwrap();
-        }
+        std::env::set_current_dir(tmp.path()).unwrap();
         let result = session_dir().unwrap();
         assert_eq!(result, agfs_dir);
     }
