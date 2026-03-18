@@ -84,14 +84,14 @@ enum Cmd {
     Rerender,
     /// List available workloads and backends
     List,
-    /// Profile a workload with bpftrace and perf (agfs backends only)
+    /// Profile a workload with perf flamegraph (and optionally bpftrace)
     Profile {
         /// Workload to profile (required)
         #[arg(long)]
         workload: String,
-        /// Scenario to profile (default: all agfs scenarios)
+        /// Backend to profile (default: agfs-no-perm + agfs-realistic)
         #[arg(long)]
-        scenario: Option<String>,
+        backend: Option<String>,
         /// Disable bpftrace op-latency histograms; only run perf for a clean flamegraph
         #[arg(long)]
         no_bpftrace: bool,
@@ -998,37 +998,37 @@ fn write_results(results: &BenchResults, out_dir: &Path) -> Result<BenchResults>
 
 // ── Profile ───────────────────────────────────────────────────────────────────
 
-fn run_profile(env: &Env, workload_name: &str, scenario_name: &str, bpftrace: bool) -> Result<()> {
+fn run_profile(env: &Env, workload_name: &str, backend_name: &str, bpftrace: bool) -> Result<()> {
     let workload = workloads::by_name(workload_name)
         .with_context(|| format!("unknown workload: {workload_name}"))?;
-
-    let no_perm = match scenario_name {
-        "agfs-no-perm" => true,
-        "agfs-realistic" => false,
-        other => bail!("unknown agfs scenario for profiling: {other}"),
-    };
+    let backend = backends::by_name(backend_name)
+        .with_context(|| format!("unknown backend: {backend_name}"))?;
+    if !backend.available() {
+        bail!(
+            "backend {backend_name} is not available: {}",
+            backend.unavailable_reason().unwrap_or("unknown")
+        );
+    }
 
     workload.ensure_fixture()?;
 
     let out_dir = results_dir(env, false)
         .join("profiling")
         .join(workload_name)
-        .join(scenario_name);
+        .join(backend_name);
 
-    let (session, dest) = backends::agfs::setup_profile_session(workload.as_ref(), no_perm)?;
-    std::fs::create_dir_all(&dest).context("creating workload dest dir")?;
-    if workload.needs_prepare_workdir() {
-        workload.prepare_workdir(&dest)?;
-    }
-    if workload.cache_mode() == workload::CacheMode::DropPageCache {
-        workloads::drop_page_cache()?;
-    }
-
-    eprintln!("Profiling {workload_name} / {scenario_name}…");
+    eprintln!("Profiling {workload_name} / {backend_name}…");
     let p = profiler::Profiler::start(&out_dir, bpftrace)?;
     let t0 = std::time::Instant::now();
-    workload.run(&dest, false)?;
-    session.commit(false)?;
+    // Run the workload repeatedly via the backend's normal run_one() path
+    // to accumulate enough perf samples for a useful flamegraph.
+    let min_profile_ms = 10000;
+    loop {
+        backend.run_one(workload.as_ref(), false)?;
+        if t0.elapsed().as_millis() as u64 >= min_profile_ms {
+            break;
+        }
+    }
     let wall_ms = t0.elapsed().as_millis() as u64;
     p.stop(wall_ms)?;
 
@@ -1140,16 +1140,16 @@ fn main() -> Result<()> {
 
     if let Some(Cmd::Profile {
         workload: wname,
-        scenario: sname,
+        backend: bname,
         no_bpftrace,
     }) = cli.cmd
     {
-        let scenarios: Vec<&str> = match sname.as_deref() {
-            Some(s) => vec![s],
+        let backends: Vec<&str> = match bname.as_deref() {
+            Some(b) => vec![b],
             None => vec!["agfs-no-perm", "agfs-realistic"],
         };
-        for sname in scenarios {
-            run_profile(&env, &wname, sname, !no_bpftrace)?;
+        for bname in backends {
+            run_profile(&env, &wname, bname, !no_bpftrace)?;
         }
         return Ok(());
     }

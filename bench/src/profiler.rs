@@ -47,21 +47,15 @@ impl Profiler {
         // prevents a race where the workload finishes before perf initialises.
         let perf_data = out_dir.join("perf.data");
         let perf = Command::new("sudo")
-            .args([
-                "perf",
-                "record",
-                "-g",
-                "-F",
-                "99",
-                "-p",
-                &std::process::id().to_string(),
-                "-o",
-            ])
+            .args(["perf", "record", "-a", "-g", "-F", "997", "-o"])
             .arg(&perf_data)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .context("spawning perf record (is perf installed?)")?;
+
+        // Give perf time to initialise before the workload starts.
+        std::thread::sleep(Duration::from_millis(300));
 
         let (bpftrace, bpf_output) = if run_bpftrace {
             let funcs = discover_agfs_funcs().context("discovering agfs kfuncs")?;
@@ -139,10 +133,12 @@ impl Profiler {
                 nix::sys::signal::Signal::SIGINT,
             );
         }
-        let _ = nix::sys::signal::kill(
-            nix::unistd::Pid::from_raw(self.perf.id() as i32),
-            nix::sys::signal::Signal::SIGINT,
-        );
+        // sudo perf runs as a child; kill the entire process group so
+        // SIGINT reaches perf underneath sudo.
+        let _ = Command::new("sudo")
+            .args(["kill", "-INT"])
+            .arg(self.perf.id().to_string())
+            .status();
         if let Some(mut bpftrace) = self.bpftrace.take() {
             bpftrace.wait().context("waiting for bpftrace")?;
         }
@@ -455,8 +451,10 @@ fn generate_flamegraph(out_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
+    // perf.data is owned by root (system-wide recording with sudo).
+    // Filter to just our process's comm name to exclude noise.
     let script = Command::new("sudo")
-        .args(["perf", "script", "-i"])
+        .args(["perf", "script", "--comms=agfs-bench", "-i"])
         .arg(&perf_data)
         .output()
         .context("running perf script")?;
