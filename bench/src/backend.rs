@@ -1,14 +1,18 @@
 // Backend trait — abstraction over staging/commit mechanisms.
 
-use crate::workload::{IterResult, Workload};
+use crate::workload::{IterResult, OpResult, Workload};
 use anyhow::{Context, Result, bail};
 use std::io::BufRead;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::Instant;
 
 /// Marker printed by `exec-workload` to stdout right before the workload runs.
 pub const READY_MARKER: &str = "AGFS_BENCH_READY";
+
+/// Marker printed by Op workloads to stdout after the workload finishes,
+/// followed by a JSON line containing the `OpResult`.
+pub const RESULTS_MARKER: &str = "AGFS_BENCH_RESULTS";
 
 /// A backend defines how writes are staged and committed.
 ///
@@ -34,6 +38,13 @@ pub trait Backend: Send + Sync {
         false
     }
 
+    /// Check whether this backend can meaningfully run the given workload.
+    /// Returns `Some(reason)` if the combination is invalid and should be
+    /// skipped, `None` if supported.
+    fn unsupported_reason(&self, _workload: &dyn Workload) -> Option<&'static str> {
+        None
+    }
+
     /// Run one timed iteration: set up, run workload, commit, tear down.
     /// Returns (timing, kernel_messages).
     fn run_one(&self, workload: &dyn Workload, verbose: bool) -> Result<(IterResult, Vec<String>)>;
@@ -46,12 +57,19 @@ pub struct SubprocessResult {
     pub startup_ms: u64,
     /// Wall time from READY marker to process exit (the workload itself).
     pub staging_ms: u64,
+    /// Self-reported op metrics, if the subprocess printed RESULTS + JSON.
+    pub op_result: Option<OpResult>,
 }
 
 /// Build the base `Command` for `exec-workload`. Backends that run the
 /// workload directly (native, agfs, branchfs) use this as-is. The `try`
 /// backend wraps it inside `try -n -D <sandbox> -- ...`.
-pub fn exec_workload_cmd(workload_name: &str, dest: &Path, verbose: bool) -> Result<Command> {
+pub fn exec_workload_cmd(
+    workload_name: &str,
+    dest: &Path,
+    verbose: bool,
+    wait_after_ready: bool,
+) -> Result<Command> {
     let self_exe = std::env::current_exe().context("resolving current executable")?;
     let mut cmd = Command::new(self_exe);
     cmd.arg("exec-workload")
@@ -62,35 +80,59 @@ pub fn exec_workload_cmd(workload_name: &str, dest: &Path, verbose: bool) -> Res
     if verbose {
         cmd.arg("--verbose");
     }
+    if wait_after_ready {
+        cmd.arg("--wait-after-ready");
+    }
     Ok(cmd)
 }
 
-/// Spawn a workload subprocess, wait for the READY marker on stdout, then
-/// wait for exit. Returns startup time (spawn → READY) and staging time
-/// (READY → exit).
+// ── Two-phase subprocess API ─────────────────────────────────────────────────
+//
+// Backends that need to do work between READY and GO (e.g. unmount+remount
+// for cold metadata benchmarks) use `spawn_and_await_ready` + `PausedSubprocess::go`.
+// Backends that just need a simple drop_caches use the convenience wrapper
+// `run_workload_subprocess`.
+
+/// A subprocess that has printed READY and is paused, waiting for the
+/// parent to send GO on stdin.
+pub struct PausedSubprocess {
+    child: Child,
+    reader: std::io::BufReader<ChildStdout>,
+    pub startup_ms: u64,
+    t0: Instant,
+}
+
+/// Spawn a workload subprocess and wait for it to print the READY marker.
 ///
-/// The caller provides a fully configured `Command` — it may be a bare
-/// `exec-workload` invocation or one wrapped by `try`.
-pub fn run_workload_subprocess(cmd: &mut Command) -> Result<SubprocessResult> {
+/// If `needs_signal` is true, stdin is piped so the caller can do work
+/// (cache drops, unmount/remount) before calling [`PausedSubprocess::go`].
+pub fn spawn_and_await_ready(cmd: &mut Command, needs_signal: bool) -> Result<PausedSubprocess> {
     cmd.stdout(Stdio::piped());
-    // stderr: leave as-is (caller may have set inherit or piped)
+    if needs_signal {
+        cmd.stdin(Stdio::piped());
+    }
 
     let t0 = Instant::now();
     let mut child = cmd.spawn().context("spawning workload subprocess")?;
 
     let stdout = child.stdout.take().unwrap();
-    let reader = std::io::BufReader::new(stdout);
+    let mut reader = std::io::BufReader::new(stdout);
 
     let mut got_ready = false;
-    for line in reader.lines() {
-        let line = line.context("reading workload subprocess stdout")?;
-        if line.trim() == READY_MARKER {
+    let mut line_buf = String::new();
+    loop {
+        line_buf.clear();
+        let n = reader
+            .read_line(&mut line_buf)
+            .context("reading workload subprocess stdout")?;
+        if n == 0 {
+            break;
+        }
+        if line_buf.trim() == READY_MARKER {
             got_ready = true;
             break;
         }
     }
-
-    let startup_ms = t0.elapsed().as_millis() as u64;
 
     if !got_ready {
         let output = child.wait_with_output()?;
@@ -98,19 +140,79 @@ pub fn run_workload_subprocess(cmd: &mut Command) -> Result<SubprocessResult> {
         bail!("workload subprocess exited without READY marker: {stderr}");
     }
 
-    let output = child
-        .wait_with_output()
-        .context("waiting for workload subprocess")?;
-    let total_ms = t0.elapsed().as_millis() as u64;
-    let staging_ms = total_ms - startup_ms;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("workload subprocess failed: {stderr}");
-    }
-
-    Ok(SubprocessResult {
+    let startup_ms = t0.elapsed().as_millis() as u64;
+    Ok(PausedSubprocess {
+        child,
+        reader,
         startup_ms,
-        staging_ms,
+        t0,
     })
+}
+
+impl PausedSubprocess {
+    /// Signal the subprocess to proceed, then wait for exit and parse results.
+    pub fn go(mut self) -> Result<SubprocessResult> {
+        if let Some(mut stdin) = self.child.stdin.take() {
+            use std::io::Write;
+            writeln!(stdin, "GO").context("signalling subprocess to proceed")?;
+        }
+
+        let mut op_result = None;
+        let mut found_results = false;
+        let mut line_buf = String::new();
+        loop {
+            line_buf.clear();
+            let n = self
+                .reader
+                .read_line(&mut line_buf)
+                .context("reading workload subprocess stdout")?;
+            if n == 0 {
+                break;
+            }
+            let trimmed = line_buf.trim();
+            if trimmed == RESULTS_MARKER {
+                found_results = true;
+                continue;
+            }
+            if found_results && op_result.is_none() {
+                op_result = Some(
+                    serde_json::from_str::<OpResult>(trimmed)
+                        .with_context(|| format!("parsing op result JSON: {trimmed}"))?,
+                );
+            }
+        }
+
+        let status = self
+            .child
+            .wait()
+            .context("waiting for workload subprocess")?;
+        let total_ms = self.t0.elapsed().as_millis() as u64;
+        let staging_ms = total_ms - self.startup_ms;
+
+        if !status.success() {
+            bail!("workload subprocess failed (exit {})", status);
+        }
+
+        Ok(SubprocessResult {
+            startup_ms: self.startup_ms,
+            staging_ms,
+            op_result,
+        })
+    }
+}
+
+/// Convenience: spawn, optionally drop page caches after READY, then finish.
+///
+/// For backends that need to do more between READY and GO (e.g. unmount +
+/// remount), use [`spawn_and_await_ready`] + [`PausedSubprocess::go`] directly.
+pub fn run_workload_subprocess(
+    cmd: &mut Command,
+    drop_caches_after_ready: bool,
+) -> Result<SubprocessResult> {
+    let sp = spawn_and_await_ready(cmd, drop_caches_after_ready)?;
+    if drop_caches_after_ready {
+        crate::workloads::drop_page_cache()
+            .context("dropping page cache after subprocess READY")?;
+    }
+    sp.go()
 }

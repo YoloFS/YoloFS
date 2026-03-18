@@ -17,6 +17,28 @@ impl WriteFiles {
     }
 }
 
+crate::workloads::define_rust_execution!(
+    fn run_write_files(dest: &Path) -> Result<()> {
+        fs::create_dir_all(dest).context("creating work dir")?;
+        let buf = vec![0u8; 4096];
+        for i in 0..1000 {
+            fs::write(dest.join(format!("file-{i:04}.dat")), &buf)
+                .with_context(|| format!("writing file-{i:04}.dat"))?;
+        }
+        Ok(())
+    } => write_files_execution
+);
+
+pub fn details() -> crate::workloads::WorkloadDetails {
+    crate::workloads::workload_details(
+        "Session microbenchmark that creates 1,000 new 4 KiB files to exercise create + write behavior through each backend.",
+        "No external fixture. The workload runs in a fresh work directory created inside the backend session.",
+        None,
+        &write_files_execution(),
+        file!(),
+    )
+}
+
 impl Workload for WriteFiles {
     fn name(&self) -> &'static str {
         "write-files"
@@ -43,12 +65,6 @@ impl Workload for WriteFiles {
     }
 
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        fs::create_dir_all(dest).context("creating work dir")?;
-        let buf = vec![0u8; 4096];
-        for i in 0..1000 {
-            fs::write(dest.join(format!("file-{i:04}.dat")), &buf)
-                .with_context(|| format!("writing file-{i:04}.dat"))?;
-        }
-        Ok(())
+        run_write_files(dest)
     }
 }

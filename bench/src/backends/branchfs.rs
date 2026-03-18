@@ -1,5 +1,5 @@
 use crate::backend::{self, Backend};
-use crate::workload::{IterResult, Workload};
+use crate::workload::{CacheMode, IterResult, Workload};
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -10,6 +10,20 @@ pub struct BranchFs;
 impl Backend for BranchFs {
     fn name(&self) -> &'static str {
         "branchfs"
+    }
+
+    fn unsupported_reason(&self, workload: &dyn Workload) -> Option<&'static str> {
+        let cold_staged_metadata = workload.name().starts_with("meta-")
+            && workload.cache_mode() == CacheMode::DropPageCache
+            && workload.needs_prepare_workdir();
+        if cold_staged_metadata {
+            Some(
+                "cold metadata on staged/checkpoint files cannot be measured on branchfs: \
+                  flushing FUSE daemon state requires unmounting, which loses branch state",
+            )
+        } else {
+            None
+        }
     }
 
     fn available(&self) -> bool {
@@ -101,14 +115,45 @@ impl Backend for BranchFs {
         // Run the workload inside the branch via subprocess.
         let dest = mnt_dir.join(workload.work_dir());
         std::fs::create_dir_all(&dest)?;
-
-        let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose)?;
+        if workload.needs_prepare_workdir() {
+            workload.prepare_workdir(&dest)?;
+        }
+        if workload.needs_checkpoint() {
+            // Checkpoint: create a nested branch parented on "bench".
+            // Files from "bench" are visible in the child but writes
+            // trigger branchfs's copy-on-write.
+            let out = Command::new("branchfs")
+                .arg("create")
+                .arg("bench-chkpt")
+                .arg(&mnt_dir)
+                .arg("--parent")
+                .arg("bench")
+                .arg("--storage")
+                .arg(&storage_dir)
+                .stdout(Stdio::null())
+                .stderr(if verbose {
+                    Stdio::inherit()
+                } else {
+                    Stdio::piped()
+                })
+                .output()
+                .context("running branchfs create for checkpoint")?;
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                unmount(&mnt_dir, &storage_dir);
+                bail!("branchfs create for checkpoint failed: {stderr}");
+            }
+        }
+        std::fs::metadata(&dest)
+            .with_context(|| format!("warming branchfs FUSE path for {}", dest.display()))?;
+        let cold = workload.cache_mode() == CacheMode::DropPageCache;
+        let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
         cmd.stderr(if verbose {
             Stdio::inherit()
         } else {
             Stdio::piped()
         });
-        let sub = match backend::run_workload_subprocess(&mut cmd) {
+        let sub = match backend::run_workload_subprocess(&mut cmd, cold) {
             Ok(r) => r,
             Err(e) => {
                 unmount(&mnt_dir, &storage_dir);
@@ -150,6 +195,7 @@ impl Backend for BranchFs {
                 staging_ms: Some(staging_ms),
                 commit_ms: Some(commit_ms),
                 total_ms: init_ms + staging_ms + commit_ms,
+                op_result: sub.op_result,
             },
             vec![],
         ))

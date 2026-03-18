@@ -11,6 +11,27 @@ use std::path::Path;
 
 pub struct OverwriteFiles;
 
+crate::workloads::define_rust_execution!(
+    fn run_overwrite_files(dest: &Path) -> Result<()> {
+        let buf = vec![0xFFu8; 4096];
+        for i in 0..1000 {
+            std::fs::write(dest.join(format!("file-{i:04}.dat")), &buf)
+                .with_context(|| format!("overwriting file-{i:04}.dat"))?;
+        }
+        Ok(())
+    } => overwrite_files_execution
+);
+
+pub fn details() -> crate::workloads::WorkloadDetails {
+    crate::workloads::workload_details(
+        "Session microbenchmark for copy-on-write / copy-up behavior on existing files.",
+        "Populates the backend base layer with 1,000 4 KiB files before timing so each write targets an existing file.",
+        None,
+        &overwrite_files_execution(),
+        file!(),
+    )
+}
+
 impl Workload for OverwriteFiles {
     fn name(&self) -> &'static str {
         "overwrite-files"
@@ -41,11 +62,6 @@ impl Workload for OverwriteFiles {
     }
 
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        let buf = vec![0xFFu8; 4096];
-        for i in 0..1000 {
-            std::fs::write(dest.join(format!("file-{i:04}.dat")), &buf)
-                .with_context(|| format!("overwriting file-{i:04}.dat"))?;
-        }
-        Ok(())
+        run_overwrite_files(dest)
     }
 }

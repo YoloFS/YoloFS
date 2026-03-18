@@ -6,6 +6,8 @@ set -euo pipefail
 info() { echo -e "\033[1;34m==>\033[0m $*"; }
 
 BENCH_PKGS=(
+    # per-operation I/O benchmarks
+    fio                        # flexible I/O tester for throughput/latency measurement
     # profiling
     "linux-tools-$(uname -r)"  # perf for flamegraph generation
     bpftrace                   # per-op latency histograms on agfs kfuncs

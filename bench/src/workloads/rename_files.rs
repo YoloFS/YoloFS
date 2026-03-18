@@ -12,6 +12,29 @@ use std::path::Path;
 
 pub struct RenameFiles;
 
+crate::workloads::define_rust_execution!(
+    fn run_rename_files(dest: &Path) -> Result<()> {
+        for i in 0..1000 {
+            std::fs::rename(
+                dest.join(format!("file-{i:04}.dat")),
+                dest.join(format!("renamed-{i:04}.dat")),
+            )
+            .with_context(|| format!("renaming file-{i:04}.dat"))?;
+        }
+        Ok(())
+    } => rename_files_execution
+);
+
+pub fn details() -> crate::workloads::WorkloadDetails {
+    crate::workloads::workload_details(
+        "Session microbenchmark for rename-heavy directory operations on existing files.",
+        "Populates the backend base layer with 1,000 4 KiB files before timing.",
+        None,
+        &rename_files_execution(),
+        file!(),
+    )
+}
+
 impl Workload for RenameFiles {
     fn name(&self) -> &'static str {
         "rename-files"
@@ -42,13 +65,6 @@ impl Workload for RenameFiles {
     }
 
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        for i in 0..1000 {
-            std::fs::rename(
-                dest.join(format!("file-{i:04}.dat")),
-                dest.join(format!("renamed-{i:04}.dat")),
-            )
-            .with_context(|| format!("renaming file-{i:04}.dat"))?;
-        }
-        Ok(())
+        run_rename_files(dest)
     }
 }

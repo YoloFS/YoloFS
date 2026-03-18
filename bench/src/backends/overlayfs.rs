@@ -1,11 +1,26 @@
 use crate::backend::{self, Backend};
-use crate::workload::{IterResult, Workload};
+use crate::workload::{CacheMode, IterResult, Workload};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
 pub struct Overlayfs;
+
+struct OverlayfsMountPaths<'a> {
+    lower: &'a std::path::Path,
+    upper: &'a std::path::Path,
+    work: &'a std::path::Path,
+    merged: &'a std::path::Path,
+}
+
+#[derive(Clone, Copy)]
+struct OverlayfsChildOpts {
+    verbose: bool,
+    prepare_only: bool,
+    inline_prepare: bool,
+    wait_after_ready: bool,
+}
 
 impl Backend for Overlayfs {
     fn name(&self) -> &'static str {
@@ -48,35 +63,57 @@ impl Backend for Overlayfs {
         std::fs::create_dir_all(&lower_work)?;
         workload.populate_base(&lower_work)?;
 
-        // Build the inner exec-workload command, then wrap it in unshare.
-        // Inside the namespace, exec-overlayfs mounts the overlay then runs
-        // the workload via the standard exec-workload protocol (READY marker).
-        let self_exe = std::env::current_exe().context("resolving current executable")?;
+        let needs_prepare = workload.needs_prepare_workdir();
+        let needs_chkpt = workload.needs_checkpoint();
 
-        let mut cmd = Command::new("unshare");
-        cmd.args(["--user", "--map-root-user", "--mount", "--"])
-            .arg(&self_exe)
-            .arg("exec-overlayfs")
-            .arg("--name")
-            .arg(workload.name())
-            .arg("--lower")
-            .arg(&lower)
-            .arg("--upper")
-            .arg(&upper)
-            .arg("--work")
-            .arg(&work)
-            .arg("--merged")
-            .arg(&merged);
-        if verbose {
-            cmd.arg("--verbose");
+        if needs_prepare && needs_chkpt {
+            // Checkpoint: prepare in a separate overlay pass, then commit
+            // to lower so files end up in a lower layer and writes trigger
+            // copy-up — same as the base path.
+            let prep_upper = root.path().join("prep-upper");
+            let prep_work = root.path().join("prep-work");
+            let prep_merged = root.path().join("prep-merged");
+            for d in [&prep_upper, &prep_work, &prep_merged] {
+                std::fs::create_dir_all(d)?;
+            }
+            run_overlayfs_child(
+                workload,
+                &OverlayfsMountPaths {
+                    lower: &lower,
+                    upper: &prep_upper,
+                    work: &prep_work,
+                    merged: &prep_merged,
+                },
+                OverlayfsChildOpts {
+                    verbose,
+                    prepare_only: true,
+                    inline_prepare: false,
+                    wait_after_ready: false,
+                },
+            )?;
+            commit_upper_to_lower(&prep_upper, &lower)?;
         }
-        cmd.stderr(if verbose {
-            Stdio::inherit()
-        } else {
-            Stdio::piped()
-        });
-
-        let result = backend::run_workload_subprocess(&mut cmd)?;
+        // For stage (non-checkpoint) workloads that need prepare_workdir,
+        // pass --inline-prepare so files are created inside the actual
+        // overlay upper layer rather than committed to lower.
+        let inline_prepare = needs_prepare && !needs_chkpt;
+        let cold = workload.cache_mode() == CacheMode::DropPageCache;
+        let mut cmd = overlayfs_child_cmd(
+            workload,
+            &OverlayfsMountPaths {
+                lower: &lower,
+                upper: &upper,
+                work: &work,
+                merged: &merged,
+            },
+            OverlayfsChildOpts {
+                verbose,
+                prepare_only: false,
+                inline_prepare,
+                wait_after_ready: cold,
+            },
+        )?;
+        let result = backend::run_workload_subprocess(&mut cmd, cold)?;
 
         // Commit: replay upper layer onto lower.
         // Regular files/dirs are copied; overlayfs whiteouts (char 0,0)
@@ -93,10 +130,75 @@ impl Backend for Overlayfs {
                 staging_ms: Some(result.staging_ms),
                 commit_ms: Some(commit_ms),
                 total_ms,
+                op_result: result.op_result,
             },
             vec![],
         ))
     }
+}
+
+fn run_overlayfs_child(
+    workload: &dyn Workload,
+    paths: &OverlayfsMountPaths<'_>,
+    opts: OverlayfsChildOpts,
+) -> Result<()> {
+    let output = overlayfs_child_cmd(workload, paths, opts)?
+        .output()
+        .context("running overlayfs helper subprocess")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "overlayfs helper failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+fn overlayfs_child_cmd(
+    workload: &dyn Workload,
+    paths: &OverlayfsMountPaths<'_>,
+    opts: OverlayfsChildOpts,
+) -> Result<Command> {
+    // Build the inner exec-workload command, then wrap it in unshare.
+    // Inside the namespace, exec-overlayfs mounts the overlay then runs
+    // the workload via the standard exec-workload protocol (READY marker).
+    let self_exe = std::env::current_exe().context("resolving current executable")?;
+
+    let mut cmd = Command::new("unshare");
+    cmd.args(["--user", "--map-root-user", "--mount", "--"])
+        .arg(&self_exe)
+        .arg("exec-overlayfs")
+        .arg("--name")
+        .arg(workload.name())
+        .arg("--lower")
+        .arg(paths.lower)
+        .arg("--upper")
+        .arg(paths.upper)
+        .arg("--work")
+        .arg(paths.work)
+        .arg("--merged")
+        .arg(paths.merged);
+    if opts.verbose {
+        cmd.arg("--verbose");
+    }
+    if opts.prepare_only {
+        cmd.arg("--prepare-only");
+    }
+    if opts.inline_prepare {
+        cmd.arg("--inline-prepare");
+    }
+    if opts.wait_after_ready {
+        cmd.arg("--wait-after-ready");
+        // For cold workloads: subprocess unmounts before READY and remounts
+        // after GO, so the overlay's kernel state is flushed during drop_caches.
+        cmd.arg("--remount-for-cold");
+    }
+    cmd.stderr(if opts.verbose {
+        Stdio::inherit()
+    } else {
+        Stdio::piped()
+    });
+    Ok(cmd)
 }
 
 /// Replay the overlayfs upper dir onto the lower dir.
