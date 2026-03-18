@@ -1,3 +1,4 @@
+pub mod checkpoint_scalability;
 pub mod fio_rand_read_cold;
 pub mod fio_rand_read_warm;
 pub mod fio_rand_write;
@@ -9,6 +10,8 @@ pub mod fio_seq_write;
 pub mod linux_untar;
 pub mod meta_append;
 pub mod meta_create;
+pub mod meta_open_cold;
+pub mod meta_open_warm;
 pub mod meta_readdir_cold;
 pub mod meta_readdir_warm;
 pub mod meta_rename;
@@ -83,6 +86,7 @@ pub fn all() -> Vec<Box<dyn Workload>> {
         Box::new(stat_files::StatFiles),
         Box::new(overwrite_files::OverwriteFiles),
         Box::new(rename_files::RenameFiles),
+        Box::new(checkpoint_scalability::CheckpointScalability),
         // macro
         Box::new(worktree::Worktree::new()),
         Box::new(linux_untar::LinuxUntar::new()),
@@ -98,6 +102,12 @@ pub fn all() -> Vec<Box<dyn Workload>> {
         Box::new(meta_create::MetaCreate),
     ];
     for w in meta_append::MetaAppend::all() {
+        v.push(Box::new(w));
+    }
+    for w in meta_open_cold::MetaOpenCold::all() {
+        v.push(Box::new(w));
+    }
+    for w in meta_open_warm::MetaOpenWarm::all() {
         v.push(Box::new(w));
     }
     for w in meta_stat_cold::MetaStatCold::all() {
@@ -169,11 +179,18 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
         "stat-files" => stat_files::details(),
         "overwrite-files" => overwrite_files::details(),
         "rename-files" => rename_files::details(),
+        "checkpoint-scalability" => checkpoint_scalability::details(),
         "worktree" => worktree::details(),
         "linux-untar" => linux_untar::details(),
         "meta-create" => meta_create::details(),
         "meta-append-base" | "meta-append-stage" | "meta-append-checkpoint" => {
             meta_append::details()
+        }
+        "meta-open-cold-base" | "meta-open-cold-stage" | "meta-open-cold-checkpoint" => {
+            meta_open_cold::details()
+        }
+        "meta-open-warm-base" | "meta-open-warm-stage" | "meta-open-warm-checkpoint" => {
+            meta_open_warm::details()
         }
         "meta-stat-cold-base" | "meta-stat-cold-stage" | "meta-stat-cold-checkpoint" => {
             meta_stat_cold::details()

@@ -194,6 +194,38 @@ workloads::define_rust_execution!(
 );
 
 workloads::define_rust_execution!(
+    fn run_meta_open_cold(dest: &Path) -> Result<()> {
+        let path = dest.join(COLD_DATA_SUBDIR).join("file-0000.dat");
+        let total = Instant::now();
+        let t0 = Instant::now();
+        let f = std::fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
+        std::hint::black_box(f);
+        let latencies = vec![t0.elapsed()];
+
+        workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
+    } => meta_open_cold_execution
+);
+
+workloads::define_rust_execution!(
+    fn run_meta_open_warm(dest: &Path) -> Result<()> {
+        workloads::warm_metadata(dest)?;
+
+        let mut latencies = Vec::with_capacity(workloads::OP_FILE_COUNT);
+        let total = Instant::now();
+        for i in 0..workloads::OP_FILE_COUNT {
+            let path = dest.join(format!("file-{i:04}.dat"));
+            let t0 = Instant::now();
+            let f = std::fs::File::open(&path)
+                .with_context(|| format!("open {}", path.display()))?;
+            std::hint::black_box(f);
+            latencies.push(t0.elapsed());
+        }
+
+        workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
+    } => meta_open_warm_execution
+);
+
+workloads::define_rust_execution!(
     fn run_meta_stat_warm(dest: &Path) -> Result<()> {
         workloads::warm_metadata(dest)?;
 

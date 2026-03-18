@@ -217,6 +217,8 @@ struct BackendResult {
     mean_write_lat_us_p99: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     repo_state: Option<RepoState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checkpoint_series: Option<crate::workload::CheckpointLatencySeries>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -535,10 +537,11 @@ fn run_backend(
     eprintln!("  backend: {}", backend.name());
 
     let mut iterations = Vec::with_capacity(runs);
+    let mut checkpoint_series_runs: Vec<crate::workload::CheckpointLatencySeries> = Vec::new();
     let mut all_kernel_msgs: Vec<String> = Vec::new();
     for i in 0..runs {
         eprint!("    iter {}/{}… ", i + 1, runs);
-        let (result, kernel_msgs) = match backend.run_one(workload, verbose) {
+        let (mut result, kernel_msgs) = match backend.run_one(workload, verbose) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("failed: {e:#}");
@@ -567,6 +570,9 @@ fn run_backend(
         }
         if !kernel_msgs.is_empty() || verbose {
             all_kernel_msgs.extend(kernel_msgs);
+        }
+        if let Some(series) = result.checkpoint_series.take() {
+            checkpoint_series_runs.push(series);
         }
         iterations.push(result);
     }
@@ -608,7 +614,55 @@ fn run_backend(
         mean_write_lat_us_p50: None,
         mean_write_lat_us_p99: None,
         repo_state: repo_state.clone(),
+        checkpoint_series: aggregate_checkpoint_series(&checkpoint_series_runs),
     })
+}
+
+fn aggregate_checkpoint_series(
+    runs: &[crate::workload::CheckpointLatencySeries],
+) -> Option<crate::workload::CheckpointLatencySeries> {
+    let first = runs.first()?;
+    if first.points.is_empty() {
+        return None;
+    }
+    let len = first.points.len();
+    if runs.iter().any(|s| s.points.len() != len) {
+        return None;
+    }
+    for idx in 0..len {
+        let checkpoint = first.points[idx].checkpoint;
+        if runs.iter().any(|s| s.points[idx].checkpoint != checkpoint) {
+            return None;
+        }
+    }
+
+    let n = runs.len() as f64;
+    let mut points = Vec::with_capacity(len);
+    for idx in 0..len {
+        let checkpoint = first.points[idx].checkpoint;
+        let mean = |f: fn(&crate::workload::CheckpointLatencyPoint) -> f64| -> f64 {
+            runs.iter().map(|s| f(&s.points[idx])).sum::<f64>() / n
+        };
+        let mean_ms = |f: fn(&crate::workload::CheckpointLatencyPoint) -> u64| -> u64 {
+            (runs.iter().map(|s| f(&s.points[idx]) as f64).sum::<f64>() / n) as u64
+        };
+        let mean_count = |f: fn(&crate::workload::CheckpointLatencyPoint) -> usize| -> usize {
+            (runs.iter().map(|s| f(&s.points[idx]) as f64).sum::<f64>() / n) as usize
+        };
+        points.push(crate::workload::CheckpointLatencyPoint {
+            checkpoint,
+            stat_avg_lat_us: mean(|p| p.stat_avg_lat_us),
+            readdir_avg_lat_us: mean(|p| p.readdir_avg_lat_us),
+            unlink_avg_lat_us: mean(|p| p.unlink_avg_lat_us),
+            read_avg_lat_us: mean(|p| p.read_avg_lat_us),
+            create_avg_lat_us: mean(|p| p.create_avg_lat_us),
+            overwrite_avg_lat_us: mean(|p| p.overwrite_avg_lat_us),
+            file_count: mean_count(|p| p.file_count),
+            checkpoint_ms: mean_ms(|p| p.checkpoint_ms),
+        });
+    }
+
+    Some(crate::workload::CheckpointLatencySeries { points })
 }
 
 fn run_backend_op(
@@ -765,6 +819,7 @@ fn run_backend_op(
         mean_write_lat_us_p50,
         mean_write_lat_us_p99,
         repo_state: repo_state.clone(),
+        checkpoint_series: None,
     })
 }
 

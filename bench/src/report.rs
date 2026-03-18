@@ -54,12 +54,96 @@ fn render_workload(
     out_dir: &Path,
     current_repo_state: Option<&RepoState>,
 ) -> Result<()> {
+    let has_checkpoint_series = wl.backends.iter().any(|b| b.checkpoint_series.is_some());
+    if has_checkpoint_series {
+        return render_checkpoint_scalability_workload(wl, out_dir, current_repo_state);
+    }
     let is_op = wl.backends.iter().any(|b| b.mean_iops.is_some());
     if is_op {
         render_op_workload(wl, out_dir, current_repo_state)
     } else {
         render_session_workload(wl, out_dir, current_repo_state)
     }
+}
+
+fn render_checkpoint_scalability_workload(
+    wl: &WorkloadResult,
+    out_dir: &Path,
+    current_repo_state: Option<&RepoState>,
+) -> Result<()> {
+    type OpLatFn = fn(&crate::workload::CheckpointLatencyPoint) -> f64;
+    let order = backends::display_order();
+    let mut sorted = wl.backends.clone();
+    sorted.retain(|b| report_backend_visible(&b.backend));
+    sorted.sort_by_key(|b| {
+        order
+            .iter()
+            .position(|&name| name == b.backend)
+            .unwrap_or(usize::MAX)
+    });
+
+    let op_defs: [(&str, OpLatFn); 6] = [
+        ("stat", |p| p.stat_avg_lat_us),
+        ("readdir", |p| p.readdir_avg_lat_us),
+        ("unlink", |p| p.unlink_avg_lat_us),
+        ("read", |p| p.read_avg_lat_us),
+        ("create", |p| p.create_avg_lat_us),
+        ("overwrite", |p| p.overwrite_avg_lat_us),
+    ];
+
+    for (op_name, get_lat) in &op_defs {
+        let mut plot = Plot::new();
+        for b in &sorted {
+            let Some(series) = &b.checkpoint_series else {
+                continue;
+            };
+            let xs: Vec<u32> = series.points.iter().map(|p| p.checkpoint).collect();
+            let ys: Vec<f64> = series.points.iter().map(get_lat).collect();
+            plot.add_trace(
+                Scatter::new(xs.clone(), ys)
+                    .mode(Mode::LinesMarkers)
+                    .name(b.backend.clone()),
+            );
+        }
+        let layout = Layout::new()
+            .title(Title::with_text(format!("{} - {}", wl.workload, op_name)))
+            .x_axis(Axis::new().title(Title::with_text("checkpoint number")))
+            .y_axis(Axis::new().title(Title::with_text("avg latency per op (us)")))
+            .show_legend(true);
+        plot.set_layout(layout);
+        plot.set_configuration(Configuration::new().responsive(true).fill_frame(true));
+
+        let op_html_path = out_dir.join(format!("report-{}-{}.html", wl.workload, op_name));
+        std::fs::write(&op_html_path, plot.to_html())
+            .with_context(|| format!("writing {}", op_html_path.display()))?;
+    }
+
+    let html_path = out_dir.join(format!("report-{}.html", wl.workload));
+    let status = workload_staleness(wl, current_repo_state);
+    let mut full_html = String::new();
+    full_html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\">");
+    full_html.push_str(&format!("<title>{}</title>", escape_html(&wl.workload)));
+    full_html.push_str(
+        "<style>body{font-family:system-ui,sans-serif;margin:1em;background:#fafafa}h1{font-size:1.15em}p{color:#555}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:1em}iframe{width:100%;height:420px;border:1px solid #ddd;border-radius:4px;background:#fff}</style>",
+    );
+    full_html.push_str("</head><body>");
+    full_html.push_str(&format!("<h1>{}</h1>", escape_html(&wl.workload)));
+    full_html.push_str(
+        "<p>Checkpoint scalability facets: one line plot per operation (lines = backends).</p>",
+    );
+    full_html.push_str("<div class=\"grid\">");
+    for (op_name, _) in &op_defs {
+        full_html.push_str(&format!(
+            "<iframe src=\"report-{}-{}.html\"></iframe>",
+            wl.workload, op_name
+        ));
+    }
+    full_html.push_str("</div></body></html>");
+    full_html = inject_workload_status(full_html, &status);
+    std::fs::write(&html_path, full_html)
+        .with_context(|| format!("writing {}", html_path.display()))?;
+    eprintln!("Report written to {}", html_path.display());
+    Ok(())
 }
 
 fn render_session_workload(

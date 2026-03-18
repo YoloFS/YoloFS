@@ -48,6 +48,7 @@ impl Backend for Native {
                 commit_ms: None,
                 total_ms: result.staging_ms,
                 op_result: result.op_result,
+                checkpoint_series: result.checkpoint_series,
             },
             vec![],
         ))

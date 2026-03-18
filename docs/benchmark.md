@@ -36,7 +36,9 @@ report into three families:
   sections: **Big file data operations** (`fio-*`) and **Small file metadata
   operations** (`meta-*`).
 - **Session micro-benchmark** (`--micro`): full staging lifecycle for small,
-  single-kind operations. Reports init, staging (run), and commit time.
+  single-kind operations. Reports init, staging (run), and commit time. This
+  family now includes both one-shot micro workloads and checkpoint-scalability
+  workloads.
 - **Session macro-benchmark** (`--macro`): full staging lifecycle for larger,
   realistic tasks.
 
@@ -62,6 +64,65 @@ measures the full lifecycle: mount → workload → commit.
 | `stat-files` | Stat 1,000 existing files | Metadata / permission check overhead |
 | `overwrite-files` | Overwrite 1,000 existing files | Copy-on-write / copy-up path |
 | `rename-files` | Rename 1,000 existing files | Directory ops + journal (agfs) or copy-up (overlayfs) |
+
+#### Checkpoint scalability session benchmarks
+
+This benchmark line measures how operation latency evolves as checkpoint depth
+grows within one session. The goal is to answer: "does lookup/COW/journal cost
+drift as the number of checkpoints increases?"
+
+High-level loop for one timed run:
+
+1. Start a fresh mounted session with an initial working set.
+2. For checkpoint index `k = 1..K`:
+   - run a fixed operation batch,
+   - record operation latencies for that batch,
+   - take a checkpoint,
+   - carry resulting filesystem state into the next `k`.
+
+Candidate operation batches per checkpoint:
+
+- `stat` over existing files,
+- `readdir` over existing directories,
+- `unlink` on a slice of existing files,
+- `read` on existing files,
+- `create` on new files,
+- `overwrite` on existing files.
+
+Default per-checkpoint sample counts for this family:
+
+- `readdir`: 1 operation per checkpoint step,
+- all other operations listed above: 10 operations per checkpoint step.
+
+Checkpoint depth is configurable via `AGFS_BENCH_CHECKPOINT_STEPS` (default:
+`100`).
+
+To avoid a shrinking or steady-state-only dataset, the benchmark enforces a
+net growth policy: each checkpoint step must add more files than it removes.
+For example, if a step unlinks `N`, it creates at least `N + delta` new files.
+This keeps inode and directory population increasing with checkpoint number and
+prevents late checkpoints from becoming trivially small.
+
+Reported outputs should include:
+
+- per-checkpoint latency statistics (mean/p50/p99) for each operation batch,
+- optional throughput per checkpoint,
+- visualization axes: x = checkpoint number (`k`), y = average latency per
+  operation (microseconds),
+- visualization style: faceted multiline line plots (one facet per operation,
+  one line per backend within each facet),
+- final file-count trajectory to verify the growth invariant held.
+
+Design notes:
+
+- Keep cache policy explicit (separate warm and cold variants where relevant).
+- Use one shared implementation parameterized by operation mix and growth
+  policy; avoid duplicating workload bodies per operation.
+- For comparability, fix batch sizes per checkpoint and checkpoint count `K`
+  per workload profile.
+- Checkpoint creation time itself should be recorded as its own series in
+  addition to operation latency, so operation drift and checkpoint drift are
+  separable.
 
 ### Session macro-benchmarks
 
@@ -224,6 +285,7 @@ body for every `cache × source` combination.
 |---|---|---|---|
 | `meta-create` | Create 10,000 empty files | — | File creation throughput |
 | `meta-append-{base,stage,checkpoint}` | Append 4K to 10,000 files | — | Append + COW throughput on base vs stage vs checkpoint files |
+| `meta-open-{cold,warm}-{base,stage,checkpoint}` | Open 10,000 files (`File::open`) | cold / warm | Open-path lookup and inode/dentry resolution overhead across source layers |
 | `meta-stat-{cold,warm}-{base,stage,checkpoint}` | Stat 10,000 files | cold / warm | Inode lookup from disk vs cache, across all source layers |
 | `meta-readdir-{cold,warm}-{base,stage,checkpoint}` | Readdir 1,000 dirs × 10 files | cold / warm | Directory enumeration across all source layers |
 | `meta-rename-{base,stage,checkpoint}` | Rename 10,000 files | — | Rename + journal overhead across all source layers |

@@ -191,6 +191,7 @@ fn run_agfs_iteration(
             commit_ms: Some(commit_ms),
             total_ms: init_ms + result.staging_ms + commit_ms,
             op_result: result.op_result,
+            checkpoint_series: result.checkpoint_series,
         },
         vec![],
     ))
@@ -336,6 +337,7 @@ impl Backend for AgfsRealistic {
                 commit_ms: Some(commit_ms),
                 total_ms: init_ms + result.staging_ms + commit_ms,
                 op_result: result.op_result,
+                checkpoint_series: result.checkpoint_series,
             },
             vec![],
         ))

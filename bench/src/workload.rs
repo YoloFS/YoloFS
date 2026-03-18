@@ -21,6 +21,27 @@ pub struct IterResult {
     pub total_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub op_result: Option<OpResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_series: Option<CheckpointLatencySeries>,
+}
+
+/// Per-checkpoint latency samples for checkpoint-scalability session workloads.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CheckpointLatencySeries {
+    pub points: Vec<CheckpointLatencyPoint>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CheckpointLatencyPoint {
+    pub checkpoint: u32,
+    pub stat_avg_lat_us: f64,
+    pub readdir_avg_lat_us: f64,
+    pub unlink_avg_lat_us: f64,
+    pub read_avg_lat_us: f64,
+    pub create_avg_lat_us: f64,
+    pub overwrite_avg_lat_us: f64,
+    pub file_count: usize,
+    pub checkpoint_ms: u64,
 }
 
 /// Per-operation metrics reported by Op workloads.

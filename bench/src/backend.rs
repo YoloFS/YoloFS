@@ -1,6 +1,6 @@
 // Backend trait — abstraction over staging/commit mechanisms.
 
-use crate::workload::{IterResult, OpResult, Workload};
+use crate::workload::{CheckpointLatencySeries, IterResult, OpResult, Workload};
 use anyhow::{Context, Result, bail};
 use std::io::BufRead;
 use std::path::Path;
@@ -59,6 +59,8 @@ pub struct SubprocessResult {
     pub staging_ms: u64,
     /// Self-reported op metrics, if the subprocess printed RESULTS + JSON.
     pub op_result: Option<OpResult>,
+    /// Self-reported checkpoint-series metrics for checkpoint-scalability workloads.
+    pub checkpoint_series: Option<CheckpointLatencySeries>,
 }
 
 /// Build the base `Command` for `exec-workload`. Backends that run the
@@ -158,6 +160,7 @@ impl PausedSubprocess {
         }
 
         let mut op_result = None;
+        let mut checkpoint_series = None;
         let mut found_results = false;
         let mut line_buf = String::new();
         loop {
@@ -175,10 +178,14 @@ impl PausedSubprocess {
                 continue;
             }
             if found_results && op_result.is_none() {
-                op_result = Some(
-                    serde_json::from_str::<OpResult>(trimmed)
-                        .with_context(|| format!("parsing op result JSON: {trimmed}"))?,
-                );
+                if let Ok(op) = serde_json::from_str::<OpResult>(trimmed) {
+                    op_result = Some(op);
+                } else if let Ok(series) = serde_json::from_str::<CheckpointLatencySeries>(trimmed)
+                {
+                    checkpoint_series = Some(series);
+                } else {
+                    bail!("parsing workload result JSON failed: {trimmed}");
+                }
             }
         }
 
@@ -197,6 +204,7 @@ impl PausedSubprocess {
             startup_ms: self.startup_ms,
             staging_ms,
             op_result,
+            checkpoint_series,
         })
     }
 }

@@ -196,6 +196,7 @@ impl Backend for BranchFs {
                 commit_ms: Some(commit_ms),
                 total_ms: init_ms + staging_ms + commit_ms,
                 op_result: sub.op_result,
+                checkpoint_series: sub.checkpoint_series,
             },
             vec![],
         ))

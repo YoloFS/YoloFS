@@ -102,6 +102,7 @@ impl Backend for Try {
                 commit_ms: Some(commit_ms),
                 total_ms,
                 op_result: result.op_result,
+                checkpoint_series: result.checkpoint_series,
             },
             vec![],
         ))
