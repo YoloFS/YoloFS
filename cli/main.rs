@@ -142,7 +142,7 @@ fn run_cli() -> anyhow::Result<u8> {
         Some(Command::Load) => kmod::load()?,
         Some(Command::Unload) => kmod::unload()?,
         Some(Command::Reload) => kmod::reload()?,
-        Some(Command::Init) => config::init()?,
+        Some(Command::Init) => config::init(&std::env::current_dir()?)?,
         Some(Command::Mount) => mount::mount()?,
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,

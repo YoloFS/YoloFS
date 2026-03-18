@@ -197,8 +197,8 @@ pub fn load_config() -> Config {
 }
 
 /// Create agfs.toml with default config if it doesn't exist.
-pub fn init() -> Result<()> {
-    let cp = config_path()?;
+pub fn init(dir: &Path) -> Result<()> {
+    let cp = dir.join("agfs.toml");
     if cp.exists() {
         eprintln!("{}", "agfs.toml already exists".yellow());
     } else {
@@ -531,11 +531,7 @@ mod tests {
     #[test]
     fn init_creates_config() {
         let tmp = tempfile::tempdir().unwrap();
-        // Run init from within the temp dir
-        let prev = env::current_dir().unwrap();
-        env::set_current_dir(tmp.path()).unwrap();
-        super::init().unwrap();
-        env::set_current_dir(&prev).unwrap();
+        super::init(tmp.path()).unwrap();
 
         let path = tmp.path().join("agfs.toml");
         assert!(path.exists(), "agfs.toml should be created");
@@ -553,10 +549,7 @@ mod tests {
         let path = tmp.path().join("agfs.toml");
         fs::write(&path, "permission = false\nstaging = false\n").unwrap();
 
-        let prev = env::current_dir().unwrap();
-        env::set_current_dir(tmp.path()).unwrap();
-        super::init().unwrap();
-        env::set_current_dir(&prev).unwrap();
+        super::init(tmp.path()).unwrap();
 
         let config = Config::load(&path).unwrap();
         assert!(
