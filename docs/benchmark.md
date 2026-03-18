@@ -41,6 +41,12 @@ three kinds:
 Workloads that need pre-existing files implement `populate_base()`. Each
 backend calls this to populate the base directory *before* mounting, so that
 operations correctly exercise copy-up / passthrough behaviour.
+Workload-specific report metadata lives beside each workload implementation,
+and the report source path is derived from Rust's `file!()` macro rather than
+hand-maintained path strings. For Rust-driven workloads, the report execution
+snippet is captured from the same `macro_rules!` input that defines the actual
+execution function body, so the displayed code stays mechanically aligned with
+what `run()` really calls.
 
 ### Session microbenchmarks
 
@@ -79,50 +85,133 @@ overhead of the interposition layer.
 Large-file I/O using [fio](https://github.com/axboe/fio). Each workload
 generates a jobfile, runs `fio --output-format=json`, and parses the result.
 Buffered I/O (`direct=0`) is used because agfs operates at the VFS level and
-real agent workloads use the page cache.
+real agent workloads use the page cache. The generated fio jobfiles set
+`invalidate=0` so fio does not discard the page cache on open. Read-style fio
+workloads that need a pre-existing file create the 1 GiB backing file inside
+the mounted sandbox before the timed run. Cold variants then have the backend
+drop page cache *after* that sandbox-local file is prepared and *before* fio
+starts, so the cold transition is controlled by the harness rather than by fio
+invalidating an already-open file. Each fio workload uses a 1 GiB backing file
+but performs 256 MiB of total I/O so cold random-read runs finish in roughly
+10 seconds on the slowest backends while still exercising a large working set.
+Seeded fio workloads create that file inside the mounted sandbox with a
+deterministic non-zero byte pattern rather than a zero-filled image.
 
-Read workloads come in **cold** and **warm** variants. Cold drops the page
-cache via `sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'` before the run;
-warm pre-reads the file so all I/O hits the page cache. This matters because warm-cache
-reads isolate pure VFS interposition overhead, while cold-cache reads include
-actual disk I/O amplified by interposition. Writes always go to the page
-cache regardless, so they have no cold/warm split.
+Read workloads come in **cold** and **warm** variants. Cold drops page cache
+from the parent process after the sandbox-local backing file has been created
+and before fio starts. Warm pre-reads the file so all I/O hits the page cache.
+This matters because warm-cache reads isolate pure VFS interposition overhead,
+while cold-cache reads include actual disk I/O amplified by interposition.
+Writes always go to the page cache regardless, so they have no cold/warm
+split.
 
 | Workload | Operation | Cache | What it measures |
 |---|---|---|---|
-| `fio-seq-read-cold` | Sequential 4K read, 1 GB | cold | Disk read + agfs lookup overhead |
-| `fio-seq-read-warm` | Sequential 4K read, 1 GB | warm | Pure VFS interposition overhead |
-| `fio-seq-write` | Sequential 4K write, 1 GB | — | Write path + staging overhead |
-| `fio-rand-read-cold` | Random 4K read, 1 GB | cold | Random disk + agfs overhead |
-| `fio-rand-read-warm` | Random 4K read, 1 GB | warm | Random read interposition overhead |
-| `fio-rand-write` | Random 4K write, 1 GB | — | Random write + staging overhead |
-| `fio-randrw-cold` | 70/30 read/write mix, 4K, 1 GB | cold | Mixed I/O, first-access pattern |
-| `fio-randrw-warm` | 70/30 read/write mix, 4K, 1 GB | warm | Mixed I/O, steady-state |
+| `fio-seq-read-cold` | Sequential 4K read, 256 MiB over a 1 GiB file | cold | Disk read + agfs lookup overhead |
+| `fio-seq-read-warm` | Sequential 4K read, 256 MiB over a 1 GiB file | warm | Pure VFS interposition overhead |
+| `fio-seq-write` | Sequential 4K write, 256 MiB over a 1 GiB file | — | Write path + staging overhead |
+| `fio-rand-read-cold` | Random 4K read, 256 MiB over a 1 GiB file | cold | Random disk + agfs overhead |
+| `fio-rand-read-warm` | Random 4K read, 256 MiB over a 1 GiB file | warm | Random read interposition overhead |
+| `fio-rand-write` | Random 4K write, 256 MiB over a 1 GiB file | — | Random write + staging overhead |
+| `fio-randrw-cold` | 70/30 read/write mix, 4K, 256 MiB over a 1 GiB file | cold | Mixed I/O, first-access pattern |
+| `fio-randrw-warm` | 70/30 read/write mix, 4K, 256 MiB over a 1 GiB file | warm | Mixed I/O, steady-state |
 
 fio must be installed (`apt install fio`). If absent, fio workloads are
 skipped with a warning.
 
 #### Metadata benchmarks (custom)
 
-Small-file metadata operations, implemented in Rust. Each workload operates
-on 10,000 files, records per-operation latency, and computes IOPS and
-percentiles.
+Small-file metadata operations, implemented in Rust. Most workloads operate on
+10,000 files, record per-operation latency, and compute IOPS and percentiles.
+The readdir workloads instead enumerate 1,000 directories with 10 files each
+and record one latency sample per directory enumeration.
 
 Read-path metadata ops (stat, readdir) have cold/warm variants for the same
 reason as fio reads: cold stat hits disk for inode reads, warm stat is pure
 dcache/icache. Write-path ops (create, rename, unlink) are always writes and
 have no cold/warm split.
 
+For **cold** metadata variants, a timed iteration should measure a single cold
+operation, not an average over a long sequence of accesses. Averaging many
+"cold" operations inside one run quickly turns the measurement into a mixed
+cold+warm result because dentries, inodes, and small directories become cached
+after the first accesses. Repeated benchmark iterations should provide the
+sample set for cold metadata latency, while warm metadata variants may still
+batch many operations inside one timed run.
+
+Metadata benchmarks also need to distinguish **where the target files live**:
+
+- **base**: the files or directories already exist in the underlying/base
+  layer before the backend mount or branch is created
+- **stage**: the files or directories are created inside the mounted staging
+  view before the timed workload starts
+- **checkpoint**: the files are created inside the mounted staging view,
+  then a checkpoint is taken before the timed workload starts. The files
+  exist in the staging layer but belong to a previous checkpoint, so
+  modifications trigger re-COW / copy-up from the checkpointed state.
+
+This distinction matters because operations on base-layer objects exercise
+lookup passthrough and copy-up behavior, operations on stage-local objects
+exercise the already-staged fast path, and operations on checkpoint-layer
+objects exercise the re-COW path where the source is a previously staged
+inode rather than the lower filesystem. For metadata-heavy operations such as
+`stat`, `readdir`, `append`, `rename`, and `unlink`, the benchmark matrix
+should cover `base`, `stage`, and `checkpoint` source variants.
+
+##### Checkpoint mechanics per backend
+
+Each backend implements the checkpoint variant differently:
+
+- **agfs**: The agfs config used by the benchmark sets `checkpoint: false`
+  to disable auto-checkpointing. For checkpoint variants, the backend
+  explicitly calls `agfs checkpoint` after `prepare_workdir()` and before
+  the timed run. This increments `sbi->checkpoint_gen` in the kernel so
+  that subsequent opens of the prepared files trigger re-COW via
+  `agfs_do_cow`.
+- **overlayfs**: The backend unmounts after `prepare_workdir()`, then
+  remounts with the old upper directory demoted to an additional lower
+  layer and a fresh upper directory. overlayfs supports multiple stacked
+  lower directories, so the checkpointed files now live in a lower layer
+  and writes trigger copy-up just as they would for base-layer files.
+- **branchfs**: After `prepare_workdir()`, the backend creates a nested
+  branch (`branchfs create bench2 <mnt>`). Files from the parent branch
+  are visible in the nested branch but modifications trigger branchfs's
+  copy-on-write.
+- **native**: No layering concept. The checkpoint variant runs the same as
+  stage — files are ordinary files on disk. This serves as a control to
+  confirm that checkpoint overhead is zero without interposition.
+
+The workload code should treat `cache` and `source` as two orthogonal axes:
+
+- `cache`: `cold` or `warm`
+- `source`: `base`, `stage`, or `checkpoint`
+
+Each operation should have one shared implementation parameterized by those
+axes, with thin workload wrappers providing the concrete CLI name and report
+metadata. The shared implementation should split responsibility as follows:
+
+- `populate_base()`: create fixtures only for `source=base`
+- `prepare_workdir()`: create fixtures for `source=stage` and
+  `source=checkpoint` (both need files inside the mounted view)
+- `needs_checkpoint()`: return true only for `source=checkpoint`; the
+  backend calls this to decide whether to take a checkpoint between
+  `prepare_workdir()` and the timed run
+- `cache_mode()`: request page-cache dropping only for `cache=cold`
+- `run()`: perform any warm-up pass only for `cache=warm`, then execute the
+  timed operation. For `cache=cold`, the timed body should contain exactly
+  one cold metadata operation per iteration.
+
+This keeps the benchmark matrix explicit without duplicating the full workload
+body for every `cache × source` combination.
+
 | Workload | Operation | Cache | What it measures |
 |---|---|---|---|
 | `meta-create` | Create 10,000 empty files | — | File creation throughput |
-| `meta-append` | Append 4K to 10,000 files | — | Append + COW throughput |
-| `meta-stat-cold` | Stat 10,000 files | cold | Inode read from disk |
-| `meta-stat-warm` | Stat 10,000 files | warm | Dcache/icache lookup overhead |
-| `meta-readdir-cold` | Readdir (10,000 entries) | cold | Directory read from disk |
-| `meta-readdir-warm` | Readdir (10,000 entries) | warm | Cached directory listing overhead |
-| `meta-rename` | Rename 10,000 files | — | Rename + journal overhead |
-| `meta-unlink` | Unlink 10,000 files | — | Delete + journal overhead |
+| `meta-append-{base,stage,checkpoint}` | Append 4K to 10,000 files | — | Append + COW throughput on base vs stage vs checkpoint files |
+| `meta-stat-{cold,warm}-{base,stage,checkpoint}` | Stat 10,000 files | cold / warm | Inode lookup from disk vs cache, across all source layers |
+| `meta-readdir-{cold,warm}-{base,stage,checkpoint}` | Readdir 1,000 dirs × 10 files | cold / warm | Directory enumeration across all source layers |
+| `meta-rename-{base,stage,checkpoint}` | Rename 10,000 files | — | Rename + journal overhead across all source layers |
+| `meta-unlink-{base,stage,checkpoint}` | Unlink 10,000 files | — | Delete + journal overhead across all source layers |
 
 #### Op result model
 
@@ -135,6 +224,8 @@ OpResult {
     lat_us_p50:        f64,          // median latency in microseconds
     lat_us_p99:        f64,
     lat_us_p999:       f64,
+    read_avg_lat_us:   Option<f64>,  // mixed fio only
+    write_avg_lat_us:  Option<f64>,  // mixed fio only
 }
 ```
 
@@ -159,14 +250,57 @@ Op benchmarks run across all backends (native, agfs, overlayfs, branchfs).
 A per-workload timeout (default 120 s) prevents FUSE-heavy backends from
 blocking the entire suite indefinitely.
 
+The branchfs backend performs one untimed `stat` on the workload directory
+after mount/branch creation and before the timed workload starts. This absorbs
+first-request FUSE/daemon startup overhead without warming file contents or
+polluting the page-cache behavior of read benchmarks.
+
 Op benchmarks are rendered as bar charts with backends on the x-axis and
-IOPS on the y-axis. Native is shown as a baseline reference line. For fio
-workloads, a secondary axis shows throughput (MB/s). Latency percentiles
-(p50/p99) are shown in a table below each chart.
+IOPS on the y-axis. Native is shown as a baseline reference line. Bars are
+colored by backend.
+
+For workloads with source variants (base/stage/checkpoint), each backend
+has grouped bars — one per source variant — distinguished by **fill
+pattern**: solid fill for base, diagonal stripes for stage, crosshatch for
+checkpoint. The legend shows the three patterns. This keeps the backend
+color encoding intact while adding the source dimension without extra
+charts. Workloads without source variants (e.g. `meta-create`, fio
+workloads) use plain solid bars as before.
+
+Cold and warm cache variants are rendered as **separate charts** because
+they measure fundamentally different things (disk I/O vs cache hits) and
+have different y-axis scales. The charts are placed adjacent to each other
+in the report grid for easy visual comparison.
+
+For mixed fio workloads, the chart shows separate read and write average
+latencies per backend using filled vs outlined bars. Latency percentiles
+(p50/p99) are shown in a table below each chart, along with average latency
+and throughput for fio workloads.
+If one backend is an extreme outlier relative to native, the report keeps a
+single chart but visually caps that bar, gives it a distinct appearance, and
+labels it with how many times larger it is than the native baseline. This
+keeps the normal backends readable without hiding the outlier.
 
 The report index page groups results into three sections: Session Micro,
 Session Macro, and Per-Operation. Op benchmarks are included in the default
 (no-flags) run alongside session benchmarks.
+
+For long-running sweeps, `agfs-bench --skip-complete --runs N` resumes from
+the current `results.json`: any `(workload, backend)` pair that already has
+exactly `N` timed iterations recorded is skipped, while missing or partially
+recorded pairs are still executed and merged back into the report.
+
+`agfs-bench` must be run from a release build. The binary exits immediately
+when compiled with debug assertions so benchmark numbers do not come from an
+unoptimized runner.
+
+Each recorded backend result also stores the repository commit plus whether
+`cli/` and `kmod/` were dirty at run time. The HTML report compares those
+recorded states against the current checkout and marks each workload as fresh
+or stale. A plain `HEAD` change does not make a result stale by itself: the
+report asks git whether `cli/` or `kmod/` actually differ between the recorded
+commit and the current one, and also tracks `cli/` / `kmod/` dirty/clean
+transitions.
 
 ---
 
@@ -202,6 +336,13 @@ level of gating:
 
 `agfs-allow-all` is the practical floor for a useful agfs configuration.
 `native` is the absolute floor.
+
+Both agfs backend configurations set `checkpoint: false` in the generated
+`agfs.toml` to prevent `agfs exec` from auto-checkpointing. For workloads
+that need a checkpoint (the `source=checkpoint` metadata variants), the
+backend explicitly calls `agfs checkpoint` between `prepare_workdir()` and
+the timed run, giving the harness full control over when `checkpoint_gen`
+is incremented.
 
 ### overlayfs
 
@@ -382,10 +523,25 @@ bench/src/
     try_backend.rs — try shell wrapper (hidden)
     branchfs.rs
   workload.rs      — Workload trait + IterResult
-  workloads/       — one file per workload
+  workloads/
+    mod.rs         — registry + shared helpers for op workloads
+    <name>.rs      — one file per workload
   profiler.rs      — bpftrace + perf flamegraph
   report.rs        — plotly HTML report
 ```
+
+Op workloads share helper code in `workloads/mod.rs` for:
+
+- emitting the `AGFS_BENCH_RESULTS` JSON line,
+- computing latency percentiles from per-operation samples,
+- dropping or warming caches for cold/warm read-path benchmarks,
+- generating fio jobfiles from a small set of parameters.
+
+The individual workload files stay thin wrappers around those helpers so the
+benchmark matrix can grow without duplicating the same measurement code in
+every file. Workload-specific report metadata (summary, fixture notes, exact
+fio spec display, etc.) lives alongside the workload implementation in each
+`workloads/<name>.rs` file rather than in one central registry blob.
 
 ### Backend availability and visibility
 
@@ -408,7 +564,8 @@ Each backend implements `available()`, `unavailable_reason()`, and `hidden()`.
 ### CLI
 
 ```
-agfs-bench [--workload <name>] [--backend <name>] [--micro] [--macro] [--op]
+agfs-bench [--workload <name> ...] [--backend <name>] [--micro] [--macro] [--op]
+           [--op-group <meta|fio>]
            [--runs N] [--verbose] [--timestamped-results]
 agfs-bench rerender
 agfs-bench list
@@ -419,8 +576,11 @@ agfs-bench exec-workload --name <name> --dest <path> [--verbose]
 - With no flags: runs all workloads × all available non-hidden backends.
 - `--micro` / `--macro` / `--op`: run only session micro, session macro, or
   per-operation benchmarks respectively.
-- `--workload` / `--backend`: filter to a specific combination. `--backend`
-  overrides hidden status, so `--backend try` will run `try`.
+- `--op-group <meta|fio>`: with `--op`, further narrow the per-operation run
+  to metadata workloads or fio workloads only.
+- `--workload` / `--backend`: filter to a specific combination. `--workload`
+  may be repeated to run multiple named workloads. `--backend` overrides
+  hidden status, so `--backend try` will run `try`.
 - `--runs N`: number of timed iterations (default 3).
 - `--verbose`: capture detailed logs for all runs, not just failures.
 - `--timestamped-results`: write results into a timestamped subdirectory
@@ -452,19 +612,31 @@ not conflated. Running `--workload X` or `--backend Y` merges only the
 re-run entries into the existing `results.json`, preserving results for
 workloads and backends that were not part of the current run.
 
+Persistence is incremental: after each completed `(workload, backend)`
+combination, the bench runner rewrites `results.json` immediately. Report
+generation is incremental too: it rerenders only `report-<workload>.html` for
+the workload that changed, plus the index page, instead of rebuilding every
+workload report on every update.
+
 An HTML report (`report-<workload>.html`) is generated per workload using the
 [`plotly`](https://crates.io/crates/plotly) crate:
 
 - **Session workloads**: stacked bar charts showing backend × (init, staging,
-  commit) time. Native rendered as a bar and as a reference line. Error bars
-  showing total stddev across iterations.
+  commit) time. Native shown only as a reference line/annotation, with the
+  backend bars showing the non-native mechanisms under comparison. Error bars
+  show total stddev across iterations.
 - **Op workloads**: bar charts with backends on the x-axis and IOPS on the
   y-axis. For fio workloads, throughput (MB/s) on a secondary axis. Latency
-  percentiles (p50/p99) in a table below each chart. Native as baseline
-  reference line.
+  percentiles (p50/p99) in a table below each chart. Native shown only as a
+  baseline line/annotation, not as a bar.
 
 The index page groups results into three sections: Session Micro, Session
-Macro, and Per-Operation.
+Macro, and Per-Operation. Each workload card/report also includes a compact
+workload explainer: a hover summary on the title plus an expandable details
+panel describing fixture setup, cache behavior, and the concrete fio or Rust
+operation sequence being benchmarked. For fio workloads, the details panel
+shows the exact fio command form and the generated jobfile text used by the
+bench runner.
 
 ---
 

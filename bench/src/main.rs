@@ -1,7 +1,7 @@
 // agfs-bench — benchmark suite for the agfs filesystem.
 //
 // Usage:
-//   agfs-bench [--workload <name>] [--backend <name>] [--verbose] [--timestamped-results]
+//   agfs-bench [--workload <name> ...] [--backend <name>] [--verbose] [--timestamped-results]
 //   agfs-bench rerender
 //   agfs-bench exec-workload --name <name> --dest <path>
 
@@ -14,10 +14,11 @@ mod workloads;
 
 use anyhow::{Context, Result, bail};
 use backend::Backend;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 #[allow(unused_imports)]
 use workload::{IterResult, Workload};
@@ -30,17 +31,25 @@ struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
 
-    /// Run only this workload
+    /// Run only these workloads (repeatable)
     #[arg(long)]
-    workload: Option<String>,
+    workload: Vec<String>,
 
-    /// Run only microbenchmarks
-    #[arg(long, conflicts_with_all = ["workload", "r#macro"])]
+    /// Run only session microbenchmarks
+    #[arg(long, conflicts_with_all = ["workload", "macro", "op"])]
     micro: bool,
 
-    /// Run only macrobenchmarks
-    #[arg(long, name = "macro", conflicts_with_all = ["workload", "micro"])]
+    /// Run only session macrobenchmarks
+    #[arg(long, name = "macro", conflicts_with_all = ["workload", "micro", "op"])]
     r#macro: bool,
+
+    /// Run only per-operation benchmarks (fio + metadata)
+    #[arg(long, conflicts_with_all = ["workload", "micro", "macro"])]
+    op: bool,
+
+    /// With --op, narrow the selection to metadata or fio workloads
+    #[arg(long, requires = "op")]
+    op_group: Option<OpGroup>,
 
     /// Run only this backend
     #[arg(long)]
@@ -57,6 +66,16 @@ struct Cli {
     /// Write results into a timestamped subdirectory instead of overwriting
     #[arg(long)]
     timestamped_results: bool,
+
+    /// Skip (workload, backend) pairs that already have exactly --runs timed iterations in results.json
+    #[arg(long)]
+    skip_complete: bool,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum OpGroup {
+    Meta,
+    Fio,
 }
 
 #[derive(Subcommand)]
@@ -88,6 +107,10 @@ enum Cmd {
         /// Verbose output
         #[arg(long)]
         verbose: bool,
+        /// Block on stdin after printing READY, so the parent can drop
+        /// page caches before the workload runs.
+        #[arg(long)]
+        wait_after_ready: bool,
     },
     /// Mount overlayfs then run a workload (used internally by the overlayfs backend)
     #[command(hide = true)]
@@ -104,10 +127,31 @@ enum Cmd {
         merged: PathBuf,
         #[arg(long)]
         verbose: bool,
+        #[arg(long)]
+        prepare_only: bool,
+        /// Run prepare_workdir inside this overlay mount before the timed
+        /// workload so that stage-local files stay in the upper layer.
+        #[arg(long)]
+        inline_prepare: bool,
+        /// Block on stdin after printing READY, so the parent can drop
+        /// page caches before the workload runs.
+        #[arg(long)]
+        wait_after_ready: bool,
+        /// Unmount the overlay before READY and remount after GO, so
+        /// overlay kernel state is fully flushed during drop_caches.
+        #[arg(long)]
+        remount_for_cold: bool,
     },
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone)]
+struct RepoState {
+    commit: String,
+    cli_dirty: bool,
+    kmod_dirty: bool,
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Env {
@@ -127,6 +171,8 @@ struct Env {
     cloudlab_cluster: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cloudlab_hardware: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo_state: Option<RepoState>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -142,6 +188,35 @@ struct BackendResult {
     outlier_iter_indices: Vec<usize>,
     /// Kernel messages observed during the run (on failure or --verbose).
     kernel_messages: Vec<String>,
+    // ── Op workload fields (present when workload kind == Op) ──
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mean_iops: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stddev_iops: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mean_throughput_kbps: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mean_lat_us_p50: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mean_lat_us_p99: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mean_read_avg_lat_us: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stddev_read_avg_lat_us: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mean_write_avg_lat_us: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stddev_write_avg_lat_us: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mean_read_lat_us_p50: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mean_read_lat_us_p99: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mean_write_lat_us_p50: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mean_write_lat_us_p99: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo_state: Option<RepoState>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -181,6 +256,7 @@ fn collect_env() -> Env {
         distro: read_distro(),
         cloudlab_cluster,
         cloudlab_hardware,
+        repo_state: read_repo_state().ok(),
     }
 }
 
@@ -332,8 +408,6 @@ fn read_distro() -> String {
 
 /// If running on CloudLab, return (cluster, hardware_type) from `geni-get`.
 fn read_cloudlab_info() -> (Option<String>, Option<String>) {
-    use std::process::Command;
-
     let manifest = Command::new("geni-get")
         .arg("manifest")
         .output()
@@ -361,6 +435,94 @@ fn read_cloudlab_info() -> (Option<String>, Option<String>) {
     (cluster, hardware)
 }
 
+fn read_repo_state() -> Result<RepoState> {
+    let root = repo_root();
+    let commit = git_stdout(&root, &["rev-parse", "HEAD"]).context("reading git HEAD")?;
+    Ok(RepoState {
+        commit,
+        cli_dirty: git_path_dirty(&root, "cli")?,
+        kmod_dirty: git_path_dirty(&root, "kmod")?,
+    })
+}
+
+fn git_stdout(root: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("running git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_path_dirty(root: &Path, path: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain", "--", path])
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("checking git dirtiness for {path}"))?;
+    if !output.status.success() {
+        bail!(
+            "git status for {path} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(!output.stdout.is_empty())
+}
+
+pub(crate) fn repo_paths_changed_between(from_commit: &str, to_commit: &str) -> Result<bool> {
+    let root = repo_root();
+    let status = Command::new("git")
+        .args([
+            "diff",
+            "--quiet",
+            from_commit,
+            to_commit,
+            "--",
+            "cli",
+            "kmod",
+        ])
+        .current_dir(&root)
+        .status()
+        .with_context(|| {
+            format!("checking git diff between {from_commit} and {to_commit} for cli/ and kmod/")
+        })?;
+
+    match status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => bail!("git diff failed comparing {from_commit} and {to_commit}"),
+    }
+}
+
+// ── Dependency checks ─────────────────────────────────────────────────────────
+
+/// Check that fio is installed. Called before running any workload whose name
+/// starts with "fio-". Fails hard — fio is a required dependency, not optional.
+fn require_fio() -> Result<()> {
+    use std::process::Command;
+    if !Command::new("fio")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        bail!(
+            "fio is not installed. Per-operation I/O benchmarks require fio.\n\
+             Install with: sudo apt-get install fio\n\
+             Or run: bench/install_deps.sh"
+        );
+    }
+    Ok(())
+}
+
 // ── Backend runner ───────────────────────────────────────────────────────────
 
 fn run_backend(
@@ -368,6 +530,7 @@ fn run_backend(
     workload: &dyn Workload,
     verbose: bool,
     runs: usize,
+    repo_state: &Option<RepoState>,
 ) -> Result<BackendResult> {
     eprintln!("  backend: {}", backend.name());
 
@@ -431,6 +594,177 @@ fn run_backend(
         mean_commit_ms: stats.mean_commit,
         outlier_iter_indices: stats.outlier_iter_indices,
         kernel_messages: all_kernel_msgs,
+        mean_iops: None,
+        stddev_iops: None,
+        mean_throughput_kbps: None,
+        mean_lat_us_p50: None,
+        mean_lat_us_p99: None,
+        mean_read_avg_lat_us: None,
+        stddev_read_avg_lat_us: None,
+        mean_write_avg_lat_us: None,
+        stddev_write_avg_lat_us: None,
+        mean_read_lat_us_p50: None,
+        mean_read_lat_us_p99: None,
+        mean_write_lat_us_p50: None,
+        mean_write_lat_us_p99: None,
+        repo_state: repo_state.clone(),
+    })
+}
+
+fn run_backend_op(
+    backend: &dyn Backend,
+    workload: &dyn Workload,
+    verbose: bool,
+    runs: usize,
+    repo_state: &Option<RepoState>,
+) -> Result<BackendResult> {
+    use crate::workload::OpResult;
+
+    eprintln!("  backend: {}", backend.name());
+
+    let mut iterations = Vec::with_capacity(runs);
+    let mut op_results: Vec<OpResult> = Vec::with_capacity(runs);
+
+    for i in 0..runs {
+        eprint!("    iter {}/{}… ", i + 1, runs);
+        let (result, _) = match backend.run_one(workload, verbose) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("failed: {e:#}");
+                eprintln!("    rerunning with verbose logging…");
+                backend
+                    .run_one(workload, true)
+                    .with_context(|| format!("iter {} (verbose rerun) failed", i + 1))?
+            }
+        };
+
+        let op = result
+            .op_result
+            .clone()
+            .with_context(|| "op workload did not produce OpResult")?;
+
+        if let Some(tp) = op.throughput_kbps {
+            eprintln!(
+                "{:.0} IOPS  {:.1} MB/s  (p50 {:.1} µs, p99 {:.1} µs)",
+                op.iops,
+                tp as f64 / 1024.0,
+                op.lat_us_p50,
+                op.lat_us_p99
+            );
+        } else {
+            eprintln!(
+                "{:.0} IOPS  (p50 {:.1} µs, p99 {:.1} µs)",
+                op.iops, op.lat_us_p50, op.lat_us_p99
+            );
+        }
+
+        iterations.push(result);
+        op_results.push(op);
+    }
+
+    let n = runs as f64;
+    let mean_iops = op_results.iter().map(|r| r.iops).sum::<f64>() / n;
+    let var = op_results
+        .iter()
+        .map(|r| (r.iops - mean_iops).powi(2))
+        .sum::<f64>()
+        / n;
+
+    let mean_tp: Option<u64> = if op_results[0].throughput_kbps.is_some() {
+        Some(
+            (op_results
+                .iter()
+                .map(|r| r.throughput_kbps.unwrap_or(0) as f64)
+                .sum::<f64>()
+                / n) as u64,
+        )
+    } else {
+        None
+    };
+
+    let mean_read_avg_lat_us = op_results[0].read_avg_lat_us.map(|_| {
+        op_results
+            .iter()
+            .map(|r| r.read_avg_lat_us.unwrap_or(0.0))
+            .sum::<f64>()
+            / n
+    });
+    let stddev_read_avg_lat_us = mean_read_avg_lat_us.map(|mean| {
+        (op_results
+            .iter()
+            .map(|r| (r.read_avg_lat_us.unwrap_or(0.0) - mean).powi(2))
+            .sum::<f64>()
+            / n)
+            .sqrt()
+    });
+    let mean_write_avg_lat_us = op_results[0].write_avg_lat_us.map(|_| {
+        op_results
+            .iter()
+            .map(|r| r.write_avg_lat_us.unwrap_or(0.0))
+            .sum::<f64>()
+            / n
+    });
+    let stddev_write_avg_lat_us = mean_write_avg_lat_us.map(|mean| {
+        (op_results
+            .iter()
+            .map(|r| (r.write_avg_lat_us.unwrap_or(0.0) - mean).powi(2))
+            .sum::<f64>()
+            / n)
+            .sqrt()
+    });
+    let mean_read_lat_us_p50 = op_results[0].read_lat_us_p50.map(|_| {
+        op_results
+            .iter()
+            .map(|r| r.read_lat_us_p50.unwrap_or(0.0))
+            .sum::<f64>()
+            / n
+    });
+    let mean_read_lat_us_p99 = op_results[0].read_lat_us_p99.map(|_| {
+        op_results
+            .iter()
+            .map(|r| r.read_lat_us_p99.unwrap_or(0.0))
+            .sum::<f64>()
+            / n
+    });
+    let mean_write_lat_us_p50 = op_results[0].write_lat_us_p50.map(|_| {
+        op_results
+            .iter()
+            .map(|r| r.write_lat_us_p50.unwrap_or(0.0))
+            .sum::<f64>()
+            / n
+    });
+    let mean_write_lat_us_p99 = op_results[0].write_lat_us_p99.map(|_| {
+        op_results
+            .iter()
+            .map(|r| r.write_lat_us_p99.unwrap_or(0.0))
+            .sum::<f64>()
+            / n
+    });
+
+    Ok(BackendResult {
+        backend: backend.name().to_string(),
+        iterations,
+        mean_total_ms: 0.0,
+        stddev_total_ms: 0.0,
+        mean_init_ms: None,
+        mean_staging_ms: None,
+        mean_commit_ms: None,
+        outlier_iter_indices: vec![],
+        kernel_messages: vec![],
+        mean_iops: Some(mean_iops),
+        stddev_iops: Some(var.sqrt()),
+        mean_throughput_kbps: mean_tp,
+        mean_lat_us_p50: Some(op_results.iter().map(|r| r.lat_us_p50).sum::<f64>() / n),
+        mean_lat_us_p99: Some(op_results.iter().map(|r| r.lat_us_p99).sum::<f64>() / n),
+        mean_read_avg_lat_us,
+        stddev_read_avg_lat_us,
+        mean_write_avg_lat_us,
+        stddev_write_avg_lat_us,
+        mean_read_lat_us_p50,
+        mean_read_lat_us_p99,
+        mean_write_lat_us_p50,
+        mean_write_lat_us_p99,
+        repo_state: repo_state.clone(),
     })
 }
 
@@ -505,11 +839,86 @@ fn results_dir(env: &Env, timestamped: bool) -> PathBuf {
     }
 }
 
-fn write_fresh(results: &BenchResults, json_path: &Path) -> Result<BenchResults> {
-    let json = serde_json::to_string_pretty(results).context("serialising results")?;
-    fs::write(json_path, json).context("writing results.json")?;
-    eprintln!("Results written to {}", json_path.display());
-    Ok(results.clone())
+fn read_existing_results(json_path: &Path) -> Result<Option<BenchResults>> {
+    if !json_path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(json_path).context("reading existing results.json")?;
+    match serde_json::from_str(&raw) {
+        Ok(results) => Ok(Some(results)),
+        Err(_) => {
+            eprintln!("Existing results.json uses old format; ignoring for resume/merge checks.");
+            Ok(None)
+        }
+    }
+}
+
+fn has_exact_runs(
+    results: &BenchResults,
+    workload_name: &str,
+    backend_name: &str,
+    runs: usize,
+) -> bool {
+    results
+        .workloads
+        .iter()
+        .find(|w| w.workload == workload_name)
+        .and_then(|w| w.backends.iter().find(|b| b.backend == backend_name))
+        .is_some_and(|b| b.iterations.len() == runs)
+}
+
+fn merge_results(existing: BenchResults, incoming: &BenchResults) -> BenchResults {
+    let mut workload_map: std::collections::BTreeMap<String, WorkloadResult> = existing
+        .workloads
+        .into_iter()
+        .map(|w| (w.workload.clone(), w))
+        .collect();
+
+    for new_wl in &incoming.workloads {
+        match workload_map.get_mut(&new_wl.workload) {
+            Some(existing_wl) => {
+                let new_backend_names: std::collections::HashSet<&str> =
+                    new_wl.backends.iter().map(|b| b.backend.as_str()).collect();
+                existing_wl
+                    .backends
+                    .retain(|b| !new_backend_names.contains(b.backend.as_str()));
+                existing_wl.backends.extend(new_wl.backends.iter().cloned());
+            }
+            None => {
+                workload_map.insert(new_wl.workload.clone(), new_wl.clone());
+            }
+        }
+    }
+
+    BenchResults {
+        timestamp: incoming.timestamp,
+        env: incoming.env.clone(),
+        workloads: workload_map.into_values().collect(),
+    }
+}
+
+/// Remove a stale backend entry from results.json (e.g. when the combination
+/// is now skipped as unsupported but old data exists).
+fn remove_stale_backend(out_dir: &Path, workload_name: &str, backend_name: &str) -> Result<()> {
+    let json_path = out_dir.join("results.json");
+    if let Some(mut results) = read_existing_results(&json_path)? {
+        let mut changed = false;
+        for wl in &mut results.workloads {
+            if wl.workload == workload_name {
+                let before = wl.backends.len();
+                wl.backends.retain(|b| b.backend != backend_name);
+                if wl.backends.len() < before {
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let json = serde_json::to_string_pretty(&results).context("serialising results")?;
+            fs::write(&json_path, json).context("writing results.json")?;
+        }
+    }
+    Ok(())
 }
 
 /// Write results to disk, merging with any existing data. Returns the merged results.
@@ -520,47 +929,8 @@ fn write_results(results: &BenchResults, out_dir: &Path) -> Result<BenchResults>
     // Merge with existing results: replace workload entries that were re-run,
     // preserve workload entries that were not part of this run.
     // If the existing file uses the old format (scenarios), skip merging.
-    let merged = if json_path.exists() {
-        let raw = fs::read_to_string(&json_path).context("reading existing results.json")?;
-        let existing: BenchResults = match serde_json::from_str(&raw) {
-            Ok(r) => r,
-            Err(_) => {
-                eprintln!("Existing results.json uses old format; overwriting.");
-                return write_fresh(results, &json_path);
-            }
-        };
-
-        // Build a map of existing workloads for merging.
-        let mut workload_map: std::collections::BTreeMap<String, WorkloadResult> = existing
-            .workloads
-            .into_iter()
-            .map(|w| (w.workload.clone(), w))
-            .collect();
-
-        for new_wl in &results.workloads {
-            match workload_map.get_mut(&new_wl.workload) {
-                Some(existing_wl) => {
-                    // Merge backends: replace re-run backends, keep the rest.
-                    let new_backend_names: std::collections::HashSet<&str> =
-                        new_wl.backends.iter().map(|b| b.backend.as_str()).collect();
-                    existing_wl
-                        .backends
-                        .retain(|b| !new_backend_names.contains(b.backend.as_str()));
-                    existing_wl.backends.extend(new_wl.backends.iter().cloned());
-                }
-                None => {
-                    workload_map.insert(new_wl.workload.clone(), new_wl.clone());
-                }
-            }
-        }
-
-        let workloads: Vec<WorkloadResult> = workload_map.into_values().collect();
-
-        BenchResults {
-            timestamp: results.timestamp,
-            env: results.env.clone(),
-            workloads,
-        }
+    let merged = if let Some(existing) = read_existing_results(&json_path)? {
+        merge_results(existing, results)
     } else {
         results.clone()
     };
@@ -592,6 +962,12 @@ fn run_profile(env: &Env, workload_name: &str, scenario_name: &str, bpftrace: bo
 
     let (session, dest) = backends::agfs::setup_profile_session(workload.as_ref(), allow_all)?;
     std::fs::create_dir_all(&dest).context("creating workload dest dir")?;
+    if workload.needs_prepare_workdir() {
+        workload.prepare_workdir(&dest)?;
+    }
+    if workload.cache_mode() == workload::CacheMode::DropPageCache {
+        workloads::drop_page_cache()?;
+    }
 
     eprintln!("Profiling {workload_name} / {scenario_name}…");
     let p = profiler::Profiler::start(&out_dir, bpftrace)?;
@@ -609,6 +985,8 @@ fn run_profile(env: &Env, workload_name: &str, scenario_name: &str, bpftrace: bo
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    ensure_release_build()?;
+
     // exec-workload: internal subcommand used by all backends to run the
     // workload in a subprocess. Prints a READY marker to stdout so the parent
     // can split init vs staging time.
@@ -616,12 +994,20 @@ fn main() -> Result<()> {
         name,
         dest,
         verbose,
+        wait_after_ready,
     }) = &cli.cmd
     {
         let workload =
             workloads::by_name(name).with_context(|| format!("unknown workload: {name}"))?;
-        std::fs::create_dir_all(dest)?;
+        // dest is already created by the parent backend before spawning
+        // this subprocess. Skipping create_dir_all here avoids warming
+        // the dcache/icache path for cold-cache workloads.
         println!("{}", backend::READY_MARKER);
+        if *wait_after_ready {
+            // Block until the parent signals (after dropping page caches).
+            let mut buf = String::new();
+            std::io::stdin().read_line(&mut buf)?;
+        }
         workload.run(dest, *verbose)?;
         return Ok(());
     }
@@ -635,6 +1021,10 @@ fn main() -> Result<()> {
         work,
         merged,
         verbose,
+        prepare_only,
+        inline_prepare,
+        wait_after_ready,
+        remount_for_cold,
     }) = &cli.cmd
     {
         use nix::mount::{MsFlags, mount};
@@ -657,7 +1047,36 @@ fn main() -> Result<()> {
             workloads::by_name(name).with_context(|| format!("unknown workload: {name}"))?;
         let dest = merged.join(workload.work_dir());
         std::fs::create_dir_all(&dest)?;
+        if *prepare_only {
+            workload.prepare_workdir(&dest)?;
+            return Ok(());
+        }
+        // For stage workloads: prepare inside this mount so files stay
+        // in the upper layer rather than being committed to lower.
+        if *inline_prepare && workload.needs_prepare_workdir() {
+            workload.prepare_workdir(&dest)?;
+        }
+        if *remount_for_cold {
+            // Unmount the overlay so its kernel state is flushed during
+            // the parent's drop_caches. Remount after receiving GO.
+            nix::mount::umount(merged.as_path())
+                .with_context(|| format!("unmounting overlayfs on {}", merged.display()))?;
+        }
         println!("{}", backend::READY_MARKER);
+        if *wait_after_ready {
+            let mut buf = String::new();
+            std::io::stdin().read_line(&mut buf)?;
+        }
+        if *remount_for_cold {
+            mount(
+                Some("overlay"),
+                merged.as_path(),
+                Some("overlay"),
+                MsFlags::empty(),
+                Some(opts.as_str()),
+            )
+            .with_context(|| format!("remounting overlayfs on {}", merged.display()))?;
+        }
         workload.run(&dest, *verbose)?;
         return Ok(());
     }
@@ -689,6 +1108,10 @@ fn main() -> Result<()> {
         for w in workloads::by_kind(workload::WorkloadKind::Macro) {
             println!("  {}", w.name());
         }
+        println!("\nWorkloads (op):");
+        for w in workloads::by_kind(workload::WorkloadKind::Op) {
+            println!("  {}", w.name());
+        }
         println!("\nBackends:");
         for b in backends::all() {
             if b.hidden() {
@@ -714,16 +1137,38 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let selected_workloads: Vec<Box<dyn Workload>> = if let Some(name) = &cli.workload {
-        let w = workloads::by_name(name).with_context(|| format!("unknown workload: {name}"))?;
-        vec![w]
+    let selected_workloads: Vec<Box<dyn Workload>> = if !cli.workload.is_empty() {
+        let mut selected = Vec::with_capacity(cli.workload.len());
+        for name in &cli.workload {
+            let w =
+                workloads::by_name(name).with_context(|| format!("unknown workload: {name}"))?;
+            selected.push(w);
+        }
+        selected
     } else if cli.micro {
         workloads::by_kind(workload::WorkloadKind::Micro)
     } else if cli.r#macro {
         workloads::by_kind(workload::WorkloadKind::Macro)
+    } else if cli.op {
+        let mut selected = workloads::by_kind(workload::WorkloadKind::Op);
+        if let Some(group) = cli.op_group {
+            selected.retain(|w| match group {
+                OpGroup::Meta => w.name().starts_with("meta-"),
+                OpGroup::Fio => w.name().starts_with("fio-"),
+            });
+        }
+        selected
     } else {
         workloads::all()
     };
+
+    // Fail hard if any selected workload needs fio and it's not installed.
+    if selected_workloads
+        .iter()
+        .any(|w| w.name().starts_with("fio-"))
+    {
+        require_fio()?;
+    }
 
     let selected_backends: Vec<Box<dyn Backend>> = if let Some(name) = &cli.backend {
         // Explicit --backend: run it even if hidden, just check availability.
@@ -748,47 +1193,85 @@ fn main() -> Result<()> {
             .collect()
     };
 
-    let mut workload_results = Vec::new();
+    let out_dir = results_dir(&env, cli.timestamped_results);
+    let json_path = out_dir.join("results.json");
 
     for workload in &selected_workloads {
         eprintln!("Running workload: {}", workload.name());
         workload.ensure_fixture()?;
 
-        // Warm up with native to populate page cache / dentry cache.
-        eprintln!("  warm-up…");
-        {
-            let native = backends::native::Native;
-            native
-                .run_one(workload.as_ref(), cli.verbose)
-                .context("warm-up iteration failed")?;
-        }
-
-        let mut backend_results = Vec::new();
+        let is_op = workload.kind() == workload::WorkloadKind::Op;
+        let mut did_warm_up = false;
         for b in &selected_backends {
-            let result = run_backend(b.as_ref(), workload.as_ref(), cli.verbose, cli.runs)?;
-            backend_results.push(result);
-        }
+            if cli.skip_complete {
+                if let Some(existing) = read_existing_results(&json_path)? {
+                    if has_exact_runs(&existing, workload.name(), b.name(), cli.runs) {
+                        eprintln!(
+                            "  backend: {} (skipping, already has {} timed iterations)",
+                            b.name(),
+                            cli.runs
+                        );
+                        continue;
+                    }
+                }
+            }
 
-        workload_results.push(WorkloadResult {
-            workload: workload.name().to_string(),
-            backends: backend_results,
-        });
+            if let Some(reason) = b.unsupported_reason(workload.as_ref()) {
+                eprintln!("  backend: {} (skipping: {})", b.name(), reason);
+                // Remove stale data from results.json so the report shows N/A.
+                remove_stale_backend(&out_dir, workload.name(), b.name())?;
+                continue;
+            }
+
+            if !did_warm_up {
+                eprintln!("  warm-up…");
+                let native = backends::native::Native;
+                native
+                    .run_one(workload.as_ref(), cli.verbose)
+                    .context("warm-up iteration failed")?;
+                did_warm_up = true;
+            }
+
+            let result = if is_op {
+                run_backend_op(
+                    b.as_ref(),
+                    workload.as_ref(),
+                    cli.verbose,
+                    cli.runs,
+                    &env.repo_state,
+                )?
+            } else {
+                run_backend(
+                    b.as_ref(),
+                    workload.as_ref(),
+                    cli.verbose,
+                    cli.runs,
+                    &env.repo_state,
+                )?
+            };
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let partial = BenchResults {
+                timestamp,
+                env: env.clone(),
+                workloads: vec![WorkloadResult {
+                    workload: workload.name().to_string(),
+                    backends: vec![result],
+                }],
+            };
+            let merged = write_results(&partial, &out_dir)?;
+            report::render_one(&merged, workload.name(), &out_dir)?;
+        }
     }
 
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    Ok(())
+}
 
-    let results = BenchResults {
-        timestamp,
-        env: env.clone(),
-        workloads: workload_results,
-    };
-
-    let out_dir = results_dir(&env, cli.timestamped_results);
-    let merged = write_results(&results, &out_dir)?;
-    report::render(&merged, &out_dir)?;
-
+fn ensure_release_build() -> Result<()> {
+    if cfg!(debug_assertions) {
+        bail!("agfs-bench must be built with --release; debug builds are refused");
+    }
     Ok(())
 }

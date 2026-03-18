@@ -10,6 +10,27 @@ use std::path::Path;
 
 pub struct StatFiles;
 
+crate::workloads::define_rust_execution!(
+    fn run_stat_files(dest: &Path) -> Result<()> {
+        for i in 0..1000 {
+            let meta = std::fs::metadata(dest.join(format!("file-{i:04}.dat")))
+                .with_context(|| format!("stat file-{i:04}.dat"))?;
+            std::hint::black_box(&meta);
+        }
+        Ok(())
+    } => stat_files_execution
+);
+
+pub fn details() -> crate::workloads::WorkloadDetails {
+    crate::workloads::workload_details(
+        "Session microbenchmark for pure metadata lookup and permission-check overhead on 1,000 files.",
+        "Populates the backend base layer with 1,000 4 KiB files before timing.",
+        None,
+        &stat_files_execution(),
+        file!(),
+    )
+}
+
 impl Workload for StatFiles {
     fn name(&self) -> &'static str {
         "stat-files"
@@ -40,11 +61,6 @@ impl Workload for StatFiles {
     }
 
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        for i in 0..1000 {
-            let meta = std::fs::metadata(dest.join(format!("file-{i:04}.dat")))
-                .with_context(|| format!("stat file-{i:04}.dat"))?;
-            std::hint::black_box(&meta);
-        }
-        Ok(())
+        run_stat_files(dest)
     }
 }

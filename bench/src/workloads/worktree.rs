@@ -16,6 +16,16 @@ pub struct Worktree {
     fixture: PathBuf,
 }
 
+pub fn details() -> crate::workloads::WorkloadDetails {
+    crate::workloads::workload_details(
+        "Session macrobenchmark that materializes a Linux kernel git worktree to simulate large real-world file creation.",
+        "Ensures `~/.cache/agfs-bench/linux` exists by cloning Linux once, preferring a local mirror when available, and pruning stale worktree metadata before each run.",
+        None,
+        "Runs `git worktree add --detach <dest>` inside the cached Linux clone. This creates roughly 80k files with no network transfer.",
+        file!(),
+    )
+}
+
 impl Worktree {
     pub fn new() -> Self {
         Worktree {

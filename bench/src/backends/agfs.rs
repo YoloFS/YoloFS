@@ -1,5 +1,5 @@
 use crate::backend::{self, Backend};
-use crate::workload::{IterResult, Workload};
+use crate::workload::{CacheMode, IterResult, Workload};
 use agfs::config::{Config, Perm};
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -62,6 +62,23 @@ impl Session {
             .join(rel)
     }
 
+    fn checkpoint(&self) -> Result<()> {
+        let out = Command::new("agfs")
+            .arg("checkpoint")
+            .arg("bench-checkpoint")
+            .current_dir(self.root.path())
+            .env("NO_COLOR", "1")
+            .output()
+            .context("running agfs checkpoint")?;
+        if !out.status.success() {
+            bail!(
+                "agfs checkpoint failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        Ok(())
+    }
+
     fn commit(&self, verbose: bool) -> Result<u64> {
         let t = Instant::now();
         let out = Command::new("agfs")
@@ -119,14 +136,33 @@ fn run_agfs_iteration(
     let (session, init_ms) = Session::setup(config, workload)?;
 
     let dest = session.mnt_path(workload.work_dir());
-
-    let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose)?;
+    // For cold+base workloads, skip create_dir_all on the mounted path —
+    // the directory already exists in the lower fs via populate_base().
+    // Traversing the agfs mount here would warm kernel state that
+    // drop_caches cannot flush (igrab'd directory inodes).
+    let cold = workload.cache_mode() == CacheMode::DropPageCache;
+    if !cold || workload.needs_prepare_workdir() {
+        std::fs::create_dir_all(&dest)?;
+    }
+    if workload.needs_prepare_workdir() {
+        workload.prepare_workdir(&dest)?;
+    }
+    if workload.needs_checkpoint() {
+        session.checkpoint()?;
+    }
+    // For cold workloads, page caches are dropped after READY (inside
+    // run_workload_subprocess). The mount-point dentry chain stays pinned
+    // in the VFS — that's inherent to any mounted filesystem and means
+    // cold stat through agfs will always be faster than cold stat on native
+    // (fewer unpinned path components to read from disk).
+    let cold = workload.cache_mode() == CacheMode::DropPageCache;
+    let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
     cmd.stderr(if verbose {
         Stdio::inherit()
     } else {
         Stdio::piped()
     });
-    let result = match backend::run_workload_subprocess(&mut cmd) {
+    let result = match backend::run_workload_subprocess(&mut cmd, cold) {
         Ok(r) => r,
         Err(e) => {
             let journal = session.journal_debug();
@@ -154,6 +190,7 @@ fn run_agfs_iteration(
             staging_ms: Some(result.staging_ms),
             commit_ms: Some(commit_ms),
             total_ms: init_ms + result.staging_ms + commit_ms,
+            op_result: result.op_result,
         },
         vec![],
     ))
@@ -163,14 +200,28 @@ fn run_agfs_iteration(
 
 pub struct AgfsAllowAll;
 
+fn cold_staged_reason(workload: &dyn Workload) -> Option<&'static str> {
+    if workload.cache_mode() == CacheMode::DropPageCache && workload.needs_prepare_workdir() {
+        Some("cold metadata on staged/checkpoint files cannot be measured on agfs: \
+              flushing the kernel dirent table requires unmounting, which loses staging state")
+    } else {
+        None
+    }
+}
+
 impl Backend for AgfsAllowAll {
     fn name(&self) -> &'static str {
         "agfs-allow-all"
     }
 
+    fn unsupported_reason(&self, workload: &dyn Workload) -> Option<&'static str> {
+        cold_staged_reason(workload)
+    }
+
     fn run_one(&self, workload: &dyn Workload, verbose: bool) -> Result<(IterResult, Vec<String>)> {
         let config = Config {
             permission: false,
+            checkpoint: false,
             rules: BTreeMap::from([("/".to_string(), Perm::AllowRw)]),
             ..Default::default()
         };
@@ -185,6 +236,10 @@ pub struct AgfsRealistic;
 impl Backend for AgfsRealistic {
     fn name(&self) -> &'static str {
         "agfs-realistic"
+    }
+
+    fn unsupported_reason(&self, workload: &dyn Workload) -> Option<&'static str> {
+        cold_staged_reason(workload)
     }
 
     fn run_one(&self, workload: &dyn Workload, verbose: bool) -> Result<(IterResult, Vec<String>)> {
@@ -202,6 +257,7 @@ impl Backend for AgfsRealistic {
         }
         let config = Config {
             permission: false,
+            checkpoint: false,
             rules,
             ..Default::default()
         };
@@ -230,14 +286,23 @@ impl Backend for AgfsRealistic {
 
         let session = Session { root };
         let dest = session.mnt_path(workload.work_dir());
-
-        let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose)?;
+        let cold = workload.cache_mode() == CacheMode::DropPageCache;
+        if !cold || workload.needs_prepare_workdir() {
+            std::fs::create_dir_all(&dest)?;
+        }
+        if workload.needs_prepare_workdir() {
+            workload.prepare_workdir(&dest)?;
+        }
+        if workload.needs_checkpoint() {
+            session.checkpoint()?;
+        }
+        let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
         cmd.stderr(if verbose {
             Stdio::inherit()
         } else {
             Stdio::piped()
         });
-        let result = match backend::run_workload_subprocess(&mut cmd) {
+        let result = match backend::run_workload_subprocess(&mut cmd, cold) {
             Ok(r) => r,
             Err(e) => {
                 let journal = session.journal_debug();
@@ -265,6 +330,7 @@ impl Backend for AgfsRealistic {
                 staging_ms: Some(result.staging_ms),
                 commit_ms: Some(commit_ms),
                 total_ms: init_ms + result.staging_ms + commit_ms,
+                op_result: result.op_result,
             },
             vec![],
         ))

@@ -11,6 +11,27 @@ use std::path::Path;
 
 pub struct ReadFiles;
 
+crate::workloads::define_rust_execution!(
+    fn run_read_files(dest: &Path) -> Result<()> {
+        for i in 0..1000 {
+            let data = std::fs::read(dest.join(format!("file-{i:04}.dat")))
+                .with_context(|| format!("reading file-{i:04}.dat"))?;
+            std::hint::black_box(&data);
+        }
+        Ok(())
+    } => read_files_execution
+);
+
+pub fn details() -> crate::workloads::WorkloadDetails {
+    crate::workloads::workload_details(
+        "Session microbenchmark for passthrough reads of 1,000 pre-existing 4 KiB files.",
+        "Populates the backend base layer with 1,000 files before timing so reads exercise lower-layer lookup instead of creation.",
+        None,
+        &read_files_execution(),
+        file!(),
+    )
+}
+
 impl Workload for ReadFiles {
     fn name(&self) -> &'static str {
         "read-files"
@@ -41,11 +62,6 @@ impl Workload for ReadFiles {
     }
 
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        for i in 0..1000 {
-            let data = std::fs::read(dest.join(format!("file-{i:04}.dat")))
-                .with_context(|| format!("reading file-{i:04}.dat"))?;
-            std::hint::black_box(&data);
-        }
-        Ok(())
+        run_read_files(dest)
     }
 }

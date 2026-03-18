@@ -1,5 +1,5 @@
 use crate::backend::{self, Backend};
-use crate::workload::{IterResult, Workload};
+use crate::workload::{CacheMode, IterResult, Workload};
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -45,9 +45,13 @@ impl Backend for Try {
         let dest = root.path().join(workload.work_dir());
         std::fs::create_dir_all(&dest)?;
         workload.populate_base(&dest)?;
+        if workload.needs_prepare_workdir() {
+            workload.prepare_workdir(&dest)?;
+        }
+        let cold = workload.cache_mode() == CacheMode::DropPageCache;
 
         // Build the inner exec-workload command, then wrap it in try.
-        let inner = backend::exec_workload_cmd(workload.name(), &dest, verbose)?;
+        let inner = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
         let inner_exe = inner.get_program().to_owned();
         let inner_args: Vec<_> = inner.get_args().map(|a| a.to_owned()).collect();
 
@@ -67,7 +71,7 @@ impl Backend for Try {
             Stdio::piped()
         });
 
-        let result = backend::run_workload_subprocess(&mut cmd)?;
+        let result = backend::run_workload_subprocess(&mut cmd, cold)?;
 
         // Commit: try commit <sandbox>
         let t1 = std::time::Instant::now();
@@ -97,6 +101,7 @@ impl Backend for Try {
                 staging_ms: Some(result.staging_ms),
                 commit_ms: Some(commit_ms),
                 total_ms,
+                op_result: result.op_result,
             },
             vec![],
         ))
