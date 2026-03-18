@@ -3,14 +3,16 @@
 // Parse the append-only journal and define its record types.
 //
 // Record format (NUL-separated fields, newline-terminated):
-//   E\0<dir>\0<name>\0<ino>\0<dtype>\0<base>\n   — entry (staged/deleted/redirect)
-//   K\0<id>\0<name>\n                             — checkpoint marker
+//   A\0<dir>\0<name>\0<dtype>\0<ino>\n       — add (new file)
+//   M\0<dir>\0<name>\0<dtype>\0<ino>\n       — modify (existing file)
+//   D\0<dir>\0<name>\n                        — delete
+//   R\0<dir>\0<name>\0<dtype>\0<base>\n       — redirect (rename)
+//   K\0<id>\0<name>\n                         — checkpoint marker
 
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const INO_DELETED: u64 = 0;
 pub const INO_REDIRECT: u64 = u64::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,22 +41,31 @@ impl DType {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum Target {
-    Staged(u64),
-    Redirect(String),
-    Deleted,
-}
-
 /// A journal record: either an entry (dirent mutation) or a checkpoint.
 #[derive(Debug, Clone)]
 pub enum Record {
-    Entry {
+    Added {
         path: String,
-        target: Target,
         dtype: Option<DType>,
+        ino: u64,
     },
-    Checkpoint { id: u64, name: String },
+    Modified {
+        path: String,
+        dtype: Option<DType>,
+        ino: u64,
+    },
+    Deleted {
+        path: String,
+    },
+    Redirect {
+        path: String,
+        dtype: Option<DType>,
+        base: String,
+    },
+    Checkpoint {
+        id: u64,
+        name: String,
+    },
 }
 
 /// A parsed journal: records and the byte offset after each record.
@@ -68,6 +79,24 @@ impl Journal {
     /// Byte offset just past the given record index.
     pub fn offset(&self, record_idx: usize) -> Option<u64> {
         self.offsets.get(record_idx).copied()
+    }
+}
+
+fn make_path(dir_field: &[u8], name_field: &[u8]) -> String {
+    let dir = String::from_utf8_lossy(dir_field);
+    let name = String::from_utf8_lossy(name_field);
+    if dir.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+fn parse_dtype(field: &[u8]) -> Option<DType> {
+    if field.len() == 1 {
+        DType::from_char(field[0])
+    } else {
+        None
     }
 }
 
@@ -98,45 +127,32 @@ pub fn read(agfs_dir: &Path) -> Result<Journal> {
         }
         let tag = fields[0];
         match tag {
-            b"E" if fields.len() >= 6 => {
-                let dir = String::from_utf8_lossy(fields[1]);
-                let name = String::from_utf8_lossy(fields[2]);
-                let ino_str = String::from_utf8_lossy(fields[3]);
-                let dtype_field = fields[4];
-                let base = String::from_utf8_lossy(fields[5]).to_string();
+            b"A" | b"M" if fields.len() >= 5 => {
+                let path = make_path(fields[1], fields[2]);
+                let dtype = parse_dtype(fields[3]);
+                let ino_str = String::from_utf8_lossy(fields[4]);
 
-                let path = if dir.is_empty() {
-                    format!("/{name}")
-                } else {
-                    format!("{dir}/{name}")
-                };
-
-                let dtype = if dtype_field.len() == 1 {
-                    DType::from_char(dtype_field[0])
-                } else {
-                    None
-                };
-
-                if ino_str == "-1" {
-                    records.push(Record::Entry {
-                        path,
-                        target: Target::Redirect(base),
-                        dtype,
-                    });
-                    offsets.push(line_end);
-                } else if let Ok(ino) = ino_str.parse::<u64>() {
-                    let target = if ino == INO_DELETED {
-                        Target::Deleted
+                if let Ok(ino) = ino_str.parse::<u64>() {
+                    if tag == b"A" {
+                        records.push(Record::Added { path, dtype, ino });
                     } else {
-                        Target::Staged(ino)
-                    };
-                    records.push(Record::Entry {
-                        path,
-                        target,
-                        dtype,
-                    });
+                        records.push(Record::Modified { path, dtype, ino });
+                    }
                     offsets.push(line_end);
                 }
+            }
+            b"D" if fields.len() >= 3 => {
+                let path = make_path(fields[1], fields[2]);
+                records.push(Record::Deleted { path });
+                offsets.push(line_end);
+            }
+            b"R" if fields.len() >= 5 => {
+                let path = make_path(fields[1], fields[2]);
+                let dtype = parse_dtype(fields[3]);
+                let base = String::from_utf8_lossy(fields[4]).to_string();
+
+                records.push(Record::Redirect { path, dtype, base });
+                offsets.push(line_end);
             }
             b"K" if fields.len() >= 3 => {
                 let id_str = String::from_utf8_lossy(fields[1]);
@@ -191,24 +207,38 @@ mod tests {
     fn read_multiple() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        // E: staged file "a" at root with ino=1, dtype=f
-        data.extend_from_slice(b"E\0\0a\01\0f\0\n");
-        // E: deleted "b" at root
-        data.extend_from_slice(b"E\0\0b\00\0\0\n");
-        // E: redirect "d" at root from /c
-        data.extend_from_slice(b"E\0\0d\0-1\0f\0/c\n");
+        // A: added file "a" at root with ino=1, dtype=f
+        data.extend_from_slice(b"A\0\0a\0f\01\n");
+        // D: deleted "b" at root
+        data.extend_from_slice(b"D\0\0b\n");
+        // R: redirect "d" at root from /c
+        data.extend_from_slice(b"R\0\0d\0f\0/c\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let journal = read(dir.path()).unwrap();
         assert_eq!(journal.records.len(), 3);
         assert!(
-            matches!(&journal.records[0], Record::Entry { path, target: Target::Staged(1), dtype: Some(DType::File) } if path == "/a")
+            matches!(&journal.records[0], Record::Added { path, ino: 1, dtype: Some(DType::File) } if path == "/a")
         );
+        assert!(matches!(&journal.records[1], Record::Deleted { path } if path == "/b"));
         assert!(
-            matches!(&journal.records[1], Record::Entry { path, target: Target::Deleted, .. } if path == "/b")
+            matches!(&journal.records[2], Record::Redirect { path, base, dtype: Some(DType::File) } if path == "/d" && base == "/c")
         );
+    }
+
+    #[test]
+    fn read_modified_record() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"M\0/src\0main.rs\0f\03\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(journal.records.len(), 1);
         assert!(
-            matches!(&journal.records[2], Record::Entry { path, target: Target::Redirect(base), dtype: Some(DType::File) } if path == "/d" && base == "/c")
+            matches!(&journal.records[0], Record::Modified { path, ino: 3, dtype: Some(DType::File) } if path == "/src/main.rs"),
+            "M record should parse as Modified, got: {:?}",
+            journal.records[0]
         );
     }
 
@@ -225,9 +255,9 @@ mod tests {
     fn read_checkpoint_record() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0\0a\01\0f\0\n");
+        data.extend_from_slice(b"A\0\0a\0f\01\n");
         data.extend_from_slice(b"K\01\0build\n");
-        data.extend_from_slice(b"E\0\0a\02\0f\0\n");
+        data.extend_from_slice(b"A\0\0a\0f\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let journal = read(dir.path()).unwrap();
@@ -241,10 +271,10 @@ mod tests {
     fn truncate_drops_trailing_records() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0\0a\01\0f\0\n");
-        data.extend_from_slice(b"K\01\0snap\n");
-        data.extend_from_slice(b"E\0\0b\02\0f\0\n");
-        data.extend_from_slice(b"E\0\0c\00\0\0\n");
+        data.extend_from_slice(b"A\0\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk\n");
+        data.extend_from_slice(b"A\0\0b\0f\02\n");
+        data.extend_from_slice(b"D\0\0c\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let journal = read(dir.path()).unwrap();
@@ -255,16 +285,16 @@ mod tests {
 
         let after = read(dir.path()).unwrap();
         assert_eq!(after.records.len(), 2);
-        assert!(matches!(&after.records[0], Record::Entry { path, target: Target::Staged(_), .. } if path == "/a"));
-        assert!(matches!(&after.records[1], Record::Checkpoint { id: 1, name } if name == "snap"));
+        assert!(matches!(&after.records[0], Record::Added { path, .. } if path == "/a"));
+        assert!(matches!(&after.records[1], Record::Checkpoint { id: 1, name } if name == "chk"));
     }
 
     #[test]
     fn truncate_at_last_record_is_noop() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0\0a\01\0f\0\n");
-        data.extend_from_slice(b"K\01\0snap\n");
+        data.extend_from_slice(b"A\0\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let journal = read(dir.path()).unwrap();
@@ -285,9 +315,9 @@ mod tests {
     #[test]
     fn offsets_are_byte_accurate() {
         let dir = setup_test_dir();
-        let r0 = b"E\0\0a\01\0f\0\n";
-        let r1 = b"K\01\0snap\n";
-        let r2 = b"E\0\0longpath\00\0\0\n";
+        let r0 = b"A\0\0a\0f\01\n";
+        let r1 = b"K\01\0chk\n";
+        let r2 = b"D\0\0longpath\n";
         let mut data = Vec::new();
         data.extend_from_slice(r0);
         data.extend_from_slice(r1);
@@ -306,13 +336,13 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // File "main.rs" in directory "/src"
-        data.extend_from_slice(b"E\0/src\0main.rs\01\0f\0\n");
+        data.extend_from_slice(b"A\0/src\0main.rs\0f\01\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let journal = read(dir.path()).unwrap();
         assert_eq!(journal.records.len(), 1);
         assert!(
-            matches!(&journal.records[0], Record::Entry { path, target: Target::Staged(1), dtype: Some(DType::File) } if path == "/src/main.rs")
+            matches!(&journal.records[0], Record::Added { path, ino: 1, dtype: Some(DType::File) } if path == "/src/main.rs")
         );
     }
 
@@ -320,18 +350,26 @@ mod tests {
     fn read_directory_and_symlink_dtypes() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0\0mydir\01\0d\0\n");
-        data.extend_from_slice(b"E\0\0mylink\02\0l\0\n");
+        data.extend_from_slice(b"A\0\0mydir\0d\01\n");
+        data.extend_from_slice(b"A\0\0mylink\0l\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let journal = read(dir.path()).unwrap();
         assert_eq!(journal.records.len(), 2);
-        assert!(
-            matches!(&journal.records[0], Record::Entry { dtype: Some(DType::Dir), .. })
-        );
-        assert!(
-            matches!(&journal.records[1], Record::Entry { dtype: Some(DType::Link), .. })
-        );
+        assert!(matches!(
+            &journal.records[0],
+            Record::Added {
+                dtype: Some(DType::Dir),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &journal.records[1],
+            Record::Added {
+                dtype: Some(DType::Link),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -344,13 +382,13 @@ mod tests {
     #[test]
     fn read_entry_missing_dtype_is_none() {
         let dir = setup_test_dir();
-        // E record with empty dtype field
-        fs::write(dir.path().join("journal"), b"E\0\0file\01\0\0\n").unwrap();
+        // A record with empty dtype field
+        fs::write(dir.path().join("journal"), b"A\0\0file\0\01\n").unwrap();
 
         let journal = read(dir.path()).unwrap();
         assert_eq!(journal.records.len(), 1);
         assert!(
-            matches!(&journal.records[0], Record::Entry { dtype: None, .. }),
+            matches!(&journal.records[0], Record::Added { dtype: None, .. }),
             "empty dtype field should parse as None, got: {:?}",
             journal.records[0]
         );
@@ -359,26 +397,26 @@ mod tests {
     #[test]
     fn read_entry_invalid_dtype_is_none() {
         let dir = setup_test_dir();
-        // E record with invalid dtype char 'x'
-        fs::write(dir.path().join("journal"), b"E\0\0file\01\0x\0\n").unwrap();
+        // A record with invalid dtype char 'x'
+        fs::write(dir.path().join("journal"), b"A\0\0file\0x\01\n").unwrap();
 
         let journal = read(dir.path()).unwrap();
         assert_eq!(journal.records.len(), 1);
         assert!(
-            matches!(&journal.records[0], Record::Entry { dtype: None, .. }),
+            matches!(&journal.records[0], Record::Added { dtype: None, .. }),
             "invalid dtype char should parse as None, got: {:?}",
             journal.records[0]
         );
     }
 
     #[test]
-    fn malformed_e_record_too_few_fields_skipped() {
+    fn malformed_a_record_too_few_fields_skipped() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        // E record with only 3 fields (needs 6) — should be skipped
-        data.extend_from_slice(b"E\0\0file\01\n");
+        // A record with only 3 fields (needs 5) — should be skipped
+        data.extend_from_slice(b"A\0\0file\01\n");
         // Valid record after it
-        data.extend_from_slice(b"E\0\0good\02\0f\0\n");
+        data.extend_from_slice(b"A\0\0good\0f\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let journal = read(dir.path()).unwrap();
@@ -390,7 +428,53 @@ mod tests {
         );
         assert!(matches!(
             &journal.records[0],
-            Record::Entry { path, target: Target::Staged(2), .. } if path == "/good"
+            Record::Added { path, ino: 2, .. } if path == "/good"
+        ));
+    }
+
+    #[test]
+    fn malformed_d_record_too_few_fields_skipped() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // D record with only 1 field (needs 3) — should be skipped
+        data.extend_from_slice(b"D\0\n");
+        // Valid record after it
+        data.extend_from_slice(b"A\0\0good\0f\01\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(
+            journal.records.len(),
+            1,
+            "malformed D record should be skipped: {:?}",
+            journal.records
+        );
+        assert!(matches!(
+            &journal.records[0],
+            Record::Added { path, ino: 1, .. } if path == "/good"
+        ));
+    }
+
+    #[test]
+    fn malformed_r_record_too_few_fields_skipped() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // R record with only 4 fields (needs 5) — should be skipped
+        data.extend_from_slice(b"R\0\0file\0f\n");
+        // Valid record after it
+        data.extend_from_slice(b"A\0\0good\0f\01\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(
+            journal.records.len(),
+            1,
+            "malformed R record should be skipped: {:?}",
+            journal.records
+        );
+        assert!(matches!(
+            &journal.records[0],
+            Record::Added { path, ino: 1, .. } if path == "/good"
         ));
     }
 }

@@ -16,8 +16,8 @@ fn mkdir_produces_add_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), dtype: Some(agfs::journal::DType::Dir), .. } if path.ends_with("/newdir"))),
-        "journal should have an Entry(Staged, dtype=Dir) for newdir: {records:?}"
+            .any(|r| matches!(r, Record::Added { path, dtype: Some(agfs::journal::DType::Dir), .. } if path.ends_with("/newdir"))),
+        "journal should have an Added(dtype=Dir) record for newdir: {records:?}"
     );
 }
 
@@ -34,8 +34,8 @@ fn rmdir_produces_delete_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. } if path.ends_with("/tmpdir"))),
-        "journal should have a D record for tmpdir: {records:?}"
+            .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/tmpdir"))),
+        "journal should have a Deleted record for tmpdir: {records:?}"
     );
 }
 
@@ -52,8 +52,8 @@ fn rmdir_base_dir_produces_delete_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. } if path.ends_with("/subdir"))),
-        "journal should have a D record for base dir: {records:?}"
+            .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/subdir"))),
+        "journal should have a Deleted record for base dir: {records:?}"
     );
 }
 
@@ -67,16 +67,14 @@ fn rename_dir_produces_rename_record() {
 
     let records = journal(&s);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. }
+        records.iter().any(|r| matches!(r, Record::Deleted { path }
             if path.ends_with("/olddir"))),
         "journal should have a Delete record for olddir: {records:?}"
     );
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), .. }
+            .any(|r| matches!(r, Record::Added { path, .. }
             if path.ends_with("/newdir"))),
         "journal should have a Staged record for newdir: {records:?}"
     );

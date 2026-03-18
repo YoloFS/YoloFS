@@ -419,6 +419,7 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 			&hdr.entries[i];
 		char path_buf[AGFS_PATH_MAX];
 		char bp_buf[AGFS_PATH_MAX];
+		struct agfs_dirent de;
 		const char *child;
 		int parent_len;
 		char saved;
@@ -437,9 +438,9 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 			break;
 
 		bp = NULL;
-		if (ent.base_path_len > 0) {
-			err = agfs_copy_user_path(ent.base_path_ptr,
-						  ent.base_path_len, bp_buf);
+		if (ent.base_len > 0) {
+			err = agfs_copy_user_path(ent.base_ptr,
+						  ent.base_len, bp_buf);
 			if (err)
 				break;
 			bp = bp_buf;
@@ -472,14 +473,14 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 
 		dir = d_inode(parent_path.dentry);
 
+		de = (struct agfs_dirent){
+			.ino = ent.ino,
+			.base = bp,
+			.d_type = ent.d_type,
+			.checkpoint_gen = hdr.checkpoint_gen,
+		};
 		inode_lock(dir);
-		err = agfs_add_dirent(dir, child, strlen(child),
-				      &(struct agfs_dirent){
-					      .ino = ent.ino,
-					      .base_path = bp,
-					      .d_type = ent.d_type,
-					      .checkpoint_gen = hdr.checkpoint_gen,
-				      });
+		err = agfs_add_dirent(dir, child, strlen(child), &de);
 		inode_unlock(dir);
 		path_put(&parent_path);
 

@@ -15,7 +15,10 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 			      umode_t mode, const char *symname)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
+	struct agfs_dirent *old_de, de;
 	struct path inode_path;
+	unsigned char dt;
+	bool in_base;
 	u64 ino;
 	int err;
 
@@ -30,20 +33,28 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	}
 
 	agfs_replace_lower_path(dentry, &inode_path);
-	unsigned char dt = S_ISDIR(mode) ? DT_DIR :
-			   S_ISLNK(mode) ? DT_LNK : DT_REG;
+	dt = S_ISDIR(mode) ? DT_DIR : S_ISLNK(mode) ? DT_LNK : DT_REG;
 
+	/* Check for deleted dirent to inherit in_base. */
+	old_de = agfs_find_dirent(dir, dentry->d_name.name,
+				  dentry->d_name.len);
+	in_base = old_de && agfs_de_in_base(old_de);
+
+	de = (struct agfs_dirent){
+		.ino = ino,
+		.d_type = dt,
+		.base = in_base ? AGFS_BASE_PRESENT : NULL,
+		.checkpoint_gen = (u64)atomic64_read(&sbi->checkpoint_gen),
+	};
 	err = agfs_add_dirent(dir, dentry->d_name.name,
-				dentry->d_name.len,
-				&(struct agfs_dirent){
-					.ino = ino,
-					.d_type = dt,
-					.checkpoint_gen = (u64)atomic64_read(
-							&sbi->checkpoint_gen),
-				});
+			      dentry->d_name.len, &de);
 	if (err)
 		return err;
-	agfs_journal_append(sbi, dentry, ino, dt, NULL);
+
+	if (in_base)
+		agfs_journal_modify(sbi, dentry, ino, dt);
+	else
+		agfs_journal_add(sbi, dentry, ino, dt);
 
 	return 0;
 }
@@ -73,7 +84,7 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 	if (err)
 		return err;
 
-	err = agfs_journal_append(sbi, dentry, AGFS_INO_DELETED, 0, NULL);
+	err = agfs_journal_delete(sbi, dentry);
 	if (!err)
 		d_drop(dentry);
 	return err;
@@ -97,82 +108,6 @@ static int agfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 	return agfs_create_staged(dir, dentry, S_IFLNK, symname);
 }
 
-/* ── rename helpers ─────────────────────────────────────────────────── */
-
-struct agfs_rename_ctx {
-	u64		ino;
-	u64		gen;
-	char		*base_path;
-	unsigned char	d_type;
-	bool		found;
-};
-
-/*
- * Read the source dirent state. VFS holds inode_lock(old_dir).
- * Caller must kfree(ctx->base_path).
- */
-static int agfs_rename_read_src(struct inode *old_dir,
-				struct dentry *old_dentry,
-				struct agfs_rename_ctx *ctx)
-{
-	struct agfs_dirent *de;
-
-	memset(ctx, 0, sizeof(*ctx));
-	ctx->d_type = DT_UNKNOWN;
-
-	/* VFS holds inode_lock(old_dir) during rename */
-	de = agfs_find_dirent(old_dir,
-				 old_dentry->d_name.name,
-				 old_dentry->d_name.len);
-	if (de) {
-		ctx->found = true;
-		ctx->ino = de->ino;
-		ctx->gen = de->checkpoint_gen;
-		ctx->d_type = de->d_type;
-		if (agfs_ino_is_redirect(de->ino)) {
-			ctx->base_path = kstrdup(de->base_path, GFP_KERNEL);
-			if (!ctx->base_path)
-				return -ENOMEM;
-		}
-	}
-
-	/* Derive d_type from inode when no dirent existed */
-	if (!de && d_inode(old_dentry))
-		ctx->d_type = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
-
-	return 0;
-}
-
-/*
- * Add the destination dirent based on the source state.
- * Staged inodes keep their ino; base files get a path redirect.
- */
-static int agfs_rename_add_dst(struct inode *new_dir,
-			       struct dentry *new_dentry,
-			       const struct agfs_rename_ctx *ctx,
-			       const char *redirect_path)
-{
-	if (agfs_ino_is_staged(ctx->ino)) {
-		return agfs_add_dirent(new_dir,
-					new_dentry->d_name.name,
-					new_dentry->d_name.len,
-					&(struct agfs_dirent){
-						.ino = ctx->ino,
-						.d_type = ctx->d_type,
-						.checkpoint_gen = ctx->gen,
-					});
-	}
-
-	return agfs_add_dirent(new_dir,
-				new_dentry->d_name.name,
-				new_dentry->d_name.len,
-				&(struct agfs_dirent){
-					.ino = AGFS_INO_REDIRECT,
-					.base_path = (char *)redirect_path,
-					.d_type = ctx->d_type,
-				});
-}
-
 /* ── rename ────────────────────────────────────────────────────────── */
 
 static int agfs_rename(struct mnt_idmap *idmap,
@@ -181,15 +116,19 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		       unsigned int flags)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
-	struct agfs_rename_ctx ctx;
-	const char *redirect_path;
+	struct agfs_dirent *src_de, *dst_de, de;
+	char *redirect_path;
+	char *redirect = NULL;
 	char old_buf[AGFS_PATH_MAX];
+	u64 ino = 0, gen = 0;
+	unsigned char d_type = DT_UNKNOWN;
+	bool dst_in_base;
 	int err;
 
 	if (flags)
 		return -EINVAL;
 
-	/* old_buf is needed as the redirect base_path for base-only renames */
+	/* old_buf is needed as the redirect base for base-only renames */
 	err = agfs_dentry_relpath(old_dentry, old_buf, sizeof(old_buf));
 	if (err)
 		return err;
@@ -198,38 +137,76 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	 * serializes dirent access.  staging_sem is not needed here —
 	 * rename does not interact with checkpoint_gen or COW state. */
 
-	err = agfs_rename_read_src(old_dir, old_dentry, &ctx);
-	if (err)
-		goto out;
+	/* Read source state */
+	src_de = agfs_find_dirent(old_dir,
+				  old_dentry->d_name.name,
+				  old_dentry->d_name.len);
+	if (src_de) {
+		ino = src_de->ino;
+		gen = src_de->checkpoint_gen;
+		d_type = src_de->d_type;
+		if (agfs_ino_is_redirect(ino)) {
+			WARN_ON_ONCE(src_de->base == AGFS_BASE_PRESENT);
+			redirect = kstrdup(src_de->base, GFP_KERNEL);
+			if (!redirect)
+				return -ENOMEM;
+		}
+	} else if (d_inode(old_dentry)) {
+		d_type = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
+	}
 
-	if (ctx.found && agfs_ino_is_deleted(ctx.ino)) {
-		/* Source is deleted — cannot rename */
+	if (src_de && agfs_ino_is_deleted(ino)) {
 		err = -ENOENT;
 		goto out;
 	}
 
-	redirect_path = ctx.base_path ? ctx.base_path : old_buf;
+	redirect_path = redirect ? redirect : old_buf;
 
-	err = agfs_rename_add_dst(new_dir, new_dentry, &ctx, redirect_path);
+	/* Check if destination exists in base (for A vs M journal tag).
+	 * Must be done before add_dirent overwrites the dirent. */
+	dst_de = agfs_find_dirent(new_dir,
+				  new_dentry->d_name.name,
+				  new_dentry->d_name.len);
+	dst_in_base = dst_de ? agfs_de_in_base(dst_de) : false;
+	if (!dst_de && d_inode(new_dentry))
+		dst_in_base = true;
+
+	/* Add destination dirent */
+	de = (struct agfs_dirent){ .d_type = d_type };
+	if (agfs_ino_is_staged(ino)) {
+		de.ino = ino;
+		de.base = dst_in_base ? AGFS_BASE_PRESENT : NULL;
+		de.checkpoint_gen = gen;
+	} else {
+		de.ino = AGFS_INO_REDIRECT;
+		de.base = redirect_path;
+	}
+	err = agfs_add_dirent(new_dir, new_dentry->d_name.name,
+			      new_dentry->d_name.len, &de);
 	if (err)
 		goto out;
 
+	/* Delete old name */
 	err = agfs_del_dirent(old_dir,
-				old_dentry->d_name.name,
-				old_dentry->d_name.len);
+			      old_dentry->d_name.name,
+			      old_dentry->d_name.len);
 	if (err)
 		goto out;
 
-	/* Emit two E records: delete old + add new */
-	err = agfs_journal_append(sbi, old_dentry, AGFS_INO_DELETED, 0, NULL);
+	/* Emit journal records: delete old + add/modify/redirect new */
+	err = agfs_journal_delete(sbi, old_dentry);
 	if (!err) {
-		if (agfs_ino_is_staged(ctx.ino))
-			err = agfs_journal_append(sbi, new_dentry, ctx.ino,
-						  ctx.d_type, NULL);
-		else
-			err = agfs_journal_append(sbi, new_dentry,
-						  AGFS_INO_REDIRECT,
-						  ctx.d_type, redirect_path);
+		if (agfs_ino_is_staged(ino)) {
+			if (dst_in_base)
+				err = agfs_journal_modify(sbi, new_dentry,
+							  ino, d_type);
+			else
+				err = agfs_journal_add(sbi, new_dentry,
+						       ino, d_type);
+		} else {
+			err = agfs_journal_redirect(sbi, new_dentry,
+						    d_type, redirect_path);
+		}
 	}
 
 	/* Invalidate dcache for both names so next lookup uses dirents */
@@ -237,7 +214,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	d_drop(new_dentry);
 
 out:
-	kfree(ctx.base_path);
+	kfree(redirect);
 	return err;
 }
 

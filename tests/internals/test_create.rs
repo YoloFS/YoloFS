@@ -16,8 +16,8 @@ fn create_produces_add_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Staged(_), dtype: Some(agfs::journal::DType::File), .. } if path.ends_with("/brandnew.txt"))),
-        "journal should have an Entry(Staged, dtype=File) for brandnew.txt: {records:?}"
+            .any(|r| matches!(r, Record::Added { path, dtype: Some(agfs::journal::DType::File), .. } if path.ends_with("/brandnew.txt"))),
+        "journal should have an Added(dtype=File) record for brandnew.txt: {records:?}"
     );
 }
 

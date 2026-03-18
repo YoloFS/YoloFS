@@ -83,8 +83,8 @@ pub struct AgfsIocRestoreEntry {
     pub d_type: u8,
     pub _pad1: [u8; 5],
     pub ino: u64,
-    pub base_path_ptr: u64,
-    pub base_path_len: u16,
+    pub base_ptr: u64,
+    pub base_len: u16,
     pub _pad2: [u8; 6],
 }
 

@@ -132,7 +132,7 @@ static int agfs_lookup_staged(struct agfs_sb_info *sbi, struct dentry *dentry)
 		struct path base;
 		int err;
 
-		err = kern_path(de->base_path, LOOKUP_FOLLOW, &base);
+		err = kern_path(de->base, LOOKUP_FOLLOW, &base);
 		if (err)
 			return 0; /* base path gone — fall through */
 

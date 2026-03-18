@@ -90,6 +90,9 @@ fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<()> {
                 let base_old = to_base_path(from);
                 let base_new = to_base_path(to);
                 ensure_parent(&base_new, &mut ensured)?;
+                // Guard: source may not exist in base when a staged-only
+                // file was renamed; the content is handled by a separate
+                // Modified change via apply_inode.
                 if base_old.exists() {
                     fs::rename(&base_old, &base_new)
                         .with_context(|| format!("rename {from} → {to}"))?;

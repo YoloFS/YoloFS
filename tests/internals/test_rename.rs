@@ -16,9 +16,9 @@ fn rename_produces_rename_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Redirect(base), dtype: Some(agfs::journal::DType::File), .. }
+            .any(|r| matches!(r, Record::Redirect { path, dtype: Some(agfs::journal::DType::File), base, .. }
             if path.ends_with("/moved.txt") && base.ends_with("/hello.txt"))),
-        "journal should have an Entry(Redirect, dtype=File) for hello.txt → moved.txt: {records:?}"
+        "journal should have a Redirect(dtype=File) record for hello.txt → moved.txt: {records:?}"
     );
 }
 
@@ -92,11 +92,7 @@ fn rename_chain_journal_records() {
     // Both renames should produce Redirect records (base-file renames)
     let redirects: Vec<_> = records
         .iter()
-        .filter(|r| {
-            matches!(r, Record::Entry {
-                target: agfs::journal::Target::Redirect(_), ..
-            })
-        })
+        .filter(|r| matches!(r, Record::Redirect { .. }))
         .collect();
     assert_eq!(
         redirects.len(),
@@ -119,11 +115,11 @@ fn rename_overwrite_journal() {
 
     // Should have Delete(hello.txt) + Redirect(subdir/deep.txt, base=hello.txt)
     let has_delete = records.iter().any(|r| {
-        matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. }
+        matches!(r, Record::Deleted { path }
         if path.ends_with("/hello.txt"))
     });
     let has_redirect = records.iter().any(|r| {
-        matches!(r, Record::Entry { path, target: agfs::journal::Target::Redirect(base), .. }
+        matches!(r, Record::Redirect { path, base, .. }
         if path.ends_with("/deep.txt") && base.ends_with("/hello.txt"))
     });
     assert!(has_delete, "should have Delete for hello.txt: {records:?}");
@@ -147,4 +143,38 @@ fn rename_back_and_forth_no_changes() {
         ch.is_empty(),
         "rename back and forth should produce no changes, got: {ch:?}"
     );
+}
+
+/// Rename a staged (newly created) file to overwrite a base file.
+/// The destination exists in base, so the kernel emits D + M (not D + A).
+#[test]
+fn rename_staged_file_to_base_path() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // Create a new staged file
+    fs::write(s.mnt_path("brand_new.txt"), "staged content\n").expect("create");
+    // Rename it to overwrite multi.txt (which exists in base)
+    fs::rename(s.mnt_path("brand_new.txt"), s.mnt_path("multi.txt")).expect("rename");
+
+    let records = journal(&s);
+
+    // Should have Delete for brand_new.txt
+    let has_delete = records
+        .iter()
+        .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/brand_new.txt")));
+    assert!(
+        has_delete,
+        "should have Delete for brand_new.txt: {records:?}"
+    );
+    // Destination exists in base → kernel emits Modified (not Added)
+    let has_modified = records
+        .iter()
+        .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/multi.txt")));
+    assert!(
+        has_modified,
+        "should have Modified for multi.txt (dest in base): {records:?}"
+    );
+    // Verify the file content is correct
+    let content = fs::read_to_string(s.mnt_path("multi.txt")).expect("read");
+    assert_eq!(content, "staged content\n");
 }

@@ -4,6 +4,7 @@ mod test_checkpoint;
 mod test_commit_abort;
 mod test_create;
 mod test_delete;
+mod test_in_base;
 mod test_layout;
 mod test_mkdir;
 mod test_ownership;

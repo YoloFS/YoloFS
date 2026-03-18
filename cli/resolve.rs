@@ -3,35 +3,41 @@
 // Resolve (replay) the append-only journal into a list of Changes.
 //
 // Intermediate operations collapse into their final effect:
-// - `Staged(x) → Deleted(x)` cancels out (if x not in base).
+// - `Added(x) → Deleted(x)` cancels out (x was new).
 // - `Deleted(old) + Redirect(new, old)` collapses to `Rename(old→new)`.
 // - Redirect chains collapse: `Redirect(b, a)` then `Redirect(c, b)` → `Rename(a, c)`.
-// - Multiple `E` records for the same path keep only the final state.
+// - Multiple records for the same path keep only the final state.
 
-use crate::journal::{DType, Record, Target};
+use crate::journal::{DType, Record};
 use anyhow::Result;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-
-fn base_file(rel: &str) -> PathBuf {
-    Path::new("/").join(rel.trim_start_matches('/'))
-}
 
 /// A resolved change — the final effect of replaying the journal.
 #[derive(Debug)]
 pub enum Change {
-    Added { path: String, ino: u64, dtype: DType },
-    Modified { path: String, ino: u64, dtype: DType },
+    Added {
+        path: String,
+        ino: u64,
+        dtype: DType,
+    },
+    Modified {
+        path: String,
+        ino: u64,
+        dtype: DType,
+    },
     Deleted(String),
-    Renamed { from: String, to: String, dtype: DType },
+    Renamed {
+        from: String,
+        to: String,
+        dtype: DType,
+    },
 }
 
 impl Change {
     /// Return the staged inode ID if this change carries one.
     pub fn ino(&self) -> Option<u64> {
         match self {
-            Change::Added { ino, .. }
-            | Change::Modified { ino, .. } => Some(*ino),
+            Change::Added { ino, .. } | Change::Modified { ino, .. } => Some(*ino),
             _ => None,
         }
     }
@@ -102,11 +108,19 @@ pub struct Resolver {
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
     /// Write `inodes/<ino>` to base. `is_new`: true = add, false = overwrite.
-    Stage { ino: u64, dtype: DType, is_new: bool },
+    Stage {
+        ino: u64,
+        dtype: DType,
+        is_new: bool,
+    },
     /// Remove from base.
     Delete,
     /// Rename from `origin`. If `ino` is Some, also overwrite with staged content.
-    Rename { origin: String, dtype: DType, ino: Option<u64> },
+    Rename {
+        origin: String,
+        dtype: DType,
+        ino: Option<u64>,
+    },
 }
 
 impl Resolver {
@@ -114,81 +128,114 @@ impl Resolver {
         Self::default()
     }
 
+    fn process_stage(&mut self, path: String, dtype: Option<DType>, ino: u64, is_new: bool) {
+        let dt = dtype.unwrap_or(DType::File);
+        match self.state.remove(&path) {
+            Some(Action::Rename { origin, .. }) => {
+                self.state.insert(
+                    path,
+                    Action::Rename {
+                        origin,
+                        dtype: dt,
+                        ino: Some(ino),
+                    },
+                );
+            }
+            Some(Action::Delete) => {
+                // Path was deleted before this add/modify — it existed
+                // prior (base or earlier staged), so this is a modification.
+                self.state.insert(
+                    path,
+                    Action::Stage {
+                        ino,
+                        dtype: dt,
+                        is_new: false,
+                    },
+                );
+            }
+            _ => {
+                self.state.insert(
+                    path,
+                    Action::Stage {
+                        ino,
+                        dtype: dt,
+                        is_new,
+                    },
+                );
+            }
+        }
+    }
+
     pub fn process(&mut self, record: Record) {
         match record {
-            Record::Entry { path, target, dtype } => match target {
-                Target::Staged(ino) => {
-                    let dt = dtype.unwrap_or(DType::File);
-                    if let Some(Action::Rename { origin, .. }) = self.state.remove(&path) {
-                        self.state.insert(
-                            path,
-                            Action::Rename { origin, dtype: dt, ino: Some(ino) },
-                        );
-                    } else {
-                        let is_new = !base_file(&path).exists();
-                        self.state
-                            .insert(path, Action::Stage { ino, dtype: dt, is_new });
-                    }
+            Record::Added { path, dtype, ino } => {
+                self.process_stage(path, dtype, ino, true);
+            }
+            Record::Modified { path, dtype, ino } => {
+                self.process_stage(path, dtype, ino, false);
+            }
+            Record::Deleted { path } => match self.state.remove(&path) {
+                Some(Action::Stage { is_new: true, .. }) => {
+                    // New file deleted — cancels out.
                 }
-                Target::Deleted => match self.state.remove(&path) {
-                    Some(Action::Stage { is_new: true, .. }) => {
-                        // New file deleted — cancels out.
-                    }
-                    Some(Action::Stage { is_new: false, .. }) => {
-                        self.state.insert(path, Action::Delete);
-                    }
-                    Some(Action::Rename { origin, .. }) => {
-                        self.state.insert(origin, Action::Delete);
-                    }
-                    _ => {
-                        self.state.insert(path, Action::Delete);
-                    }
-                },
-                Target::Redirect(base_path) => {
-                    let dt = dtype.unwrap_or(DType::File);
-
-                    // Overwrite whatever was at the destination.
-                    if let Some(Action::Rename {
-                        origin: prev_origin, ..
-                    }) = self.state.remove(&path)
-                    {
-                        self.state.insert(prev_origin, Action::Delete);
-                    }
-
-                    // The kernel emits E(old, Deleted) before E(new,
-                    // Redirect(old)).  Remove that spurious delete.
-                    if matches!(self.state.get(&base_path), Some(Action::Delete)) {
-                        self.state.remove(&base_path);
-                    }
-
-                    // If the source was staged, carry over the ino.
-                    if let Some(Action::Stage { ino, dtype: prev_dt, .. }) =
-                        self.state.remove(&base_path)
-                    {
-                        if base_file(&base_path).exists() {
-                            self.state
-                                .insert(base_path.clone(), Action::Delete);
-                        }
-                        self.state.insert(
-                            path,
-                            Action::Rename {
-                                origin: base_path,
-                                dtype: prev_dt,
-                                ino: Some(ino),
-                            },
-                        );
-                    } else {
-                        self.state.insert(
-                            path,
-                            Action::Rename {
-                                origin: base_path,
-                                dtype: dt,
-                                ino: None,
-                            },
-                        );
-                    }
+                Some(Action::Rename { origin, .. }) => {
+                    self.state.insert(origin, Action::Delete);
+                }
+                _ => {
+                    self.state.insert(path, Action::Delete);
                 }
             },
+            Record::Redirect {
+                path,
+                dtype,
+                base: base_path,
+            } => {
+                let dt = dtype.unwrap_or(DType::File);
+
+                // Overwrite whatever was at the destination.
+                if let Some(Action::Rename {
+                    origin: prev_origin,
+                    ..
+                }) = self.state.remove(&path)
+                {
+                    self.state.insert(prev_origin, Action::Delete);
+                }
+
+                // The kernel emits D(old) before R(new, old).
+                // Remove that spurious delete.
+                if matches!(self.state.get(&base_path), Some(Action::Delete)) {
+                    self.state.remove(&base_path);
+                }
+
+                // If the source was staged, carry over the ino.
+                if let Some(Action::Stage {
+                    ino,
+                    dtype: prev_dt,
+                    is_new,
+                }) = self.state.remove(&base_path)
+                {
+                    if !is_new {
+                        self.state.insert(base_path.clone(), Action::Delete);
+                    }
+                    self.state.insert(
+                        path,
+                        Action::Rename {
+                            origin: base_path,
+                            dtype: prev_dt,
+                            ino: Some(ino),
+                        },
+                    );
+                } else {
+                    self.state.insert(
+                        path,
+                        Action::Rename {
+                            origin: base_path,
+                            dtype: dt,
+                            ino: None,
+                        },
+                    );
+                }
+            }
             Record::Checkpoint { .. } => {}
         }
     }
@@ -196,163 +243,134 @@ impl Resolver {
     /// Consume the state and produce the final change list.
     /// Order: renames, then adds/modifies, then deletes.
     pub fn into_changes(self) -> Vec<Change> {
-        let mut renames = Vec::new();
-        let mut writes = Vec::new();
-        let mut deletes = Vec::new();
-
+        let mut changes = Vec::new();
         for (path, action) in self.state {
-            emit_action_owned(&mut renames, &mut writes, &mut deletes, path, &action);
+            emit_action(&mut changes, path, action);
         }
-
-        renames.extend(writes);
-        renames.extend(deletes);
-        renames
+        changes.sort_by_key(|c| match c {
+            Change::Renamed { .. } => 0,
+            Change::Added { .. } | Change::Modified { .. } => 1,
+            Change::Deleted(_) => 2,
+        });
+        changes
     }
-
 }
-
-
 
 /// A group of resolved changes belonging to a checkpoint (or trailing).
 #[derive(Debug)]
-pub struct Section {
+pub struct Segment {
     /// Checkpoint id and name, or None for trailing (unsaved) changes.
     pub checkpoint: Option<(u64, String)>,
     pub changes: Vec<Change>,
 }
 
-/// Resolve the journal into sections grouped by checkpoint boundaries.
+/// Resolve the journal into segments grouped by checkpoint boundaries.
 ///
-/// Each section contains the *delta* of changes introduced between the
-/// previous checkpoint and this one.  The trailing section (checkpoint=None)
+/// Each segment contains the *delta* of changes introduced between the
+/// previous checkpoint and this one.  The trailing segment (checkpoint=None)
 /// holds changes after the last checkpoint.
 ///
-/// When there are no checkpoints, returns a single section with checkpoint=None.
-pub fn resolve_sections(records: Vec<Record>) -> Result<Vec<Section>> {
-    // Collect checkpoint boundary indices
-    let chk_indices: Vec<(usize, u64, String)> = records
+/// When there are no checkpoints, returns a single segment with checkpoint=None.
+pub fn resolve_segments(records: Vec<Record>) -> Result<Vec<Segment>> {
+    // Collect checkpoint boundary indices (index only, no string clones).
+    let chk_indices: Vec<(usize, u64)> = records
         .iter()
         .enumerate()
         .filter_map(|(i, r)| match r {
-            Record::Checkpoint { id, name } => Some((i, *id, name.clone())),
+            Record::Checkpoint { id, .. } => Some((i, *id)),
             _ => None,
         })
         .collect();
 
     if chk_indices.is_empty() {
         let changes = resolve(records)?;
-        return Ok(vec![Section {
+        return Ok(vec![Segment {
             checkpoint: None,
             changes,
         }]);
     }
 
-    // Process records incrementally through a single Resolver,
-    // snapshotting at each boundary — O(N) total instead of O(N*S).
-    let mut sections = Vec::new();
-    let mut resolver = Resolver::new();
-    let mut prev_state: BTreeMap<String, Action> = BTreeMap::new();
+    // Resolve each segment independently with a fresh Resolver.
+    let mut segments = Vec::new();
     let mut records_iter = records.into_iter();
     let mut record_idx = 0;
 
-    for &(chk_idx, chk_id, ref chk_name) in &chk_indices {
+    for &(chk_idx, chk_id) in &chk_indices {
+        let mut resolver = Resolver::new();
+        let mut chk_name = String::new();
         while record_idx <= chk_idx {
-            resolver.process(records_iter.next().unwrap());
+            let record = records_iter.next().unwrap();
+            if let Record::Checkpoint { name, .. } = record {
+                chk_name = name;
+            } else {
+                resolver.process(record);
+            }
             record_idx += 1;
         }
-        let delta = diff_actions(&prev_state, &resolver.state);
-        sections.push(Section {
-            checkpoint: Some((chk_id, chk_name.clone())),
-            changes: delta,
+        segments.push(Segment {
+            checkpoint: Some((chk_id, chk_name)),
+            changes: resolver.into_changes(),
         });
-        prev_state = resolver.state.clone();
     }
 
     // Trailing changes after the last checkpoint
+    let mut resolver = Resolver::new();
     for record in records_iter {
         resolver.process(record);
     }
-    let trailing = diff_actions(&prev_state, &resolver.state);
+    let trailing = resolver.into_changes();
     if !trailing.is_empty() {
-        sections.push(Section {
+        segments.push(Segment {
             checkpoint: None,
             changes: trailing,
         });
     }
 
-    Ok(sections)
+    Ok(segments)
 }
 
-/// Compute the delta between two Action-map snapshots.
-fn diff_actions(
-    prev: &BTreeMap<String, Action>,
-    curr: &BTreeMap<String, Action>,
-) -> Vec<Change> {
-    let mut changes = Vec::new();
-
-    for (path, action) in curr {
-        match prev.get(path) {
-            None => {
-                let mut discard = Vec::new();
-                emit_action_owned(
-                    &mut changes, &mut changes, &mut discard,
-                    path.clone(), action,
-                );
-                changes.extend(discard);
+/// Convert a (path, action) pair into Changes.
+fn emit_action(out: &mut Vec<Change>, path: String, action: Action) {
+    match action {
+        Action::Stage { ino, dtype, is_new } => {
+            if is_new {
+                out.push(Change::Added { path, ino, dtype });
+            } else {
+                out.push(Change::Modified { path, ino, dtype });
             }
-            Some(old) if old != action => {
-                // Path existed in the previous section — emit as modification.
-                match action {
-                    Action::Stage { ino, dtype, .. } => {
-                        changes.push(Change::Modified {
-                            path: path.clone(),
-                            ino: *ino,
-                            dtype: *dtype,
-                        });
-                    }
-                    Action::Delete => {
-                        if !matches!(old, Action::Delete) {
-                            changes.push(Change::Deleted(path.clone()));
-                        }
-                    }
-                    Action::Rename { origin, ino, dtype } => {
-                        if origin != path {
-                            changes.push(Change::Renamed {
-                                from: origin.clone(),
-                                to: path.clone(),
-                                dtype: *dtype,
-                            });
-                        }
-                        if let Some(ino) = ino {
-                            changes.push(Change::Modified {
-                                path: path.clone(),
-                                ino: *ino,
-                                dtype: *dtype,
-                            });
-                        }
-                    }
+        }
+        Action::Delete => {
+            out.push(Change::Deleted(path));
+        }
+        Action::Rename { origin, dtype, ino } => {
+            let renamed = origin != path;
+            if let Some(ino) = ino {
+                if renamed {
+                    // Need path for both Renamed and Modified — one clone required.
+                    out.push(Change::Renamed {
+                        from: origin,
+                        to: path.clone(),
+                        dtype,
+                    });
                 }
+                out.push(Change::Modified { path, ino, dtype });
+            } else if renamed {
+                out.push(Change::Renamed {
+                    from: origin,
+                    to: path,
+                    dtype,
+                });
             }
-            _ => {} // unchanged
         }
     }
-
-    // Paths in prev that vanished in curr (e.g. staged file then canceled).
-    for (path, old) in prev {
-        if !curr.contains_key(path) && !matches!(old, Action::Delete) {
-            changes.push(Change::Deleted(path.clone()));
-        }
-    }
-
-    changes
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::journal::{DType, Record};
     use std::fs;
+    use std::path::Path;
 
     fn setup_test_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -375,7 +393,7 @@ mod tests {
     fn resolve_add() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0new.txt\01\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0new.txt\0f\01\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
@@ -388,7 +406,7 @@ mod tests {
     fn resolve_delete() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/etc\0hostname\00\0\0\n");
+        data.extend_from_slice(b"D\0/etc\0hostname\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
@@ -397,12 +415,30 @@ mod tests {
     }
 
     #[test]
+    fn resolve_modify() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"M\0/etc\0hostname\0f\01\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/1"), "modified").unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert!(
+            matches!(&changes[0], Change::Modified { path, ino: 1, dtype: DType::File }
+                if path == "/etc/hostname"),
+            "expected Modified(/etc/hostname, ino=1), got: {:?}",
+            changes[0]
+        );
+    }
+
+    #[test]
     fn resolve_rename() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Rename: E(old, Deleted) + E(new, Redirect(old))
-        data.extend_from_slice(b"E\0/old\0path\00\0\0\n");
-        data.extend_from_slice(b"E\0/new\0path\0-1\0f\0/old/path\n");
+        data.extend_from_slice(b"D\0/old\0path\n");
+        data.extend_from_slice(b"R\0/new\0path\0f\0/old/path\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
@@ -417,8 +453,8 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Rename directory: E(old, Deleted) + E(new, Redirect(old), dtype=d)
-        data.extend_from_slice(b"E\0\0olddir\00\0\0\n");
-        data.extend_from_slice(b"E\0\0newdir\0-1\0d\0/olddir\n");
+        data.extend_from_slice(b"D\0\0olddir\n");
+        data.extend_from_slice(b"R\0\0newdir\0d\0/olddir\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
@@ -437,11 +473,11 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Rename dir a->b: delete a + redirect b->a (dtype=d)
-        data.extend_from_slice(b"E\0\0a\00\0\0\n");
-        data.extend_from_slice(b"E\0\0b\0-1\0d\0/a\n");
+        data.extend_from_slice(b"D\0\0a\n");
+        data.extend_from_slice(b"R\0\0b\0d\0/a\n");
         // Rename dir b->c: delete b + redirect c->a (dtype=d, kernel follows chain)
-        data.extend_from_slice(b"E\0\0b\00\0\0\n");
-        data.extend_from_slice(b"E\0\0c\0-1\0d\0/a\n");
+        data.extend_from_slice(b"D\0\0b\n");
+        data.extend_from_slice(b"R\0\0c\0d\0/a\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
@@ -460,10 +496,10 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Rename base file: E(old, Deleted) + E(new, Redirect(old))
-        data.extend_from_slice(b"E\0\0old.txt\00\0\0\n");
-        data.extend_from_slice(b"E\0\0new.txt\0-1\0f\0/old.txt\n");
-        // Modify at new path (COW): E(new, Staged(ino=5))
-        data.extend_from_slice(b"E\0\0new.txt\05\0f\0\n");
+        data.extend_from_slice(b"D\0\0old.txt\n");
+        data.extend_from_slice(b"R\0\0new.txt\0f\0/old.txt\n");
+        // Modify at new path (COW): M(new, ino=5)
+        data.extend_from_slice(b"M\0\0new.txt\0f\05\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/5"), "modified").unwrap();
 
@@ -490,10 +526,10 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Create x (staged)
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
         // Rename x->y: kernel emits staged rename (same ino at new path + delete old)
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\00\0\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0y\01\0f\0\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0x\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\01\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
@@ -513,10 +549,10 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Rename a->b (redirect): delete old + redirect new
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\00\0\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\0-1\0f\0/nonexistent_test_12345/a\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
+        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/a\n");
         // Create new file at a
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\02\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/2"), "new content").unwrap();
 
@@ -541,11 +577,11 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Rename a->b: delete a + redirect b->a
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\00\0\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\0-1\0f\0/nonexistent_test_12345/a\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
+        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/a\n");
         // Rename b->c: delete b + redirect c->a (kernel follows the chain)
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\00\0\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0c\0-1\0f\0/nonexistent_test_12345/a\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0b\n");
+        data.extend_from_slice(b"R\0/nonexistent_test_12345\0c\0f\0/nonexistent_test_12345/a\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
@@ -565,13 +601,11 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Rename a->b: delete a + redirect b->a
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\00\0\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\0-1\0f\0/nonexistent_test_12345/a\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
+        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/a\n");
         // Rename b->a: delete b + redirect a->a (kernel follows chain: b's base_path is a)
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\00\0\0\n");
-        data.extend_from_slice(
-            b"E\0/nonexistent_test_12345\0a\0-1\0f\0/nonexistent_test_12345/a\n",
-        );
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0b\n");
+        data.extend_from_slice(b"R\0/nonexistent_test_12345\0a\0f\0/nonexistent_test_12345/a\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
@@ -591,8 +625,8 @@ mod tests {
         let mut data = Vec::new();
         // /etc/hostname and /etc/hosts both exist in base
         // Rename hostname -> hosts (overwrite)
-        data.extend_from_slice(b"E\0/etc\0hostname\00\0\0\n");
-        data.extend_from_slice(b"E\0/etc\0hosts\0-1\0f\0/etc/hostname\n");
+        data.extend_from_slice(b"D\0/etc\0hostname\n");
+        data.extend_from_slice(b"R\0/etc\0hosts\0f\0/etc/hostname\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
@@ -615,12 +649,10 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Stage x with ino 1
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
         // Rename y→x (redirect): delete y + redirect x→y
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0y\00\0\0\n");
-        data.extend_from_slice(
-            b"E\0/nonexistent_test_12345\0x\0-1\0f\0/nonexistent_test_12345/y\n",
-        );
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0y\n");
+        data.extend_from_slice(b"R\0/nonexistent_test_12345\0x\0f\0/nonexistent_test_12345/y\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "staged content").unwrap();
 
@@ -641,26 +673,22 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Rename a→b: delete a + redirect b→a
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\00\0\0\n");
-        data.extend_from_slice(
-            b"E\0/nonexistent_test_12345\0b\0-1\0f\0/nonexistent_test_12345/a\n",
-        );
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
+        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/a\n");
         // Rename c→b: delete c + redirect b→c (overwrites the a→b rename at b)
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0c\00\0\0\n");
-        data.extend_from_slice(
-            b"E\0/nonexistent_test_12345\0b\0-1\0f\0/nonexistent_test_12345/c\n",
-        );
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0c\n");
+        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/c\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
-        let has_rename = changes
-            .iter()
-            .any(|c| matches!(c, Change::Renamed { from, to, .. }
-                if from == "/nonexistent_test_12345/c" && to == "/nonexistent_test_12345/b"));
-        let has_delete = changes
-            .iter()
-            .any(|c| matches!(c, Change::Deleted(p)
-                if p == "/nonexistent_test_12345/a"));
+        let has_rename = changes.iter().any(|c| {
+            matches!(c, Change::Renamed { from, to, .. }
+                if from == "/nonexistent_test_12345/c" && to == "/nonexistent_test_12345/b")
+        });
+        let has_delete = changes.iter().any(|c| {
+            matches!(c, Change::Deleted(p)
+                if p == "/nonexistent_test_12345/a")
+        });
         assert!(has_rename, "expected Renamed(c→b), got: {changes:?}");
         assert!(has_delete, "expected Deleted(a), got: {changes:?}");
     }
@@ -670,13 +698,102 @@ mod tests {
     fn create_then_delete_cancels() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\00\0\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0x\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
         assert!(changes.is_empty(), "expected no changes, got: {changes:?}");
+    }
+
+    /// Modify a base file, then rename another base file onto it.
+    /// The modification is overwritten — only the rename survives.
+    #[test]
+    fn redirect_overwrites_prior_modified() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // COW modify /etc/hostname
+        data.extend_from_slice(b"M\0/etc\0hostname\0f\01\n");
+        // Rename /etc/hosts → /etc/hostname (overwrite the modified file)
+        data.extend_from_slice(b"D\0/etc\0hosts\n");
+        data.extend_from_slice(b"R\0/etc\0hostname\0f\0/etc/hosts\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/1"), "modified").unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
+        assert!(
+            matches!(&changes[0], Change::Renamed { from, to, .. }
+                if from == "/etc/hosts" && to == "/etc/hostname"),
+            "expected Renamed(hosts→hostname), modification should be dropped, got: {:?}",
+            changes[0]
+        );
+    }
+
+    /// Multiple COW modifications to the same base file keep only the final ino.
+    #[test]
+    fn multiple_modifies_keep_final_ino() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"M\0/etc\0hostname\0f\01\n");
+        data.extend_from_slice(b"M\0/etc\0hostname\0f\02\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/1"), "first").unwrap();
+        fs::write(dir.path().join("inodes/2"), "second").unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
+        assert!(
+            matches!(&changes[0], Change::Modified { path, ino: 2, .. }
+                if path == "/etc/hostname"),
+            "expected Modified with final ino=2, got: {:?}",
+            changes[0]
+        );
+    }
+
+    /// Delete a base file then create a new one at the same path.
+    /// The Delete tells us the path existed, so the net result is Modified.
+    #[test]
+    fn delete_then_create_at_same_path() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"D\0/etc\0hostname\n");
+        data.extend_from_slice(b"A\0/etc\0hostname\0f\01\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/1"), "replacement").unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
+        assert!(
+            matches!(&changes[0], Change::Modified { path, ino: 1, .. }
+                if path == "/etc/hostname"),
+            "expected Modified (base file replaced), got: {:?}",
+            changes[0]
+        );
+    }
+
+    /// Delete a file then rename another file onto the deleted path.
+    /// The explicit Delete at the destination is superseded by the redirect.
+    #[test]
+    fn delete_then_redirect_onto_same_path() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // rm /etc/hostname
+        data.extend_from_slice(b"D\0/etc\0hostname\n");
+        // mv /etc/hosts → /etc/hostname: D(hosts) + R(hostname, hosts)
+        data.extend_from_slice(b"D\0/etc\0hosts\n");
+        data.extend_from_slice(b"R\0/etc\0hostname\0f\0/etc/hosts\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
+        assert!(
+            matches!(&changes[0], Change::Renamed { from, to, .. }
+                if from == "/etc/hosts" && to == "/etc/hostname"),
+            "expected Renamed(hosts→hostname), got: {:?}",
+            changes[0]
+        );
     }
 
     /// Modify base file then delete: should still delete the base file.
@@ -686,8 +803,8 @@ mod tests {
         let dir = setup_test_dir();
         // /etc/hostname exists in base
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/etc\0hostname\01\0f\0\n");
-        data.extend_from_slice(b"E\0/etc\0hostname\00\0\0\n");
+        data.extend_from_slice(b"M\0/etc\0hostname\0f\01\n");
+        data.extend_from_slice(b"D\0/etc\0hostname\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "modified").unwrap();
 
@@ -706,10 +823,10 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // COW modify
-        data.extend_from_slice(b"E\0/etc\0hostname\01\0f\0\n");
+        data.extend_from_slice(b"M\0/etc\0hostname\0f\01\n");
         // Staged rename: delete old + staged new (same ino)
-        data.extend_from_slice(b"E\0/etc\0hostname\00\0\0\n");
-        data.extend_from_slice(b"E\0/etc\0hostname.bak\01\0f\0\n");
+        data.extend_from_slice(b"D\0/etc\0hostname\n");
+        data.extend_from_slice(b"A\0/etc\0hostname.bak\0f\01\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "modified").unwrap();
 
@@ -739,17 +856,17 @@ mod tests {
     fn resolve_at_checkpoint() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\02\0f\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0y\03\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\02\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\03\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "v1").unwrap();
         fs::write(dir.path().join("inodes/2"), "v2").unwrap();
         fs::write(dir.path().join("inodes/3"), "v3").unwrap();
 
-        let changes = resolve_at(read(dir.path()), "snap1").unwrap();
-        assert_eq!(changes.len(), 1, "at snap1: {changes:?}");
+        let changes = resolve_at(read(dir.path()), "chk1").unwrap();
+        assert_eq!(changes.len(), 1, "at chk1: {changes:?}");
         assert!(matches!(&changes[0], Change::Added { path, ino, .. }
             if path == "/nonexistent_test_12345/x" && *ino == 1));
 
@@ -761,11 +878,11 @@ mod tests {
     fn resolve_at_matches_latest_checkpoint() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
         data.extend_from_slice(b"K\01\0dup\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0y\02\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\02\n");
         data.extend_from_slice(b"K\02\0dup\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0z\03\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0z\0f\03\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
         fs::write(dir.path().join("inodes/2"), "").unwrap();
@@ -778,7 +895,7 @@ mod tests {
     #[test]
     fn resolve_at_not_found() {
         let dir = setup_test_dir();
-        fs::write(dir.path().join("journal"), b"E\0\0a\01\0f\0\n").unwrap();
+        fs::write(dir.path().join("journal"), b"A\0\0a\0f\01\n").unwrap();
         assert!(resolve_at(read(dir.path()), "nonexistent").is_err());
     }
 
@@ -786,9 +903,9 @@ mod tests {
     fn resolve_at_by_numeric_id() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
-        data.extend_from_slice(b"K\05\0mysnap\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0y\02\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
+        data.extend_from_slice(b"K\05\0mychk\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
         fs::write(dir.path().join("inodes/2"), "").unwrap();
@@ -796,7 +913,7 @@ mod tests {
         let changes = resolve_at(read(dir.path()), "5").unwrap();
         assert_eq!(changes.len(), 1, "by id: {changes:?}");
 
-        let changes2 = resolve_at(read(dir.path()), "mysnap").unwrap();
+        let changes2 = resolve_at(read(dir.path()), "mychk").unwrap();
         assert_eq!(changes2.len(), 1, "by name: {changes2:?}");
     }
 
@@ -804,7 +921,7 @@ mod tests {
     fn resolve_at_id_not_found() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"K\01\0snap\n");
+        data.extend_from_slice(b"K\01\0chk\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         assert!(resolve_at(read(dir.path()), "99").is_err());
     }
@@ -813,19 +930,27 @@ mod tests {
     fn resolve_at_id_takes_priority_over_name() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
         data.extend_from_slice(b"K\01\0first\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0y\02\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\02\n");
         data.extend_from_slice(b"K\02\01\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
         fs::write(dir.path().join("inodes/2"), "").unwrap();
 
         let changes = resolve_at(read(dir.path()), "1").unwrap();
-        assert_eq!(changes.len(), 1, "id=1 should find first checkpoint: {changes:?}");
+        assert_eq!(
+            changes.len(),
+            1,
+            "id=1 should find first checkpoint: {changes:?}"
+        );
 
         let changes2 = resolve_at(read(dir.path()), "2").unwrap();
-        assert_eq!(changes2.len(), 2, "id=2 should find second checkpoint: {changes2:?}");
+        assert_eq!(
+            changes2.len(),
+            2,
+            "id=2 should find second checkpoint: {changes2:?}"
+        );
 
         let changes3 = resolve_at(read(dir.path()), "first").unwrap();
         assert_eq!(changes3.len(), 1, "name=first: {changes3:?}");
@@ -835,9 +960,9 @@ mod tests {
     fn resolver_single_pass_checkpoint() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
-        data.extend_from_slice(b"K\03\0snap\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0y\02\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
+        data.extend_from_slice(b"K\03\0chk\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
         fs::write(dir.path().join("inodes/2"), "").unwrap();
@@ -863,8 +988,8 @@ mod tests {
     fn resolve_skips_checkpoint_records() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
-        data.extend_from_slice(b"K\01\0snap\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
@@ -873,367 +998,524 @@ mod tests {
         assert!(matches!(&changes[0], Change::Added { .. }));
     }
 
-    // -- resolve_sections tests --
+    // -- resolve_segments tests --
 
     #[test]
-    fn sections_no_checkpoints() {
+    fn segments_no_checkpoints() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\01\0f\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\02\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
         fs::write(dir.path().join("inodes/2"), "").unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 1);
-        assert!(sections[0].checkpoint.is_none());
-        assert_eq!(sections[0].changes.len(), 2);
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert!(segments[0].checkpoint.is_none());
+        assert_eq!(segments[0].changes.len(), 2);
     }
 
     #[test]
-    fn sections_one_checkpoint_no_trailing() {
+    fn segments_one_checkpoint_no_trailing() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\01\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
         data.extend_from_slice(b"K\01\0build\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 1);
-        assert_eq!(sections[0].checkpoint, Some((1, "build".into())));
-        assert_eq!(sections[0].changes.len(), 1);
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].checkpoint, Some((1, "build".into())));
+        assert_eq!(segments[0].changes.len(), 1);
     }
 
     #[test]
-    fn sections_two_checkpoints_with_trailing() {
+    fn segments_two_checkpoints_with_trailing() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\01\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
         data.extend_from_slice(b"K\01\0first\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\02\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
         data.extend_from_slice(b"K\02\0second\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0c\03\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "").unwrap();
         fs::write(dir.path().join("inodes/2"), "").unwrap();
         fs::write(dir.path().join("inodes/3"), "").unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 3, "{sections:?}");
-        assert_eq!(sections[0].checkpoint, Some((1, "first".into())));
-        assert_eq!(sections[0].changes.len(), 1, "first: {:?}", sections[0].changes);
-        assert_eq!(sections[1].checkpoint, Some((2, "second".into())));
-        assert_eq!(sections[1].changes.len(), 1, "second: {:?}", sections[1].changes);
-        assert!(sections[2].checkpoint.is_none());
-        assert_eq!(sections[2].changes.len(), 1, "trailing: {:?}", sections[2].changes);
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 3, "{segments:?}");
+        assert_eq!(segments[0].checkpoint, Some((1, "first".into())));
+        assert_eq!(
+            segments[0].changes.len(),
+            1,
+            "first: {:?}",
+            segments[0].changes
+        );
+        assert_eq!(segments[1].checkpoint, Some((2, "second".into())));
+        assert_eq!(
+            segments[1].changes.len(),
+            1,
+            "second: {:?}",
+            segments[1].changes
+        );
+        assert!(segments[2].checkpoint.is_none());
+        assert_eq!(
+            segments[2].changes.len(),
+            1,
+            "trailing: {:?}",
+            segments[2].changes
+        );
     }
 
     #[test]
-    fn sections_modify_across_checkpoints() {
+    fn segments_modify_across_checkpoints() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\02\0f\0\n");
-        data.extend_from_slice(b"K\02\0snap2\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        // Re-COW after checkpoint: kernel emits M (file exists after chk1)
+        data.extend_from_slice(b"M\0/nonexistent_test_12345\0x\0f\02\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "v1").unwrap();
         fs::write(dir.path().join("inodes/2"), "v2").unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 2, "{sections:?}");
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
 
-        assert_eq!(sections[0].changes.len(), 1);
+        assert_eq!(segments[0].changes.len(), 1);
         assert!(
-            matches!(&sections[0].changes[0], Change::Added { path, ino, .. }
+            matches!(&segments[0].changes[0], Change::Added { path, ino, .. }
             if path == "/nonexistent_test_12345/x" && *ino == 1)
         );
 
-        assert_eq!(sections[1].changes.len(), 1);
+        assert_eq!(segments[1].changes.len(), 1);
         assert!(
-            matches!(&sections[1].changes[0], Change::Modified { path, ino, .. }
+            matches!(&segments[1].changes[0], Change::Modified { path, ino, .. }
             if path == "/nonexistent_test_12345/x" && *ino == 2)
         );
     }
 
+    /// Base file modified in segment 1, re-COW in segment 2: both are Modified.
     #[test]
-    fn sections_empty_checkpoint() {
+    fn segments_base_modify_across_checkpoints() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"K\01\0empty\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\01\0f\0\n");
+        data.extend_from_slice(b"M\0/etc\0hostname\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"M\0/etc\0hostname\0f\02\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "").unwrap();
+        fs::write(dir.path().join("inodes/1"), "v1").unwrap();
+        fs::write(dir.path().join("inodes/2"), "v2").unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 2);
-        assert_eq!(sections[0].checkpoint, Some((1, "empty".into())));
-        assert!(sections[0].changes.is_empty());
-        assert!(sections[1].checkpoint.is_none());
-        assert_eq!(sections[1].changes.len(), 1);
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
+
+        assert_eq!(segments[0].changes.len(), 1);
+        assert!(
+            matches!(&segments[0].changes[0], Change::Modified { path, ino, .. }
+            if path == "/etc/hostname" && *ino == 1),
+            "seg1: expected Modified(hostname, 1), got: {:?}",
+            segments[0].changes
+        );
+
+        assert_eq!(segments[1].changes.len(), 1);
+        assert!(
+            matches!(&segments[1].changes[0], Change::Modified { path, ino, .. }
+            if path == "/etc/hostname" && *ino == 2),
+            "seg2: expected Modified(hostname, 2), got: {:?}",
+            segments[1].changes
+        );
     }
 
     #[test]
-    fn sections_delete_in_later_section() {
+    fn segments_empty_checkpoint() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\00\0\0\n");
-        data.extend_from_slice(b"K\02\0snap2\n");
+        data.extend_from_slice(b"K\01\0empty\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/1"), "").unwrap();
+
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].checkpoint, Some((1, "empty".into())));
+        assert!(segments[0].changes.is_empty());
+        assert!(segments[1].checkpoint.is_none());
+        assert_eq!(segments[1].changes.len(), 1);
+    }
+
+    #[test]
+    fn segments_delete_in_later_segment() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0x\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 2, "{sections:?}");
-        assert_eq!(sections[0].changes.len(), 1);
-        assert!(matches!(&sections[0].changes[0], Change::Added { path, .. }
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
+        assert_eq!(segments[0].changes.len(), 1);
+        assert!(matches!(&segments[0].changes[0], Change::Added { path, .. }
             if path == "/nonexistent_test_12345/x"));
     }
 
     #[test]
-    fn sections_rename_in_later_section() {
+    fn segments_rename_in_later_segment() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\01\0f\0\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
         // Staged rename: delete old + staged new (same ino)
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\00\0\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\01\0f\0\n");
-        data.extend_from_slice(b"K\02\0snap2\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\01\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 2, "{sections:?}");
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
 
-        assert_eq!(sections[0].changes.len(), 1);
-        assert!(matches!(&sections[0].changes[0], Change::Added { path, .. }
+        assert_eq!(segments[0].changes.len(), 1);
+        assert!(matches!(&segments[0].changes[0], Change::Added { path, .. }
             if path == "/nonexistent_test_12345/a"));
 
-        let snap2 = &sections[1].changes;
-        assert!(!snap2.is_empty(), "snap2 should have changes: {snap2:?}");
-        let has_b = snap2.iter().any(|c| {
+        let chk2 = &segments[1].changes;
+        assert!(!chk2.is_empty(), "chk2 should have changes: {chk2:?}");
+        let has_b = chk2.iter().any(|c| {
             matches!(c, Change::Added { path, ino, .. }
                 if path == "/nonexistent_test_12345/b" && *ino == 1)
         });
-        assert!(has_b, "expected /b added in snap2, got: {snap2:?}");
+        assert!(has_b, "expected /b added in chk2, got: {chk2:?}");
+    }
+
+    /// Redirect-rename appearing in a later segment must emit Renamed in delta.
+    /// Segment 1: stage file at /b. Segment 2: rename /c → /b (redirect).
+    /// The delta for segment 2 should contain a Renamed change.
+    #[test]
+    fn segments_redirect_rename_in_later_segment() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // Segment 1: stage a file at /b
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        // Segment 2: redirect-rename /c → /b
+        // Kernel emits: E(c, Deleted) + E(b, Redirect(c))
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0c\n");
+        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/c\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/1"), "content").unwrap();
+
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
+
+        // Segment 2 should contain the rename
+        let chk2 = &segments[1].changes;
+        let has_rename = chk2.iter().any(|c| {
+            matches!(c, Change::Renamed { from, to, .. }
+                if from == "/nonexistent_test_12345/c" && to == "/nonexistent_test_12345/b")
+        });
+        assert!(has_rename, "expected Renamed(c→b) in chk2, got: {chk2:?}");
     }
 
     #[test]
-    fn sections_multiple_files_per_section() {
+    fn segments_multiple_files_per_segment() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\01\0f\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\02\0f\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0c\03\0f\0\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0d\04\0f\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0e\05\0f\0\n");
-        data.extend_from_slice(b"K\02\0snap2\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0d\0f\04\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0e\0f\05\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         for i in 1..=5 {
             fs::write(dir.path().join(format!("inodes/{i}")), "").unwrap();
         }
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 2, "{sections:?}");
-        assert_eq!(sections[0].changes.len(), 3, "snap1: {:?}", sections[0].changes);
-        assert_eq!(sections[1].changes.len(), 2, "snap2: {:?}", sections[1].changes);
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
+        assert_eq!(
+            segments[0].changes.len(),
+            3,
+            "chk1: {:?}",
+            segments[0].changes
+        );
+        assert_eq!(
+            segments[1].changes.len(),
+            2,
+            "chk2: {:?}",
+            segments[1].changes
+        );
     }
 
     #[test]
-    fn sections_empty_journal() {
+    fn segments_empty_journal() {
         let dir = setup_test_dir();
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 1);
-        assert!(sections[0].checkpoint.is_none());
-        assert!(sections[0].changes.is_empty());
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert!(segments[0].checkpoint.is_none());
+        assert!(segments[0].changes.is_empty());
     }
 
     #[test]
-    fn sections_only_checkpoint_records() {
+    fn segments_only_checkpoint_records() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"K\01\0snap1\n");
-        data.extend_from_slice(b"K\02\0snap2\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 2, "{sections:?}");
-        assert!(sections[0].changes.is_empty());
-        assert!(sections[1].changes.is_empty());
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
+        assert!(segments[0].changes.is_empty());
+        assert!(segments[1].changes.is_empty());
     }
 
     #[test]
-    fn sections_three_checkpoints() {
+    fn segments_three_checkpoints() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\01\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
         data.extend_from_slice(b"K\01\0s1\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\02\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
         data.extend_from_slice(b"K\02\0s2\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0c\03\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
         data.extend_from_slice(b"K\03\0s3\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         for i in 1..=3 {
             fs::write(dir.path().join(format!("inodes/{i}")), "").unwrap();
         }
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 3, "{sections:?}");
-        for (i, s) in sections.iter().enumerate() {
-            assert_eq!(s.changes.len(), 1, "section {i}: {:?}", s.changes);
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 3, "{segments:?}");
+        for (i, s) in segments.iter().enumerate() {
+            assert_eq!(s.changes.len(), 1, "segment {i}: {:?}", s.changes);
         }
-        assert_eq!(sections[0].checkpoint, Some((1, "s1".into())));
-        assert_eq!(sections[1].checkpoint, Some((2, "s2".into())));
-        assert_eq!(sections[2].checkpoint, Some((3, "s3".into())));
+        assert_eq!(segments[0].checkpoint, Some((1, "s1".into())));
+        assert_eq!(segments[1].checkpoint, Some((2, "s2".into())));
+        assert_eq!(segments[2].checkpoint, Some((3, "s3".into())));
     }
 
+    /// Delete + re-create within the same segment must show Modified (not Added)
+    /// when the file existed in the previous checkpoint.
+    /// The kernel emits D + A (not M) because the re-create goes through VFS create.
     #[test]
-    fn sections_add_delete_readd_across_checkpoints() {
+    fn segments_delete_recreate_same_path_across_checkpoints() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\00\0\0\n");
-        data.extend_from_slice(b"K\02\0snap2\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\02\0f\0\n");
+        // Segment 1: create /x
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        // Segment 2: delete /x then re-create /x.
+        // Kernel emits D + M (modify, because /x exists in base).
+        // Resolver: D inserts Delete, M replaces it with Stage(is_new=false) → Modified.
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0x\n");
+        data.extend_from_slice(b"M\0/nonexistent_test_12345\0x\0f\02\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "v1").unwrap();
         fs::write(dir.path().join("inodes/2"), "v2").unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert!(sections.len() >= 2, "{sections:?}");
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
+
+        // Segment 1: Added
+        assert_eq!(segments[0].changes.len(), 1);
+        assert!(matches!(
+            &segments[0].changes[0],
+            Change::Added { path, ino, .. }
+            if path == "/nonexistent_test_12345/x" && *ino == 1
+        ));
+
+        // Segment 2: Modified (file existed in base from chk1)
+        assert_eq!(
+            segments[1].changes.len(),
+            1,
+            "chk2: {:?}",
+            segments[1].changes
+        );
+        assert!(
+            matches!(
+                &segments[1].changes[0],
+                Change::Modified { path, ino, .. }
+                if path == "/nonexistent_test_12345/x" && *ino == 2
+            ),
+            "expected Modified in chk2, got: {:?}",
+            segments[1].changes[0]
+        );
+    }
+
+    #[test]
+    fn segments_add_delete_readd_across_checkpoints() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0x\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\02\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/1"), "v1").unwrap();
+        fs::write(dir.path().join("inodes/2"), "v2").unwrap();
+
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert!(segments.len() >= 2, "{segments:?}");
 
         assert!(
-            sections[0].changes.iter().any(|c| matches!(c, Change::Added { path, .. }
+            segments[0]
+                .changes
+                .iter()
+                .any(|c| matches!(c, Change::Added { path, .. }
             if path == "/nonexistent_test_12345/x"))
         );
 
-        let trailing = sections.last().unwrap();
+        let trailing = segments.last().unwrap();
         let has_x = trailing.changes.iter().any(|c| {
             matches!(c, Change::Added { path, ino, .. }
                 if path == "/nonexistent_test_12345/x" && *ino == 2)
         });
-        assert!(has_x, "expected re-add in trailing, got: {:?}", trailing.changes);
+        assert!(
+            has_x,
+            "expected re-add in trailing, got: {:?}",
+            trailing.changes
+        );
     }
 
     #[test]
-    fn sections_rename_modified_in_section() {
+    fn segments_rename_modified_in_segment() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\01\0f\0\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
         // Staged rename a->b then modify b (new ino)
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\00\0\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\01\0f\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\02\0f\0\n");
-        data.extend_from_slice(b"K\02\0snap2\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\01\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "v1").unwrap();
         fs::write(dir.path().join("inodes/2"), "v2").unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 2, "{sections:?}");
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
 
-        let snap2 = &sections[1].changes;
-        assert!(!snap2.is_empty(), "snap2 should have changes: {snap2:?}");
+        let chk2 = &segments[1].changes;
+        assert!(!chk2.is_empty(), "chk2 should have changes: {chk2:?}");
     }
 
-    /// Sections must preserve dtype — directories should not become DType::File.
+    /// Segments must preserve dtype — directories should not become DType::File.
     #[test]
-    fn sections_preserve_dtype_for_directories() {
+    fn segments_preserve_dtype_for_directories() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        // Create a directory in snap1
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0mydir\01\0d\0\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
-        // Create a file in snap2
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0file\02\0f\0\n");
-        data.extend_from_slice(b"K\02\0snap2\n");
+        // Create a directory in chk1
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0mydir\0d\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        // Create a file in chk2
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0file\0f\02\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::create_dir_all(dir.path().join("inodes/1")).unwrap();
         fs::write(dir.path().join("inodes/2"), "").unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 2, "{sections:?}");
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
 
-        // snap1: directory added — dtype must be Dir, not File
-        assert_eq!(sections[0].changes.len(), 1);
+        // chk1: directory added — dtype must be Dir, not File
+        assert_eq!(segments[0].changes.len(), 1);
         assert!(
-            matches!(&sections[0].changes[0], Change::Added { path, dtype: DType::Dir, .. }
+            matches!(&segments[0].changes[0], Change::Added { path, dtype: DType::Dir, .. }
             if path == "/nonexistent_test_12345/mydir"),
             "expected Added with DType::Dir, got: {:?}",
-            sections[0].changes[0]
+            segments[0].changes[0]
         );
 
-        // snap2: file added — dtype must be File
-        assert_eq!(sections[1].changes.len(), 1);
+        // chk2: file added — dtype must be File
+        assert_eq!(segments[1].changes.len(), 1);
         assert!(
-            matches!(&sections[1].changes[0], Change::Added { path, dtype: DType::File, .. }
+            matches!(&segments[1].changes[0], Change::Added { path, dtype: DType::File, .. }
             if path == "/nonexistent_test_12345/file"),
             "expected Added with DType::File, got: {:?}",
-            sections[1].changes[0]
+            segments[1].changes[0]
         );
     }
 
-    /// Sections must preserve dtype through rename deltas.
+    /// Segments must preserve dtype through rename deltas.
     #[test]
-    fn sections_preserve_dtype_for_renamed_symlink() {
+    fn segments_preserve_dtype_for_renamed_symlink() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        // Create a symlink in snap1
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0link\01\0l\0\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
+        // Create a symlink in chk1
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0link\0l\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
         // Rename link -> link2 (staged rename: delete + staged with same ino)
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0link\00\0\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0link2\01\0l\0\n");
-        data.extend_from_slice(b"K\02\0snap2\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0link\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0link2\0l\01\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         std::os::unix::fs::symlink("target", dir.path().join("inodes/1")).unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 2, "{sections:?}");
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
 
-        // snap2: the delta should show link2 as Added with DType::Link
-        let snap2 = &sections[1].changes;
-        let link2 = snap2
+        // chk2: the delta should show link2 as Added with DType::Link
+        let chk2 = &segments[1].changes;
+        let link2 = chk2
             .iter()
             .find(|c| matches!(c, Change::Added { path, .. } if path.ends_with("/link2")));
-        assert!(link2.is_some(), "expected link2 in snap2: {snap2:?}");
+        assert!(link2.is_some(), "expected link2 in chk2: {chk2:?}");
         assert!(
-            matches!(link2.unwrap(), Change::Added { dtype: DType::Link, .. }),
+            matches!(
+                link2.unwrap(),
+                Change::Added {
+                    dtype: DType::Link,
+                    ..
+                }
+            ),
             "expected DType::Link, got: {:?}",
             link2.unwrap()
         );
     }
 
-    /// Sections must preserve dtype when a modify crosses checkpoints.
+    /// Segments must preserve dtype when a modify crosses checkpoints.
     #[test]
-    fn sections_preserve_dtype_for_modified() {
+    fn segments_preserve_dtype_for_modified() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0mydir\01\0d\0\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
-        // Re-stage directory with new ino
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0mydir\02\0d\0\n");
-        data.extend_from_slice(b"K\02\0snap2\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0mydir\0d\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        // Re-stage directory with new ino (modify, since it was added in chk1)
+        data.extend_from_slice(b"M\0/nonexistent_test_12345\0mydir\0d\02\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::create_dir_all(dir.path().join("inodes/1")).unwrap();
         fs::create_dir_all(dir.path().join("inodes/2")).unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 2, "{sections:?}");
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
 
-        // snap2: modified directory — dtype must be Dir
-        assert_eq!(sections[1].changes.len(), 1);
+        // chk2: modified directory — dtype must be Dir
+        assert_eq!(segments[1].changes.len(), 1);
         assert!(
-            matches!(&sections[1].changes[0], Change::Modified { dtype: DType::Dir, .. }),
+            matches!(
+                &segments[1].changes[0],
+                Change::Modified {
+                    dtype: DType::Dir,
+                    ..
+                }
+            ),
             "expected Modified with DType::Dir, got: {:?}",
-            sections[1].changes[0]
+            segments[1].changes[0]
         );
     }
 
@@ -1242,30 +1524,53 @@ mod tests {
     #[test]
     fn change_ino() {
         assert_eq!(
-            Change::Added { path: "/a".into(), ino: 42, dtype: DType::File }.ino(),
+            Change::Added {
+                path: "/a".into(),
+                ino: 42,
+                dtype: DType::File
+            }
+            .ino(),
             Some(42)
         );
         assert_eq!(
-            Change::Modified { path: "/a".into(), ino: 7, dtype: DType::File }.ino(),
+            Change::Modified {
+                path: "/a".into(),
+                ino: 7,
+                dtype: DType::File
+            }
+            .ino(),
             Some(7)
         );
         assert_eq!(Change::Deleted("/a".into()).ino(), None);
         assert_eq!(
-            Change::Renamed { from: "/a".into(), to: "/b".into(), dtype: DType::File }.ino(),
+            Change::Renamed {
+                from: "/a".into(),
+                to: "/b".into(),
+                dtype: DType::File
+            }
+            .ino(),
             None
         );
     }
 
     #[test]
     fn matches_path_added() {
-        let c = Change::Added { path: "/src/main.rs".into(), ino: 1, dtype: DType::File };
+        let c = Change::Added {
+            path: "/src/main.rs".into(),
+            ino: 1,
+            dtype: DType::File,
+        };
         assert!(c.matches_path("/src/main.rs"));
         assert!(!c.matches_path("/src/lib.rs"));
     }
 
     #[test]
     fn matches_path_modified() {
-        let c = Change::Modified { path: "/etc/config".into(), ino: 5, dtype: DType::File };
+        let c = Change::Modified {
+            path: "/etc/config".into(),
+            ino: 5,
+            dtype: DType::File,
+        };
         assert!(c.matches_path("/etc/config"));
         assert!(!c.matches_path("/etc/other"));
     }
@@ -1279,102 +1584,133 @@ mod tests {
 
     #[test]
     fn matches_path_renamed_from() {
-        let c = Change::Renamed { from: "/a.txt".into(), to: "/b.txt".into(), dtype: DType::File };
+        let c = Change::Renamed {
+            from: "/a.txt".into(),
+            to: "/b.txt".into(),
+            dtype: DType::File,
+        };
         assert!(c.matches_path("/a.txt"));
         assert!(c.matches_path("/b.txt"));
         assert!(!c.matches_path("/c.txt"));
     }
 
-    // -- Redirect rename in sections --
+    // -- Redirect rename in segments --
 
     /// Base-file redirect rename across checkpoints shows correct incremental delta.
     #[test]
-    fn sections_redirect_rename_across_checkpoints() {
+    fn segments_redirect_rename_across_checkpoints() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        // snap1: create file a
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\01\0f\0\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
-        // snap2: rename a->b via redirect
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\00\0\0\n");
-        data.extend_from_slice(
-            b"E\0/nonexistent_test_12345\0b\0-1\0f\0/nonexistent_test_12345/a\n",
-        );
-        data.extend_from_slice(b"K\02\0snap2\n");
+        // chk1: create file a
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        // chk2: rename a->b via redirect
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
+        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/a\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "content").unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 2, "{sections:?}");
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
 
-        // snap1: Added a
-        assert_eq!(sections[0].changes.len(), 1);
-        assert!(matches!(&sections[0].changes[0], Change::Added { path, .. }
+        // chk1: Added a
+        assert_eq!(segments[0].changes.len(), 1);
+        assert!(matches!(&segments[0].changes[0], Change::Added { path, .. }
             if path == "/nonexistent_test_12345/a"));
 
-        // snap2: delta should show a Renamed(a -> b)
-        let snap2 = &sections[1].changes;
-        assert!(!snap2.is_empty(), "snap2 should have changes: {snap2:?}");
-        let has_rename = snap2.iter().any(|c| {
+        // chk2: delta should show a Renamed(a -> b)
+        let chk2 = &segments[1].changes;
+        assert!(!chk2.is_empty(), "chk2 should have changes: {chk2:?}");
+        let has_rename = chk2.iter().any(|c| {
             matches!(c, Change::Renamed { from, to, .. }
                 if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/b")
         });
-        assert!(has_rename, "expected Renamed(a->b) in snap2, got: {snap2:?}");
+        assert!(
+            has_rename,
+            "expected Renamed(a->b) in chk2, got: {chk2:?}"
+        );
     }
 
-    /// DType must be preserved through redirect chains across sections.
+    /// DType must be preserved through redirect chains across segments.
     #[test]
-    fn sections_preserve_dtype_through_redirect_chain() {
+    fn segments_preserve_dtype_through_redirect_chain() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
-        // snap1: create directory
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0mydir\01\0d\0\n");
-        data.extend_from_slice(b"K\01\0snap1\n");
-        // snap2: rename mydir->dir2 via redirect (dtype=d)
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0mydir\00\0\0\n");
+        // chk1: create directory
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0mydir\0d\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        // chk2: rename mydir->dir2 via redirect (dtype=d)
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0mydir\n");
         data.extend_from_slice(
-            b"E\0/nonexistent_test_12345\0dir2\0-1\0d\0/nonexistent_test_12345/mydir\n",
+            b"R\0/nonexistent_test_12345\0dir2\0d\0/nonexistent_test_12345/mydir\n",
         );
-        data.extend_from_slice(b"K\02\0snap2\n");
-        // snap3: rename dir2->dir3 via redirect (dtype=d, kernel follows chain)
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0dir2\00\0\0\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
+        // chk3: rename dir2->dir3 via redirect (dtype=d, kernel follows chain)
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0dir2\n");
         data.extend_from_slice(
-            b"E\0/nonexistent_test_12345\0dir3\0-1\0d\0/nonexistent_test_12345/mydir\n",
+            b"R\0/nonexistent_test_12345\0dir3\0d\0/nonexistent_test_12345/mydir\n",
         );
-        data.extend_from_slice(b"K\03\0snap3\n");
+        data.extend_from_slice(b"K\03\0chk3\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::create_dir_all(dir.path().join("inodes/1")).unwrap();
 
-        let sections = resolve_sections(read(dir.path())).unwrap();
-        assert_eq!(sections.len(), 3, "{sections:?}");
+        let segments = resolve_segments(read(dir.path())).unwrap();
+        assert_eq!(segments.len(), 3, "{segments:?}");
 
-        // snap1: Added Dir
+        // chk1: Added Dir
         assert!(
-            matches!(&sections[0].changes[0], Change::Added { dtype: DType::Dir, .. }),
-            "snap1 should be Added Dir, got: {:?}",
-            sections[0].changes[0]
+            matches!(
+                &segments[0].changes[0],
+                Change::Added {
+                    dtype: DType::Dir,
+                    ..
+                }
+            ),
+            "chk1 should be Added Dir, got: {:?}",
+            segments[0].changes[0]
         );
 
-        // snap2: Renamed Dir (mydir -> dir2)
-        let snap2_rename = sections[1].changes.iter().find(|c| {
-            matches!(c, Change::Renamed { to, .. } if to == "/nonexistent_test_12345/dir2")
-        });
-        assert!(snap2_rename.is_some(), "snap2 should have rename to dir2: {:?}", sections[1].changes);
+        // chk2: Renamed Dir (mydir -> dir2)
+        let chk2_rename = segments[1].changes.iter().find(
+            |c| matches!(c, Change::Renamed { to, .. } if to == "/nonexistent_test_12345/dir2"),
+        );
         assert!(
-            matches!(snap2_rename.unwrap(), Change::Renamed { dtype: DType::Dir, .. }),
-            "snap2 rename should preserve DType::Dir, got: {:?}",
-            snap2_rename.unwrap()
+            chk2_rename.is_some(),
+            "chk2 should have rename to dir2: {:?}",
+            segments[1].changes
+        );
+        assert!(
+            matches!(
+                chk2_rename.unwrap(),
+                Change::Renamed {
+                    dtype: DType::Dir,
+                    ..
+                }
+            ),
+            "chk2 rename should preserve DType::Dir, got: {:?}",
+            chk2_rename.unwrap()
         );
 
-        // snap3: Renamed Dir (dir2 -> dir3)
-        let snap3_rename = sections[2].changes.iter().find(|c| {
-            matches!(c, Change::Renamed { to, .. } if to == "/nonexistent_test_12345/dir3")
-        });
-        assert!(snap3_rename.is_some(), "snap3 should have rename to dir3: {:?}", sections[2].changes);
+        // chk3: Renamed Dir (dir2 -> dir3)
+        let chk3_rename = segments[2].changes.iter().find(
+            |c| matches!(c, Change::Renamed { to, .. } if to == "/nonexistent_test_12345/dir3"),
+        );
         assert!(
-            matches!(snap3_rename.unwrap(), Change::Renamed { dtype: DType::Dir, .. }),
-            "snap3 rename should preserve DType::Dir, got: {:?}",
-            snap3_rename.unwrap()
+            chk3_rename.is_some(),
+            "chk3 should have rename to dir3: {:?}",
+            segments[2].changes
+        );
+        assert!(
+            matches!(
+                chk3_rename.unwrap(),
+                Change::Renamed {
+                    dtype: DType::Dir,
+                    ..
+                }
+            ),
+            "chk3 rename should preserve DType::Dir, got: {:?}",
+            chk3_rename.unwrap()
         );
     }
 
@@ -1387,23 +1723,16 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Rename a→b (redirect): delete a + redirect b→a
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\00\0\0\n");
-        data.extend_from_slice(
-            b"E\0/nonexistent_test_12345\0b\0-1\0f\0/nonexistent_test_12345/a\n",
-        );
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
+        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/a\n");
         // Modify b (COW): staged with new ino
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\02\0f\0\n");
+        data.extend_from_slice(b"M\0/nonexistent_test_12345\0b\0f\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/2"), "modified").unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
-        let renamed = changes
-            .iter()
-            .find(|c| matches!(c, Change::Renamed { .. }));
-        assert!(
-            renamed.is_some(),
-            "expected Renamed, got: {changes:?}"
-        );
+        let renamed = changes.iter().find(|c| matches!(c, Change::Renamed { .. }));
+        assert!(renamed.is_some(), "expected Renamed, got: {changes:?}");
         assert!(
             matches!(renamed.unwrap(), Change::Renamed { from, to, .. }
             if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/b"),
@@ -1413,10 +1742,7 @@ mod tests {
         let modified = changes
             .iter()
             .find(|c| matches!(c, Change::Modified { .. }));
-        assert!(
-            modified.is_some(),
-            "expected Modified, got: {changes:?}"
-        );
+        assert!(modified.is_some(), "expected Modified, got: {changes:?}");
         assert!(
             matches!(modified.unwrap(), Change::Modified { path, ino: 2, .. }
             if path == "/nonexistent_test_12345/b"),
@@ -1431,10 +1757,10 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Rename /etc/hostname → /etc/hostname.bak
-        data.extend_from_slice(b"E\0/etc\0hostname\00\0\0\n");
-        data.extend_from_slice(b"E\0/etc\0hostname.bak\0-1\0f\0/etc/hostname\n");
+        data.extend_from_slice(b"D\0/etc\0hostname\n");
+        data.extend_from_slice(b"R\0/etc\0hostname.bak\0f\0/etc/hostname\n");
         // Delete the destination /etc/hostname.bak
-        data.extend_from_slice(b"E\0/etc\0hostname.bak\00\0\0\n");
+        data.extend_from_slice(b"D\0/etc\0hostname.bak\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
@@ -1446,9 +1772,7 @@ mod tests {
             "expected Deleted(/etc/hostname), got: {changes:?}"
         );
         assert!(
-            !changes
-                .iter()
-                .any(|c| matches!(c, Change::Renamed { .. })),
+            !changes.iter().any(|c| matches!(c, Change::Renamed { .. })),
             "should have no renames, got: {changes:?}"
         );
     }
@@ -1460,11 +1784,11 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Rename /etc/hostname → /etc/target
-        data.extend_from_slice(b"E\0/etc\0hostname\00\0\0\n");
-        data.extend_from_slice(b"E\0/etc\0target\0-1\0f\0/etc/hostname\n");
+        data.extend_from_slice(b"D\0/etc\0hostname\n");
+        data.extend_from_slice(b"R\0/etc\0target\0f\0/etc/hostname\n");
         // Rename /etc/hosts → /etc/target (overwrites the first rename's destination)
-        data.extend_from_slice(b"E\0/etc\0hosts\00\0\0\n");
-        data.extend_from_slice(b"E\0/etc\0target\0-1\0f\0/etc/hosts\n");
+        data.extend_from_slice(b"D\0/etc\0hosts\n");
+        data.extend_from_slice(b"R\0/etc\0target\0f\0/etc/hosts\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
@@ -1490,12 +1814,12 @@ mod tests {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Create file at x (ino=1)
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
         // Staged rename x→y: delete x + staged y with same ino
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\00\0\0\n");
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0y\01\0f\0\n");
+        data.extend_from_slice(b"D\0/nonexistent_test_12345\0x\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\01\n");
         // Create new file at x (ino=2)
-        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\02\0f\0\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\02\n");
         fs::write(dir.path().join("journal"), &data).unwrap();
         fs::write(dir.path().join("inodes/1"), "original").unwrap();
         fs::write(dir.path().join("inodes/2"), "replacement").unwrap();
@@ -1512,5 +1836,42 @@ mod tests {
         });
         assert!(has_y, "expected Added(y, ino=1): {changes:?}");
         assert!(has_x, "expected Added(x, ino=2): {changes:?}");
+    }
+
+    /// into_changes() must order: renames first, then adds/modifies, then deletes.
+    /// commit.rs depends on this ordering so renames move base files before
+    /// adds write to potentially overlapping paths.
+    #[test]
+    fn into_changes_ordering_renames_writes_deletes() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // Add a new file (will become Added)
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0new.txt\0f\01\n");
+        // Delete an existing file (will become Deleted)
+        data.extend_from_slice(b"D\0/etc\0hostname\n");
+        // Rename a base file (will become Renamed)
+        data.extend_from_slice(b"D\0/old\0path\n");
+        data.extend_from_slice(b"R\0/new\0path\0f\0/old/path\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/1"), "content").unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        assert_eq!(changes.len(), 3, "expected 3 changes, got: {changes:?}");
+
+        assert!(
+            matches!(&changes[0], Change::Renamed { .. }),
+            "first change should be Renamed, got: {:?}",
+            changes[0]
+        );
+        assert!(
+            matches!(&changes[1], Change::Added { .. }),
+            "second change should be Added, got: {:?}",
+            changes[1]
+        );
+        assert!(
+            matches!(&changes[2], Change::Deleted(_)),
+            "third change should be Deleted, got: {:?}",
+            changes[2]
+        );
     }
 }

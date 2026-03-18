@@ -83,8 +83,8 @@ struct agfs_ioc_restore_entry {
 	__u8	d_type;			/* DT_REG / DT_DIR / DT_LNK */
 	__u8	_pad1[5];
 	__u64	ino;			/* inode store ID; 0 = deleted */
-	__u64	base_path_ptr;		/* userspace pointer to base_path string */
-	__u16	base_path_len;		/* length excluding NUL; 0 = none */
+	__u64	base_ptr;		/* userspace pointer to base path string */
+	__u16	base_len;		/* length excluding NUL; 0 = none */
 	__u8	_pad2[6];
 };
 
@@ -147,12 +147,36 @@ struct agfs_perm_request {
 struct agfs_dirent {
 	struct hlist_node	node;
 	u64			ino;		/* >0 = staged, 0 = deleted, (u64)-1 = redirect */
-	char			*base_path;	/* redirect only: content at base path */
+	char			*base;		/* redirect: real path; non-redirect in-base:
+					 * AGFS_BASE_PRESENT sentinel; else NULL */
 	u64			checkpoint_gen;	/* sbi->checkpoint_gen when inode was created */
 	unsigned int		name_len;
 	unsigned char		d_type;		/* DT_REG / DT_DIR / DT_LNK for readdir */
 	char			name[];
 };
+
+/* Sentinel: path exists in base layer but is not a redirect. */
+#define AGFS_BASE_PRESENT	((char *)-1)
+
+static inline bool agfs_de_in_base(const struct agfs_dirent *de)
+{
+	return de->base != NULL;
+}
+
+static inline void agfs_de_base_free(char *base)
+{
+	if (base && base != AGFS_BASE_PRESENT)
+		kfree(base);
+}
+
+static inline char *agfs_de_base_dup(const char *base)
+{
+	if (!base)
+		return NULL;
+	if (base == AGFS_BASE_PRESENT)
+		return AGFS_BASE_PRESENT;
+	return kstrdup(base, GFP_KERNEL);
+}
 
 static inline bool agfs_ino_is_staged(u64 ino)
 {
@@ -403,8 +427,13 @@ void agfs_release_pinned_dirs(struct agfs_sb_info *sbi);
 
 /* journal.c */
 int agfs_journal_open(struct agfs_sb_info *sbi);
-int agfs_journal_append(struct agfs_sb_info *sbi, struct dentry *dentry,
-			  u64 ino, unsigned char d_type, const char *base);
+int agfs_journal_add(struct agfs_sb_info *sbi, struct dentry *dentry,
+		       u64 ino, unsigned char d_type);
+int agfs_journal_modify(struct agfs_sb_info *sbi, struct dentry *dentry,
+			  u64 ino, unsigned char d_type);
+int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry);
+int agfs_journal_redirect(struct agfs_sb_info *sbi, struct dentry *dentry,
+			    unsigned char d_type, const char *base);
 int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name);
 
 /* perm.c */

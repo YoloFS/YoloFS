@@ -352,3 +352,264 @@ fn rename_symlink_preserves_target() {
         "old symlink name should not exist"
     );
 }
+
+/// Create a staged file, rename it to a new path, then commit.
+/// Tests the commit guard: base rename is skipped (source doesn't exist in base)
+/// and content is applied via the staged inode.
+#[test]
+fn rename_staged_file_to_new_path_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("brand_new.txt"), "staged content\n").expect("create staged");
+    fs::rename(s.mnt_path("brand_new.txt"), s.mnt_path("final.txt")).expect("rename staged");
+
+    // Verify through mount
+    let content = fs::read_to_string(s.mnt_path("final.txt")).expect("read through mount");
+    assert_eq!(content, "staged content\n");
+    assert!(
+        fs::read_to_string(s.mnt_path("brand_new.txt")).is_err(),
+        "old name should not exist"
+    );
+
+    s.cli(&["commit"]).expect("commit");
+
+    // After commit: new name in base, old name absent
+    assert_eq!(
+        fs::read_to_string(s.base_path("final.txt")).unwrap(),
+        "staged content\n",
+        "staged file should be committed at new path"
+    );
+    assert!(
+        !s.base_path("brand_new.txt").exists(),
+        "old staged path should not exist in base"
+    );
+}
+
+/// Create a staged file and rename it to overwrite a base file, then commit.
+/// Tests the D + M path: the base file is replaced with staged content.
+#[test]
+fn rename_staged_file_overwrite_base_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("brand_new.txt"), "replacement\n").expect("create staged");
+    fs::rename(s.mnt_path("brand_new.txt"), s.mnt_path("multi.txt")).expect("rename overwrite");
+
+    // Verify through mount
+    let content = fs::read_to_string(s.mnt_path("multi.txt")).expect("read through mount");
+    assert_eq!(content, "replacement\n");
+
+    s.cli(&["commit"]).expect("commit");
+
+    // After commit: base file overwritten with staged content
+    assert_eq!(
+        fs::read_to_string(s.base_path("multi.txt")).unwrap(),
+        "replacement\n",
+        "base file should be overwritten with staged content"
+    );
+    assert!(
+        !s.base_path("brand_new.txt").exists(),
+        "staged-only file should not appear in base"
+    );
+}
+
+/// Complex multi-operation scenario exercising the A/M/D/R journal format,
+/// resolver edge cases, and commit correctness in a single session.
+///
+/// Base files: hello.txt, multi.txt, subdir/deep.txt, test.sh
+///
+/// Operations (grouped by the edge case they exercise):
+///   1. Modify hello.txt (COW → M record)
+///   2. Create brand_new.txt then rename it to multi.txt
+///      (staged rename to base path → D + M; overwrites base file)
+///   3. Create temp.txt then delete it (A + D cancel out)
+///   4. Rename subdir/deep.txt → subdir/shallow.txt (base rename → D + R)
+///   5. Rename subdir/shallow.txt → top.txt (chained rename → D + R collapses)
+///   6. Create link.txt as symlink (A with dtype=Link)
+///   7. Modify hello.txt again (second COW → M; multiple modifies keep final ino)
+///
+/// Expected resolved state before commit:
+///   - Modified(hello.txt)           — double COW, final ino wins
+///   - Modified(multi.txt)           — staged file overwrote base via rename
+///   - Renamed(subdir/deep.txt → top.txt) — chained redirect collapse
+///   - Added(link.txt)               — new symlink
+///   - (temp.txt absent)             — A + D cancelled
+///
+/// After commit all changes are applied to base.
+#[test]
+fn complex_multi_operation_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // ── 1. COW modify hello.txt ──
+    fs::write(s.mnt_path("hello.txt"), "first edit\n").expect("write hello v1");
+
+    // ── 2. Create staged file, rename onto base file (D + M path) ──
+    fs::write(s.mnt_path("brand_new.txt"), "replacement\n").expect("create brand_new");
+    fs::rename(s.mnt_path("brand_new.txt"), s.mnt_path("multi.txt"))
+        .expect("rename brand_new → multi");
+
+    // ── 3. Create then immediately delete (A + D cancel) ──
+    fs::write(s.mnt_path("temp.txt"), "ephemeral\n").expect("create temp");
+    fs::remove_file(s.mnt_path("temp.txt")).expect("delete temp");
+
+    // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
+    fs::rename(
+        s.mnt_path("subdir/deep.txt"),
+        s.mnt_path("subdir/shallow.txt"),
+    )
+    .expect("rename deep → shallow");
+    fs::rename(s.mnt_path("subdir/shallow.txt"), s.mnt_path("top.txt"))
+        .expect("rename shallow → top");
+
+    // ── 6. Create a symlink (A record, dtype=Link) ──
+    std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
+
+    // ── 7. Second COW on hello.txt (multiple M records → final ino wins) ──
+    fs::write(s.mnt_path("hello.txt"), "second edit\n").expect("write hello v2");
+
+    // ── Verify mount view before commit ──
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
+        "second edit\n"
+    );
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("multi.txt")).unwrap(),
+        "replacement\n"
+    );
+    assert!(
+        !s.mnt_path("temp.txt").exists(),
+        "temp.txt should be gone"
+    );
+    assert!(
+        !s.mnt_path("brand_new.txt").exists(),
+        "brand_new.txt should be gone (renamed)"
+    );
+    assert!(
+        !s.mnt_path("subdir/deep.txt").exists(),
+        "deep.txt should be gone (renamed)"
+    );
+    assert!(
+        !s.mnt_path("subdir/shallow.txt").exists(),
+        "shallow.txt should be gone (renamed again)"
+    );
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("top.txt")).unwrap(),
+        "nested\n",
+        "top.txt should have deep.txt content"
+    );
+    assert_eq!(
+        fs::read_link(s.mnt_path("link.txt")).unwrap(),
+        std::path::Path::new("hello.txt")
+    );
+
+    // ── Verify resolved changes ──
+    use agfs::journal;
+    use agfs::resolve::{self, Change};
+
+    let agfs_dir = s.root.join(".agfs");
+    let records = journal::read(&agfs_dir).expect("read journal").records;
+    let changes = resolve::resolve(records).expect("resolve");
+
+    let has_modified_hello = changes
+        .iter()
+        .any(|c| matches!(c, Change::Modified { path, .. } if path.ends_with("/hello.txt")));
+    let has_modified_multi = changes
+        .iter()
+        .any(|c| matches!(c, Change::Modified { path, .. } if path.ends_with("/multi.txt")));
+    let has_renamed_deep_to_top = changes.iter().any(|c| {
+        matches!(c, Change::Renamed { from, to, .. }
+            if from.ends_with("/deep.txt") && to.ends_with("/top.txt"))
+    });
+    let has_added_link = changes
+        .iter()
+        .any(|c| matches!(c, Change::Added { path, .. } if path.ends_with("/link.txt")));
+    let has_temp = changes.iter().any(|c| match c {
+        Change::Added { path, .. }
+        | Change::Modified { path, .. }
+        | Change::Deleted(path) => path.ends_with("/temp.txt"),
+        Change::Renamed { from, to, .. } => {
+            from.ends_with("/temp.txt") || to.ends_with("/temp.txt")
+        }
+    });
+    let has_brand_new = changes.iter().any(|c| match c {
+        Change::Added { path, .. }
+        | Change::Modified { path, .. }
+        | Change::Deleted(path) => path.ends_with("/brand_new.txt"),
+        Change::Renamed { from, to, .. } => {
+            from.ends_with("/brand_new.txt") || to.ends_with("/brand_new.txt")
+        }
+    });
+
+    assert!(
+        has_modified_hello,
+        "expected Modified(hello.txt): {changes:?}"
+    );
+    assert!(
+        has_modified_multi,
+        "expected Modified(multi.txt): {changes:?}"
+    );
+    assert!(
+        has_renamed_deep_to_top,
+        "expected Renamed(deep.txt → top.txt) (chain collapsed): {changes:?}"
+    );
+    assert!(has_added_link, "expected Added(link.txt): {changes:?}");
+    assert!(
+        !has_temp,
+        "temp.txt should have cancelled out (A+D): {changes:?}"
+    );
+    assert!(
+        !has_brand_new,
+        "brand_new.txt should not appear (staged rename absorbed): {changes:?}"
+    );
+
+    // ── Commit and verify base ──
+    s.cli(&["commit"]).expect("commit");
+
+    // hello.txt: second edit
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        "second edit\n",
+        "hello.txt should have final edit"
+    );
+
+    // multi.txt: replaced by staged file
+    assert_eq!(
+        fs::read_to_string(s.base_path("multi.txt")).unwrap(),
+        "replacement\n",
+        "multi.txt should have staged replacement"
+    );
+
+    // subdir/deep.txt → top.txt (renamed via chain)
+    assert_eq!(
+        fs::read_to_string(s.base_path("top.txt")).unwrap(),
+        "nested\n",
+        "top.txt should have deep.txt content"
+    );
+    assert!(
+        !s.base_path("subdir/deep.txt").exists(),
+        "deep.txt should be gone from base"
+    );
+
+    // link.txt: symlink
+    assert_eq!(
+        fs::read_link(s.base_path("link.txt")).unwrap(),
+        std::path::Path::new("hello.txt"),
+        "symlink should be committed"
+    );
+
+    // Ephemeral files should not exist in base
+    assert!(
+        !s.base_path("temp.txt").exists(),
+        "temp.txt should not be in base"
+    );
+    assert!(
+        !s.base_path("brand_new.txt").exists(),
+        "brand_new.txt should not be in base"
+    );
+
+    // test.sh: untouched
+    assert_eq!(
+        fs::read_to_string(s.base_path("test.sh")).unwrap(),
+        "#!/bin/sh\necho ok\n",
+        "test.sh should be untouched"
+    );
+}

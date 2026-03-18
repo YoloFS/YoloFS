@@ -50,13 +50,13 @@ the ioctl wire format.
 
 | Operation    | Perm check                                                   | Staging layer                                                                     | Passthrough                               |
 | ------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------- |
-| `lookup`     | --                                                           | Check dirent table first (deleted -> ENOENT, ino -> staged inode, base_path -> redirect); fall back to base. | `lookup_one_len()` on base dir. |
-| `create`     | -- (dir perm via lower FS)                                   | Allocate inode, add dirent + journal E record.                                  | `vfs_create()` on inode store.  |
-| `mkdir`      | -- (dir perm via lower FS)                                   | Allocate directory inode, add dirent + journal E record.                        | --                               |
-| `unlink`     | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal E record.                                           | --                                         |
-| `rmdir`      | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal E record.                                           | --                                         |
-| `rename`     | -- (dir perm via lower FS)                                   | See [Rename Handling](staging.md#rename-handling). Emits 2 E records.             | --                                         |
-| `symlink`    | -- (dir perm via lower FS)                                   | Allocate inode (symlink), add dirent + journal E record.                        | `vfs_symlink()`.                          |
+| `lookup`     | --                                                           | Check dirent table first (deleted -> ENOENT, ino -> staged inode, base redirect -> redirect); fall back to base. | `lookup_one_len()` on base dir. |
+| `create`     | -- (dir perm via lower FS)                                   | Allocate inode, add dirent + journal `A` record.                                | `vfs_create()` on inode store.  |
+| `mkdir`      | -- (dir perm via lower FS)                                   | Allocate directory inode, add dirent + journal `A` record.                      | --                               |
+| `unlink`     | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal `D` record.                                         | --                                         |
+| `rmdir`      | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal `D` record.                                         | --                                         |
+| `rename`     | -- (dir perm via lower FS)                                   | See [Rename Handling](staging.md#rename-handling). Emits `D` + `A`/`M`/`R`.       | --                                         |
+| `symlink`    | -- (dir perm via lower FS)                                   | Allocate inode (symlink), add dirent + journal `A` record.                      | `vfs_symlink()`.                          |
 | `permission` | **Gating for regular files (O(1) cached); delegate to lower FS for dirs.** | --                                                                                 | `inode_permission()` on lower inode.      |
 | `setattr`    | Gated (regular files only).                                  | Setattr on resolved lower file (staged inode or base). No COW triggered.           | `notify_change()` on lower.               |
 | `getattr`    | Gated (regular files only).                                  | Stat from resolved path (staged inode or base).                                   | `vfs_getattr()` on lower.                 |

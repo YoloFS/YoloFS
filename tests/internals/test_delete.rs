@@ -16,8 +16,8 @@ fn delete_produces_delete_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Entry { path, target: agfs::journal::Target::Deleted, .. } if path.ends_with("/hello.txt"))),
-        "journal should have a D record for hello.txt: {records:?}"
+            .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/hello.txt"))),
+        "journal should have a Deleted record for hello.txt: {records:?}"
     );
 }
 

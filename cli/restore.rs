@@ -10,7 +10,7 @@ use colored::Colorize;
 struct RestoreItem {
     path: String,
     ino: u64,
-    base_path: String,
+    base: String,
     d_type: u8,
 }
 
@@ -19,7 +19,7 @@ impl RestoreItem {
         Self {
             path,
             ino: 0,
-            base_path: String::new(),
+            base: String::new(),
             d_type: 0,
         }
     }
@@ -51,7 +51,7 @@ fn changes_to_items(changes: &[resolve::Change]) -> Vec<RestoreItem> {
                 items.push(RestoreItem {
                     path: path.clone(),
                     ino: *ino,
-                    base_path: String::new(),
+                    base: String::new(),
                     d_type: dtype.to_libc(),
                 });
             }
@@ -64,7 +64,7 @@ fn changes_to_items(changes: &[resolve::Change]) -> Vec<RestoreItem> {
                     items.push(RestoreItem {
                         path: to.clone(),
                         ino: journal::INO_REDIRECT,
-                        base_path: from.clone(),
+                        base: from.clone(),
                         d_type: dtype.to_libc(),
                     });
                 }
@@ -87,19 +87,19 @@ fn items_to_entries(items: &[RestoreItem]) -> Result<Vec<ioctl::AgfsIocRestoreEn
                 .len()
                 .try_into()
                 .context("restore path too long")?;
-            let base_path_len: u16 = item
-                .base_path
+            let base_len: u16 = item
+                .base
                 .len()
                 .try_into()
-                .context("restore base_path too long")?;
+                .context("restore base too long")?;
             Ok(ioctl::AgfsIocRestoreEntry {
                 path_ptr: item.path.as_ptr() as u64,
                 path_len,
                 d_type: item.d_type,
                 _pad1: [0u8; 5],
                 ino: item.ino,
-                base_path_ptr: item.base_path.as_ptr() as u64,
-                base_path_len,
+                base_ptr: item.base.as_ptr() as u64,
+                base_len,
                 _pad2: [0u8; 6],
             })
         })
@@ -168,7 +168,7 @@ mod tests {
         assert_eq!(items[0].path, "/src/main.rs");
         assert_eq!(items[0].ino, 1);
         assert_eq!(items[0].d_type, libc::DT_REG);
-        assert_eq!(items[0].base_path, "");
+        assert_eq!(items[0].base, "");
     }
 
     #[test]
@@ -178,7 +178,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].path, "/old.txt");
         assert_eq!(items[0].ino, 0);
-        assert_eq!(items[0].base_path, "");
+        assert_eq!(items[0].base, "");
     }
 
     #[test]
@@ -196,7 +196,7 @@ mod tests {
 
         let redirect = items.iter().find(|e| e.path == "/b.txt").unwrap();
         assert_eq!(redirect.ino, journal::INO_REDIRECT);
-        assert_eq!(redirect.base_path, "/a.txt");
+        assert_eq!(redirect.base, "/a.txt");
         assert_eq!(redirect.d_type, libc::DT_REG);
     }
 
@@ -220,7 +220,7 @@ mod tests {
         // Sorted: /new.rs before /old.rs
         assert_eq!(items[0].path, "/new.rs");
         assert_eq!(items[0].ino, 5);
-        assert_eq!(items[0].base_path, "");
+        assert_eq!(items[0].base, "");
 
         assert_eq!(items[1].path, "/old.rs");
         assert_eq!(items[1].ino, 0);
@@ -279,7 +279,7 @@ mod tests {
         let items = vec![RestoreItem {
             path: "/src/main.rs".into(),
             ino: 1,
-            base_path: String::new(),
+            base: String::new(),
             d_type: libc::DT_REG,
         }];
         let entries = items_to_entries(&items).unwrap();
@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(entries[0].path_len, 12);
         assert_eq!(entries[0].ino, 1);
         assert_eq!(entries[0].d_type, libc::DT_REG);
-        assert_eq!(entries[0].base_path_len, 0);
+        assert_eq!(entries[0].base_len, 0);
     }
 
     #[test]
@@ -295,18 +295,18 @@ mod tests {
         let items = vec![RestoreItem {
             path: "a".repeat(u16::MAX as usize + 1),
             ino: 0,
-            base_path: String::new(),
+            base: String::new(),
             d_type: 0,
         }];
         assert!(items_to_entries(&items).is_err());
     }
 
     #[test]
-    fn items_to_entries_rejects_oversized_base_path() {
+    fn items_to_entries_rejects_oversized_base() {
         let items = vec![RestoreItem {
             path: "/ok".into(),
             ino: 0,
-            base_path: "a".repeat(u16::MAX as usize + 1),
+            base: "a".repeat(u16::MAX as usize + 1),
             d_type: 0,
         }];
         assert!(items_to_entries(&items).is_err());

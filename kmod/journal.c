@@ -6,8 +6,11 @@
  * commit/abort/status/diff. The kernel never reads it back.
  *
  * Record format (NUL-separated fields, newline-terminated):
- *   E\0<dir>\0<name>\0<ino>\0<dtype>\0<base>\n    — entry (staged/deleted/redirect)
- *   K\0<id>\0<name>\n                              — checkpoint marker
+ *   A\0<dir>\0<name>\0<dtype>\0<ino>\n       — add (new file)
+ *   M\0<dir>\0<name>\0<dtype>\0<ino>\n       — modify (existing file)
+ *   D\0<dir>\0<name>\n                        — delete
+ *   R\0<dir>\0<name>\0<dtype>\0<base>\n       — redirect (rename)
+ *   K\0<id>\0<name>\n                         — checkpoint marker
  */
 
 #include "agfs.h"
@@ -70,7 +73,7 @@ static int journal_write(struct agfs_sb_info *sbi, char tag,
 	return err < 0 ? err : 0;
 }
 
-/* ── Public helpers ────────────────────────────────────────────────── */
+/* ── Helpers ───────────────────────────────────────────────────────── */
 
 static char dtype_to_char(unsigned char d_type)
 {
@@ -82,16 +85,12 @@ static char dtype_to_char(unsigned char d_type)
 	}
 }
 
-int agfs_journal_append(struct agfs_sb_info *sbi, struct dentry *dentry,
-			u64 ino, unsigned char d_type, const char *base)
+/* Compute dir_buf = relpath of dentry's parent. Returns 0 or -errno. */
+static int journal_dir(struct dentry *dentry, char *dir_buf, size_t size)
 {
-	char dir_buf[AGFS_PATH_MAX];
-	char ino_str[21];
-	char dtype_str[2] = { '\0', '\0' };
 	char *p;
 
-	/* dir = relpath of parent */
-	p = dentry_path_raw(dentry->d_parent, dir_buf, sizeof(dir_buf));
+	p = dentry_path_raw(dentry->d_parent, dir_buf, size);
 	if (IS_ERR(p))
 		return PTR_ERR(p);
 	if (p != dir_buf)
@@ -99,20 +98,78 @@ int agfs_journal_append(struct agfs_sb_info *sbi, struct dentry *dentry,
 	/* Root parent shows as "/" — normalize to "" */
 	if (dir_buf[0] == '/' && dir_buf[1] == '\0')
 		dir_buf[0] = '\0';
+	return 0;
+}
 
-	if (ino == AGFS_INO_REDIRECT)
-		snprintf(ino_str, sizeof(ino_str), "-1");
-	else
-		snprintf(ino_str, sizeof(ino_str), "%llu",
-			 (unsigned long long)ino);
+/* ── Public: typed journal record writers ──────────────────────────── */
+
+static int journal_ino_record(struct agfs_sb_info *sbi, char tag,
+			      struct dentry *dentry, u64 ino,
+			      unsigned char d_type)
+{
+	char dir_buf[AGFS_PATH_MAX];
+	char ino_str[21];
+	char dtype_str[2] = { '\0', '\0' };
+	int err;
+
+	err = journal_dir(dentry, dir_buf, sizeof(dir_buf));
+	if (err)
+		return err;
+
+	snprintf(ino_str, sizeof(ino_str), "%llu", (unsigned long long)ino);
+	dtype_str[0] = dtype_to_char(d_type);
+
+	return journal_write(sbi, tag,
+			     (const char *[]){ dir_buf,
+					       dentry->d_name.name,
+					       dtype_str, ino_str,
+					       NULL });
+}
+
+int agfs_journal_add(struct agfs_sb_info *sbi, struct dentry *dentry,
+		     u64 ino, unsigned char d_type)
+{
+	return journal_ino_record(sbi, 'A', dentry, ino, d_type);
+}
+
+int agfs_journal_modify(struct agfs_sb_info *sbi, struct dentry *dentry,
+			u64 ino, unsigned char d_type)
+{
+	return journal_ino_record(sbi, 'M', dentry, ino, d_type);
+}
+
+int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry)
+{
+	char dir_buf[AGFS_PATH_MAX];
+	int err;
+
+	err = journal_dir(dentry, dir_buf, sizeof(dir_buf));
+	if (err)
+		return err;
+
+	return journal_write(sbi, 'D',
+			     (const char *[]){ dir_buf,
+					       dentry->d_name.name,
+					       NULL });
+}
+
+int agfs_journal_redirect(struct agfs_sb_info *sbi, struct dentry *dentry,
+			  unsigned char d_type, const char *base)
+{
+	char dir_buf[AGFS_PATH_MAX];
+	char dtype_str[2] = { '\0', '\0' };
+	int err;
+
+	err = journal_dir(dentry, dir_buf, sizeof(dir_buf));
+	if (err)
+		return err;
 
 	dtype_str[0] = dtype_to_char(d_type);
 
-	return journal_write(sbi, 'E',
+	return journal_write(sbi, 'R',
 			     (const char *[]){ dir_buf,
 					       dentry->d_name.name,
-					       ino_str, dtype_str,
-					       base ? base : "",
+					       dtype_str, base,
 					       NULL });
 }
 

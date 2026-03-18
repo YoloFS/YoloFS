@@ -6,11 +6,10 @@
 // `--from <name>` — diff changes since a checkpoint.
 
 use crate::journal;
-use crate::resolve::{self, Change, Section};
+use crate::resolve::{self, Change, Segment};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -54,10 +53,10 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
     }
 }
 
-// ── Section display helpers ──────────────────────────────────────────
+// ── Segment display helpers ──────────────────────────────────────────
 
-fn print_section_footer(section: &Section) {
-    if let Some((id, name)) = &section.checkpoint {
+fn print_segment_footer(segment: &Segment) {
+    if let Some((id, name)) = &segment.checkpoint {
         println!(
             "  {} {}",
             format!("checkpoint [{id}]").cyan().bold(),
@@ -109,12 +108,6 @@ fn print_change(agfs: &Path, change: &Change, verbose: bool) {
     }
 }
 
-fn print_changes(agfs: &Path, changes: &[Change], verbose: bool) {
-    for change in changes {
-        print_change(agfs, change, verbose);
-    }
-}
-
 // ── Public entry points ──────────────────────────────────────────────
 
 /// `agfs status` — summary view.
@@ -128,13 +121,15 @@ pub fn run_status(at: Option<&str>) -> Result<()> {
             println!("{}", "No changes staged.".yellow());
         } else {
             println!("{}", format!("State at checkpoint \"{name}\":").dimmed());
-            print_changes(&agfs, &changes, false);
+            for change in &changes {
+                print_change(&agfs, change, false);
+            }
             print_total(changes.len());
         }
         return Ok(());
     }
 
-    run_sections(&agfs, false, None)?;
+    run_segments(&agfs, false, None)?;
     Ok(())
 }
 
@@ -151,22 +146,22 @@ pub fn run_diff(from: Option<&str>, path: Option<&str>) -> Result<bool> {
         return run_from_checkpoint(&agfs, chk_name, path.as_deref());
     }
 
-    run_sections(&agfs, true, path.as_deref())
+    run_segments(&agfs, true, path.as_deref())
 }
 
 // ── Shared implementation ────────────────────────────────────────────
 
-fn run_sections(agfs: &Path, verbose: bool, path: Option<&str>) -> Result<bool> {
+fn run_segments(agfs: &Path, verbose: bool, path: Option<&str>) -> Result<bool> {
     let records = journal::read(agfs)?.records;
-    let sections = resolve::resolve_sections(records)?;
+    let segments = resolve::resolve_segments(records)?;
 
     let total: usize = match path {
-        Some(target) => sections
+        Some(target) => segments
             .iter()
             .flat_map(|s| &s.changes)
             .filter(|c| c.matches_path(target))
             .count(),
-        None => sections.iter().map(|s| s.changes.len()).sum(),
+        None => segments.iter().map(|s| s.changes.len()).sum(),
     };
 
     if total == 0 {
@@ -174,27 +169,27 @@ fn run_sections(agfs: &Path, verbose: bool, path: Option<&str>) -> Result<bool> 
         return Ok(false);
     }
 
-    let has_checkpoints = sections.iter().any(|s| s.checkpoint.is_some());
+    let has_checkpoints = segments.iter().any(|s| s.checkpoint.is_some());
 
-    for section in &sections {
+    for segment in &segments {
         let changes: Vec<&Change> = match path {
-            Some(target) => section
+            Some(target) => segment
                 .changes
                 .iter()
                 .filter(|c| c.matches_path(target))
                 .collect(),
-            None => section.changes.iter().collect(),
+            None => segment.changes.iter().collect(),
         };
 
         if has_checkpoints {
             if changes.is_empty() && path.is_some() {
                 continue;
             }
-            if section.checkpoint.is_none() {
+            if segment.checkpoint.is_none() {
                 println!("{}", "── (unsaved changes) ──".dimmed());
             }
             if changes.is_empty() {
-                print_section_footer(section);
+                print_segment_footer(segment);
                 continue;
             }
         }
@@ -204,7 +199,7 @@ fn run_sections(agfs: &Path, verbose: bool, path: Option<&str>) -> Result<bool> 
         }
 
         if has_checkpoints {
-            print_section_footer(section);
+            print_segment_footer(segment);
         }
     }
 
@@ -224,104 +219,95 @@ fn print_total(n: usize) {
 
 // ── Checkpoint-to-current diff ─────────────────────────────────────────
 
-/// Build a map of path → inode content for a set of resolved changes.
-fn state_map<'a>(agfs: &Path, changes: &'a [Change]) -> BTreeMap<&'a str, Option<String>> {
-    let mut map = BTreeMap::new();
-    for change in changes {
-        match change {
-            Change::Added { path, ino, .. } | Change::Modified { path, ino, .. } => {
-                map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
-            }
-            Change::Deleted(path) => {
-                map.insert(path.as_str(), None);
-            }
-            Change::Renamed { from, to, .. } => {
-                map.insert(from.as_str(), None);
-                map.insert(to.as_str(), Some(read_base(from)));
-            }
-        }
-    }
-    map
-}
-
 /// Diff between checkpoint state and current state.
+///
+/// Segments are independently replayable, so the post-checkpoint records
+/// form a self-contained delta.  We resolve only the tail and render it.
 fn run_from_checkpoint(agfs: &Path, chk_name: &str, filter: Option<&str>) -> Result<bool> {
-    let records = journal::read(agfs)?.records;
+    let mut records = journal::read(agfs)?.records;
     let chk_idx = resolve::find_checkpoint_index(&records, chk_name)?;
+    let tail = records.split_off(chk_idx + 1);
+    drop(records);
 
-    // Single-pass: snapshot at checkpoint, then continue to end.
-    let mut resolver = resolve::Resolver::new();
-    let mut records_iter = records.into_iter();
-    for record in records_iter.by_ref().take(chk_idx + 1) {
-        resolver.process(record);
-    }
-    let chk_changes = resolver.clone().into_changes();
-    for record in records_iter {
-        resolver.process(record);
-    }
-    let current_changes = resolver.into_changes();
+    let changes = resolve::resolve(tail)?;
+    let changes: Vec<&Change> = match filter {
+        Some(target) => changes.iter().filter(|c| c.matches_path(target)).collect(),
+        None => changes.iter().collect(),
+    };
 
-    let chk_state = state_map(agfs, &chk_changes);
-    let current_state = state_map(agfs, &current_changes);
-
-    // Collect all paths
-    let mut all_paths: Vec<&str> = chk_state.keys().chain(current_state.keys()).copied().collect();
-    all_paths.sort();
-    all_paths.dedup();
-
-    if let Some(target) = filter {
-        all_paths.retain(|p| *p == target);
-    }
-
-    let mut has_diff = false;
-
-    for path in all_paths {
-        let old = chk_state.get(path);
-        let new = current_state.get(path);
-
-        let (label, old_text, new_text) = match (old, new) {
-            (Some(Some(old_text)), Some(Some(new_text))) if old_text != new_text => (
-                "(modified since checkpoint)".yellow(),
-                old_text.as_str(),
-                new_text.as_str(),
-            ),
-            (None, Some(Some(new_text))) => {
-                ("(added since checkpoint)".green(), "", new_text.as_str())
-            }
-            (Some(Some(old_text)), None) => {
-                ("(removed since checkpoint)".red(), old_text.as_str(), "")
-            }
-            (Some(Some(old_text)), Some(None)) => {
-                ("(deleted since checkpoint)".red(), old_text.as_str(), "")
-            }
-            (Some(None), Some(Some(new_text))) => {
-                ("(restored since checkpoint)".green(), "", new_text.as_str())
-            }
-            _ => continue,
-        };
-
-        println!("{} {}", path.bold(), label);
-        print_unified_diff(old_text, new_text);
-        println!();
-        has_diff = true;
-    }
-
-    if !has_diff {
+    if changes.is_empty() {
         println!(
             "{}",
             format!("No changes since checkpoint \"{chk_name}\".").yellow()
         );
+        return Ok(false);
     }
 
-    Ok(has_diff)
+    for change in &changes {
+        let (label, old_text, new_text) = match change {
+            Change::Added { path: _, ino, .. } => (
+                "(added since checkpoint)".green(),
+                String::new(),
+                read_inode(agfs, *ino),
+            ),
+            Change::Modified { path, ino, .. } => (
+                "(modified since checkpoint)".yellow(),
+                read_base(path),
+                read_inode(agfs, *ino),
+            ),
+            Change::Deleted(path) => (
+                "(deleted since checkpoint)".red(),
+                read_base(path),
+                String::new(),
+            ),
+            Change::Renamed { from, to, .. } => (
+                "(renamed since checkpoint)".yellow(),
+                read_base(from),
+                read_base(to),
+            ),
+        };
+
+        let path = match change {
+            Change::Added { path, .. }
+            | Change::Modified { path, .. }
+            | Change::Deleted(path) => path.as_str(),
+            Change::Renamed { to, .. } => to.as_str(),
+        };
+
+        println!("{} {}", path.bold(), label);
+        print_unified_diff(&old_text, &new_text);
+        println!();
+    }
+
+    Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::resolve::Change;
+    use std::collections::BTreeMap;
     use std::fs;
     use tempfile::TempDir;
+
+    fn state_map<'a>(agfs: &Path, changes: &'a [Change]) -> BTreeMap<&'a str, Option<String>> {
+        let mut map = BTreeMap::new();
+        for change in changes {
+            match change {
+                Change::Added { path, ino, .. } | Change::Modified { path, ino, .. } => {
+                    map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
+                }
+                Change::Deleted(path) => {
+                    map.insert(path.as_str(), None);
+                }
+                Change::Renamed { from, to, .. } => {
+                    map.insert(from.as_str(), None);
+                    map.insert(to.as_str(), Some(read_base(from)));
+                }
+            }
+        }
+        map
+    }
 
     /// Create a temp dir that looks like an agfs session with staged inodes.
     /// Returns the TempDir (must be kept alive) and its path.

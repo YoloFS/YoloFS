@@ -98,7 +98,8 @@ for interactive approval.
 
 **On-disk format**: OverlayFS requires filesystem support for whiteouts
 (`RENAME_WHITEOUT`, ext4/xfs). AgFS uses a flat inode store + append-only
-journal, working on any lower FS.
+journal, working on any lower FS. The journal uses typed record tags
+(`A`/`M`/`D`/`R`) so each record is self-describing.
 
 ## Lifecycle Example
 
@@ -209,8 +210,8 @@ agfs/
 │   ├── commit.rs
 │   ├── abort.rs
 │   ├── diff.rs                # `agfs status` + `agfs diff` (summary and verbose views)
-│   ├── journal.rs             # journal parsing + checkpoint sections
-│   ├── resolve.rs             # journal resolution (collapse E records into final ops)
+│   ├── journal.rs             # journal parsing + checkpoint segments
+│   ├── resolve.rs             # journal resolution (collapse records into final ops)
 │   ├── restore.rs             # `agfs restore` -- restore to a previous checkpoint
 │   ├── checkpoint.rs            # checkpoint create, log
 │   ├── watch.rs               # permission prompt daemon (handles TTY ownership)
