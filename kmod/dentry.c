@@ -30,26 +30,58 @@ void agfs_free_dentry_private_data(struct dentry *dentry)
 	dentry->d_fsdata = NULL;
 }
 
+/*
+ * Dentry revalidation.
+ *
+ * For local lower filesystems (ext4, xfs, …) the lower dentry never has
+ * d_revalidate, so there is nothing to proxy.  In that common case we can
+ * return 1 immediately — including under RCU-walk — so that lookup_fast
+ * stays on the fast RCU path and avoids the refcount bouncing that
+ * path_get/path_put would cause.
+ *
+ * If the lower filesystem *does* set DCACHE_OP_REVALIDATE (e.g. NFS),
+ * we fall back to ref-walk and proxy the call, exactly like overlayfs
+ * does in ovl_revalidate_real().
+ */
 static int agfs_d_revalidate(struct dentry *dentry, unsigned int flags)
 {
-	struct path lower_path;
+	struct agfs_dentry_info *info;
 	struct dentry *lower_dentry;
-	int err = 1;
 
-	if (flags & LOOKUP_RCU)
+	if (flags & LOOKUP_RCU) {
+		if (!d_inode_rcu(dentry))
+			return -ECHILD;
+		info = AGFS_D(dentry);
+		if (!info)
+			return -ECHILD;
+		lower_dentry = info->lower_path.dentry;
+		/* No lower revalidate → dentry is valid, stay in RCU-walk. */
+		if (!lower_dentry ||
+		    !(lower_dentry->d_flags & DCACHE_OP_REVALIDATE))
+			return 1;
+		/* Lower needs revalidation — drop to ref-walk. */
 		return -ECHILD;
+	}
 
 	if (!AGFS_D(dentry))
 		return 0;
 
-	agfs_get_lower_path(dentry, &lower_path);
-	lower_dentry = lower_path.dentry;
+	/* ref-walk: proxy to the lower dentry's revalidate if it has one. */
+	{
+		struct path lower_path;
+		int err = 1;
 
-	if (lower_dentry && lower_dentry->d_op && lower_dentry->d_op->d_revalidate)
-		err = lower_dentry->d_op->d_revalidate(lower_dentry, flags);
+		agfs_get_lower_path(dentry, &lower_path);
+		lower_dentry = lower_path.dentry;
 
-	agfs_put_lower_path(dentry, &lower_path);
-	return err;
+		if (lower_dentry &&
+		    (lower_dentry->d_flags & DCACHE_OP_REVALIDATE))
+			err = lower_dentry->d_op->d_revalidate(lower_dentry,
+							       flags);
+
+		agfs_put_lower_path(dentry, &lower_path);
+		return err;
+	}
 }
 
 static void agfs_d_release(struct dentry *dentry)
