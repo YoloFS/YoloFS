@@ -367,4 +367,27 @@ mod tests {
             journal.records[0]
         );
     }
+
+    #[test]
+    fn malformed_e_record_too_few_fields_skipped() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // E record with only 3 fields (needs 6) — should be skipped
+        data.extend_from_slice(b"E\0\0file\01\n");
+        // Valid record after it
+        data.extend_from_slice(b"E\0\0good\02\0f\0\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let journal = read(dir.path()).unwrap();
+        assert_eq!(
+            journal.records.len(),
+            1,
+            "malformed record should be skipped: {:?}",
+            journal.records
+        );
+        assert!(matches!(
+            &journal.records[0],
+            Record::Entry { path, target: Target::Staged(2), .. } if path == "/good"
+        ));
+    }
 }

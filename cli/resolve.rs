@@ -10,7 +10,7 @@
 
 use crate::journal::{DType, Record, Target};
 use anyhow::Result;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn base_file(rel: &str) -> PathBuf {
@@ -116,20 +116,29 @@ pub fn resolve_from(
 /// emit the resolved change list at any point. Used by both `resolve`
 /// (batch) and `resolve_sections` (incremental checkpoints) so the journal is
 /// traversed only once.
+///
+/// Each path maps to exactly one `PathState`. Renames are a `Redirect`
+/// (or `RedirectStaged`) at the destination plus a `Deleted` at the source.
 struct ResolveState {
-    resolved_renames: BTreeMap<String, (String, DType)>,
-    resolved_adds: BTreeMap<String, (u64, DType)>,
-    resolved_deletes: BTreeSet<String>,
-    rename_origin: BTreeMap<String, String>,
+    state: BTreeMap<String, PathState>,
+}
+
+#[derive(Clone, Debug)]
+enum PathState {
+    /// Content in staging: `inodes/<ino>`.
+    Staged { ino: u64, dtype: DType },
+    /// Removed from base.
+    Deleted,
+    /// Content comes from base at `origin` (zero-copy rename).
+    Redirect { origin: String, dtype: DType },
+    /// Renamed from `origin` AND content replaced by staged inode.
+    RedirectStaged { origin: String, ino: u64, dtype: DType },
 }
 
 impl ResolveState {
     fn new() -> Self {
         Self {
-            resolved_renames: BTreeMap::new(),
-            resolved_adds: BTreeMap::new(),
-            resolved_deletes: BTreeSet::new(),
-            rename_origin: BTreeMap::new(),
+            state: BTreeMap::new(),
         }
     }
 
@@ -137,53 +146,96 @@ impl ResolveState {
         match record {
             Record::Entry { path, target, dtype } => match target {
                 Target::Staged(ino) => {
-                    // dtype is None only for malformed records; default to File.
                     let dt = dtype.unwrap_or(DType::File);
-                    self.resolved_adds.insert(path.clone(), (*ino, dt));
-                    self.resolved_deletes.remove(path);
-                }
-                Target::Deleted => {
-                    if self.resolved_adds.remove(path).is_some() {
-                        let base_file = base_file(path);
-                        if base_file.exists() {
-                            self.resolved_deletes.insert(path.clone());
-                        }
-                    } else if let Some(origin) = self.rename_origin.remove(path) {
-                        self.resolved_renames.remove(&origin);
-                        self.resolved_deletes.insert(origin);
+                    // If this path is a rename destination, preserve the
+                    // rename tracking while updating the staged content.
+                    if let Some(
+                        PathState::Redirect { origin, .. }
+                        | PathState::RedirectStaged { origin, .. },
+                    ) = self.state.get(path)
+                    {
+                        let origin = origin.clone();
+                        self.state.insert(
+                            path.clone(),
+                            PathState::RedirectStaged {
+                                origin,
+                                ino: *ino,
+                                dtype: dt,
+                            },
+                        );
                     } else {
-                        self.resolved_deletes.insert(path.clone());
+                        self.state
+                            .insert(path.clone(), PathState::Staged { ino: *ino, dtype: dt });
                     }
                 }
+                Target::Deleted => match self.state.remove(path) {
+                    Some(PathState::Staged { .. }) => {
+                        if base_file(path).exists() {
+                            self.state.insert(path.clone(), PathState::Deleted);
+                        }
+                    }
+                    Some(
+                        PathState::Redirect { origin, .. }
+                        | PathState::RedirectStaged { origin, .. },
+                    ) => {
+                        // Rename destination deleted — undo the rename,
+                        // delete the original base path instead.
+                        self.state.insert(origin, PathState::Deleted);
+                    }
+                    _ => {
+                        self.state.insert(path.clone(), PathState::Deleted);
+                    }
+                },
                 Target::Redirect(base_path) => {
-                    let old_path = base_path;
-                    let new_path = path;
-                    // dtype is None only for malformed records; default to File.
+                    let origin = base_path;
                     let dt = dtype.unwrap_or(DType::File);
 
-                    // The delete of old_path was already processed (rename
-                    // emits E(old, Deleted) before E(new, Redirect(old))).
-                    // Remove the spurious delete since it's a rename, not a
-                    // standalone delete.  This is safe even if the delete
-                    // was not yet processed: emit_changes() independently
-                    // filters rename sources out of resolved_deletes.
-                    self.resolved_deletes.remove(old_path);
-
-                    if let Some((ino, prev_dt)) = self.resolved_adds.remove(old_path) {
-                        self.resolved_adds.insert(new_path.clone(), (ino, prev_dt));
-                        let base_file = base_file(old_path);
-                        if base_file.exists() {
-                            self.resolved_deletes.insert(old_path.clone());
+                    // Overwrite whatever was at the destination.
+                    if let Some(
+                        PathState::Redirect {
+                            origin: prev_origin,
+                            ..
                         }
-                    } else if let Some(origin) = self.rename_origin.remove(old_path) {
-                        self.resolved_renames
-                            .insert(origin.clone(), (new_path.clone(), dt));
-                        self.rename_origin.insert(new_path.clone(), origin);
+                        | PathState::RedirectStaged {
+                            origin: prev_origin,
+                            ..
+                        },
+                    ) = self.state.remove(path)
+                    {
+                        self.state.insert(prev_origin, PathState::Deleted);
+                    }
+
+                    // The kernel emits E(old, Deleted) before E(new,
+                    // Redirect(old)).  Remove that spurious delete.
+                    if matches!(self.state.get(origin), Some(PathState::Deleted)) {
+                        self.state.remove(origin);
+                    }
+
+                    // If the source was staged, move the staged content.
+                    if let Some(PathState::Staged {
+                        ino,
+                        dtype: prev_dt,
+                    }) = self.state.remove(origin)
+                    {
+                        self.state.insert(
+                            path.clone(),
+                            PathState::RedirectStaged {
+                                origin: origin.clone(),
+                                ino,
+                                dtype: prev_dt,
+                            },
+                        );
+                        if base_file(origin).exists() {
+                            self.state.insert(origin.clone(), PathState::Deleted);
+                        }
                     } else {
-                        self.resolved_renames
-                            .insert(old_path.clone(), (new_path.clone(), dt));
-                        self.rename_origin
-                            .insert(new_path.clone(), old_path.clone());
+                        self.state.insert(
+                            path.clone(),
+                            PathState::Redirect {
+                                origin: origin.clone(),
+                                dtype: dt,
+                            },
+                        );
                     }
                 }
             },
@@ -193,60 +245,80 @@ impl ResolveState {
 
     fn emit_changes(&self) -> Vec<Change> {
         let mut changes = Vec::new();
-        let rename_srcs: BTreeSet<&String> = self.resolved_renames.keys().collect();
-        let rename_dsts: BTreeSet<&String> =
-            self.resolved_renames.values().map(|(p, _)| p).collect();
 
-        for (old_path, (new_path, dt)) in &self.resolved_renames {
-            if old_path == new_path {
-                continue; // identity rename (e.g. a→b→a) — no net change
-            }
-            if let Some(&(ino, ino_dt)) = self.resolved_adds.get(new_path) {
-                changes.push(Change::RenamedModified {
-                    from: old_path.clone(),
-                    to: new_path.clone(),
-                    ino,
-                    dtype: ino_dt,
-                });
-            } else {
-                changes.push(Change::Renamed {
-                    from: old_path.clone(),
-                    to: new_path.clone(),
-                    dtype: *dt,
-                });
+        // Collect rename origins so we can filter them from deletes
+        // and from the Added-vs-Modified check.
+        let rename_origins: BTreeMap<&String, &String> = self
+            .state
+            .iter()
+            .filter_map(|(path, s)| match s {
+                PathState::Redirect { origin, .. }
+                | PathState::RedirectStaged { origin, .. } => Some((origin, path)),
+                _ => None,
+            })
+            .collect();
+
+        // Emit in commit-safe order: renames, then adds/modifies, then deletes.
+
+        for (path, ps) in &self.state {
+            match ps {
+                PathState::Redirect { origin, dtype } if origin != path => {
+                    changes.push(Change::Renamed {
+                        from: origin.clone(),
+                        to: path.clone(),
+                        dtype: *dtype,
+                    });
+                }
+                PathState::RedirectStaged { origin, ino, dtype } if origin != path => {
+                    changes.push(Change::RenamedModified {
+                        from: origin.clone(),
+                        to: path.clone(),
+                        ino: *ino,
+                        dtype: *dtype,
+                    });
+                }
+                _ => {}
             }
         }
 
-        for (path, (ino, dtype)) in &self.resolved_adds {
-            if rename_dsts.contains(path) {
-                continue;
-            }
-            let base_file = base_file(path);
-            if base_file.exists() {
-                changes.push(Change::Modified {
-                    path: path.clone(),
-                    ino: *ino,
-                    dtype: *dtype,
-                });
-            } else {
-                changes.push(Change::Added {
-                    path: path.clone(),
-                    ino: *ino,
-                    dtype: *dtype,
-                });
+        for (path, ps) in &self.state {
+            match ps {
+                PathState::Staged { ino, dtype } => {
+                    if base_file(path).exists() && !rename_origins.contains_key(path) {
+                        changes.push(Change::Modified {
+                            path: path.clone(),
+                            ino: *ino,
+                            dtype: *dtype,
+                        });
+                    } else {
+                        changes.push(Change::Added {
+                            path: path.clone(),
+                            ino: *ino,
+                            dtype: *dtype,
+                        });
+                    }
+                }
+                PathState::RedirectStaged { origin, ino, dtype } if origin == path => {
+                    changes.push(Change::Modified {
+                        path: path.clone(),
+                        ino: *ino,
+                        dtype: *dtype,
+                    });
+                }
+                _ => {}
             }
         }
 
-        for path in self.resolved_deletes.iter().rev() {
-            if rename_srcs.contains(path) {
-                continue;
+        for (path, ps) in &self.state {
+            if matches!(ps, PathState::Deleted) && !rename_origins.contains_key(path) {
+                changes.push(Change::Deleted(path.clone()));
             }
-            changes.push(Change::Deleted(path.clone()));
         }
 
         changes
     }
 }
+
 
 /// A group of resolved changes belonging to a checkpoint (or trailing).
 #[derive(Debug)]
@@ -700,6 +772,64 @@ mod tests {
             has_rename,
             "expected Renamed(hostname->hosts), got: {changes:?}"
         );
+    }
+
+    /// touch x (staged), then mv y→x (base file overwrites staged file).
+    /// The redirect should evict the prior staged add at x.
+    /// Should produce Renamed(y→x), not RenamedModified with the orphaned ino.
+    #[test]
+    fn redirect_overwrites_prior_staged_add() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // Stage x with ino 1
+        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
+        // Rename y→x (redirect): delete y + redirect x→y
+        data.extend_from_slice(b"E\0/nonexistent_test_12345\0y\00\0\0\n");
+        data.extend_from_slice(
+            b"E\0/nonexistent_test_12345\0x\0-1\0f\0/nonexistent_test_12345/y\n",
+        );
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/1"), "staged content").unwrap();
+
+        let changes = resolve(&read(dir.path())).unwrap();
+        assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
+        assert!(
+            matches!(&changes[0], Change::Renamed { from, to, .. }
+                if from == "/nonexistent_test_12345/y" && to == "/nonexistent_test_12345/x"),
+            "expected Renamed(y→x), got: {:?}",
+            changes[0]
+        );
+    }
+
+    /// mv a→b, then mv c→b (second redirect overwrites first rename destination).
+    /// Should produce Renamed(c→b) + Deleted(a).
+    #[test]
+    fn redirect_overwrites_prior_rename_destination() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // Rename a→b: delete a + redirect b→a
+        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\00\0\0\n");
+        data.extend_from_slice(
+            b"E\0/nonexistent_test_12345\0b\0-1\0f\0/nonexistent_test_12345/a\n",
+        );
+        // Rename c→b: delete c + redirect b→c (overwrites the a→b rename at b)
+        data.extend_from_slice(b"E\0/nonexistent_test_12345\0c\00\0\0\n");
+        data.extend_from_slice(
+            b"E\0/nonexistent_test_12345\0b\0-1\0f\0/nonexistent_test_12345/c\n",
+        );
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let changes = resolve(&read(dir.path())).unwrap();
+        let has_rename = changes
+            .iter()
+            .any(|c| matches!(c, Change::Renamed { from, to, .. }
+                if from == "/nonexistent_test_12345/c" && to == "/nonexistent_test_12345/b"));
+        let has_delete = changes
+            .iter()
+            .any(|c| matches!(c, Change::Deleted(p)
+                if p == "/nonexistent_test_12345/a"));
+        assert!(has_rename, "expected Renamed(c→b), got: {changes:?}");
+        assert!(has_delete, "expected Deleted(a), got: {changes:?}");
     }
 
     /// touch x, rm x: create then delete cancels out (x never existed in base).
@@ -1413,5 +1543,128 @@ mod tests {
             "snap3 rename should preserve DType::Dir, got: {:?}",
             snap3_rename.unwrap()
         );
+    }
+
+    // ── Rename edge cases ─────────────────────────────────────────────
+
+    /// Rename a→b then modify b with a different ino: preserves rename
+    /// tracking and produces RenamedModified with the new ino.
+    #[test]
+    fn rename_modify_different_ino() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // Rename a→b (redirect): delete a + redirect b→a
+        data.extend_from_slice(b"E\0/nonexistent_test_12345\0a\00\0\0\n");
+        data.extend_from_slice(
+            b"E\0/nonexistent_test_12345\0b\0-1\0f\0/nonexistent_test_12345/a\n",
+        );
+        // Modify b (COW): staged with new ino
+        data.extend_from_slice(b"E\0/nonexistent_test_12345\0b\02\0f\0\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/2"), "modified").unwrap();
+
+        let changes = resolve(&read(dir.path())).unwrap();
+        let rm = changes
+            .iter()
+            .find(|c| matches!(c, Change::RenamedModified { .. }));
+        assert!(
+            rm.is_some(),
+            "expected RenamedModified, got: {changes:?}"
+        );
+        assert!(
+            matches!(rm.unwrap(), Change::RenamedModified { from, to, ino: 2, .. }
+            if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/b"),
+            "wrong RenamedModified fields: {:?}",
+            rm.unwrap()
+        );
+    }
+
+    /// Delete a rename destination: should undo the rename and delete the origin.
+    #[test]
+    fn delete_rename_destination_undoes_rename() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // Rename /etc/hostname → /etc/hostname.bak
+        data.extend_from_slice(b"E\0/etc\0hostname\00\0\0\n");
+        data.extend_from_slice(b"E\0/etc\0hostname.bak\0-1\0f\0/etc/hostname\n");
+        // Delete the destination /etc/hostname.bak
+        data.extend_from_slice(b"E\0/etc\0hostname.bak\00\0\0\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let changes = resolve(&read(dir.path())).unwrap();
+        // The rename was undone; the original file (/etc/hostname) should be deleted
+        assert!(
+            changes
+                .iter()
+                .any(|c| matches!(c, Change::Deleted(p) if p == "/etc/hostname")),
+            "expected Deleted(/etc/hostname), got: {changes:?}"
+        );
+        assert!(
+            !changes
+                .iter()
+                .any(|c| matches!(c, Change::Renamed { .. })),
+            "should have no renames, got: {changes:?}"
+        );
+    }
+
+    /// Rename onto a path that was previously a rename destination:
+    /// the overwritten rename's source should become a standalone delete.
+    #[test]
+    fn redirect_overwrites_previous_redirect() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // Rename /etc/hostname → /etc/target
+        data.extend_from_slice(b"E\0/etc\0hostname\00\0\0\n");
+        data.extend_from_slice(b"E\0/etc\0target\0-1\0f\0/etc/hostname\n");
+        // Rename /etc/hosts → /etc/target (overwrites the first rename's destination)
+        data.extend_from_slice(b"E\0/etc\0hosts\00\0\0\n");
+        data.extend_from_slice(b"E\0/etc\0target\0-1\0f\0/etc/hosts\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let changes = resolve(&read(dir.path())).unwrap();
+        // Final: Renamed(hosts → target) + Deleted(hostname)
+        let has_rename = changes.iter().any(|c| {
+            matches!(c, Change::Renamed { from, to, .. }
+            if from == "/etc/hosts" && to == "/etc/target")
+        });
+        let has_delete = changes
+            .iter()
+            .any(|c| matches!(c, Change::Deleted(p) if p == "/etc/hostname"));
+        assert!(has_rename, "expected Renamed(hosts→target): {changes:?}");
+        assert!(
+            has_delete,
+            "expected Deleted(hostname) from overwritten rename: {changes:?}"
+        );
+    }
+
+    /// Create file, rename it, then create another file at the original name.
+    /// Verifies staged-file rename (Delete + Staged with same ino) plus re-creation.
+    #[test]
+    fn staged_rename_then_recreate() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // Create file at x (ino=1)
+        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\01\0f\0\n");
+        // Staged rename x→y: delete x + staged y with same ino
+        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\00\0\0\n");
+        data.extend_from_slice(b"E\0/nonexistent_test_12345\0y\01\0f\0\n");
+        // Create new file at x (ino=2)
+        data.extend_from_slice(b"E\0/nonexistent_test_12345\0x\02\0f\0\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/1"), "original").unwrap();
+        fs::write(dir.path().join("inodes/2"), "replacement").unwrap();
+
+        let changes = resolve(&read(dir.path())).unwrap();
+        assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
+        let has_y = changes.iter().any(|c| {
+            matches!(c, Change::Added { path, ino: 1, .. }
+            if path == "/nonexistent_test_12345/y")
+        });
+        let has_x = changes.iter().any(|c| {
+            matches!(c, Change::Added { path, ino: 2, .. }
+            if path == "/nonexistent_test_12345/x")
+        });
+        assert!(has_y, "expected Added(y, ino=1): {changes:?}");
+        assert!(has_x, "expected Added(x, ino=2): {changes:?}");
     }
 }
