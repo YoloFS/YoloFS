@@ -1,9 +1,0 @@
-{
-  "search.exclude": {
-    "**/.agfs": true
-  },
-  "files.watcherExclude": {
-    "**/.agfs/**": true
-  },
-  "rust-analyzer.files.excludeDirs": [".agfs"]
-}
