@@ -475,10 +475,7 @@ fn complex_multi_operation_commit() {
         fs::read_to_string(s.mnt_path("multi.txt")).unwrap(),
         "replacement\n"
     );
-    assert!(
-        !s.mnt_path("temp.txt").exists(),
-        "temp.txt should be gone"
-    );
+    assert!(!s.mnt_path("temp.txt").exists(), "temp.txt should be gone");
     assert!(
         !s.mnt_path("brand_new.txt").exists(),
         "brand_new.txt should be gone (renamed)"
@@ -523,17 +520,17 @@ fn complex_multi_operation_commit() {
         .iter()
         .any(|c| matches!(c, Change::Added { path, .. } if path.ends_with("/link.txt")));
     let has_temp = changes.iter().any(|c| match c {
-        Change::Added { path, .. }
-        | Change::Modified { path, .. }
-        | Change::Deleted(path) => path.ends_with("/temp.txt"),
+        Change::Added { path, .. } | Change::Modified { path, .. } | Change::Deleted(path) => {
+            path.ends_with("/temp.txt")
+        }
         Change::Renamed { from, to, .. } => {
             from.ends_with("/temp.txt") || to.ends_with("/temp.txt")
         }
     });
     let has_brand_new = changes.iter().any(|c| match c {
-        Change::Added { path, .. }
-        | Change::Modified { path, .. }
-        | Change::Deleted(path) => path.ends_with("/brand_new.txt"),
+        Change::Added { path, .. } | Change::Modified { path, .. } | Change::Deleted(path) => {
+            path.ends_with("/brand_new.txt")
+        }
         Change::Renamed { from, to, .. } => {
             from.ends_with("/brand_new.txt") || to.ends_with("/brand_new.txt")
         }

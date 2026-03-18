@@ -41,6 +41,13 @@ impl DType {
     }
 }
 
+/// A named checkpoint in the journal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkpoint {
+    pub id: u64,
+    pub name: String,
+}
+
 /// A journal record: either an entry (dirent mutation) or a checkpoint.
 #[derive(Debug, Clone)]
 pub enum Record {
@@ -62,10 +69,7 @@ pub enum Record {
         dtype: Option<DType>,
         base: String,
     },
-    Checkpoint {
-        id: u64,
-        name: String,
-    },
+    Checkpoint(Checkpoint),
 }
 
 /// A parsed journal: records and the byte offset after each record.
@@ -158,7 +162,7 @@ pub fn read(agfs_dir: &Path) -> Result<Journal> {
                 let id_str = String::from_utf8_lossy(fields[1]);
                 let name = String::from_utf8_lossy(fields[2]).to_string();
                 if let Ok(id) = id_str.parse::<u64>() {
-                    records.push(Record::Checkpoint { id, name });
+                    records.push(Record::Checkpoint(Checkpoint { id, name }));
                     offsets.push(line_end);
                 }
             }
@@ -263,7 +267,7 @@ mod tests {
         let journal = read(dir.path()).unwrap();
         assert_eq!(journal.records.len(), 3);
         assert!(
-            matches!(&journal.records[1], Record::Checkpoint { id: 1, name } if name == "build")
+            matches!(&journal.records[1], Record::Checkpoint(c) if c.id == 1 && c.name == "build")
         );
     }
 
@@ -286,7 +290,7 @@ mod tests {
         let after = read(dir.path()).unwrap();
         assert_eq!(after.records.len(), 2);
         assert!(matches!(&after.records[0], Record::Added { path, .. } if path == "/a"));
-        assert!(matches!(&after.records[1], Record::Checkpoint { id: 1, name } if name == "chk"));
+        assert!(matches!(&after.records[1], Record::Checkpoint(c) if c.id == 1 && c.name == "chk"));
     }
 
     #[test]

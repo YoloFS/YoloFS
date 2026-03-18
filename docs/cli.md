@@ -52,7 +52,7 @@ $ agfs remount           # unmount then remount (prompts if staged changes exist
 $ agfs checkpoint              # checkpoint with timestamp as name
 $ agfs checkpoint "my label"   # checkpoint with explicit name
 $ agfs restore <name|id>       # restore to a previous checkpoint (discards later changes)
-$ agfs log                     # show checkpoint log with change counts
+$ agfs log                     # show checkpoint log
 ```
 
 **Permission rules and diagnostics:**

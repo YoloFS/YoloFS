@@ -58,11 +58,11 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
 // ── Segment display helpers ──────────────────────────────────────────
 
 fn print_segment_footer(segment: &Segment) {
-    if let Some((id, name)) = &segment.checkpoint {
+    if let Some(c) = &segment.to {
         println!(
-            "  {} {}",
-            format!("checkpoint [{id}]").cyan().bold(),
-            name.dimmed()
+            "{} {}",
+            format!("checkpoint [{}]", c.id).cyan().bold(),
+            c.name.dimmed()
         );
     }
 }
@@ -70,10 +70,9 @@ fn print_segment_footer(segment: &Segment) {
 // ── Per-change printing (summary vs verbose) ─────────────────────────
 
 fn print_change(agfs: &Path, change: &Change, verbose: bool) {
-    let indent = if verbose { "" } else { "  " };
     match change {
         Change::Added { path, ino, .. } => {
-            println!("{indent}{} {}", path.bold(), "(added)".green());
+            println!("{} {}", path.bold(), "(added)".green());
             if verbose {
                 print_unified_diff("", &read_inode(agfs, *ino));
             }
@@ -83,30 +82,27 @@ fn print_change(agfs: &Path, change: &Change, verbose: bool) {
                 let old_text = read_base(path);
                 let new_text = read_inode(agfs, *ino);
                 if old_text != new_text {
-                    println!("{indent}{} {}", path.bold(), "(modified)".yellow());
+                    println!("{} {}", path.bold(), "(modified)".yellow());
                     print_unified_diff(&old_text, &new_text);
                 }
             } else {
-                println!("{indent}{} {}", path.bold(), "(modified)".yellow());
+                println!("{} {}", path.bold(), "(modified)".yellow());
             }
         }
         Change::Deleted(p) => {
-            println!("{indent}{} {}", p.bold(), "(deleted)".red());
+            println!("{} {}", p.bold(), "(deleted)".red());
             if verbose {
                 print_unified_diff(&read_base(p), "");
             }
         }
         Change::Renamed { from, to, .. } => {
             println!(
-                "{indent}{} → {} {}",
+                "{} → {} {}",
                 from.bold(),
                 to.bold(),
                 "(renamed)".cyan()
             );
         }
-    }
-    if verbose {
-        println!();
     }
 }
 
@@ -146,14 +142,17 @@ fn run(
     let has_changes = segments
         .iter()
         .flat_map(|s| &s.changes)
-        .any(|c| path.map_or(true, |t| c.matches_path(t)));
+        .any(|c| path.is_none_or(|t| c.matches_path(t)));
 
     if !has_changes {
-        println!("{}", format!("No changes{}.", range_label(at, from, to)).yellow());
+        println!(
+            "{}",
+            format!("No changes{}.", range_label(at, from, to)).yellow()
+        );
         return Ok(false);
     }
 
-    let has_checkpoints = segments.iter().any(|s| s.checkpoint.is_some());
+    let has_checkpoints = segments.iter().any(|s| s.to.is_some());
     let mut total = 0usize;
 
     for segment in &segments {
@@ -170,7 +169,7 @@ fn run(
             if changes.is_empty() && path.is_some() {
                 continue;
             }
-            if segment.checkpoint.is_none() {
+            if segment.to.is_none() {
                 println!("{}", "── (unsaved changes) ──".dimmed());
             }
             if changes.is_empty() {
@@ -360,10 +359,7 @@ mod tests {
 
     #[test]
     fn range_label_at() {
-        assert_eq!(
-            range_label(Some("s1"), None, None),
-            " at checkpoint \"s1\""
-        );
+        assert_eq!(range_label(Some("s1"), None, None), " at checkpoint \"s1\"");
     }
 
     #[test]

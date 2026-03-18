@@ -127,7 +127,6 @@ fn bind_mount_pseudofs(mnt: &Path) -> Result<()> {
         if is_mountpoint(&target) {
             continue;
         }
-        eprintln!("{} {}", "agfs: bind-mounting".green(), source);
         nix::mount::mount(
             Some(*source),
             &target,
@@ -144,7 +143,6 @@ fn unbind_mount_pseudofs(mnt: &Path) -> Result<()> {
     for source in BIND_MOUNTS.iter().rev() {
         let target = mnt.join(source.trim_start_matches('/'));
         if target.exists() && is_mountpoint(&target) {
-            eprintln!("{} {}", "agfs: unbinding".green(), source);
             umount_or_prompt(&target).with_context(|| format!("unbinding {source}"))?;
         }
     }

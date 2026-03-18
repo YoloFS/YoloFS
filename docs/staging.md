@@ -754,5 +754,4 @@ as abort — all dirents are cleared and the mount shows the clean base
 state. Orphaned inodes remain in the store until the next `commit` or
 `abort`.
 
-**`agfs log`**: List all checkpoints with their names and the
-number of changes since the previous checkpoint.
+**`agfs log`**: List all checkpoints with their names.

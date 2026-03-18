@@ -24,3 +24,6 @@ jobs:
 
       - name: Integration tests
         run: make test-e2e
+
+      - name: Example script
+        run: ./example.sh

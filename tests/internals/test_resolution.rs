@@ -30,7 +30,7 @@ fn operations_produce_ordered_records() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Checkpoint { .. })),
+            .any(|r| matches!(r, Record::Checkpoint(_))),
         "missing S: {records:?}"
     );
     assert!(
@@ -45,7 +45,7 @@ fn operations_produce_ordered_records() {
     // Checkpoint "s1" should appear after the Add (write) and before the Delete.
     let chk_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1"))
+        .position(|r| matches!(r, Record::Checkpoint(c) if c.name == "s1"))
         .unwrap();
     let add_pos = records
         .iter()

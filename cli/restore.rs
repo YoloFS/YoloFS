@@ -113,7 +113,7 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     let chk_idx = resolve::find_checkpoint_index(&journal.records, checkpoint_name)?;
 
     let (checkpoint_gen, chk_label) = match &journal.records[chk_idx] {
-        journal::Record::Checkpoint { id, name } => (*id, name.clone()),
+        journal::Record::Checkpoint(c) => (c.id, c.name.clone()),
         _ => unreachable!("find_checkpoint_index returned non-checkpoint record"),
     };
 

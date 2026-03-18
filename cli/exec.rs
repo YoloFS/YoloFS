@@ -62,8 +62,6 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         eprintln!("{}", "agfs: entering sandbox (exit to return)".cyan());
         (default_shell.clone(), vec![])
     } else {
-        let quoted: Vec<_> = exec_args.iter().map(|s| format!("\"{s}\"")).collect();
-        eprintln!("{} [{}]", "agfs: exec".cyan(), quoted.join(", "));
         (exec_args[0].clone(), exec_args[1..].to_vec())
     };
 

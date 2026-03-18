@@ -21,7 +21,7 @@ fn restore_journal_contains_checkpoint_marker() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "chk1")),
+            .any(|r| matches!(r, Record::Checkpoint(c) if c.name == "chk1")),
         "chk1 marker should be in journal: {records:?}"
     );
 }
@@ -42,7 +42,7 @@ fn restore_journal_has_no_post_checkpoint_records() {
     // Find the checkpoint index
     let chk_idx = records
         .iter()
-        .position(|r| matches!(r, Record::Checkpoint { name, .. } if name == "chk1"))
+        .position(|r| matches!(r, Record::Checkpoint(c) if c.name == "chk1"))
         .expect("chk1 should exist");
 
     assert_eq!(
@@ -362,7 +362,7 @@ fn restore_renamed_symlink_in_resolved_changes() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "chk1")),
+            .any(|r| matches!(r, Record::Checkpoint(c) if c.name == "chk1")),
         "chk1 should be in journal: {records:?}"
     );
 }

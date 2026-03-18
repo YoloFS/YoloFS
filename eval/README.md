@@ -2,34 +2,6 @@
 codex --disable shell_tool --config 'mcp_servers.agfs={command = "/users/szhong/agentctl/target/debug/agfs", args = ["--mcp"]}' 'Use the shell tool to run this exact command: printf "hello from agfs\n" > smoke.txt. check the result, but instead of commiting, abort the changes.'
 ```
 
-## Build & Install
-
-Build everything (CLI + kernel module):
-```bash
-make
-```
-
-Build individually:
-```bash
-make cli    # build the CLI (Rust, release mode)
-make kmod   # build the kernel module
-```
-
-Install CLI and load kernel module:
-```bash
-sudo make install
-```
-
-Uninstall CLI and unload kernel module:
-```bash
-sudo make uninstall
-```
-
-Clean build artifacts:
-```bash
-make clean
-```
-
 ## Dependencies
 
 Install uv

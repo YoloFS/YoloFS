@@ -14,11 +14,10 @@ pub fn is_loaded() -> bool {
     Path::new("/sys/module/agfs").exists()
 }
 
-/// Load the kernel module if not already loaded.
-pub fn load() -> Result<()> {
+/// Load the kernel module if not already loaded. Returns `true` if freshly loaded.
+pub fn load() -> Result<bool> {
     if is_loaded() {
-        eprintln!("{} kernel module already loaded", "agfs:".green());
-        return Ok(());
+        return Ok(false);
     }
 
     let ko_path = find_ko().context("cannot find agfs.ko — build it with `make kmod`")?;
@@ -39,7 +38,7 @@ pub fn load() -> Result<()> {
         anyhow::bail!("insmod failed: {stderr}");
     }
 
-    Ok(())
+    Ok(true)
 }
 
 /// Unmount all agfs sessions and unload the kernel module.
@@ -69,7 +68,8 @@ pub fn unload() -> Result<()> {
 /// Unload then reload the kernel module.
 pub fn reload() -> Result<()> {
     unload()?;
-    load()
+    load()?;
+    Ok(())
 }
 
 /// Find the .ko file: dev build directory, then system install path.

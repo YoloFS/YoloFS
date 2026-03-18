@@ -18,7 +18,11 @@ pub fn create(name: Option<&str>) -> Result<()> {
     let ctl_file = ioctl::open(&agfs).context("opening ctl for checkpoint")?;
     let id = ioctl::create_checkpoint(&ctl_file, &chk_name)?;
 
-    eprintln!("{} {} (id {})", "checkpoint:".green().bold(), chk_name, id);
+    eprintln!(
+        "{} {}",
+        format!("checkpoint [{id}]").cyan().bold(),
+        chk_name.dimmed()
+    );
     Ok(())
 }
 
@@ -27,11 +31,9 @@ pub fn list() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
     let records = journal::read(&agfs)?.records;
 
-    // Collect checkpoint positions in a single pass
-    let checkpoints: Vec<(usize, &journal::Record)> = records
+    let checkpoints: Vec<&journal::Record> = records
         .iter()
-        .enumerate()
-        .filter(|(_, r)| matches!(r, journal::Record::Checkpoint { .. }))
+        .filter(|r| matches!(r, journal::Record::Checkpoint(_)))
         .collect();
 
     if checkpoints.is_empty() {
@@ -39,38 +41,14 @@ pub fn list() -> Result<()> {
         return Ok(());
     }
 
-    for (i, &(rec_idx, rec)) in checkpoints.iter().enumerate() {
-        let journal::Record::Checkpoint { id, name } = rec else {
+    for rec in &checkpoints {
+        let journal::Record::Checkpoint(c) = rec else {
             unreachable!()
         };
-
-        let prev_end = if i > 0 { checkpoints[i - 1].0 + 1 } else { 0 };
-        let changes = records[prev_end..rec_idx]
-            .iter()
-            .filter(|r| !matches!(r, journal::Record::Checkpoint { .. }))
-            .count();
-
         println!(
-            "  {} {} ({} change{})",
-            format!("checkpoint [{id}]").cyan().bold(),
-            name.dimmed(),
-            changes,
-            crate::utils::plural(changes)
-        );
-    }
-
-    // Count changes after the last checkpoint
-    let last_idx = checkpoints.last().unwrap().0;
-    let trailing = records[last_idx + 1..]
-        .iter()
-        .filter(|r| !matches!(r, journal::Record::Checkpoint { .. }))
-        .count();
-    if trailing > 0 {
-        println!(
-            "  {} ({} uncommitted change{} since last checkpoint)",
-            "(current)".dimmed(),
-            trailing,
-            crate::utils::plural(trailing)
+            "{} {}",
+            format!("checkpoint [{}]", c.id).cyan().bold(),
+            c.name.dimmed(),
         );
     }
 

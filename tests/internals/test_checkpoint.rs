@@ -17,7 +17,7 @@ fn checkpoint_produces_checkpoint_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "build")),
+            .any(|r| matches!(r, Record::Checkpoint(c) if c.name == "build")),
         "journal should have an S record named 'build': {records:?}"
     );
 }
@@ -51,7 +51,7 @@ fn recow_after_checkpoint_produces_new_add() {
     // Checkpoint "s1" should sit between the two adds.
     let chk_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1"))
+        .position(|r| matches!(r, Record::Checkpoint(c) if c.name == "s1"))
         .unwrap();
     let first_add = records
         .iter()
@@ -85,7 +85,7 @@ fn multiple_checkpoints_have_distinct_ids() {
     let snaps: Vec<_> = records
         .iter()
         .filter_map(|r| match r {
-            Record::Checkpoint { id, name } if name != "(initial)" => Some((id, name)),
+            Record::Checkpoint(c) if c.name != "(initial)" => Some((&c.id, &c.name)),
             _ => None,
         })
         .collect();
@@ -112,7 +112,7 @@ fn rename_after_checkpoint() {
     let records = journal(&s);
     let chk_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Checkpoint { .. }))
+        .position(|r| matches!(r, Record::Checkpoint(_)))
         .unwrap();
     // After COW, hello.txt has a staged ino — rename emits Delete + Staged
     let del_pos = records
@@ -145,7 +145,7 @@ fn delete_after_checkpoint() {
     let records = journal(&s);
     let chk_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Checkpoint { .. }))
+        .position(|r| matches!(r, Record::Checkpoint(_)))
         .unwrap();
     let del_pos = records
         .iter()

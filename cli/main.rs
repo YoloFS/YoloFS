@@ -1,7 +1,7 @@
 // agfs CLI — main.rs
 
 use agfs::{abort, checkpoint, commit, config, diff, exec, kmod, mount, restore, watch};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
 
@@ -139,7 +139,11 @@ fn run_cli() -> anyhow::Result<u8> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Load) => kmod::load()?,
+        Some(Command::Load) => {
+            if !kmod::load()? {
+                eprintln!("{} kernel module already loaded", "agfs:".green());
+            }
+        }
         Some(Command::Unload) => kmod::unload()?,
         Some(Command::Reload) => kmod::reload()?,
         Some(Command::Init) => config::init(&std::env::current_dir()?)?,
@@ -151,7 +155,12 @@ fn run_cli() -> anyhow::Result<u8> {
             diff::run_status(at.as_deref(), from.as_deref(), to.as_deref())?
         }
         Some(Command::Diff { at, from, to, path }) => {
-            diff::run_diff(at.as_deref(), from.as_deref(), to.as_deref(), path.as_deref())?;
+            diff::run_diff(
+                at.as_deref(),
+                from.as_deref(),
+                to.as_deref(),
+                path.as_deref(),
+            )?;
         }
         Some(Command::Commit) => commit::run()?,
         Some(Command::Abort { force }) => abort::run(force)?,
@@ -168,8 +177,8 @@ fn run_cli() -> anyhow::Result<u8> {
         None => {
             let has_separator = std::env::args().any(|a| a == "--");
             if !cli.exec_args.is_empty() && !has_separator {
-                Cli::parse_from(["agfs", "--help"]);
-                unreachable!();
+                Cli::command().print_help()?;
+                std::process::exit(1);
             }
             return run(&cli.exec_args);
         }
