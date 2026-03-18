@@ -1187,9 +1187,11 @@ pub fn render_index(
     let known: std::collections::HashMap<&str, WorkloadKind> =
         all_workloads.iter().map(|w| (w.name(), w.kind())).collect();
 
-    let mut micros: Vec<&str> = Vec::new();
-    let mut macros: Vec<&str> = Vec::new();
-    let mut ops: Vec<String> = Vec::new();
+    let mut session_micros: Vec<&str> = Vec::new();
+    let mut session_macros: Vec<&str> = Vec::new();
+    let mut op_data: Vec<String> = Vec::new();
+    let mut op_metadata: Vec<String> = Vec::new();
+    let mut op_other: Vec<String> = Vec::new();
     let mut seen_groups: std::collections::HashSet<String> = std::collections::HashSet::new();
     for wl in &results.workloads {
         // Skip stale entries superseded by source variants (e.g. "meta-rename"
@@ -1203,15 +1205,21 @@ pub fn render_index(
             .copied()
             .unwrap_or(WorkloadKind::Micro);
         match kind {
-            WorkloadKind::Micro => micros.push(&wl.workload),
-            WorkloadKind::Macro => macros.push(&wl.workload),
+            WorkloadKind::Micro => session_micros.push(&wl.workload),
+            WorkloadKind::Macro => session_macros.push(&wl.workload),
             WorkloadKind::Op => {
                 // Deduplicate source variants into groups.
                 let display_name = source_group_name(&wl.workload)
                     .map(|g| g.to_string())
                     .unwrap_or_else(|| wl.workload.clone());
                 if seen_groups.insert(display_name.clone()) {
-                    ops.push(display_name);
+                    if display_name.starts_with("meta-") {
+                        op_metadata.push(display_name);
+                    } else if display_name.starts_with("fio-") {
+                        op_data.push(display_name);
+                    } else {
+                        op_other.push(display_name);
+                    }
                 }
             }
         }
@@ -1225,9 +1233,11 @@ pub fn render_index(
             .position(|&n| n == name || source_group_name(n) == Some(name))
             .unwrap_or(usize::MAX)
     };
-    micros.sort_by_key(|n| pos(n));
-    macros.sort_by_key(|n| pos(n));
-    ops.sort_by_key(|n| pos(n));
+    session_micros.sort_by_key(|n| pos(n));
+    session_macros.sort_by_key(|n| pos(n));
+    op_data.sort_by_key(|n| pos(n));
+    op_metadata.sort_by_key(|n| pos(n));
+    op_other.sort_by_key(|n| pos(n));
 
     let descriptions = workloads::descriptions();
     let e = &results.env;
@@ -1411,10 +1421,26 @@ pub fn render_index(
         html.push_str("</div>\n");
     };
 
-    let ops_refs: Vec<&str> = ops.iter().map(|s| s.as_str()).collect();
-    emit_section(&mut html, "Per-Operation", &ops_refs);
-    emit_section(&mut html, "Microbenchmarks", &micros);
-    emit_section(&mut html, "Macrobenchmarks", &macros);
+    let op_data_refs: Vec<&str> = op_data.iter().map(|s| s.as_str()).collect();
+    let op_metadata_refs: Vec<&str> = op_metadata.iter().map(|s| s.as_str()).collect();
+    let op_other_refs: Vec<&str> = op_other.iter().map(|s| s.as_str()).collect();
+    emit_section(
+        &mut html,
+        "Per-op Micro-benchmark: Big File Data Operations",
+        &op_data_refs,
+    );
+    emit_section(
+        &mut html,
+        "Per-op Micro-benchmark: Small File Metadata Operations",
+        &op_metadata_refs,
+    );
+    emit_section(&mut html, "Per-op Micro-benchmark: Other", &op_other_refs);
+    emit_section(
+        &mut html,
+        "Session Micro-benchmark (init/run/commit)",
+        &session_micros,
+    );
+    emit_section(&mut html, "Session Macro-benchmark", &session_macros);
 
     html.push_str("</body></html>\n");
 

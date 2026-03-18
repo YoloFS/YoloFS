@@ -28,15 +28,17 @@ it against alternative staging/sandboxing approaches.
 
 The suite defines multiple workloads to avoid overfitting to a single access
 pattern. Each workload is a self-contained Rust function that performs a
-specific operation on the mounted filesystem. Workloads are categorised into
-three kinds:
+specific operation on the mounted filesystem. Workloads are organised in the
+report into three families:
 
-- **Session** (`--micro` / `--macro`): measure the full staging cycle
-  (mount → work → commit). Report wall time decomposed into init, staging,
-  and commit phases. Answer: "how long does an agfs session take?"
-- **Op** (`--op`): measure per-operation throughput inside a single mounted
-  session. Report IOPS, throughput, and latency percentiles. Answer: "what
-  is the per-syscall overhead of agfs interposition?"
+- **Per-op micro-benchmark** (`--op`): one mounted session, then repeated
+  operations. Reports IOPS, throughput, and latency percentiles. Shown in two
+  sections: **Big file data operations** (`fio-*`) and **Small file metadata
+  operations** (`meta-*`).
+- **Session micro-benchmark** (`--micro`): full staging lifecycle for small,
+  single-kind operations. Reports init, staging (run), and commit time.
+- **Session macro-benchmark** (`--macro`): full staging lifecycle for larger,
+  realistic tasks.
 
 Workloads that need pre-existing files implement `populate_base()`. Each
 backend calls this to populate the base directory *before* mounting, so that
@@ -48,7 +50,7 @@ snippet is captured from the same `macro_rules!` input that defines the actual
 execution function body, so the displayed code stays mechanically aligned with
 what `run()` really calls.
 
-### Session microbenchmarks
+### Session micro-benchmarks
 
 Each session micro workload operates on 1,000 files of 4 KiB. The runner
 measures the full lifecycle: mount → workload → commit.
@@ -61,7 +63,7 @@ measures the full lifecycle: mount → workload → commit.
 | `overwrite-files` | Overwrite 1,000 existing files | Copy-on-write / copy-up path |
 | `rename-files` | Rename 1,000 existing files | Directory ops + journal (agfs) or copy-up (overlayfs) |
 
-### Session macrobenchmarks
+### Session macro-benchmarks
 
 #### Worktree (`worktree`)
 
@@ -72,7 +74,7 @@ tree into the mount. The fixture (initial clone) is constructed once and
 reused; subsequent runs use `git worktree prune` to clean up stale entries
 before each `worktree add`.
 
-### Per-operation benchmarks
+### Per-op micro-benchmarks
 
 Op benchmarks measure per-syscall throughput and latency inside a mounted
 session. The backend mounts once, the workload runs, and results are
@@ -80,7 +82,7 @@ self-reported by the subprocess (IOPS, MB/s, latency percentiles). No
 init/commit timing is reported — the goal is to isolate the steady-state
 overhead of the interposition layer.
 
-#### I/O benchmarks (fio)
+#### Big file data operations (fio)
 
 Large-file I/O using [fio](https://github.com/axboe/fio). Each workload
 generates a jobfile, runs `fio --output-format=json`, and parses the result.
@@ -119,7 +121,7 @@ split.
 fio must be installed (`apt install fio`). If absent, fio workloads are
 skipped with a warning.
 
-#### Metadata benchmarks (custom)
+#### Small file metadata operations (custom)
 
 Small-file metadata operations, implemented in Rust. Most workloads operate on
 10,000 files, record per-operation latency, and compute IOPS and percentiles.
