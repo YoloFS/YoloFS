@@ -71,6 +71,7 @@ fn render_session_workload(
 
     let order = backends::display_order();
     let mut sorted = wl.backends.clone();
+    sorted.retain(|b| report_backend_visible(&b.backend));
     sorted.sort_by_key(|b| {
         order
             .iter()
@@ -155,6 +156,7 @@ fn render_op_workload(
 
     let order = backends::display_order();
     let mut sorted = wl.backends.clone();
+    sorted.retain(|b| report_backend_visible(&b.backend));
     sorted.sort_by_key(|b| {
         order
             .iter()
@@ -195,6 +197,8 @@ fn render_op_workload(
             line: None,
             x_axis: None,
             y_axis: None,
+            offset_group: None,
+            alignment_group: None,
         },
     );
 
@@ -277,6 +281,7 @@ fn render_op_mixed_workload(
 
     let order = backends::display_order();
     let mut sorted = wl.backends.clone();
+    sorted.retain(|b| report_backend_visible(&b.backend));
     sorted.sort_by_key(|b| {
         order
             .iter()
@@ -321,6 +326,8 @@ fn render_op_mixed_workload(
             line: None,
             x_axis: None,
             y_axis: None,
+            offset_group: Some("read"),
+            alignment_group: Some("rw"),
         },
     );
 
@@ -337,6 +344,8 @@ fn render_op_mixed_workload(
             line: Some(plotly::common::Line::new().color("#222").width(1.5)),
             x_axis: None,
             y_axis: None,
+            offset_group: Some("write"),
+            alignment_group: Some("rw"),
         },
     );
 
@@ -440,7 +449,7 @@ fn avg_latency_stddev_us(mean_iops: f64, stddev_iops: f64) -> f64 {
 
 fn backend_color(backend: &str) -> &'static str {
     match backend {
-        "agfs-allow-all" => "#2E86AB",
+        "agfs-no-perm" => "#2E86AB",
         "agfs-realistic" => "#4F772D",
         "overlayfs" => "#C1666B",
         "branchfs" => "#D17B0F",
@@ -479,6 +488,9 @@ fn workload_staleness(wl: &WorkloadResult, current: Option<&RepoState>) -> Workl
         .map(str::to_string);
 
     for backend in &wl.backends {
+        if !report_backend_visible(&backend.backend) {
+            continue;
+        }
         match (&backend.repo_state, current) {
             (Some(recorded), Some(current)) => {
                 let backend_reasons = repo_state_drift(recorded, current);
@@ -553,6 +565,11 @@ fn repo_state_drift(recorded: &RepoState, current: &RepoState) -> Vec<String> {
         ));
     }
     reasons
+}
+
+fn report_backend_visible(name: &str) -> bool {
+    // Hide stale pre-rename results from report plots/tables.
+    name != "agfs-allow-all"
 }
 
 fn dirty_label(dirty: bool) -> &'static str {
@@ -692,6 +709,12 @@ fn op_bar_trace(
     if let Some(y_axis) = style.y_axis {
         trace = trace.y_axis(y_axis);
     }
+    if let Some(offset_group) = style.offset_group {
+        trace = trace.offset_group(offset_group);
+    }
+    if let Some(alignment_group) = style.alignment_group {
+        trace = trace.alignment_group(alignment_group);
+    }
     trace
 }
 
@@ -701,6 +724,8 @@ struct OpBarStyle {
     line: Option<plotly::common::Line>,
     x_axis: Option<&'static str>,
     y_axis: Option<&'static str>,
+    offset_group: Option<&'static str>,
+    alignment_group: Option<&'static str>,
 }
 
 struct OutlierCap {
@@ -898,6 +923,8 @@ fn add_capped_op_trace(
                     line: Some(outline),
                     x_axis: style.x_axis,
                     y_axis: style.y_axis,
+                    offset_group: style.offset_group,
+                    alignment_group: style.alignment_group,
                 },
             )
             .marker(
@@ -1013,7 +1040,10 @@ fn render_grouped_op_workloads(
         let wl_name = format!("{group}-{src}");
         if let Some(wl) = results.workloads.iter().find(|w| w.workload == wl_name) {
             for b in &wl.backends {
-                if b.backend != "native" && !all_backend_names.contains(&b.backend) {
+                if b.backend != "native"
+                    && report_backend_visible(&b.backend)
+                    && !all_backend_names.contains(&b.backend)
+                {
                     all_backend_names.push(b.backend.clone());
                 }
             }

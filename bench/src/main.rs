@@ -947,8 +947,8 @@ fn run_profile(env: &Env, workload_name: &str, scenario_name: &str, bpftrace: bo
     let workload = workloads::by_name(workload_name)
         .with_context(|| format!("unknown workload: {workload_name}"))?;
 
-    let allow_all = match scenario_name {
-        "agfs-allow-all" => true,
+    let no_perm = match scenario_name {
+        "agfs-no-perm" => true,
         "agfs-realistic" => false,
         other => bail!("unknown agfs scenario for profiling: {other}"),
     };
@@ -960,7 +960,7 @@ fn run_profile(env: &Env, workload_name: &str, scenario_name: &str, bpftrace: bo
         .join(workload_name)
         .join(scenario_name);
 
-    let (session, dest) = backends::agfs::setup_profile_session(workload.as_ref(), allow_all)?;
+    let (session, dest) = backends::agfs::setup_profile_session(workload.as_ref(), no_perm)?;
     std::fs::create_dir_all(&dest).context("creating workload dest dir")?;
     if workload.needs_prepare_workdir() {
         workload.prepare_workdir(&dest)?;
@@ -1091,7 +1091,7 @@ fn main() -> Result<()> {
     {
         let scenarios: Vec<&str> = match sname.as_deref() {
             Some(s) => vec![s],
-            None => vec!["agfs-allow-all", "agfs-realistic"],
+            None => vec!["agfs-no-perm", "agfs-realistic"],
         };
         for sname in scenarios {
             run_profile(&env, &wname, sname, !no_bpftrace)?;

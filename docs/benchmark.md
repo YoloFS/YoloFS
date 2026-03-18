@@ -74,6 +74,20 @@ tree into the mount. The fixture (initial clone) is constructed once and
 reused; subsequent runs use `git worktree prune` to clean up stale entries
 before each `worktree add`.
 
+#### Linux untar (`linux-untar`)
+
+Extracts a cached Linux release tarball into the benchmark destination
+directory (`tar -xJf ... --strip-components=1`). This stresses bulk directory
+creation, inode allocation, and metadata updates from a large source tree
+without requiring a pre-existing git repository in the workload runtime path.
+
+Fixture setup is cached and reused in `~/.cache/agfs-bench/linux-tar/`:
+
+- On first use, the workload downloads one Linux source tarball once.
+- Subsequent runs and benchmark invocations reuse the same cached tarball.
+- The tarball is mounted read-only for realistic-rule runs while extraction
+  output is written inside the backend session work directory.
+
 ### Per-op micro-benchmarks
 
 Op benchmarks measure per-syscall throughput and latency inside a mounted
@@ -315,7 +329,7 @@ place agfs in context relative to alternatives.
 | Backend | Mechanism | Needs root? | Default? |
 |---|---|---|---|
 | `native` | Direct ext4 writes, no staging | no | yes |
-| `agfs-allow-all` | Kernel stackable fs; `allow-rw /` rule | no (setuid) | yes |
+| `agfs-no-perm` | Kernel stackable fs; permission gating disabled (`permission=false`) | no (setuid) | yes |
 | `agfs-realistic` | Kernel stackable fs; workload-defined rules | no (setuid) | yes |
 | `overlayfs` | User-namespace overlayfs; replay upper on commit | no (user-ns) | yes |
 | `branchfs` | FUSE copy-on-write branches; `branchfs commit` | no | yes |
@@ -333,10 +347,10 @@ level of gating:
 
 | Backend | Configuration | What it measures |
 |---|---|---|
-| `agfs-allow-all` | `allow-rw /` rule | VFS interposition + staging; no per-access gating |
-| `agfs-realistic` | workload-defined rules | Typical rule-based config; most accesses hit cache |
+| `agfs-no-perm` | `permission=false` | VFS interposition + staging only; permission checks are fully disabled |
+| `agfs-realistic` | `permission=true`, workload-defined rules | Typical rule-based config with permission checking enabled |
 
-`agfs-allow-all` is the practical floor for a useful agfs configuration.
+`agfs-no-perm` is the lower bound for pure agfs interposition overhead.
 `native` is the absolute floor.
 
 Both agfs backend configurations set `checkpoint: false` in the generated
@@ -520,7 +534,7 @@ bench/src/
   backends/
     mod.rs         — registry (all, by_name)
     native.rs
-    agfs.rs        — agfs-allow-all + agfs-realistic + ProfileSession
+    agfs.rs        — agfs-no-perm + agfs-realistic + ProfileSession
     overlayfs.rs   — direct overlayfs in user namespace
     try_backend.rs — try shell wrapper (hidden)
     branchfs.rs
@@ -713,7 +727,7 @@ Artifacts are saved to `results-bench/<hostname>/profiling/<workload>/<scenario>
 Example summary:
 
 ```
-Profile: write-files / agfs-allow-all  (wall: 167 ms)
+Profile: write-files / agfs-no-perm  (wall: 167 ms)
 
   op                               calls  median µs  p99 µs    total ms
   --------------------------------------------------------------------------

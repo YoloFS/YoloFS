@@ -1,6 +1,6 @@
 use crate::backend::{self, Backend};
 use crate::workload::{CacheMode, IterResult, Workload};
-use agfs::config::{Config, Perm};
+use agfs::config::Config;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -196,9 +196,9 @@ fn run_agfs_iteration(
     ))
 }
 
-// ── agfs-allow-all ───────────────────────────────────────────────────────────
+// ── agfs-no-perm ─────────────────────────────────────────────────────────────
 
-pub struct AgfsAllowAll;
+pub struct AgfsNoPerm;
 
 fn cold_staged_reason(workload: &dyn Workload) -> Option<&'static str> {
     let cold_staged_metadata = workload.name().starts_with("meta-")
@@ -214,9 +214,9 @@ fn cold_staged_reason(workload: &dyn Workload) -> Option<&'static str> {
     }
 }
 
-impl Backend for AgfsAllowAll {
+impl Backend for AgfsNoPerm {
     fn name(&self) -> &'static str {
-        "agfs-allow-all"
+        "agfs-no-perm"
     }
 
     fn unsupported_reason(&self, workload: &dyn Workload) -> Option<&'static str> {
@@ -227,7 +227,7 @@ impl Backend for AgfsAllowAll {
         let config = Config {
             permission: false,
             checkpoint: false,
-            rules: BTreeMap::from([("/".to_string(), Perm::AllowRw)]),
+            rules: BTreeMap::new(),
             ..Default::default()
         };
         run_agfs_iteration(config, workload, verbose)
@@ -261,7 +261,7 @@ impl Backend for AgfsRealistic {
             rules.insert(path, perm);
         }
         let config = Config {
-            permission: false,
+            permission: true,
             checkpoint: false,
             rules,
             ..Default::default()
@@ -348,7 +348,7 @@ impl Backend for AgfsRealistic {
 /// destination path.
 pub fn setup_profile_session(
     workload: &dyn Workload,
-    allow_all: bool,
+    no_perm: bool,
 ) -> Result<(ProfileSession, PathBuf)> {
     let cache = dirs_next::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -358,10 +358,10 @@ pub fn setup_profile_session(
         .prefix("agfs-bench-")
         .tempdir_in(&cache)?;
 
-    let config = if allow_all {
+    let config = if no_perm {
         Config {
             permission: false,
-            rules: BTreeMap::from([("/".to_string(), Perm::AllowRw)]),
+            rules: BTreeMap::new(),
             ..Default::default()
         }
     } else {
@@ -370,7 +370,7 @@ pub fn setup_profile_session(
             rules.insert(path, perm);
         }
         Config {
-            permission: false,
+            permission: true,
             rules,
             ..Default::default()
         }

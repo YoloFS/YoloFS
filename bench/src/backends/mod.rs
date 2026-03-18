@@ -11,7 +11,7 @@ use crate::backend::Backend;
 pub fn all() -> Vec<Box<dyn Backend>> {
     vec![
         Box::new(native::Native),
-        Box::new(agfs::AgfsAllowAll),
+        Box::new(agfs::AgfsNoPerm),
         Box::new(agfs::AgfsRealistic),
         Box::new(try_backend::Try),
         Box::new(overlayfs::Overlayfs),

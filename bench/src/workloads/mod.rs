@@ -6,6 +6,7 @@ pub mod fio_randrw_warm;
 pub mod fio_seq_read_cold;
 pub mod fio_seq_read_warm;
 pub mod fio_seq_write;
+pub mod linux_untar;
 pub mod meta_append;
 pub mod meta_create;
 pub mod meta_readdir_cold;
@@ -84,6 +85,7 @@ pub fn all() -> Vec<Box<dyn Workload>> {
         Box::new(rename_files::RenameFiles),
         // macro
         Box::new(worktree::Worktree::new()),
+        Box::new(linux_untar::LinuxUntar::new()),
         // op
         Box::new(fio_seq_read_cold::FioSeqReadCold),
         Box::new(fio_seq_read_warm::FioSeqReadWarm),
@@ -168,6 +170,7 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
         "overwrite-files" => overwrite_files::details(),
         "rename-files" => rename_files::details(),
         "worktree" => worktree::details(),
+        "linux-untar" => linux_untar::details(),
         "meta-create" => meta_create::details(),
         "meta-append-base" | "meta-append-stage" | "meta-append-checkpoint" => {
             meta_append::details()
