@@ -88,11 +88,41 @@ pub fn find_checkpoint_index(records: &[Record], name_or_id: &str) -> Result<usi
     last.ok_or_else(|| anyhow::anyhow!("checkpoint not found: {name_or_id}"))
 }
 
-/// Resolve journal up to (and including) the named checkpoint.
-pub fn resolve_at(mut records: Vec<Record>, checkpoint_name: &str) -> Result<Vec<Change>> {
-    let chk_idx = find_checkpoint_index(&records, checkpoint_name)?;
-    records.truncate(chk_idx + 1);
-    resolve(records)
+/// Slice journal records to the range specified by --at, --from, --to.
+///
+/// - `at`   → single segment: from previous checkpoint (exclusive) to named one (inclusive)
+/// - `from` → records after that checkpoint to end
+/// - `to`   → records from start up to (and including) that checkpoint
+/// - both   → records between the two checkpoints
+/// - none   → all records (unchanged)
+pub fn slice_records(
+    mut records: Vec<Record>,
+    at: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<Vec<Record>> {
+    if let Some(name) = at {
+        let chk_idx = find_checkpoint_index(&records, name)?;
+        let prev = records[..chk_idx]
+            .iter()
+            .rposition(|r| matches!(r, Record::Checkpoint { .. }));
+        let start = match prev {
+            Some(i) => i + 1,
+            None => 0,
+        };
+        records.truncate(chk_idx + 1);
+        return Ok(records.split_off(start));
+    }
+    // Truncate end first so `from` indices stay valid.
+    if let Some(to_name) = to {
+        let to_idx = find_checkpoint_index(&records, to_name)?;
+        records.truncate(to_idx + 1);
+    }
+    if let Some(from_name) = from {
+        let from_idx = find_checkpoint_index(&records, from_name)?;
+        records = records.split_off(from_idx + 1);
+    }
+    Ok(records)
 }
 
 /// Incremental resolution state — processes records one at a time.
@@ -852,6 +882,11 @@ mod tests {
 
     // -- Checkpoint tests --
 
+    /// Helper: slice at a checkpoint and resolve.
+    fn resolve_at(records: Vec<Record>, name: &str) -> Result<Vec<Change>> {
+        resolve(slice_records(records, Some(name), None, None)?)
+    }
+
     #[test]
     fn resolve_at_checkpoint() {
         let dir = setup_test_dir();
@@ -889,7 +924,10 @@ mod tests {
         fs::write(dir.path().join("inodes/3"), "").unwrap();
 
         let changes = resolve_at(read(dir.path()), "dup").unwrap();
-        assert_eq!(changes.len(), 2, "at latest dup: {changes:?}");
+        // Latest "dup" is the second checkpoint; its segment contains only A(y).
+        assert_eq!(changes.len(), 1, "at latest dup: {changes:?}");
+        assert!(matches!(&changes[0], Change::Added { path, ino, .. }
+            if path == "/nonexistent_test_12345/y" && *ino == 2));
     }
 
     #[test]
@@ -945,11 +983,12 @@ mod tests {
             "id=1 should find first checkpoint: {changes:?}"
         );
 
+        // id=2 is the second checkpoint; its segment contains only A(y).
         let changes2 = resolve_at(read(dir.path()), "2").unwrap();
         assert_eq!(
             changes2.len(),
-            2,
-            "id=2 should find second checkpoint: {changes2:?}"
+            1,
+            "id=2 should find second checkpoint segment: {changes2:?}"
         );
 
         let changes3 = resolve_at(read(dir.path()), "first").unwrap();
@@ -1517,6 +1556,182 @@ mod tests {
             "expected Modified with DType::Dir, got: {:?}",
             segments[1].changes[0]
         );
+    }
+
+    // -- slice_records tests --
+
+    #[test]
+    fn slice_none_returns_all() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let records = read(dir.path());
+        let n = records.len();
+        let sliced = slice_records(records, None, None, None).unwrap();
+        assert_eq!(sliced.len(), n);
+    }
+
+    #[test]
+    fn slice_at_isolates_segment() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        // --at chk2 should give only the records between chk1 and chk2
+        let sliced = slice_records(read(dir.path()), Some("chk2"), None, None).unwrap();
+        let changes = resolve(sliced).unwrap();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert!(matches!(&changes[0], Change::Added { path, .. }
+            if path == "/nonexistent_test_12345/b"));
+    }
+
+    #[test]
+    fn slice_at_first_checkpoint() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        // --at chk1: no previous checkpoint, so includes everything up to chk1
+        let sliced = slice_records(read(dir.path()), Some("chk1"), None, None).unwrap();
+        let changes = resolve(sliced).unwrap();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert!(matches!(&changes[0], Change::Added { path, .. }
+            if path == "/nonexistent_test_12345/a"));
+    }
+
+    #[test]
+    fn slice_from_only() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        // --from chk1: everything after chk1
+        let sliced = slice_records(read(dir.path()), None, Some("chk1"), None).unwrap();
+        let changes = resolve(sliced).unwrap();
+        assert_eq!(changes.len(), 2, "{changes:?}");
+    }
+
+    #[test]
+    fn slice_to_only() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        // --to chk1: everything up to and including chk1
+        let sliced = slice_records(read(dir.path()), None, None, Some("chk1")).unwrap();
+        let changes = resolve(sliced).unwrap();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert!(matches!(&changes[0], Change::Added { path, .. }
+            if path == "/nonexistent_test_12345/a"));
+    }
+
+    #[test]
+    fn slice_from_to_range() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
+        data.extend_from_slice(b"K\03\0chk3\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0d\0f\04\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        // --from chk1 --to chk3: records after chk1 up to chk3
+        let sliced =
+            slice_records(read(dir.path()), None, Some("chk1"), Some("chk3")).unwrap();
+        let changes = resolve(sliced).unwrap();
+        assert_eq!(changes.len(), 2, "{changes:?}");
+        // Should have b and c, not a or d
+        assert!(changes.iter().any(|c| matches!(c, Change::Added { path, .. }
+            if path == "/nonexistent_test_12345/b")));
+        assert!(changes.iter().any(|c| matches!(c, Change::Added { path, .. }
+            if path == "/nonexistent_test_12345/c")));
+    }
+
+    #[test]
+    fn slice_from_to_preserves_segments() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
+        data.extend_from_slice(b"K\03\0chk3\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        // --from chk1 --to chk3: should produce 2 segments (chk2 and chk3)
+        let sliced =
+            slice_records(read(dir.path()), None, Some("chk1"), Some("chk3")).unwrap();
+        let segments = resolve_segments(sliced).unwrap();
+        assert_eq!(segments.len(), 2, "{segments:?}");
+        assert_eq!(segments[0].checkpoint, Some((2, "chk2".into())));
+        assert_eq!(segments[1].checkpoint, Some((3, "chk3".into())));
+    }
+
+    #[test]
+    fn slice_from_to_same_checkpoint() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
+        data.extend_from_slice(b"K\02\0chk2\n");
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        // --from chk1 --to chk1: truncate at chk1+1 then split_off at chk1+1 → empty
+        let sliced =
+            slice_records(read(dir.path()), None, Some("chk1"), Some("chk1")).unwrap();
+        let changes = resolve(sliced).unwrap();
+        assert!(changes.is_empty(), "same from/to should be empty: {changes:?}");
+    }
+
+    #[test]
+    fn slice_from_last_checkpoint() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
+        data.extend_from_slice(b"K\01\0chk1\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        // --from the last checkpoint with no trailing records → empty
+        let sliced = slice_records(read(dir.path()), None, Some("chk1"), None).unwrap();
+        let changes = resolve(sliced).unwrap();
+        assert!(changes.is_empty(), "no records after last chk: {changes:?}");
+    }
+
+    #[test]
+    fn slice_not_found() {
+        let dir = setup_test_dir();
+        fs::write(dir.path().join("journal"), b"A\0\0a\0f\01\n").unwrap();
+        assert!(slice_records(read(dir.path()), Some("nope"), None, None).is_err());
+        assert!(slice_records(read(dir.path()), None, Some("nope"), None).is_err());
+        assert!(slice_records(read(dir.path()), None, None, Some("nope")).is_err());
     }
 
     // -- Change method tests --

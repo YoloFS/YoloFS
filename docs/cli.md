@@ -29,11 +29,17 @@ $ agfs mount             # create .agfs/ layout and mount (auto-loads kmod if ne
 $ agfs exec              # chroot $SHELL into .agfs/mnt (requires existing mount)
 $ agfs exec -- make build
 $ agfs status            # show staged changes (grouped by checkpoint when present)
-$ agfs status --at <name|id> # show state at a checkpoint
+$ agfs status --at <name|id>           # show single checkpoint segment
+$ agfs status --from <name|id>         # show changes since checkpoint
+$ agfs status --to <name|id>           # show changes up to checkpoint
+$ agfs status --from <A> --to <B>      # show changes between two checkpoints
 $ agfs diff              # git-style diff of staged vs base (grouped by checkpoint)
 $ agfs diff <path>       # diff a single file
-$ agfs diff --from <name|id> # diff changes since checkpoint
-$ agfs diff --from <name|id> <path> # diff a single file since checkpoint
+$ agfs diff --at <name|id>             # diff single checkpoint segment
+$ agfs diff --from <name|id>           # diff changes since checkpoint
+$ agfs diff --to <name|id>             # diff changes up to checkpoint
+$ agfs diff --from <A> --to <B>        # diff changes between two checkpoints
+$ agfs diff --from <name|id> <path>    # diff a single file since checkpoint
 $ agfs commit            # apply staged changes to base
 $ agfs abort             # discard staged changes (prompts for confirmation)
 $ agfs unmount           # tear down session (prompts if staged changes exist)

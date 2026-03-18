@@ -2,8 +2,10 @@
 //
 // `agfs status` — one-line summary of staged changes.
 // `agfs diff`   — git-style unified diff of staged vs base.
-// `--at <name>` — show state at a checkpoint.
+// `--at <name>` — show state at a checkpoint (single segment).
 // `--from <name>` — diff changes since a checkpoint.
+// `--to <name>` — diff changes up to a checkpoint.
+// `--from <name> --to <name>` — diff changes between two checkpoints.
 
 use crate::journal;
 use crate::resolve::{self, Change, Segment};
@@ -111,65 +113,48 @@ fn print_change(agfs: &Path, change: &Change, verbose: bool) {
 // ── Public entry points ──────────────────────────────────────────────
 
 /// `agfs status` — summary view.
-pub fn run_status(at: Option<&str>) -> Result<()> {
-    let agfs = crate::utils::session_dir()?;
-
-    if let Some(name) = at {
-        let records = journal::read(&agfs)?.records;
-        let changes = resolve::resolve_at(records, name)?;
-        if changes.is_empty() {
-            println!("{}", "No changes staged.".yellow());
-        } else {
-            println!("{}", format!("State at checkpoint \"{name}\":").dimmed());
-            for change in &changes {
-                print_change(&agfs, change, false);
-            }
-            print_total(changes.len());
-        }
-        return Ok(());
-    }
-
-    run_segments(&agfs, false, None)?;
+pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> Result<()> {
+    run(false, at, from, to, None)?;
     Ok(())
 }
 
 /// `agfs diff` — verbose diff view. Returns true if there were changes.
-pub fn run_diff(from: Option<&str>, path: Option<&str>) -> Result<bool> {
-    let agfs = crate::utils::session_dir()?;
-    if !agfs.exists() {
-        anyhow::bail!("no agfs session found (no .agfs/ directory)");
-    }
-
+pub fn run_diff(
+    at: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    path: Option<&str>,
+) -> Result<bool> {
     let path = path.map(crate::utils::normalize_path);
-
-    if let Some(chk_name) = from {
-        return run_from_checkpoint(&agfs, chk_name, path.as_deref());
-    }
-
-    run_segments(&agfs, true, path.as_deref())
+    run(true, at, from, to, path.as_deref())
 }
 
-// ── Shared implementation ────────────────────────────────────────────
+// ── Core implementation ─────────────────────────────────────────────
 
-fn run_segments(agfs: &Path, verbose: bool, path: Option<&str>) -> Result<bool> {
-    let records = journal::read(agfs)?.records;
+fn run(
+    verbose: bool,
+    at: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    path: Option<&str>,
+) -> Result<bool> {
+    let agfs = crate::utils::session_dir()?;
+    let records = journal::read(&agfs)?.records;
+    let records = resolve::slice_records(records, at, from, to)?;
     let segments = resolve::resolve_segments(records)?;
 
-    let total: usize = match path {
-        Some(target) => segments
-            .iter()
-            .flat_map(|s| &s.changes)
-            .filter(|c| c.matches_path(target))
-            .count(),
-        None => segments.iter().map(|s| s.changes.len()).sum(),
-    };
+    let has_changes = segments
+        .iter()
+        .flat_map(|s| &s.changes)
+        .any(|c| path.map_or(true, |t| c.matches_path(t)));
 
-    if total == 0 {
-        println!("{}", "No changes staged.".yellow());
+    if !has_changes {
+        println!("{}", format!("No changes{}.", range_label(at, from, to)).yellow());
         return Ok(false);
     }
 
     let has_checkpoints = segments.iter().any(|s| s.checkpoint.is_some());
+    let mut total = 0usize;
 
     for segment in &segments {
         let changes: Vec<&Change> = match path {
@@ -195,8 +180,9 @@ fn run_segments(agfs: &Path, verbose: bool, path: Option<&str>) -> Result<bool> 
         }
 
         for change in &changes {
-            print_change(agfs, change, verbose);
+            print_change(&agfs, change, verbose);
         }
+        total += changes.len();
 
         if has_checkpoints {
             print_segment_footer(segment);
@@ -217,69 +203,15 @@ fn print_total(n: usize) {
     );
 }
 
-// ── Checkpoint-to-current diff ─────────────────────────────────────────
-
-/// Diff between checkpoint state and current state.
-///
-/// Segments are independently replayable, so the post-checkpoint records
-/// form a self-contained delta.  We resolve only the tail and render it.
-fn run_from_checkpoint(agfs: &Path, chk_name: &str, filter: Option<&str>) -> Result<bool> {
-    let mut records = journal::read(agfs)?.records;
-    let chk_idx = resolve::find_checkpoint_index(&records, chk_name)?;
-    let tail = records.split_off(chk_idx + 1);
-    drop(records);
-
-    let changes = resolve::resolve(tail)?;
-    let changes: Vec<&Change> = match filter {
-        Some(target) => changes.iter().filter(|c| c.matches_path(target)).collect(),
-        None => changes.iter().collect(),
-    };
-
-    if changes.is_empty() {
-        println!(
-            "{}",
-            format!("No changes since checkpoint \"{chk_name}\".").yellow()
-        );
-        return Ok(false);
+/// Human-readable label for the query range (empty string when no filter).
+fn range_label(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> String {
+    match (at, from, to) {
+        (Some(name), _, _) => format!(" at checkpoint \"{name}\""),
+        (_, Some(f), Some(t)) => format!(" between \"{f}\" and \"{t}\""),
+        (_, Some(f), None) => format!(" since checkpoint \"{f}\""),
+        (_, None, Some(t)) => format!(" up to checkpoint \"{t}\""),
+        _ => " staged".into(),
     }
-
-    for change in &changes {
-        let (label, old_text, new_text) = match change {
-            Change::Added { path: _, ino, .. } => (
-                "(added since checkpoint)".green(),
-                String::new(),
-                read_inode(agfs, *ino),
-            ),
-            Change::Modified { path, ino, .. } => (
-                "(modified since checkpoint)".yellow(),
-                read_base(path),
-                read_inode(agfs, *ino),
-            ),
-            Change::Deleted(path) => (
-                "(deleted since checkpoint)".red(),
-                read_base(path),
-                String::new(),
-            ),
-            Change::Renamed { from, to, .. } => (
-                "(renamed since checkpoint)".yellow(),
-                read_base(from),
-                read_base(to),
-            ),
-        };
-
-        let path = match change {
-            Change::Added { path, .. }
-            | Change::Modified { path, .. }
-            | Change::Deleted(path) => path.as_str(),
-            Change::Renamed { to, .. } => to.as_str(),
-        };
-
-        println!("{} {}", path.bold(), label);
-        print_unified_diff(&old_text, &new_text);
-        println!();
-    }
-
-    Ok(true)
 }
 
 #[cfg(test)]
@@ -422,5 +354,44 @@ mod tests {
         assert_eq!(map["/a.txt"], Some("aaa".into()));
         assert_eq!(map["/b.txt"], Some("bbb".into()));
         assert_eq!(map["/c.txt"], None);
+    }
+
+    // -- range_label tests --
+
+    #[test]
+    fn range_label_at() {
+        assert_eq!(
+            range_label(Some("s1"), None, None),
+            " at checkpoint \"s1\""
+        );
+    }
+
+    #[test]
+    fn range_label_from_to() {
+        assert_eq!(
+            range_label(None, Some("s1"), Some("s2")),
+            " between \"s1\" and \"s2\""
+        );
+    }
+
+    #[test]
+    fn range_label_from_only() {
+        assert_eq!(
+            range_label(None, Some("s1"), None),
+            " since checkpoint \"s1\""
+        );
+    }
+
+    #[test]
+    fn range_label_to_only() {
+        assert_eq!(
+            range_label(None, None, Some("s2")),
+            " up to checkpoint \"s2\""
+        );
+    }
+
+    #[test]
+    fn range_label_none() {
+        assert_eq!(range_label(None, None, None), " staged");
     }
 }

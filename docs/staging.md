@@ -552,13 +552,21 @@ pointer determines the journal tag: `M` if non-NULL, `A` if `NULL`.
 
 ### Checkpoint Segments
 
-The CLI uses `resolve_segments` to display per-checkpoint deltas. It
-processes all records through a single `Resolver`, snapshotting the
-state at each checkpoint boundary and computing the delta between
-consecutive snapshots via `diff_actions`. This is O(N) total.
+The CLI uses `resolve_segments` to display per-checkpoint deltas. Each
+segment is resolved independently with a fresh `Resolver` — records
+between consecutive `K` markers form one segment. This is O(N) total.
 
-`K` records a checkpoint. The CLI resolves the journal up to a given `K`
-marker to reconstruct the staged state at that point in time.
+`K` records a checkpoint. The CLI can slice the journal with
+`slice_records(records, at, from, to)` before passing to
+`resolve_segments`, so that only the requested range of segments is
+resolved and displayed.
+
+Slicing semantics:
+- `--at <name>` — isolate the single segment at that checkpoint
+  (records between the previous checkpoint and the named one).
+- `--from <name>` — records after that checkpoint to end.
+- `--to <name>` — records from start up to and including that checkpoint.
+- `--from <A> --to <B>` — records between the two checkpoints.
 
 Written by the kernel (`kernel_write()` per mutation). Read by the CLI
 for commit/abort/status/diff. Never read by the kernel.
@@ -598,22 +606,18 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 
 **Status** (`agfs status`):
 
-1. Replay journal in order (same as commit step 1) and classify:
-   renames, deletes, adds, modifies. Optionally stop at a checkpoint marker
-   with `--at <name>`.
-2. When checkpoints exist, group changes under checkpoint headers showing
-   which changes belong to each checkpoint segment (and any trailing
-   unsaved changes).
+1. Optionally slice journal to a range (`--at`, `--from`, `--to`).
+2. Resolve into segments grouped by checkpoint boundaries.
+3. Display one-line summaries under checkpoint headers (and any trailing
+   unsaved changes). Print total count.
 
 **Diff** (`agfs diff`):
 
-1. Read journal. For modified/added files, diff `inodes/<ino>` vs base.
-   For renames, show rename metadata (and diff if also modified).
-   For deletes, show as deleted file.
-2. Output in git-style unified diff format.
-3. When checkpoints exist, group diffs under checkpoint headers.
-4. With `--from <name>`, diff changes since the named checkpoint
-   (resolve at checkpoint vs resolve at current, then diff the two states).
+1. Optionally slice journal to a range (`--at`, `--from`, `--to`).
+2. Resolve into segments grouped by checkpoint boundaries.
+3. For modified/added files, diff `inodes/<ino>` vs base.
+   For renames, show rename metadata. For deletes, show as deleted file.
+4. Output in git-style unified diff format under checkpoint headers.
 
 ## Checkpoint Mechanism
 
@@ -709,10 +713,16 @@ State at each point:
 
 ### Checkpoint-Aware CLI Operations
 
-**`agfs status --at <name|id>`**: Resolve journal up to the named checkpoint.
+All checkpoint query flags (`--at`, `--from`, `--to`) work by slicing
+the journal records before resolving into segments. This means the
+output always preserves checkpoint boundaries within the requested range.
 
-**`agfs diff --from <name|id>`**: Diff changes since the named checkpoint
-(resolve at checkpoint vs resolve at current, then diff the two states).
+**`agfs status`** / **`agfs diff`** support:
+- `--at <name|id>` — show the single segment at that checkpoint.
+- `--from <name|id>` — show changes from that checkpoint to end of journal.
+- `--to <name|id>` — show changes from start of journal to that checkpoint.
+- `--from <A> --to <B>` — show changes between two checkpoints.
+- `--at` conflicts with `--from`/`--to`.
 
 **`agfs restore <name|id>`**: Restore the mounted view to the state at the
 named checkpoint. Post-checkpoint changes are discarded. The kernel's

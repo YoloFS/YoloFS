@@ -51,15 +51,27 @@ enum Command {
     },
     /// Show staged changes
     Status {
-        /// Show state at a named checkpoint
+        /// Show state at a named checkpoint (single segment)
         #[arg(long)]
         at: Option<String>,
+        /// Start from a named checkpoint (inclusive)
+        #[arg(long, conflicts_with = "at")]
+        from: Option<String>,
+        /// End at a named checkpoint (inclusive)
+        #[arg(long, conflicts_with = "at")]
+        to: Option<String>,
     },
     /// Git-style diff of staged vs base
     Diff {
-        /// Diff changes since a named checkpoint
+        /// Diff a single checkpoint segment
         #[arg(long)]
+        at: Option<String>,
+        /// Diff changes since a named checkpoint
+        #[arg(long, conflicts_with = "at")]
         from: Option<String>,
+        /// Diff changes up to a named checkpoint
+        #[arg(long, conflicts_with = "at")]
+        to: Option<String>,
         /// Show diff for a single file
         path: Option<String>,
     },
@@ -135,9 +147,11 @@ fn run_cli() -> anyhow::Result<u8> {
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,
         Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
-        Some(Command::Status { at }) => diff::run_status(at.as_deref())?,
-        Some(Command::Diff { from, path }) => {
-            diff::run_diff(from.as_deref(), path.as_deref())?;
+        Some(Command::Status { at, from, to }) => {
+            diff::run_status(at.as_deref(), from.as_deref(), to.as_deref())?
+        }
+        Some(Command::Diff { at, from, to, path }) => {
+            diff::run_diff(at.as_deref(), from.as_deref(), to.as_deref(), path.as_deref())?;
         }
         Some(Command::Commit) => commit::run()?,
         Some(Command::Abort { force }) => abort::run(force)?,
@@ -176,7 +190,7 @@ fn run(exec_args: &[String]) -> anyhow::Result<u8> {
     let cmd_exit_code = exec::run(exec_args).unwrap_or(1);
 
     // 4. Show diff
-    let has_changes = diff::run_diff(None, None)?;
+    let has_changes = diff::run_diff(None, None, None, None)?;
 
     if !has_changes {
         return Ok(cmd_exit_code);

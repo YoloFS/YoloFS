@@ -282,6 +282,294 @@ fn multiple_checkpoints_interleaved_writes() {
     assert!(log.contains("s2"), "log should list s2: {log}");
 }
 
+/// `--from` shows changes after a checkpoint to end.
+#[test]
+fn status_from_checkpoint() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+
+    fs::write(s.mnt_path("newfile.txt"), "new\n").expect("write new");
+    s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
+
+    // --from s1 should show newfile.txt but not hello.txt
+    let output = s.cli(&["status", "--from", "s1"]).expect("status --from");
+    assert!(
+        output.contains("newfile.txt"),
+        "should show newfile.txt: {output}"
+    );
+    assert!(
+        !output.contains("hello.txt"),
+        "should NOT show hello.txt: {output}"
+    );
+}
+
+/// `--to` shows changes from start up to a checkpoint.
+#[test]
+fn status_to_checkpoint() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+
+    fs::write(s.mnt_path("newfile.txt"), "new\n").expect("write new");
+    s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
+
+    // --to s1 should show hello.txt but not newfile.txt
+    let output = s.cli(&["status", "--to", "s1"]).expect("status --to");
+    assert!(
+        output.contains("hello.txt"),
+        "should show hello.txt: {output}"
+    );
+    assert!(
+        !output.contains("newfile.txt"),
+        "should NOT show newfile.txt: {output}"
+    );
+}
+
+/// `--from A --to B` shows changes between two checkpoints.
+#[test]
+fn status_from_to_range() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+
+    fs::write(s.mnt_path("mid.txt"), "mid\n").expect("write mid");
+    s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
+
+    fs::write(s.mnt_path("late.txt"), "late\n").expect("write late");
+    s.cli(&["checkpoint", "s3"]).expect("checkpoint s3");
+
+    // --from s1 --to s2 should only show mid.txt
+    let output = s
+        .cli(&["status", "--from", "s1", "--to", "s2"])
+        .expect("status --from --to");
+    assert!(output.contains("mid.txt"), "should show mid.txt: {output}");
+    assert!(
+        !output.contains("hello.txt"),
+        "should NOT show hello.txt: {output}"
+    );
+    assert!(
+        !output.contains("late.txt"),
+        "should NOT show late.txt: {output}"
+    );
+}
+
+/// `diff --at` shows diff for a single checkpoint segment.
+#[test]
+fn diff_at_checkpoint() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+
+    fs::write(s.mnt_path("newfile.txt"), "new\n").expect("write new");
+    s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
+
+    // diff --at s1 should show hello.txt but not newfile.txt
+    let output = s.cli(&["diff", "--at", "s1"]).expect("diff --at");
+    assert!(
+        output.contains("hello.txt"),
+        "should show hello.txt: {output}"
+    );
+    assert!(
+        !output.contains("newfile.txt"),
+        "should NOT show newfile.txt: {output}"
+    );
+}
+
+/// `diff --from` shows diff from a checkpoint to end.
+#[test]
+fn diff_from_checkpoint() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+
+    fs::write(s.mnt_path("newfile.txt"), "new content\n").expect("write new");
+
+    let output = s.cli(&["diff", "--from", "s1"]).expect("diff --from");
+    assert!(
+        output.contains("newfile.txt"),
+        "should show newfile.txt: {output}"
+    );
+    assert!(
+        output.contains("+new content"),
+        "should show diff content: {output}"
+    );
+    assert!(
+        !output.contains("hello.txt"),
+        "should NOT show hello.txt: {output}"
+    );
+}
+
+/// `diff --from A --to B` shows diff between two checkpoints.
+#[test]
+fn diff_from_to_range() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+
+    fs::write(s.mnt_path("mid.txt"), "mid content\n").expect("write mid");
+    s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
+
+    fs::write(s.mnt_path("late.txt"), "late\n").expect("write late");
+
+    let output = s
+        .cli(&["diff", "--from", "s1", "--to", "s2"])
+        .expect("diff --from --to");
+    assert!(output.contains("mid.txt"), "should show mid.txt: {output}");
+    assert!(
+        output.contains("+mid content"),
+        "should show diff content: {output}"
+    );
+    assert!(
+        !output.contains("hello.txt"),
+        "should NOT show hello.txt: {output}"
+    );
+    assert!(
+        !output.contains("late.txt"),
+        "should NOT show late.txt: {output}"
+    );
+}
+
+/// `diff --to` shows diff up to a checkpoint.
+#[test]
+fn diff_to_checkpoint() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "early content\n").expect("write");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+
+    fs::write(s.mnt_path("newfile.txt"), "later\n").expect("write new");
+    s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
+
+    // diff --to s1 should show hello.txt but not newfile.txt
+    let output = s.cli(&["diff", "--to", "s1"]).expect("diff --to");
+    assert!(
+        output.contains("hello.txt"),
+        "should show hello.txt: {output}"
+    );
+    assert!(
+        output.contains("+early content"),
+        "should show diff content: {output}"
+    );
+    assert!(
+        !output.contains("newfile.txt"),
+        "should NOT show newfile.txt: {output}"
+    );
+}
+
+/// `--from` after the last checkpoint with no trailing changes → "No changes".
+#[test]
+fn status_from_last_checkpoint_empty() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+
+    // No changes after s1
+    let output = s.cli(&["status", "--from", "s1"]).expect("status --from");
+    assert!(
+        output.contains("No changes"),
+        "should say no changes: {output}"
+    );
+}
+
+/// `diff --from` after the last checkpoint with no trailing changes → "No changes".
+#[test]
+fn diff_from_last_checkpoint_empty() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+
+    let output = s.cli(&["diff", "--from", "s1"]).expect("diff --from");
+    assert!(
+        output.contains("No changes"),
+        "should say no changes: {output}"
+    );
+}
+
+/// `--from` and `--to` pointing to the same checkpoint → empty range.
+#[test]
+fn status_from_to_same_checkpoint_empty() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+
+    fs::write(s.mnt_path("other.txt"), "v2\n").expect("write other");
+    s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
+
+    // --from s1 --to s1: exclusive start at s1, inclusive end at s1 → empty
+    let output = s
+        .cli(&["status", "--from", "s1", "--to", "s1"])
+        .expect("status --from --to same");
+    assert!(
+        output.contains("No changes"),
+        "same from/to should be empty: {output}"
+    );
+}
+
+/// Path filter combined with `--from` range flag.
+#[test]
+fn diff_from_with_path_filter() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+
+    fs::write(s.mnt_path("target.txt"), "target content\n").expect("write target");
+    fs::write(s.mnt_path("other.txt"), "other content\n").expect("write other");
+
+    // diff --from s1 target.txt: should show only target.txt
+    let output = s
+        .cli(&["diff", "--from", "s1", "target.txt"])
+        .expect("diff --from with path");
+    assert!(
+        output.contains("target.txt"),
+        "should show target.txt: {output}"
+    );
+    assert!(
+        output.contains("+target content"),
+        "should show target diff: {output}"
+    );
+    assert!(
+        !output.contains("other.txt"),
+        "should NOT show other.txt: {output}"
+    );
+}
+
+/// `--at` conflicts with `--from`/`--to` (clap enforces this).
+#[test]
+fn at_conflicts_with_from_to() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let (ok, _, stderr) = s
+        .cli_output(&["status", "--at", "x", "--from", "y"])
+        .expect("cli_output");
+    assert!(!ok, "should fail: {stderr}");
+
+    let (ok, _, stderr) = s
+        .cli_output(&["status", "--at", "x", "--to", "y"])
+        .expect("cli_output");
+    assert!(!ok, "should fail: {stderr}");
+
+    let (ok, _, stderr) = s
+        .cli_output(&["diff", "--at", "x", "--from", "y"])
+        .expect("cli_output");
+    assert!(!ok, "should fail: {stderr}");
+
+    let (ok, _, stderr) = s
+        .cli_output(&["diff", "--at", "x", "--to", "y"])
+        .expect("cli_output");
+    assert!(!ok, "should fail: {stderr}");
+}
+
 /// Open a file with O_APPEND (not O_TRUNC) after a checkpoint: the
 /// append should trigger re-COW, preserving the pre-checkpoint content.
 #[test]
