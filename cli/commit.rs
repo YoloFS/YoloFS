@@ -90,18 +90,10 @@ fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<()> {
                 let base_old = to_base_path(from);
                 let base_new = to_base_path(to);
                 ensure_parent(&base_new, &mut ensured)?;
-                fs::rename(&base_old, &base_new)
-                    .with_context(|| format!("rename {from} → {to}"))?;
-            }
-            Change::RenamedModified { from, to, ino, .. } => {
-                let base_old = to_base_path(from);
-                let base_new = to_base_path(to);
-                ensure_parent(&base_new, &mut ensured)?;
                 if base_old.exists() {
                     fs::rename(&base_old, &base_new)
                         .with_context(|| format!("rename {from} → {to}"))?;
                 }
-                apply_inode(agfs, *ino, &base_new, &mut ensured)?;
             }
             Change::Deleted(p) => {
                 let base_file = to_base_path(p);
@@ -128,7 +120,7 @@ pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let records = journal::read(&agfs)?.records;
-    let changes = resolve::resolve(&records)?;
+    let changes = resolve::resolve(records)?;
 
     if changes.is_empty() {
         println!("{}", "Nothing to commit.".yellow());

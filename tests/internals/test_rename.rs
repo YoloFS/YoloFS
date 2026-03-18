@@ -68,8 +68,7 @@ fn write_then_rename_inode_content() {
     let content = fs::read_to_string(s.mnt_path("final.txt")).unwrap();
     assert_eq!(content, "written first\n");
 
-    // The inode should have the written content — may resolve as RenamedModified
-    // or as separate changes depending on the resolver.
+    // The inode should have the written content — resolves as Renamed + Modified.
     let ch = changes(&s);
     let ino = ino_for(&ch, "/final.txt");
     assert_eq!(

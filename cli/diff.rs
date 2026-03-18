@@ -103,21 +103,6 @@ fn print_change(agfs: &Path, change: &Change, verbose: bool) {
                 "(renamed)".cyan()
             );
         }
-        Change::RenamedModified { from, to, ino, .. } => {
-            println!(
-                "{indent}{} → {} {}",
-                from.bold(),
-                to.bold(),
-                "(renamed + modified)".cyan()
-            );
-            if verbose {
-                let old_text = read_base(from);
-                let new_text = read_inode(agfs, *ino);
-                if old_text != new_text {
-                    print_unified_diff(&old_text, &new_text);
-                }
-            }
-        }
     }
     if verbose {
         println!();
@@ -138,7 +123,7 @@ pub fn run_status(at: Option<&str>) -> Result<()> {
 
     if let Some(name) = at {
         let records = journal::read(&agfs)?.records;
-        let changes = resolve::resolve_at(&records, name)?;
+        let changes = resolve::resolve_at(records, name)?;
         if changes.is_empty() {
             println!("{}", "No changes staged.".yellow());
         } else {
@@ -173,7 +158,7 @@ pub fn run_diff(from: Option<&str>, path: Option<&str>) -> Result<bool> {
 
 fn run_sections(agfs: &Path, verbose: bool, path: Option<&str>) -> Result<bool> {
     let records = journal::read(agfs)?.records;
-    let sections = resolve::resolve_sections(&records)?;
+    let sections = resolve::resolve_sections(records)?;
 
     let total: usize = match path {
         Some(target) => sections
@@ -240,23 +225,19 @@ fn print_total(n: usize) {
 // ── Checkpoint-to-current diff ─────────────────────────────────────────
 
 /// Build a map of path → inode content for a set of resolved changes.
-fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>> {
+fn state_map<'a>(agfs: &Path, changes: &'a [Change]) -> BTreeMap<&'a str, Option<String>> {
     let mut map = BTreeMap::new();
     for change in changes {
         match change {
             Change::Added { path, ino, .. } | Change::Modified { path, ino, .. } => {
-                map.insert(path.clone(), Some(read_inode(agfs, *ino)));
+                map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
             }
             Change::Deleted(path) => {
-                map.insert(path.clone(), None);
+                map.insert(path.as_str(), None);
             }
             Change::Renamed { from, to, .. } => {
-                map.insert(from.clone(), None);
-                map.insert(to.clone(), Some(read_base(from)));
-            }
-            Change::RenamedModified { from, to, ino, .. } => {
-                map.insert(from.clone(), None);
-                map.insert(to.clone(), Some(read_inode(agfs, *ino)));
+                map.insert(from.as_str(), None);
+                map.insert(to.as_str(), Some(read_base(from)));
             }
         }
     }
@@ -266,18 +247,30 @@ fn state_map(agfs: &Path, changes: &[Change]) -> BTreeMap<String, Option<String>
 /// Diff between checkpoint state and current state.
 fn run_from_checkpoint(agfs: &Path, chk_name: &str, filter: Option<&str>) -> Result<bool> {
     let records = journal::read(agfs)?.records;
-    let (chk_changes, current_changes) = resolve::resolve_from(&records, chk_name)?;
+    let chk_idx = resolve::find_checkpoint_index(&records, chk_name)?;
+
+    // Single-pass: snapshot at checkpoint, then continue to end.
+    let mut resolver = resolve::Resolver::new();
+    let mut records_iter = records.into_iter();
+    for record in records_iter.by_ref().take(chk_idx + 1) {
+        resolver.process(record);
+    }
+    let chk_changes = resolver.clone().into_changes();
+    for record in records_iter {
+        resolver.process(record);
+    }
+    let current_changes = resolver.into_changes();
 
     let chk_state = state_map(agfs, &chk_changes);
     let current_state = state_map(agfs, &current_changes);
 
     // Collect all paths
-    let mut all_paths: Vec<&String> = chk_state.keys().chain(current_state.keys()).collect();
+    let mut all_paths: Vec<&str> = chk_state.keys().chain(current_state.keys()).copied().collect();
     all_paths.sort();
     all_paths.dedup();
 
     if let Some(target) = filter {
-        all_paths.retain(|p| p.as_str() == target);
+        all_paths.retain(|p| *p == target);
     }
 
     let mut has_diff = false;
@@ -404,12 +397,18 @@ mod tests {
     #[test]
     fn state_map_renamed_modified() {
         let tmp = make_agfs(&[(7, "modified content")]);
-        let changes = vec![Change::RenamedModified {
-            from: "/nonexistent/old.rs".into(),
-            to: "/nonexistent/new.rs".into(),
-            ino: 7,
-            dtype: crate::journal::DType::File,
-        }];
+        let changes = vec![
+            Change::Renamed {
+                from: "/nonexistent/old.rs".into(),
+                to: "/nonexistent/new.rs".into(),
+                dtype: crate::journal::DType::File,
+            },
+            Change::Modified {
+                path: "/nonexistent/new.rs".into(),
+                ino: 7,
+                dtype: crate::journal::DType::File,
+            },
+        ];
         let map = state_map(tmp.path(), &changes);
         assert_eq!(map.len(), 2);
         assert_eq!(map["/nonexistent/old.rs"], None);

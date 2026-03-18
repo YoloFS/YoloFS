@@ -64,6 +64,13 @@ pub struct Journal {
     offsets: Vec<u64>,
 }
 
+impl Journal {
+    /// Byte offset just past the given record index.
+    pub fn offset(&self, record_idx: usize) -> Option<u64> {
+        self.offsets.get(record_idx).copied()
+    }
+}
+
 /// Read and parse the journal file.
 pub fn read(agfs_dir: &Path) -> Result<Journal> {
     let journal_path = agfs_dir.join("journal");
@@ -151,13 +158,9 @@ pub fn inode_path(agfs_dir: &Path, ino: u64) -> PathBuf {
     agfs_dir.join("inodes").join(ino.to_string())
 }
 
-/// Truncate the journal after record `record_idx`.
+/// Truncate the journal to the given byte offset.
 /// Preserves the inode so the kernel's O_APPEND fd stays valid.
-pub fn truncate(journal: &Journal, agfs_dir: &Path, record_idx: usize) -> Result<()> {
-    let offset = *journal
-        .offsets
-        .get(record_idx)
-        .context("record index out of bounds")?;
+pub fn truncate(agfs_dir: &Path, offset: u64) -> Result<()> {
     let journal_path = agfs_dir.join("journal");
     let f = fs::OpenOptions::new()
         .write(true)
@@ -248,7 +251,7 @@ mod tests {
         assert_eq!(journal.records.len(), 4);
 
         // Truncate after the checkpoint (record index 1)
-        truncate(&journal, dir.path(), 1).unwrap();
+        truncate(dir.path(), journal.offset(1).unwrap()).unwrap();
 
         let after = read(dir.path()).unwrap();
         assert_eq!(after.records.len(), 2);
@@ -268,7 +271,7 @@ mod tests {
         assert_eq!(journal.records.len(), 2);
 
         let size_before = fs::metadata(dir.path().join("journal")).unwrap().len();
-        truncate(&journal, dir.path(), 1).unwrap();
+        truncate(dir.path(), journal.offset(1).unwrap()).unwrap();
         let size_after = fs::metadata(dir.path().join("journal")).unwrap().len();
 
         assert_eq!(

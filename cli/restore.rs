@@ -27,6 +27,21 @@ impl RestoreItem {
 
 /// Convert a resolved Change list into restore items (owned data, sortable).
 fn changes_to_items(changes: &[resolve::Change]) -> Vec<RestoreItem> {
+    use std::collections::BTreeSet;
+
+    // Collect destination paths that have staged content (Added/Modified).
+    // When a Renamed destination also has a Modified entry, the staged inode
+    // takes precedence over a redirect — skip the redundant redirect.
+    let staged_paths: BTreeSet<&str> = changes
+        .iter()
+        .filter_map(|c| match c {
+            resolve::Change::Added { path, .. } | resolve::Change::Modified { path, .. } => {
+                Some(path.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+
     let mut items = Vec::new();
 
     for change in changes {
@@ -45,26 +60,14 @@ fn changes_to_items(changes: &[resolve::Change]) -> Vec<RestoreItem> {
             }
             resolve::Change::Renamed { from, to, dtype } => {
                 items.push(RestoreItem::deleted(from.clone()));
-                items.push(RestoreItem {
-                    path: to.clone(),
-                    ino: journal::INO_REDIRECT,
-                    base_path: from.clone(),
-                    d_type: dtype.to_libc(),
-                });
-            }
-            resolve::Change::RenamedModified {
-                from,
-                to,
-                ino,
-                dtype,
-            } => {
-                items.push(RestoreItem::deleted(from.clone()));
-                items.push(RestoreItem {
-                    path: to.clone(),
-                    ino: *ino,
-                    base_path: String::new(),
-                    d_type: dtype.to_libc(),
-                });
+                if !staged_paths.contains(to.as_str()) {
+                    items.push(RestoreItem {
+                        path: to.clone(),
+                        ino: journal::INO_REDIRECT,
+                        base_path: from.clone(),
+                        d_type: dtype.to_libc(),
+                    });
+                }
             }
         }
     }
@@ -110,11 +113,17 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     let chk_idx = resolve::find_checkpoint_index(&journal.records, checkpoint_name)?;
 
     let (checkpoint_gen, chk_label) = match &journal.records[chk_idx] {
-        journal::Record::Checkpoint { id, name } => (*id, name.as_str()),
+        journal::Record::Checkpoint { id, name } => (*id, name.clone()),
         _ => unreachable!("find_checkpoint_index returned non-checkpoint record"),
     };
 
-    let changes = resolve::resolve(&journal.records[..=chk_idx])?;
+    let truncate_offset = journal
+        .offset(chk_idx)
+        .context("checkpoint offset out of bounds")?;
+
+    let mut records = journal.records;
+    records.truncate(chk_idx + 1);
+    let changes = resolve::resolve(records)?;
     let items = changes_to_items(&changes);
     let entries = items_to_entries(&items)?;
 
@@ -125,7 +134,7 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 
     // Truncate journal after the checkpoint record — preserves the inode
     // so the kernel's O_APPEND fd stays valid.
-    journal::truncate(&journal, &agfs, chk_idx)?;
+    journal::truncate(&agfs, truncate_offset)?;
 
     println!(
         "{}",
@@ -193,12 +202,18 @@ mod tests {
 
     #[test]
     fn renamed_modified_produces_delete_and_ino() {
-        let changes = vec![Change::RenamedModified {
-            from: "/old.rs".into(),
-            to: "/new.rs".into(),
-            ino: 5,
-            dtype: DType::File,
-        }];
+        let changes = vec![
+            Change::Renamed {
+                from: "/old.rs".into(),
+                to: "/new.rs".into(),
+                dtype: DType::File,
+            },
+            Change::Modified {
+                path: "/new.rs".into(),
+                ino: 5,
+                dtype: DType::File,
+            },
+        ];
         let items = changes_to_items(&changes);
         assert_eq!(items.len(), 2);
 

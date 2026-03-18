@@ -13,7 +13,7 @@ pub fn journal(s: &AgfsSession) -> Vec<Record> {
 
 /// Resolve the journal to get the final Change list.
 pub fn changes(s: &AgfsSession) -> Vec<Change> {
-    resolve::resolve(&journal(s)).expect("resolve journal")
+    resolve::resolve(journal(s)).expect("resolve journal")
 }
 
 /// List numeric inode entries in the inode store.
@@ -42,7 +42,6 @@ pub fn ino_for(changes: &[Change], suffix: &str) -> u64 {
             {
                 c.ino()
             }
-            Change::RenamedModified { to, .. } if to.ends_with(suffix) => c.ino(),
             _ => None,
         })
         .unwrap_or_else(|| panic!("no inode found for path ending with {suffix}"))

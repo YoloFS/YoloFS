@@ -479,18 +479,17 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
    - Delete + Redirect at a new path collapses to `Rename`.
    - Redirect chains collapse: `Redirect(a→b)` then `Redirect(b→c)` → `Rename(a,c)`.
    - Multiple `E` records for the same path keep only the final ino.
-2. Apply resolved changes sequentially. For each change:
+2. Apply resolved changes in order: **renames first**, then adds/modifies,
+   then deletes. Renames must precede adds because a rename source path
+   may overlap with a new add at the same path (e.g. `mv a b` then
+   `touch a`). For each change:
    - **Rename**: `rename(base/old, base/new)`.
-   - **Delete**: `rm base/path`.
    - **Add/Modify**: move `inodes/<ino> -> base/path` (stat inode to
      determine type: regular file -> copy/rename, symlink -> recreate,
      directory -> mkdir), creating parent dirs as needed.
+   - **Delete**: `rm base/path`.
 3. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
 4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `entry_count=0`, `checkpoint_gen=1`).
-
-Since step 1 resolves all cross-dependencies, no particular ordering
-between renames, deletes, and adds is required — each resolved
-operation targets a distinct path.
 
 **Abort** (`agfs abort`):
 
