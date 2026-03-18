@@ -955,7 +955,7 @@ fn run_profile(env: &Env, workload_name: &str, scenario_name: &str, bpftrace: bo
 
     workload.ensure_fixture()?;
 
-    let out_dir = results_dir(&env, false)
+    let out_dir = results_dir(env, false)
         .join("profiling")
         .join(workload_name)
         .join(scenario_name);
@@ -1112,6 +1112,13 @@ fn main() -> Result<()> {
         for w in workloads::by_kind(workload::WorkloadKind::Op) {
             println!("  {}", w.name());
         }
+        let source_groups = workloads::source_groups();
+        if !source_groups.is_empty() {
+            println!("\nWorkload groups (expand to source variants):");
+            for group in source_groups {
+                println!("  {}", group);
+            }
+        }
         println!("\nBackends:");
         for b in backends::all() {
             if b.hidden() {
@@ -1138,12 +1145,21 @@ fn main() -> Result<()> {
     }
 
     let selected_workloads: Vec<Box<dyn Workload>> = if !cli.workload.is_empty() {
-        let mut selected = Vec::with_capacity(cli.workload.len());
+        let mut selected = Vec::new();
         for name in &cli.workload {
-            let w =
-                workloads::by_name(name).with_context(|| format!("unknown workload: {name}"))?;
-            selected.push(w);
+            let expanded = workloads::expand_selector(name);
+            if expanded.is_empty() {
+                bail!("unknown workload: {name}");
+            }
+            selected.extend(expanded);
         }
+        selected.sort_by_key(|w| {
+            workloads::all()
+                .iter()
+                .position(|ww| ww.name() == w.name())
+                .unwrap_or(usize::MAX)
+        });
+        selected.dedup_by(|a, b| a.name() == b.name());
         selected
     } else if cli.micro {
         workloads::by_kind(workload::WorkloadKind::Micro)
@@ -1203,17 +1219,16 @@ fn main() -> Result<()> {
         let is_op = workload.kind() == workload::WorkloadKind::Op;
         let mut did_warm_up = false;
         for b in &selected_backends {
-            if cli.skip_complete {
-                if let Some(existing) = read_existing_results(&json_path)? {
-                    if has_exact_runs(&existing, workload.name(), b.name(), cli.runs) {
-                        eprintln!(
-                            "  backend: {} (skipping, already has {} timed iterations)",
-                            b.name(),
-                            cli.runs
-                        );
-                        continue;
-                    }
-                }
+            if cli.skip_complete
+                && let Some(existing) = read_existing_results(&json_path)?
+                && has_exact_runs(&existing, workload.name(), b.name(), cli.runs)
+            {
+                eprintln!(
+                    "  backend: {} (skipping, already has {} timed iterations)",
+                    b.name(),
+                    cli.runs
+                );
+                continue;
             }
 
             if let Some(reason) = b.unsupported_reason(workload.as_ref()) {

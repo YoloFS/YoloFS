@@ -13,9 +13,14 @@ impl Backend for BranchFs {
     }
 
     fn unsupported_reason(&self, workload: &dyn Workload) -> Option<&'static str> {
-        if workload.cache_mode() == CacheMode::DropPageCache && workload.needs_prepare_workdir() {
-            Some("cold metadata on staged/checkpoint files cannot be measured on branchfs: \
-                  flushing FUSE daemon state requires unmounting, which loses branch state")
+        let cold_staged_metadata = workload.name().starts_with("meta-")
+            && workload.cache_mode() == CacheMode::DropPageCache
+            && workload.needs_prepare_workdir();
+        if cold_staged_metadata {
+            Some(
+                "cold metadata on staged/checkpoint files cannot be measured on branchfs: \
+                  flushing FUSE daemon state requires unmounting, which loses branch state",
+            )
         } else {
             None
         }

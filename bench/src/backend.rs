@@ -182,7 +182,10 @@ impl PausedSubprocess {
             }
         }
 
-        let status = self.child.wait().context("waiting for workload subprocess")?;
+        let status = self
+            .child
+            .wait()
+            .context("waiting for workload subprocess")?;
         let total_ms = self.t0.elapsed().as_millis() as u64;
         let staging_ms = total_ms - self.startup_ms;
 

@@ -63,9 +63,9 @@ pub struct WorkloadDetails {
 
 macro_rules! define_rust_execution {
     (fn $name:ident($($arg:ident : $arg_ty:ty),* $(,)?) -> Result<()> $body:block => $render_name:ident) => {
-        fn $name($($arg: $arg_ty),*) -> Result<()> $body
+        pub(crate) fn $name($($arg: $arg_ty),*) -> Result<()> $body
 
-        fn $render_name() -> String {
+        pub(crate) fn $render_name() -> String {
             crate::workloads::rust_execution(stringify!($body))
         }
     };
@@ -75,7 +75,7 @@ pub(crate) use define_rust_execution;
 
 /// All registered workloads: microbenchmarks first, then macrobenchmarks.
 pub fn all() -> Vec<Box<dyn Workload>> {
-    vec![
+    let mut v: Vec<Box<dyn Workload>> = vec![
         // micro
         Box::new(write_files::WriteFiles::new()),
         Box::new(read_files::ReadFiles),
@@ -94,32 +94,61 @@ pub fn all() -> Vec<Box<dyn Workload>> {
         Box::new(fio_randrw_cold::FioRandRwCold),
         Box::new(fio_randrw_warm::FioRandRwWarm),
         Box::new(meta_create::MetaCreate),
-        Box::new(meta_append::MetaAppendBase),
-        Box::new(meta_append::MetaAppendStage),
-        Box::new(meta_append::MetaAppendCheckpoint),
-        Box::new(meta_stat_cold::MetaStatColdBase),
-        Box::new(meta_stat_cold::MetaStatColdStage),
-        Box::new(meta_stat_cold::MetaStatColdCheckpoint),
-        Box::new(meta_stat_warm::MetaStatWarmBase),
-        Box::new(meta_stat_warm::MetaStatWarmStage),
-        Box::new(meta_stat_warm::MetaStatWarmCheckpoint),
-        Box::new(meta_readdir_cold::MetaReaddirColdBase),
-        Box::new(meta_readdir_cold::MetaReaddirColdStage),
-        Box::new(meta_readdir_cold::MetaReaddirColdCheckpoint),
-        Box::new(meta_readdir_warm::MetaReaddirWarmBase),
-        Box::new(meta_readdir_warm::MetaReaddirWarmStage),
-        Box::new(meta_readdir_warm::MetaReaddirWarmCheckpoint),
-        Box::new(meta_rename::MetaRenameBase),
-        Box::new(meta_rename::MetaRenameStage),
-        Box::new(meta_rename::MetaRenameCheckpoint),
-        Box::new(meta_unlink::MetaUnlinkBase),
-        Box::new(meta_unlink::MetaUnlinkStage),
-        Box::new(meta_unlink::MetaUnlinkCheckpoint),
-    ]
+    ];
+    for w in meta_append::MetaAppend::all() {
+        v.push(Box::new(w));
+    }
+    for w in meta_stat_cold::MetaStatCold::all() {
+        v.push(Box::new(w));
+    }
+    for w in meta_stat_warm::MetaStatWarm::all() {
+        v.push(Box::new(w));
+    }
+    for w in meta_readdir_cold::MetaReaddirCold::all() {
+        v.push(Box::new(w));
+    }
+    for w in meta_readdir_warm::MetaReaddirWarm::all() {
+        v.push(Box::new(w));
+    }
+    for w in meta_rename::MetaRename::all() {
+        v.push(Box::new(w));
+    }
+    for w in meta_unlink::MetaUnlink::all() {
+        v.push(Box::new(w));
+    }
+    v
 }
 
 pub fn by_name(name: &str) -> Option<Box<dyn Workload>> {
     all().into_iter().find(|w| w.name() == name)
+}
+
+/// Expand a workload selector into concrete workload instances.
+///
+/// - If `name` is an exact workload name, returns that one workload.
+/// - Otherwise, if `name` matches a source-variant group (e.g. `meta-append`),
+///   returns all source variants in canonical registration order.
+pub fn expand_selector(name: &str) -> Vec<Box<dyn Workload>> {
+    if let Some(w) = by_name(name) {
+        return vec![w];
+    }
+    all()
+        .into_iter()
+        .filter(|w| meta_shared::source_group_name(w.name()) == Some(name))
+        .collect()
+}
+
+/// Source-variant group names in canonical registration order.
+pub fn source_groups() -> Vec<&'static str> {
+    let mut groups = Vec::new();
+    for w in all() {
+        if let Some(group) = meta_shared::source_group_name(w.name())
+            && !groups.contains(&group)
+        {
+            groups.push(group);
+        }
+    }
+    groups
 }
 
 pub fn by_kind(kind: WorkloadKind) -> Vec<Box<dyn Workload>> {
@@ -140,27 +169,27 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
         "rename-files" => rename_files::details(),
         "worktree" => worktree::details(),
         "meta-create" => meta_create::details(),
-        "meta-append-base" => meta_append::details_base(),
-        "meta-append-stage" => meta_append::details_stage(),
-        "meta-append-checkpoint" => meta_append::details_checkpoint(),
-        "meta-stat-cold-base" => meta_stat_cold::details_base(),
-        "meta-stat-cold-stage" => meta_stat_cold::details_stage(),
-        "meta-stat-cold-checkpoint" => meta_stat_cold::details_checkpoint(),
-        "meta-stat-warm-base" => meta_stat_warm::details_base(),
-        "meta-stat-warm-stage" => meta_stat_warm::details_stage(),
-        "meta-stat-warm-checkpoint" => meta_stat_warm::details_checkpoint(),
-        "meta-readdir-cold-base" => meta_readdir_cold::details_base(),
-        "meta-readdir-cold-stage" => meta_readdir_cold::details_stage(),
-        "meta-readdir-cold-checkpoint" => meta_readdir_cold::details_checkpoint(),
-        "meta-readdir-warm-base" => meta_readdir_warm::details_base(),
-        "meta-readdir-warm-stage" => meta_readdir_warm::details_stage(),
-        "meta-readdir-warm-checkpoint" => meta_readdir_warm::details_checkpoint(),
-        "meta-rename-base" => meta_rename::details_base(),
-        "meta-rename-stage" => meta_rename::details_stage(),
-        "meta-rename-checkpoint" => meta_rename::details_checkpoint(),
-        "meta-unlink-base" => meta_unlink::details_base(),
-        "meta-unlink-stage" => meta_unlink::details_stage(),
-        "meta-unlink-checkpoint" => meta_unlink::details_checkpoint(),
+        "meta-append-base" | "meta-append-stage" | "meta-append-checkpoint" => {
+            meta_append::details()
+        }
+        "meta-stat-cold-base" | "meta-stat-cold-stage" | "meta-stat-cold-checkpoint" => {
+            meta_stat_cold::details()
+        }
+        "meta-stat-warm-base" | "meta-stat-warm-stage" | "meta-stat-warm-checkpoint" => {
+            meta_stat_warm::details()
+        }
+        "meta-readdir-cold-base" | "meta-readdir-cold-stage" | "meta-readdir-cold-checkpoint" => {
+            meta_readdir_cold::details()
+        }
+        "meta-readdir-warm-base" | "meta-readdir-warm-stage" | "meta-readdir-warm-checkpoint" => {
+            meta_readdir_warm::details()
+        }
+        "meta-rename-base" | "meta-rename-stage" | "meta-rename-checkpoint" => {
+            meta_rename::details()
+        }
+        "meta-unlink-base" | "meta-unlink-stage" | "meta-unlink-checkpoint" => {
+            meta_unlink::details()
+        }
         "fio-seq-read-cold" => fio_seq_read_cold::details(),
         "fio-seq-read-warm" => fio_seq_read_warm::details(),
         "fio-seq-write" => fio_seq_write::details(),

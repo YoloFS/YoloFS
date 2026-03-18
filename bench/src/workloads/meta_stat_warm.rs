@@ -4,134 +4,69 @@ use crate::workloads::meta_shared::{self, MetaSource};
 use anyhow::Result;
 use std::path::Path;
 
-pub struct MetaStatWarmBase;
-pub struct MetaStatWarmStage;
-pub struct MetaStatWarmCheckpoint;
+pub struct MetaStatWarm {
+    pub source: MetaSource,
+}
 
-pub fn details_base() -> workloads::WorkloadDetails {
+impl MetaStatWarm {
+    pub fn all() -> Vec<Self> {
+        MetaSource::ALL
+            .iter()
+            .map(|&s| Self { source: s })
+            .collect()
+    }
+}
+
+pub fn details() -> workloads::WorkloadDetails {
     workloads::workload_details(
-        "Op benchmark for warm metadata lookup on a base-layer 10,000-file fixture.",
-        "Populates 10,000 base-layer files before timing, then pre-stats them once to warm dcache/icache.",
+        "Stat 10,000 files from warm dcache/icache, measuring per-operation latency.",
+        "Fixture varies by source: base populates before mount; stage creates inside the mount; checkpoint snapshots after creation.",
         None,
-        &meta_shared::execution_stub("crate::workloads::meta_shared::run_meta_stat_warm(dest)?;"),
+        &meta_shared::meta_stat_warm_execution(),
         file!(),
     )
 }
 
-pub fn details_stage() -> workloads::WorkloadDetails {
-    workloads::workload_details(
-        "Op benchmark for warm metadata lookup on a stage-local 10,000-file fixture.",
-        "Creates 10,000 stage-local files before timing, then pre-stats them once to warm dcache/icache.",
-        None,
-        &meta_shared::execution_stub("crate::workloads::meta_shared::run_meta_stat_warm(dest)?;"),
-        file!(),
-    )
-}
-
-pub fn details_checkpoint() -> workloads::WorkloadDetails {
-    workloads::workload_details(
-        "Op benchmark for warm metadata lookup on a checkpoint-layer 10,000-file fixture.",
-        "Populates 10,000 checkpoint-layer files before timing, then pre-stats them once to warm dcache/icache.",
-        None,
-        &meta_shared::execution_stub("crate::workloads::meta_shared::run_meta_stat_warm(dest)?;"),
-        file!(),
-    )
-}
-
-fn realistic_rules(session_root: &Path) -> Vec<(String, agfs::config::Perm)> {
-    workloads::allow_rw_rules(session_root)
-}
-
-fn run(dest: &Path) -> Result<()> {
-    meta_shared::run_meta_stat_warm(dest)
-}
-
-impl Workload for MetaStatWarmBase {
+impl Workload for MetaStatWarm {
     fn name(&self) -> &'static str {
-        "meta-stat-warm-base"
+        match self.source {
+            MetaSource::Base => "meta-stat-warm-base",
+            MetaSource::Stage => "meta-stat-warm-stage",
+            MetaSource::Checkpoint => "meta-stat-warm-checkpoint",
+        }
     }
     fn kind(&self) -> WorkloadKind {
         WorkloadKind::Op
     }
     fn description(&self) -> &'static str {
-        "Warm stat over 10,000 base-layer files"
+        match self.source {
+            MetaSource::Base => "Warm stat over 10,000 base-layer files",
+            MetaSource::Stage => "Warm stat over 10,000 stage-local files",
+            MetaSource::Checkpoint => "Warm stat over 10,000 checkpoint-layer files",
+        }
     }
     fn work_dir(&self) -> &'static str {
-        "meta-stat-warm-base"
+        self.name()
     }
     fn ensure_fixture(&self) -> Result<()> {
         Ok(())
     }
     fn realistic_rules(&self, session_root: &Path) -> Vec<(String, agfs::config::Perm)> {
-        realistic_rules(session_root)
+        workloads::allow_rw_rules(session_root)
     }
     fn populate_base(&self, base_work_dir: &Path) -> Result<()> {
-        meta_shared::populate_files_for_source(MetaSource::Base, base_work_dir)
-    }
-    fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        run(dest)
-    }
-}
-
-impl Workload for MetaStatWarmStage {
-    fn name(&self) -> &'static str {
-        "meta-stat-warm-stage"
-    }
-    fn kind(&self) -> WorkloadKind {
-        WorkloadKind::Op
-    }
-    fn description(&self) -> &'static str {
-        "Warm stat over 10,000 stage-local files"
-    }
-    fn work_dir(&self) -> &'static str {
-        "meta-stat-warm-stage"
-    }
-    fn ensure_fixture(&self) -> Result<()> {
-        Ok(())
-    }
-    fn realistic_rules(&self, session_root: &Path) -> Vec<(String, agfs::config::Perm)> {
-        realistic_rules(session_root)
+        meta_shared::populate_files_for_source(self.source, base_work_dir)
     }
     fn prepare_workdir(&self, dest: &Path) -> Result<()> {
-        meta_shared::prepare_files_for_source(MetaSource::Stage, dest)
+        meta_shared::prepare_files_for_source(self.source, dest)
     }
     fn needs_prepare_workdir(&self) -> bool {
-        meta_shared::needs_prepare(MetaSource::Stage)
-    }
-    fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        run(dest)
-    }
-}
-
-impl Workload for MetaStatWarmCheckpoint {
-    fn name(&self) -> &'static str {
-        "meta-stat-warm-checkpoint"
-    }
-    fn kind(&self) -> WorkloadKind {
-        WorkloadKind::Op
-    }
-    fn description(&self) -> &'static str {
-        "Warm stat over 10,000 checkpoint-layer files"
-    }
-    fn work_dir(&self) -> &'static str {
-        "meta-stat-warm-checkpoint"
-    }
-    fn ensure_fixture(&self) -> Result<()> {
-        Ok(())
-    }
-    fn realistic_rules(&self, session_root: &Path) -> Vec<(String, agfs::config::Perm)> {
-        realistic_rules(session_root)
-    }
-    fn prepare_workdir(&self, dest: &Path) -> Result<()> {
-        meta_shared::prepare_files_for_source(MetaSource::Checkpoint, dest)
-    }
-    fn needs_prepare_workdir(&self) -> bool {
-        meta_shared::needs_prepare(MetaSource::Checkpoint)
+        meta_shared::needs_prepare(self.source)
     }
     fn needs_checkpoint(&self) -> bool {
-        meta_shared::needs_checkpoint(MetaSource::Checkpoint)
+        meta_shared::needs_checkpoint(self.source)
     }
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        run(dest)
+        meta_shared::run_meta_stat_warm(dest)
     }
 }

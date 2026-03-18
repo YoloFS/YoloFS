@@ -15,8 +15,7 @@ use std::path::Path;
 
 pub fn render(results: &BenchResults, out_dir: &Path) -> Result<()> {
     let current_repo_state = crate::read_repo_state().ok();
-    let mut rendered_groups: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut rendered_groups: std::collections::HashSet<String> = std::collections::HashSet::new();
     for wl in &results.workloads {
         if let Some(group) = source_group_name(&wl.workload) {
             if rendered_groups.insert(group.to_string()) {
@@ -191,8 +190,12 @@ fn render_op_workload(
         &stddev_vals,
         &bar_colors,
         native_avg_lat,
-        None,
-        None,
+        OpBarStyle {
+            opacity: None,
+            line: None,
+            x_axis: None,
+            y_axis: None,
+        },
     );
 
     let (mut layout, mut shapes, mut annotations) = op_layout(wl, false);
@@ -202,10 +205,12 @@ fn render_op_workload(
             &mut shapes,
             &mut annotations,
             &backend_names,
-            avg_latency_us(native),
-            "native avg latency (µs)",
-            "native baseline",
-            false,
+            BaselineSpec {
+                value: avg_latency_us(native),
+                hover_label: "native avg latency (µs)",
+                visible_label: "native baseline",
+                secondary_shift: false,
+            },
         );
     }
     if !shapes.is_empty() {
@@ -311,8 +316,12 @@ fn render_op_mixed_workload(
         &read_stddevs,
         &colors,
         native_read,
-        None,
-        None,
+        OpBarStyle {
+            opacity: None,
+            line: None,
+            x_axis: None,
+            y_axis: None,
+        },
     );
 
     let native_write = native.as_ref().and_then(|b| b.mean_write_avg_lat_us);
@@ -323,8 +332,12 @@ fn render_op_mixed_workload(
         &write_stddevs,
         &colors,
         native_write,
-        Some(0.35),
-        Some(plotly::common::Line::new().color("#222").width(1.5)),
+        OpBarStyle {
+            opacity: Some(0.35),
+            line: Some(plotly::common::Line::new().color("#222").width(1.5)),
+            x_axis: None,
+            y_axis: None,
+        },
     );
 
     let (mut layout, mut shapes, mut annotations) = op_layout(wl, true);
@@ -335,10 +348,12 @@ fn render_op_mixed_workload(
                 &mut shapes,
                 &mut annotations,
                 &backend_names,
-                read_lat,
-                "native read avg latency (µs)",
-                "native read",
-                true,
+                BaselineSpec {
+                    value: read_lat,
+                    hover_label: "native read avg latency (µs)",
+                    visible_label: "native read",
+                    secondary_shift: true,
+                },
             );
         }
         if let Some(write_lat) = native.mean_write_avg_lat_us {
@@ -347,10 +362,12 @@ fn render_op_mixed_workload(
                 &mut shapes,
                 &mut annotations,
                 &backend_names,
-                write_lat,
-                "native write avg latency (µs)",
-                "native write",
-                true,
+                BaselineSpec {
+                    value: write_lat,
+                    hover_label: "native write avg latency (µs)",
+                    visible_label: "native write",
+                    secondary_shift: true,
+                },
             );
         }
     }
@@ -656,29 +673,34 @@ fn op_bar_trace(
     values: Vec<f64>,
     stddevs: Vec<f64>,
     colors: Vec<String>,
-    opacity: Option<f64>,
-    line: Option<plotly::common::Line>,
-    x_axis: Option<&str>,
-    y_axis: Option<&str>,
+    style: OpBarStyle,
 ) -> Box<Bar<String, f64>> {
     let mut marker = plotly::common::Marker::new().color_array(colors);
-    if let Some(line) = line {
+    if let Some(line) = style.line {
         marker = marker.line(line);
     }
     let mut trace = Bar::new(backend_names, values)
         .show_legend(false)
         .marker(marker)
         .error_y(ErrorData::new(ErrorType::Data).array(stddevs).visible(true));
-    if let Some(opacity) = opacity {
+    if let Some(opacity) = style.opacity {
         trace = trace.opacity(opacity);
     }
-    if let Some(x_axis) = x_axis {
+    if let Some(x_axis) = style.x_axis {
         trace = trace.x_axis(x_axis);
     }
-    if let Some(y_axis) = y_axis {
+    if let Some(y_axis) = style.y_axis {
         trace = trace.y_axis(y_axis);
     }
     trace
+}
+
+#[derive(Clone)]
+struct OpBarStyle {
+    opacity: Option<f64>,
+    line: Option<plotly::common::Line>,
+    x_axis: Option<&'static str>,
+    y_axis: Option<&'static str>,
 }
 
 struct OutlierCap {
@@ -752,21 +774,29 @@ fn add_baseline_to_plot(
     shapes: &mut Vec<Shape>,
     annotations: &mut Vec<Annotation>,
     backend_names: &[String],
-    value: f64,
-    hover_label: &str,
-    visible_label: &str,
-    secondary_shift: bool,
+    baseline: BaselineSpec<'_>,
 ) {
-    add_native_baseline_hover_trace(plot, backend_names, value, hover_label);
-    let y_shift = if secondary_shift { 10.0 } else { -10.0 };
-    shapes.push(baseline_shape(value, "y", "paper"));
+    add_native_baseline_hover_trace(plot, backend_names, baseline.value, baseline.hover_label);
+    let y_shift = if baseline.secondary_shift {
+        10.0
+    } else {
+        -10.0
+    };
+    shapes.push(baseline_shape(baseline.value, "y", "paper"));
     annotations.push(baseline_annotation(
-        value,
-        visible_label,
+        baseline.value,
+        baseline.visible_label,
         "y",
         "paper",
         y_shift,
     ));
+}
+
+struct BaselineSpec<'a> {
+    value: f64,
+    hover_label: &'a str,
+    visible_label: &'a str,
+    secondary_shift: bool,
 }
 
 fn baseline_shape(value: f64, y_ref: &str, x_ref: &str) -> Shape {
@@ -806,8 +836,7 @@ fn add_capped_op_trace(
     stddevs: &[f64],
     colors: &[String],
     native: Option<f64>,
-    opacity: Option<f64>,
-    line: Option<plotly::common::Line>,
+    style: OpBarStyle,
 ) {
     let capped = cap_relative_to_native(values, stddevs, native);
     if !capped.main_indices.is_empty() {
@@ -832,13 +861,16 @@ fn add_capped_op_trace(
                 .iter()
                 .map(|&i| colors[i].clone())
                 .collect(),
-            opacity,
-            line.clone(),
-            None,
-            None,
+            style.clone(),
         ));
     }
     if !capped.outlier_indices.is_empty() {
+        let outline = style
+            .line
+            .clone()
+            .unwrap_or_default()
+            .color("#222")
+            .width(2.0);
         plot.add_trace(
             op_bar_trace(
                 capped
@@ -861,14 +893,12 @@ fn add_capped_op_trace(
                     .iter()
                     .map(|&i| colors[i].clone())
                     .collect(),
-                None,
-                Some(
-                    line.unwrap_or_else(|| plotly::common::Line::new())
-                        .color("#222")
-                        .width(2.0),
-                ),
-                None,
-                None,
+                OpBarStyle {
+                    opacity: None,
+                    line: Some(outline),
+                    x_axis: style.x_axis,
+                    y_axis: style.y_axis,
+                },
             )
             .marker(
                 plotly::common::Marker::new()
@@ -876,7 +906,9 @@ fn add_capped_op_trace(
                         capped
                             .outlier_indices
                             .iter()
-                            .map(|&i| color_with_alpha(&colors[i], opacity.unwrap_or(1.0) * 0.45))
+                            .map(|&i| {
+                                color_with_alpha(&colors[i], style.opacity.unwrap_or(1.0) * 0.45)
+                            })
                             .collect::<Vec<_>>(),
                     )
                     .line(plotly::common::Line::new().color("#222").width(2.0))
@@ -901,16 +933,15 @@ fn add_capped_op_trace(
 
 fn color_with_alpha(color: &str, alpha: f64) -> String {
     let alpha = alpha.clamp(0.0, 1.0);
-    if let Some(hex) = color.strip_prefix('#') {
-        if hex.len() == 6 {
-            if let (Ok(r), Ok(g), Ok(b)) = (
-                u8::from_str_radix(&hex[0..2], 16),
-                u8::from_str_radix(&hex[2..4], 16),
-                u8::from_str_radix(&hex[4..6], 16),
-            ) {
-                return format!("rgba({r}, {g}, {b}, {alpha:.3})");
-            }
-        }
+    if let Some(hex) = color.strip_prefix('#')
+        && hex.len() == 6
+        && let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&hex[0..2], 16),
+            u8::from_str_radix(&hex[2..4], 16),
+            u8::from_str_radix(&hex[4..6], 16),
+        )
+    {
+        return format!("rgba({r}, {g}, {b}, {alpha:.3})");
     }
     color.to_string()
 }
@@ -988,17 +1019,13 @@ fn render_grouped_op_workloads(
             }
         }
     }
-    all_backend_names.sort_by_key(|name| {
-        order
-            .iter()
-            .position(|&n| n == name)
-            .unwrap_or(usize::MAX)
-    });
+    all_backend_names
+        .sort_by_key(|name| order.iter().position(|&n| n == name).unwrap_or(usize::MAX));
 
     // Look up the caveat for this workload group (if any).
-    let caveat = source_order.iter().find_map(|&src| {
-        workloads::caveat(&format!("{group}-{src}"))
-    });
+    let caveat = source_order
+        .iter()
+        .find_map(|&src| workloads::caveat(&format!("{group}-{src}")));
 
     // Build one trace per source variant.
     for &src in &source_order {
@@ -1028,11 +1055,11 @@ fn render_grouped_op_workloads(
                         "{backend_name} ({src})<br>{lat:.1} µs<br>{:.0} IOPS",
                         b.mean_iops.unwrap_or(0.0)
                     );
-                    if let Some(ref c) = caveat {
-                        if backend_name != "native" {
-                            let c_html = c.replace('\n', "<br>");
-                            hover.push_str(&format!("<br><br><i>{c_html}</i>"));
-                        }
+                    if let Some(ref c) = caveat
+                        && backend_name != "native"
+                    {
+                        let c_html = c.replace('\n', "<br>");
+                        hover.push_str(&format!("<br><br><i>{c_html}</i>"));
                     }
                     hover_texts.push(hover);
                     has_any = true;
@@ -1273,9 +1300,7 @@ pub fn render_index(
             dirty_label(repo.kmod_dirty)
         ));
     }
-    html.push_str(&format!(
-        "<tr><td></td><td><a href=\"results.json\">results.json</a></td></tr>\n"
-    ));
+    html.push_str("<tr><td></td><td><a href=\"results.json\">results.json</a></td></tr>\n");
     html.push_str("</table></div>\n");
 
     // For grouped workloads (e.g. "meta-append"), resolve to the first
@@ -1342,8 +1367,7 @@ pub fn render_index(
                      </details></div>"
                 )
             };
-            let detail = workloads::details(name)
-                .or_else(|| workloads::details(variant_name));
+            let detail = workloads::details(name).or_else(|| workloads::details(variant_name));
             let detail_html = detail.map(|d| {
                 format!(
                     "<details class=\"card-details\" style=\"margin:0 0 0.5em\">\
@@ -1365,8 +1389,8 @@ pub fn render_index(
                     source = escape_html(&d.source_path),
                 )
             }).unwrap_or_default();
-            let hover_detail = workloads::details(name)
-                .or_else(|| workloads::details(variant_name));
+            let hover_detail =
+                workloads::details(name).or_else(|| workloads::details(variant_name));
             html.push_str(&format!(
                 "  <div class=\"card\">\
                 <div class=\"card-header\">\

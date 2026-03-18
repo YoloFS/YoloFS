@@ -4,134 +4,69 @@ use crate::workloads::meta_shared::{self, MetaSource};
 use anyhow::Result;
 use std::path::Path;
 
-pub struct MetaUnlinkBase;
-pub struct MetaUnlinkStage;
-pub struct MetaUnlinkCheckpoint;
+pub struct MetaUnlink {
+    pub source: MetaSource,
+}
 
-pub fn details_base() -> workloads::WorkloadDetails {
+impl MetaUnlink {
+    pub fn all() -> Vec<Self> {
+        MetaSource::ALL
+            .iter()
+            .map(|&s| Self { source: s })
+            .collect()
+    }
+}
+
+pub fn details() -> workloads::WorkloadDetails {
     workloads::workload_details(
-        "Op benchmark for delete throughput on base-layer files.",
-        &meta_shared::base_or_stage_fixture(MetaSource::Base, "10,000 files"),
+        "Delete 10,000 files, measuring per-operation latency.",
+        "Fixture varies by source: base populates before mount; stage creates inside the mount; checkpoint snapshots after creation.",
         None,
-        &meta_shared::execution_stub("crate::workloads::meta_shared::run_meta_unlink(dest)?;"),
+        &meta_shared::meta_unlink_execution(),
         file!(),
     )
 }
 
-pub fn details_stage() -> workloads::WorkloadDetails {
-    workloads::workload_details(
-        "Op benchmark for delete throughput on stage-local files.",
-        &meta_shared::base_or_stage_fixture(MetaSource::Stage, "10,000 files"),
-        None,
-        &meta_shared::execution_stub("crate::workloads::meta_shared::run_meta_unlink(dest)?;"),
-        file!(),
-    )
-}
-
-pub fn details_checkpoint() -> workloads::WorkloadDetails {
-    workloads::workload_details(
-        "Op benchmark for delete throughput on checkpoint-layer files.",
-        &meta_shared::source_fixture(MetaSource::Checkpoint, "10,000 files"),
-        None,
-        &meta_shared::execution_stub("crate::workloads::meta_shared::run_meta_unlink(dest)?;"),
-        file!(),
-    )
-}
-
-fn realistic_rules(session_root: &Path) -> Vec<(String, agfs::config::Perm)> {
-    workloads::allow_rw_rules(session_root)
-}
-
-fn run(dest: &Path) -> Result<()> {
-    meta_shared::run_meta_unlink(dest)
-}
-
-impl Workload for MetaUnlinkBase {
+impl Workload for MetaUnlink {
     fn name(&self) -> &'static str {
-        "meta-unlink-base"
+        match self.source {
+            MetaSource::Base => "meta-unlink-base",
+            MetaSource::Stage => "meta-unlink-stage",
+            MetaSource::Checkpoint => "meta-unlink-checkpoint",
+        }
     }
     fn kind(&self) -> WorkloadKind {
         WorkloadKind::Op
     }
     fn description(&self) -> &'static str {
-        "Unlink 10,000 base-layer files"
+        match self.source {
+            MetaSource::Base => "Unlink 10,000 base-layer files",
+            MetaSource::Stage => "Unlink 10,000 stage-local files",
+            MetaSource::Checkpoint => "Unlink 10,000 checkpoint-layer files",
+        }
     }
     fn work_dir(&self) -> &'static str {
-        "meta-unlink-base"
+        self.name()
     }
     fn ensure_fixture(&self) -> Result<()> {
         Ok(())
     }
     fn realistic_rules(&self, session_root: &Path) -> Vec<(String, agfs::config::Perm)> {
-        realistic_rules(session_root)
+        workloads::allow_rw_rules(session_root)
     }
     fn populate_base(&self, base_work_dir: &Path) -> Result<()> {
-        meta_shared::populate_files_for_source(MetaSource::Base, base_work_dir)
-    }
-    fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        run(dest)
-    }
-}
-
-impl Workload for MetaUnlinkStage {
-    fn name(&self) -> &'static str {
-        "meta-unlink-stage"
-    }
-    fn kind(&self) -> WorkloadKind {
-        WorkloadKind::Op
-    }
-    fn description(&self) -> &'static str {
-        "Unlink 10,000 stage-local files"
-    }
-    fn work_dir(&self) -> &'static str {
-        "meta-unlink-stage"
-    }
-    fn ensure_fixture(&self) -> Result<()> {
-        Ok(())
-    }
-    fn realistic_rules(&self, session_root: &Path) -> Vec<(String, agfs::config::Perm)> {
-        realistic_rules(session_root)
+        meta_shared::populate_files_for_source(self.source, base_work_dir)
     }
     fn prepare_workdir(&self, dest: &Path) -> Result<()> {
-        meta_shared::prepare_files_for_source(MetaSource::Stage, dest)
+        meta_shared::prepare_files_for_source(self.source, dest)
     }
     fn needs_prepare_workdir(&self) -> bool {
-        meta_shared::needs_prepare(MetaSource::Stage)
-    }
-    fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        run(dest)
-    }
-}
-
-impl Workload for MetaUnlinkCheckpoint {
-    fn name(&self) -> &'static str {
-        "meta-unlink-checkpoint"
-    }
-    fn kind(&self) -> WorkloadKind {
-        WorkloadKind::Op
-    }
-    fn description(&self) -> &'static str {
-        "Unlink 10,000 checkpoint-layer files"
-    }
-    fn work_dir(&self) -> &'static str {
-        "meta-unlink-checkpoint"
-    }
-    fn ensure_fixture(&self) -> Result<()> {
-        Ok(())
-    }
-    fn realistic_rules(&self, session_root: &Path) -> Vec<(String, agfs::config::Perm)> {
-        realistic_rules(session_root)
-    }
-    fn prepare_workdir(&self, dest: &Path) -> Result<()> {
-        meta_shared::prepare_files_for_source(MetaSource::Checkpoint, dest)
-    }
-    fn needs_prepare_workdir(&self) -> bool {
-        meta_shared::needs_prepare(MetaSource::Checkpoint)
+        meta_shared::needs_prepare(self.source)
     }
     fn needs_checkpoint(&self) -> bool {
-        meta_shared::needs_checkpoint(MetaSource::Checkpoint)
+        meta_shared::needs_checkpoint(self.source)
     }
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        run(dest)
+        meta_shared::run_meta_unlink(dest)
     }
 }

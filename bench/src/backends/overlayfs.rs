@@ -7,6 +7,21 @@ use std::time::Instant;
 
 pub struct Overlayfs;
 
+struct OverlayfsMountPaths<'a> {
+    lower: &'a std::path::Path,
+    upper: &'a std::path::Path,
+    work: &'a std::path::Path,
+    merged: &'a std::path::Path,
+}
+
+#[derive(Clone, Copy)]
+struct OverlayfsChildOpts {
+    verbose: bool,
+    prepare_only: bool,
+    inline_prepare: bool,
+    wait_after_ready: bool,
+}
+
 impl Backend for Overlayfs {
     fn name(&self) -> &'static str {
         "overlayfs"
@@ -63,13 +78,18 @@ impl Backend for Overlayfs {
             }
             run_overlayfs_child(
                 workload,
-                &lower,
-                &prep_upper,
-                &prep_work,
-                &prep_merged,
-                verbose,
-                true,
-                false,
+                &OverlayfsMountPaths {
+                    lower: &lower,
+                    upper: &prep_upper,
+                    work: &prep_work,
+                    merged: &prep_merged,
+                },
+                OverlayfsChildOpts {
+                    verbose,
+                    prepare_only: true,
+                    inline_prepare: false,
+                    wait_after_ready: false,
+                },
             )?;
             commit_upper_to_lower(&prep_upper, &lower)?;
         }
@@ -79,7 +99,19 @@ impl Backend for Overlayfs {
         let inline_prepare = needs_prepare && !needs_chkpt;
         let cold = workload.cache_mode() == CacheMode::DropPageCache;
         let mut cmd = overlayfs_child_cmd(
-            workload, &lower, &upper, &work, &merged, verbose, false, inline_prepare, cold,
+            workload,
+            &OverlayfsMountPaths {
+                lower: &lower,
+                upper: &upper,
+                work: &work,
+                merged: &merged,
+            },
+            OverlayfsChildOpts {
+                verbose,
+                prepare_only: false,
+                inline_prepare,
+                wait_after_ready: cold,
+            },
         )?;
         let result = backend::run_workload_subprocess(&mut cmd, cold)?;
 
@@ -107,27 +139,12 @@ impl Backend for Overlayfs {
 
 fn run_overlayfs_child(
     workload: &dyn Workload,
-    lower: &std::path::Path,
-    upper: &std::path::Path,
-    work: &std::path::Path,
-    merged: &std::path::Path,
-    verbose: bool,
-    prepare_only: bool,
-    inline_prepare: bool,
+    paths: &OverlayfsMountPaths<'_>,
+    opts: OverlayfsChildOpts,
 ) -> Result<()> {
-    let output = overlayfs_child_cmd(
-        workload,
-        lower,
-        upper,
-        work,
-        merged,
-        verbose,
-        prepare_only,
-        inline_prepare,
-        false, // prepare-only never needs wait_after_ready
-    )?
-    .output()
-    .context("running overlayfs helper subprocess")?;
+    let output = overlayfs_child_cmd(workload, paths, opts)?
+        .output()
+        .context("running overlayfs helper subprocess")?;
     if !output.status.success() {
         anyhow::bail!(
             "overlayfs helper failed: {}",
@@ -139,14 +156,8 @@ fn run_overlayfs_child(
 
 fn overlayfs_child_cmd(
     workload: &dyn Workload,
-    lower: &std::path::Path,
-    upper: &std::path::Path,
-    work: &std::path::Path,
-    merged: &std::path::Path,
-    verbose: bool,
-    prepare_only: bool,
-    inline_prepare: bool,
-    wait_after_ready: bool,
+    paths: &OverlayfsMountPaths<'_>,
+    opts: OverlayfsChildOpts,
 ) -> Result<Command> {
     // Build the inner exec-workload command, then wrap it in unshare.
     // Inside the namespace, exec-overlayfs mounts the overlay then runs
@@ -160,29 +171,29 @@ fn overlayfs_child_cmd(
         .arg("--name")
         .arg(workload.name())
         .arg("--lower")
-        .arg(lower)
+        .arg(paths.lower)
         .arg("--upper")
-        .arg(upper)
+        .arg(paths.upper)
         .arg("--work")
-        .arg(work)
+        .arg(paths.work)
         .arg("--merged")
-        .arg(merged);
-    if verbose {
+        .arg(paths.merged);
+    if opts.verbose {
         cmd.arg("--verbose");
     }
-    if prepare_only {
+    if opts.prepare_only {
         cmd.arg("--prepare-only");
     }
-    if inline_prepare {
+    if opts.inline_prepare {
         cmd.arg("--inline-prepare");
     }
-    if wait_after_ready {
+    if opts.wait_after_ready {
         cmd.arg("--wait-after-ready");
         // For cold workloads: subprocess unmounts before READY and remounts
         // after GO, so the overlay's kernel state is flushed during drop_caches.
         cmd.arg("--remount-for-cold");
     }
-    cmd.stderr(if verbose {
+    cmd.stderr(if opts.verbose {
         Stdio::inherit()
     } else {
         Stdio::piped()

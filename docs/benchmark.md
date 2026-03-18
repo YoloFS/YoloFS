@@ -581,6 +581,10 @@ agfs-bench exec-workload --name <name> --dest <path> [--verbose]
 - `--workload` / `--backend`: filter to a specific combination. `--workload`
   may be repeated to run multiple named workloads. `--backend` overrides
   hidden status, so `--backend try` will run `try`.
+- For source-variant metadata workloads, `--workload` accepts either an
+  individual variant (for example `meta-append-stage`) or the group name
+  (for example `meta-append`), which expands to
+  `{base,stage,checkpoint}` variants.
 - `--runs N`: number of timed iterations (default 3).
 - `--verbose`: capture detailed logs for all runs, not just failures.
 - `--timestamped-results`: write results into a timestamped subdirectory

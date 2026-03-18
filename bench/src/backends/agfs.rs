@@ -201,9 +201,14 @@ fn run_agfs_iteration(
 pub struct AgfsAllowAll;
 
 fn cold_staged_reason(workload: &dyn Workload) -> Option<&'static str> {
-    if workload.cache_mode() == CacheMode::DropPageCache && workload.needs_prepare_workdir() {
-        Some("cold metadata on staged/checkpoint files cannot be measured on agfs: \
-              flushing the kernel dirent table requires unmounting, which loses staging state")
+    let cold_staged_metadata = workload.name().starts_with("meta-")
+        && workload.cache_mode() == CacheMode::DropPageCache
+        && workload.needs_prepare_workdir();
+    if cold_staged_metadata {
+        Some(
+            "cold metadata on staged/checkpoint files cannot be measured on agfs: \
+              flushing the kernel dirent table requires unmounting, which loses staging state",
+        )
     } else {
         None
     }
