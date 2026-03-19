@@ -55,7 +55,7 @@ the ioctl wire format.
 | `mkdir`      | -- (dir perm via lower FS)                                   | Allocate directory inode, add dirent + journal `A` record.                      | --                               |
 | `unlink`     | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal `D` record.                                         | --                                         |
 | `rmdir`      | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal `D` record.                                         | --                                         |
-| `rename`     | -- (dir perm via lower FS)                                   | See [Rename Handling](staging.md#rename-handling). Emits `D` + `A`/`M`/`R`.       | --                                         |
+| `rename`     | -- (dir perm via lower FS)                                   | See [Rename Handling](staging.md#rename-handling). Emits `D` + `A`/`M`/`R`/`P`.   | --                                         |
 | `symlink`    | -- (dir perm via lower FS)                                   | Allocate inode (symlink), add dirent + journal `A` record.                      | `vfs_symlink()`.                          |
 | `permission` | **Gating for regular files (O(1) cached); delegate to lower FS for dirs.** | --                                                                                 | `inode_permission()` on lower inode.      |
 | `setattr`    | Gated (regular files only).                                  | Setattr on resolved lower file (staged inode or base). No COW triggered.           | `notify_change()` on lower.               |

@@ -619,9 +619,9 @@ fn restore_rename_then_recreate() {
     );
 }
 
-/// `agfs log` after restore shows all checkpoints and the restore record.
+/// `agfs timeline` after restore shows all checkpoints and the restore record.
 #[test]
-fn log_after_restore() {
+fn timeline_after_restore() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write");
@@ -631,15 +631,15 @@ fn log_after_restore() {
 
     s.cli(&["restore", "first"]).expect("restore");
 
-    let log = s.cli(&["log"]).expect("log");
-    assert!(log.contains("first"), "first should be in log: {log}");
+    let timeline = s.cli(&["timeline"]).expect("timeline");
+    assert!(timeline.contains("first"), "first should be in timeline: {timeline}");
     assert!(
-        log.contains("second"),
-        "second should still be in log (append-only journal): {log}"
+        timeline.contains("second"),
+        "second should still be in timeline (append-only journal): {timeline}"
     );
     assert!(
-        log.contains("restore"),
-        "restore record should be in log: {log}"
+        timeline.contains("restore"),
+        "restore record should be in timeline: {timeline}"
     );
 }
 
@@ -766,9 +766,9 @@ fn kernel_appends_to_journal_after_restore() {
 // ── Append-only journal / S-record tests ─────────────────────────────
 
 /// After restore, the journal is append-only (not truncated).
-/// Verify that `agfs log` shows the restore event.
+/// Verify that `agfs timeline` shows the restore event.
 #[test]
-fn log_shows_restore_event() {
+fn timeline_shows_restore_event() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
@@ -779,9 +779,9 @@ fn log_shows_restore_event() {
 
     s.cli(&["restore", "build"]).expect("restore");
 
-    let log = s.cli(&["log"]).expect("log");
-    assert!(log.contains("restore"), "log should show restore event: {log}");
-    assert!(log.contains("build"), "log should reference target checkpoint: {log}");
+    let timeline = s.cli(&["timeline"]).expect("timeline");
+    assert!(timeline.contains("restore"), "timeline should show restore event: {timeline}");
+    assert!(timeline.contains("build"), "timeline should reference target checkpoint: {timeline}");
 }
 
 /// Restore, make changes, checkpoint, then restore again (further back).

@@ -1,78 +1,20 @@
-// agfs CLI — journal.rs
+// agfs CLI — journal/parse.rs
 //
-// Parse the append-only journal and define its record types.
+// Parse the append-only journal file.
 //
 // Record format (NUL-separated fields, newline-terminated):
-//   A\0<dir>\0<name>\0<dtype>\0<ino>\n       — add (new file)
-//   M\0<dir>\0<name>\0<dtype>\0<ino>\n       — modify (existing file)
+//   A\0<dir>\0<name>\0<dtype>\0<ino>\n       — add (staged, new path)
+//   M\0<dir>\0<name>\0<dtype>\0<ino>\n       — modify (staged, existing path)
 //   D\0<dir>\0<name>\n                        — delete
-//   R\0<dir>\0<name>\0<dtype>\0<base>\n       — redirect (rename)
+//   R\0<dir>\0<name>\0<dtype>\0<base>\n       — redirect (rename, new path)
+//   P\0<dir>\0<name>\0<dtype>\0<base>\n       — replace (rename, existing path)
 //   K\0<gen>\0<name>\n                         — checkpoint marker
 //   S\0<gen>\0<target_gen>\n                   — restore marker
 
+use super::types::*;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-pub const INO_REDIRECT: u64 = u64::MAX;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DType {
-    File,
-    Dir,
-    Link,
-}
-
-impl DType {
-    pub fn from_char(c: u8) -> Option<DType> {
-        match c {
-            b'f' => Some(DType::File),
-            b'd' => Some(DType::Dir),
-            b'l' => Some(DType::Link),
-            _ => None,
-        }
-    }
-
-    pub fn to_libc(&self) -> u8 {
-        match self {
-            DType::File => libc::DT_REG,
-            DType::Dir => libc::DT_DIR,
-            DType::Link => libc::DT_LNK,
-        }
-    }
-}
-
-/// A named checkpoint in the journal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Checkpoint {
-    pub gen_id: u64,
-    pub name: String,
-}
-
-/// A journal record: either an entry (dirent mutation) or a checkpoint.
-#[derive(Debug, Clone)]
-pub enum Record {
-    Added {
-        path: String,
-        dtype: Option<DType>,
-        ino: u64,
-    },
-    Modified {
-        path: String,
-        dtype: Option<DType>,
-        ino: u64,
-    },
-    Deleted {
-        path: String,
-    },
-    Redirect {
-        path: String,
-        dtype: Option<DType>,
-        base: String,
-    },
-    Checkpoint(Checkpoint),
-    Restore { gen_id: u64, target_gen: u64 },
-}
 
 /// A parsed journal.
 pub struct Journal {
@@ -135,12 +77,16 @@ pub fn read(agfs_dir: &Path) -> Result<Journal> {
                 let path = make_path(fields[1], fields[2]);
                 records.push(Record::Deleted { path });
             }
-            b"R" if fields.len() >= 5 => {
+            b"R" | b"P" if fields.len() >= 5 => {
                 let path = make_path(fields[1], fields[2]);
                 let dtype = parse_dtype(fields[3]);
                 let base = String::from_utf8_lossy(fields[4]).to_string();
 
-                records.push(Record::Redirect { path, dtype, base });
+                if tag == b"R" {
+                    records.push(Record::Redirect { path, dtype, base });
+                } else {
+                    records.push(Record::Replace { path, dtype, base });
+                }
             }
             b"K" if fields.len() >= 3 => {
                 let gen_str = String::from_utf8_lossy(fields[1]);

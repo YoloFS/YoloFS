@@ -1,6 +1,6 @@
 // agfs CLI — main.rs
 
-use agfs::{abort, checkpoint, commit, config, diff, exec, kmod, mount, restore, watch};
+use agfs::{abort, checkpoint, commit, config, diff, exec, journal_cmd, kmod, mount, restore, timeline_cmd, watch};
 use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
@@ -93,8 +93,14 @@ enum Command {
         /// Checkpoint name or numeric ID
         name: String,
     },
-    /// Show checkpoint log
-    Log,
+    /// Show checkpoint/restore timeline (unreachable branches dimmed)
+    Timeline,
+    /// Show full session history (every operation, dead branches dimmed)
+    Journal {
+        /// Filter to operations on a specific path
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Manage permission rules
     Rule {
         #[command(subcommand)]
@@ -168,7 +174,8 @@ fn run_cli() -> anyhow::Result<u8> {
             checkpoint::create(name.as_deref())?;
         }
         Some(Command::Restore { name }) => restore::run(&name)?,
-        Some(Command::Log) => checkpoint::list()?,
+        Some(Command::Timeline) => timeline_cmd::run()?,
+        Some(Command::Journal { path }) => journal_cmd::run(path.as_deref())?,
         Some(Command::Rule { action }) => match action {
             RuleAction::Add { path, perm } => config::add_rule(&path, &perm)?,
             RuleAction::Remove { path } => config::remove_rule(&path)?,

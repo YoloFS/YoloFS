@@ -41,7 +41,7 @@ pub fn run(force: bool) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let records = crate::journal::read(&agfs)?.records;
-    let changes = crate::resolve::resolve(records)?;
+    let changes = crate::journal::resolve::resolve(records)?;
     if changes.is_empty() {
         println!("{}", "Nothing to discard.".yellow());
         return Ok(());

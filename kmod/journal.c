@@ -174,6 +174,26 @@ int agfs_journal_redirect(struct agfs_sb_info *sbi, struct dentry *dentry,
 					       NULL });
 }
 
+int agfs_journal_replace(struct agfs_sb_info *sbi, struct dentry *dentry,
+			 unsigned char d_type, const char *base)
+{
+	char dir_buf[AGFS_PATH_MAX];
+	char dtype_str[2] = { '\0', '\0' };
+	int err;
+
+	err = journal_dir(dentry, dir_buf, sizeof(dir_buf));
+	if (err)
+		return err;
+
+	dtype_str[0] = dtype_to_char(d_type);
+
+	return journal_write(sbi, 'P',
+			     (const char *[]){ dir_buf,
+					       dentry->d_name.name,
+					       dtype_str, base,
+					       NULL });
+}
+
 int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name)
 {
 	char id_str[21];

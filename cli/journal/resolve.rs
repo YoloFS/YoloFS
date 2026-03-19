@@ -1,4 +1,4 @@
-// agfs CLI — resolve.rs
+// agfs CLI — journal/resolve.rs
 //
 // Resolve (replay) the append-only journal into a list of Changes.
 //
@@ -8,76 +8,9 @@
 // - Redirect chains collapse: `Redirect(b, a)` then `Redirect(c, b)` → `Rename(a, c)`.
 // - Multiple records for the same path keep only the final state.
 
-use crate::journal::{Checkpoint, DType, Record};
+use super::types::{Checkpoint, DType, Record};
 use anyhow::Result;
-use std::collections::{BTreeMap, HashMap};
-
-/// Remove dead zones created by S (restore) records.
-///
-/// An S record with `target_gen=G` means "state was reset to checkpoint G."
-/// Records between that checkpoint and the S record are dead. This function
-/// returns only the live records by walking S records right-to-left and
-/// building non-overlapping live ranges.
-///
-/// If an S record references a non-existent checkpoint (corrupted journal),
-/// that S record is skipped.
-///
-/// O(N) to collect positions + O(R) to build ranges where R = number of
-/// restore records.
-pub fn extract_live(records: Vec<Record>) -> Vec<Record> {
-    // Collect S and K positions in one pass.
-    let mut s_list: Vec<(usize, u64)> = Vec::new();
-    let mut k_map: HashMap<u64, usize> = HashMap::new();
-
-    for (i, record) in records.iter().enumerate() {
-        match record {
-            Record::Restore { target_gen, .. } => {
-                s_list.push((i, *target_gen));
-            }
-            Record::Checkpoint(c) => {
-                k_map.insert(c.gen_id, i);
-            }
-            _ => {}
-        }
-    }
-
-    if s_list.is_empty() {
-        return records;
-    }
-
-    // Walk S records right-to-left, building live ranges.
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    let mut end = records.len();
-
-    for &(s_pos, target_gen) in s_list.iter().rev() {
-        if s_pos >= end {
-            continue; // S is in a dead zone, skip
-        }
-        let Some(&k_pos) = k_map.get(&target_gen) else {
-            continue; // Target checkpoint not found — skip corrupt S record
-        };
-        if s_pos + 1 < end {
-            ranges.push((s_pos + 1, end));
-        }
-        end = k_pos + 1;
-    }
-    ranges.push((0, end));
-    ranges.reverse();
-
-    // Extract live records directly from sorted, non-overlapping ranges.
-    let capacity: usize = ranges.iter().map(|&(s, e)| e - s).sum();
-    let mut live = Vec::with_capacity(capacity);
-    let mut iter = records.into_iter();
-    let mut pos = 0;
-    for &(start, end) in &ranges {
-        if start > pos {
-            iter.by_ref().take(start - pos).for_each(drop);
-        }
-        live.extend(iter.by_ref().take(end - start));
-        pos = end;
-    }
-    live
-}
+use std::collections::BTreeMap;
 
 /// A resolved change — the final effect of replaying the journal.
 #[derive(Debug)]
@@ -98,6 +31,11 @@ pub enum Change {
         to: String,
         dtype: DType,
     },
+    Replaced {
+        from: String,
+        to: String,
+        dtype: DType,
+    },
 }
 
 impl Change {
@@ -114,7 +52,9 @@ impl Change {
         match self {
             Change::Added { path, .. } | Change::Modified { path, .. } => path == target,
             Change::Deleted(path) => path == target,
-            Change::Renamed { from, to, .. } => from == target || to == target,
+            Change::Renamed { from, to, .. } | Change::Replaced { from, to, .. } => {
+                from == target || to == target
+            }
         }
     }
 }
@@ -128,72 +68,7 @@ pub fn resolve(records: Vec<Record>) -> Result<Vec<Change>> {
     Ok(r.into_changes())
 }
 
-/// Find the record index of a checkpoint by name or numeric ID.
-/// Tries parsing as a numeric ID first, then falls back to name match
-/// (using the latest occurrence if names are duplicated).
-pub fn find_checkpoint_index(records: &[Record], name_or_id: &str) -> Result<usize> {
-    // Try numeric ID first
-    if let Ok(target_id) = name_or_id.parse::<u64>() {
-        for (i, record) in records.iter().enumerate() {
-            if let Record::Checkpoint(c) = record
-                && c.gen_id == target_id
-            {
-                return Ok(i);
-            }
-        }
-    }
 
-    // Fall back to name match (latest occurrence)
-    let mut last = None;
-    for (i, record) in records.iter().enumerate() {
-        if let Record::Checkpoint(c) = record
-            && c.name == name_or_id
-        {
-            last = Some(i);
-        }
-    }
-    last.ok_or_else(|| anyhow::anyhow!("checkpoint not found: {name_or_id}"))
-}
-
-/// Slice journal records to the range specified by --at, --from, --to.
-///
-/// The returned slice always includes boundary checkpoint records so that
-/// `resolve_segments` can determine `from` and `to` for each segment.
-///
-/// - `at`   → single segment between previous checkpoint and named one
-/// - `from` → records from that checkpoint to end
-/// - `to`   → records from start up to (and including) that checkpoint
-/// - both   → records between the two checkpoints (inclusive)
-/// - none   → all records (unchanged)
-pub fn slice_records(
-    mut records: Vec<Record>,
-    at: Option<&str>,
-    from: Option<&str>,
-    to: Option<&str>,
-) -> Result<Vec<Record>> {
-    if let Some(name) = at {
-        let chk_idx = find_checkpoint_index(&records, name)?;
-        let prev = records[..chk_idx]
-            .iter()
-            .rposition(|r| matches!(r, Record::Checkpoint(_)));
-        let start = match prev {
-            Some(i) => i, // include previous checkpoint
-            None => 0,
-        };
-        records.truncate(chk_idx + 1);
-        return Ok(records.split_off(start));
-    }
-    // Truncate end first so `from` indices stay valid.
-    if let Some(to_name) = to {
-        let to_idx = find_checkpoint_index(&records, to_name)?;
-        records.truncate(to_idx + 1);
-    }
-    if let Some(from_name) = from {
-        let from_idx = find_checkpoint_index(&records, from_name)?;
-        records = records.split_off(from_idx); // include from checkpoint
-    }
-    Ok(records)
-}
 
 /// Incremental resolution state — processes records one at a time.
 /// Each path maps to one `Action` describing what commit should do.
@@ -207,20 +82,11 @@ pub struct Resolver {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
-    /// Write `inodes/<ino>` to base. `is_new`: true = add, false = overwrite.
-    Stage {
-        ino: u64,
-        dtype: DType,
-        is_new: bool,
-    },
-    /// Remove from base.
-    Delete,
-    /// Rename from `origin`. If `ino` is Some, also overwrite with staged content.
-    Rename {
-        origin: String,
-        dtype: DType,
-        ino: Option<u64>,
-    },
+    Added { ino: u64, dtype: DType },
+    Modified { ino: u64, dtype: DType },
+    Deleted,
+    Renamed { origin: String, dtype: DType },
+    Replaced { origin: String, dtype: DType },
 }
 
 impl Resolver {
@@ -228,61 +94,95 @@ impl Resolver {
         Self::default()
     }
 
-    fn process_stage(&mut self, path: String, dtype: Option<DType>, ino: u64, is_new: bool) {
+    fn process_stage(&mut self, path: String, dtype: Option<DType>, ino: u64, in_base: bool) {
         let dt = dtype.unwrap_or(DType::File);
         match self.state.remove(&path) {
-            Some(Action::Rename { origin, .. }) => {
-                self.state.insert(
-                    path,
-                    Action::Rename {
-                        origin,
-                        dtype: dt,
-                        ino: Some(ino),
-                    },
-                );
+            Some(Action::Renamed { origin, .. } | Action::Replaced { origin, .. }) => {
+                // Rename + modify at same path: decompose into
+                // delete(origin) + modified(path).
+                self.state.insert(origin, Action::Deleted);
+                self.state.insert(path, Action::Modified { ino, dtype: dt });
             }
-            Some(Action::Delete) => {
-                // Path was deleted before this add/modify — it existed
-                // prior (base or earlier staged), so this is a modification.
+            Some(Action::Deleted) => {
                 self.state.insert(
                     path,
-                    Action::Stage {
-                        ino,
-                        dtype: dt,
-                        is_new: false,
-                    },
+                    Action::Modified { ino, dtype: dt },
                 );
             }
             _ => {
-                self.state.insert(
-                    path,
-                    Action::Stage {
-                        ino,
-                        dtype: dt,
-                        is_new,
-                    },
-                );
+                if in_base {
+                    self.state.insert(path, Action::Modified { ino, dtype: dt });
+                } else {
+                    self.state.insert(path, Action::Added { ino, dtype: dt });
+                }
             }
+        }
+    }
+
+    fn process_redirect(&mut self, path: String, dtype: Option<DType>, base_path: String, in_base: bool) {
+        let dt = dtype.unwrap_or(DType::File);
+
+        // Overwrite whatever was at the destination.
+        // If a prior redirect existed, its origin becomes a Delete.
+        // Other prior states are silently replaced — the R/P record
+        // from the kernel is authoritative.
+        if let Some(Action::Renamed { origin, .. } | Action::Replaced { origin, .. }) =
+            self.state.remove(&path)
+        {
+            self.state.insert(origin, Action::Deleted);
+        }
+
+        // The kernel emits D(old) before R/P(new, old).
+        // Remove that spurious delete.
+        if matches!(self.state.get(&base_path), Some(Action::Deleted)) {
+            self.state.remove(&base_path);
+        }
+
+        // If the source was staged, decompose: emit delete for base
+        // files and preserve the dtype from the staged action.
+        let final_dt = match self.state.remove(&base_path) {
+            Some(Action::Modified { dtype: prev_dt, .. }) => {
+                self.state.insert(base_path.clone(), Action::Deleted);
+                prev_dt
+            }
+            Some(Action::Added { dtype: prev_dt, .. }) => prev_dt,
+            _ => dt,
+        };
+
+        if in_base {
+            self.state.insert(
+                path,
+                Action::Replaced { origin: base_path, dtype: final_dt },
+            );
+        } else {
+            self.state.insert(
+                path,
+                Action::Renamed { origin: base_path, dtype: final_dt },
+            );
         }
     }
 
     pub fn process(&mut self, record: Record) {
         match record {
             Record::Added { path, dtype, ino } => {
-                self.process_stage(path, dtype, ino, true);
-            }
-            Record::Modified { path, dtype, ino } => {
                 self.process_stage(path, dtype, ino, false);
             }
+            Record::Modified { path, dtype, ino } => {
+                self.process_stage(path, dtype, ino, true);
+            }
             Record::Deleted { path } => match self.state.remove(&path) {
-                Some(Action::Stage { is_new: true, .. }) => {
-                    // New file deleted — cancels out.
+                Some(Action::Added { .. }) => {
+                    // Staged-only file deleted — cancels out.
                 }
-                Some(Action::Rename { origin, .. }) => {
-                    self.state.insert(origin, Action::Delete);
+                Some(Action::Renamed { origin, .. }) => {
+                    self.state.insert(origin, Action::Deleted);
+                }
+                Some(Action::Replaced { origin, .. }) => {
+                    self.state.insert(origin, Action::Deleted);
+                    self.state.insert(path, Action::Deleted);
                 }
                 _ => {
-                    self.state.insert(path, Action::Delete);
+                    self.state.insert(path, Action::Deleted);
                 }
             },
             Record::Redirect {
@@ -290,51 +190,14 @@ impl Resolver {
                 dtype,
                 base: base_path,
             } => {
-                let dt = dtype.unwrap_or(DType::File);
-
-                // Overwrite whatever was at the destination.
-                if let Some(Action::Rename {
-                    origin: prev_origin,
-                    ..
-                }) = self.state.remove(&path)
-                {
-                    self.state.insert(prev_origin, Action::Delete);
-                }
-
-                // The kernel emits D(old) before R(new, old).
-                // Remove that spurious delete.
-                if matches!(self.state.get(&base_path), Some(Action::Delete)) {
-                    self.state.remove(&base_path);
-                }
-
-                // If the source was staged, carry over the ino.
-                if let Some(Action::Stage {
-                    ino,
-                    dtype: prev_dt,
-                    is_new,
-                }) = self.state.remove(&base_path)
-                {
-                    if !is_new {
-                        self.state.insert(base_path.clone(), Action::Delete);
-                    }
-                    self.state.insert(
-                        path,
-                        Action::Rename {
-                            origin: base_path,
-                            dtype: prev_dt,
-                            ino: Some(ino),
-                        },
-                    );
-                } else {
-                    self.state.insert(
-                        path,
-                        Action::Rename {
-                            origin: base_path,
-                            dtype: dt,
-                            ino: None,
-                        },
-                    );
-                }
+                self.process_redirect(path, dtype, base_path, false);
+            }
+            Record::Replace {
+                path,
+                dtype,
+                base: base_path,
+            } => {
+                self.process_redirect(path, dtype, base_path, true);
             }
             Record::Checkpoint(_) | Record::Restore { .. } => {}
         }
@@ -348,7 +211,7 @@ impl Resolver {
             emit_action(&mut changes, path, action);
         }
         changes.sort_by_key(|c| match c {
-            Change::Renamed { .. } => 0,
+            Change::Renamed { .. } | Change::Replaced { .. } => 0,
             Change::Added { .. } | Change::Modified { .. } => 1,
             Change::Deleted(_) => 2,
         });
@@ -358,7 +221,7 @@ impl Resolver {
 
 /// A group of resolved changes between two checkpoint boundaries.
 #[derive(Debug)]
-pub struct Segment {
+pub struct ResolvedSegment {
     /// The checkpoint at the start of this segment.
     pub from: Checkpoint,
     /// The checkpoint at the end, or None for trailing (unsaved) changes.
@@ -374,7 +237,7 @@ pub struct Segment {
 ///
 /// Records before the first checkpoint are skipped (the initial checkpoint
 /// is always created at mount time).
-pub fn resolve_segments(records: Vec<Record>) -> Result<Vec<Segment>> {
+pub fn resolve_segments(records: Vec<Record>) -> Result<Vec<ResolvedSegment>> {
     // Collect checkpoint boundary indices.
     let chk_indices: Vec<usize> = records
         .iter()
@@ -407,7 +270,7 @@ pub fn resolve_segments(records: Vec<Record>) -> Result<Vec<Segment>> {
             return Ok(vec![]);
         }
         let changes = resolve(trailing)?;
-        return Ok(vec![Segment {
+        return Ok(vec![ResolvedSegment {
             from,
             to: None,
             changes,
@@ -443,7 +306,7 @@ pub fn resolve_segments(records: Vec<Record>) -> Result<Vec<Segment>> {
             }
             record_idx += 1;
         }
-        segments.push(Segment {
+        segments.push(ResolvedSegment {
             from: prev_chk.clone().unwrap(),
             to: cur_chk.clone(),
             changes: resolver.into_changes(),
@@ -458,7 +321,7 @@ pub fn resolve_segments(records: Vec<Record>) -> Result<Vec<Segment>> {
     }
     let trailing = resolver.into_changes();
     if !trailing.is_empty() {
-        segments.push(Segment {
+        segments.push(ResolvedSegment {
             from: prev_chk.unwrap(),
             to: None,
             changes: trailing,
@@ -471,34 +334,23 @@ pub fn resolve_segments(records: Vec<Record>) -> Result<Vec<Segment>> {
 /// Convert a (path, action) pair into Changes.
 fn emit_action(out: &mut Vec<Change>, path: String, action: Action) {
     match action {
-        Action::Stage { ino, dtype, is_new } => {
-            if is_new {
-                out.push(Change::Added { path, ino, dtype });
-            } else {
-                out.push(Change::Modified { path, ino, dtype });
-            }
+        Action::Added { ino, dtype } => {
+            out.push(Change::Added { path, ino, dtype });
         }
-        Action::Delete => {
+        Action::Modified { ino, dtype } => {
+            out.push(Change::Modified { path, ino, dtype });
+        }
+        Action::Deleted => {
             out.push(Change::Deleted(path));
         }
-        Action::Rename { origin, dtype, ino } => {
-            let renamed = origin != path;
-            if let Some(ino) = ino {
-                if renamed {
-                    // Need path for both Renamed and Modified — one clone required.
-                    out.push(Change::Renamed {
-                        from: origin,
-                        to: path.clone(),
-                        dtype,
-                    });
-                }
-                out.push(Change::Modified { path, ino, dtype });
-            } else if renamed {
-                out.push(Change::Renamed {
-                    from: origin,
-                    to: path,
-                    dtype,
-                });
+        Action::Renamed { origin, dtype } => {
+            if origin != path {
+                out.push(Change::Renamed { from: origin, to: path, dtype });
+            }
+        }
+        Action::Replaced { origin, dtype } => {
+            if origin != path {
+                out.push(Change::Replaced { from: origin, to: path, dtype });
             }
         }
     }
@@ -507,10 +359,10 @@ fn emit_action(out: &mut Vec<Change>, path: String, action: Action) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{Checkpoint, DType, Record};
+    use super::super::types::{Checkpoint, DType, Record};
+    use super::super::timeline::{reachable, find_checkpoint_index, slice_records};
     use std::fs;
     use std::path::Path;
-
     fn setup_test_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("inodes")).unwrap();
@@ -599,7 +451,7 @@ mod tests {
         let changes = resolve(read(dir.path())).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(
-            matches!(&changes[0], Change::Renamed { from, to, dtype: DType::Dir }
+            matches!(&changes[0], Change::Renamed { from, to, dtype: DType::Dir, .. }
                 if from == "/olddir" && to == "/newdir"),
             "expected Renamed with DType::Dir, got: {:?}",
             changes[0]
@@ -622,16 +474,16 @@ mod tests {
         let changes = resolve(read(dir.path())).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(
-            matches!(&changes[0], Change::Renamed { from, to, dtype: DType::Dir }
+            matches!(&changes[0], Change::Renamed { from, to, dtype: DType::Dir, .. }
                 if from == "/a" && to == "/c"),
             "expected Renamed(a->c) with DType::Dir, got: {:?}",
             changes[0]
         );
     }
 
-    /// Rename a base file then modify at the new path: produces Renamed + Modified.
+    /// Rename a base file then modify at the new path: produces Deleted + Modified.
     #[test]
-    fn rename_then_modify_produces_renamed_modified() {
+    fn rename_then_modify_produces_delete_modified() {
         let dir = setup_test_dir();
         let mut data = Vec::new();
         // Rename base file: E(old, Deleted) + E(new, Redirect(old))
@@ -644,18 +496,15 @@ mod tests {
 
         let changes = resolve(read(dir.path())).unwrap();
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
-        assert!(
-            matches!(&changes[0], Change::Renamed { from, to, .. }
-                if from == "/old.txt" && to == "/new.txt"),
-            "expected Renamed(old.txt->new.txt), got: {:?}",
-            changes[0]
-        );
-        assert!(
-            matches!(&changes[1], Change::Modified { path, ino: 5, .. }
-                if path == "/new.txt"),
-            "expected Modified(new.txt, ino=5), got: {:?}",
-            changes[1]
-        );
+        let has_deleted = changes
+            .iter()
+            .any(|c| matches!(c, Change::Deleted(p) if p == "/old.txt"));
+        let has_modified = changes.iter().any(|c| {
+            matches!(c, Change::Modified { path, ino: 5, .. }
+                if path == "/new.txt")
+        });
+        assert!(has_deleted, "expected Deleted(/old.txt), got: {changes:?}");
+        assert!(has_modified, "expected Modified(/new.txt, ino=5), got: {changes:?}");
     }
 
     /// touch x, mv x->y: staging-created file renamed.
@@ -987,6 +836,245 @@ mod tests {
             has_delete,
             "expected Deleted(/etc/hostname), got: {changes:?}"
         );
+    }
+
+    /// Rename that overwrites a base file, then destination is moved again.
+    /// The overwritten base file must be deleted.
+    ///
+    /// Scenario: both /dir/a and /dir/b exist in base.
+    ///   mv b a   (overwrite a with b)
+    ///   mv a c   (move again)
+    ///
+    /// Expected: Renamed(b→c) + Deleted(a)
+    #[test]
+    fn rename_overwrite_base_then_move() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // mv b a (overwrite, both in base): D(b) + P(a, /dir/b)
+        data.extend_from_slice(b"D\0/dir\0b\n");
+        data.extend_from_slice(b"P\0/dir\0a\0f\0/dir/b\n");
+        // mv a c: D(a) + R(c, /dir/b) [kernel follows redirect chain]
+        data.extend_from_slice(b"D\0/dir\0a\n");
+        data.extend_from_slice(b"R\0/dir\0c\0f\0/dir/b\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        let has_rename = changes.iter().any(|c| {
+            matches!(c, Change::Renamed { from, to, .. }
+                if from == "/dir/b" && to == "/dir/c")
+        });
+        let has_delete = changes
+            .iter()
+            .any(|c| matches!(c, Change::Deleted(p) if p == "/dir/a"));
+        assert!(has_rename, "expected Renamed(b→c), got: {changes:?}");
+        assert!(
+            has_delete,
+            "expected Deleted(a) for overwritten base file, got: {changes:?}"
+        );
+    }
+
+    /// Same issue but simpler: rename overwrites base file, then delete.
+    ///
+    /// Scenario: both /dir/a and /dir/b exist in base.
+    ///   mv b a   (overwrite a with b)
+    ///   rm a     (delete)
+    ///
+    /// Expected: Deleted(a) + Deleted(b)
+    #[test]
+    fn rename_overwrite_base_then_delete() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // mv b a (overwrite, both in base): D(b) + P(a, /dir/b)
+        data.extend_from_slice(b"D\0/dir\0b\n");
+        data.extend_from_slice(b"P\0/dir\0a\0f\0/dir/b\n");
+        // rm a: D(a)
+        data.extend_from_slice(b"D\0/dir\0a\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        let has_delete_a = changes
+            .iter()
+            .any(|c| matches!(c, Change::Deleted(p) if p == "/dir/a"));
+        let has_delete_b = changes
+            .iter()
+            .any(|c| matches!(c, Change::Deleted(p) if p == "/dir/b"));
+        assert!(
+            has_delete_a,
+            "expected Deleted(a) for overwritten base file, got: {changes:?}"
+        );
+        assert!(
+            has_delete_b,
+            "expected Deleted(b) for renamed-away file, got: {changes:?}"
+        );
+    }
+
+    // -- P tag (replace-redirect) tests --
+
+    /// R (redirect to new path) + delete: only the source needs deletion.
+    #[test]
+    fn redirect_new_path_then_delete() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // mv a b (b is new): D(a) + R(b, /a)
+        data.extend_from_slice(b"D\0/dir\0a\n");
+        data.extend_from_slice(b"R\0/dir\0b\0f\0/dir/a\n");
+        // rm b: D(b)
+        data.extend_from_slice(b"D\0/dir\0b\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
+        assert!(
+            matches!(&changes[0], Change::Deleted(p) if p == "/dir/a"),
+            "expected Deleted(a), got: {changes:?}"
+        );
+    }
+
+    /// P (replace-redirect, destination in base) + delete: both paths deleted.
+    #[test]
+    fn replace_redirect_then_delete() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // mv a b (b exists in base): D(a) + P(b, /a)
+        data.extend_from_slice(b"D\0/dir\0a\n");
+        data.extend_from_slice(b"P\0/dir\0b\0f\0/dir/a\n");
+        // rm b: D(b)
+        data.extend_from_slice(b"D\0/dir\0b\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        let has_delete_a = changes
+            .iter()
+            .any(|c| matches!(c, Change::Deleted(p) if p == "/dir/a"));
+        let has_delete_b = changes
+            .iter()
+            .any(|c| matches!(c, Change::Deleted(p) if p == "/dir/b"));
+        assert!(has_delete_a, "expected Deleted(a), got: {changes:?}");
+        assert!(has_delete_b, "expected Deleted(b), got: {changes:?}");
+    }
+
+    /// Simple P (replace-redirect): rename overwrites base file.
+    #[test]
+    fn replace_redirect_simple() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // mv a b (b exists in base): D(a) + P(b, /a)
+        data.extend_from_slice(b"D\0/dir\0a\n");
+        data.extend_from_slice(b"P\0/dir\0b\0f\0/dir/a\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
+        assert!(
+            matches!(&changes[0], Change::Replaced { from, to, .. }
+                if from == "/dir/a" && to == "/dir/b"),
+            "expected Replaced(a→b), got: {changes:?}"
+        );
+    }
+
+    /// Redirect (R) overwrites prior staged add — staged content dropped.
+    #[test]
+    fn redirect_overwrites_prior_stage_new() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // touch b (staged new): A(b, ino=1)
+        data.extend_from_slice(b"A\0/dir\0b\0f\01\n");
+        // mv a b (b not originally in base): D(a) + R(b, /a)
+        data.extend_from_slice(b"D\0/dir\0a\n");
+        data.extend_from_slice(b"R\0/dir\0b\0f\0/dir/a\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/1"), "staged").unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
+        assert!(
+            matches!(&changes[0], Change::Renamed { from, to, .. }
+                if from == "/dir/a" && to == "/dir/b"),
+            "expected Renamed(a→b), staged add silently replaced, got: {changes:?}"
+        );
+    }
+
+    /// P overwrites prior modify — staged content dropped, in_base preserved.
+    #[test]
+    fn replace_overwrites_prior_modify() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // echo >> b (COW modify): M(b, ino=1)
+        data.extend_from_slice(b"M\0/dir\0b\0f\01\n");
+        // mv a b (b in base): D(a) + P(b, /a)
+        data.extend_from_slice(b"D\0/dir\0a\n");
+        data.extend_from_slice(b"P\0/dir\0b\0f\0/dir/a\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+        fs::write(dir.path().join("inodes/1"), "modified").unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
+        assert!(
+            matches!(&changes[0], Change::Replaced { from, to, .. }
+                if from == "/dir/a" && to == "/dir/b"),
+            "expected Replaced(a→b), prior modify dropped, got: {changes:?}"
+        );
+    }
+
+    /// Chain rename through a base path: mv b a (overwrite) then mv a c.
+    #[test]
+    fn chain_rename_through_base_path() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // mv b a (overwrite, both in base): D(b) + P(a, /b)
+        data.extend_from_slice(b"D\0/dir\0b\n");
+        data.extend_from_slice(b"P\0/dir\0a\0f\0/dir/b\n");
+        // mv a c (c is new): D(a) + R(c, /b) [kernel follows chain]
+        data.extend_from_slice(b"D\0/dir\0a\n");
+        data.extend_from_slice(b"R\0/dir\0c\0f\0/dir/b\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        let has_rename = changes.iter().any(|c| {
+            matches!(c, Change::Renamed { from, to, .. }
+                if from == "/dir/b" && to == "/dir/c")
+        });
+        let has_delete = changes
+            .iter()
+            .any(|c| matches!(c, Change::Deleted(p) if p == "/dir/a"));
+        assert!(has_rename, "expected Renamed(b→c), got: {changes:?}");
+        assert!(
+            has_delete,
+            "expected Deleted(a) for overwritten base file, got: {changes:?}"
+        );
+    }
+
+    // -- P+P (consecutive overwrites) tests --
+
+    /// Two consecutive replace-redirects to the same destination.
+    ///
+    /// Scenario: /dir/a, /dir/b, /dir/c all exist in base.
+    ///   mv a b   (overwrite b with a)
+    ///   mv c b   (overwrite b again with c)
+    ///
+    /// Expected: Deleted(a) + Replaced(c→b)
+    #[test]
+    fn consecutive_replace_redirects() {
+        let dir = setup_test_dir();
+        let mut data = Vec::new();
+        // mv a b (overwrite, both in base): D(a) + P(b, /dir/a)
+        data.extend_from_slice(b"D\0/dir\0a\n");
+        data.extend_from_slice(b"P\0/dir\0b\0f\0/dir/a\n");
+        // mv c b (overwrite again): D(c) + P(b, /dir/c)
+        data.extend_from_slice(b"D\0/dir\0c\n");
+        data.extend_from_slice(b"P\0/dir\0b\0f\0/dir/c\n");
+        fs::write(dir.path().join("journal"), &data).unwrap();
+
+        let changes = resolve(read(dir.path())).unwrap();
+        let has_delete_a = changes
+            .iter()
+            .any(|c| matches!(c, Change::Deleted(p) if p == "/dir/a"));
+        let has_replaced = changes.iter().any(|c| {
+            matches!(c, Change::Replaced { from, to, .. }
+                if from == "/dir/c" && to == "/dir/b")
+        });
+        assert!(has_delete_a, "expected Deleted(a) from first overwrite, got: {changes:?}");
+        assert!(has_replaced, "expected Replaced(c→b), got: {changes:?}");
     }
 
     // -- Checkpoint tests --
@@ -1806,7 +1894,7 @@ mod tests {
             Change::Renamed {
                 from: "/a".into(),
                 to: "/b".into(),
-                dtype: DType::File
+                dtype: DType::File,
             }
             .ino(),
             None
@@ -1955,8 +2043,7 @@ mod tests {
 
     // ── Rename edge cases ─────────────────────────────────────────────
 
-    /// Rename a→b then modify b with a different ino: preserves rename
-    /// tracking and produces Renamed + Modified with the new ino.
+    /// Rename + modify with different ino decomposes into Deleted + Modified.
     #[test]
     fn rename_modify_different_ino() {
         let dir = setup_test_dir();
@@ -1970,24 +2057,15 @@ mod tests {
         fs::write(dir.path().join("inodes/2"), "modified").unwrap();
 
         let changes = resolve(read(dir.path())).unwrap();
-        let renamed = changes.iter().find(|c| matches!(c, Change::Renamed { .. }));
-        assert!(renamed.is_some(), "expected Renamed, got: {changes:?}");
-        assert!(
-            matches!(renamed.unwrap(), Change::Renamed { from, to, .. }
-            if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/b"),
-            "wrong Renamed fields: {:?}",
-            renamed.unwrap()
-        );
-        let modified = changes
-            .iter()
-            .find(|c| matches!(c, Change::Modified { .. }));
-        assert!(modified.is_some(), "expected Modified, got: {changes:?}");
-        assert!(
-            matches!(modified.unwrap(), Change::Modified { path, ino: 2, .. }
-            if path == "/nonexistent_test_12345/b"),
-            "wrong Modified fields: {:?}",
-            modified.unwrap()
-        );
+        let has_deleted = changes.iter().any(|c| {
+            matches!(c, Change::Deleted(p) if p == "/nonexistent_test_12345/a")
+        });
+        let has_modified = changes.iter().any(|c| {
+            matches!(c, Change::Modified { path, ino: 2, .. }
+                if path == "/nonexistent_test_12345/b")
+        });
+        assert!(has_deleted, "expected Deleted(a), got: {changes:?}");
+        assert!(has_modified, "expected Modified(b, ino=2), got: {changes:?}");
     }
 
     /// Delete a rename destination: should undo the rename and delete the origin.
@@ -2114,21 +2192,21 @@ mod tests {
         );
     }
 
-    // ── extract_live tests ───────────────────────────────────────────
+    // ── reachable tests ────────────────────────────────────────────
 
     #[test]
-    fn extract_live_no_restores() {
+    fn reachable_no_restores() {
         let records = vec![
             Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
             Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
             Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
         ];
-        let live = extract_live(records.clone());
-        assert_eq!(live.len(), 3);
+        let reachable = reachable(records.clone());
+        assert_eq!(reachable.len(), 3);
     }
 
     #[test]
-    fn extract_live_single_restore() {
+    fn reachable_single_restore() {
         // K1 [A] K2 [B] K3 S4(K2) [D] K5
         let records = vec![
             Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
@@ -2140,18 +2218,18 @@ mod tests {
             Record::Added { path: "/d".into(), dtype: Some(DType::File), ino: 3 },
             Record::Checkpoint(Checkpoint { gen_id: 5, name: "c5".into() }),
         ];
-        let live = extract_live(records);
-        // Live: K1, A(/a), K2, A(/d), K5
-        assert_eq!(live.len(), 5);
-        assert!(matches!(&live[0], Record::Checkpoint(c) if c.gen_id == 1));
-        assert!(matches!(&live[1], Record::Added { path, .. } if path == "/a"));
-        assert!(matches!(&live[2], Record::Checkpoint(c) if c.gen_id == 2));
-        assert!(matches!(&live[3], Record::Added { path, .. } if path == "/d"));
-        assert!(matches!(&live[4], Record::Checkpoint(c) if c.gen_id == 5));
+        let reachable = reachable(records);
+        // Reachable: K1, A(/a), K2, A(/d), K5
+        assert_eq!(reachable.len(), 5);
+        assert!(matches!(&reachable[0], Record::Checkpoint(c) if c.gen_id == 1));
+        assert!(matches!(&reachable[1], Record::Added { path, .. } if path == "/a"));
+        assert!(matches!(&reachable[2], Record::Checkpoint(c) if c.gen_id == 2));
+        assert!(matches!(&reachable[3], Record::Added { path, .. } if path == "/d"));
+        assert!(matches!(&reachable[4], Record::Checkpoint(c) if c.gen_id == 5));
     }
 
     #[test]
-    fn extract_live_multiple_restores_last_wins() {
+    fn reachable_multiple_restores_last_wins() {
         // K1 [A] K2 [B] K3 S4(K2) [D] K5 S6(K1)
         let records = vec![
             Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
@@ -2164,14 +2242,14 @@ mod tests {
             Record::Checkpoint(Checkpoint { gen_id: 5, name: "c5".into() }),
             Record::Restore { gen_id: 6, target_gen: 1 },
         ];
-        let live = extract_live(records);
-        // Live: K1 only
-        assert_eq!(live.len(), 1);
-        assert!(matches!(&live[0], Record::Checkpoint(c) if c.gen_id == 1));
+        let reachable = reachable(records);
+        // Reachable: K1 only
+        assert_eq!(reachable.len(), 1);
+        assert!(matches!(&reachable[0], Record::Checkpoint(c) if c.gen_id == 1));
     }
 
     #[test]
-    fn extract_live_nested_s_in_dead_zone() {
+    fn reachable_nested_s_in_dead_zone() {
         // K1 [A] K2 [B] K3 S4(K1) [D] K5 [E] K6 S7(K5)
         let records = vec![
             Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
@@ -2186,19 +2264,19 @@ mod tests {
             Record::Checkpoint(Checkpoint { gen_id: 6, name: "c6".into() }),
             Record::Restore { gen_id: 7, target_gen: 5 },
         ];
-        let live = extract_live(records);
-        // S7(K5): live prefix up to K5, nothing after S7
+        let reachable = reachable(records);
+        // S7(K5): reachable prefix up to K5, nothing after S7
         // But prefix K1..K5 contains S4(K1), so recurse:
-        //   S4(K1): live prefix up to K1, then K5 suffix = [D] K5
+        //   S4(K1): reachable prefix up to K1, then K5 suffix = [D] K5
         // Final: K1, [D], K5
-        assert_eq!(live.len(), 3);
-        assert!(matches!(&live[0], Record::Checkpoint(c) if c.gen_id == 1));
-        assert!(matches!(&live[1], Record::Added { path, .. } if path == "/d"));
-        assert!(matches!(&live[2], Record::Checkpoint(c) if c.gen_id == 5));
+        assert_eq!(reachable.len(), 3);
+        assert!(matches!(&reachable[0], Record::Checkpoint(c) if c.gen_id == 1));
+        assert!(matches!(&reachable[1], Record::Added { path, .. } if path == "/d"));
+        assert!(matches!(&reachable[2], Record::Checkpoint(c) if c.gen_id == 5));
     }
 
     #[test]
-    fn extract_live_undo_restore() {
+    fn reachable_undo_restore() {
         // K1 [A] K2 [B] K3 S4(K1) [D] K5 S6(K3)
         let records = vec![
             Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
@@ -2211,19 +2289,19 @@ mod tests {
             Record::Checkpoint(Checkpoint { gen_id: 5, name: "c5".into() }),
             Record::Restore { gen_id: 6, target_gen: 3 },
         ];
-        let live = extract_live(records);
-        // S6(K3) is last S. Live = records[0..=K3] (K3 is at idx 4)
-        // No S in that prefix. Live: K1 [A] K2 [B] K3
-        assert_eq!(live.len(), 5);
-        assert!(matches!(&live[0], Record::Checkpoint(c) if c.gen_id == 1));
-        assert!(matches!(&live[1], Record::Added { path, .. } if path == "/a"));
-        assert!(matches!(&live[2], Record::Checkpoint(c) if c.gen_id == 2));
-        assert!(matches!(&live[3], Record::Added { path, .. } if path == "/b"));
-        assert!(matches!(&live[4], Record::Checkpoint(c) if c.gen_id == 3));
+        let reachable = reachable(records);
+        // S6(K3) is last S. Reachable = records[0..=K3] (K3 is at idx 4)
+        // No S in that prefix. Reachable: K1 [A] K2 [B] K3
+        assert_eq!(reachable.len(), 5);
+        assert!(matches!(&reachable[0], Record::Checkpoint(c) if c.gen_id == 1));
+        assert!(matches!(&reachable[1], Record::Added { path, .. } if path == "/a"));
+        assert!(matches!(&reachable[2], Record::Checkpoint(c) if c.gen_id == 2));
+        assert!(matches!(&reachable[3], Record::Added { path, .. } if path == "/b"));
+        assert!(matches!(&reachable[4], Record::Checkpoint(c) if c.gen_id == 3));
     }
 
     #[test]
-    fn extract_live_restore_to_initial() {
+    fn reachable_restore_to_initial() {
         // K1 [A] K2 S3(K1)
         let records = vec![
             Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
@@ -2231,14 +2309,14 @@ mod tests {
             Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
             Record::Restore { gen_id: 3, target_gen: 1 },
         ];
-        let live = extract_live(records);
-        // Live: K1 only
-        assert_eq!(live.len(), 1);
-        assert!(matches!(&live[0], Record::Checkpoint(c) if c.gen_id == 1));
+        let reachable = reachable(records);
+        // Reachable: K1 only
+        assert_eq!(reachable.len(), 1);
+        assert!(matches!(&reachable[0], Record::Checkpoint(c) if c.gen_id == 1));
     }
 
     #[test]
-    fn extract_live_corrupt_s_record_skipped() {
+    fn reachable_corrupt_s_record_skipped() {
         // S record references non-existent checkpoint gen 99 — should be skipped.
         let records = vec![
             Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
@@ -2247,13 +2325,13 @@ mod tests {
             Record::Restore { gen_id: 3, target_gen: 99 },
             Record::Added { path: "/b".into(), dtype: Some(DType::File), ino: 2 },
         ];
-        let live = extract_live(records);
+        let reachable = reachable(records);
         // Corrupt S is skipped, all records pass through.
-        assert_eq!(live.len(), 5);
+        assert_eq!(reachable.len(), 5);
     }
 
     #[test]
-    fn extract_live_restore_then_work_then_commit_resolves() {
+    fn reachable_restore_then_work_then_commit_resolves() {
         // K1 A(/x,1) K2 M(/x,2) K3 S4(K2) A(/y,3)
         let records = vec![
             Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
@@ -2264,8 +2342,8 @@ mod tests {
             Record::Restore { gen_id: 4, target_gen: 2 },
             Record::Added { path: "/y".into(), dtype: Some(DType::File), ino: 3 },
         ];
-        let live = extract_live(records);
-        let changes = resolve(live).unwrap();
+        let reachable = reachable(records);
+        let changes = resolve(reachable).unwrap();
         // After restore to K2: /x is ino 1 (from K1→K2 segment).
         // Then /y is added. So: Added(/x, 1) + Added(/y, 3)
         assert_eq!(changes.len(), 2);
@@ -2278,7 +2356,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_segments_after_extract_live() {
+    fn resolve_segments_after_reachable() {
         // K1 A(/x,1) K2 A(/y,2) K3 S4(K2) A(/z,3) K5
         let records = vec![
             Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
@@ -2290,9 +2368,9 @@ mod tests {
             Record::Added { path: "/z".into(), dtype: Some(DType::File), ino: 3 },
             Record::Checkpoint(Checkpoint { gen_id: 5, name: "c5".into() }),
         ];
-        let live = extract_live(records);
-        let segments = resolve_segments(live).unwrap();
-        // Live: K1, A(/x), K2, A(/z), K5
+        let reachable = reachable(records);
+        let segments = resolve_segments(reachable).unwrap();
+        // Reachable: K1, A(/x), K2, A(/z), K5
         // Segments: K1→K2 (A /x), K2→K5 (A /z)
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].from.gen_id, 1);
@@ -2304,13 +2382,13 @@ mod tests {
     }
 
     #[test]
-    fn extract_live_empty_journal() {
-        let live = extract_live(vec![]);
-        assert!(live.is_empty());
+    fn reachable_empty_journal() {
+        let reachable = reachable(vec![]);
+        assert!(reachable.is_empty());
     }
 
     #[test]
-    fn extract_live_consecutive_s_records() {
+    fn reachable_consecutive_s_records() {
         // K1 [A] K2 [B] K3 S4(K2) S5(K1)
         // Two consecutive restores: second one "wins" and goes further back.
         let records = vec![
@@ -2322,15 +2400,15 @@ mod tests {
             Record::Restore { gen_id: 4, target_gen: 2 },
             Record::Restore { gen_id: 5, target_gen: 1 },
         ];
-        let live = extract_live(records);
+        let reachable = reachable(records);
         // S5(K1) kills everything after K1. S4(K2) is in that dead zone.
-        assert_eq!(live.len(), 1);
-        assert!(matches!(&live[0], Record::Checkpoint(c) if c.gen_id == 1));
+        assert_eq!(reachable.len(), 1);
+        assert!(matches!(&reachable[0], Record::Checkpoint(c) if c.gen_id == 1));
     }
 
     #[test]
     fn resolve_segments_trailing_s_only() {
-        // K1 [A] K2 S3(K1) — trailing segment after extract_live has no
+        // K1 [A] K2 S3(K1) — trailing segment after reachable has no
         // mutations (the S record is filtered out). Should produce one segment
         // (K1→K2 with A) and no trailing segment.
         let records = vec![
@@ -2339,9 +2417,9 @@ mod tests {
             Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
             Record::Restore { gen_id: 3, target_gen: 1 },
         ];
-        let live = extract_live(records);
-        // Live: K1 only (S3 kills everything after K1)
-        let segments = resolve_segments(live).unwrap();
+        let reachable = reachable(records);
+        // Reachable: K1 only (S3 kills everything after K1)
+        let segments = resolve_segments(reachable).unwrap();
         // Only the initial checkpoint — no mutations, no segments.
         assert!(segments.is_empty());
     }

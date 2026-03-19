@@ -101,16 +101,16 @@ Kernel behavior by `target_gen`:
 Restore to initial checkpoint (`target_gen=1`, `entry_count=0`) is distinct
 from commit/abort (`target_gen=0`) by the target_gen value.
 
-### 2.5 Live record extraction
+### 2.5 Reachable record extraction
 
-S records create "dead zones" — journal records between the target checkpoint
+S records create unreachable records — journal records between the target checkpoint
 and the S record that no longer reflect the current state. All consumers
 (commit, status, diff, restore) must filter these out before resolving.
 
 **Algorithm** — O(N) single pass + O(R) backward walk:
 
 ```
-extract_live(records):
+reachable(records):
     // Pass 1: collect S and K positions — O(N)
     s_list = [(pos, target_gen) for each S record]
     k_map  = {gen: pos for each K record}
@@ -120,7 +120,7 @@ extract_live(records):
     end = len(records)
 
     for s_pos, target_gen in reversed(s_list):
-        if s_pos >= end: continue          // S in dead zone, skip
+        if s_pos >= end: continue          // S in unreachable region, skip
         if s_pos + 1 < end:
             ranges.push((s_pos + 1, end))  // live suffix after this S
         end = k_map[target_gen] + 1        // narrow to target K
@@ -148,22 +148,22 @@ S4 (pos=5):   5 <  8 ✓, push (6,8),               end = 0+1 = 1
 push (0,1)
 
 ranges = [(0,1), (6,8)]  →  [K1], [[D], K5]
-live records: K1, [D], K5  ✓
+reachable records: K1, [D], K5  ✓
 ```
 
 ### 2.6 Restore target lookup
 
 Restore must find the target checkpoint in **all** records (not just live
-ones), because the target might be in a dead zone (undo-restore). After
-finding the target, it runs `extract_live` on the prefix `records[0..=target]`
+ones), because the target might be in an unreachable region (undo-restore). After
+finding the target, it runs `reachable` on the prefix `records[0..=target]`
 and resolves the result.
 
 For `--at`/`--from`/`--to` (used by status/diff), checkpoints are searched
-in live records only. Dead checkpoints are not addressable for display.
+in reachable records only. Unreachable checkpoints are not addressable for display.
 
 ### 2.7 `agfs log` — full audit trail
 
-`agfs log` reads **all** records (no `extract_live`) and displays events
+`agfs log` reads **all** records (no `reachable`) and displays events
 chronologically:
 
 ```
@@ -174,7 +174,7 @@ chronologically:
 [5] after make fix
 ```
 
-All other commands (status, diff, commit, restore) work on live records only.
+All other commands (status, diff, commit, restore) work on reachable records only.
 
 ### 2.8 Who writes what
 
@@ -197,15 +197,15 @@ the full journal on each CLI invocation.
 
 | Cache | Key | Value | Benefit |
 |-------|-----|-------|---------|
-| S/K positions | journal byte length | `Vec<(pos, gen, target_gen)>` for S, `Vec<(pos, gen)>` for K | Incremental live range extraction — avoid full journal scan |
-| Resolver state | checkpoint gen | Serialized `BTreeMap<String, Action>` | O(unsaved) commit/restore instead of O(all live records) |
-| Segment changes | `(from_gen, to_gen)` | Serialized `Vec<Change>` | O(trailing) status/diff instead of O(all live records) |
+| S/K positions | journal byte length | `Vec<(pos, gen, target_gen)>` for S, `Vec<(pos, gen)>` for K | Incremental reachable range extraction — avoid full journal scan |
+| Resolver state | checkpoint gen | Serialized `BTreeMap<String, Action>` | O(unsaved) commit/restore instead of O(all reachable records) |
+| Segment changes | `(from_gen, to_gen)` | Serialized `Vec<Change>` | O(trailing) status/diff instead of O(all reachable records) |
 
 ### Cache properties
 
 - **Immutable by design**: checkpoint caches never change (no open fds during
   checkpoint = no mutations can slip in).
-- **No invalidation needed for S records**: dead-zone caches just go unused.
+- **No invalidation needed for S records**: unreachable caches just go unused.
 - **Commit/abort clears all caches** (session boundary).
 - **Eager build**: compute and persist caches right after `agfs checkpoint`
   returns.
@@ -226,7 +226,7 @@ the full journal on each CLI invocation.
 
 | ID | Task | Files |
 |----|------|-------|
-| docs-staging | S record format, append-only semantics, `extract_live` algorithm, gen naming | `docs/staging.md` |
+| docs-staging | S record format, append-only semantics, `reachable` algorithm, gen naming | `docs/staging.md` |
 | docs-internals | RESTORE ioctl changes (`_IOWR`, `target_gen`/`new_gen`, S record write), gen naming | `docs/internals.md` |
 | docs-cli | `agfs log` shows restore events, gen naming | `docs/cli.md` |
 | docs-architecture | Lifecycle example with restore | `docs/architecture.md` |
@@ -246,26 +246,26 @@ the full journal on each CLI invocation.
 |----|------|-------|------------|
 | cli-rename-gen | Rename `checkpoint_gen` → `gen` in CLI | `cli/*.rs` | kmod-rename-gen |
 | cli-journal-parse-S | Add `Record::Restore`, parse S tag, remove offset tracking | `cli/journal.rs` | kmod-journal-restore |
-| cli-extract-live | Add `extract_live()` — O(N) dead zone removal | `cli/resolve.rs` | cli-journal-parse-S |
+| cli-reachable | Add `reachable()` — O(N) unreachable record removal | `cli/resolve.rs` | cli-journal-parse-S |
 | cli-ioctl-struct | Update `AgfsIocRestore` struct, `_IOWR`, return `new_gen` | `cli/ioctl.rs` | kmod-ioctl-restore |
 
 ### Phase 4: CLI commands
 
 | ID | Task | Files | Depends on |
 |----|------|-------|------------|
-| cli-restore | Remove truncation, use `extract_live` on prefix, pass `target_gen` | `cli/restore.rs` | cli-extract-live, cli-ioctl-struct |
-| cli-commit | Call `extract_live` before `resolve` | `cli/commit.rs` | cli-extract-live |
-| cli-diff-status | Call `extract_live` before `slice_records`/`resolve_segments` | `cli/diff.rs` | cli-extract-live |
+| cli-restore | Remove truncation, use `reachable` on prefix, pass `target_gen` | `cli/restore.rs` | cli-reachable, cli-ioctl-struct |
+| cli-commit | Call `reachable` before `resolve` | `cli/commit.rs` | cli-reachable |
+| cli-diff-status | Call `reachable` before `slice_records`/`resolve_segments` | `cli/diff.rs` | cli-reachable |
 | cli-log | Show S records in `agfs log` | `cli/checkpoint.rs` | cli-journal-parse-S |
-| cli-find-checkpoint | All records for restore targets, live records for `--at`/`--from`/`--to` | `cli/resolve.rs` | cli-extract-live |
+| cli-find-checkpoint | All records for restore targets, reachable records for `--at`/`--from`/`--to` | `cli/resolve.rs` | cli-reachable |
 
 ### Phase 5: Tests
 
 | ID | Task | Depends on |
 |----|------|------------|
-| test-extract-live | Unit tests: no S, single restore, multiple restores, dead-zone S, undo restore, restore to initial | cli-extract-live |
-| test-resolve-with-S | Unit tests: `resolve()` produces correct changes with S records in input | cli-extract-live |
-| test-segments-with-S | Unit tests: `resolve_segments` correct segment boundaries after `extract_live` | cli-extract-live |
+| test-reachable | Unit tests: no S, single restore, multiple restores, unreachable S, undo restore, restore to initial | cli-reachable |
+| test-resolve-with-S | Unit tests: `resolve()` produces correct changes with S records in input | cli-reachable |
+| test-segments-with-S | Unit tests: `resolve_segments` correct segment boundaries after `reachable` | cli-reachable |
 | test-e2e-restore | E2E: restore + work + commit, multiple restores, undo restore, `agfs log` audit trail | cli-restore, cli-commit, cli-diff-status, cli-log |
 
 ### Phase 6: Caching (deferred)
@@ -273,7 +273,7 @@ the full journal on each CLI invocation.
 | ID | Task | Depends on |
 |----|------|------------|
 | cache-infrastructure | `.agfs/cache/` directory, read/write helpers | test-e2e-restore |
-| cache-positions | Cache S/K positions for incremental live range computation | cache-infrastructure |
+| cache-positions | Cache S/K positions for incremental reachable range computation | cache-infrastructure |
 | cache-resolver-state | Cache resolver `BTreeMap` at checkpoint boundaries | cache-infrastructure |
 | cache-segments | Cache per-segment `Vec<Change>` | cache-infrastructure |
 | cache-integration | Integrate caches into resolve pipeline | cache-positions, cache-resolver-state, cache-segments |

@@ -52,22 +52,24 @@ $ agfs remount           # unmount then remount (prompts if staged changes exist
 $ agfs checkpoint              # checkpoint with timestamp as name
 $ agfs checkpoint "my label"   # checkpoint with explicit name
 $ agfs restore <name|gen>       # restore to a previous checkpoint (discards later changes)
-$ agfs log                     # show checkpoint and restore history
+$ agfs timeline                # show checkpoint/restore DAG (unreachable dimmed)
+$ agfs journal                 # show every raw journal record (unreachable dimmed)
+$ agfs journal --path /src/main.rs  # trace operations on a specific file
 ```
 
 The `--at`, `--from`, and `--to` flags accept a checkpoint name or
 generation number and only address live checkpoints (not those in dead
 zones created by restores).
 
-`agfs log` shows the complete session history including restore events
-(it reads the full append-only journal, not just live records). Example:
+`agfs timeline` shows the checkpoint/restore DAG with unreachable branches
+dimmed. Example `agfs timeline` output:
 
 ```
-[1] (initial)
-[2] after make build
-[3] after make test
-[4] restored to [2] after make build
-[5] after make fix
+checkpoint [1] (initial)
+checkpoint [2] after make build
+checkpoint [3] after make test
+restore    [4] restored to [2] after make build
+checkpoint [5] after make fix
 ```
 
 **Permission rules and diagnostics:**

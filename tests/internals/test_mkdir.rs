@@ -126,7 +126,7 @@ fn mkdir_with_file_creates_separate_inodes() {
     let dir_ids: Vec<u64> = ch
         .iter()
         .filter_map(|c| match c {
-            agfs::resolve::Change::Added { path, ino, .. }
+            agfs::journal::resolve::Change::Added { path, ino, .. }
                 if path.ends_with("/parent") || path.ends_with("/child") =>
             {
                 Some(*ino)

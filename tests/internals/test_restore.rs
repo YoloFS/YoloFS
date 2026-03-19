@@ -1,7 +1,7 @@
 use super::helpers::{changes, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
-use agfs::resolve;
+use agfs::journal;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
@@ -27,7 +27,7 @@ fn restore_journal_contains_checkpoint_marker() {
     );
 }
 
-/// Restore appends an S record; extract_live + resolve excludes post-checkpoint mutations.
+/// Restore appends an S record; reachable + resolve excludes post-checkpoint mutations.
 #[test]
 fn restore_journal_has_no_post_checkpoint_records() {
     let s = AgfsSession::new().expect("session setup");
@@ -49,9 +49,9 @@ fn restore_journal_has_no_post_checkpoint_records() {
         "Restore record should be in journal: {records:?}"
     );
 
-    // extract_live + resolve should match the checkpoint state (only a.txt).
-    let live = resolve::extract_live(records);
-    let ch = resolve::resolve(live).expect("resolve");
+    // reachable + resolve should match the checkpoint state (only a.txt).
+    let reachable = journal::timeline::reachable(records);
+    let ch = journal::resolve::resolve(reachable).expect("resolve");
     let debug = format!("{ch:?}");
     assert!(
         debug.contains("a.txt"),

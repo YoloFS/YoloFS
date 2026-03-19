@@ -458,6 +458,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 		de = (struct agfs_dirent){
 			.ino = ent.ino,
 			.base = bp,
+			.in_base = ent.in_base,
 			.d_type = ent.d_type,
 			.gen = gen,
 		};

@@ -500,11 +500,11 @@ fn complex_multi_operation_commit() {
 
     // ── Verify resolved changes ──
     use agfs::journal;
-    use agfs::resolve::{self, Change};
+    use agfs::journal::resolve::Change;
 
     let agfs_dir = s.root.join(".agfs");
     let records = journal::read(&agfs_dir).expect("read journal").records;
-    let changes = resolve::resolve(records).expect("resolve");
+    let changes = journal::resolve::resolve(records).expect("resolve");
 
     let has_modified_hello = changes
         .iter()
@@ -523,7 +523,7 @@ fn complex_multi_operation_commit() {
         Change::Added { path, .. } | Change::Modified { path, .. } | Change::Deleted(path) => {
             path.ends_with("/temp.txt")
         }
-        Change::Renamed { from, to, .. } => {
+        Change::Renamed { from, to, .. } | Change::Replaced { from, to, .. } => {
             from.ends_with("/temp.txt") || to.ends_with("/temp.txt")
         }
     });
@@ -531,7 +531,7 @@ fn complex_multi_operation_commit() {
         Change::Added { path, .. } | Change::Modified { path, .. } | Change::Deleted(path) => {
             path.ends_with("/brand_new.txt")
         }
-        Change::Renamed { from, to, .. } => {
+        Change::Renamed { from, to, .. } | Change::Replaced { from, to, .. } => {
             from.ends_with("/brand_new.txt") || to.ends_with("/brand_new.txt")
         }
     });

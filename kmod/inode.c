@@ -43,7 +43,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	de = (struct agfs_dirent){
 		.ino = ino,
 		.d_type = dt,
-		.base = in_base ? AGFS_BASE_PRESENT : NULL,
+		.in_base = in_base,
 		.gen = (u64)atomic64_read(&sbi->gen),
 	};
 	err = agfs_add_dirent(dir, dentry->d_name.name,
@@ -146,7 +146,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		gen = src_de->gen;
 		d_type = src_de->d_type;
 		if (agfs_ino_is_redirect(ino)) {
-			WARN_ON_ONCE(src_de->base == AGFS_BASE_PRESENT);
+			WARN_ON_ONCE(!src_de->base);
 			redirect = kstrdup(src_de->base, GFP_KERNEL);
 			if (!redirect)
 				return -ENOMEM;
@@ -172,10 +172,9 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		dst_in_base = true;
 
 	/* Add destination dirent */
-	de = (struct agfs_dirent){ .d_type = d_type };
+	de = (struct agfs_dirent){ .d_type = d_type, .in_base = dst_in_base };
 	if (agfs_ino_is_staged(ino)) {
 		de.ino = ino;
-		de.base = dst_in_base ? AGFS_BASE_PRESENT : NULL;
 		de.gen = gen;
 	} else {
 		de.ino = AGFS_INO_REDIRECT;
@@ -193,7 +192,9 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (err)
 		goto out;
 
-	/* Emit journal records: delete old + add/modify/redirect new */
+	/* Emit journal records: D(old) + A/M/R/P(new).
+	 * Staged sources use A (new path) or M (existing path).
+	 * Redirect sources use R (new path) or P (existing path). */
 	err = agfs_journal_delete(sbi, old_dentry);
 	if (!err) {
 		if (agfs_ino_is_staged(ino)) {
@@ -204,8 +205,14 @@ static int agfs_rename(struct mnt_idmap *idmap,
 				err = agfs_journal_add(sbi, new_dentry,
 						       ino, d_type);
 		} else {
-			err = agfs_journal_redirect(sbi, new_dentry,
-						    d_type, redirect_path);
+			if (dst_in_base)
+				err = agfs_journal_replace(sbi, new_dentry,
+							   d_type,
+							   redirect_path);
+			else
+				err = agfs_journal_redirect(sbi, new_dentry,
+							    d_type,
+							    redirect_path);
 		}
 	}
 

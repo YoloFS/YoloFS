@@ -1,18 +1,18 @@
 use crate::helpers::AgfsSession;
 use std::fs;
 
-/// Creating a checkpoint is visible via `agfs log`.
+/// Creating a checkpoint is visible via `agfs timeline`.
 #[test]
-fn checkpoint_visible_in_log() {
+fn checkpoint_visible_in_timeline() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     s.cli(&["checkpoint", "build"]).expect("checkpoint");
 
-    let log = s.cli(&["log"]).expect("log");
+    let timeline = s.cli(&["timeline"]).expect("timeline");
     assert!(
-        log.contains("build"),
-        "agfs log should list the 'build' checkpoint: {log}"
+        timeline.contains("build"),
+        "agfs timeline should list the 'build' checkpoint: {timeline}"
     );
 }
 
@@ -27,7 +27,7 @@ fn checkpoint_list() {
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write");
     s.cli(&["checkpoint", "second"]).expect("checkpoint 2");
 
-    let output = s.cli(&["log"]).expect("checkpoint list");
+    let output = s.cli(&["timeline"]).expect("checkpoint list");
     assert!(output.contains("first"), "should list first: {output}");
     assert!(output.contains("second"), "should list second: {output}");
 }
@@ -131,7 +131,7 @@ fn checkpoint_default_name() {
 
     s.cli(&["checkpoint"]).expect("checkpoint with no name");
 
-    let output = s.cli(&["log"]).expect("list");
+    let output = s.cli(&["timeline"]).expect("list");
     assert!(
         output.contains("chk-"),
         "default name should start with 'chk-': {output}"
@@ -276,10 +276,10 @@ fn multiple_checkpoints_interleaved_writes() {
     );
 
     // Each checkpoint state is independently verifiable via CLI — no need to count inodes.
-    // The log should list both checkpoints.
-    let log = s.cli(&["log"]).expect("log");
-    assert!(log.contains("s1"), "log should list s1: {log}");
-    assert!(log.contains("s2"), "log should list s2: {log}");
+    // The timeline should list both checkpoints.
+    let timeline = s.cli(&["timeline"]).expect("timeline");
+    assert!(timeline.contains("s1"), "timeline should list s1: {timeline}");
+    assert!(timeline.contains("s2"), "timeline should list s2: {timeline}");
 }
 
 /// `--from` shows changes after a checkpoint to end.
@@ -604,9 +604,9 @@ fn append_after_checkpoint_triggers_recow() {
     );
 }
 
-/// `agfs log` shows both checkpoint and restore events.
+/// `agfs timeline` shows both checkpoint and restore events.
 #[test]
-fn log_shows_restore_events() {
+fn timeline_shows_restore_events() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
@@ -616,20 +616,20 @@ fn log_shows_restore_events() {
 
     s.cli(&["restore", "build"]).expect("restore");
 
-    let log = s.cli(&["log"]).expect("log");
+    let timeline = s.cli(&["timeline"]).expect("timeline");
     assert!(
-        log.contains("build"),
-        "log should list the 'build' checkpoint: {log}"
+        timeline.contains("build"),
+        "timeline should list the 'build' checkpoint: {timeline}"
     );
     assert!(
-        log.contains("restore"),
-        "log should show restore event: {log}"
+        timeline.contains("restore"),
+        "timeline should show restore event: {timeline}"
     );
 }
 
-/// `agfs log` interleaves checkpoints and restores in chronological order.
+/// `agfs timeline` interleaves checkpoints and restores in chronological order.
 #[test]
-fn log_interleaves_checkpoints_and_restores() {
+fn timeline_interleaves_checkpoints_and_restores() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
@@ -642,20 +642,20 @@ fn log_interleaves_checkpoints_and_restores() {
 
     s.cli(&["checkpoint", "chk3"]).expect("checkpoint 3");
 
-    let log = s.cli(&["log"]).expect("log");
+    let timeline = s.cli(&["timeline"]).expect("timeline");
 
     // All events should be present
-    assert!(log.contains("chk1"), "log should list chk1: {log}");
-    assert!(log.contains("chk2"), "log should list chk2: {log}");
-    assert!(log.contains("chk3"), "log should list chk3: {log}");
-    assert!(log.contains("restore"), "log should show restore: {log}");
+    assert!(timeline.contains("chk1"), "timeline should list chk1: {timeline}");
+    assert!(timeline.contains("chk2"), "timeline should list chk2: {timeline}");
+    assert!(timeline.contains("chk3"), "timeline should list chk3: {timeline}");
+    assert!(timeline.contains("restore"), "timeline should show restore: {timeline}");
 
     // Restore should appear between chk2 and chk3 in the output
-    let restore_pos = log.find("restore").unwrap();
-    let chk2_pos = log.find("chk2").unwrap();
-    let chk3_pos = log.find("chk3").unwrap();
+    let restore_pos = timeline.find("restore").unwrap();
+    let chk2_pos = timeline.find("chk2").unwrap();
+    let chk3_pos = timeline.find("chk3").unwrap();
     assert!(
         restore_pos > chk2_pos && restore_pos < chk3_pos,
-        "restore should appear between chk2 and chk3 in log: {log}"
+        "restore should appear between chk2 and chk3 in timeline: {timeline}"
     );
 }

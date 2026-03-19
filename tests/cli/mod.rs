@@ -2,6 +2,7 @@ mod test_abort;
 mod test_checkpoint;
 mod test_commit;
 mod test_diff;
+mod test_journal;
 mod test_lifecycle;
 mod test_mount;
 mod test_restore;

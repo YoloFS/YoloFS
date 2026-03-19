@@ -8,7 +8,7 @@
 // `--from <name> --to <name>` — diff changes between two checkpoints.
 
 use crate::journal;
-use crate::resolve::{self, Change, Segment};
+use crate::journal::resolve::{Change, ResolvedSegment};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -57,7 +57,7 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
 
 // ── Segment display helpers ──────────────────────────────────────────
 
-fn print_segment_footer(segment: &Segment) {
+fn print_segment_footer(segment: &ResolvedSegment) {
     if let Some(c) = &segment.to {
         println!(
             "{} {}",
@@ -103,6 +103,14 @@ fn print_change(agfs: &Path, change: &Change, verbose: bool) {
                 "(renamed)".cyan()
             );
         }
+        Change::Replaced { from, to, .. } => {
+            println!(
+                "{} → {} {}",
+                from.bold(),
+                to.bold(),
+                "(replaced)".cyan()
+            );
+        }
     }
 }
 
@@ -136,9 +144,9 @@ fn run(
 ) -> Result<bool> {
     let agfs = crate::utils::session_dir()?;
     let records = journal::read(&agfs)?.records;
-    let records = resolve::extract_live(records);
-    let records = resolve::slice_records(records, at, from, to)?;
-    let segments = resolve::resolve_segments(records)?;
+    let records = journal::timeline::reachable(records);
+    let records = journal::timeline::slice_records(records, at, from, to)?;
+    let segments = journal::resolve::resolve_segments(records)?;
 
     let has_changes = segments
         .iter()
@@ -217,7 +225,7 @@ fn range_label(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolve::Change;
+    use crate::journal::resolve::Change;
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::TempDir;
@@ -232,7 +240,7 @@ mod tests {
                 Change::Deleted(path) => {
                     map.insert(path.as_str(), None);
                 }
-                Change::Renamed { from, to, .. } => {
+                Change::Renamed { from, to, .. } | Change::Replaced { from, to, .. } => {
                     map.insert(from.as_str(), None);
                     map.insert(to.as_str(), Some(read_base(from)));
                 }

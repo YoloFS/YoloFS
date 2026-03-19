@@ -99,7 +99,7 @@ for interactive approval.
 **On-disk format**: OverlayFS requires filesystem support for whiteouts
 (`RENAME_WHITEOUT`, ext4/xfs). AgFS uses a flat inode store + append-only
 journal, working on any lower FS. The journal uses typed record tags
-(`A`/`M`/`D`/`R`) so each record is self-describing.
+(`A`/`M`/`D`/`R`/`P` for mutations, `K`/`S` for checkpoints/restores) so each record is self-describing.
 
 ## Lifecycle Example
 
@@ -176,12 +176,12 @@ $ agfs commit
 
 # 8. Restore to a previous checkpoint (appends S record, no truncation)
 $ agfs restore "after make build"
-   -> CLI: extract_live(journal[0..checkpoint]) → resolved changes
+   -> CLI: reachable(journal[0..checkpoint]) → resolved changes
    -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, entries })
    -> kernel: wipe dirents, inject entries, increment gen to 4,
       append S\04\02\n to journal
    -> journal is append-only — dead records remain but are filtered
-      by extract_live() on subsequent operations
+      by reachable() on subsequent operations
 ```
 
 ## Source File Layout
@@ -219,10 +219,15 @@ agfs/
 │   ├── commit.rs
 │   ├── abort.rs
 │   ├── diff.rs                # `agfs status` + `agfs diff` (summary and verbose views)
-│   ├── journal.rs             # journal parsing + checkpoint segments
-│   ├── resolve.rs             # journal resolution (collapse records into final ops)
+│   ├── journal/               # journal parsing, timeline, and resolution
+│   │   ├── types.rs           # Record, Change, and related types
+│   │   ├── parse.rs           # journal file parsing
+│   │   ├── timeline.rs        # checkpoint/restore DAG (Timeline, Segment)
+│   │   └── resolve.rs         # journal resolution (collapse records into final ops)
 │   ├── restore.rs             # `agfs restore` -- restore to a previous checkpoint
-│   ├── checkpoint.rs            # checkpoint create, log
+│   ├── checkpoint.rs          # `agfs checkpoint` (create only)
+│   ├── journal_cmd.rs         # `agfs journal` command (raw record display, --path filter)
+│   ├── timeline_cmd.rs        # `agfs timeline` command (checkpoint/restore DAG)
 │   ├── watch.rs               # permission prompt daemon (handles TTY ownership)
 │   ├── ioctl.rs               # binary protocol structs + ioctl helpers
 │   ├── kmsg.rs                # kernel log reading via /dev/kmsg

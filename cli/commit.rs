@@ -4,7 +4,7 @@
 // Journal is resolved first, then changes are applied sequentially.
 
 use crate::journal;
-use crate::resolve::{self, Change};
+use crate::journal::resolve::Change;
 use crate::utils::to_base_path;
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -86,7 +86,7 @@ fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<()> {
 
     for change in changes {
         match change {
-            Change::Renamed { from, to, .. } => {
+            Change::Renamed { from, to, .. } | Change::Replaced { from, to, .. } => {
                 let base_old = to_base_path(from);
                 let base_new = to_base_path(to);
                 ensure_parent(&base_new, &mut ensured)?;
@@ -123,8 +123,8 @@ pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let records = journal::read(&agfs)?.records;
-    let live = resolve::extract_live(records);
-    let changes = resolve::resolve(live)?;
+    let reachable = journal::timeline::reachable(records);
+    let changes = journal::resolve::resolve(reachable)?;
 
     if changes.is_empty() {
         println!("{}", "Nothing to commit.".yellow());

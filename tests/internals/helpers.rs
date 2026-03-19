@@ -1,6 +1,6 @@
 use crate::helpers::AgfsSession;
 use agfs::journal::{self, Record};
-use agfs::resolve::{self, Change};
+use agfs::journal::resolve::Change;
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,11 +12,11 @@ pub fn journal(s: &AgfsSession) -> Vec<Record> {
 }
 
 /// Resolve the journal to get the final Change list.
-/// Uses `extract_live` to filter out dead records (e.g. after restore).
+/// Uses `reachable` to filter out dead records (e.g. after restore).
 pub fn changes(s: &AgfsSession) -> Vec<Change> {
     let records = journal(s);
-    let live = resolve::extract_live(records);
-    resolve::resolve(live).expect("resolve journal")
+    let reachable = journal::timeline::reachable(records);
+    journal::resolve::resolve(reachable).expect("resolve journal")
 }
 
 /// List numeric inode entries in the inode store.

@@ -2,7 +2,7 @@
 //
 // `agfs restore <name|id>` — restore to a previous checkpoint.
 
-use crate::{ioctl, journal, resolve};
+use crate::{ioctl, journal};
 use anyhow::{Context, Result};
 use colored::Colorize;
 
@@ -11,6 +11,7 @@ struct RestoreItem {
     path: String,
     ino: u64,
     base: String,
+    in_base: bool,
     d_type: u8,
 }
 
@@ -20,13 +21,14 @@ impl RestoreItem {
             path,
             ino: 0,
             base: String::new(),
+            in_base: true,
             d_type: 0,
         }
     }
 }
 
 /// Convert a resolved Change list into restore items (owned data, sortable).
-fn changes_to_items(changes: &[resolve::Change]) -> Vec<RestoreItem> {
+fn changes_to_items(changes: &[journal::resolve::Change]) -> Vec<RestoreItem> {
     use std::collections::BTreeSet;
 
     // Collect destination paths that have staged content (Added/Modified).
@@ -35,7 +37,7 @@ fn changes_to_items(changes: &[resolve::Change]) -> Vec<RestoreItem> {
     let staged_paths: BTreeSet<&str> = changes
         .iter()
         .filter_map(|c| match c {
-            resolve::Change::Added { path, .. } | resolve::Change::Modified { path, .. } => {
+            journal::resolve::Change::Added { path, .. } | journal::resolve::Change::Modified { path, .. } => {
                 Some(path.as_str())
             }
             _ => None,
@@ -46,25 +48,40 @@ fn changes_to_items(changes: &[resolve::Change]) -> Vec<RestoreItem> {
 
     for change in changes {
         match change {
-            resolve::Change::Added { path, ino, dtype }
-            | resolve::Change::Modified { path, ino, dtype } => {
+            journal::resolve::Change::Added { path, ino, dtype }
+            | journal::resolve::Change::Modified { path, ino, dtype } => {
+                let in_base = matches!(change, journal::resolve::Change::Modified { .. });
                 items.push(RestoreItem {
                     path: path.clone(),
                     ino: *ino,
                     base: String::new(),
+                    in_base,
                     d_type: dtype.to_libc(),
                 });
             }
-            resolve::Change::Deleted(path) => {
+            journal::resolve::Change::Deleted(path) => {
                 items.push(RestoreItem::deleted(path.clone()));
             }
-            resolve::Change::Renamed { from, to, dtype } => {
+            journal::resolve::Change::Renamed { from, to, dtype } => {
                 items.push(RestoreItem::deleted(from.clone()));
                 if !staged_paths.contains(to.as_str()) {
                     items.push(RestoreItem {
                         path: to.clone(),
                         ino: journal::INO_REDIRECT,
                         base: from.clone(),
+                        in_base: false,
+                        d_type: dtype.to_libc(),
+                    });
+                }
+            }
+            journal::resolve::Change::Replaced { from, to, dtype } => {
+                items.push(RestoreItem::deleted(from.clone()));
+                if !staged_paths.contains(to.as_str()) {
+                    items.push(RestoreItem {
+                        path: to.clone(),
+                        ino: journal::INO_REDIRECT,
+                        base: from.clone(),
+                        in_base: true,
                         d_type: dtype.to_libc(),
                     });
                 }
@@ -96,7 +113,8 @@ fn items_to_entries(items: &[RestoreItem]) -> Result<Vec<ioctl::AgfsIocRestoreEn
                 path_ptr: item.path.as_ptr() as u64,
                 path_len,
                 d_type: item.d_type,
-                _pad1: [0u8; 5],
+                in_base: item.in_base as u8,
+                _pad1: [0u8; 4],
                 ino: item.ino,
                 base_ptr: item.base.as_ptr() as u64,
                 base_len,
@@ -112,7 +130,7 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     let journal = journal::read(&agfs)?;
     // Search all records (including dead zones) for the target checkpoint,
     // so that undo-restore (restoring to a dead checkpoint) works.
-    let chk_idx = resolve::find_checkpoint_index(&journal.records, checkpoint_name)?;
+    let chk_idx = journal::timeline::find_checkpoint_index(&journal.records, checkpoint_name)?;
 
     let (target_gen, chk_label) = match &journal.records[chk_idx] {
         journal::Record::Checkpoint(c) => (c.gen_id, c.name.clone()),
@@ -122,8 +140,8 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     // Extract live records from the prefix up to the target checkpoint,
     // handling any S records within that prefix.
     let prefix: Vec<journal::Record> = journal.records.into_iter().take(chk_idx + 1).collect();
-    let live = resolve::extract_live(prefix);
-    let changes = resolve::resolve(live)?;
+    let reachable = journal::timeline::reachable(prefix);
+    let changes = journal::resolve::resolve(reachable)?;
     let items = changes_to_items(&changes);
     let entries = items_to_entries(&items)?;
 
@@ -150,7 +168,7 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::journal::DType;
-    use crate::resolve::Change;
+    use crate::journal::resolve::Change;
 
     #[test]
     fn added_produces_single_entry() {
@@ -276,6 +294,7 @@ mod tests {
             path: "/src/main.rs".into(),
             ino: 1,
             base: String::new(),
+            in_base: false,
             d_type: libc::DT_REG,
         }];
         let entries = items_to_entries(&items).unwrap();
@@ -292,6 +311,7 @@ mod tests {
             path: "a".repeat(u16::MAX as usize + 1),
             ino: 0,
             base: String::new(),
+            in_base: false,
             d_type: 0,
         }];
         assert!(items_to_entries(&items).is_err());
@@ -303,6 +323,7 @@ mod tests {
             path: "/ok".into(),
             ino: 0,
             base: "a".repeat(u16::MAX as usize + 1),
+            in_base: false,
             d_type: 0,
         }];
         assert!(items_to_entries(&items).is_err());
