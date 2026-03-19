@@ -70,6 +70,12 @@ struct Cli {
     /// Skip (workload, backend) pairs that already have exactly --runs timed iterations in results.json
     #[arg(long)]
     skip_complete: bool,
+
+    /// Skip (workload, backend) pairs whose recorded repo state matches the
+    /// current checkout (cli/ and kmod/ unchanged). Useful for rerunning only
+    /// workloads affected by code changes.
+    #[arg(long)]
+    skip_fresh: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -953,6 +959,46 @@ fn merge_results(existing: BenchResults, incoming: &BenchResults) -> BenchResult
     }
 }
 
+/// Check if a (workload, backend) result is fresh — its recorded repo state
+/// matches the current one (no cli/ or kmod/ changes).
+fn is_result_fresh(
+    results: &BenchResults,
+    workload_name: &str,
+    backend_name: &str,
+    current: &Option<RepoState>,
+) -> bool {
+    let Some(current) = current else {
+        return false;
+    };
+    let recorded = results
+        .workloads
+        .iter()
+        .find(|w| w.workload == workload_name)
+        .and_then(|w| w.backends.iter().find(|b| b.backend == backend_name))
+        .and_then(|b| b.repo_state.as_ref());
+    let Some(recorded) = recorded else {
+        return false;
+    };
+    if recorded.commit == current.commit
+        && recorded.cli_dirty == current.cli_dirty
+        && recorded.kmod_dirty == current.kmod_dirty
+    {
+        return true;
+    }
+    // Different commit but maybe cli/ and kmod/ are unchanged.
+    if recorded.commit != current.commit {
+        match repo_paths_changed_between(&recorded.commit, &current.commit) {
+            Ok(false) => {
+                // Same cli/kmod content despite different commit.
+                return recorded.cli_dirty == current.cli_dirty
+                    && recorded.kmod_dirty == current.kmod_dirty;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// Remove a stale backend entry from results.json (e.g. when the combination
 /// is now skipped as unsupported but old data exists).
 fn remove_stale_backend(out_dir: &Path, workload_name: &str, backend_name: &str) -> Result<()> {
@@ -1300,6 +1346,14 @@ fn main() -> Result<()> {
                     b.name(),
                     cli.runs
                 );
+                continue;
+            }
+
+            if cli.skip_fresh
+                && let Some(existing) = read_existing_results(&json_path)?
+                && is_result_fresh(&existing, workload.name(), b.name(), &env.repo_state)
+            {
+                eprintln!("  backend: {} (skipping, result is fresh)", b.name());
                 continue;
             }
 
