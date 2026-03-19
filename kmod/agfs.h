@@ -240,7 +240,7 @@ struct agfs_sb_info {
 
 /* dirent hash table: 64 buckets (shift=6) covers most directories well.
  * Allocated lazily on first agfs_add_dirent; NULL for leaf files. */
-#define AGFS_DE_SHIFT		6
+#define AGFS_DE_SHIFT		10
 #define AGFS_DE_BUCKETS	(1u << AGFS_DE_SHIFT)
 
 struct agfs_inode_info {
