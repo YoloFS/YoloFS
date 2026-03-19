@@ -1,6 +1,7 @@
 use super::helpers::{changes, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
+use agfs::resolve;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
@@ -26,7 +27,7 @@ fn restore_journal_contains_checkpoint_marker() {
     );
 }
 
-/// Restore removes all journal records after the checkpoint.
+/// Restore appends an S record; extract_live + resolve excludes post-checkpoint mutations.
 #[test]
 fn restore_journal_has_no_post_checkpoint_records() {
     let s = AgfsSession::new().expect("session setup");
@@ -39,16 +40,26 @@ fn restore_journal_has_no_post_checkpoint_records() {
     s.cli(&["restore", "chk1"]).expect("restore");
 
     let records = journal(&s);
-    // Find the checkpoint index
-    let chk_idx = records
-        .iter()
-        .position(|r| matches!(r, Record::Checkpoint(c) if c.name == "chk1"))
-        .expect("chk1 should exist");
 
-    assert_eq!(
-        chk_idx,
-        records.len() - 1,
-        "checkpoint should be the last record: {records:?}"
+    // S (Restore) record should be present in the raw journal.
+    assert!(
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Restore { .. })),
+        "Restore record should be in journal: {records:?}"
+    );
+
+    // extract_live + resolve should match the checkpoint state (only a.txt).
+    let live = resolve::extract_live(records);
+    let ch = resolve::resolve(live).expect("resolve");
+    let debug = format!("{ch:?}");
+    assert!(
+        debug.contains("a.txt"),
+        "a.txt should be in live changes: {debug}"
+    );
+    assert!(
+        !debug.contains("b.txt"),
+        "b.txt should NOT be in live changes: {debug}"
     );
 }
 
@@ -391,7 +402,7 @@ fn restore_preserves_journal_inode() {
     );
 }
 
-/// After restore, the journal bytes are an exact prefix of the original.
+/// After restore, the journal grows (S record appended) and original bytes are preserved.
 #[test]
 fn restore_journal_is_byte_prefix() {
     let s = AgfsSession::new().expect("session setup");
@@ -408,14 +419,62 @@ fn restore_journal_is_byte_prefix() {
 
     let bytes_after = fs::read(&journal_path).expect("read after");
     assert!(
-        bytes_after.len() < bytes_before.len(),
-        "journal should be shorter after restore: before={} after={}",
+        bytes_after.len() > bytes_before.len(),
+        "journal should grow after restore (S record appended): before={} after={}",
         bytes_before.len(),
         bytes_after.len()
     );
     assert_eq!(
-        &bytes_before[..bytes_after.len()],
-        &bytes_after[..],
-        "post-restore journal must be a byte-exact prefix of the original"
+        &bytes_after[..bytes_before.len()],
+        &bytes_before[..],
+        "original journal bytes must be preserved as a prefix"
+    );
+
+    // Verify the S record is present.
+    let records = journal(&s);
+    assert!(
+        records
+            .iter()
+            .any(|r| matches!(r, Record::Restore { .. })),
+        "Restore record should be in journal: {records:?}"
+    );
+}
+
+/// The S record written by restore should have a gen_id higher than the
+/// target checkpoint's gen_id (monotonically increasing).
+#[test]
+fn restore_s_record_has_correct_gen() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+    s.cli(&["checkpoint", "chk2"]).expect("checkpoint 2");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    let records = journal(&s);
+
+    // Find the checkpoint gen_ids and the restore record.
+    let chk1_gen = records.iter().find_map(|r| match r {
+        Record::Checkpoint(c) if c.name == "chk1" => Some(c.gen_id),
+        _ => None,
+    }).expect("chk1 should exist");
+
+    let chk2_gen = records.iter().find_map(|r| match r {
+        Record::Checkpoint(c) if c.name == "chk2" => Some(c.gen_id),
+        _ => None,
+    }).expect("chk2 should exist");
+
+    let (s_gen, s_target) = records.iter().find_map(|r| match r {
+        Record::Restore { gen_id, target_gen } => Some((*gen_id, *target_gen)),
+        _ => None,
+    }).expect("restore record should exist");
+
+    assert_eq!(s_target, chk1_gen, "S record should target chk1");
+    assert!(
+        s_gen > chk2_gen,
+        "S record gen ({s_gen}) should be greater than chk2 gen ({chk2_gen})"
     );
 }

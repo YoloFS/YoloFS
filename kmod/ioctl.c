@@ -349,15 +349,15 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 		up_write(&sbi->staging_sem);
 		return -EBUSY;
 	}
-	gen = atomic64_inc_return(&sbi->checkpoint_gen);
+	gen = atomic64_inc_return(&sbi->gen);
 	agfs_journal_checkpoint(sbi, gen, name_buf);
 	up_write(&sbi->staging_sem);
 
 	/* Best-effort: checkpoint is already committed to the journal,
 	 * so return success even if copy_to_user fails. */
-	chk.id = gen;
+	chk.gen = gen;
 	if (copy_to_user((void __user *)arg, &chk, sizeof(chk)))
-		/* id already in journal — userspace can read it back */;
+		/* gen already in journal — userspace can read it back */;
 
 	return 0;
 }
@@ -384,39 +384,21 @@ static const char *split_parent_child(const char *path, int *parent_len)
 	return last_slash + 1;
 }
 
-static long agfs_restore_ioctl(struct file *file, unsigned long arg)
+static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
+			       struct agfs_ioc_restore *hdr, u64 gen)
 {
 	struct super_block *sb = file_inode(file)->i_sb;
-	struct agfs_sb_info *sbi = AGFS_SB(sb);
-	struct agfs_ioc_restore hdr;
+	struct agfs_ioc_restore_entry __user *uentries =
+		(struct agfs_ioc_restore_entry __user *)hdr->entries_ptr;
 	struct agfs_ioc_restore_entry ent;
 	u64 i;
 	int err = 0;
-
-	if (!sbi->staging)
-		return -EOPNOTSUPP;
-
-	if (copy_from_user(&hdr, (void __user *)arg, sizeof(hdr)))
-		return -EFAULT;
-
-	down_write(&sbi->staging_sem);
-	if (atomic_read(&sbi->staging_fd_count) > 0) {
-		up_write(&sbi->staging_sem);
-		return -EBUSY;
-	}
-
-	/* Reset: perm caches, dirents, dentry cache */
-	atomic64_inc(&sbi->perm_gen);
-	agfs_release_pinned_dirs(sbi);
-	shrink_dcache_sb(sb);
 
 	/*
 	 * Inject dirent entries.  On failure midway, the mount is left
 	 * with a partial set of dirents — the CLI can retry or abort.
 	 */
-	for (i = 0; i < hdr.entry_count; i++) {
-		struct agfs_ioc_restore_entry __user *uent =
-			&hdr.entries[i];
+	for (i = 0; i < hdr->entry_count; i++) {
 		char path_buf[AGFS_PATH_MAX];
 		char bp_buf[AGFS_PATH_MAX];
 		struct agfs_dirent de;
@@ -427,7 +409,7 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 		struct inode *dir;
 		char *bp;
 
-		if (copy_from_user(&ent, uent, sizeof(ent))) {
+		if (copy_from_user(&ent, &uentries[i], sizeof(ent))) {
 			err = -EFAULT;
 			break;
 		}
@@ -477,7 +459,7 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 			.ino = ent.ino,
 			.base = bp,
 			.d_type = ent.d_type,
-			.checkpoint_gen = hdr.checkpoint_gen,
+			.gen = gen,
 		};
 		inode_lock(dir);
 		err = agfs_add_dirent(dir, child, strlen(child), &de);
@@ -488,9 +470,62 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 			break;
 	}
 
+	return err;
+}
+
+static long agfs_restore_ioctl(struct file *file, unsigned long arg)
+{
+	struct super_block *sb = file_inode(file)->i_sb;
+	struct agfs_sb_info *sbi = AGFS_SB(sb);
+	struct agfs_ioc_restore hdr;
+	u64 new_gen;
+	int err = 0;
+
+	if (!sbi->staging)
+		return -EOPNOTSUPP;
+
+	if (copy_from_user(&hdr, (void __user *)arg, sizeof(hdr)))
+		return -EFAULT;
+
+	down_write(&sbi->staging_sem);
+	if (atomic_read(&sbi->staging_fd_count) > 0) {
+		up_write(&sbi->staging_sem);
+		return -EBUSY;
+	}
+
+	/* Wipe perm caches, dirents, dentry cache */
+	atomic64_inc(&sbi->perm_gen);
+	agfs_release_pinned_dirs(sbi);
+	shrink_dcache_sb(sb);
+
+	if (hdr.target_gen == 0) {
+		/* Reset mode (commit/abort): no entries, no journal write */
+		atomic64_set(&sbi->gen, 1);
+		up_write(&sbi->staging_sem);
+		return 0;
+	}
+
+	/* Restore mode: increment gen, inject entries, write S record */
+	new_gen = atomic64_inc_return(&sbi->gen);
+
+	err = agfs_restore_inject(file, sbi, &hdr, new_gen);
 	if (!err)
-		atomic64_set(&sbi->checkpoint_gen, hdr.checkpoint_gen);
+		err = agfs_journal_restore(sbi, new_gen, hdr.target_gen);
+	/* Don't rollback gen on failure — dirents may already be injected
+	 * with new_gen.  Rolling back would leave those dirents with a gen
+	 * higher than sbi->gen, breaking COW checks.  The CLI can retry
+	 * the operation or abort (which resets gen to 1). */
+
 	up_write(&sbi->staging_sem);
+
+	if (!err) {
+		/* Best-effort: restore is already committed to the journal,
+		 * so return success even if copy_to_user fails. */
+		hdr.new_gen = new_gen;
+		if (copy_to_user((void __user *)arg, &hdr, sizeof(hdr)))
+			/* new_gen already in journal — userspace can recover */;
+	}
+
 	return err;
 }
 

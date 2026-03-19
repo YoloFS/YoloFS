@@ -123,7 +123,8 @@ pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let records = journal::read(&agfs)?.records;
-    let changes = resolve::resolve(records)?;
+    let live = resolve::extract_live(records);
+    let changes = resolve::resolve(live)?;
 
     if changes.is_empty() {
         println!("{}", "Nothing to commit.".yellow());

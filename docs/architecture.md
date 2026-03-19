@@ -1,7 +1,7 @@
 # Architecture
 
 AgFS stacks on top of any lower filesystem (ext4, xfs, NFS, ...) using VFS
-interposition (the wrapfs pattern). It adds two orthogonal capabilities:
+interposition. It adds two orthogonal capabilities:
 
 | Capability            | Summary |
 | --------------------- | ------- |
@@ -41,7 +41,7 @@ interposition (the wrapfs pattern). It adds two orthogonal capabilities:
  │    ← AGFS_IOC_GET_REQUEST:  dequeue perm request │
  │    → AGFS_IOC_PUT_RESPONSE: post decision        │
  │    → AGFS_IOC_RULE_ADD/REMOVE: manage rules      │
- │    → AGFS_IOC_RESTORE: reset staging / restore    │
+ │    → AGFS_IOC_RESTORE: reset staging (commit/abort) or restore to checkpoint │
  │    → AGFS_IOC_CHECKPOINT: create checkpoint           │
  └──────────────────────────────────────────────────┘
 ```
@@ -57,8 +57,8 @@ The two layers execute in order for every VFS operation:
    modified, otherwise to the base. Ensures writes go to staged inodes.
    Uses per-directory-inode dirent hash tables for deletions and renames.
 
-All I/O is ultimately delegated to the lower filesystem via the standard
-wrapfs pattern (`kiocb` swapping, `vfs_*()` calls).
+All I/O is ultimately delegated to the lower filesystem via `kiocb` swapping
+and `vfs_*()` calls.
 
 ## Why Stackable VFS?
 
@@ -173,6 +173,15 @@ $ agfs commit
    -> userspace: ioctl(AGFS_IOC_RESTORE) with entry_count=0 on .agfs/mnt
    -> kernel: release dirents, invalidate dentry + inode caches
    -> umount .agfs/mnt
+
+# 8. Restore to a previous checkpoint (appends S record, no truncation)
+$ agfs restore "after make build"
+   -> CLI: extract_live(journal[0..checkpoint]) → resolved changes
+   -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, entries })
+   -> kernel: wipe dirents, inject entries, increment gen to 4,
+      append S\04\02\n to journal
+   -> journal is append-only — dead records remain but are filtered
+      by extract_live() on subsequent operations
 ```
 
 ## Source File Layout

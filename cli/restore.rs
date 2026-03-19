@@ -110,31 +110,27 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let journal = journal::read(&agfs)?;
+    // Search all records (including dead zones) for the target checkpoint,
+    // so that undo-restore (restoring to a dead checkpoint) works.
     let chk_idx = resolve::find_checkpoint_index(&journal.records, checkpoint_name)?;
 
-    let (checkpoint_gen, chk_label) = match &journal.records[chk_idx] {
-        journal::Record::Checkpoint(c) => (c.id, c.name.clone()),
+    let (target_gen, chk_label) = match &journal.records[chk_idx] {
+        journal::Record::Checkpoint(c) => (c.gen_id, c.name.clone()),
         _ => unreachable!("find_checkpoint_index returned non-checkpoint record"),
     };
 
-    let truncate_offset = journal
-        .offset(chk_idx)
-        .context("checkpoint offset out of bounds")?;
-
-    let mut records = journal.records;
-    records.truncate(chk_idx + 1);
-    let changes = resolve::resolve(records)?;
+    // Extract live records from the prefix up to the target checkpoint,
+    // handling any S records within that prefix.
+    let prefix: Vec<journal::Record> = journal.records.into_iter().take(chk_idx + 1).collect();
+    let live = resolve::extract_live(prefix);
+    let changes = resolve::resolve(live)?;
     let items = changes_to_items(&changes);
     let entries = items_to_entries(&items)?;
 
-    // Restore kernel state first — if this fails (e.g. EBUSY), the
-    // journal is still intact and the operation can be retried.
+    // Restore kernel state — if this fails (e.g. EBUSY), the journal is
+    // still intact (append-only) and the operation can be retried.
     let ctl_file = ioctl::open(&agfs).context("opening ctl for restore")?;
-    ioctl::restore(&ctl_file, checkpoint_gen, &entries).context("ioctl RESTORE")?;
-
-    // Truncate journal after the checkpoint record — preserves the inode
-    // so the kernel's O_APPEND fd stays valid.
-    journal::truncate(&agfs, truncate_offset)?;
+    let _new_gen = ioctl::restore(&ctl_file, target_gen, &entries).context("ioctl RESTORE")?;
 
     println!(
         "{}",

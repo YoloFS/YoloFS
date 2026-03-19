@@ -4,7 +4,7 @@ A Linux kernel stackable filesystem that provides **staging-commit semantics**
 and **progressive permission gating** for AI-agent sandboxing.
 
 AgFS stacks on top of any lower filesystem (ext4, xfs, NFS, ...) using VFS
-interposition (the wrapfs pattern). Every write goes to a staging layer —
+interposition. Every write goes to a staging layer —
 invisible to the lower FS until an explicit `commit`. Every file access is
 gated by a rule engine that can allow, deny, or interactively prompt a human
 before the agent proceeds.

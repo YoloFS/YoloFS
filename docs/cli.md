@@ -29,17 +29,17 @@ $ agfs mount             # create .agfs/ layout and mount (auto-loads kmod if ne
 $ agfs exec              # chroot $SHELL into .agfs/mnt (requires existing mount)
 $ agfs exec -- make build
 $ agfs status            # show staged changes (grouped by checkpoint when present)
-$ agfs status --at <name|id>           # show single checkpoint segment
-$ agfs status --from <name|id>         # show changes since checkpoint
-$ agfs status --to <name|id>           # show changes up to checkpoint
+$ agfs status --at <name|gen>           # show single checkpoint segment
+$ agfs status --from <name|gen>        # show changes since checkpoint
+$ agfs status --to <name|gen>          # show changes up to checkpoint
 $ agfs status --from <A> --to <B>      # show changes between two checkpoints
 $ agfs diff              # git-style diff of staged vs base (grouped by checkpoint)
 $ agfs diff <path>       # diff a single file
-$ agfs diff --at <name|id>             # diff single checkpoint segment
-$ agfs diff --from <name|id>           # diff changes since checkpoint
-$ agfs diff --to <name|id>             # diff changes up to checkpoint
+$ agfs diff --at <name|gen>             # diff single checkpoint segment
+$ agfs diff --from <name|gen>          # diff changes since checkpoint
+$ agfs diff --to <name|gen>            # diff changes up to checkpoint
 $ agfs diff --from <A> --to <B>        # diff changes between two checkpoints
-$ agfs diff --from <name|id> <path>    # diff a single file since checkpoint
+$ agfs diff --from <name|gen> <path>   # diff a single file since checkpoint
 $ agfs commit            # apply staged changes to base
 $ agfs abort             # discard staged changes (prompts for confirmation)
 $ agfs unmount           # tear down session (prompts if staged changes exist)
@@ -51,8 +51,23 @@ $ agfs remount           # unmount then remount (prompts if staged changes exist
 ```bash
 $ agfs checkpoint              # checkpoint with timestamp as name
 $ agfs checkpoint "my label"   # checkpoint with explicit name
-$ agfs restore <name|id>       # restore to a previous checkpoint (discards later changes)
-$ agfs log                     # show checkpoint log
+$ agfs restore <name|gen>       # restore to a previous checkpoint (discards later changes)
+$ agfs log                     # show checkpoint and restore history
+```
+
+The `--at`, `--from`, and `--to` flags accept a checkpoint name or
+generation number and only address live checkpoints (not those in dead
+zones created by restores).
+
+`agfs log` shows the complete session history including restore events
+(it reads the full append-only journal, not just live records). Example:
+
+```
+[1] (initial)
+[2] after make build
+[3] after make test
+[4] restored to [2] after make build
+[5] after make fix
 ```
 
 **Permission rules and diagnostics:**

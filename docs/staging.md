@@ -13,7 +13,7 @@ the kernel, not merely assumed.
    with `-EBUSY` if any staging fds are open (`sbi->staging_fd_count > 0`).
    The CLI naturally satisfies this by taking checkpoints between `agfs exec`
    invocations, never while agent processes are running. This means
-   `sbi->checkpoint_gen` cannot change while any staging fd is open, so the
+   `sbi->gen` cannot change while any staging fd is open, so the
    COW decision can be made once at `open()` time — the write and mmap
    paths are pure pass-throughs with zero staging logic.
 
@@ -78,7 +78,7 @@ table on directory inodes.
 | `journal_file` | Open file handle to `.agfs/journal` (`O_APPEND`). The kernel only appends; it never reads the journal back. |
 | `staging_sem` | rw\_semaphore serializing COW / re-COW, checkpoint, and journal writes |
 | `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
-| `checkpoint_gen` | Atomic counter, starts at 1, bumped by each checkpoint ioctl. Compared against `dirent.checkpoint_gen` at open time to decide COW / re-COW. |
+| `gen` | Atomic counter, starts at 1, bumped by each checkpoint and restore ioctl. Compared against `dirent.gen` at open time to decide COW / re-COW. |
 | `staging_fd_count` | Atomic counter of open staging fds (opened for write). Checkpoint ioctl rejects with `-EBUSY` when > 0. |
 | `pinned_dirs` | List head tracking `igrab()`-pinned directory inodes (those with dirents) for bulk release at cache invalidation / unmount. |
 | `pinned_dirs_lock` | Spinlock protecting `pinned_dirs`. |
@@ -95,7 +95,7 @@ The dirent table lives on the directory inode because it is a property
 of the directory itself, not of the dentry name. Directories are never
 COW'd, so their inode identity is stable for the entire staging session.
 The COW generation for regular files is tracked on the dirent entry
-(`checkpoint_gen`), not on the inode.
+(`gen`), not on the inode.
 
 **Per-dentry** (`agfs_dentry_info`) — one per cached dentry:
 
@@ -120,7 +120,7 @@ time is valid for the lifetime of the fd.
 | `ino` | Discriminant: `>0` → staged in `inodes/<ino>`, `0` → deleted, `AGFS_INO_REDIRECT` → content at `base` |
 | `base` | `NULL` → not in base; `AGFS_BASE_PRESENT` (sentinel `(char *)-1`) → exists in base but not a redirect; otherwise → absolute base path for zero-copy rename (redirect). Non-NULL means the path exists in the base layer; used at journal-write time to distinguish `A` (add) from `M` (modify) records. See [Tracking `in_base`](#tracking-in_base). |
 | `d_type` | File type (`DT_REG` / `DT_DIR` / `DT_LNK`) for correct readdir emission |
-| `checkpoint_gen` | `sbi->checkpoint_gen` at the time this inode was created. Used at open time: if `checkpoint_gen < sbi->checkpoint_gen`, a re-COW is needed. |
+| `gen` | `sbi->gen` at the time this inode was created. Used at open time: if `gen < sbi->gen`, a re-COW is needed. |
 
 ## Path Resolution
 
@@ -137,7 +137,7 @@ struct agfs_dirent {
     u64               ino;        /* >0 = staged, 0 = deleted, (u64)-1 = redirect */
     char              *base;      /* NULL = not in base, AGFS_BASE_PRESENT = in base,
                                    * other = redirect path (also in base) */
-    u64               checkpoint_gen;    /* sbi->checkpoint_gen when inode was created */
+    u64               gen;    /* sbi->gen when inode was created */
     unsigned int      name_len;
     unsigned char     d_type;     /* DT_REG / DT_DIR / DT_LNK for readdir */
     char              name[];
@@ -146,8 +146,8 @@ struct agfs_dirent {
 
 Discrimination is by `ino` alone:
 - `ino > 0` (and `!= AGFS_INO_REDIRECT`) → staged file, symlink, or directory
-  in `inodes/<ino>`. `checkpoint_gen` records when the inode was created; if
-  `checkpoint_gen < sbi->checkpoint_gen`, a re-COW is needed on the next
+  in `inodes/<ino>`. `gen` records when the inode was created; if
+  `gen < sbi->gen`, a re-COW is needed on the next
   open-for-write.
 - `ino == AGFS_INO_REDIRECT` → redirect to `base` path (zero-copy rename)
 - `ino == 0` → deleted (lookup returns negative dentry)
@@ -174,7 +174,7 @@ add_dirent(dir, name, de_template):
     de = find_dirent(dir, name)
     if de:
         de.ino = de_template.ino
-        de.checkpoint_gen = de_template.checkpoint_gen
+        de.gen = de_template.gen
         if de_template.ino == 0:
             # Deleting: keep existing base (inherit from what was here)
         else:
@@ -182,7 +182,7 @@ add_dirent(dir, name, de_template):
     else:
         de = alloc_dirent(name)
         de.ino = de_template.ino
-        de.checkpoint_gen = de_template.checkpoint_gen
+        de.gen = de_template.gen
         if de_template.ino == 0:
             de.base = AGFS_BASE_PRESENT  # no prior dirent → file was only in base
         else:
@@ -230,7 +230,7 @@ the right lower inode.
 
 COW and re-COW are resolved at **open time**, not deferred to the first
 write. Because no fd spans a checkpoint boundary (enforced by `staging_fd_count`),
-`sbi->checkpoint_gen` is stable for the lifetime of the fd, so the decision
+`sbi->gen` is stable for the lifetime of the fd, so the decision
 made at open time is final. This makes `write_iter` and `mmap` pure
 pass-throughs with zero staging logic.
 
@@ -247,7 +247,7 @@ agfs_open(inode, file):
     de = find_dirent(parent, name)
 
     if file->f_flags & (O_WRONLY | O_RDWR):
-        if de and agfs_ino_is_staged(de.ino) and de.checkpoint_gen >= sbi->checkpoint_gen:
+        if de and agfs_ino_is_staged(de.ino) and de.gen >= sbi->gen:
             // Inode is current — open it directly (O_TRUNC truncates in place).
             down_read(staging_sem)
             atomic_inc(staging_fd_count)
@@ -263,7 +263,7 @@ agfs_open(inode, file):
             // already COW'd this file since our check above.
             atomic_inc(staging_fd_count)
             new_file = agfs_do_cow(sbi, dentry, flags, O_TRUNC in flags)
-            // agfs_do_cow updates: dirent (ino, checkpoint_gen,
+            // agfs_do_cow updates: dirent (ino, gen,
             //   sets base=AGFS_BASE_PRESENT), dentry lower_path, journal
             up_write(staging_sem)
             file_info->lower_file = new_file
@@ -304,7 +304,7 @@ agfs_mmap(file, vma):
 ## Create / Mkdir / Symlink Path
 
 All creation operations allocate a new inode and add a dirent with
-`checkpoint_gen = sbi->checkpoint_gen` so the file is recognised as already staged
+`gen = sbi->gen` so the file is recognised as already staged
 (preventing a spurious re-COW on next open-for-write):
 
 ```
@@ -315,7 +315,7 @@ agfs_create(dir, name, mode):
     in_base = old_de ? de_in_base(old_de) : false   # inherit from deleted dirent
     add_dirent(dir, name, ino=ino,
                base=in_base ? AGFS_BASE_PRESENT : NULL,
-               checkpoint_gen=sbi->checkpoint_gen)
+               gen=sbi->gen)
     if in_base:
         journal(M, dir_path, name, dtype, ino)
     else:
@@ -328,7 +328,7 @@ agfs_mkdir(dir, name, mode):
     in_base = old_de ? de_in_base(old_de) : false
     add_dirent(dir, name, ino=ino,
                base=in_base ? AGFS_BASE_PRESENT : NULL,
-               checkpoint_gen=sbi->checkpoint_gen)
+               gen=sbi->gen)
     if in_base:
         journal(M, dir_path, name, dtype, ino)
     else:
@@ -341,7 +341,7 @@ agfs_symlink(dir, name, target):
     in_base = old_de ? de_in_base(old_de) : false
     add_dirent(dir, name, ino=ino,
                base=in_base ? AGFS_BASE_PRESENT : NULL,
-               checkpoint_gen=sbi->checkpoint_gen)
+               gen=sbi->gen)
     if in_base:
         journal(M, dir_path, name, dtype, ino)
     else:
@@ -384,7 +384,7 @@ agfs_rename(old_parent, old_name, new_parent, new_name):
         # Inherit base from source dirent.
         add_dirent(new_parent, new_name, ino=old_de.ino,
                      base=old_de.base,
-                     checkpoint_gen=old_de.checkpoint_gen)
+                     gen=old_de.gen)
     elif old_de and old_de.ino == AGFS_INO_REDIRECT:
         # Already redirected (chained rename) -- follow the chain.
         add_dirent(new_parent, new_name, ino=AGFS_INO_REDIRECT,
@@ -484,7 +484,8 @@ A\0<dir>\0<name>\0<dtype>\0<ino>\n       # add    — new file (create/mkdir/sym
 M\0<dir>\0<name>\0<dtype>\0<ino>\n       # modify — existing file (COW)
 D\0<dir>\0<name>\n                        # delete
 R\0<dir>\0<name>\0<dtype>\0<base>\n       # redirect (rename, source in base)
-K\0<id>\0<name>\n                         # checkpoint marker
+K\0<gen>\0<name>\n                        # checkpoint marker
+S\0<gen>\0<target_gen>\n                  # restore marker
 ```
 
 Each mutation type has its own record tag and carries exactly the fields
@@ -496,7 +497,8 @@ it needs:
 | `M` | `<dir>`, `<name>`, `<dtype>`, `<ino>` | Existing file modified: content in `inodes/<ino>` |
 | `D` | `<dir>`, `<name>` | Entry deleted |
 | `R` | `<dir>`, `<name>`, `<dtype>`, `<base>` | Redirect: rename from base path (zero-copy) |
-| `K` | `<id>`, `<name>` | Checkpoint marker |
+| `K` | `<gen>`, `<name>` | Checkpoint marker |
+| `S` | `<gen>`, `<target_gen>` | Restore to checkpoint (journal remains append-only) |
 
 `<dir>` is the parent directory path (empty string for root).
 `<name>` is the entry name within that directory.
@@ -578,14 +580,15 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 
 **Commit** (`agfs commit`):
 
-1. Replay journal in order to build a resolved operation list. Each path
+1. Call `extract_live()` on the journal records to filter dead zones from restores.
+2. Replay live records in order to build a resolved operation list. Each path
    is tracked through its lifetime of mutations so that intermediate
    operations collapse into their final effect:
    - Staged + Delete collapses (path never existed in base).
    - Delete + Redirect at a new path collapses to `Rename`.
    - Redirect chains collapse: `Redirect(a→b)` then `Redirect(b→c)` → `Rename(a,c)`.
    - Multiple records for the same path keep only the final ino.
-2. Apply resolved changes in order: **renames first**, then adds/modifies,
+3. Apply resolved changes in order: **renames first**, then adds/modifies,
    then deletes. Renames must precede adds because a rename source path
    may overlap with a new add at the same path (e.g. `mv a b` then
    `touch a`). For each change:
@@ -594,30 +597,32 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
      determine type: regular file -> copy/rename, symlink -> recreate,
      directory -> mkdir), creating parent dirs as needed.
    - **Delete**: `rm base/path`.
-3. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
-4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `entry_count=0`, `checkpoint_gen=1`).
+4. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
+5. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `entry_count=0` — reset mode, no S record written).
 
 **Abort** (`agfs abort`):
 
 1. Count staged changes; if none, print "nothing to discard" and exit.
 2. Prompt for confirmation: `Discard N staged changes? [y/N]`.
 3. Remove all files under `.agfs/inodes/` and truncate `.agfs/journal`.
-4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `entry_count=0`, `checkpoint_gen=1`).
+4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `entry_count=0` — reset mode, no S record written).
 
 **Status** (`agfs status`):
 
-1. Optionally slice journal to a range (`--at`, `--from`, `--to`).
-2. Resolve into segments grouped by checkpoint boundaries.
-3. Display one-line summaries under checkpoint headers (and any trailing
+1. Call `extract_live()` on the journal records to filter dead zones from restores.
+2. Optionally slice live records to a range (`--at`, `--from`, `--to`).
+3. Resolve into segments grouped by checkpoint boundaries.
+4. Display one-line summaries under checkpoint headers (and any trailing
    unsaved changes). Print total count.
 
 **Diff** (`agfs diff`):
 
-1. Optionally slice journal to a range (`--at`, `--from`, `--to`).
-2. Resolve into segments grouped by checkpoint boundaries.
-3. For modified/added files, diff `inodes/<ino>` vs base.
+1. Call `extract_live()` on the journal records to filter dead zones from restores.
+2. Optionally slice live records to a range (`--at`, `--from`, `--to`).
+3. Resolve into segments grouped by checkpoint boundaries.
+4. For modified/added files, diff `inodes/<ino>` vs base.
    For renames, show rename metadata. For deletes, show as deleted file.
-4. Output in git-style unified diff format under checkpoint headers.
+5. Output in git-style unified diff format under checkpoint headers.
 
 ## Checkpoint Mechanism
 
@@ -637,7 +642,7 @@ This is the re-COW mechanism.
 ### Creating a Checkpoint
 
 On mount, the kernel writes an initial checkpoint record `K\01\0(initial)\n`
-to the journal, giving userspace a stable id=1 reference to the mount-time
+to the journal, giving userspace a stable gen=1 reference to the mount-time
 state.
 
 `agfs checkpoint [name]` calls `ioctl(AGFS_IOC_CHECKPOINT)`. The kernel:
@@ -645,10 +650,10 @@ state.
 1. Returns `-ENOTSUP` if `staging` is disabled (checkpoints require staging).
 2. Takes `staging_sem` write lock.
 3. If `staging_fd_count > 0`, releases sem and returns `-EBUSY`.
-4. Increments `sbi->checkpoint_gen` (atomic counter).
-5. Appends `K\0<id>\0<name>\n` to the journal.
+4. Increments `sbi->gen` (atomic counter).
+5. Appends `K\0<gen>\0<name>\n` to the journal.
 6. Releases `staging_sem`.
-7. Returns the checkpoint ID to userspace.
+7. Returns the gen to userspace.
 
 No dirent tables change. No caches invalidated. The write lock on
 `staging_sem` ensures no open-for-write is mid-flight when the generation
@@ -658,15 +663,15 @@ is bumped (open-for-write holds at least a read lock while incrementing
 The name defaults to `"after <cmd>"` when auto-checkpointing via `agfs exec`
 (e.g., `"after make build"`), or a human-readable timestamp like
 `chk-20260315-043807` when run via `agfs checkpoint` with no argument. Names need
-not be unique; checkpoints can also be addressed by their numeric ID. When
+not be unique; checkpoints can also be addressed by their numeric gen. When
 looking up by name, `--at` and `--from` match the latest one.
 
 ### Re-COW on First Open-for-Write After Checkpoint
 
-The COW check is per-dirent: `dirent.checkpoint_gen` records the
-`sbi->checkpoint_gen` at which the current inode was created.
-`sbi->checkpoint_gen` starts at 1. Newly created files set
-`checkpoint_gen = sbi->checkpoint_gen` at creation time, so they are already
+The COW check is per-dirent: `dirent.gen` records the
+`sbi->gen` at which the current inode was created.
+`sbi->gen` starts at 1. Newly created files set
+`gen = sbi->gen` at creation time, so they are already
 up-to-date and skip the COW check. Base files that have no dirent
 (or have `ino == 0`) naturally trigger COW on the first
 open-for-write.
@@ -674,12 +679,12 @@ open-for-write.
 At open time, the COW check in `agfs_open` (see [Open / Read / Write
 Path](#open--read--write-path)) handles both base→staged COW and
 staged→staged re-COW: if the dirent is missing, has no ino, or has a
-stale `checkpoint_gen`, a fresh inode is created.
+stale `gen`, a fresh inode is created.
 
 `agfs_do_cow` copies from the dentry's current `lower_path` — which is
 the base file before any COW, or the current staged inode after one.
 The same function handles both cases; no separate re-COW path.
-`agfs_do_cow` also updates `dirent.checkpoint_gen` after a successful COW.
+`agfs_do_cow` also updates `dirent.gen` after a successful COW.
 
 Because no fd spans a checkpoint boundary (enforced by `staging_fd_count`),
 the write and mmap paths need no COW checks — they are pure pass-throughs.
@@ -711,6 +716,32 @@ State at each point:
 | "after make test"  | ino 3   | (deleted) | ino 4  |
 | current            | ino 3   | (deleted) | ino 5  |
 
+### Example Journal with Restore
+
+```
+K\01\0(initial)\n                                 # implicit checkpoint at mount
+M\0/src\0main.rs\0f\01\n                          # COW: main.rs -> ino 1
+A\0/src\0lib.rs\0f\02\n                           # create lib.rs -> ino 2
+K\02\0after make build\n                           # checkpoint 2
+M\0/src\0main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
+D\0/src\0lib.rs\n                                  # delete lib.rs
+K\03\0after make test\n                            # checkpoint 3
+S\04\02\n                                          # restore to checkpoint 2 (gen bumped to 4)
+A\0/src\0util.rs\0f\04\n                          # create util.rs -> ino 4
+K\05\0after make fix\n                             # checkpoint 5
+```
+
+Live records (after `extract_live`): K1, M(main.rs→1), A(lib.rs→2), K2, A(util.rs→4), K5
+Dead zone: M(main.rs→3), D(lib.rs), K3, S4
+
+State at current:
+
+| Checkpoint         | main.rs | lib.rs | util.rs |
+|--------------------|---------|--------|---------|
+| (initial)          | --      | --     | --      |
+| "after make build" | ino 1   | ino 2  | --      |
+| "after make fix"   | ino 1   | ino 2  | ino 4   |
+
 ### Checkpoint-Aware CLI Operations
 
 All checkpoint query flags (`--at`, `--from`, `--to`) work by slicing
@@ -718,40 +749,50 @@ the journal records before resolving into segments. This means the
 output always preserves checkpoint boundaries within the requested range.
 
 **`agfs status`** / **`agfs diff`** support:
-- `--at <name|id>` — show the single segment at that checkpoint.
-- `--from <name|id>` — show changes from that checkpoint to end of journal.
-- `--to <name|id>` — show changes from start of journal to that checkpoint.
+- `--at <name|gen>` — show the single segment at that checkpoint.
+- `--from <name|gen>` — show changes from that checkpoint to end of journal.
+- `--to <name|gen>` — show changes from start of journal to that checkpoint.
 - `--from <A> --to <B>` — show changes between two checkpoints.
 - `--at` conflicts with `--from`/`--to`.
 
-**`agfs restore <name|id>`**: Restore the mounted view to the state at the
-named checkpoint. Post-checkpoint changes are discarded. The kernel's
-staging state is atomically replaced with the checkpoint's resolved state
-via `AGFS_IOC_RESTORE`:
+**`agfs restore <name|gen>`**: Restore the mounted view to the state at the
+named checkpoint. The journal is **append-only** — restore appends an `S`
+record instead of truncating. `S` records create "dead zones" — records
+between the target checkpoint and the `S` record that no longer reflect
+current state. All CLI consumers (commit, status, diff, restore) call
+`extract_live()` to filter dead zones before resolving.
 
-1. CLI resolves journal up to the checkpoint → resolved changes.
-2. CLI converts changes to dirent entries (path, ino, base, d_type).
+The `extract_live` algorithm: O(N) single pass to collect S/K positions,
+O(R) backward walk to build live ranges, skip dead-zone S records.
+
+1. CLI finds the target checkpoint in the full journal (including dead
+   zones, to support undo-restore).
+2. CLI runs `extract_live` on `records[0..=target]` to handle any S
+   records in that prefix.
+3. CLI resolves the live records → changes → entries.
+4. CLI converts changes to dirent entries (path, ino, base, d_type).
    Entries are sorted by path — parents before children — so that
    `vfs_path_lookup` in the kernel can find staged parent directories
    when injecting child dirents.
-3. `AGFS_IOC_RESTORE(checkpoint_gen=N, entries=[...])`:
-   kernel wipes all dirents, shrinks dcache, injects entries, and sets
-   `checkpoint_gen` to N. Done before truncating so the journal is intact
-   if the ioctl fails (e.g. `EBUSY`).
-4. Truncate journal after the `K` marker (`set_len` to the byte offset
-   past the checkpoint record). The inode is preserved so the kernel's
-   `O_APPEND` fd stays valid.
-5. Orphaned inodes (from post-checkpoint mutations) remain in the inode
+5. `ioctl(AGFS_IOC_RESTORE, { target_gen=N, entries })`:
+   kernel wipes all dirents, shrinks dcache, injects entries with
+   new gen, appends `S\0<new_gen>\0<target_gen>\n`, returns new_gen.
+   The `AGFS_IOC_RESTORE` ioctl **increments** gen (monotonically)
+   instead of setting it to the target value — this avoids gen
+   collisions. Injected dirents receive the new gen value.
+6. No journal truncation.
+7. Orphaned inodes (from post-checkpoint mutations) remain in the inode
    store — cleaned up on the next `commit` or `abort`.
 
 After restore, future writes trigger re-COW only if a new checkpoint is
-taken (since `checkpoint_gen` is set to the restored checkpoint's
-generation). Editing files without a new checkpoint reuses the
-existing inodes in place.
+taken (since gen is bumped to a fresh value by the restore ioctl). Editing
+files without a new checkpoint reuses the existing inodes in place.
 
-Restoring to `(initial)` (checkpoint ID 1) produces the same mounted view
-as abort — all dirents are cleared and the mount shows the clean base
-state. Orphaned inodes remain in the store until the next `commit` or
-`abort`.
+Restoring to `(initial)` (gen 1, entry_count=0) is distinct from
+commit/abort reset (target_gen=0). The restore ioctl still increments gen
+and appends an S record. The mount shows the clean base state. Orphaned
+inodes remain in the store until the next `commit` or `abort`.
 
-**`agfs log`**: List all checkpoints with their names.
+**`agfs log`**: List all checkpoints and restore events in chronological
+order. It reads the full journal (no `extract_live`) to show the complete
+audit trail.

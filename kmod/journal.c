@@ -11,6 +11,7 @@
  *   D\0<dir>\0<name>\n                        — delete
  *   R\0<dir>\0<name>\0<dtype>\0<base>\n       — redirect (rename)
  *   K\0<id>\0<name>\n                         — checkpoint marker
+ *   S\0<gen>\0<target_gen>\n                  — restore
  */
 
 #include "agfs.h"
@@ -180,4 +181,24 @@ int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name)
 	snprintf(id_str, sizeof(id_str), "%llu", (unsigned long long)id);
 	return journal_write(sbi, 'K',
 			     (const char *[]){ id_str, name, NULL });
+}
+
+/**
+ * agfs_journal_restore - Append a restore record to the journal.
+ * @sbi: superblock info (has journal_file)
+ * @gen: new generation assigned to this restore
+ * @target_gen: the checkpoint gen being restored to
+ *
+ * Format: S\0<gen>\0<target_gen>\n
+ */
+int agfs_journal_restore(struct agfs_sb_info *sbi, u64 gen, u64 target_gen)
+{
+	char gen_str[21];
+	char target_str[21];
+
+	snprintf(gen_str, sizeof(gen_str), "%llu", (unsigned long long)gen);
+	snprintf(target_str, sizeof(target_str), "%llu",
+		 (unsigned long long)target_gen);
+	return journal_write(sbi, 'S',
+			     (const char *[]){ gen_str, target_str, NULL });
 }

@@ -603,3 +603,59 @@ fn append_after_checkpoint_triggers_recow() {
         "checkpoint s1 should have 1 change: {at_s1}"
     );
 }
+
+/// `agfs log` shows both checkpoint and restore events.
+#[test]
+fn log_shows_restore_events() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
+    s.cli(&["checkpoint", "build"]).expect("checkpoint");
+
+    fs::write(s.mnt_path("hello.txt"), "v2\n").unwrap();
+
+    s.cli(&["restore", "build"]).expect("restore");
+
+    let log = s.cli(&["log"]).expect("log");
+    assert!(
+        log.contains("build"),
+        "log should list the 'build' checkpoint: {log}"
+    );
+    assert!(
+        log.contains("restore"),
+        "log should show restore event: {log}"
+    );
+}
+
+/// `agfs log` interleaves checkpoints and restores in chronological order.
+#[test]
+fn log_interleaves_checkpoints_and_restores() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint 1");
+
+    fs::write(s.mnt_path("hello.txt"), "v2\n").unwrap();
+    s.cli(&["checkpoint", "chk2"]).expect("checkpoint 2");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    s.cli(&["checkpoint", "chk3"]).expect("checkpoint 3");
+
+    let log = s.cli(&["log"]).expect("log");
+
+    // All events should be present
+    assert!(log.contains("chk1"), "log should list chk1: {log}");
+    assert!(log.contains("chk2"), "log should list chk2: {log}");
+    assert!(log.contains("chk3"), "log should list chk3: {log}");
+    assert!(log.contains("restore"), "log should show restore: {log}");
+
+    // Restore should appear between chk2 and chk3 in the output
+    let restore_pos = log.find("restore").unwrap();
+    let chk2_pos = log.find("chk2").unwrap();
+    let chk3_pos = log.find("chk3").unwrap();
+    assert!(
+        restore_pos > chk2_pos && restore_pos < chk3_pos,
+        "restore should appear between chk2 and chk3 in log: {log}"
+    );
+}

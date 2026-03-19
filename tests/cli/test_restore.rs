@@ -619,7 +619,7 @@ fn restore_rename_then_recreate() {
     );
 }
 
-/// `agfs log` after restore shows only checkpoints up to restore point.
+/// `agfs log` after restore shows all checkpoints and the restore record.
 #[test]
 fn log_after_restore() {
     let s = AgfsSession::new().expect("session setup");
@@ -634,8 +634,12 @@ fn log_after_restore() {
     let log = s.cli(&["log"]).expect("log");
     assert!(log.contains("first"), "first should be in log: {log}");
     assert!(
-        !log.contains("second"),
-        "second should NOT be in log after restore: {log}"
+        log.contains("second"),
+        "second should still be in log (append-only journal): {log}"
+    );
+    assert!(
+        log.contains("restore"),
+        "restore record should be in log: {log}"
     );
 }
 
@@ -756,5 +760,123 @@ fn kernel_appends_to_journal_after_restore() {
     assert!(
         !status.contains("discarded.txt"),
         "discarded file should not appear: {status}"
+    );
+}
+
+// ── Append-only journal / S-record tests ─────────────────────────────
+
+/// After restore, the journal is append-only (not truncated).
+/// Verify that `agfs log` shows the restore event.
+#[test]
+fn log_shows_restore_event() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
+    s.cli(&["checkpoint", "build"]).expect("checkpoint");
+
+    fs::write(s.mnt_path("a.txt"), "v2\n").expect("write v2");
+    s.cli(&["checkpoint", "test"]).expect("checkpoint");
+
+    s.cli(&["restore", "build"]).expect("restore");
+
+    let log = s.cli(&["log"]).expect("log");
+    assert!(log.contains("restore"), "log should show restore event: {log}");
+    assert!(log.contains("build"), "log should reference target checkpoint: {log}");
+}
+
+/// Restore, make changes, checkpoint, then restore again (further back).
+#[test]
+fn multiple_restores_in_session() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "v1\n").expect("write v1");
+    s.cli(&["checkpoint", "c1"]).expect("checkpoint c1");
+
+    fs::write(s.mnt_path("a.txt"), "v2\n").expect("write v2");
+    s.cli(&["checkpoint", "c2"]).expect("checkpoint c2");
+
+    // First restore: back to c1
+    s.cli(&["restore", "c1"]).expect("restore to c1");
+
+    fs::write(s.mnt_path("b.txt"), "new\n").expect("write b");
+    s.cli(&["checkpoint", "c3"]).expect("checkpoint c3");
+
+    // Second restore: back to c1 again (discards b.txt)
+    s.cli(&["restore", "c1"]).expect("restore to c1 again");
+
+    let status = s.cli(&["status"]).expect("status");
+    assert!(
+        !status.contains("b.txt"),
+        "b.txt should be gone after second restore: {status}"
+    );
+}
+
+/// Restore then commit applies only the live changes.
+#[test]
+fn commit_after_multiple_restores() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "v1\n").expect("write v1");
+    s.cli(&["checkpoint", "c1"]).expect("checkpoint c1");
+
+    fs::write(s.mnt_path("a.txt"), "v2\n").expect("write v2");
+    s.cli(&["checkpoint", "c2"]).expect("checkpoint c2");
+
+    s.cli(&["restore", "c1"]).expect("restore to c1");
+
+    fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write extra");
+
+    s.cli(&["commit"]).expect("commit");
+
+    // After commit, base should have a.txt=v1 and extra.txt
+    let a_content = fs::read_to_string(s.base_path("a.txt")).expect("read a");
+    assert_eq!(a_content, "v1\n", "a.txt should be v1 after commit");
+    let extra_content = fs::read_to_string(s.base_path("extra.txt")).expect("read extra");
+    assert_eq!(extra_content, "extra\n");
+}
+
+/// Undo-restore: restore forward to a checkpoint that was in a dead zone.
+#[test]
+fn undo_restore() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "v1\n").expect("write v1");
+    s.cli(&["checkpoint", "c1"]).expect("checkpoint c1");
+
+    fs::write(s.mnt_path("a.txt"), "v2\n").expect("write v2");
+    fs::write(s.mnt_path("b.txt"), "new\n").expect("write b");
+    s.cli(&["checkpoint", "c2"]).expect("checkpoint c2");
+
+    // Restore back to c1 — kills the c1→c2 segment (v2 and b.txt).
+    s.cli(&["restore", "c1"]).expect("restore to c1");
+    let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
+    assert_eq!(content, "v1\n", "should see v1 after first restore");
+    assert!(!s.mnt_path("b.txt").exists(), "b.txt should be gone");
+
+    // Undo the restore — restore forward to c2 (which is in the dead zone).
+    s.cli(&["restore", "c2"]).expect("undo restore to c2");
+    let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
+    assert_eq!(content, "v2\n", "should see v2 after undo restore");
+    assert!(s.mnt_path("b.txt").exists(), "b.txt should reappear");
+}
+
+/// Restore to initial checkpoint after a previous restore still works.
+#[test]
+fn restore_to_initial_after_restore() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
+    s.cli(&["checkpoint", "c1"]).expect("checkpoint");
+
+    fs::write(s.mnt_path("b.txt"), "v2\n").expect("write b");
+    s.cli(&["checkpoint", "c2"]).expect("checkpoint");
+
+    s.cli(&["restore", "c1"]).expect("restore to c1");
+    s.cli(&["restore", "1"]).expect("restore to initial");
+
+    let status = s.cli(&["status"]).expect("status");
+    assert!(
+        !status.contains("a.txt"),
+        "a.txt should be gone after restore to initial: {status}"
     );
 }

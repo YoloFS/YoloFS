@@ -33,7 +33,7 @@ pub fn reset_staging(agfs: &Path) -> Result<()> {
             .context("truncating journal")?;
     }
     let ctl_file = crate::ioctl::open(agfs).context("opening ctl for restore")?;
-    crate::ioctl::restore(&ctl_file, 1, &[]).context("ioctl RESTORE")?;
+    crate::ioctl::restore(&ctl_file, 0, &[]).context("ioctl RESTORE")?;
     Ok(())
 }
 

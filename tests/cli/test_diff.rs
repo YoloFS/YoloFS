@@ -107,3 +107,75 @@ fn diff_single_file_with_absolute_path() {
         "should find with absolute path: {output}"
     );
 }
+
+/// After restore, diff should only show checkpoint-state changes,
+/// not post-checkpoint mutations (which are in the dead zone).
+#[test]
+fn diff_after_restore_excludes_dead_zone() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "wanted\n").unwrap();
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    // Create a new file after checkpoint (becomes dead zone)
+    fs::write(s.mnt_path("post_chk.txt"), "dead\n").unwrap();
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    let output = s.cli(&["diff"]).expect("diff");
+    assert!(
+        output.contains("hello.txt"),
+        "checkpoint change should appear in diff: {output}"
+    );
+    assert!(
+        !output.contains("post_chk.txt"),
+        "dead-zone file should NOT appear in diff: {output}"
+    );
+}
+
+/// Diff between two checkpoints that span a restore should still work.
+#[test]
+fn diff_between_checkpoints_spanning_restore() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint 1");
+
+    fs::write(s.mnt_path("hello.txt"), "v2\n").unwrap();
+    fs::write(s.mnt_path("extra.txt"), "extra\n").unwrap();
+    s.cli(&["checkpoint", "chk2"]).expect("checkpoint 2");
+
+    // Restore to chk1, then work and checkpoint again
+    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["checkpoint", "post-restore"])
+        .expect("checkpoint post-restore");
+    fs::write(s.mnt_path("hello.txt"), "v3\n").unwrap();
+    s.cli(&["checkpoint", "chk3"]).expect("checkpoint 3");
+
+    // Diff from chk1 to chk3 should NOT include chk2's dead-zone changes
+    let output = s
+        .cli(&["diff", "--from", "chk1", "--to", "chk3"])
+        .expect("diff --from --to");
+    assert!(
+        !output.contains("extra.txt"),
+        "dead-zone file should NOT appear: {output}"
+    );
+}
+
+/// Diff after restoring to initial checkpoint (no mutations) should
+/// show nothing staged.
+#[test]
+fn diff_after_restore_to_initial() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    s.cli(&["restore", "1"]).expect("restore to initial");
+
+    let output = s.cli(&["diff"]).expect("diff");
+    assert!(
+        output.contains("No changes staged"),
+        "restoring to initial should show nothing: {output}"
+    );
+}

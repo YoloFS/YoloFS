@@ -68,9 +68,9 @@ struct agfs_ioc_rule {
 	__u8	_pad[5];
 };
 
-/* userspace ↔ kernel: AGFS_IOC_CHECKPOINT (name in, id out) */
+/* userspace ↔ kernel: AGFS_IOC_CHECKPOINT (name in, gen out) */
 struct agfs_ioc_checkpoint {
-	__u64	id;			/* out: assigned checkpoint ID */
+	__u64	gen;			/* out: assigned gen */
 	__u64	name_ptr;		/* in: userspace pointer to name string */
 	__u16	name_len;		/* in: length excluding NUL */
 	__u8	_pad[6];
@@ -88,11 +88,12 @@ struct agfs_ioc_restore_entry {
 	__u8	_pad2[6];
 };
 
-/* userspace → kernel: AGFS_IOC_RESTORE */
+/* userspace ↔ kernel: AGFS_IOC_RESTORE */
 struct agfs_ioc_restore {
-	__u64	checkpoint_gen;			/* target generation to set */
-	__u64	entry_count;			/* 0 for commit/abort reset */
-	struct agfs_ioc_restore_entry __user *entries;
+	__u64	target_gen;		/* in: checkpoint gen to restore to (0 = reset) */
+	__u64	new_gen;		/* out: new generation assigned (restore mode only) */
+	__u64	entry_count;
+	__u64	entries_ptr;
 };
 
 #define AGFS_IOC_RULE_ADD	_IOW('A', 10, struct agfs_ioc_rule)
@@ -100,7 +101,7 @@ struct agfs_ioc_restore {
 #define AGFS_IOC_GET_REQUEST	_IOWR('A', 30, struct agfs_ctl_request)
 #define AGFS_IOC_PUT_RESPONSE	_IOW('A', 31, struct agfs_ctl_response)
 #define AGFS_IOC_CHECKPOINT	_IOWR('A', 40, struct agfs_ioc_checkpoint)
-#define AGFS_IOC_RESTORE	_IOW('A', 41, struct agfs_ioc_restore)
+#define AGFS_IOC_RESTORE	_IOWR('A', 41, struct agfs_ioc_restore)
 
 /* ── Control-File Protocol (binary) ───────────────────────────────── */
 
@@ -149,7 +150,7 @@ struct agfs_dirent {
 	u64			ino;		/* >0 = staged, 0 = deleted, (u64)-1 = redirect */
 	char			*base;		/* redirect: real path; non-redirect in-base:
 					 * AGFS_BASE_PRESENT sentinel; else NULL */
-	u64			checkpoint_gen;	/* sbi->checkpoint_gen when inode was created */
+	u64			gen;		/* sbi->gen when inode was created */
 	unsigned int		name_len;
 	unsigned char		d_type;		/* DT_REG / DT_DIR / DT_LNK for readdir */
 	char			name[];
@@ -221,7 +222,7 @@ struct agfs_sb_info {
 	struct file		*journal_file;	/* ./agfs/journal (append-only, opened lazily) */
 	struct rw_semaphore	staging_sem;	/* protects staging + journal writes */
 	atomic64_t		next_ino;	/* counter for inode store IDs */
-	atomic64_t		checkpoint_gen;	/* bumped on each checkpoint; triggers re-COW */
+	atomic64_t		gen;		/* bumped on each checkpoint; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
 	struct list_head	pinned_dirs;	/* igrab()'d directory inodes with dirents */
 	spinlock_t		pinned_dirs_lock;/* protects pinned_dirs */
@@ -436,6 +437,7 @@ int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry);
 int agfs_journal_redirect(struct agfs_sb_info *sbi, struct dentry *dentry,
 			    unsigned char d_type, const char *base);
 int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name);
+int agfs_journal_restore(struct agfs_sb_info *sbi, u64 gen, u64 target_gen);
 
 /* perm.c */
 static inline void agfs_perm_request_release(struct kref *kref)

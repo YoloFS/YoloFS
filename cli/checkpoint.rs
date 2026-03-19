@@ -16,40 +16,70 @@ pub fn create(name: Option<&str>) -> Result<()> {
     };
 
     let ctl_file = ioctl::open(&agfs).context("opening ctl for checkpoint")?;
-    let id = ioctl::create_checkpoint(&ctl_file, &chk_name)?;
+    let gen_id = ioctl::create_checkpoint(&ctl_file, &chk_name)?;
 
     eprintln!(
         "{} {}",
-        format!("checkpoint [{id}]").cyan().bold(),
+        format!("checkpoint [{gen_id}]").cyan().bold(),
         chk_name.dimmed()
     );
     Ok(())
 }
 
-/// List all checkpoints in the journal.
+/// List all checkpoints and restore events in the journal.
+/// Reads the full journal (no extract_live) to show the complete audit trail.
 pub fn list() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
     let records = journal::read(&agfs)?.records;
 
-    let checkpoints: Vec<&journal::Record> = records
+    // Collect checkpoint names by gen for restore display.
+    let chk_names: std::collections::HashMap<u64, &str> = records
         .iter()
-        .filter(|r| matches!(r, journal::Record::Checkpoint(_)))
+        .filter_map(|r| match r {
+            journal::Record::Checkpoint(c) => Some((c.gen_id, c.name.as_str())),
+            _ => None,
+        })
         .collect();
 
-    if checkpoints.is_empty() {
+    let events: Vec<&journal::Record> = records
+        .iter()
+        .filter(|r| {
+            matches!(
+                r,
+                journal::Record::Checkpoint(_) | journal::Record::Restore { .. }
+            )
+        })
+        .collect();
+
+    if events.is_empty() {
         println!("{}", "No checkpoints.".yellow());
         return Ok(());
     }
 
-    for rec in &checkpoints {
-        let journal::Record::Checkpoint(c) = rec else {
-            unreachable!()
-        };
-        println!(
-            "{} {}",
-            format!("checkpoint [{}]", c.id).cyan().bold(),
-            c.name.dimmed(),
-        );
+    for rec in &events {
+        match rec {
+            journal::Record::Checkpoint(c) => {
+                println!(
+                    "{} {}",
+                    format!("checkpoint [{}]", c.gen_id).cyan().bold(),
+                    c.name.dimmed(),
+                );
+            }
+            journal::Record::Restore {
+                gen_id, target_gen, ..
+            } => {
+                let target_name = chk_names
+                    .get(target_gen)
+                    .copied()
+                    .unwrap_or("(unknown)");
+                println!(
+                    "{} {}",
+                    format!("restore    [{gen_id}]").yellow().bold(),
+                    format!("restored to [{target_gen}] {target_name}").dimmed(),
+                );
+            }
+            _ => {}
+        }
     }
 
     Ok(())

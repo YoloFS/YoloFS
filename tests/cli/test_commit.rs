@@ -157,3 +157,38 @@ fn commit_new_file_has_default_mode() {
         mode
     );
 }
+
+/// Commit after restore should only apply live changes (checkpoint state),
+/// excluding dead-zone mutations.
+#[test]
+fn commit_after_restore_excludes_dead_zone() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "wanted\n").unwrap();
+    fs::write(s.mnt_path("keep.txt"), "keep\n").unwrap();
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    // Post-checkpoint changes (will be in dead zone after restore)
+    fs::write(s.mnt_path("hello.txt"), "unwanted\n").unwrap();
+    fs::write(s.mnt_path("dead.txt"), "dead\n").unwrap();
+    fs::remove_file(s.mnt_path("keep.txt")).unwrap();
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["commit"]).expect("commit");
+
+    // Base should have checkpoint state, not post-checkpoint mutations
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        "wanted\n",
+        "base should have checkpoint content"
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("keep.txt")).unwrap(),
+        "keep\n",
+        "deleted-after-checkpoint file should be in base"
+    );
+    assert!(
+        !s.base_path("dead.txt").exists(),
+        "post-checkpoint file should NOT be in base"
+    );
+}

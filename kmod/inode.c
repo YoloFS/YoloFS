@@ -44,7 +44,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 		.ino = ino,
 		.d_type = dt,
 		.base = in_base ? AGFS_BASE_PRESENT : NULL,
-		.checkpoint_gen = (u64)atomic64_read(&sbi->checkpoint_gen),
+		.gen = (u64)atomic64_read(&sbi->gen),
 	};
 	err = agfs_add_dirent(dir, dentry->d_name.name,
 			      dentry->d_name.len, &de);
@@ -135,7 +135,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 
 	/* VFS holds inode_lock(old_dir) + inode_lock(new_dir), which
 	 * serializes dirent access.  staging_sem is not needed here —
-	 * rename does not interact with checkpoint_gen or COW state. */
+	 * rename does not interact with gen or COW state. */
 
 	/* Read source state */
 	src_de = agfs_find_dirent(old_dir,
@@ -143,7 +143,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 				  old_dentry->d_name.len);
 	if (src_de) {
 		ino = src_de->ino;
-		gen = src_de->checkpoint_gen;
+		gen = src_de->gen;
 		d_type = src_de->d_type;
 		if (agfs_ino_is_redirect(ino)) {
 			WARN_ON_ONCE(src_de->base == AGFS_BASE_PRESENT);
@@ -176,7 +176,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (agfs_ino_is_staged(ino)) {
 		de.ino = ino;
 		de.base = dst_in_base ? AGFS_BASE_PRESENT : NULL;
-		de.checkpoint_gen = gen;
+		de.gen = gen;
 	} else {
 		de.ino = AGFS_INO_REDIRECT;
 		de.base = redirect_path;

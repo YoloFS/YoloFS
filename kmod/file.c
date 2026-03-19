@@ -94,7 +94,7 @@ static struct file *agfs_open_staged_ino(struct agfs_sb_info *sbi,
 	return f;
 }
 
-/* Read ino + checkpoint_gen from the parent's dirent table. */
+/* Read ino + gen from the parent's dirent table. */
 static void agfs_read_dirent(struct dentry *dentry, u64 *ino, u64 *gen)
 {
 	struct inode *dir = d_inode(dentry->d_parent);
@@ -106,7 +106,7 @@ static void agfs_read_dirent(struct dentry *dentry, u64 *ino, u64 *gen)
 				 dentry->d_name.len);
 	if (de) {
 		*ino = de->ino;
-		*gen = de->checkpoint_gen;
+		*gen = de->gen;
 	} else {
 		*ino = 0;
 		*gen = 0;
@@ -133,10 +133,10 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 
 	/* Fast path: inode is current — open directly */
 	if (agfs_ino_is_staged(ino) &&
-	    gen >= (u64)atomic64_read(&sbi->checkpoint_gen)) {
+	    gen >= (u64)atomic64_read(&sbi->gen)) {
 		down_read(&sbi->staging_sem);
 		/* Re-check under lock — a checkpoint may have raced */
-		if (gen >= (u64)atomic64_read(&sbi->checkpoint_gen)) {
+		if (gen >= (u64)atomic64_read(&sbi->gen)) {
 			atomic_inc(&sbi->staging_fd_count);
 			up_read(&sbi->staging_sem);
 			return agfs_open_staged_ino(sbi, ino, file->f_flags);
@@ -152,7 +152,7 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 	/* Re-check under sem — a concurrent open may have COW'd */
 	agfs_read_dirent(dentry, &ino, &gen);
 	if (agfs_ino_is_staged(ino) &&
-	    gen >= (u64)atomic64_read(&sbi->checkpoint_gen)) {
+	    gen >= (u64)atomic64_read(&sbi->gen)) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_write(&sbi->staging_sem);
 		return agfs_open_staged_ino(sbi, ino, file->f_flags);

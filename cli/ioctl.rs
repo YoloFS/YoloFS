@@ -32,7 +32,7 @@ nix::ioctl_write_ptr!(ioctl_rule_remove, b'A', 11, AgfsIocRule);
 nix::ioctl_readwrite!(ioctl_get_request, b'A', 30, AgfsCtlRequest);
 nix::ioctl_write_ptr!(ioctl_put_response, b'A', 31, AgfsCtlResponse);
 nix::ioctl_readwrite!(ioctl_checkpoint, b'A', 40, AgfsIocCheckpoint);
-nix::ioctl_write_ptr!(ioctl_restore, b'A', 41, AgfsIocRestore);
+nix::ioctl_readwrite!(ioctl_restore, b'A', 41, AgfsIocRestore);
 
 /// Matches `struct agfs_ioc_rule` in the kernel.
 #[repr(C)]
@@ -69,7 +69,7 @@ pub struct AgfsCtlResponse {
 /// Matches `struct agfs_ioc_checkpoint` in the kernel.
 #[repr(C)]
 pub struct AgfsIocCheckpoint {
-    pub id: u64,
+    pub gen_id: u64,
     pub name_ptr: u64,
     pub name_len: u16,
     pub _pad: [u8; 6],
@@ -91,9 +91,10 @@ pub struct AgfsIocRestoreEntry {
 /// Matches `struct agfs_ioc_restore` in the kernel.
 #[repr(C)]
 pub struct AgfsIocRestore {
-    pub checkpoint_gen: u64,
+    pub target_gen: u64,
+    pub new_gen: u64,
     pub entry_count: u64,
-    pub entries: *const AgfsIocRestoreEntry,
+    pub entries_ptr: u64,
 }
 
 /// A dequeued permission request with owned path data.
@@ -200,22 +201,28 @@ pub fn remove_rule(fd: &File, path: &str) -> Result<()> {
 }
 
 /// Send AGFS_IOC_RESTORE ioctl. Resets staging state and optionally injects
-/// dirent entries. For commit/abort, pass empty entries with checkpoint_gen=1.
-pub fn restore(fd: &File, checkpoint_gen: u64, entries: &[AgfsIocRestoreEntry]) -> Result<()> {
-    let hdr = AgfsIocRestore {
-        checkpoint_gen,
+/// dirent entries. For commit/abort, pass empty entries with target_gen=0.
+/// For restore, pass target_gen > 0; returns the new generation assigned.
+pub fn restore(
+    fd: &File,
+    target_gen: u64,
+    entries: &[AgfsIocRestoreEntry],
+) -> Result<u64> {
+    let mut hdr = AgfsIocRestore {
+        target_gen,
+        new_gen: 0,
         entry_count: entries.len() as u64,
-        entries: if entries.is_empty() {
-            std::ptr::null()
+        entries_ptr: if entries.is_empty() {
+            0
         } else {
-            entries.as_ptr()
+            entries.as_ptr() as u64
         },
     };
-    unsafe { ioctl_restore(fd.as_raw_fd(), &hdr) }.context("ioctl RESTORE")?;
-    Ok(())
+    unsafe { ioctl_restore(fd.as_raw_fd(), &mut hdr) }.context("ioctl RESTORE")?;
+    Ok(hdr.new_gen)
 }
 
-/// Send AGFS_IOC_CHECKPOINT ioctl. Returns the assigned checkpoint ID.
+/// Send AGFS_IOC_CHECKPOINT ioctl. Returns the assigned gen.
 pub fn create_checkpoint(fd: &File, name: &str) -> Result<u64> {
     let name_bytes = name.as_bytes();
     let name_len: u16 = name_bytes
@@ -223,13 +230,13 @@ pub fn create_checkpoint(fd: &File, name: &str) -> Result<u64> {
         .try_into()
         .context("checkpoint name too long")?;
     let mut chk = AgfsIocCheckpoint {
-        id: 0,
+        gen_id: 0,
         name_ptr: name_bytes.as_ptr() as u64,
         name_len,
         _pad: [0u8; 6],
     };
     unsafe { ioctl_checkpoint(fd.as_raw_fd(), &mut chk) }.context("ioctl CHECKPOINT")?;
-    Ok(chk.id)
+    Ok(chk.gen_id)
 }
 
 #[cfg(test)]
@@ -244,7 +251,7 @@ mod tests {
         assert_eq!(size_of::<AgfsIocRule>(), 16);
         assert_eq!(size_of::<AgfsIocCheckpoint>(), 24);
         assert_eq!(size_of::<AgfsIocRestoreEntry>(), 40);
-        assert_eq!(size_of::<AgfsIocRestore>(), 24);
+        assert_eq!(size_of::<AgfsIocRestore>(), 32);
     }
 
     #[test]

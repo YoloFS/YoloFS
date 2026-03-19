@@ -12,11 +12,12 @@
 ## Workflow
 
 - Always update documentation (`docs/`) before implementation.
-- Always run tests (unit and e2e) to verify changes.
+- Always run tests in vm to verify changes.
 - To fix a bug, first write a failing test, then fix it.
 - Do not modify existing tests when fixing a bug. If you are unsure, ask.
 - When adding new features or making changes, add tests if applicable: unit tests (inline `#[cfg(test)]`), white-box tests (`tests/internals/`), and black-box tests (`tests/fs/`, `tests/cli/`, `tests/perm/`).
 - Do not use git (commit, push, rebase, etc.) unless explicitly asked.
+- Before finalizing changes, run a code review (see **Code Review** section below).
 
 ## Project Structure
 
@@ -39,3 +40,14 @@ make vm-test-unit # unit tests only
 make vm-test-e2e  # e2e tests only
 make fix          # auto-fix lint issues (cargo fmt + clippy --fix)
 ```
+
+## Code Review
+
+Before finalizing any change set, run a full review of the current changes. Launch all review checks **in parallel as separate sub-agents**. Each sub-agent examines `git diff` for one category:
+
+1. **Bugs & correctness** — logic errors, off-by-one, unhandled errors, null/unwrap panics, race conditions, use-after-free, unsafe code, unchecked inputs.
+2. **Code quality** — unnecessary allocations/clones, redundant operations, overly complex logic, code that could be simplified or deduplicated, more idiomatic Rust/C patterns.
+3. **Doc consistency** — do `docs/` files accurately describe the new behavior? Do they contradict each other or the code?
+4. **Missing tests** — new code paths, features, or edge cases without test coverage; existing tests that need updating.
+
+Each sub-agent reports findings with file paths and line references. After all agents finish, triage the results and address issues.

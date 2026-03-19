@@ -12,8 +12,11 @@ pub fn journal(s: &AgfsSession) -> Vec<Record> {
 }
 
 /// Resolve the journal to get the final Change list.
+/// Uses `extract_live` to filter out dead records (e.g. after restore).
 pub fn changes(s: &AgfsSession) -> Vec<Change> {
-    resolve::resolve(journal(s)).expect("resolve journal")
+    let records = journal(s);
+    let live = resolve::extract_live(records);
+    resolve::resolve(live).expect("resolve journal")
 }
 
 /// List numeric inode entries in the inode store.

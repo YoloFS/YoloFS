@@ -12,7 +12,7 @@ avoiding the 512-byte allocation. See [staging.md — Path Resolution](staging.m
 `agfs_dirent` struct.
 
 No per-fd checkpoint state is needed. The COW check uses
-`dirent.checkpoint_gen < sbi->checkpoint_gen` (purely per-dirent). The fsync
+`dirent.gen < sbi->gen` (purely per-dirent). The fsync
 optimization uses `agfs_ino_is_staged(de->ino)`. The CLI enforces that
 checkpoints are only taken when no staging file handles are open
 (see [staging.md — Re-COW](staging.md#re-cow-on-first-open-for-write-after-checkpoint)),
@@ -94,12 +94,14 @@ descriptor (typically `.agfs/mnt`). Ioctl command macros are defined in
 | `AGFS_IOC_PUT_RESPONSE`    | Submit a decision: one `struct agfs_ctl_response`. Wakes the sleeping thread.                                                                               |
 | `AGFS_IOC_RULE_ADD`     | Add a permission rule to a dentry. Kernel resolves the path, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps `perm_gen`.                                                |
 | `AGFS_IOC_RULE_REMOVE`  | Remove a rule from a dentry. Kernel sets `perm = NONE`, unpins the dentry, and bumps `perm_gen`.                                                                                |
-| `AGFS_IOC_RESTORE`    | Atomically reset staging state and optionally inject dirent entries. Called by userspace after commit/abort (with `entry_count=0`) and for restore (with entries). Rejects with `-EBUSY` if staging fds are open. See detailed steps below and [staging.md — Restore](staging.md#checkpoint-aware-cli-operations). |
-| `AGFS_IOC_CHECKPOINT`     | Bump `checkpoint_gen`, append `K` record to journal, return checkpoint ID. Rejects with `-EBUSY` if staging fds are open. Triggers re-COW on next open-for-write to any staged file (see [staging.md — Checkpoints](staging.md#checkpoint-mechanism)). |
+| `AGFS_IOC_RESTORE`    | Atomically reset staging state and optionally inject dirent entries. Two modes: reset (`target_gen=0`) for commit/abort, restore (`target_gen>0`) for restore. Restore mode: increments `gen`, injects entries with new gen, appends `S` record to journal, returns `new_gen`. Reset mode: wipes dirents, sets `gen=1`, no journal write. Ioctl is `_IOWR` to return `new_gen`. Rejects with `-EBUSY` if staging fds are open. See detailed steps below and [staging.md — Restore](staging.md#checkpoint-aware-cli-operations). |
+| `AGFS_IOC_CHECKPOINT`     | Bump `gen`, append `K` record to journal, return checkpoint ID. Rejects with `-EBUSY` if staging fds are open. Triggers re-COW on next open-for-write to any staged file (see [staging.md — Checkpoints](staging.md#checkpoint-mechanism)). |
 
 `AGFS_IOC_RESTORE` is called by userspace after commit/abort (with
-`entry_count=0`, `checkpoint_gen=1` to reset to initial state) and for
-restore (with entries to rebuild the staging view at a given checkpoint).
+`entry_count=0`, `target_gen=0` to reset) and for restore (with entries
+to rebuild the staging view at a given checkpoint, `target_gen>0`).
+The ioctl struct has fields `target_gen`, `new_gen`, `entry_count`, and
+`entries_ptr`.
 It:
 1. Takes `staging_sem` write lock; rejects with `-EBUSY` if
    `staging_fd_count > 0`.
@@ -108,10 +110,16 @@ It:
    pinned directory inode.
 4. Calls `shrink_dcache_sb()` to drop stale dentry caches so the mount
    reflects the new base state.
-5. For each entry in the userspace array: resolves the parent path
-   via `vfs_path_lookup` on the mount root, takes `inode_lock(parent)`,
-   calls `agfs_add_dirent()` to install the dirent, then releases.
-6. Sets `checkpoint_gen` to the requested value (only on success).
+5. **Reset mode** (`target_gen=0`): Sets `sbi->gen` to 1 and returns.
+   Steps 6–9 are skipped.
+6. **Restore mode** (`target_gen>0`): Increments `sbi->gen` to allocate
+   `new_gen`.
+7. **Restore mode**: For each entry in the userspace array: resolves
+   the parent path via `vfs_path_lookup` on the mount root, takes
+   `inode_lock(parent)`, calls `agfs_add_dirent()` to install the
+   dirent with `gen = new_gen`, then releases.
+8. **Restore mode**: Appends `S\0<new_gen>\0<target_gen>\n` to journal.
+9. **Restore mode**: Writes back `new_gen` to userspace struct.
 
 On the first `AGFS_IOC_GET_REQUEST`, a per-fd `agfs_ctl_private` is lazily
 allocated to track dispatched requests. Only one daemon is allowed at a time;
@@ -124,7 +132,7 @@ resolved immediately using `ask_default`.
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + `dirent.checkpoint_gen`). Also serializes restore. | `rw_semaphore` (write for COW/checkpoint/restore). Create/mkdir/symlink/unlink/rmdir/rename are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
+| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + `dirent.gen`). Also serializes restore (S record write). | `rw_semaphore` (write for COW/checkpoint/restore). Create/mkdir/symlink/unlink/rmdir/rename are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
 | `inode->i_rwsem` (VFS) | Per-directory dirent table | `rw_semaphore` (held by VFS for lookup/readdir/mutations) |
 | `dentry_info->lock` | Cached lower path | `spinlock` |

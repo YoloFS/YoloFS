@@ -61,7 +61,7 @@ fn print_segment_footer(segment: &Segment) {
     if let Some(c) = &segment.to {
         println!(
             "{} {}",
-            format!("checkpoint [{}]", c.id).cyan().bold(),
+            format!("checkpoint [{}]", c.gen_id).cyan().bold(),
             c.name.dimmed()
         );
     }
@@ -136,6 +136,7 @@ fn run(
 ) -> Result<bool> {
     let agfs = crate::utils::session_dir()?;
     let records = journal::read(&agfs)?.records;
+    let records = resolve::extract_live(records);
     let records = resolve::slice_records(records, at, from, to)?;
     let segments = resolve::resolve_segments(records)?;
 

@@ -6,24 +6,30 @@ use std::os::unix::fs::MetadataExt;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Restore to a checkpoint resets the journal to records up to the checkpoint.
+/// Restore to a checkpoint appends an S record (append-only journal).
 #[test]
-fn restore_to_checkpoint_truncates_journal() {
+fn restore_to_checkpoint_appends_s_record() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::write(s.mnt_path("multi.txt"), "post-chk\n").expect("write after checkpoint");
 
+    let count_before = journal(&s).len();
+
     s.cli(&["restore", "s1"]).expect("restore");
 
     let records = journal(&s);
-    // Post-checkpoint records should be gone
+
+    // Restore appends exactly one S record.
+    assert_eq!(
+        records.len(),
+        count_before + 1,
+        "restore should append exactly one record: {records:?}"
+    );
     assert!(
-        !records
-            .iter()
-            .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/multi.txt"))),
-        "post-checkpoint Add should be removed: {records:?}"
+        matches!(records.last(), Some(Record::Restore { .. })),
+        "last record should be Restore: {records:?}"
     );
     // The s1 checkpoint itself should still be present
     assert!(
