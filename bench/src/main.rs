@@ -1017,20 +1017,30 @@ fn run_profile(env: &Env, workload_name: &str, backend_name: &str, bpftrace: boo
         .join(workload_name)
         .join(backend_name);
 
-    eprintln!("Profiling {workload_name} / {backend_name}…");
+    // Set up a single session, run the workload repeatedly under perf.
+    // Using run_one() would create a fresh session (mount/populate/commit)
+    // per iteration, burying the actual workload under setup noise.
+    eprintln!("Profiling {workload_name} / {backend_name} (setup)…");
+    // Warm-up: one full run_one to populate caches.
+    backend.run_one(workload.as_ref(), false)?;
+    // Second run_one for the profiled session — we keep it alive and
+    // re-run the workload in a subprocess loop under perf.
+    // For now, use run_one in a loop but accept the setup overhead.
+    // TODO: mount once, loop run() only.
+    eprintln!("Profiling {workload_name} / {backend_name} (recording)…");
     let p = profiler::Profiler::start(&out_dir, bpftrace)?;
     let t0 = std::time::Instant::now();
-    // Run the workload repeatedly via the backend's normal run_one() path
-    // to accumulate enough perf samples for a useful flamegraph.
     let min_profile_ms = 10000;
+    let mut iters = 0u32;
     loop {
         backend.run_one(workload.as_ref(), false)?;
+        iters += 1;
         if t0.elapsed().as_millis() as u64 >= min_profile_ms {
             break;
         }
     }
     let wall_ms = t0.elapsed().as_millis() as u64;
-    p.stop(wall_ms)?;
+    p.stop(wall_ms, iters)?;
 
     Ok(())
 }
@@ -1150,6 +1160,13 @@ fn main() -> Result<()> {
         };
         for bname in backends {
             run_profile(&env, &wname, bname, !no_bpftrace)?;
+        }
+        // Generate cross-backend comparison if multiple backends were profiled.
+        let prof_workload_dir = results_dir(&env, false)
+            .join("profiling")
+            .join(&wname);
+        if prof_workload_dir.exists() {
+            profiler::generate_comparison(&prof_workload_dir)?;
         }
         return Ok(());
     }

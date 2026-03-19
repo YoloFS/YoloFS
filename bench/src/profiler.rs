@@ -125,7 +125,7 @@ impl Profiler {
     }
 
     /// Stop both tools, compute stats, write all artifacts, print summary.
-    pub fn stop(mut self, wall_ms: u64) -> Result<()> {
+    pub fn stop(mut self, wall_ms: u64, iters: u32) -> Result<()> {
         if let Some(ref bpftrace) = self.bpftrace {
             // SIGINT triggers bpftrace to flush all maps before exiting.
             let _ = nix::sys::signal::kill(
@@ -153,6 +153,7 @@ impl Profiler {
 
         write_summary(&self.out_dir, &ops, wall_ms)?;
         generate_flamegraph(&self.out_dir)?;
+        generate_breakdown(&self.out_dir, wall_ms, iters)?;
 
         Ok(())
     }
@@ -481,4 +482,508 @@ fn generate_flamegraph(out_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Generate a function-level breakdown from collapsed stacks, sorted by
+/// sample count. Each line shows the percentage of total samples and the
+/// estimated wall-time contribution based on the profiled duration.
+fn workload_run_pattern(out_dir: &Path) -> String {
+    // Derive the run function name pattern from the workload directory name.
+    // e.g. "meta-open-warm-stage" → "run_meta_open_warm"
+    // Strip the source suffix (-base/-stage/-checkpoint) first.
+    let workload_name = out_dir
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let base = crate::workloads::meta_shared::source_group_name(workload_name)
+        .unwrap_or(workload_name);
+    format!("run_{}", base.replace('-', "_"))
+}
+
+// ── Call tree ─────────────────────────────────────────────────────────────────
+
+/// A node in the call tree built from collapsed stacks.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CallNode {
+    name: String,
+    /// Inclusive sample count (this function + all descendants).
+    inclusive: u64,
+    /// Self sample count (stacks that terminate at this function).
+    self_count: u64,
+    children: Vec<CallNode>,
+}
+
+/// Serialisable breakdown metadata saved alongside the call tree.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BreakdownMeta {
+    workload: String,
+    backend: String,
+    wall_ms: u64,
+    iters: u32,
+    per_op_us: Option<f64>,
+    timed_samples: u64,
+    tree: CallNode,
+}
+
+impl CallNode {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            inclusive: 0,
+            self_count: 0,
+            children: Vec::new(),
+        }
+    }
+
+    fn child_mut(&mut self, name: &str) -> &mut CallNode {
+        if let Some(pos) = self.children.iter().position(|c| c.name == name) {
+            &mut self.children[pos]
+        } else {
+            self.children.push(CallNode::new(name));
+            self.children.last_mut().unwrap()
+        }
+    }
+
+    /// Sort children by inclusive count (descending), recursively.
+    fn sort(&mut self) {
+        self.children.sort_by(|a, b| b.inclusive.cmp(&a.inclusive));
+        for child in &mut self.children {
+            child.sort();
+        }
+    }
+
+    /// Render the tree as indented text. `scale` converts sample counts to µs.
+    fn render(&self, buf: &mut String, scale: f64, prefix: &str, is_last: bool, is_root: bool) {
+        let incl_us = self.inclusive as f64 * scale;
+        let self_us = self.self_count as f64 * scale;
+
+        if !is_root {
+            let connector = if is_last { "└─ " } else { "├─ " };
+            let self_str = if self_us > 0.005 {
+                format!("{:5.2}", self_us)
+            } else {
+                "    —".to_string()
+            };
+            buf.push_str(&format!(
+                "  {:6.2}  {}  {}{}{}\n",
+                incl_us, self_str, prefix, connector, self.name
+            ));
+        }
+
+        let child_prefix = if is_root {
+            String::new()
+        } else if is_last {
+            format!("{prefix}   ")
+        } else {
+            format!("{prefix}│  ")
+        };
+
+        // Only show children that are at least 1% of parent's inclusive.
+        let threshold = (self.inclusive as f64 * 0.01) as u64;
+        let visible: Vec<&CallNode> = self
+            .children
+            .iter()
+            .filter(|c| c.inclusive >= threshold)
+            .collect();
+
+        for (i, child) in visible.iter().enumerate() {
+            let last = i == visible.len() - 1;
+            child.render(buf, scale, &child_prefix, last, false);
+        }
+    }
+}
+
+/// Build a call tree from collapsed stacks, filtering and trimming as needed.
+fn build_call_tree<'a>(
+    stacks: impl Iterator<Item = (&'a str, u64)>,
+    skip: &dyn Fn(&str) -> bool,
+) -> CallNode {
+    let mut root = CallNode::new("(root)");
+
+    for (stack, count) in stacks {
+        let funcs: Vec<&str> = stack.split(';').filter(|f| !skip(f)).collect();
+        if funcs.is_empty() {
+            continue;
+        }
+        root.inclusive += count;
+
+        let mut node = &mut root;
+        for (i, func) in funcs.iter().enumerate() {
+            node = node.child_mut(func);
+            node.inclusive += count;
+            if i == funcs.len() - 1 {
+                node.self_count += count;
+            }
+        }
+    }
+
+    root.sort();
+    root
+}
+
+fn generate_breakdown(out_dir: &Path, wall_ms: u64, iters: u32) -> Result<()> {
+    let stacks_path = out_dir.join("stacks.txt");
+    if !stacks_path.exists() {
+        return Ok(());
+    }
+    let raw = fs::read_to_string(&stacks_path).context("reading stacks.txt")?;
+
+    let backend_name = out_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?");
+    let workload_name = out_dir
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("?");
+
+    let per_op_us = lookup_per_op_latency(out_dir, workload_name, backend_name);
+    let run_pattern = workload_run_pattern(out_dir);
+
+    let skip = |func: &str| -> bool {
+        func == "agfs-bench"
+            || func == "_start"
+            || func == "main"
+            || func == "[libc.so.6]"
+            || func.starts_with("std::")
+            || func.starts_with("core::")
+            || func.starts_with("_Z")
+    };
+
+    // Parse stacks, filter to run function, exclude warm-up.
+    let mut timed_total: u64 = 0;
+    let mut all_total: u64 = 0;
+    let mut warmup_total: u64 = 0;
+    let mut run_total: u64 = 0;
+
+    struct ParsedStack {
+        stack: String,
+        count: u64,
+        is_run: bool,
+        is_warmup: bool,
+    }
+
+    let mut parsed: Vec<ParsedStack> = Vec::new();
+    for line in raw.lines() {
+        let Some((stack, count_str)) = line.rsplit_once(' ') else {
+            continue;
+        };
+        let Ok(count) = count_str.parse::<u64>() else {
+            continue;
+        };
+        if !stack.contains("agfs-bench") {
+            continue;
+        }
+        all_total += count;
+        let is_run = stack.contains(&run_pattern);
+        let is_warmup =
+            is_run && (stack.contains("warm_metadata") || stack.contains("warm_readdir"));
+        if is_run {
+            run_total += count;
+            if is_warmup {
+                warmup_total += count;
+            } else {
+                timed_total += count;
+            }
+        }
+        parsed.push(ParsedStack {
+            stack: stack.to_string(),
+            count,
+            is_run,
+            is_warmup,
+        });
+    }
+
+    if timed_total == 0 {
+        return Ok(());
+    }
+
+    // Build call tree from timed stacks only.
+    let tree = build_call_tree(
+        parsed
+            .iter()
+            .filter(|p| p.is_run && !p.is_warmup)
+            .map(|p| (p.stack.as_str(), p.count)),
+        &skip,
+    );
+
+    let scale = if let Some(per_op) = per_op_us {
+        per_op / timed_total as f64
+    } else {
+        wall_ms as f64 / all_total as f64
+    };
+
+    let mut buf = String::new();
+    buf.push_str(&format!(
+        "Function breakdown: {workload_name} / {backend_name}\n\
+         wall: {wall_ms} ms, {iters} iterations\n"
+    ));
+    if let Some(us) = per_op_us {
+        buf.push_str(&format!("per-op latency (from results.json): {us:.2} µs\n"));
+    }
+
+    let run_pct = run_total as f64 * 100.0 / all_total as f64;
+    let warmup_pct = warmup_total as f64 * 100.0 / run_total as f64;
+    let timed_pct = timed_total as f64 * 100.0 / run_total as f64;
+    buf.push_str(&format!(
+        "\nrun function: {run_pct:.0}% of profiled time\n\
+         timed operation: {timed_pct:.0}% of run | warm-up: {warmup_pct:.0}% of run\n\n"
+    ));
+
+    let unit = if per_op_us.is_some() { "µs/op" } else { "~ms" };
+    buf.push_str(&format!("  {:>6}  {:>5}  call tree\n", "incl", "self"));
+    buf.push_str(&format!(
+        "  {:>6}  {:>5}\n",
+        unit, unit
+    ));
+    buf.push_str(&format!("  {}\n", "-".repeat(60)));
+
+    // Render from the root's children (skip the synthetic root node).
+    for (i, child) in tree.children.iter().enumerate() {
+        let last = i == tree.children.len() - 1;
+        child.render(&mut buf, scale, "", last, false);
+    }
+
+    let path = out_dir.join("breakdown.txt");
+    fs::write(&path, &buf).context("writing breakdown.txt")?;
+    print!("{buf}");
+
+    // Save structured breakdown as JSON for the comparison tool.
+    let meta = BreakdownMeta {
+        workload: workload_name.to_string(),
+        backend: backend_name.to_string(),
+        wall_ms,
+        iters,
+        per_op_us,
+        timed_samples: timed_total,
+        tree,
+    };
+    let json_path = out_dir.join("breakdown.json");
+    let json = serde_json::to_string_pretty(&meta).context("serialising breakdown")?;
+    fs::write(&json_path, json).context("writing breakdown.json")?;
+
+    Ok(())
+}
+
+/// Generate a side-by-side hierarchical comparison from breakdown.json files.
+pub fn generate_comparison(prof_workload_dir: &Path) -> Result<()> {
+    // Load all breakdown.json files.
+    let mut metas: Vec<BreakdownMeta> = Vec::new();
+    for entry in fs::read_dir(prof_workload_dir).context("reading profiling dir")? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let json_path = entry.path().join("breakdown.json");
+        if let Ok(raw) = fs::read_to_string(&json_path) {
+            if let Ok(meta) = serde_json::from_str::<BreakdownMeta>(&raw) {
+                metas.push(meta);
+            }
+        }
+    }
+    metas.sort_by(|a, b| a.backend.cmp(&b.backend));
+    if metas.len() < 2 {
+        return Ok(());
+    }
+
+    let workload_name = &metas[0].workload;
+
+    // Build a merged tree: walk all trees in parallel, unioning the children.
+    // Each node stores µs/op per backend.
+    struct MergedNode {
+        name: String,
+        /// µs/op inclusive, one per backend (0.0 if absent).
+        inclusive: Vec<f64>,
+        /// µs/op self, one per backend.
+        self_us: Vec<f64>,
+        children: Vec<MergedNode>,
+    }
+
+    fn merge_trees(trees: &[&CallNode], scales: &[f64], n: usize) -> MergedNode {
+        let mut merged = MergedNode {
+            name: trees.first().map(|t| t.name.clone()).unwrap_or_default(),
+            inclusive: (0..n)
+                .map(|i| {
+                    trees
+                        .get(i)
+                        .map(|t| t.inclusive as f64 * scales[i])
+                        .unwrap_or(0.0)
+                })
+                .collect(),
+            self_us: (0..n)
+                .map(|i| {
+                    trees
+                        .get(i)
+                        .map(|t| t.self_count as f64 * scales[i])
+                        .unwrap_or(0.0)
+                })
+                .collect(),
+            children: Vec::new(),
+        };
+
+        // Union all child names across all trees.
+        let mut child_names: Vec<String> = Vec::new();
+        for tree in trees {
+            for child in &tree.children {
+                if !child_names.contains(&child.name) {
+                    child_names.push(child.name.clone());
+                }
+            }
+        }
+
+        for child_name in &child_names {
+            let child_trees: Vec<&CallNode> = trees
+                .iter()
+                .map(|t| {
+                    t.children
+                        .iter()
+                        .find(|c| c.name == *child_name)
+                        .unwrap_or(&EMPTY_NODE)
+                })
+                .collect();
+            let child = merge_trees(&child_trees, scales, n);
+            // Skip nodes where all backends have < 1% of max inclusive.
+            let max_incl = child
+                .inclusive
+                .iter()
+                .fold(0.0f64, |a, &b| a.max(b));
+            let parent_max = merged
+                .inclusive
+                .iter()
+                .fold(0.0f64, |a, &b| a.max(b));
+            if max_incl >= parent_max * 0.01 {
+                merged.children.push(child);
+            }
+        }
+
+        // Sort children by max inclusive across backends.
+        merged.children.sort_by(|a, b| {
+            let max_a = a.inclusive.iter().fold(0.0f64, |x, &y| x.max(y));
+            let max_b = b.inclusive.iter().fold(0.0f64, |x, &y| x.max(y));
+            max_b.partial_cmp(&max_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        merged
+    }
+
+    static EMPTY_NODE: CallNode = CallNode {
+        name: String::new(),
+        inclusive: 0,
+        self_count: 0,
+        children: Vec::new(),
+    };
+
+    let n = metas.len();
+    let scales: Vec<f64> = metas
+        .iter()
+        .map(|m| {
+            m.per_op_us.unwrap_or(m.wall_ms as f64)
+                / m.timed_samples.max(1) as f64
+        })
+        .collect();
+
+    // Get root children from each tree (skip the synthetic root).
+    let roots: Vec<&CallNode> = metas.iter().map(|m| &m.tree).collect();
+    let merged = merge_trees(&roots, &scales, n);
+
+    // Render.
+    let mut buf = String::new();
+    buf.push_str(&format!("Comparison: {workload_name}\n"));
+    buf.push_str(&format!("{}\n\n", "=".repeat(70)));
+    for m in &metas {
+        buf.push_str(&format!(
+            "  {}: {:.2} µs/op\n",
+            m.backend,
+            m.per_op_us.unwrap_or(0.0)
+        ));
+    }
+    buf.push('\n');
+
+    // Column header.
+    let backend_labels: Vec<&str> = metas.iter().map(|m| m.backend.as_str()).collect();
+    buf.push_str(&format!("  {:<35}", ""));
+    for label in &backend_labels {
+        let short = if label.len() > 10 { &label[..10] } else { label };
+        buf.push_str(&format!(" {:>10}", short));
+    }
+    if n == 2 {
+        buf.push_str(&format!(" {:>8}", "delta"));
+    }
+    buf.push('\n');
+    buf.push_str(&format!("  {}\n", "-".repeat(35 + n * 11 + if n == 2 { 9 } else { 0 })));
+
+    fn render_merged(
+        node: &MergedNode,
+        buf: &mut String,
+        prefix: &str,
+        is_last: bool,
+        n: usize,
+    ) {
+        let connector = if is_last { "└─ " } else { "├─ " };
+        buf.push_str(&format!("  {prefix}{connector}{:<width$}", node.name, width = 33_usize.saturating_sub(prefix.len() + 3)));
+        for &us in &node.inclusive {
+            if us > 0.005 {
+                buf.push_str(&format!(" {:>9.2}", us));
+            } else {
+                buf.push_str(&format!(" {:>10}", "—"));
+            }
+        }
+        if n == 2 {
+            let delta = node.inclusive[0] - node.inclusive[1];
+            if delta.abs() > 0.01 {
+                buf.push_str(&format!(" {:>+7.2}", delta));
+            }
+        }
+        buf.push('\n');
+
+        let child_prefix = if is_last {
+            format!("{prefix}   ")
+        } else {
+            format!("{prefix}│  ")
+        };
+
+        for (i, child) in node.children.iter().enumerate() {
+            let last = i == node.children.len() - 1;
+            render_merged(child, buf, &child_prefix, last, n);
+        }
+    }
+
+    for (i, child) in merged.children.iter().enumerate() {
+        let last = i == merged.children.len() - 1;
+        render_merged(child, &mut buf, "", last, n);
+    }
+
+    let path = prof_workload_dir.join("comparison.txt");
+    fs::write(&path, &buf).context("writing comparison.txt")?;
+    eprintln!("Comparison written to {}", path.display());
+    print!("{buf}");
+
+    Ok(())
+}
+
+/// Look up the per-operation latency (µs) for a workload+backend from
+/// the most recent results.json. Returns None if not found.
+fn lookup_per_op_latency(out_dir: &Path, workload_name: &str, backend_name: &str) -> Option<f64> {
+    // Walk up from profiling/<workload>/<backend> to find results.json.
+    let results_dir = out_dir.parent()?.parent()?.parent()?;
+    let json_path = results_dir.join("results.json");
+    let raw = fs::read_to_string(&json_path).ok()?;
+    let results: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    for wl in results["workloads"].as_array()? {
+        if wl["workload"].as_str()? != workload_name {
+            continue;
+        }
+        for b in wl["backends"].as_array()? {
+            if b["backend"].as_str()? != backend_name {
+                continue;
+            }
+            let iops = b["mean_iops"].as_f64()?;
+            if iops > 0.0 {
+                return Some(1_000_000.0 / iops);
+            }
+        }
+    }
+    None
 }
