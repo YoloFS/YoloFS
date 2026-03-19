@@ -306,8 +306,44 @@ pub fn summarize_latencies(
     total: Duration,
     throughput_kbps: Option<u64>,
 ) -> OpResult {
-    latencies.sort_unstable();
+    summarize_latencies_with_series(latencies, total, throughput_kbps, 0)
+}
+
+/// Like `summarize_latencies` but also records a latency-vs-index series
+/// by averaging every `bucket_size` consecutive operations. Pass 0 to skip.
+pub fn summarize_latencies_with_series(
+    mut latencies: Vec<Duration>,
+    total: Duration,
+    throughput_kbps: Option<u64>,
+    bucket_size: usize,
+) -> OpResult {
+    use crate::workload::LatencyPoint;
+
     let len = latencies.len();
+
+    // Build the series BEFORE sorting (preserves insertion order).
+    let latency_series = if bucket_size > 0 && len >= bucket_size {
+        let mut points = Vec::with_capacity(len / bucket_size);
+        for chunk_start in (0..len).step_by(bucket_size) {
+            let chunk_end = (chunk_start + bucket_size).min(len);
+            let n = (chunk_end - chunk_start) as f64;
+            let avg_us = latencies[chunk_start..chunk_end]
+                .iter()
+                .map(|d| d.as_secs_f64() * 1_000_000.0)
+                .sum::<f64>()
+                / n;
+            points.push(LatencyPoint {
+                op_index: chunk_end,
+                avg_lat_us: avg_us,
+            });
+        }
+        Some(points)
+    } else {
+        None
+    };
+
+    // Sort for percentile computation.
+    latencies.sort_unstable();
     let percentile_us = |numerator: usize, denominator: usize| -> f64 {
         let idx = ((len * numerator).div_ceil(denominator)).saturating_sub(1);
         latencies[idx.min(len.saturating_sub(1))].as_secs_f64() * 1_000_000.0
@@ -325,6 +361,7 @@ pub fn summarize_latencies(
         read_lat_us_p99: None,
         write_lat_us_p50: None,
         write_lat_us_p99: None,
+        latency_series,
     }
 }
 
@@ -483,6 +520,7 @@ fn parse_fio_result(fio_json: &Value) -> Result<OpResult> {
         read_lat_us_p99: (read_iops > 0.0).then_some(read_lats.1),
         write_lat_us_p50: (write_iops > 0.0).then_some(write_lats.0),
         write_lat_us_p99: (write_iops > 0.0).then_some(write_lats.1),
+        latency_series: None,
     })
 }
 

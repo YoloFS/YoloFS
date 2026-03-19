@@ -65,6 +65,18 @@ pub struct OpResult {
     pub write_lat_us_p50: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub write_lat_us_p99: Option<f64>,
+    /// Per-operation latency evolution: average latency in µs bucketed by
+    /// operation index. Each point is (operation_index, avg_latency_us).
+    /// Used to visualise how latency changes as the workload progresses
+    /// (e.g. directory growth during meta-create).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_series: Option<Vec<LatencyPoint>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LatencyPoint {
+    pub op_index: usize,
+    pub avg_lat_us: f64,
 }
 
 /// Workload category.
