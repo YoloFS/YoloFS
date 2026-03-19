@@ -113,19 +113,19 @@ fn rename_overwrite_journal() {
 
     let records = journal(&s);
 
-    // Should have Delete(hello.txt) + Redirect(subdir/deep.txt, base=hello.txt)
+    // Should have Delete(hello.txt) + Replace(subdir/deep.txt, base=hello.txt)
     let has_delete = records.iter().any(|r| {
         matches!(r, Record::Deleted { path }
         if path.ends_with("/hello.txt"))
     });
-    let has_redirect = records.iter().any(|r| {
-        matches!(r, Record::Redirect { path, base, .. }
+    let has_replace = records.iter().any(|r| {
+        matches!(r, Record::Replace { path, base, .. }
         if path.ends_with("/deep.txt") && base.ends_with("/hello.txt"))
     });
     assert!(has_delete, "should have Delete for hello.txt: {records:?}");
     assert!(
-        has_redirect,
-        "should have Redirect for deep.txt: {records:?}"
+        has_replace,
+        "should have Replace for deep.txt: {records:?}"
     );
 }
 

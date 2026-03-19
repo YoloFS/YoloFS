@@ -12,6 +12,7 @@ use std::collections::HashMap;
 pub fn run(path_filter: Option<&str>) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
     let records = journal::read(&agfs)?.records;
+    let path_filter = path_filter.map(crate::utils::normalize_path);
 
     if records.is_empty() {
         println!("{}", "No journal records.".yellow());
@@ -33,7 +34,7 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
     for (i, record) in records.iter().enumerate() {
         let reachable = reachable_set.contains(&i);
 
-        if let Some(filter) = path_filter
+        if let Some(filter) = path_filter.as_deref()
             && !record_matches_path(record, filter)
             && !is_structural(record)
         {

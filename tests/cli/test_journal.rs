@@ -69,11 +69,9 @@ fn journal_path_filter() {
     fs::write(s.mnt_path("a.txt"), "aaa\n").expect("write a");
     fs::write(s.mnt_path("b.txt"), "bbb\n").expect("write b");
 
-    // Journal stores full mount paths, so use the full path for --path filter
-    let a_path = s.mnt_path("a.txt");
-    let a_path_str = a_path.to_str().unwrap();
+    // CLI runs from session root; normalize_path resolves relative to cwd
     let output = s
-        .cli(&["journal", "--path", a_path_str])
+        .cli(&["journal", "--path", "a.txt"])
         .expect("journal --path");
     assert!(
         output.contains("a.txt"),
