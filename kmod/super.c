@@ -235,7 +235,6 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	sb->s_fs_info = sbi;
 	sb->s_op = &agfs_sops;
-	sb->s_d_op = &agfs_dops;
 	sb->s_magic = AGFS_SUPER_MAGIC;
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
 	sb->s_stack_depth = 0;
@@ -245,6 +244,19 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	err = agfs_resolve_paths(sbi, sb, fc);
 	if (err)
 		goto out_put;
+
+	/*
+	 * Choose dentry operations based on whether the lower filesystem
+	 * needs d_revalidate.  Local filesystems (ext4, xfs, …) don't,
+	 * so we use the fast dentry ops that skip d_revalidate entirely —
+	 * keeping lookup_fast in pure RCU-walk mode.  Remote filesystems
+	 * (NFS) set DCACHE_OP_REVALIDATE on their dentries, so we use
+	 * the full ops that proxy revalidation to the lower layer.
+	 */
+	if (sbi->base_path.dentry->d_flags & DCACHE_OP_REVALIDATE)
+		sb->s_d_op = &agfs_dops;
+	else
+		sb->s_d_op = &agfs_dops_fast;
 
 	/* Create root inode from lower root */
 	inode = agfs_iget(sb, d_inode(sbi->base_path.dentry));

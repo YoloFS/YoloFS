@@ -394,6 +394,7 @@ extern const struct address_space_operations agfs_aops;
 
 /* dentry.c */
 extern const struct dentry_operations agfs_dops;
+extern const struct dentry_operations agfs_dops_fast;
 int agfs_init_dentry_cache(void);
 void agfs_destroy_dentry_cache(void);
 int agfs_new_dentry_private_data(struct dentry *dentry);

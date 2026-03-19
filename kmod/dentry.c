@@ -93,8 +93,16 @@ static void agfs_d_release(struct dentry *dentry)
 	agfs_free_dentry_private_data(dentry);
 }
 
+/* Full ops: proxy d_revalidate to the lower filesystem (e.g. NFS). */
 const struct dentry_operations agfs_dops = {
 	.d_revalidate	= agfs_d_revalidate,
+	.d_release	= agfs_d_release,
+};
+
+/* Fast ops: no d_revalidate — for local lower filesystems (ext4, xfs).
+ * The VFS won't set DCACHE_OP_REVALIDATE on these dentries, so
+ * lookup_fast stays in pure RCU-walk without any function call. */
+const struct dentry_operations agfs_dops_fast = {
 	.d_release	= agfs_d_release,
 };
 
