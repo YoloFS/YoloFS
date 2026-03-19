@@ -99,7 +99,8 @@ pub fn all() -> Vec<Box<dyn Workload>> {
         Box::new(fio_rand_write::FioRandWrite),
         Box::new(fio_randrw_cold::FioRandRwCold),
         Box::new(fio_randrw_warm::FioRandRwWarm),
-        Box::new(meta_create::MetaCreate),
+        Box::new(meta_create::MetaCreate { count: OP_FILE_COUNT }),
+        Box::new(meta_create::MetaCreate { count: 10 }),
     ];
     for w in meta_append::MetaAppend::all() {
         v.push(Box::new(w));
@@ -182,7 +183,7 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
         "checkpoint-scalability" => checkpoint_scalability::details(),
         "worktree" => worktree::details(),
         "linux-untar" => linux_untar::details(),
-        "meta-create" => meta_create::details(),
+        "meta-create" | "meta-create-10" => meta_create::details(),
         "meta-append-base" | "meta-append-stage" | "meta-append-checkpoint" => {
             meta_append::details()
         }
