@@ -8,6 +8,7 @@
 - Think through problems and implement the best solution; avoid fallbacks.
 - Keep functions short. Extract helpers when a function does multiple distinct things.
 - Do not change or remove existing comments unless they are outdated.
+- Do not be afraid of large-scale refactoring. If the design is better, do it.
 
 ## Workflow
 
@@ -17,6 +18,7 @@
 - Do not modify existing tests when fixing a bug. If you are unsure, ask.
 - When adding new features or making changes, add tests if applicable: unit tests (inline `#[cfg(test)]`), white-box tests (`tests/internals/`), and black-box tests (`tests/fs/`, `tests/cli/`, `tests/perm/`).
 - Do not use git (commit, push, rebase, etc.) unless explicitly asked.
+- For refactoring, save a plan under `docs/plans/` (numbered: `0-name.md`, `1-name.md`, ...) before implementing.
 - Before finalizing changes, run a code review (see **Code Review** section below).
 
 ## Project Structure
