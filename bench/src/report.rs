@@ -347,8 +347,43 @@ fn render_op_workload(
     }
     table.push_str("</table>\n");
 
+    // If any backend has a latency series, render a line chart.
+    let has_series = sorted.iter().any(|b| b.latency_series.is_some());
+    let series_html = if has_series {
+        let mut series_plot = Plot::new();
+        for b in &sorted {
+            if let Some(ref series) = b.latency_series {
+                let xs: Vec<usize> = series.iter().map(|p| p.op_index).collect();
+                let ys: Vec<f64> = series.iter().map(|p| p.avg_lat_us).collect();
+                series_plot.add_trace(
+                    Scatter::new(xs, ys)
+                        .mode(Mode::Lines)
+                        .name(&b.backend)
+                        .line(plotly::common::Line::new().color(backend_color(&b.backend))),
+                );
+            }
+        }
+        series_plot.set_layout(
+            Layout::new()
+                .title(Title::with_text(format!(
+                    "{} — latency vs file count",
+                    wl.workload
+                )))
+                .x_axis(Axis::new().title(Title::with_text("files created")))
+                .y_axis(Axis::new().title(Title::with_text("avg latency (µs)")))
+                .show_legend(true),
+        );
+        series_plot.set_configuration(Configuration::new().responsive(true));
+        format!(
+            "<div style=\"width:100%;height:400px;margin-top:1em\">{}</div>",
+            series_plot.to_inline_html(Some("latency-series"))
+        )
+    } else {
+        String::new()
+    };
+
     full_html = inject_workload_status(full_html, &status);
-    full_html = full_html.replace("</body>", &format!("{table}</body>"));
+    full_html = full_html.replace("</body>", &format!("{table}{series_html}</body>"));
 
     std::fs::write(&html_path, full_html)
         .with_context(|| format!("writing {}", html_path.display()))?;
