@@ -4,7 +4,7 @@
 //
 // Submodules:
 //   types     — Record, Change, Checkpoint, DType, INO_REDIRECT
-//   parse     — read(), inode_path()
+//   parse     — read()
 //   segment   — Segment, Marker, Markers, SegmentedJournal (split records at K/S boundaries)
 //   liveness  — alive_segments(), live(), live_prefix(), live_slice() (reachability filtering)
 //   resolve   — Resolver, resolve()

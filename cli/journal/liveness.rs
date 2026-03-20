@@ -29,22 +29,28 @@ impl Markers {
             return vec![];
         }
 
+        // Build gen_id → marker index lookup for O(1) checkpoint resolution.
+        let mut gen_to_idx: std::collections::HashMap<u64, usize> =
+            std::collections::HashMap::new();
+        for i in range.clone() {
+            if let Marker::Checkpoint { checkpoint, .. } = &self.0[i] {
+                gen_to_idx.insert(checkpoint.gen_id, i);
+            }
+        }
+
         let mut alive = vec![true; num_segments];
         let mut alive_end = num_segments;
 
-        for m in range.clone().rev() {
-            let Marker::Restore { target_gen, .. } = self.get(m).unwrap() else {
+        for m in range.rev() {
+            let Marker::Restore { target_gen, .. } = &self.0[m] else {
                 continue;
             };
             if m + 1 >= alive_end {
                 continue;
             }
-            let Some(k_idx) = self.0[range.clone()].iter().position(|mk| {
-                matches!(mk, Marker::Checkpoint { checkpoint, .. } if checkpoint.gen_id == *target_gen)
-            }) else {
+            let Some(&k_idx) = gen_to_idx.get(target_gen) else {
                 continue;
             };
-            let k_idx = k_idx + range.start;
             for flag in &mut alive[(k_idx + 1)..=m] {
                 *flag = false;
             }
@@ -69,6 +75,14 @@ impl SegmentedJournal {
             .collect()
     }
 
+    /// Filter to live segments and flatten into a single record list.
+    pub fn live_records(self) -> Vec<Record> {
+        self.live()
+            .into_iter()
+            .flat_map(|s| s.records)
+            .collect()
+    }
+
     /// Take prefix up to a marker index (inclusive), then filter to live.
     /// Used by restore to get live records up to a target checkpoint.
     /// Reachability is computed only within the prefix (S records after the
@@ -82,6 +96,14 @@ impl SegmentedJournal {
             .take(num_prefix)
             .filter(|(i, _)| alive[*i])
             .map(|(_, s)| s)
+            .collect()
+    }
+
+    /// Like `live_prefix`, but flattens into a single record list.
+    pub fn live_prefix_records(self, up_to_marker: usize) -> Vec<Record> {
+        self.live_prefix(up_to_marker)
+            .into_iter()
+            .flat_map(|s| s.records)
             .collect()
     }
 
@@ -814,5 +836,140 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert!(matches!(&records[0], Record::Checkpoint(c) if c.gen_id == 1));
         assert!(matches!(&records[1], Record::Added { path, .. } if path == "/a"));
+    }
+
+    #[test]
+    fn alive_segments_range_ignores_restore_outside_range() {
+        // K1 [A] K2 [B] K3 S4(K1)
+        // alive_segments_range(0..2) should only see K1 and K2, ignore S4.
+        let records = vec![
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Restore {
+                gen_id: 4,
+                target_gen: 1,
+            },
+        ];
+        let sj = SegmentedJournal::new(records);
+        // Markers: K1(0), K2(1), K3(2), S4(3). Segments: 5 total.
+        // Range 0..2 means only K1 and K2 markers considered.
+        let alive = sj.markers.alive_segments_range(0..2, 2);
+        assert!(alive[0], "seg0 should be alive (S4 outside range)");
+        assert!(alive[1], "seg1 should be alive (S4 outside range)");
+    }
+
+    #[test]
+    fn live_prefix_with_nested_restores() {
+        // K1 [A] K2 [B] K3 S4(K1) [C] K5 [D] K6
+        // live_prefix up to K5 marker:
+        //   prefix markers: K1, K2, K3, S4. S4(K1) kills K2,K3,S4 segments.
+        //   live: seg(K1,[A]) + seg(K1*,[C])
+        let records = vec![
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Restore {
+                gen_id: 4,
+                target_gen: 1,
+            },
+            Record::Added {
+                path: "/c".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
+            Record::Added {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 4,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 6,
+                name: "c6".into(),
+            }),
+        ];
+        let sj = SegmentedJournal::new(records);
+        // Markers: K1(0), K2(1), K3(2), S4(3), K5(4), K6(5)
+        let (m_idx, _) = sj.markers.find_checkpoint("c5").unwrap();
+        let prefix = sj.live_prefix(m_idx);
+        let result: Vec<Record> = prefix
+            .into_iter()
+            .flat_map(|s| s.records)
+            .collect();
+        // Live prefix up to K5: [C] from seg4.
+        // [A] is dead (killed by S4, which kills segs after K1 marker). [D] is beyond K5.
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], Record::Added { path, .. } if path == "/c"));
+    }
+
+    #[test]
+    fn corrupt_s_record_skipped_in_alive() {
+        // K1 [A] S2(K99) [B]
+        // S targets nonexistent K99 — should be skipped, all segments alive.
+        let records = vec![
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Restore {
+                gen_id: 2,
+                target_gen: 99,
+            },
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+        ];
+        let sj = SegmentedJournal::new(records);
+        let alive = sj.markers.alive_segments(sj.segments.len());
+        assert!(alive.iter().all(|&a| a), "all segments alive when S target is missing");
     }
 }

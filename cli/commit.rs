@@ -124,9 +124,7 @@ pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let sj = SegmentedJournal::new(journal::read(&agfs)?);
-    let live_records: Vec<journal::Record> =
-        sj.live().into_iter().flat_map(|s| s.records).collect();
-    let changes = journal::resolve::resolve(live_records)?;
+    let changes = journal::resolve::resolve(sj.live_records())?;
 
     if changes.is_empty() {
         println!("{}", "Nothing to commit.".yellow());

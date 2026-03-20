@@ -52,10 +52,9 @@ impl Markers {
         last.ok_or_else(|| anyhow::anyhow!("checkpoint not found: {name_or_id}"))
     }
 
-    /// Get the closing checkpoint for a segment (the marker right after it,
-    /// if that marker is a checkpoint).
-    pub fn closing_checkpoint(&self, seg_idx: usize) -> Option<&Checkpoint> {
-        match self.0.get(seg_idx)? {
+    /// Get the checkpoint at this marker index (returns `None` for restore markers).
+    pub fn closing_checkpoint(&self, marker_idx: usize) -> Option<&Checkpoint> {
+        match self.0.get(marker_idx)? {
             Marker::Checkpoint { checkpoint, .. } => Some(checkpoint),
             _ => None,
         }
@@ -441,5 +440,104 @@ mod tests {
             .markers
             .segment_range(None, Some("c3"), Some("c1"), sj.segments.len());
         assert!(result.is_err(), "from > to should be an error");
+    }
+
+    #[test]
+    fn segment_range_at_first_checkpoint() {
+        // K1 [A] K2 [B] K3
+        let records = vec![
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "c1".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+        ];
+        let sj = SegmentedJournal::new(records);
+        // --at c1: no previous K → start=0, end=1
+        let (start, end) = sj
+            .markers
+            .segment_range(Some("c1"), None, None, sj.segments.len())
+            .unwrap();
+        assert_eq!(start, 0);
+        assert_eq!(end, 1);
+    }
+
+    #[test]
+    fn segment_range_at_middle_checkpoint() {
+        // K1 [A] K2 [B] K3
+        let records = vec![
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "c1".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+        ];
+        let sj = SegmentedJournal::new(records);
+        // --at c2: prev K is marker 0 (K1), so start=1, end=2
+        let (start, end) = sj
+            .markers
+            .segment_range(Some("c2"), None, None, sj.segments.len())
+            .unwrap();
+        assert_eq!(start, 1);
+        assert_eq!(end, 2);
+    }
+
+    #[test]
+    fn segmentation_empty_journal() {
+        let sj = SegmentedJournal::new(vec![]);
+        // Even empty journal produces one trailing segment.
+        assert_eq!(sj.segments.len(), 1);
+        assert!(sj.segments[0].from.is_none());
+        assert!(sj.segments[0].records.is_empty());
+        assert!(sj.markers.is_empty());
+    }
+
+    #[test]
+    fn segmentation_only_s_records() {
+        // S record with no preceding K — target not found, treated as orphan boundary.
+        let records = vec![Record::Restore {
+            gen_id: 1,
+            target_gen: 99,
+        }];
+        let sj = SegmentedJournal::new(records);
+        // seg0(None,[]) + seg1(None,[]) (split at S, target not in k_map)
+        assert_eq!(sj.segments.len(), 2);
+        assert!(sj.segments[0].from.is_none());
+        assert!(sj.segments[1].from.is_none());
+        assert_eq!(sj.markers.len(), 1);
     }
 }

@@ -220,7 +220,7 @@ agfs/
 │   ├── abort.rs
 │   ├── diff.rs                # `agfs status` + `agfs diff` (summary and verbose views)
 │   ├── journal/               # journal parsing, timeline, and resolution
-│   │   ├── types.rs           # Record, Dirent, DType, and related types
+│   │   ├── types.rs           # Record, Change, DType, and related types
 │   │   ├── parse.rs           # journal file parsing
 │   │   ├── segment.rs         # journal pipeline (SegmentedJournal, Segment, Markers)
 │   │   ├── liveness.rs       # reachability filtering (alive_segments, live, live_prefix)

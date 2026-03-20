@@ -134,11 +134,7 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 
     // Extract live records from the prefix up to the target checkpoint,
     // handling any S records within that prefix.
-    let live_records: Vec<journal::Record> = sj
-        .live_prefix(marker_idx)
-        .into_iter()
-        .flat_map(|s| s.records)
-        .collect();
+    let live_records = sj.live_prefix_records(marker_idx);
     let changes = journal::resolve::resolve(live_records)?;
     let items = changes_to_items(&changes);
     let entries = items_to_entries(&items)?;

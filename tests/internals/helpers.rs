@@ -14,8 +14,7 @@ pub fn journal(s: &AgfsSession) -> Vec<Record> {
 pub fn changes(s: &AgfsSession) -> Vec<(String, Change)> {
     let records = journal(s);
     let sj = journal::SegmentedJournal::new(records);
-    let live_records: Vec<Record> = sj.live().into_iter().flat_map(|s| s.records).collect();
-    journal::resolve::resolve(live_records).expect("resolve journal")
+    journal::resolve::resolve(sj.live_records()).expect("resolve journal")
 }
 
 /// List numeric inode entries in the inode store.
