@@ -22,6 +22,22 @@ The benchmark suite produces comprehensive, reproducible results demonstrating
 agfs overhead across realistic workloads, and puts it in context by comparing
 it against alternative staging/sandboxing approaches.
 
+### Publication artifacts
+
+The report pipeline can emit a publication-oriented **data-op (fio)** summary
+table under `results-bench/<host>/paper/`:
+
+- `op-data-summary.tex` — compact LaTeX table source,
+- `op-data-summary.pdf` — compiled table PDF (if `pdflatex` is available),
+- `op-data-summary.svg` — vector SVG rendered from the PDF (if `pdftocairo`
+  is available).
+
+The table reports throughput in MB/s and compares each backend to native. If
+the difference from native is under 5%, the cell is rendered as
+`same as baseline`.
+
+A dedicated `paper-report.html` page links these artifacts.
+
 ---
 
 ## 2. Workloads

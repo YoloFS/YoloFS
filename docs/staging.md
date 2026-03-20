@@ -289,6 +289,10 @@ agfs_write_iter(kiocb, iov_iter):
     // Pure pass-through — COW already resolved at open time.
     lower_file->f_op->write_iter(...)
 
+agfs_fallocate(file, mode, offset, len):
+    // Pass-through to lower file if supported by the lower fs.
+    lower_file->f_op->fallocate(lower_file, mode, offset, len)
+
 agfs_mmap(file, vma):
     // Pure pass-through — COW already resolved at open time.
     lower_file = file_info->lower_file

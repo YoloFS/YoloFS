@@ -501,6 +501,22 @@ const struct address_space_operations agfs_aops = {
 	.direct_IO = agfs_direct_IO,
 };
 
+/* ── fallocate (pass-through to lower file) ────────────────────────── */
+
+static long agfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
+{
+	struct agfs_file_info *fi = AGFS_F(file);
+	struct file *lower_file = fi ? fi->lower_file : NULL;
+
+	if (!lower_file)
+		return -EIO;
+
+	if (!lower_file->f_op || !lower_file->f_op->fallocate)
+		return -EOPNOTSUPP;
+
+	return lower_file->f_op->fallocate(lower_file, mode, offset, len);
+}
+
 /* ── File Ops Tables ───────────────────────────────────────────────── */
 
 const struct file_operations agfs_main_fops = {
@@ -508,6 +524,7 @@ const struct file_operations agfs_main_fops = {
 	.release	= agfs_release,
 	.read_iter	= agfs_read_iter,
 	.write_iter	= agfs_write_iter,
+	.fallocate	= agfs_fallocate,
 	.llseek		= agfs_llseek,
 	.mmap		= agfs_mmap,
 	.fsync		= agfs_fsync,

@@ -68,6 +68,7 @@ the ioctl wire format.
 | `open`       | Perm gating (via dentry). If writable and inode is current: open staged inode. If writable and needs COW: perform COW at open time. If read-only: open resolved lower file. |
 | `read_iter`  | Swap `kiocb->ki_filp` to lower file, call `lower->read_iter()`.                                                                                                                                   |
 | `write_iter` | Pure pass-through — COW already resolved at open time. Delegate to `lower->write_iter()`. |
+| `fallocate`  | Pure pass-through to `lower->f_op->fallocate()` when supported by the lower fs. |
 | `mmap`       | Pure pass-through — COW already resolved at open time. Delegate to lower file. |
 | `fsync`      | If `agfs_ino_is_staged(de->ino)`: return 0 (staged inodes are ephemeral). Otherwise delegate to lower.                                                            |
 | `release`    | Decrement `staging_fd_count` if write-mode. `fput()` lower file. Free `agfs_file_info`.                                                                                                           |

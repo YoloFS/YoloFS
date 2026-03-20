@@ -87,7 +87,11 @@ enum OpGroup {
 #[derive(Subcommand)]
 enum Cmd {
     /// Regenerate the HTML report from existing results JSON without re-running benchmarks
-    Rerender,
+    Rerender {
+        /// Only regenerate paper artifacts (no Plotly HTML workload/index pages)
+        #[arg(long)]
+        paper_only: bool,
+    },
     /// List available workloads and backends
     List,
     /// Profile a workload with perf flamegraph (and optionally bpftrace)
@@ -1250,13 +1254,17 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(Cmd::Rerender) = cli.cmd {
+    if let Some(Cmd::Rerender { paper_only }) = cli.cmd {
         let out_dir = results_dir(&env, false);
         let results_path = out_dir.join("results.json");
         let json = fs::read_to_string(&results_path)
             .with_context(|| format!("reading {}", results_path.display()))?;
         let results: BenchResults = serde_json::from_str(&json).context("parsing results.json")?;
-        report::render(&results, &out_dir)?;
+        if paper_only {
+            report::render_paper_only(&results, &out_dir)?;
+        } else {
+            report::render(&results, &out_dir)?;
+        }
         return Ok(());
     }
 

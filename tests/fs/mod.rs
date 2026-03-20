@@ -1,6 +1,7 @@
 mod test_concurrent;
 mod test_create;
 mod test_delete;
+mod test_fallocate;
 mod test_inode;
 mod test_mkdir;
 mod test_read;
