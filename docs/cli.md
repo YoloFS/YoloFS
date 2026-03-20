@@ -65,11 +65,10 @@ zones created by restores).
 dimmed. Example `agfs timeline` output:
 
 ```
-checkpoint [1] (initial)
-checkpoint [2] after make build
-checkpoint [3] after make test
-restore    [4] restored to [2] after make build
-checkpoint [5] after make fix
+checkpoint [1] after make build
+checkpoint [2] after make test
+restore    [3] restored to [1]
+checkpoint [4] after make fix
 ```
 
 **Permission rules and diagnostics:**

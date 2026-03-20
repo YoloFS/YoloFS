@@ -132,6 +132,7 @@ enum RuleAction {
 }
 
 fn main() -> ! {
+    colored::control::set_override(true);
     let code = match run_cli() {
         Ok(code) => code,
         Err(e) => {

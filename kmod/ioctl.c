@@ -509,7 +509,7 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 
 	if (hdr.target_gen == 0) {
 		/* Reset mode (commit/abort): no entries, no journal write */
-		atomic64_set(&sbi->gen, 1);
+		atomic64_set(&sbi->gen, 0);
 		WRITE_ONCE(sbi->dirty, false);
 		up_write(&sbi->staging_sem);
 		return 0;

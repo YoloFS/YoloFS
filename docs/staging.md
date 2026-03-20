@@ -712,10 +712,6 @@ This is the re-COW mechanism.
 
 ### Creating a Checkpoint
 
-On mount, the kernel writes an initial checkpoint record `K\01\0(initial)\n`
-to the journal, giving userspace a stable gen=1 reference to the mount-time
-state.
-
 `agfs checkpoint [name]` calls `ioctl(AGFS_IOC_CHECKPOINT)`. The kernel:
 
 1. Returns `-ENOTSUP` if `staging` is disabled (checkpoints require staging).
@@ -774,22 +770,20 @@ The generation counter collapses consecutive checkpoints.
 ### Example Journal with Checkpoints
 
 ```
-K\01\0(initial)\n                                 # implicit checkpoint at mount
 M\0/src\0main.rs\0f\01\n                          # COW: main.rs -> ino 1
 A\0/src\0lib.rs\0f\02\n                           # create lib.rs -> ino 2
-K\02\0after make build\n                           # checkpoint 2
+K\01\0after make build\n                           # checkpoint 1
 M\0/src\0main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
 D\0/src\0lib.rs\n                                  # delete lib.rs
 A\0/src\0new.rs\0f\04\n                           # create new.rs
-K\03\0after make test\n                            # checkpoint 3
+K\02\0after make test\n                            # checkpoint 2
 M\0/src\0new.rs\0f\05\n                           # re-COW: new.rs -> ino 5
 ```
 
 State at each point:
 
-| Checkpoint           | main.rs | lib.rs    | new.rs |
-|-------------------|---------|-----------|--------|
-| (initial)          | --      | --        | --     |
+| Checkpoint         | main.rs | lib.rs    | new.rs |
+|--------------------|---------|-----------|--------|
 | "after make build" | ino 1   | ino 2     | --     |
 | "after make test"  | ino 3   | (deleted) | ino 4  |
 | current            | ino 3   | (deleted) | ino 5  |
@@ -797,26 +791,24 @@ State at each point:
 ### Example Journal with Restore
 
 ```
-K\01\0(initial)\n                                 # implicit checkpoint at mount
 M\0/src\0main.rs\0f\01\n                          # COW: main.rs -> ino 1
 A\0/src\0lib.rs\0f\02\n                           # create lib.rs -> ino 2
-K\02\0after make build\n                           # checkpoint 2
+K\01\0after make build\n                           # checkpoint 1
 M\0/src\0main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
 D\0/src\0lib.rs\n                                  # delete lib.rs
-K\03\0after make test\n                            # checkpoint 3
-S\04\02\n                                          # restore to checkpoint 2 (gen bumped to 4)
+K\02\0after make test\n                            # checkpoint 2
+S\03\01\n                                          # restore to checkpoint 1 (gen bumped to 3)
 A\0/src\0util.rs\0f\04\n                          # create util.rs -> ino 4
-K\05\0after make fix\n                             # checkpoint 5
+K\04\0after make fix\n                             # checkpoint 4
 ```
 
-Reachable records (after `reachable`): K1, M(main.rs→1), A(lib.rs→2), K2, A(util.rs→4), K5
-Unreachable region: M(main.rs→3), D(lib.rs), K3, S4
+Reachable records (after `reachable`): M(main.rs→1), A(lib.rs→2), K1, A(util.rs→4), K4
+Unreachable region: M(main.rs→3), D(lib.rs), K2, S3
 
 State at current:
 
 | Checkpoint         | main.rs | lib.rs | util.rs |
 |--------------------|---------|--------|---------|
-| (initial)          | --      | --     | --      |
 | "after make build" | ino 1   | ino 2  | --      |
 | "after make fix"   | ino 1   | ino 2  | ino 4   |
 
@@ -865,11 +857,6 @@ O(R) backward walk to build reachable ranges, skip unreachable S records.
 After restore, future writes trigger re-COW only if a new checkpoint is
 taken (since gen is bumped to a fresh value by the restore ioctl). Editing
 files without a new checkpoint reuses the existing inodes in place.
-
-Restoring to `(initial)` (gen 1, entry_count=0) is distinct from
-commit/abort reset (target_gen=0). The restore ioctl still increments gen
-and appends an S record. The mount shows the clean base state. Orphaned
-inodes remain in the store until the next `commit` or `abort`.
 
 **`agfs timeline`**: Show the checkpoint/restore DAG in chronological
 order, with unreachable branches dimmed. **`agfs audit`**: Show every

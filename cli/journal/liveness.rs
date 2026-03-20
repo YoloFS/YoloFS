@@ -440,12 +440,13 @@ mod tests {
         assert!(matches!(&result[4], Record::Checkpoint(c) if c.gen_id == 3));
     }
 
+    /// Restore to the first checkpoint discards everything after it.
     #[test]
-    fn reachable_restore_to_initial() {
+    fn reachable_restore_to_first_checkpoint() {
         let records = vec![
             Record::Checkpoint(Checkpoint {
                 gen_id: 1,
-                name: "init".into(),
+                name: "c1".into(),
             }),
             Record::Added {
                 path: "/a".into(),

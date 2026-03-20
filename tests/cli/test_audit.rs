@@ -35,7 +35,7 @@ fn audit_shows_checkpoints_and_restores() {
     );
 }
 
-/// `agfs audit` dims unreachable records with ~ prefix after restore.
+/// `agfs audit` marks unreachable records with (unreachable) suffix after restore.
 #[test]
 fn audit_dims_unreachable_after_restore() {
     let s = AgfsSession::new().expect("session setup");
@@ -47,14 +47,16 @@ fn audit_dims_unreachable_after_restore() {
     s.cli(&["restore", "chk1"]).expect("restore");
 
     let output = s.cli(&["audit"]).expect("audit");
-    // Unreachable records (between chk1 and restore) are prefixed with ~
-    let tilde_lines: Vec<&str> = output.lines().filter(|l| l.starts_with("~")).collect();
+    let unreachable: Vec<&str> = output
+        .lines()
+        .filter(|l| l.contains("(unreachable)"))
+        .collect();
     assert!(
-        !tilde_lines.is_empty(),
-        "should have ~ prefixed (unreachable) lines after restore: {output}"
+        !unreachable.is_empty(),
+        "should have (unreachable) lines after restore: {output}"
     );
     // The added b.txt record should be unreachable
-    let has_unreachable_b = tilde_lines.iter().any(|l| l.contains("/b.txt"));
+    let has_unreachable_b = unreachable.iter().any(|l| l.contains("/b.txt"));
     assert!(
         has_unreachable_b,
         "b.txt should be in unreachable zone: {output}"
@@ -82,17 +84,13 @@ fn audit_path_filter() {
     );
 }
 
-/// `agfs audit` on a fresh session shows the initial checkpoint.
+/// `agfs audit` on a fresh session shows no records.
 #[test]
 fn audit_fresh_session() {
     let s = AgfsSession::new().expect("session setup");
 
     let output = s.cli(&["audit"]).expect("audit");
-    // A fresh session has an initial checkpoint but no data records
-    assert!(
-        output.contains("initial"),
-        "fresh session should show initial checkpoint: {output}"
-    );
+    // A fresh session has no records at all
     assert!(
         !output.contains("added") && !output.contains("modified") && !output.contains("deleted"),
         "fresh session should have no data records: {output}"

@@ -7,7 +7,6 @@ use crate::journal;
 use crate::journal::{Marker, SegmentedJournal};
 use anyhow::Result;
 use colored::Colorize;
-use std::collections::HashMap;
 
 /// Display the full journal with dead branches dimmed.
 pub fn run(path_filter: Option<&str>) -> Result<()> {
@@ -23,18 +22,6 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
 
     let alive = sj.markers.alive_segments(sj.segments.len());
 
-    // Collect checkpoint names by gen for restore display.
-    let chk_names: HashMap<u64, &str> = sj
-        .markers
-        .iter()
-        .filter_map(|m| match m {
-            Marker::Checkpoint { checkpoint, .. } => {
-                Some((checkpoint.gen_id, checkpoint.name.as_str()))
-            }
-            _ => None,
-        })
-        .collect();
-
     for (seg_idx, segment) in sj.segments.iter().enumerate() {
         let reachable = alive[seg_idx];
 
@@ -45,11 +32,11 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
                 continue;
             }
 
-            let line = format_record(record, &chk_names);
+            let line = format_record(record);
             if reachable {
                 println!("  {line}");
             } else {
-                println!("{} {}", "~".dimmed(), line.dimmed());
+                println!("  {} {}", line.dimmed(), "(unreachable)".dimmed());
             }
         }
 
@@ -57,11 +44,11 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
         if let Some(marker) = sj.markers.get(seg_idx) {
             let marker_record = marker.to_record();
             if path_filter.is_none() || is_structural(&marker_record) {
-                let line = format_record(&marker_record, &chk_names);
+                let line = format_record(&marker_record);
                 if reachable {
                     println!("  {line}");
                 } else {
-                    println!("{} {}", "~".dimmed(), line.dimmed());
+                    println!("  {} {}", line.dimmed(), "(unreachable)".dimmed());
                 }
             }
         }
@@ -89,7 +76,7 @@ fn record_matches_path(record: &journal::Record, filter: &str) -> bool {
     }
 }
 
-fn format_record(record: &journal::Record, chk_names: &HashMap<u64, &str>) -> String {
+fn format_record(record: &journal::Record) -> String {
     match record {
         journal::Record::Checkpoint(c) => {
             format!("{} {}", format!("[{}]", c.gen_id).cyan().bold(), c.name)
@@ -97,12 +84,10 @@ fn format_record(record: &journal::Record, chk_names: &HashMap<u64, &str>) -> St
         journal::Record::Restore {
             gen_id, target_gen, ..
         } => {
-            let target_name = chk_names.get(target_gen).copied().unwrap_or("(unknown)");
             format!(
-                "{} restored to [{}] {}",
+                "{} restored to [{}]",
                 format!("[{gen_id}]").yellow().bold(),
                 target_gen,
-                target_name,
             )
         }
         journal::Record::Added { path, ino, .. } => {
@@ -152,7 +137,7 @@ mod tests {
             gen_id: 3,
             name: "build".into(),
         });
-        let s = strip_ansi(&format_record(&rec, &HashMap::new()));
+        let s = strip_ansi(&format_record(&rec));
         assert!(s.contains("[3]"), "should contain gen_id: {s}");
         assert!(s.contains("build"), "should contain name: {s}");
     }
@@ -163,12 +148,10 @@ mod tests {
             gen_id: 5,
             target_gen: 2,
         };
-        let mut names = HashMap::new();
-        names.insert(2u64, "build");
-        let s = strip_ansi(&format_record(&rec, &names));
+        let s = strip_ansi(&format_record(&rec));
         assert!(s.contains("[5]"), "should contain gen_id: {s}");
         assert!(
-            s.contains("restored to [2] build"),
+            s.contains("restored to [2]"),
             "should reference target: {s}"
         );
     }
@@ -180,7 +163,7 @@ mod tests {
             dtype: Some(DType::File),
             ino: 42,
         };
-        let s = strip_ansi(&format_record(&rec, &HashMap::new()));
+        let s = strip_ansi(&format_record(&rec));
         assert!(s.contains("added"), "should say added: {s}");
         assert!(s.contains("/src/main.rs"), "should contain path: {s}");
         assert!(s.contains("42"), "should contain ino: {s}");
@@ -193,7 +176,7 @@ mod tests {
             new: "/b".into(),
             dtype: Some(DType::File),
         };
-        let s = strip_ansi(&format_record(&rec, &HashMap::new()));
+        let s = strip_ansi(&format_record(&rec));
         assert!(s.contains("replaced"), "should say replaced: {s}");
         assert!(s.contains("/a"), "should contain old: {s}");
         assert!(s.contains("/b"), "should contain new: {s}");

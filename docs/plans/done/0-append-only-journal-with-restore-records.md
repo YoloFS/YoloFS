@@ -98,7 +98,7 @@ Kernel behavior by `target_gen`:
 | `0` | `0` | Reset (commit/abort) | Wipe dirents, set gen=1, no S record |
 | `> 0` | `≥ 0` | Restore | Wipe dirents, inject entries, increment gen, stamp dirents with new gen, append S record, return new_gen |
 
-Restore to initial checkpoint (`target_gen=1`, `entry_count=0`) is distinct
+Restore to a named checkpoint (`target_gen>0`, `entry_count≥0`) is distinct
 from commit/abort (`target_gen=0`) by the target_gen value.
 
 ### 2.5 Reachable record extraction
@@ -167,11 +167,10 @@ in reachable records only. Unreachable checkpoints are not addressable for displ
 chronologically:
 
 ```
-[1] (initial)
-[2] after make build
-[3] after make test
-[4] restored to [2] after make build
-[5] after make fix
+[1] after make build
+[2] after make test
+[3] restored to [1]
+[4] after make fix
 ```
 
 All other commands (status, diff, commit, restore) work on reachable records only.
@@ -263,7 +262,7 @@ the full journal on each CLI invocation.
 
 | ID | Task | Depends on |
 |----|------|------------|
-| test-reachable | Unit tests: no S, single restore, multiple restores, unreachable S, undo restore, restore to initial | cli-reachable |
+| test-reachable | Unit tests: no S, single restore, multiple restores, unreachable S, undo restore | cli-reachable |
 | test-resolve-with-S | Unit tests: `resolve()` produces correct changes with S records in input | cli-reachable |
 | test-segments-with-S | Unit tests: `resolve_segments` correct segment boundaries after `reachable` | cli-reachable |
 | test-e2e-restore | E2E: restore + work + commit, multiple restores, undo restore, `agfs log` audit trail | cli-restore, cli-commit, cli-diff-status, cli-log |

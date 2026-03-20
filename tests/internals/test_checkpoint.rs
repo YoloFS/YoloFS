@@ -85,7 +85,7 @@ fn multiple_checkpoints_have_distinct_ids() {
     let snaps: Vec<_> = records.0
         .iter()
         .filter_map(|r| match r {
-            Record::Checkpoint(c) if c.name != "(initial)" => Some((&c.gen_id, &c.name)),
+            Record::Checkpoint(c) => Some((&c.gen_id, &c.name)),
             _ => None,
         })
         .collect();

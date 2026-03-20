@@ -5,7 +5,6 @@
 use crate::journal;
 use crate::journal::{Marker, SegmentedJournal};
 use colored::Colorize;
-use std::collections::HashMap;
 
 /// Display the checkpoint/restore timeline (full DAG, unreachable dimmed).
 pub fn run() -> anyhow::Result<()> {
@@ -18,18 +17,6 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     let alive = sj.markers.alive_segments(sj.segments.len());
-
-    // Collect checkpoint names by gen for restore display.
-    let chk_names: HashMap<u64, &str> = sj
-        .markers
-        .iter()
-        .filter_map(|m| match m {
-            Marker::Checkpoint { checkpoint, .. } => {
-                Some((checkpoint.gen_id, checkpoint.name.as_str()))
-            }
-            _ => None,
-        })
-        .collect();
 
     for (m_idx, marker) in sj.markers.iter().enumerate() {
         let reachable = alive[m_idx];
@@ -44,18 +31,17 @@ pub fn run() -> anyhow::Result<()> {
             Marker::Restore {
                 gen_id, target_gen, ..
             } => {
-                let target_name = chk_names.get(target_gen).copied().unwrap_or("(unknown)");
                 format!(
                     "{} {}",
                     format!("restore    [{gen_id}]").yellow().bold(),
-                    format!("restored to [{target_gen}] {target_name}").dimmed(),
+                    format!("restored to [{target_gen}]").dimmed(),
                 )
             }
         };
         if reachable {
             println!("  {line}");
         } else {
-            println!("{} {}", "~".dimmed(), line.dimmed());
+            println!("  {} {}", line.dimmed(), "(unreachable)".dimmed());
         }
     }
 

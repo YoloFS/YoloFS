@@ -162,20 +162,3 @@ fn diff_between_checkpoints_spanning_restore() {
     );
 }
 
-/// Diff after restoring to initial checkpoint (no mutations) should
-/// show nothing staged.
-#[test]
-fn diff_after_restore_to_initial() {
-    let s = AgfsSession::new().expect("session setup");
-
-    fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
-
-    s.cli(&["restore", "1"]).expect("restore to initial");
-
-    let output = s.cli(&["diff"]).expect("diff");
-    assert!(
-        output.contains("No changes staged"),
-        "restoring to initial should show nothing: {output}"
-    );
-}

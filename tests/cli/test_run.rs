@@ -188,7 +188,7 @@ fn run_with_changes_creates_checkpoint() {
     let session = AgfsSession::new().expect("session setup");
 
     let before = session.cli(&["timeline"]).expect("timeline before");
-    let before_count = before.matches("checkpoint").count();
+    let before_count = before.matches("checkpoint [").count();
 
     let target = session.root.join("chk_test.txt");
     let code = session
@@ -197,11 +197,10 @@ fn run_with_changes_creates_checkpoint() {
     assert_eq!(code, 0);
 
     let after = session.cli(&["timeline"]).expect("timeline after");
-    let after_count = after.matches("checkpoint").count();
+    let after_count = after.matches("checkpoint [").count();
 
-    assert_eq!(
-        after_count,
-        before_count + 1,
+    assert!(
+        after_count == before_count + 1,
         "exec with changes should create exactly one checkpoint.\nbefore:\n{before}\nafter:\n{after}"
     );
 }
