@@ -77,10 +77,7 @@ impl SegmentedJournal {
 
     /// Filter to live segments and flatten into a single record list.
     pub fn live_records(self) -> Vec<Record> {
-        self.live()
-            .into_iter()
-            .flat_map(|s| s.records)
-            .collect()
+        self.live().into_iter().flat_map(|s| s.records).collect()
     }
 
     /// Take prefix up to a marker index (inclusive), then filter to live.
@@ -132,155 +129,6 @@ impl SegmentedJournal {
 
         Ok(result)
     }
-}
-
-// ── Test-only compat helpers ─────────────────────────────────────────
-//
-// These preserve the old flat-record API used by resolve.rs tests.
-
-#[cfg(test)]
-use std::collections::{HashMap, HashSet};
-
-#[cfg(test)]
-fn compute_reachable_ranges(records: &[Record]) -> Option<Vec<(usize, usize)>> {
-    let n = records.len();
-    if n == 0 {
-        return None;
-    }
-
-    let mut s_list: Vec<(usize, u64)> = Vec::new();
-    let mut k_map: HashMap<u64, usize> = HashMap::new();
-
-    for (i, record) in records.iter().enumerate() {
-        match record {
-            Record::Restore { target_gen, .. } => {
-                s_list.push((i, *target_gen));
-            }
-            Record::Checkpoint(c) => {
-                k_map.insert(c.gen_id, i);
-            }
-            _ => {}
-        }
-    }
-
-    if s_list.is_empty() {
-        return None;
-    }
-
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    let mut end = n;
-
-    for &(s_pos, target_gen) in s_list.iter().rev() {
-        if s_pos >= end {
-            continue;
-        }
-        let Some(&k_pos) = k_map.get(&target_gen) else {
-            continue;
-        };
-        if s_pos + 1 < end {
-            ranges.push((s_pos + 1, end));
-        }
-        end = k_pos + 1;
-    }
-    ranges.push((0, end));
-    Some(ranges)
-}
-
-#[cfg(test)]
-pub(crate) fn reachable_indices(records: &[Record]) -> HashSet<usize> {
-    let n = records.len();
-    let Some(ranges) = compute_reachable_ranges(records) else {
-        return (0..n).collect();
-    };
-
-    let mut set = HashSet::new();
-    for (start, range_end) in ranges {
-        for i in start..range_end {
-            set.insert(i);
-        }
-    }
-    set
-}
-
-#[cfg(test)]
-pub(crate) fn reachable(records: Vec<Record>) -> Vec<Record> {
-    let Some(mut ranges) = compute_reachable_ranges(&records) else {
-        return records;
-    };
-    ranges.reverse();
-
-    let capacity: usize = ranges.iter().map(|&(s, e)| e - s).sum();
-    let mut reachable = Vec::with_capacity(capacity);
-    let mut iter = records.into_iter();
-    let mut pos = 0;
-    for &(start, end) in &ranges {
-        if start > pos {
-            iter.by_ref().take(start - pos).for_each(drop);
-        }
-        reachable.extend(iter.by_ref().take(end - start));
-        pos = end;
-    }
-    reachable
-}
-
-#[cfg(test)]
-pub(crate) fn find_checkpoint_index(records: &[Record], name_or_id: &str) -> Result<usize> {
-    if let Ok(target_id) = name_or_id.parse::<u64>() {
-        for (i, record) in records.iter().enumerate() {
-            if let Record::Checkpoint(c) = record
-                && c.gen_id == target_id
-            {
-                return Ok(i);
-            }
-        }
-    }
-
-    let mut last = None;
-    for (i, record) in records.iter().enumerate() {
-        if let Record::Checkpoint(c) = record
-            && c.name == name_or_id
-        {
-            last = Some(i);
-        }
-    }
-    last.ok_or_else(|| anyhow::anyhow!("checkpoint not found: {name_or_id}"))
-}
-
-#[cfg(test)]
-pub(crate) fn slice_records(
-    mut records: Vec<Record>,
-    at: Option<&str>,
-    from: Option<&str>,
-    to: Option<&str>,
-) -> Result<Vec<Record>> {
-    slice_records_inner(&mut records, at, from, to)
-}
-
-#[cfg(test)]
-fn slice_records_inner(
-    records: &mut Vec<Record>,
-    at: Option<&str>,
-    from: Option<&str>,
-    to: Option<&str>,
-) -> Result<Vec<Record>> {
-    if let Some(name) = at {
-        let chk_idx = find_checkpoint_index(records, name)?;
-        let prev = records[..chk_idx]
-            .iter()
-            .rposition(|r| matches!(r, Record::Checkpoint(_)));
-        let start = prev.unwrap_or(0);
-        records.truncate(chk_idx + 1);
-        return Ok(records.split_off(start));
-    }
-    if let Some(to_name) = to {
-        let to_idx = find_checkpoint_index(records, to_name)?;
-        records.truncate(to_idx + 1);
-    }
-    if let Some(from_name) = from {
-        let from_idx = find_checkpoint_index(records, from_name)?;
-        *records = records.split_off(from_idx);
-    }
-    Ok(std::mem::take(records))
 }
 
 #[cfg(test)]
@@ -934,10 +782,7 @@ mod tests {
         // Markers: K1(0), K2(1), K3(2), S4(3), K5(4), K6(5)
         let (m_idx, _) = sj.markers.find_checkpoint("c5").unwrap();
         let prefix = sj.live_prefix(m_idx);
-        let result: Vec<Record> = prefix
-            .into_iter()
-            .flat_map(|s| s.records)
-            .collect();
+        let result: Vec<Record> = prefix.into_iter().flat_map(|s| s.records).collect();
         // Live prefix up to K5: [C] from seg4.
         // [A] is dead (killed by S4, which kills segs after K1 marker). [D] is beyond K5.
         assert_eq!(result.len(), 1);
@@ -970,6 +815,9 @@ mod tests {
         ];
         let sj = SegmentedJournal::new(records);
         let alive = sj.markers.alive_segments(sj.segments.len());
-        assert!(alive.iter().all(|&a| a), "all segments alive when S target is missing");
+        assert!(
+            alive.iter().all(|&a| a),
+            "all segments alive when S target is missing"
+        );
     }
 }

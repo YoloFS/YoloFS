@@ -95,9 +95,7 @@ impl Markers {
         };
 
         if start > end {
-            anyhow::bail!(
-                "invalid range: --from checkpoint comes after --to checkpoint"
-            );
+            anyhow::bail!("invalid range: --from checkpoint comes after --to checkpoint");
         }
 
         Ok((start, end))
