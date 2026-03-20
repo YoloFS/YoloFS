@@ -50,5 +50,6 @@ Before finalizing any change set, run a full review of the current changes. Laun
 2. **Code quality** — unnecessary allocations/clones, redundant operations, overly complex logic, code that could be simplified or deduplicated, more idiomatic Rust/C patterns.
 3. **Doc consistency** — do `docs/` files accurately describe the new behavior? Do they contradict each other or the code?
 4. **Missing tests** — new code paths, features, or edge cases without test coverage; existing tests that need updating.
+5. **Plan adherence** — if a corresponding plan exists in `docs/plans/`, verify the changes follow the plan and flag anything specified in the plan that has not been implemented yet.
 
 Each sub-agent reports findings with file paths and line references. After all agents finish, triage the results and address issues.
