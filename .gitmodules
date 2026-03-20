@@ -19,3 +19,6 @@
 [submodule "paper-docs"]
 	path = paper-docs
 	url = git@github.com:ShawnZhong/AgFS-Paper-Docs.git
+[submodule "paper-study"]
+	path = paper-study
+	url = git@github.com:ShawnZhong/AgFS-Paper-Study.git
