@@ -33,8 +33,8 @@ impl Markers {
         let mut gen_to_idx: std::collections::HashMap<u64, usize> =
             std::collections::HashMap::new();
         for i in range.clone() {
-            if let Marker::Checkpoint(checkpoint) = &self.0[i] {
-                gen_to_idx.insert(checkpoint.gen_id, i);
+            if let Record::Checkpoint { gen_id, .. } = &self.0[i] {
+                gen_to_idx.insert(*gen_id, i);
             }
         }
 
@@ -42,7 +42,7 @@ impl Markers {
         let mut alive_end = num_segments;
 
         for m in range.rev() {
-            let Marker::Restore { target_gen, .. } = &self.0[m] else {
+            let Record::Restore { target_gen, .. } = &self.0[m] else {
                 continue;
             };
             if m + 1 >= alive_end {
@@ -116,7 +116,7 @@ impl SegmentedJournal {
         at: Option<&str>,
         from: Option<&str>,
         to: Option<&str>,
-    ) -> Result<Vec<(Segment, Option<Checkpoint>)>> {
+    ) -> Result<Vec<(Segment, Option<(u64, String)>)>> {
         let SegmentedJournal { segments, markers } = self;
         let num = segments.len();
         let alive = markers.alive_segments(num);
@@ -127,7 +127,9 @@ impl SegmentedJournal {
             .enumerate()
             .filter(|(i, _)| *i >= start && *i < end && alive[*i])
             .map(|(i, seg)| {
-                let closing = markers.closing_checkpoint(i).cloned();
+                let closing = markers
+                    .closing_checkpoint(i)
+                    .map(|(g, n)| (g, n.to_owned()));
                 (seg, closing)
             })
             .collect();
@@ -148,10 +150,10 @@ mod tests {
         let mut result = Vec::new();
         for seg in live.0 {
             if seg.from > 0 {
-                result.push(Record::Checkpoint(Checkpoint {
+                result.push(Record::Checkpoint {
                     gen_id: seg.from,
                     name: String::new(),
-                }));
+                });
             }
             result.extend(seg.records);
         }
@@ -164,28 +166,28 @@ mod tests {
     fn segment_alive_with_restore() {
         // K1 [A] K2 [B] K3 S4(K2) [D] K5
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 4,
                 target_gen: 2,
@@ -195,10 +197,10 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 3,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 5,
                 name: "c5".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
         let alive = sj.markers.alive_segments(sj.segments.len());
@@ -216,19 +218,19 @@ mod tests {
     #[test]
     fn reachable_no_restores() {
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
         ];
         assert_eq!(live_records(records).len(), 3);
     }
@@ -237,28 +239,28 @@ mod tests {
     fn reachable_single_restore() {
         // K1 [A] K2 [B] K3 S4(K2) [D] K5
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 4,
                 target_gen: 2,
@@ -268,45 +270,45 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 3,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 5,
                 name: "c5".into(),
-            }),
+            },
         ];
         let result = live_records(records);
         assert_eq!(result.len(), 5);
-        assert!(matches!(&result[0], Record::Checkpoint(c) if c.gen_id == 1));
+        assert!(matches!(&result[0], Record::Checkpoint { gen_id, .. } if *gen_id == 1));
         assert!(matches!(&result[1], Record::Added { path, .. } if path == "/a"));
-        assert!(matches!(&result[2], Record::Checkpoint(c) if c.gen_id == 2));
+        assert!(matches!(&result[2], Record::Checkpoint { gen_id, .. } if *gen_id == 2));
         assert!(matches!(&result[3], Record::Added { path, .. } if path == "/d"));
-        assert!(matches!(&result[4], Record::Checkpoint(c) if c.gen_id == 5));
+        assert!(matches!(&result[4], Record::Checkpoint { gen_id, .. } if *gen_id == 5));
     }
 
     #[test]
     fn reachable_multiple_restores_last_wins() {
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 4,
                 target_gen: 2,
@@ -316,10 +318,10 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 3,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 5,
                 name: "c5".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 6,
                 target_gen: 1,
@@ -327,35 +329,35 @@ mod tests {
         ];
         let result = live_records(records);
         assert_eq!(result.len(), 1);
-        assert!(matches!(&result[0], Record::Checkpoint(c) if c.gen_id == 1));
+        assert!(matches!(&result[0], Record::Checkpoint { gen_id, .. } if *gen_id == 1));
     }
 
     #[test]
     fn reachable_nested_s_in_dead_zone() {
         // K1 [A] K2 [B] K3 S4(K1) [D] K5 [E] K6 S7(K5)
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 4,
                 target_gen: 1,
@@ -365,19 +367,19 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 3,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 5,
                 name: "c5".into(),
-            }),
+            },
             Record::Added {
                 path: "/e".into(),
                 dtype: Some(DType::File),
                 ino: 4,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 6,
                 name: "c6".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 7,
                 target_gen: 5,
@@ -385,37 +387,37 @@ mod tests {
         ];
         let result = live_records(records);
         assert_eq!(result.len(), 3);
-        assert!(matches!(&result[0], Record::Checkpoint(c) if c.gen_id == 1));
+        assert!(matches!(&result[0], Record::Checkpoint { gen_id, .. } if *gen_id == 1));
         assert!(matches!(&result[1], Record::Added { path, .. } if path == "/d"));
-        assert!(matches!(&result[2], Record::Checkpoint(c) if c.gen_id == 5));
+        assert!(matches!(&result[2], Record::Checkpoint { gen_id, .. } if *gen_id == 5));
     }
 
     #[test]
     fn reachable_undo_restore() {
         // K1 [A] K2 [B] K3 S4(K1) [D] K5 S6(K3)
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 4,
                 target_gen: 1,
@@ -425,10 +427,10 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 3,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 5,
                 name: "c5".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 6,
                 target_gen: 3,
@@ -436,30 +438,30 @@ mod tests {
         ];
         let result = live_records(records);
         assert_eq!(result.len(), 5);
-        assert!(matches!(&result[0], Record::Checkpoint(c) if c.gen_id == 1));
+        assert!(matches!(&result[0], Record::Checkpoint { gen_id, .. } if *gen_id == 1));
         assert!(matches!(&result[1], Record::Added { path, .. } if path == "/a"));
-        assert!(matches!(&result[2], Record::Checkpoint(c) if c.gen_id == 2));
+        assert!(matches!(&result[2], Record::Checkpoint { gen_id, .. } if *gen_id == 2));
         assert!(matches!(&result[3], Record::Added { path, .. } if path == "/b"));
-        assert!(matches!(&result[4], Record::Checkpoint(c) if c.gen_id == 3));
+        assert!(matches!(&result[4], Record::Checkpoint { gen_id, .. } if *gen_id == 3));
     }
 
     /// Restore to the first checkpoint discards everything after it.
     #[test]
     fn reachable_restore_to_first_checkpoint() {
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "c1".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 3,
                 target_gen: 1,
@@ -467,25 +469,25 @@ mod tests {
         ];
         let result = live_records(records);
         assert_eq!(result.len(), 1);
-        assert!(matches!(&result[0], Record::Checkpoint(c) if c.gen_id == 1));
+        assert!(matches!(&result[0], Record::Checkpoint { gen_id, .. } if *gen_id == 1));
     }
 
     #[test]
     fn reachable_corrupt_s_record_skipped() {
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 3,
                 target_gen: 99,
@@ -508,28 +510,28 @@ mod tests {
     #[test]
     fn reachable_consecutive_s_records() {
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 4,
                 target_gen: 2,
@@ -541,7 +543,7 @@ mod tests {
         ];
         let result = live_records(records);
         assert_eq!(result.len(), 1);
-        assert!(matches!(&result[0], Record::Checkpoint(c) if c.gen_id == 1));
+        assert!(matches!(&result[0], Record::Checkpoint { gen_id, .. } if *gen_id == 1));
     }
 
     // ── Slice tests ──────────────────────────────────────────────────
@@ -549,28 +551,28 @@ mod tests {
     #[test]
     fn live_slice_at() {
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
         let pairs = sj.live_slice(Some("c3"), None, None).unwrap();
@@ -578,43 +580,43 @@ mod tests {
         assert_eq!(pairs[0].0.from, 2);
         assert_eq!(pairs[0].0.records.len(), 1);
         assert!(matches!(&pairs[0].0.records[0], Record::Added { path, .. } if path == "/b"));
-        assert_eq!(pairs[0].1.as_ref().unwrap().gen_id, 3);
+        assert_eq!(pairs[0].1.as_ref().unwrap().0, 3);
     }
 
     #[test]
     fn live_slice_from_to() {
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
             Record::Added {
                 path: "/c".into(),
                 dtype: Some(DType::File),
                 ino: 3,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 4,
                 name: "c4".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
         let pairs = sj.live_slice(None, Some("c2"), Some("c3")).unwrap();
@@ -625,10 +627,10 @@ mod tests {
 
     #[test]
     fn live_slice_not_found() {
-        let records = vec![Record::Checkpoint(Checkpoint {
+        let records = vec![Record::Checkpoint {
             gen_id: 1,
             name: "init".into(),
-        })];
+        }];
         let sj = SegmentedJournal::new(RawJournal(records));
         assert!(sj.live_slice(Some("nonexistent"), None, None).is_err());
     }
@@ -639,28 +641,28 @@ mod tests {
     fn live_prefix_basic() {
         // K1 [A] K2 [B] K3 S4(K1) [D] K5
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 4,
                 target_gen: 1,
@@ -670,24 +672,24 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 3,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 5,
                 name: "c5".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
-        let (m_idx, _) = sj.markers.find_checkpoint_by_name("c2").unwrap();
-        let prefix = sj.live_prefix(m_idx);
+        let (gen_id, _) = sj.markers.find_checkpoint_by_name("c2").unwrap();
+        let prefix = sj.live_prefix((gen_id - 1) as usize);
         let records: Vec<Record> = prefix
             .0
             .into_iter()
             .flat_map(|s| {
                 let mut r = Vec::new();
                 if s.from > 0 {
-                    r.push(Record::Checkpoint(Checkpoint {
+                    r.push(Record::Checkpoint {
                         gen_id: s.from,
                         name: String::new(),
-                    }));
+                    });
                 }
                 r.extend(s.records);
                 r
@@ -695,7 +697,7 @@ mod tests {
             .collect();
         // K1, [A] — the live prefix up to K2
         assert_eq!(records.len(), 2);
-        assert!(matches!(&records[0], Record::Checkpoint(c) if c.gen_id == 1));
+        assert!(matches!(&records[0], Record::Checkpoint { gen_id, .. } if *gen_id == 1));
         assert!(matches!(&records[1], Record::Added { path, .. } if path == "/a"));
     }
 
@@ -704,28 +706,28 @@ mod tests {
         // K1 [A] K2 [B] K3 S4(K1)
         // alive_segments_range(0..2) should only see K1 and K2, ignore S4.
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 4,
                 target_gen: 1,
@@ -746,28 +748,28 @@ mod tests {
         //   prefix markers: K1, K2, K3, S4. S4(K1) kills K2,K3,S4 segments.
         //   live: seg(K1,[A]) + seg(K1*,[C])
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 4,
                 target_gen: 1,
@@ -777,24 +779,24 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 3,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 5,
                 name: "c5".into(),
-            }),
+            },
             Record::Added {
                 path: "/d".into(),
                 dtype: Some(DType::File),
                 ino: 4,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 6,
                 name: "c6".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
         // Markers: K1(0), K2(1), K3(2), S4(3), K5(4), K6(5)
-        let (m_idx, _) = sj.markers.find_checkpoint_by_name("c5").unwrap();
-        let prefix = sj.live_prefix(m_idx);
+        let (gen_id, _) = sj.markers.find_checkpoint_by_name("c5").unwrap();
+        let prefix = sj.live_prefix((gen_id - 1) as usize);
         let result: Vec<Record> = prefix.0.into_iter().flat_map(|s| s.records).collect();
         // Live prefix up to K5: [C] from seg4.
         // [A] is dead (killed by S4, which kills segs after K1 marker). [D] is beyond K5.
@@ -807,10 +809,10 @@ mod tests {
         // K1 [A] S2(K99) [B]
         // S targets nonexistent K99 — should be skipped, all segments alive.
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),

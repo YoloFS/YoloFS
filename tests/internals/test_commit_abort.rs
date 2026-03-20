@@ -35,7 +35,7 @@ fn restore_to_checkpoint_appends_s_record() {
     assert!(
         records.0
             .iter()
-            .any(|r| matches!(r, Record::Checkpoint(c) if c.name == "s1")),
+            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1")),
         "s1 checkpoint should be preserved: {records:?}"
     );
 }

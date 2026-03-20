@@ -22,7 +22,7 @@ fn restore_journal_contains_checkpoint_marker() {
     assert!(
         records.0
             .iter()
-            .any(|r| matches!(r, Record::Checkpoint(c) if c.name == "chk1")),
+            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "chk1")),
         "chk1 marker should be in journal: {records:?}"
     );
 }
@@ -372,7 +372,7 @@ fn restore_renamed_symlink_in_resolved_changes() {
     assert!(
         records.0
             .iter()
-            .any(|r| matches!(r, Record::Checkpoint(c) if c.name == "chk1")),
+            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "chk1")),
         "chk1 should be in journal: {records:?}"
     );
 }
@@ -457,7 +457,7 @@ fn restore_s_record_has_correct_gen() {
     let chk1_gen = records.0
         .iter()
         .find_map(|r| match r {
-            Record::Checkpoint(c) if c.name == "chk1" => Some(c.gen_id),
+            Record::Checkpoint { gen_id, name } if name == "chk1" => Some(*gen_id),
             _ => None,
         })
         .expect("chk1 should exist");
@@ -465,7 +465,7 @@ fn restore_s_record_has_correct_gen() {
     let chk2_gen = records.0
         .iter()
         .find_map(|r| match r {
-            Record::Checkpoint(c) if c.name == "chk2" => Some(c.gen_id),
+            Record::Checkpoint { gen_id, name } if name == "chk2" => Some(*gen_id),
             _ => None,
         })
         .expect("chk2 should exist");

@@ -128,9 +128,9 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     // Search all markers (including dead zones) for the target checkpoint,
     // so that undo-restore (restoring to a dead checkpoint) works.
     let sj = SegmentedJournal::new(journal::read(&agfs)?);
-    let (marker_idx, checkpoint) = sj.markers.find_checkpoint(checkpoint_name)?;
-    let target_gen = checkpoint.gen_id;
-    let chk_label = checkpoint.name.clone();
+    let (target_gen, chk_name) = sj.markers.find_checkpoint(checkpoint_name)?;
+    let chk_label = chk_name.to_owned();
+    let marker_idx = (target_gen - 1) as usize;
 
     // Extract live records from the prefix up to the target checkpoint,
     // handling any S records within that prefix.

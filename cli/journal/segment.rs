@@ -2,13 +2,13 @@
 //
 // Segmentation: split a flat record stream into segments at checkpoint (K)
 // and restore (S) boundaries. Each segment contains only data records
-// (A/M/D/R); structural records become Markers in the K/S skeleton.
+// (A/M/D/R); checkpoint and restore records are stored in Markers.
 
 use super::types::*;
 use anyhow::Result;
 
 /// The K/S skeleton of the journal.
-pub struct Markers(pub(super) Vec<Marker>);
+pub struct Markers(pub(super) Vec<Record>);
 
 impl Markers {
     pub fn len(&self) -> usize {
@@ -19,22 +19,21 @@ impl Markers {
         self.0.is_empty()
     }
 
-    pub fn get(&self, idx: usize) -> Option<&Marker> {
+    pub fn get(&self, idx: usize) -> Option<&Record> {
         self.0.get(idx)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Marker> {
+    pub fn iter(&self) -> impl Iterator<Item = &Record> {
         self.0.iter()
     }
 
     /// Find a checkpoint by numeric gen ID. O(1) via direct indexing.
-    /// Returns (marker index, checkpoint reference).
-    pub fn find_checkpoint_by_gen_id(&self, gen_id: u64) -> Result<(usize, &Checkpoint)> {
+    pub fn find_checkpoint_by_gen_id(&self, gen_id: u64) -> Result<(u64, &str)> {
         let idx = gen_id.checked_sub(1).and_then(|i| usize::try_from(i).ok());
         if let Some(idx) = idx {
-            if let Some(Marker::Checkpoint(checkpoint)) = self.0.get(idx) {
-                if checkpoint.gen_id == gen_id {
-                    return Ok((idx, checkpoint));
+            if let Some(Record::Checkpoint { gen_id: g, name }) = self.0.get(idx) {
+                if *g == gen_id {
+                    return Ok((*g, name));
                 }
             }
         }
@@ -42,21 +41,20 @@ impl Markers {
     }
 
     /// Find a checkpoint by name. Returns the last match (names may repeat).
-    /// Returns (marker index, checkpoint reference).
-    pub fn find_checkpoint_by_name(&self, name: &str) -> Result<(usize, &Checkpoint)> {
+    pub fn find_checkpoint_by_name(&self, name: &str) -> Result<(u64, &str)> {
         let mut last = None;
-        for (i, marker) in self.0.iter().enumerate() {
-            if let Marker::Checkpoint(checkpoint) = marker
-                && checkpoint.name == name
+        for marker in self.0.iter() {
+            if let Record::Checkpoint { gen_id, name: n } = marker
+                && n == name
             {
-                last = Some((i, checkpoint));
+                last = Some((*gen_id, n.as_str()));
             }
         }
         last.ok_or_else(|| anyhow::anyhow!("checkpoint not found: {name}"))
     }
 
     /// Find a checkpoint by name or numeric ID (user input).
-    pub fn find_checkpoint(&self, name_or_id: &str) -> Result<(usize, &Checkpoint)> {
+    pub fn find_checkpoint(&self, name_or_id: &str) -> Result<(u64, &str)> {
         if let Ok(id) = name_or_id.parse::<u64>() {
             return self.find_checkpoint_by_gen_id(id);
         }
@@ -64,9 +62,9 @@ impl Markers {
     }
 
     /// Get the checkpoint at this marker index (returns `None` for restore markers).
-    pub fn closing_checkpoint(&self, marker_idx: usize) -> Option<&Checkpoint> {
+    pub fn closing_checkpoint(&self, marker_idx: usize) -> Option<(u64, &str)> {
         match self.0.get(marker_idx)? {
-            Marker::Checkpoint(checkpoint) => Some(checkpoint),
+            Record::Checkpoint { gen_id, name } => Some((*gen_id, name)),
             _ => None,
         }
     }
@@ -81,26 +79,26 @@ impl Markers {
         num_segments: usize,
     ) -> Result<(usize, usize)> {
         if let Some(name) = at {
-            let (m_idx, _) = self.find_checkpoint(name)?;
-            // Segment m_idx is between the previous marker and this checkpoint.
+            let (gen_id, _) = self.find_checkpoint(name)?;
+            let m_idx = (gen_id - 1) as usize;
             // Find the previous checkpoint marker to bound the "at" range.
             let prev_k = (0..m_idx)
                 .rev()
-                .find(|&i| matches!(&self.0[i], Marker::Checkpoint(..)));
+                .find(|&i| matches!(&self.0[i], Record::Checkpoint { .. }));
             let start = prev_k.map(|k| k + 1).unwrap_or(0);
             return Ok((start, m_idx + 1));
         }
 
         let start = if let Some(from_name) = from {
-            let (m_idx, _) = self.find_checkpoint(from_name)?;
-            m_idx + 1
+            let (gen_id, _) = self.find_checkpoint(from_name)?;
+            gen_id as usize
         } else {
             0
         };
 
         let end = if let Some(to_name) = to {
-            let (m_idx, _) = self.find_checkpoint(to_name)?;
-            m_idx + 1
+            let (gen_id, _) = self.find_checkpoint(to_name)?;
+            gen_id as usize
         } else {
             num_segments
         };
@@ -126,26 +124,26 @@ impl SegmentedJournal {
     /// Splits at both checkpoint (K) and restore (S) boundaries.
     pub fn new(journal: RawJournal) -> Self {
         let mut segments = Vec::new();
-        let mut markers_vec: Vec<Marker> = Vec::new();
+        let mut markers_vec: Vec<Record> = Vec::new();
         let mut current_records = Vec::new();
         let mut current_from: u64 = 0;
 
         for record in journal.0.into_iter() {
             match record {
-                Record::Checkpoint(c) => {
+                Record::Checkpoint { gen_id, .. } => {
                     segments.push(Segment {
                         from: current_from,
                         records: std::mem::take(&mut current_records),
                     });
-                    current_from = c.gen_id;
-                    markers_vec.push(Marker::Checkpoint(c));
+                    current_from = gen_id;
+                    markers_vec.push(record);
                 }
-                Record::Restore { gen_id, target_gen } => {
+                Record::Restore { target_gen, .. } => {
                     segments.push(Segment {
                         from: current_from,
                         records: std::mem::take(&mut current_records),
                     });
-                    markers_vec.push(Marker::Restore { gen_id, target_gen });
+                    markers_vec.push(record);
                     current_from = target_gen;
                 }
                 _ => {
@@ -175,28 +173,28 @@ mod tests {
     fn segmentation_basic() {
         // K1 [A] K2 [B] K3
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
         // seg0(None,[]) seg1(K1,[A]) seg2(K2,[B]) seg3(K3,[])
@@ -215,28 +213,28 @@ mod tests {
     fn segmentation_splits_at_s_boundary() {
         // K1 [A] K2 [B] K3 S4(K2) [D] K5
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 4,
                 target_gen: 2,
@@ -246,10 +244,10 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 3,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 5,
                 name: "c5".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
         // seg0(None,[]) seg1(K1,[A]) seg2(K2,[B]) seg3(K3,[]) seg4(K2,[D]) seg5(K5,[])
@@ -268,19 +266,19 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 999,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
         // seg0(None,[/orphan]) seg1(K1,[/a]) seg2(K2,[])
@@ -299,55 +297,53 @@ mod tests {
     #[test]
     fn find_checkpoint_by_gen_id() {
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "first".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "second".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
-        let (m_idx, c) = sj.markers.find_checkpoint_by_gen_id(1).unwrap();
-        assert_eq!(m_idx, 0);
-        assert_eq!(c.gen_id, 1);
+        let (gen_id, _) = sj.markers.find_checkpoint_by_gen_id(1).unwrap();
+        assert_eq!(gen_id, 1);
     }
 
     #[test]
     fn find_checkpoint_by_name() {
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "first".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "second".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
-        let (m_idx, c) = sj.markers.find_checkpoint_by_name("second").unwrap();
-        assert_eq!(m_idx, 1);
-        assert_eq!(c.gen_id, 2);
+        let (gen_id, _) = sj.markers.find_checkpoint_by_name("second").unwrap();
+        assert_eq!(gen_id, 2);
     }
 
     #[test]
     fn find_checkpoint_not_found() {
-        let records = vec![Record::Checkpoint(Checkpoint {
+        let records = vec![Record::Checkpoint {
             gen_id: 1,
             name: "first".into(),
-        })];
+        }];
         let sj = SegmentedJournal::new(RawJournal(records));
         assert!(sj.markers.find_checkpoint_by_name("nonexistent").is_err());
     }
@@ -355,43 +351,42 @@ mod tests {
     #[test]
     fn find_checkpoint_duplicate_names_returns_last() {
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "dup".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "dup".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
-        let (m_idx, c) = sj.markers.find_checkpoint_by_name("dup").unwrap();
-        assert_eq!(m_idx, 1, "should return the last matching checkpoint");
-        assert_eq!(c.gen_id, 2);
+        let (gen_id, _) = sj.markers.find_checkpoint_by_name("dup").unwrap();
+        assert_eq!(gen_id, 2, "should return the last matching checkpoint");
     }
 
     #[test]
     fn closing_checkpoint_on_restore_marker() {
         // K1 [A] K2 S3(K1)
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "init".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 3,
                 target_gen: 1,
@@ -411,28 +406,28 @@ mod tests {
     fn segment_range_from_after_to_is_error() {
         // K1 [A] K2 [B] K3
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "c1".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
         let result = sj
@@ -445,28 +440,28 @@ mod tests {
     fn segment_range_at_first_checkpoint() {
         // K1 [A] K2 [B] K3
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "c1".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
         // --at c1: no previous K → start=0, end=1
@@ -482,28 +477,28 @@ mod tests {
     fn segment_range_at_middle_checkpoint() {
         // K1 [A] K2 [B] K3
         let records = vec![
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "c1".into(),
-            }),
+            },
             Record::Added {
                 path: "/a".into(),
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "c2".into(),
-            }),
+            },
             Record::Added {
                 path: "/b".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 3,
                 name: "c3".into(),
-            }),
+            },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
         // --at c2: prev K is marker 0 (K1), so start=1, end=2
@@ -513,6 +508,29 @@ mod tests {
             .unwrap();
         assert_eq!(start, 1);
         assert_eq!(end, 2);
+    }
+
+    #[test]
+    fn segment_range_at_checkpoint_after_restore() {
+        // K1 [A] K2 [B] K3 S4(K2) [D] K5
+        let records = vec![
+            Record::Checkpoint { gen_id: 1, name: "c1".into() },
+            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint { gen_id: 2, name: "c2".into() },
+            Record::Added { path: "/b".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint { gen_id: 3, name: "c3".into() },
+            Record::Restore { gen_id: 4, target_gen: 2 },
+            Record::Added { path: "/d".into(), dtype: Some(DType::File), ino: 3 },
+            Record::Checkpoint { gen_id: 5, name: "c5".into() },
+        ];
+        let sj = SegmentedJournal::new(RawJournal(records));
+        // --at c5: prev K is marker[2] (K3), so start=3, end=5
+        let (start, end) = sj
+            .markers
+            .segment_range(Some("c5"), None, None, sj.segments.len())
+            .unwrap();
+        assert_eq!(start, 3);
+        assert_eq!(end, 5);
     }
 
     #[test]

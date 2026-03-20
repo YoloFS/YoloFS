@@ -3,7 +3,7 @@
 // `agfs timeline` — show checkpoint/restore DAG with unreachable branches dimmed.
 
 use crate::journal;
-use crate::journal::{Marker, SegmentedJournal};
+use crate::journal::SegmentedJournal;
 use colored::Colorize;
 
 /// Display the checkpoint/restore timeline (full DAG, unreachable dimmed).
@@ -21,14 +21,14 @@ pub fn run() -> anyhow::Result<()> {
     for (m_idx, marker) in sj.markers.iter().enumerate() {
         let reachable = alive[m_idx];
         let line = match marker {
-            Marker::Checkpoint(checkpoint) => {
+            journal::Record::Checkpoint { gen_id, name } => {
                 format!(
                     "{} {}",
-                    format!("checkpoint [{}]", checkpoint.gen_id).cyan().bold(),
-                    checkpoint.name.dimmed(),
+                    format!("checkpoint [{gen_id}]").cyan().bold(),
+                    name.dimmed(),
                 )
             }
-            Marker::Restore {
+            journal::Record::Restore {
                 gen_id, target_gen,
             } => {
                 format!(
@@ -37,6 +37,7 @@ pub fn run() -> anyhow::Result<()> {
                     format!("restored to [{target_gen}]").dimmed(),
                 )
             }
+            _ => unreachable!("markers only contain checkpoint/restore records"),
         };
         if reachable {
             println!("  {line}");

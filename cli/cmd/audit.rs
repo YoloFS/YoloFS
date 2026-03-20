@@ -42,26 +42,16 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
 
         // Print the marker after this segment (if any).
         if let Some(marker) = sj.markers.get(seg_idx) {
-            let marker_record = marker.to_record();
-            if path_filter.is_none() || is_structural(&marker_record) {
-                let line = format_record(&marker_record);
-                if reachable {
-                    println!("  {line}");
-                } else {
-                    println!("  {} {}", line.dimmed(), "(unreachable)".dimmed());
-                }
+            let line = format_record(marker);
+            if reachable {
+                println!("  {line}");
+            } else {
+                println!("  {} {}", line.dimmed(), "(unreachable)".dimmed());
             }
         }
     }
 
     Ok(())
-}
-
-fn is_structural(record: &journal::Record) -> bool {
-    matches!(
-        record,
-        journal::Record::Checkpoint(_) | journal::Record::Restore { .. }
-    )
 }
 
 fn record_matches_path(record: &journal::Record, filter: &str) -> bool {
@@ -78,8 +68,8 @@ fn record_matches_path(record: &journal::Record, filter: &str) -> bool {
 
 fn format_record(record: &journal::Record) -> String {
     match record {
-        journal::Record::Checkpoint(c) => {
-            format!("{} {}", format!("[{}]", c.gen_id).cyan().bold(), c.name)
+        journal::Record::Checkpoint { gen_id, name } => {
+            format!("{} {}", format!("[{}]", gen_id).cyan().bold(), name)
         }
         journal::Record::Restore {
             gen_id, target_gen, ..
@@ -111,7 +101,7 @@ fn format_record(record: &journal::Record) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{Checkpoint, DType, Record};
+    use crate::journal::{DType, Record};
 
     /// Strip ANSI escape codes for assertion matching.
     fn strip_ansi(s: &str) -> String {
@@ -133,10 +123,10 @@ mod tests {
 
     #[test]
     fn format_checkpoint() {
-        let rec = Record::Checkpoint(Checkpoint {
+        let rec = Record::Checkpoint {
             gen_id: 3,
             name: "build".into(),
-        });
+        };
         let s = strip_ansi(&format_record(&rec));
         assert!(s.contains("[3]"), "should contain gen_id: {s}");
         assert!(s.contains("build"), "should contain name: {s}");

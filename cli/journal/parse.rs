@@ -98,7 +98,7 @@ pub fn parse(data: &[u8]) -> Result<RawJournal> {
                 let gen_str = String::from_utf8_lossy(fields[1]);
                 let name = String::from_utf8_lossy(fields[2]).to_string();
                 if let Ok(gen_id) = gen_str.parse::<u64>() {
-                    records.push(Record::Checkpoint(Checkpoint { gen_id, name }));
+                    records.push(Record::Checkpoint { gen_id, name });
                 }
             }
             b"S" if fields.len() >= 3 => {
@@ -159,7 +159,7 @@ mod tests {
     fn parse_checkpoint_record() {
         let records = parse(b"A\0\0a\0f\01\nK\01\0build\nA\0\0a\0f\02\n").unwrap();
         assert_eq!(records.0.len(), 3);
-        assert!(matches!(&records.0[1], Record::Checkpoint(c) if c.gen_id == 1 && c.name == "build"));
+        assert!(matches!(&records.0[1], Record::Checkpoint { gen_id, name } if *gen_id == 1 && name == "build"));
     }
 
     #[test]

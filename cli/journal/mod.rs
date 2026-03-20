@@ -3,9 +3,9 @@
 // Structured access to the append-only journal.
 //
 // Submodules:
-//   types     — Record, Change, Action, ActionList, Checkpoint, DType, INO_REDIRECT
+//   types     — Record, Change, Action, ActionList, DType, INO_REDIRECT
 //   parse     — read()
-//   segment   — Segment, Marker, Markers, SegmentedJournal (split records at K/S boundaries)
+//   segment   — Segment, Markers, SegmentedJournal (split records at K/S boundaries)
 //   liveness  — alive_segments(), live(), live_prefix(), live_slice() (reachability filtering)
 //   simplify  — simplify() records into ActionList (chain collapse, cancel, etc.)
 //   action    — ActionList: apply() to base fs, collapse() to Changeset

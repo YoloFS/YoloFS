@@ -8,7 +8,7 @@
 // `--from <name> --to <name>` — diff changes between two checkpoints.
 
 use crate::journal;
-use crate::journal::{Change, Checkpoint, SegmentedJournal};
+use crate::journal::{Change, SegmentedJournal};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -57,12 +57,12 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
 
 // ── Segment display helpers ──────────────────────────────────────────
 
-fn print_segment_footer(closing: &Option<Checkpoint>) {
-    if let Some(c) = closing {
+fn print_segment_footer(closing: &Option<(u64, String)>) {
+    if let Some((gen_id, name)) = closing {
         println!(
             "{} {}",
-            format!("checkpoint [{}]", c.gen_id).cyan().bold(),
-            c.name.dimmed()
+            format!("checkpoint [{}]", gen_id).cyan().bold(),
+            name.dimmed()
         );
     }
 }
@@ -137,7 +137,7 @@ fn run(
     let pairs = sj.live_slice(at, from, to)?;
 
     // Resolve all segments upfront.
-    let resolved: Vec<(journal::Changeset, Option<journal::Checkpoint>)> = pairs
+    let resolved: Vec<(journal::Changeset, Option<(u64, String)>)> = pairs
         .into_iter()
         .map(|(seg, closing)| {
             let actions = journal::simplify::simplify(seg.records);

@@ -108,13 +108,6 @@ pub struct Changeset(pub Vec<(String, Change)>);
 #[derive(Debug, Default)]
 pub struct LiveSegments(pub Vec<Segment>);
 
-/// A named checkpoint in the journal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Checkpoint {
-    pub gen_id: u64,
-    pub name: String,
-}
-
 /// A group of data records (A/M/D/R) between consecutive K/S boundaries.
 #[derive(Debug)]
 pub struct Segment {
@@ -125,27 +118,6 @@ pub struct Segment {
     pub records: Vec<Record>,
 }
 
-/// A boundary event in the journal (checkpoint or restore).
-#[derive(Debug, Clone)]
-pub enum Marker {
-    Checkpoint(Checkpoint),
-    Restore { gen_id: u64, target_gen: u64 },
-}
-
-impl Marker {
-    /// Convert to a Record for display formatting.
-    pub fn to_record(&self) -> Record {
-        match self {
-            Marker::Checkpoint(checkpoint) => Record::Checkpoint(checkpoint.clone()),
-            Marker::Restore {
-                gen_id, target_gen,
-            } => Record::Restore {
-                gen_id: *gen_id,
-                target_gen: *target_gen,
-            },
-        }
-    }
-}
 
 /// A journal record: either an entry (dirent mutation) or a checkpoint.
 #[derive(Debug, Clone)]
@@ -173,7 +145,7 @@ pub enum Record {
         new: String,
         dtype: Option<DType>,
     },
-    Checkpoint(Checkpoint),
+    Checkpoint { gen_id: u64, name: String },
     Restore {
         gen_id: u64,
         target_gen: u64,

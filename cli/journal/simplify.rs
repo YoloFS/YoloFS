@@ -39,7 +39,7 @@ pub fn simplify(records: Vec<Record>) -> ActionList {
                 new,
                 dtype: dtype.unwrap_or(DType::File),
             }),
-            Record::Checkpoint(_) | Record::Restore { .. } => None,
+            Record::Checkpoint { .. } | Record::Restore { .. } => None,
         })
         .collect();
 
@@ -592,10 +592,10 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(super::super::types::Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "test".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 2,
                 target_gen: 1,
@@ -880,7 +880,7 @@ mod tests {
     // when records span checkpoint boundaries and are filtered by liveness.
 
     use super::super::segment::SegmentedJournal;
-    use super::super::types::{Checkpoint, RawJournal};
+    use super::super::types::RawJournal;
 
     /// Helper: run the full pipeline on raw records including K/S markers.
     fn resolve_all(records: Vec<Record>) -> Vec<(String, super::super::types::Change)> {
@@ -899,15 +899,15 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "k1".into(),
-            }),
+            },
             Record::Deleted { path: "/x".into() },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "k2".into(),
-            }),
+            },
             Record::Added {
                 path: "/x".into(),
                 dtype: Some(DType::File),
@@ -932,10 +932,10 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "k1".into(),
-            }),
+            },
             Record::Modified {
                 path: "/x".into(),
                 dtype: Some(DType::File),
@@ -960,10 +960,10 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "k1".into(),
-            }),
+            },
             Record::Deleted { path: "/x".into() },
         ];
         let cs = resolve_all(records);
@@ -984,10 +984,10 @@ mod tests {
                 new: "/b".into(),
                 dtype: Some(DType::File),
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "k1".into(),
-            }),
+            },
             Record::Modified {
                 path: "/b".into(),
                 dtype: Some(DType::File),
@@ -1014,10 +1014,10 @@ mod tests {
                 new: "/b".into(),
                 dtype: Some(DType::File),
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "k1".into(),
-            }),
+            },
             Record::Redirect {
                 old: "/b".into(),
                 new: "/c".into(),
@@ -1045,19 +1045,19 @@ mod tests {
                 dtype: Some(DType::File),
                 ino: 1,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "k1".into(),
-            }),
+            },
             Record::Added {
                 path: "/y".into(),
                 dtype: Some(DType::File),
                 ino: 2,
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 2,
                 name: "k2".into(),
-            }),
+            },
             Record::Restore {
                 gen_id: 3,
                 target_gen: 1,
@@ -1086,10 +1086,10 @@ mod tests {
         // Seg0: D(x) | K1 | Seg1: A(x, ino=2)
         let records = vec![
             Record::Deleted { path: "/x".into() },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "k1".into(),
-            }),
+            },
             Record::Added {
                 path: "/x".into(),
                 dtype: Some(DType::File),
@@ -1115,10 +1115,10 @@ mod tests {
                 new: "/b".into(),
                 dtype: Some(DType::Dir),
             },
-            Record::Checkpoint(Checkpoint {
+            Record::Checkpoint {
                 gen_id: 1,
                 name: "k1".into(),
-            }),
+            },
             Record::Redirect {
                 old: "/b".into(),
                 new: "/c".into(),

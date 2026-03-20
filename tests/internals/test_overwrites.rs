@@ -197,7 +197,7 @@ fn recow_of_staged_file_after_checkpoint_emits_modify() {
     // Find all staged records for created.txt after the checkpoint.
     let chk_pos = records.0
         .iter()
-        .position(|r| matches!(r, Record::Checkpoint(c) if c.name == "s1"))
+        .position(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1"))
         .expect("should have checkpoint s1");
     let post_chk: Vec<_> = records.0[chk_pos + 1..]
         .iter()
