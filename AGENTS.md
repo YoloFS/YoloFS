@@ -8,7 +8,7 @@
 - Think through problems and implement the best solution; avoid fallbacks.
 - Keep functions short. Extract helpers when a function does multiple distinct things.
 - Do not change or remove existing comments unless they are outdated.
-- Do not be afraid of large-scale refactoring. If the design is better, do it.
+- Freely refactor code — rename, restructure, move, split, or merge files and modules whenever it improves clarity or design. Do not be afraid of large-scale refactoring.
 
 ## Workflow
 
