@@ -1,7 +1,7 @@
-// agfs CLI — journal_cmd.rs
+// agfs CLI — audit.rs
 //
-// `agfs journal`                — full session history (every record, dead branches dimmed).
-// `agfs journal --path <path>`  — trace operations on a specific file.
+// `agfs audit`                — full session history (every record, dead branches dimmed).
+// `agfs audit --path <path>`  — trace operations on a specific file.
 
 use crate::journal;
 use crate::journal::{Marker, SegmentedJournal};

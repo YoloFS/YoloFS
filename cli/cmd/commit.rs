@@ -24,7 +24,7 @@ pub fn run() -> Result<()> {
 
     actions.apply(&agfs)?;
 
-    crate::abort::reset_staging(&agfs)?;
+    super::abort::reset_staging(&agfs)?;
 
     println!(
         "{}",

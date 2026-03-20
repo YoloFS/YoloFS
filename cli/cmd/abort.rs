@@ -69,7 +69,7 @@ pub fn run(force: bool) -> Result<()> {
         }
     }
 
-    crate::abort::reset_staging(&agfs)?;
+    reset_staging(&agfs)?;
 
     println!("{}", "Staging discarded.".yellow().bold());
 

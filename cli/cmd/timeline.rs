@@ -1,4 +1,4 @@
-// agfs CLI — timeline_cmd.rs
+// agfs CLI — timeline.rs
 //
 // `agfs timeline` — show checkpoint/restore DAG with unreachable branches dimmed.
 

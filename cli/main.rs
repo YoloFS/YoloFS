@@ -1,9 +1,7 @@
 // agfs CLI — main.rs
 
-use agfs::{
-    abort, checkpoint, commit, config, diff, exec, journal_cmd, kmod, mount, restore, timeline_cmd,
-    watch,
-};
+use agfs::cmd::{abort, audit, checkpoint, commit, diff, exec, load, mount, restore, timeline, watch};
+use agfs::config;
 use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
@@ -99,7 +97,7 @@ enum Command {
     /// Show checkpoint/restore timeline (unreachable branches dimmed)
     Timeline,
     /// Show full session history (every operation, dead branches dimmed)
-    Journal {
+    Audit {
         /// Filter to operations on a specific path
         #[arg(long)]
         path: Option<String>,
@@ -149,12 +147,12 @@ fn run_cli() -> anyhow::Result<u8> {
 
     match cli.command {
         Some(Command::Load) => {
-            if !kmod::load()? {
+            if !load::load()? {
                 eprintln!("{} kernel module already loaded", "agfs:".green());
             }
         }
-        Some(Command::Unload) => kmod::unload()?,
-        Some(Command::Reload) => kmod::reload()?,
+        Some(Command::Unload) => load::unload()?,
+        Some(Command::Reload) => load::reload()?,
         Some(Command::Init) => config::init(&std::env::current_dir()?)?,
         Some(Command::Mount) => mount::mount()?,
         Some(Command::Unmount { force }) => mount::unmount(force)?,
@@ -177,8 +175,8 @@ fn run_cli() -> anyhow::Result<u8> {
             checkpoint::create(name.as_deref())?;
         }
         Some(Command::Restore { name }) => restore::run(&name)?,
-        Some(Command::Timeline) => timeline_cmd::run()?,
-        Some(Command::Journal { path }) => journal_cmd::run(path.as_deref())?,
+        Some(Command::Timeline) => timeline::run()?,
+        Some(Command::Audit { path }) => audit::run(path.as_deref())?,
         Some(Command::Rule { action }) => match action {
             RuleAction::Add { path, perm } => config::add_rule(&path, &perm)?,
             RuleAction::Remove { path } => config::remove_rule(&path)?,

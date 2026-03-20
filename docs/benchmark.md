@@ -696,7 +696,7 @@ On failure, the failing (workload, backend) combination is automatically rerun
 with verbose logging enabled. Verbose logs include:
 
 - Workload stdout/stderr
-- agfs journal contents at the point of failure (agfs backend only)
+- agfs audit contents at the point of failure (agfs backend only)
 
 ### Results
 

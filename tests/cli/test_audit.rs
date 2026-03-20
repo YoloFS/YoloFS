@@ -1,23 +1,23 @@
 use crate::helpers::AgfsSession;
 use std::fs;
 
-/// `agfs journal` shows file operations.
+/// `agfs audit` shows file operations.
 #[test]
-fn journal_shows_added_file() {
+fn audit_shows_added_file() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "content\n").expect("write");
 
-    let output = s.cli(&["journal"]).expect("journal");
+    let output = s.cli(&["audit"]).expect("audit");
     assert!(
         output.contains("hello.txt"),
         "should show record for hello.txt: {output}"
     );
 }
 
-/// `agfs journal` shows checkpoint and restore records.
+/// `agfs audit` shows checkpoint and restore records.
 #[test]
-fn journal_shows_checkpoints_and_restores() {
+fn audit_shows_checkpoints_and_restores() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
@@ -26,7 +26,7 @@ fn journal_shows_checkpoints_and_restores() {
     s.cli(&["checkpoint", "chk2"]).expect("checkpoint");
     s.cli(&["restore", "chk1"]).expect("restore");
 
-    let output = s.cli(&["journal"]).expect("journal");
+    let output = s.cli(&["audit"]).expect("audit");
     assert!(output.contains("chk1"), "should show chk1: {output}");
     assert!(output.contains("chk2"), "should show chk2: {output}");
     assert!(
@@ -35,9 +35,9 @@ fn journal_shows_checkpoints_and_restores() {
     );
 }
 
-/// `agfs journal` dims unreachable records with ~ prefix after restore.
+/// `agfs audit` dims unreachable records with ~ prefix after restore.
 #[test]
-fn journal_dims_unreachable_after_restore() {
+fn audit_dims_unreachable_after_restore() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
@@ -46,7 +46,7 @@ fn journal_dims_unreachable_after_restore() {
     s.cli(&["checkpoint", "chk2"]).expect("checkpoint");
     s.cli(&["restore", "chk1"]).expect("restore");
 
-    let output = s.cli(&["journal"]).expect("journal");
+    let output = s.cli(&["audit"]).expect("audit");
     // Unreachable records (between chk1 and restore) are prefixed with ~
     let tilde_lines: Vec<&str> = output.lines().filter(|l| l.starts_with("~")).collect();
     assert!(
@@ -61,9 +61,9 @@ fn journal_dims_unreachable_after_restore() {
     );
 }
 
-/// `agfs journal --path` filters to a specific file.
+/// `agfs audit --path` filters to a specific file.
 #[test]
-fn journal_path_filter() {
+fn audit_path_filter() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "aaa\n").expect("write a");
@@ -71,8 +71,8 @@ fn journal_path_filter() {
 
     // CLI runs from session root; normalize_path resolves relative to cwd
     let output = s
-        .cli(&["journal", "--path", "a.txt"])
-        .expect("journal --path");
+        .cli(&["audit", "--path", "a.txt"])
+        .expect("audit --path");
     assert!(output.contains("a.txt"), "should include a.txt: {output}");
     // b.txt data records should be filtered out (only structural records pass through)
     let data_lines: Vec<&str> = output.lines().filter(|l| l.contains("b.txt")).collect();
@@ -82,12 +82,12 @@ fn journal_path_filter() {
     );
 }
 
-/// `agfs journal` on a fresh session shows the initial checkpoint.
+/// `agfs audit` on a fresh session shows the initial checkpoint.
 #[test]
-fn journal_fresh_session() {
+fn audit_fresh_session() {
     let s = AgfsSession::new().expect("session setup");
 
-    let output = s.cli(&["journal"]).expect("journal");
+    let output = s.cli(&["audit"]).expect("audit");
     // A fresh session has an initial checkpoint but no data records
     assert!(
         output.contains("initial"),

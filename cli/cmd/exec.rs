@@ -5,7 +5,8 @@
 // When config.checkpoint=true, a checkpoint is created after the command
 // finishes, capturing what the command did.
 
-use crate::{checkpoint, config};
+use super::checkpoint;
+use crate::config;
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
 use std::env;

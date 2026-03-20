@@ -186,7 +186,7 @@ pub fn mount() -> Result<()> {
     }
 
     setup_agfs_dir(&agfs_dir)?;
-    crate::kmod::load()?;
+    super::load::load()?;
     do_mount(&agfs_dir)?;
     bind_mount_pseudofs(&mnt)?;
     create_cwd_symlink(&agfs_dir, &cwd)?;
@@ -249,8 +249,8 @@ fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
     io::stdin().lock().read_line(&mut line)?;
 
     match line.trim().to_ascii_lowercase().as_str() {
-        "c" | "commit" => crate::commit::run()?,
-        "a" | "abort" => crate::abort::reset_staging(agfs_dir)?,
+        "c" | "commit" => super::commit::run()?,
+        "a" | "abort" => super::abort::reset_staging(agfs_dir)?,
         _ => anyhow::bail!("unmount cancelled"),
     }
     Ok(())

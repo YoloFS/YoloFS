@@ -53,8 +53,8 @@ $ agfs checkpoint              # checkpoint with timestamp as name
 $ agfs checkpoint "my label"   # checkpoint with explicit name
 $ agfs restore <name|gen>       # restore to a previous checkpoint (discards later changes)
 $ agfs timeline                # show checkpoint/restore DAG (unreachable dimmed)
-$ agfs journal                 # show every raw journal record (unreachable dimmed)
-$ agfs journal --path /src/main.rs  # trace operations on a specific file
+$ agfs audit                 # show every raw journal record (unreachable dimmed)
+$ agfs audit --path /src/main.rs  # trace operations on a specific file
 ```
 
 The `--at`, `--from`, and `--to` flags accept a checkpoint name or

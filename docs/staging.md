@@ -864,6 +864,6 @@ and appends an S record. The mount shows the clean base state. Orphaned
 inodes remain in the store until the next `commit` or `abort`.
 
 **`agfs timeline`**: Show the checkpoint/restore DAG in chronological
-order, with unreachable branches dimmed. **`agfs journal`**: Show every
+order, with unreachable branches dimmed. **`agfs audit`**: Show every
 raw journal record (unreachable dimmed), with an optional `--path` filter
 to trace operations on a specific file.

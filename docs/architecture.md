@@ -215,12 +215,18 @@ agfs/
 │   ├── main.rs
 │   ├── lib.rs
 │   ├── config.rs              # agfs.toml management (init, rules, mount options)
-│   ├── kmod.rs                # `agfs load/unload/reload` -- kernel module management
-│   ├── mount.rs               # mount, unmount, remount (auto-loads kmod, prompts on staged changes)
-│   ├── exec.rs
-│   ├── commit.rs
-│   ├── abort.rs
-│   ├── diff.rs                # `agfs status` + `agfs diff` (summary and verbose views)
+│   ├── cmd/                   # CLI subcommand implementations
+│   │   ├── abort.rs
+│   │   ├── audit.rs           # `agfs audit` command (raw record display, --path filter)
+│   │   ├── checkpoint.rs      # `agfs checkpoint` (create only)
+│   │   ├── commit.rs
+│   │   ├── diff.rs            # `agfs status` + `agfs diff` (summary and verbose views)
+│   │   ├── exec.rs
+│   │   ├── load.rs            # `agfs load/unload/reload` -- kernel module management
+│   │   ├── mount.rs           # mount, unmount, remount (auto-loads kmod, prompts on staged changes)
+│   │   ├── restore.rs         # `agfs restore` -- restore to a previous checkpoint
+│   │   ├── timeline.rs        # `agfs timeline` command (checkpoint/restore DAG)
+│   │   └── watch.rs           # permission prompt daemon (handles TTY ownership)
 │   ├── journal/               # journal parsing, timeline, and resolution
 │   │   ├── types.rs           # Record, Change, Action, DType, and related types
 │   │   ├── parse.rs           # journal file parsing
@@ -228,11 +234,6 @@ agfs/
 │   │   ├── liveness.rs       # reachability filtering (alive_segments, live, live_prefix)
 │   │   ├── simplify.rs        # simplify records into ActionList (chain collapse, cancel, etc.)
 │   │   └── action.rs          # ActionList: apply() to base fs, collapse() to Changeset
-│   ├── restore.rs             # `agfs restore` -- restore to a previous checkpoint
-│   ├── checkpoint.rs          # `agfs checkpoint` (create only)
-│   ├── journal_cmd.rs         # `agfs journal` command (raw record display, --path filter)
-│   ├── timeline_cmd.rs        # `agfs timeline` command (checkpoint/restore DAG)
-│   ├── watch.rs               # permission prompt daemon (handles TTY ownership)
 │   ├── ioctl.rs               # binary protocol structs + ioctl helpers
 │   ├── kmsg.rs                # kernel log reading via /dev/kmsg
 │   └── utils.rs               # shared helpers (session_dir, plural)
