@@ -453,9 +453,20 @@ fn generate_flamegraph(out_dir: &Path) -> Result<()> {
     }
 
     // perf.data is owned by root (system-wide recording with sudo).
-    // Filter to just our process's comm name to exclude noise.
+    // For fio workloads, include child fio process samples; for all other
+    // workloads, keep agfs-bench only.
+    let workload_name = out_dir
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let comms = if workload_name.starts_with("fio-") {
+        "agfs-bench,fio"
+    } else {
+        "agfs-bench"
+    };
     let script = Command::new("sudo")
-        .args(["perf", "script", "--comms=agfs-bench", "-i"])
+        .args(["perf", "script", "--comms", comms, "-i"])
         .arg(&perf_data)
         .output()
         .context("running perf script")?;
