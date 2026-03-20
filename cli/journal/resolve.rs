@@ -361,59 +361,42 @@ mod tests {
     use super::*;
     use super::super::types::{Checkpoint, DType, Record};
     use super::super::timeline::{reachable, find_checkpoint_index, slice_records};
-    use std::fs;
-    use std::path::Path;
-    fn setup_test_dir() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("inodes")).unwrap();
-        dir
-    }
-
-    fn read(dir: &Path) -> Vec<Record> {
-        crate::journal::read(dir).unwrap().records
-    }
 
     #[test]
     fn resolve_empty() {
-        let dir = setup_test_dir();
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(vec![]).unwrap();
         assert!(changes.is_empty());
     }
 
     #[test]
     fn resolve_add() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0new.txt\0f\01\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "content").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/new.txt".into(), dtype: Some(DType::File), ino: 1 },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(matches!(&changes[0], Change::Added { path, .. } if path.contains("new.txt")));
     }
 
     #[test]
     fn resolve_delete() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"D\0/etc\0hostname\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            Record::Deleted { path: "/etc/hostname".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(matches!(&changes[0], Change::Deleted(p) if p.contains("hostname")));
     }
 
     #[test]
     fn resolve_modify() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"M\0/etc\0hostname\0f\01\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "modified").unwrap();
+        let records = vec![
+            Record::Modified { path: "/etc/hostname".into(), dtype: Some(DType::File), ino: 1 },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(
             matches!(&changes[0], Change::Modified { path, ino: 1, dtype: DType::File }
@@ -425,14 +408,13 @@ mod tests {
 
     #[test]
     fn resolve_rename() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Rename: E(old, Deleted) + E(new, Redirect(old))
-        data.extend_from_slice(b"D\0/old\0path\n");
-        data.extend_from_slice(b"R\0/new\0path\0f\0/old/path\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // Rename: E(old, Deleted) + E(new, Redirect(old))
+            Record::Deleted { path: "/old/path".into() },
+            Record::Redirect { path: "/new/path".into(), dtype: Some(DType::File), base: "/old/path".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(matches!(&changes[0], Change::Renamed { from, to, .. }
             if from == "/old/path" && to == "/new/path"));
@@ -441,14 +423,13 @@ mod tests {
     /// Redirect-based rename must preserve the dtype from the E record.
     #[test]
     fn resolve_rename_preserves_dtype() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Rename directory: E(old, Deleted) + E(new, Redirect(old), dtype=d)
-        data.extend_from_slice(b"D\0\0olddir\n");
-        data.extend_from_slice(b"R\0\0newdir\0d\0/olddir\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // Rename directory: E(old, Deleted) + E(new, Redirect(old), dtype=d)
+            Record::Deleted { path: "/olddir".into() },
+            Record::Redirect { path: "/newdir".into(), dtype: Some(DType::Dir), base: "/olddir".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(
             matches!(&changes[0], Change::Renamed { from, to, dtype: DType::Dir, .. }
@@ -461,17 +442,16 @@ mod tests {
     /// Chained directory renames must preserve dtype through the chain.
     #[test]
     fn chained_rename_preserves_dtype() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Rename dir a->b: delete a + redirect b->a (dtype=d)
-        data.extend_from_slice(b"D\0\0a\n");
-        data.extend_from_slice(b"R\0\0b\0d\0/a\n");
-        // Rename dir b->c: delete b + redirect c->a (dtype=d, kernel follows chain)
-        data.extend_from_slice(b"D\0\0b\n");
-        data.extend_from_slice(b"R\0\0c\0d\0/a\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // Rename dir a->b: delete a + redirect b->a (dtype=d)
+            Record::Deleted { path: "/a".into() },
+            Record::Redirect { path: "/b".into(), dtype: Some(DType::Dir), base: "/a".into() },
+            // Rename dir b->c: delete b + redirect c->a (dtype=d, kernel follows chain)
+            Record::Deleted { path: "/b".into() },
+            Record::Redirect { path: "/c".into(), dtype: Some(DType::Dir), base: "/a".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(
             matches!(&changes[0], Change::Renamed { from, to, dtype: DType::Dir, .. }
@@ -484,17 +464,15 @@ mod tests {
     /// Rename a base file then modify at the new path: produces Deleted + Modified.
     #[test]
     fn rename_then_modify_produces_delete_modified() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Rename base file: E(old, Deleted) + E(new, Redirect(old))
-        data.extend_from_slice(b"D\0\0old.txt\n");
-        data.extend_from_slice(b"R\0\0new.txt\0f\0/old.txt\n");
-        // Modify at new path (COW): M(new, ino=5)
-        data.extend_from_slice(b"M\0\0new.txt\0f\05\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/5"), "modified").unwrap();
+        let records = vec![
+            // Rename base file: E(old, Deleted) + E(new, Redirect(old))
+            Record::Deleted { path: "/old.txt".into() },
+            Record::Redirect { path: "/new.txt".into(), dtype: Some(DType::File), base: "/old.txt".into() },
+            // Modify at new path (COW): M(new, ino=5)
+            Record::Modified { path: "/new.txt".into(), dtype: Some(DType::File), ino: 5 },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
         let has_deleted = changes
             .iter()
@@ -511,17 +489,15 @@ mod tests {
     /// Should collapse to a single Add at the new path, not a base rename.
     #[test]
     fn create_then_rename_collapses_to_add() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Create x (staged)
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        // Rename x->y: kernel emits staged rename (same ino at new path + delete old)
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0x\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\01\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "content").unwrap();
+        let records = vec![
+            // Create x (staged)
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            // Rename x->y: kernel emits staged rename (same ino at new path + delete old)
+            Record::Deleted { path: "/nonexistent_test_12345/x".into() },
+            Record::Added { path: "/nonexistent_test_12345/y".into(), dtype: Some(DType::File), ino: 1 },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Added { path, ino, .. } if path == "/nonexistent_test_12345/y" && *ino == 1),
@@ -534,17 +510,15 @@ mod tests {
     /// Should produce Renamed(a->b) + Added(a).
     #[test]
     fn rename_then_recreate_at_old_path() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Rename a->b (redirect): delete old + redirect new
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
-        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/a\n");
-        // Create new file at a
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/2"), "new content").unwrap();
+        let records = vec![
+            // Rename a->b (redirect): delete old + redirect new
+            Record::Deleted { path: "/nonexistent_test_12345/a".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), base: "/nonexistent_test_12345/a".into() },
+            // Create new file at a
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 2 },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
         let has_rename = changes.iter().any(|c| {
             matches!(c, Change::Renamed { from, to, .. }
@@ -562,17 +536,16 @@ mod tests {
     /// Should collapse to a single Renamed(a->c).
     #[test]
     fn chained_renames_collapse() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Rename a->b: delete a + redirect b->a
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
-        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/a\n");
-        // Rename b->c: delete b + redirect c->a (kernel follows the chain)
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0b\n");
-        data.extend_from_slice(b"R\0/nonexistent_test_12345\0c\0f\0/nonexistent_test_12345/a\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // Rename a->b: delete a + redirect b->a
+            Record::Deleted { path: "/nonexistent_test_12345/a".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), base: "/nonexistent_test_12345/a".into() },
+            // Rename b->c: delete b + redirect c->a (kernel follows the chain)
+            Record::Deleted { path: "/nonexistent_test_12345/b".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/c".into(), dtype: Some(DType::File), base: "/nonexistent_test_12345/a".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Renamed { from, to, .. }
@@ -586,17 +559,16 @@ mod tests {
     /// Should cancel out (no net change).
     #[test]
     fn rename_back_and_forth_cancels() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Rename a->b: delete a + redirect b->a
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
-        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/a\n");
-        // Rename b->a: delete b + redirect a->a (kernel follows chain: b's base_path is a)
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0b\n");
-        data.extend_from_slice(b"R\0/nonexistent_test_12345\0a\0f\0/nonexistent_test_12345/a\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // Rename a->b: delete a + redirect b->a
+            Record::Deleted { path: "/nonexistent_test_12345/a".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), base: "/nonexistent_test_12345/a".into() },
+            // Rename b->a: delete b + redirect a->a (kernel follows chain: b's base_path is a)
+            Record::Deleted { path: "/nonexistent_test_12345/b".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), base: "/nonexistent_test_12345/a".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert!(
             changes.is_empty(),
             "rename back and forth should cancel out, got: {changes:?}"
@@ -609,15 +581,14 @@ mod tests {
     /// Since dst existed in base, it's implicitly overwritten by the rename.
     #[test]
     fn rename_overwrite_base_file() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // /etc/hostname and /etc/hosts both exist in base
-        // Rename hostname -> hosts (overwrite)
-        data.extend_from_slice(b"D\0/etc\0hostname\n");
-        data.extend_from_slice(b"R\0/etc\0hosts\0f\0/etc/hostname\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // /etc/hostname and /etc/hosts both exist in base
+            // Rename hostname -> hosts (overwrite)
+            Record::Deleted { path: "/etc/hostname".into() },
+            Record::Redirect { path: "/etc/hosts".into(), dtype: Some(DType::File), base: "/etc/hostname".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         // Should have a rename from hostname -> hosts
         let has_rename = changes.iter().any(|c| {
             matches!(c, Change::Renamed { from, to, .. }
@@ -634,17 +605,15 @@ mod tests {
     /// Should produce Renamed(y→x), not a spurious Modified with the orphaned ino.
     #[test]
     fn redirect_overwrites_prior_staged_add() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Stage x with ino 1
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        // Rename y→x (redirect): delete y + redirect x→y
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0y\n");
-        data.extend_from_slice(b"R\0/nonexistent_test_12345\0x\0f\0/nonexistent_test_12345/y\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "staged content").unwrap();
+        let records = vec![
+            // Stage x with ino 1
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            // Rename y→x (redirect): delete y + redirect x→y
+            Record::Deleted { path: "/nonexistent_test_12345/y".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), base: "/nonexistent_test_12345/y".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Renamed { from, to, .. }
@@ -658,17 +627,16 @@ mod tests {
     /// Should produce Renamed(c→b) + Deleted(a).
     #[test]
     fn redirect_overwrites_prior_rename_destination() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Rename a→b: delete a + redirect b→a
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
-        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/a\n");
-        // Rename c→b: delete c + redirect b→c (overwrites the a→b rename at b)
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0c\n");
-        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/c\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // Rename a→b: delete a + redirect b→a
+            Record::Deleted { path: "/nonexistent_test_12345/a".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), base: "/nonexistent_test_12345/a".into() },
+            // Rename c→b: delete c + redirect b→c (overwrites the a→b rename at b)
+            Record::Deleted { path: "/nonexistent_test_12345/c".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), base: "/nonexistent_test_12345/c".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         let has_rename = changes.iter().any(|c| {
             matches!(c, Change::Renamed { from, to, .. }
                 if from == "/nonexistent_test_12345/c" && to == "/nonexistent_test_12345/b")
@@ -684,14 +652,12 @@ mod tests {
     /// touch x, rm x: create then delete cancels out (x never existed in base).
     #[test]
     fn create_then_delete_cancels() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0x\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "content").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Deleted { path: "/nonexistent_test_12345/x".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert!(changes.is_empty(), "expected no changes, got: {changes:?}");
     }
 
@@ -699,17 +665,15 @@ mod tests {
     /// The modification is overwritten — only the rename survives.
     #[test]
     fn redirect_overwrites_prior_modified() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // COW modify /etc/hostname
-        data.extend_from_slice(b"M\0/etc\0hostname\0f\01\n");
-        // Rename /etc/hosts → /etc/hostname (overwrite the modified file)
-        data.extend_from_slice(b"D\0/etc\0hosts\n");
-        data.extend_from_slice(b"R\0/etc\0hostname\0f\0/etc/hosts\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "modified").unwrap();
+        let records = vec![
+            // COW modify /etc/hostname
+            Record::Modified { path: "/etc/hostname".into(), dtype: Some(DType::File), ino: 1 },
+            // Rename /etc/hosts → /etc/hostname (overwrite the modified file)
+            Record::Deleted { path: "/etc/hosts".into() },
+            Record::Redirect { path: "/etc/hostname".into(), dtype: Some(DType::File), base: "/etc/hosts".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Renamed { from, to, .. }
@@ -722,15 +686,12 @@ mod tests {
     /// Multiple COW modifications to the same base file keep only the final ino.
     #[test]
     fn multiple_modifies_keep_final_ino() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"M\0/etc\0hostname\0f\01\n");
-        data.extend_from_slice(b"M\0/etc\0hostname\0f\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "first").unwrap();
-        fs::write(dir.path().join("inodes/2"), "second").unwrap();
+        let records = vec![
+            Record::Modified { path: "/etc/hostname".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Modified { path: "/etc/hostname".into(), dtype: Some(DType::File), ino: 2 },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Modified { path, ino: 2, .. }
@@ -744,14 +705,12 @@ mod tests {
     /// The Delete tells us the path existed, so the net result is Modified.
     #[test]
     fn delete_then_create_at_same_path() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"D\0/etc\0hostname\n");
-        data.extend_from_slice(b"A\0/etc\0hostname\0f\01\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "replacement").unwrap();
+        let records = vec![
+            Record::Deleted { path: "/etc/hostname".into() },
+            Record::Added { path: "/etc/hostname".into(), dtype: Some(DType::File), ino: 1 },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Modified { path, ino: 1, .. }
@@ -765,16 +724,15 @@ mod tests {
     /// The explicit Delete at the destination is superseded by the redirect.
     #[test]
     fn delete_then_redirect_onto_same_path() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // rm /etc/hostname
-        data.extend_from_slice(b"D\0/etc\0hostname\n");
-        // mv /etc/hosts → /etc/hostname: D(hosts) + R(hostname, hosts)
-        data.extend_from_slice(b"D\0/etc\0hosts\n");
-        data.extend_from_slice(b"R\0/etc\0hostname\0f\0/etc/hosts\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // rm /etc/hostname
+            Record::Deleted { path: "/etc/hostname".into() },
+            // mv /etc/hosts → /etc/hostname: D(hosts) + R(hostname, hosts)
+            Record::Deleted { path: "/etc/hosts".into() },
+            Record::Redirect { path: "/etc/hostname".into(), dtype: Some(DType::File), base: "/etc/hosts".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Renamed { from, to, .. }
@@ -788,15 +746,13 @@ mod tests {
     /// E(path, Staged) for a base file is a COW modify; E(path, Deleted) then means "delete base".
     #[test]
     fn modify_base_then_delete() {
-        let dir = setup_test_dir();
         // /etc/hostname exists in base
-        let mut data = Vec::new();
-        data.extend_from_slice(b"M\0/etc\0hostname\0f\01\n");
-        data.extend_from_slice(b"D\0/etc\0hostname\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "modified").unwrap();
+        let records = vec![
+            Record::Modified { path: "/etc/hostname".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Deleted { path: "/etc/hostname".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Deleted(p) if p == "/etc/hostname"),
@@ -808,17 +764,15 @@ mod tests {
     /// Modify base file then rename: inode goes to new path, base old path deleted.
     #[test]
     fn modify_base_then_rename() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // COW modify
-        data.extend_from_slice(b"M\0/etc\0hostname\0f\01\n");
-        // Staged rename: delete old + staged new (same ino)
-        data.extend_from_slice(b"D\0/etc\0hostname\n");
-        data.extend_from_slice(b"A\0/etc\0hostname.bak\0f\01\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "modified").unwrap();
+        let records = vec![
+            // COW modify
+            Record::Modified { path: "/etc/hostname".into(), dtype: Some(DType::File), ino: 1 },
+            // Staged rename: delete old + staged new (same ino)
+            Record::Deleted { path: "/etc/hostname".into() },
+            Record::Added { path: "/etc/hostname.bak".into(), dtype: Some(DType::File), ino: 1 },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         // Should have: Add(/etc/hostname.bak, 1) + Delete(/etc/hostname)
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
         let has_add = changes.iter().any(|c| {
@@ -848,17 +802,16 @@ mod tests {
     /// Expected: Renamed(b→c) + Deleted(a)
     #[test]
     fn rename_overwrite_base_then_move() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // mv b a (overwrite, both in base): D(b) + P(a, /dir/b)
-        data.extend_from_slice(b"D\0/dir\0b\n");
-        data.extend_from_slice(b"P\0/dir\0a\0f\0/dir/b\n");
-        // mv a c: D(a) + R(c, /dir/b) [kernel follows redirect chain]
-        data.extend_from_slice(b"D\0/dir\0a\n");
-        data.extend_from_slice(b"R\0/dir\0c\0f\0/dir/b\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // mv b a (overwrite, both in base): D(b) + P(a, /dir/b)
+            Record::Deleted { path: "/dir/b".into() },
+            Record::Replace { path: "/dir/a".into(), dtype: Some(DType::File), base: "/dir/b".into() },
+            // mv a c: D(a) + R(c, /dir/b) [kernel follows redirect chain]
+            Record::Deleted { path: "/dir/a".into() },
+            Record::Redirect { path: "/dir/c".into(), dtype: Some(DType::File), base: "/dir/b".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         let has_rename = changes.iter().any(|c| {
             matches!(c, Change::Renamed { from, to, .. }
                 if from == "/dir/b" && to == "/dir/c")
@@ -882,16 +835,15 @@ mod tests {
     /// Expected: Deleted(a) + Deleted(b)
     #[test]
     fn rename_overwrite_base_then_delete() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // mv b a (overwrite, both in base): D(b) + P(a, /dir/b)
-        data.extend_from_slice(b"D\0/dir\0b\n");
-        data.extend_from_slice(b"P\0/dir\0a\0f\0/dir/b\n");
-        // rm a: D(a)
-        data.extend_from_slice(b"D\0/dir\0a\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // mv b a (overwrite, both in base): D(b) + P(a, /dir/b)
+            Record::Deleted { path: "/dir/b".into() },
+            Record::Replace { path: "/dir/a".into(), dtype: Some(DType::File), base: "/dir/b".into() },
+            // rm a: D(a)
+            Record::Deleted { path: "/dir/a".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         let has_delete_a = changes
             .iter()
             .any(|c| matches!(c, Change::Deleted(p) if p == "/dir/a"));
@@ -913,16 +865,15 @@ mod tests {
     /// R (redirect to new path) + delete: only the source needs deletion.
     #[test]
     fn redirect_new_path_then_delete() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // mv a b (b is new): D(a) + R(b, /a)
-        data.extend_from_slice(b"D\0/dir\0a\n");
-        data.extend_from_slice(b"R\0/dir\0b\0f\0/dir/a\n");
-        // rm b: D(b)
-        data.extend_from_slice(b"D\0/dir\0b\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // mv a b (b is new): D(a) + R(b, /a)
+            Record::Deleted { path: "/dir/a".into() },
+            Record::Redirect { path: "/dir/b".into(), dtype: Some(DType::File), base: "/dir/a".into() },
+            // rm b: D(b)
+            Record::Deleted { path: "/dir/b".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Deleted(p) if p == "/dir/a"),
@@ -933,16 +884,15 @@ mod tests {
     /// P (replace-redirect, destination in base) + delete: both paths deleted.
     #[test]
     fn replace_redirect_then_delete() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // mv a b (b exists in base): D(a) + P(b, /a)
-        data.extend_from_slice(b"D\0/dir\0a\n");
-        data.extend_from_slice(b"P\0/dir\0b\0f\0/dir/a\n");
-        // rm b: D(b)
-        data.extend_from_slice(b"D\0/dir\0b\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // mv a b (b exists in base): D(a) + P(b, /a)
+            Record::Deleted { path: "/dir/a".into() },
+            Record::Replace { path: "/dir/b".into(), dtype: Some(DType::File), base: "/dir/a".into() },
+            // rm b: D(b)
+            Record::Deleted { path: "/dir/b".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         let has_delete_a = changes
             .iter()
             .any(|c| matches!(c, Change::Deleted(p) if p == "/dir/a"));
@@ -956,14 +906,13 @@ mod tests {
     /// Simple P (replace-redirect): rename overwrites base file.
     #[test]
     fn replace_redirect_simple() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // mv a b (b exists in base): D(a) + P(b, /a)
-        data.extend_from_slice(b"D\0/dir\0a\n");
-        data.extend_from_slice(b"P\0/dir\0b\0f\0/dir/a\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // mv a b (b exists in base): D(a) + P(b, /a)
+            Record::Deleted { path: "/dir/a".into() },
+            Record::Replace { path: "/dir/b".into(), dtype: Some(DType::File), base: "/dir/a".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Replaced { from, to, .. }
@@ -975,17 +924,15 @@ mod tests {
     /// Redirect (R) overwrites prior staged add — staged content dropped.
     #[test]
     fn redirect_overwrites_prior_stage_new() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // touch b (staged new): A(b, ino=1)
-        data.extend_from_slice(b"A\0/dir\0b\0f\01\n");
-        // mv a b (b not originally in base): D(a) + R(b, /a)
-        data.extend_from_slice(b"D\0/dir\0a\n");
-        data.extend_from_slice(b"R\0/dir\0b\0f\0/dir/a\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "staged").unwrap();
+        let records = vec![
+            // touch b (staged new): A(b, ino=1)
+            Record::Added { path: "/dir/b".into(), dtype: Some(DType::File), ino: 1 },
+            // mv a b (b not originally in base): D(a) + R(b, /a)
+            Record::Deleted { path: "/dir/a".into() },
+            Record::Redirect { path: "/dir/b".into(), dtype: Some(DType::File), base: "/dir/a".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Renamed { from, to, .. }
@@ -997,17 +944,15 @@ mod tests {
     /// P overwrites prior modify — staged content dropped, in_base preserved.
     #[test]
     fn replace_overwrites_prior_modify() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // echo >> b (COW modify): M(b, ino=1)
-        data.extend_from_slice(b"M\0/dir\0b\0f\01\n");
-        // mv a b (b in base): D(a) + P(b, /a)
-        data.extend_from_slice(b"D\0/dir\0a\n");
-        data.extend_from_slice(b"P\0/dir\0b\0f\0/dir/a\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "modified").unwrap();
+        let records = vec![
+            // echo >> b (COW modify): M(b, ino=1)
+            Record::Modified { path: "/dir/b".into(), dtype: Some(DType::File), ino: 1 },
+            // mv a b (b in base): D(a) + P(b, /a)
+            Record::Deleted { path: "/dir/a".into() },
+            Record::Replace { path: "/dir/b".into(), dtype: Some(DType::File), base: "/dir/a".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
             matches!(&changes[0], Change::Replaced { from, to, .. }
@@ -1019,17 +964,16 @@ mod tests {
     /// Chain rename through a base path: mv b a (overwrite) then mv a c.
     #[test]
     fn chain_rename_through_base_path() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // mv b a (overwrite, both in base): D(b) + P(a, /b)
-        data.extend_from_slice(b"D\0/dir\0b\n");
-        data.extend_from_slice(b"P\0/dir\0a\0f\0/dir/b\n");
-        // mv a c (c is new): D(a) + R(c, /b) [kernel follows chain]
-        data.extend_from_slice(b"D\0/dir\0a\n");
-        data.extend_from_slice(b"R\0/dir\0c\0f\0/dir/b\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // mv b a (overwrite, both in base): D(b) + P(a, /b)
+            Record::Deleted { path: "/dir/b".into() },
+            Record::Replace { path: "/dir/a".into(), dtype: Some(DType::File), base: "/dir/b".into() },
+            // mv a c (c is new): D(a) + R(c, /b) [kernel follows chain]
+            Record::Deleted { path: "/dir/a".into() },
+            Record::Redirect { path: "/dir/c".into(), dtype: Some(DType::File), base: "/dir/b".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         let has_rename = changes.iter().any(|c| {
             matches!(c, Change::Renamed { from, to, .. }
                 if from == "/dir/b" && to == "/dir/c")
@@ -1055,17 +999,16 @@ mod tests {
     /// Expected: Deleted(a) + Replaced(c→b)
     #[test]
     fn consecutive_replace_redirects() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // mv a b (overwrite, both in base): D(a) + P(b, /dir/a)
-        data.extend_from_slice(b"D\0/dir\0a\n");
-        data.extend_from_slice(b"P\0/dir\0b\0f\0/dir/a\n");
-        // mv c b (overwrite again): D(c) + P(b, /dir/c)
-        data.extend_from_slice(b"D\0/dir\0c\n");
-        data.extend_from_slice(b"P\0/dir\0b\0f\0/dir/c\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // mv a b (overwrite, both in base): D(a) + P(b, /dir/a)
+            Record::Deleted { path: "/dir/a".into() },
+            Record::Replace { path: "/dir/b".into(), dtype: Some(DType::File), base: "/dir/a".into() },
+            // mv c b (overwrite again): D(c) + P(b, /dir/c)
+            Record::Deleted { path: "/dir/c".into() },
+            Record::Replace { path: "/dir/b".into(), dtype: Some(DType::File), base: "/dir/c".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         let has_delete_a = changes
             .iter()
             .any(|c| matches!(c, Change::Deleted(p) if p == "/dir/a"));
@@ -1086,41 +1029,33 @@ mod tests {
 
     #[test]
     fn resolve_at_checkpoint() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\02\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\03\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "v1").unwrap();
-        fs::write(dir.path().join("inodes/2"), "v2").unwrap();
-        fs::write(dir.path().join("inodes/3"), "v3").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Added { path: "/nonexistent_test_12345/y".into(), dtype: Some(DType::File), ino: 3 },
+        ];
 
-        let changes = resolve_at(read(dir.path()), "chk1").unwrap();
+        let changes = resolve_at(records.clone(), "chk1").unwrap();
         assert_eq!(changes.len(), 1, "at chk1: {changes:?}");
         assert!(matches!(&changes[0], Change::Added { path, ino, .. }
             if path == "/nonexistent_test_12345/x" && *ino == 1));
 
-        let all = resolve(read(dir.path())).unwrap();
+        let all = resolve(records).unwrap();
         assert_eq!(all.len(), 2, "full: {all:?}");
     }
 
     #[test]
     fn resolve_at_matches_latest_checkpoint() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        data.extend_from_slice(b"K\01\0dup\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\02\n");
-        data.extend_from_slice(b"K\02\0dup\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0z\0f\03\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "").unwrap();
-        fs::write(dir.path().join("inodes/2"), "").unwrap();
-        fs::write(dir.path().join("inodes/3"), "").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "dup".into() }),
+            Record::Added { path: "/nonexistent_test_12345/y".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "dup".into() }),
+            Record::Added { path: "/nonexistent_test_12345/z".into(), dtype: Some(DType::File), ino: 3 },
+        ];
 
-        let changes = resolve_at(read(dir.path()), "dup").unwrap();
+        let changes = resolve_at(records, "dup").unwrap();
         // Latest "dup" is the second checkpoint; its segment contains only A(y).
         assert_eq!(changes.len(), 1, "at latest dup: {changes:?}");
         assert!(matches!(&changes[0], Change::Added { path, ino, .. }
@@ -1129,51 +1064,45 @@ mod tests {
 
     #[test]
     fn resolve_at_not_found() {
-        let dir = setup_test_dir();
-        fs::write(dir.path().join("journal"), b"A\0\0a\0f\01\n").unwrap();
-        assert!(resolve_at(read(dir.path()), "nonexistent").is_err());
+        let records = vec![
+            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
+        ];
+        assert!(resolve_at(records, "nonexistent").is_err());
     }
 
     #[test]
     fn resolve_at_by_numeric_id() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        data.extend_from_slice(b"K\05\0mychk\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "").unwrap();
-        fs::write(dir.path().join("inodes/2"), "").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 5, name: "mychk".into() }),
+            Record::Added { path: "/nonexistent_test_12345/y".into(), dtype: Some(DType::File), ino: 2 },
+        ];
 
-        let changes = resolve_at(read(dir.path()), "5").unwrap();
+        let changes = resolve_at(records.clone(), "5").unwrap();
         assert_eq!(changes.len(), 1, "by id: {changes:?}");
 
-        let changes2 = resolve_at(read(dir.path()), "mychk").unwrap();
+        let changes2 = resolve_at(records, "mychk").unwrap();
         assert_eq!(changes2.len(), 1, "by name: {changes2:?}");
     }
 
     #[test]
     fn resolve_at_id_not_found() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"K\01\0chk\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        assert!(resolve_at(read(dir.path()), "99").is_err());
+        let records = vec![
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk".into() }),
+        ];
+        assert!(resolve_at(records, "99").is_err());
     }
 
     #[test]
     fn resolve_at_id_takes_priority_over_name() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        data.extend_from_slice(b"K\01\0first\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\02\n");
-        data.extend_from_slice(b"K\02\01\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "").unwrap();
-        fs::write(dir.path().join("inodes/2"), "").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "first".into() }),
+            Record::Added { path: "/nonexistent_test_12345/y".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "1".into() }),
+        ];
 
-        let changes = resolve_at(read(dir.path()), "1").unwrap();
+        let changes = resolve_at(records.clone(), "1").unwrap();
         assert_eq!(
             changes.len(),
             1,
@@ -1181,29 +1110,25 @@ mod tests {
         );
 
         // id=2 is the second checkpoint; its segment contains only A(y).
-        let changes2 = resolve_at(read(dir.path()), "2").unwrap();
+        let changes2 = resolve_at(records.clone(), "2").unwrap();
         assert_eq!(
             changes2.len(),
             1,
             "id=2 should find second checkpoint segment: {changes2:?}"
         );
 
-        let changes3 = resolve_at(read(dir.path()), "first").unwrap();
+        let changes3 = resolve_at(records, "first").unwrap();
         assert_eq!(changes3.len(), 1, "name=first: {changes3:?}");
     }
 
     #[test]
     fn resolver_single_pass_checkpoint() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        data.extend_from_slice(b"K\03\0chk\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "").unwrap();
-        fs::write(dir.path().join("inodes/2"), "").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 3, name: "chk".into() }),
+            Record::Added { path: "/nonexistent_test_12345/y".into(), dtype: Some(DType::File), ino: 2 },
+        ];
 
-        let records = read(dir.path());
         let chk_idx = find_checkpoint_index(&records, "3").unwrap();
         let mut resolver = Resolver::new();
         let mut iter = records.into_iter();
@@ -1222,14 +1147,12 @@ mod tests {
 
     #[test]
     fn resolve_skips_checkpoint_records() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "content").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk".into() }),
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(matches!(&changes[0], Change::Added { .. }));
     }
@@ -1238,42 +1161,35 @@ mod tests {
 
     #[test]
     fn segments_no_checkpoints() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "").unwrap();
-        fs::write(dir.path().join("inodes/2"), "").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert!(segments.is_empty());
     }
 
     #[test]
     fn segments_one_checkpoint_no_trailing() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"K\01\0build\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "build".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert!(segments.is_empty());
     }
 
     #[test]
     fn segments_two_checkpoints_with_trailing() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"K\01\0first\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        data.extend_from_slice(b"K\02\0second\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/2"), "").unwrap();
-        fs::write(dir.path().join("inodes/3"), "").unwrap();
+        let records = vec![
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "first".into() }),
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "second".into() }),
+            Record::Added { path: "/nonexistent_test_12345/c".into(), dtype: Some(DType::File), ino: 3 },
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 2, "{segments:?}");
         assert_eq!(segments[0].from, Checkpoint { gen_id: 1, name: "first".into() });
         assert_eq!(segments[0].to, Some(Checkpoint { gen_id: 2, name: "second".into() }));
@@ -1285,18 +1201,15 @@ mod tests {
 
     #[test]
     fn segments_modify_across_checkpoints() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        // Re-COW after checkpoint: kernel emits M (file exists after chk1)
-        data.extend_from_slice(b"M\0/nonexistent_test_12345\0x\0f\02\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "v1").unwrap();
-        fs::write(dir.path().join("inodes/2"), "v2").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            // Re-COW after checkpoint: kernel emits M (file exists after chk1)
+            Record::Modified { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
 
         assert_eq!(segments[0].from, Checkpoint { gen_id: 1, name: "chk1".into() });
@@ -1311,17 +1224,14 @@ mod tests {
     /// Base file modified in segment 1, re-COW in segment 2: both are Modified.
     #[test]
     fn segments_base_modify_across_checkpoints() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"M\0/etc\0hostname\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"M\0/etc\0hostname\0f\02\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "v1").unwrap();
-        fs::write(dir.path().join("inodes/2"), "v2").unwrap();
+        let records = vec![
+            Record::Modified { path: "/etc/hostname".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Modified { path: "/etc/hostname".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
 
         assert_eq!(segments[0].changes.len(), 1);
@@ -1335,14 +1245,12 @@ mod tests {
 
     #[test]
     fn segments_empty_checkpoint() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"K\01\0empty\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "").unwrap();
+        let records = vec![
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "empty".into() }),
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].from, Checkpoint { gen_id: 1, name: "empty".into() });
         assert!(segments[0].to.is_none());
@@ -1351,33 +1259,29 @@ mod tests {
 
     #[test]
     fn segments_delete_in_later_segment() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0x\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "content").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Deleted { path: "/nonexistent_test_12345/x".into() },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
     }
 
     #[test]
     fn segments_rename_in_later_segment() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        // Staged rename: delete old + staged new (same ino)
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\01\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "content").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            // Staged rename: delete old + staged new (same ino)
+            Record::Deleted { path: "/nonexistent_test_12345/a".into() },
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
 
         let chk2 = &segments[0].changes;
@@ -1394,20 +1298,18 @@ mod tests {
     /// The delta for segment 2 should contain a Renamed change.
     #[test]
     fn segments_redirect_rename_in_later_segment() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Segment 1: stage a file at /b
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        // Segment 2: redirect-rename /c → /b
-        // Kernel emits: E(c, Deleted) + E(b, Redirect(c))
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0c\n");
-        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/c\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "content").unwrap();
+        let records = vec![
+            // Segment 1: stage a file at /b
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            // Segment 2: redirect-rename /c → /b
+            // Kernel emits: E(c, Deleted) + E(b, Redirect(c))
+            Record::Deleted { path: "/nonexistent_test_12345/c".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), base: "/nonexistent_test_12345/c".into() },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
 
         // Segment should contain the rename
@@ -1421,21 +1323,17 @@ mod tests {
 
     #[test]
     fn segments_multiple_files_per_segment() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0d\0f\04\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0e\0f\05\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        for i in 1..=5 {
-            fs::write(dir.path().join(format!("inodes/{i}")), "").unwrap();
-        }
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Added { path: "/nonexistent_test_12345/c".into(), dtype: Some(DType::File), ino: 3 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Added { path: "/nonexistent_test_12345/d".into(), dtype: Some(DType::File), ino: 4 },
+            Record::Added { path: "/nonexistent_test_12345/e".into(), dtype: Some(DType::File), ino: 5 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
         assert_eq!(
             segments[0].changes.len(),
@@ -1447,39 +1345,33 @@ mod tests {
 
     #[test]
     fn segments_empty_journal() {
-        let dir = setup_test_dir();
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(vec![]).unwrap();
         assert!(segments.is_empty());
     }
 
     #[test]
     fn segments_only_checkpoint_records() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
         assert!(segments[0].changes.is_empty());
     }
 
     #[test]
     fn segments_three_checkpoints() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"K\01\0s1\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        data.extend_from_slice(b"K\02\0s2\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
-        data.extend_from_slice(b"K\03\0s3\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        for i in 2..=3 {
-            fs::write(dir.path().join(format!("inodes/{i}")), "").unwrap();
-        }
+        let records = vec![
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "s1".into() }),
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "s2".into() }),
+            Record::Added { path: "/nonexistent_test_12345/c".into(), dtype: Some(DType::File), ino: 3 },
+            Record::Checkpoint(Checkpoint { gen_id: 3, name: "s3".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 2, "{segments:?}");
         assert_eq!(segments[0].from, Checkpoint { gen_id: 1, name: "s1".into() });
         assert_eq!(segments[0].to, Some(Checkpoint { gen_id: 2, name: "s2".into() }));
@@ -1494,22 +1386,19 @@ mod tests {
     /// The kernel emits D + A (not M) because the re-create goes through VFS create.
     #[test]
     fn segments_delete_recreate_same_path_across_checkpoints() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Segment 1: create /x
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        // Segment 2: delete /x then re-create /x.
-        // Kernel emits D + M (modify, because /x exists in base).
-        // Resolver: D inserts Delete, M replaces it with Stage(is_new=false) → Modified.
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0x\n");
-        data.extend_from_slice(b"M\0/nonexistent_test_12345\0x\0f\02\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "v1").unwrap();
-        fs::write(dir.path().join("inodes/2"), "v2").unwrap();
+        let records = vec![
+            // Segment 1: create /x
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            // Segment 2: delete /x then re-create /x.
+            // Kernel emits D + M (modify, because /x exists in base).
+            // Resolver: D inserts Delete, M replaces it with Stage(is_new=false) → Modified.
+            Record::Deleted { path: "/nonexistent_test_12345/x".into() },
+            Record::Modified { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
 
         // Segment (K1→K2): Modified (file existed in base from chk1)
@@ -1532,18 +1421,15 @@ mod tests {
 
     #[test]
     fn segments_add_delete_readd_across_checkpoints() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0x\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "v1").unwrap();
-        fs::write(dir.path().join("inodes/2"), "v2").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Deleted { path: "/nonexistent_test_12345/x".into() },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 2 },
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 2, "{segments:?}");
 
         // Segment 0 (K1→K2): Deleted
@@ -1566,20 +1452,17 @@ mod tests {
 
     #[test]
     fn segments_rename_modified_in_segment() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        // Staged rename a->b then modify b (new ino)
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\01\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "v1").unwrap();
-        fs::write(dir.path().join("inodes/2"), "v2").unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            // Staged rename a->b then modify b (new ino)
+            Record::Deleted { path: "/nonexistent_test_12345/a".into() },
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
 
         let chk2 = &segments[0].changes;
@@ -1589,19 +1472,16 @@ mod tests {
     /// Segments must preserve dtype — directories should not become DType::File.
     #[test]
     fn segments_preserve_dtype_for_directories() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Create a directory in chk1
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0mydir\0d\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        // Create a file in chk2
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0file\0f\02\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::create_dir_all(dir.path().join("inodes/1")).unwrap();
-        fs::write(dir.path().join("inodes/2"), "").unwrap();
+        let records = vec![
+            // Create a directory in chk1
+            Record::Added { path: "/nonexistent_test_12345/mydir".into(), dtype: Some(DType::Dir), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            // Create a file in chk2
+            Record::Added { path: "/nonexistent_test_12345/file".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
 
         // chk1→chk2: file added — dtype must be File
@@ -1617,19 +1497,17 @@ mod tests {
     /// Segments must preserve dtype through rename deltas.
     #[test]
     fn segments_preserve_dtype_for_renamed_symlink() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Create a symlink in chk1
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0link\0l\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        // Rename link -> link2 (staged rename: delete + staged with same ino)
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0link\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0link2\0l\01\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        std::os::unix::fs::symlink("target", dir.path().join("inodes/1")).unwrap();
+        let records = vec![
+            // Create a symlink in chk1
+            Record::Added { path: "/nonexistent_test_12345/link".into(), dtype: Some(DType::Link), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            // Rename link -> link2 (staged rename: delete + staged with same ino)
+            Record::Deleted { path: "/nonexistent_test_12345/link".into() },
+            Record::Added { path: "/nonexistent_test_12345/link2".into(), dtype: Some(DType::Link), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
 
         // chk1→chk2: the delta should show link2 as Added with DType::Link
@@ -1654,18 +1532,15 @@ mod tests {
     /// Segments must preserve dtype when a modify crosses checkpoints.
     #[test]
     fn segments_preserve_dtype_for_modified() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0mydir\0d\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        // Re-stage directory with new ino (modify, since it was added in chk1)
-        data.extend_from_slice(b"M\0/nonexistent_test_12345\0mydir\0d\02\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::create_dir_all(dir.path().join("inodes/1")).unwrap();
-        fs::create_dir_all(dir.path().join("inodes/2")).unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/mydir".into(), dtype: Some(DType::Dir), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            // Re-stage directory with new ino (modify, since it was added in chk1)
+            Record::Modified { path: "/nonexistent_test_12345/mydir".into(), dtype: Some(DType::Dir), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
 
         // chk1→chk2: modified directory — dtype must be Dir
@@ -1687,14 +1562,12 @@ mod tests {
 
     #[test]
     fn slice_none_returns_all() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+        ];
 
-        let records = read(dir.path());
         let n = records.len();
         let sliced = slice_records(records, None, None, None).unwrap();
         assert_eq!(sliced.len(), n);
@@ -1702,17 +1575,16 @@ mod tests {
 
     #[test]
     fn slice_at_isolates_segment() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+            Record::Added { path: "/nonexistent_test_12345/c".into(), dtype: Some(DType::File), ino: 3 },
+        ];
 
         // --at chk2 should give only the records between chk1 and chk2
-        let sliced = slice_records(read(dir.path()), Some("chk2"), None, None).unwrap();
+        let sliced = slice_records(records, Some("chk2"), None, None).unwrap();
         let changes = resolve(sliced).unwrap();
         assert_eq!(changes.len(), 1, "{changes:?}");
         assert!(matches!(&changes[0], Change::Added { path, .. }
@@ -1721,15 +1593,14 @@ mod tests {
 
     #[test]
     fn slice_at_first_checkpoint() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+        ];
 
         // --at chk1: no previous checkpoint, so includes everything up to chk1
-        let sliced = slice_records(read(dir.path()), Some("chk1"), None, None).unwrap();
+        let sliced = slice_records(records, Some("chk1"), None, None).unwrap();
         let changes = resolve(sliced).unwrap();
         assert_eq!(changes.len(), 1, "{changes:?}");
         assert!(matches!(&changes[0], Change::Added { path, .. }
@@ -1738,34 +1609,32 @@ mod tests {
 
     #[test]
     fn slice_from_only() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+            Record::Added { path: "/nonexistent_test_12345/c".into(), dtype: Some(DType::File), ino: 3 },
+        ];
 
         // --from chk1: everything after chk1
-        let sliced = slice_records(read(dir.path()), None, Some("chk1"), None).unwrap();
+        let sliced = slice_records(records, None, Some("chk1"), None).unwrap();
         let changes = resolve(sliced).unwrap();
         assert_eq!(changes.len(), 2, "{changes:?}");
     }
 
     #[test]
     fn slice_to_only() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+            Record::Added { path: "/nonexistent_test_12345/c".into(), dtype: Some(DType::File), ino: 3 },
+        ];
 
         // --to chk1: everything up to and including chk1
-        let sliced = slice_records(read(dir.path()), None, None, Some("chk1")).unwrap();
+        let sliced = slice_records(records, None, None, Some("chk1")).unwrap();
         let changes = resolve(sliced).unwrap();
         assert_eq!(changes.len(), 1, "{changes:?}");
         assert!(matches!(&changes[0], Change::Added { path, .. }
@@ -1774,19 +1643,18 @@ mod tests {
 
     #[test]
     fn slice_from_to_range() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
-        data.extend_from_slice(b"K\03\0chk3\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0d\0f\04\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+            Record::Added { path: "/nonexistent_test_12345/c".into(), dtype: Some(DType::File), ino: 3 },
+            Record::Checkpoint(Checkpoint { gen_id: 3, name: "chk3".into() }),
+            Record::Added { path: "/nonexistent_test_12345/d".into(), dtype: Some(DType::File), ino: 4 },
+        ];
 
         // --from chk1 --to chk3: records after chk1 up to chk3
-        let sliced = slice_records(read(dir.path()), None, Some("chk1"), Some("chk3")).unwrap();
+        let sliced = slice_records(records, None, Some("chk1"), Some("chk3")).unwrap();
         let changes = resolve(sliced).unwrap();
         assert_eq!(changes.len(), 2, "{changes:?}");
         // Should have b and c, not a or d
@@ -1806,18 +1674,17 @@ mod tests {
 
     #[test]
     fn slice_from_to_preserves_segments() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
-        data.extend_from_slice(b"K\03\0chk3\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+            Record::Added { path: "/nonexistent_test_12345/c".into(), dtype: Some(DType::File), ino: 3 },
+            Record::Checkpoint(Checkpoint { gen_id: 3, name: "chk3".into() }),
+        ];
 
         // --from chk1 --to chk3: should produce 2 segments (chk1→chk2, chk2→chk3)
-        let sliced = slice_records(read(dir.path()), None, Some("chk1"), Some("chk3")).unwrap();
+        let sliced = slice_records(records, None, Some("chk1"), Some("chk3")).unwrap();
         let segments = resolve_segments(sliced).unwrap();
         assert_eq!(segments.len(), 2, "{segments:?}");
         assert_eq!(segments[0].to, Some(Checkpoint { gen_id: 2, name: "chk2".into() }));
@@ -1826,17 +1693,16 @@ mod tests {
 
     #[test]
     fn slice_from_to_same_checkpoint() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0b\0f\02\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0c\0f\03\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            Record::Added { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+            Record::Added { path: "/nonexistent_test_12345/c".into(), dtype: Some(DType::File), ino: 3 },
+        ];
 
         // --from chk1 --to chk1: truncate at chk1+1 then split_off at chk1+1 → empty
-        let sliced = slice_records(read(dir.path()), None, Some("chk1"), Some("chk1")).unwrap();
+        let sliced = slice_records(records, None, Some("chk1"), Some("chk1")).unwrap();
         let changes = resolve(sliced).unwrap();
         assert!(
             changes.is_empty(),
@@ -1846,25 +1712,25 @@ mod tests {
 
     #[test]
     fn slice_from_last_checkpoint() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+        ];
 
         // --from the last checkpoint with no trailing records → empty
-        let sliced = slice_records(read(dir.path()), None, Some("chk1"), None).unwrap();
+        let sliced = slice_records(records, None, Some("chk1"), None).unwrap();
         let changes = resolve(sliced).unwrap();
         assert!(changes.is_empty(), "no records after last chk: {changes:?}");
     }
 
     #[test]
     fn slice_not_found() {
-        let dir = setup_test_dir();
-        fs::write(dir.path().join("journal"), b"A\0\0a\0f\01\n").unwrap();
-        assert!(slice_records(read(dir.path()), Some("nope"), None, None).is_err());
-        assert!(slice_records(read(dir.path()), None, Some("nope"), None).is_err());
-        assert!(slice_records(read(dir.path()), None, None, Some("nope")).is_err());
+        let records = vec![
+            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
+        ];
+        assert!(slice_records(records.clone(), Some("nope"), None, None).is_err());
+        assert!(slice_records(records.clone(), None, Some("nope"), None).is_err());
+        assert!(slice_records(records, None, None, Some("nope")).is_err());
     }
 
     // -- Change method tests --
@@ -1947,19 +1813,17 @@ mod tests {
     /// Base-file redirect rename across checkpoints shows correct incremental delta.
     #[test]
     fn segments_redirect_rename_across_checkpoints() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // chk1: create file a
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        // chk2: rename a->b via redirect
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
-        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/a\n");
-        data.extend_from_slice(b"K\02\0chk2\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "content").unwrap();
+        let records = vec![
+            // chk1: create file a
+            Record::Added { path: "/nonexistent_test_12345/a".into(), dtype: Some(DType::File), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            // chk2: rename a->b via redirect
+            Record::Deleted { path: "/nonexistent_test_12345/a".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), base: "/nonexistent_test_12345/a".into() },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 1, "{segments:?}");
 
         // chk1→chk2: delta should show a Renamed(a -> b)
@@ -1975,27 +1839,21 @@ mod tests {
     /// DType must be preserved through redirect chains across segments.
     #[test]
     fn segments_preserve_dtype_through_redirect_chain() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // chk1: create directory
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0mydir\0d\01\n");
-        data.extend_from_slice(b"K\01\0chk1\n");
-        // chk2: rename mydir->dir2 via redirect (dtype=d)
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0mydir\n");
-        data.extend_from_slice(
-            b"R\0/nonexistent_test_12345\0dir2\0d\0/nonexistent_test_12345/mydir\n",
-        );
-        data.extend_from_slice(b"K\02\0chk2\n");
-        // chk3: rename dir2->dir3 via redirect (dtype=d, kernel follows chain)
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0dir2\n");
-        data.extend_from_slice(
-            b"R\0/nonexistent_test_12345\0dir3\0d\0/nonexistent_test_12345/mydir\n",
-        );
-        data.extend_from_slice(b"K\03\0chk3\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::create_dir_all(dir.path().join("inodes/1")).unwrap();
+        let records = vec![
+            // chk1: create directory
+            Record::Added { path: "/nonexistent_test_12345/mydir".into(), dtype: Some(DType::Dir), ino: 1 },
+            Record::Checkpoint(Checkpoint { gen_id: 1, name: "chk1".into() }),
+            // chk2: rename mydir->dir2 via redirect (dtype=d)
+            Record::Deleted { path: "/nonexistent_test_12345/mydir".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/dir2".into(), dtype: Some(DType::Dir), base: "/nonexistent_test_12345/mydir".into() },
+            Record::Checkpoint(Checkpoint { gen_id: 2, name: "chk2".into() }),
+            // chk3: rename dir2->dir3 via redirect (dtype=d, kernel follows chain)
+            Record::Deleted { path: "/nonexistent_test_12345/dir2".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/dir3".into(), dtype: Some(DType::Dir), base: "/nonexistent_test_12345/mydir".into() },
+            Record::Checkpoint(Checkpoint { gen_id: 3, name: "chk3".into() }),
+        ];
 
-        let segments = resolve_segments(read(dir.path())).unwrap();
+        let segments = resolve_segments(records).unwrap();
         assert_eq!(segments.len(), 2, "{segments:?}");
 
         // chk1→chk2: Renamed Dir (mydir -> dir2)
@@ -2046,17 +1904,15 @@ mod tests {
     /// Rename + modify with different ino decomposes into Deleted + Modified.
     #[test]
     fn rename_modify_different_ino() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Rename a→b (redirect): delete a + redirect b→a
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0a\n");
-        data.extend_from_slice(b"R\0/nonexistent_test_12345\0b\0f\0/nonexistent_test_12345/a\n");
-        // Modify b (COW): staged with new ino
-        data.extend_from_slice(b"M\0/nonexistent_test_12345\0b\0f\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/2"), "modified").unwrap();
+        let records = vec![
+            // Rename a→b (redirect): delete a + redirect b→a
+            Record::Deleted { path: "/nonexistent_test_12345/a".into() },
+            Record::Redirect { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), base: "/nonexistent_test_12345/a".into() },
+            // Modify b (COW): staged with new ino
+            Record::Modified { path: "/nonexistent_test_12345/b".into(), dtype: Some(DType::File), ino: 2 },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         let has_deleted = changes.iter().any(|c| {
             matches!(c, Change::Deleted(p) if p == "/nonexistent_test_12345/a")
         });
@@ -2071,16 +1927,15 @@ mod tests {
     /// Delete a rename destination: should undo the rename and delete the origin.
     #[test]
     fn delete_rename_destination_undoes_rename() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Rename /etc/hostname → /etc/hostname.bak
-        data.extend_from_slice(b"D\0/etc\0hostname\n");
-        data.extend_from_slice(b"R\0/etc\0hostname.bak\0f\0/etc/hostname\n");
-        // Delete the destination /etc/hostname.bak
-        data.extend_from_slice(b"D\0/etc\0hostname.bak\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // Rename /etc/hostname → /etc/hostname.bak
+            Record::Deleted { path: "/etc/hostname".into() },
+            Record::Redirect { path: "/etc/hostname.bak".into(), dtype: Some(DType::File), base: "/etc/hostname".into() },
+            // Delete the destination /etc/hostname.bak
+            Record::Deleted { path: "/etc/hostname.bak".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         // The rename was undone; the original file (/etc/hostname) should be deleted
         assert!(
             changes
@@ -2098,17 +1953,16 @@ mod tests {
     /// the overwritten rename's source should become a standalone delete.
     #[test]
     fn redirect_overwrites_previous_redirect() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Rename /etc/hostname → /etc/target
-        data.extend_from_slice(b"D\0/etc\0hostname\n");
-        data.extend_from_slice(b"R\0/etc\0target\0f\0/etc/hostname\n");
-        // Rename /etc/hosts → /etc/target (overwrites the first rename's destination)
-        data.extend_from_slice(b"D\0/etc\0hosts\n");
-        data.extend_from_slice(b"R\0/etc\0target\0f\0/etc/hosts\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+        let records = vec![
+            // Rename /etc/hostname → /etc/target
+            Record::Deleted { path: "/etc/hostname".into() },
+            Record::Redirect { path: "/etc/target".into(), dtype: Some(DType::File), base: "/etc/hostname".into() },
+            // Rename /etc/hosts → /etc/target (overwrites the first rename's destination)
+            Record::Deleted { path: "/etc/hosts".into() },
+            Record::Redirect { path: "/etc/target".into(), dtype: Some(DType::File), base: "/etc/hosts".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         // Final: Renamed(hosts → target) + Deleted(hostname)
         let has_rename = changes.iter().any(|c| {
             matches!(c, Change::Renamed { from, to, .. }
@@ -2128,20 +1982,17 @@ mod tests {
     /// Verifies staged-file rename (Delete + Staged with same ino) plus re-creation.
     #[test]
     fn staged_rename_then_recreate() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Create file at x (ino=1)
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\01\n");
-        // Staged rename x→y: delete x + staged y with same ino
-        data.extend_from_slice(b"D\0/nonexistent_test_12345\0x\n");
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0y\0f\01\n");
-        // Create new file at x (ino=2)
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0x\0f\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "original").unwrap();
-        fs::write(dir.path().join("inodes/2"), "replacement").unwrap();
+        let records = vec![
+            // Create file at x (ino=1)
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 1 },
+            // Staged rename x→y: delete x + staged y with same ino
+            Record::Deleted { path: "/nonexistent_test_12345/x".into() },
+            Record::Added { path: "/nonexistent_test_12345/y".into(), dtype: Some(DType::File), ino: 1 },
+            // Create new file at x (ino=2)
+            Record::Added { path: "/nonexistent_test_12345/x".into(), dtype: Some(DType::File), ino: 2 },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
         let has_y = changes.iter().any(|c| {
             matches!(c, Change::Added { path, ino: 1, .. }
@@ -2160,19 +2011,17 @@ mod tests {
     /// adds write to potentially overlapping paths.
     #[test]
     fn into_changes_ordering_renames_writes_deletes() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // Add a new file (will become Added)
-        data.extend_from_slice(b"A\0/nonexistent_test_12345\0new.txt\0f\01\n");
-        // Delete an existing file (will become Deleted)
-        data.extend_from_slice(b"D\0/etc\0hostname\n");
-        // Rename a base file (will become Renamed)
-        data.extend_from_slice(b"D\0/old\0path\n");
-        data.extend_from_slice(b"R\0/new\0path\0f\0/old/path\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-        fs::write(dir.path().join("inodes/1"), "content").unwrap();
+        let records = vec![
+            // Add a new file (will become Added)
+            Record::Added { path: "/nonexistent_test_12345/new.txt".into(), dtype: Some(DType::File), ino: 1 },
+            // Delete an existing file (will become Deleted)
+            Record::Deleted { path: "/etc/hostname".into() },
+            // Rename a base file (will become Renamed)
+            Record::Deleted { path: "/old/path".into() },
+            Record::Redirect { path: "/new/path".into(), dtype: Some(DType::File), base: "/old/path".into() },
+        ];
 
-        let changes = resolve(read(dir.path())).unwrap();
+        let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 3, "expected 3 changes, got: {changes:?}");
 
         assert!(
