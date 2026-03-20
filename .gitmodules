@@ -16,3 +16,6 @@
 [submodule "bench/third_party/try"]
 	path = bench/third_party/try
 	url = https://github.com/binpash/try
+[submodule "paper-docs"]
+	path = paper-docs
+	url = git@github.com:ShawnZhong/AgFS-Paper-Docs.git
