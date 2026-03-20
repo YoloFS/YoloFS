@@ -29,10 +29,10 @@ methods instead of calling flat functions. After migration, the flat
 | tl-journal-cmd | Use `Timeline` in `agfs journal` instead of `reachable_indices()` | `cli/journal_cmd.rs` |
 | tl-timeline-cmd | Use `Timeline` in `agfs timeline` instead of `reachable_indices()` | `cli/timeline_cmd.rs` |
 | tl-diff | Use `Timeline::slice()` + resolve in `agfs diff`/`agfs status` | `cli/diff.rs` |
-| tl-commit | Use `Timeline` in `agfs commit` | `cli/commit.rs` |
+| tl-commit | Use `Timeline` in `agfs commit` — `reachable_records()` + `resolve()` | `cli/commit.rs` |
 | tl-restore | Use `Timeline::find_checkpoint()` + reachable prefix in `agfs restore` | `cli/restore.rs` |
-| tl-abort | Use `Timeline` in `agfs abort` | `cli/abort.rs` |
-| tl-mount | Use `Timeline` in mount prompt | `cli/mount.rs` |
+| tl-abort | Use `Timeline` in `agfs abort` — `all_records()` + `resolve()` (needs all records incl. dead zones) | `cli/abort.rs` |
+| tl-mount | Use `Timeline` in mount prompt — `all_records()` + `resolve()` (needs all records incl. dead zones) | `cli/mount.rs` |
 | tl-cleanup | Remove or reduce visibility of flat `reachable()`, `reachable_indices()`, `find_checkpoint_index()`, `slice_records()` | `cli/journal/timeline.rs` |
 
 ## Notes
@@ -42,5 +42,11 @@ methods instead of calling flat functions. After migration, the flat
 - `diff.rs` currently calls `reachable()` → `slice_records()` →
   `resolve_segments()`. This becomes `Timeline::slice()` →
   `resolve_segments()`.
-- `commit.rs` and `abort.rs` only need `reachable()` + `resolve()`,
-  which becomes `timeline.reachable_records()` + `resolve()`.
+- Two distinct patterns among callers:
+  - **Pattern A — reachable-first** (`commit.rs`, `diff.rs`, `restore.rs`,
+    `journal_cmd.rs`, `timeline_cmd.rs`): filter through reachability
+    before resolving. These use `timeline.reachable_records()` or
+    `timeline.slice()`.
+  - **Pattern B — all-records** (`abort.rs`, `mount.rs`): intentionally
+    pass *all* records (including dead zones) to `resolve()`, because they
+    need complete staging information. These use `timeline.all_records()`.
