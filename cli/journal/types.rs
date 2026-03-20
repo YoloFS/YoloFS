@@ -108,6 +108,60 @@ pub struct Changeset(pub Vec<(String, Change)>);
 #[derive(Debug, Default)]
 pub struct LiveSegments(pub Vec<Segment>);
 
+impl LiveSegments {
+    /// Flatten into a single record list.
+    pub fn into_records(self) -> Vec<Record> {
+        self.0.into_iter().flat_map(|s| s.records).collect()
+    }
+}
+
+#[cfg(test)]
+mod live_segments_tests {
+    use super::*;
+
+    #[test]
+    fn into_records_empty() {
+        let ls = LiveSegments(vec![]);
+        assert!(ls.into_records().is_empty());
+    }
+
+    #[test]
+    fn into_records_flattens_segments() {
+        let ls = LiveSegments(vec![
+            Segment {
+                from: 0,
+                records: vec![Record::Added {
+                    path: "/a".into(),
+                    ino: 10,
+                    dtype: DType::File.into(),
+                }],
+            },
+            Segment {
+                from: 1,
+                records: vec![],
+            },
+            Segment {
+                from: 2,
+                records: vec![
+                    Record::Added {
+                        path: "/b".into(),
+                        ino: 20,
+                        dtype: DType::File.into(),
+                    },
+                    Record::Deleted {
+                        path: "/c".into(),
+                    },
+                ],
+            },
+        ]);
+        let records = ls.into_records();
+        assert_eq!(records.len(), 3);
+        assert!(matches!(&records[0], Record::Added { path, .. } if path == "/a"));
+        assert!(matches!(&records[1], Record::Added { path, .. } if path == "/b"));
+        assert!(matches!(&records[2], Record::Deleted { path, .. } if path == "/c"));
+    }
+}
+
 /// A group of data records (A/M/D/R) between consecutive K/S boundaries.
 #[derive(Debug)]
 pub struct Segment {

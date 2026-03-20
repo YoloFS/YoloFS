@@ -4,6 +4,7 @@
 // restore pruning, and provide live(), live_prefix(), live_slice()
 // convenience methods on SegmentedJournal.
 
+use super::markers::*;
 use super::segment::*;
 use super::types::*;
 use anyhow::Result;
@@ -77,17 +78,19 @@ impl SegmentedJournal {
         )
     }
 
-    /// Filter to live segments and flatten into a single record list.
-    pub fn live_records(self) -> Vec<Record> {
-        self.live().0.into_iter().flat_map(|s| s.records).collect()
-    }
-
-    /// Take prefix up to a marker index (inclusive), then filter to live.
+    /// Take prefix up to a checkpoint (inclusive), then filter to live.
     /// Used by restore to get live records up to a target checkpoint.
     /// Reachability is computed only within the prefix (S records after the
     /// prefix boundary do not affect it).
-    pub fn live_prefix(self, up_to_marker: usize) -> LiveSegments {
-        let num_prefix = up_to_marker + 1;
+    pub fn live_prefix(self, checkpoint: &str) -> Result<LiveSegments> {
+        let (gen_id, _) = self.markers.find_checkpoint(checkpoint)?;
+        Ok(self.live_prefix_gen(gen_id))
+    }
+
+    /// Like `live_prefix`, but takes a pre-resolved gen_id.
+    /// Use when the caller already looked up the checkpoint.
+    pub fn live_prefix_gen(self, gen_id: u64) -> LiveSegments {
+        let num_prefix = gen_id as usize;
         let alive = self.markers.alive_segments_range(0..num_prefix, num_prefix);
         LiveSegments(
             self.segments
@@ -98,15 +101,6 @@ impl SegmentedJournal {
                 .map(|(_, s)| s)
                 .collect(),
         )
-    }
-
-    /// Like `live_prefix`, but flattens into a single record list.
-    pub fn live_prefix_records(self, up_to_marker: usize) -> Vec<Record> {
-        self.live_prefix(up_to_marker)
-            .0
-            .into_iter()
-            .flat_map(|s| s.records)
-            .collect()
     }
 
     /// Slice to a checkpoint range and filter to live segments.
@@ -635,6 +629,16 @@ mod tests {
         assert!(sj.live_slice(Some("nonexistent"), None, None).is_err());
     }
 
+    #[test]
+    fn live_prefix_not_found() {
+        let records = vec![Record::Checkpoint {
+            gen_id: 1,
+            name: "init".into(),
+        }];
+        let sj = SegmentedJournal::new(RawJournal(records));
+        assert!(sj.live_prefix("nonexistent").is_err());
+    }
+
     // ── Live prefix test (for restore) ───────────────────────────────
 
     #[test]
@@ -678,8 +682,7 @@ mod tests {
             },
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
-        let (gen_id, _) = sj.markers.find_checkpoint_by_name("c2").unwrap();
-        let prefix = sj.live_prefix((gen_id - 1) as usize);
+        let prefix = sj.live_prefix("c2").unwrap();
         let records: Vec<Record> = prefix
             .0
             .into_iter()
@@ -795,9 +798,7 @@ mod tests {
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
         // Markers: K1(0), K2(1), K3(2), S4(3), K5(4), K6(5)
-        let (gen_id, _) = sj.markers.find_checkpoint_by_name("c5").unwrap();
-        let prefix = sj.live_prefix((gen_id - 1) as usize);
-        let result: Vec<Record> = prefix.0.into_iter().flat_map(|s| s.records).collect();
+        let result: Vec<Record> = sj.live_prefix("c5").unwrap().into_records();
         // Live prefix up to K5: [C] from seg4.
         // [A] is dead (killed by S4, which kills segs after K1 marker). [D] is beyond K5.
         assert_eq!(result.len(), 1);

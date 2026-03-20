@@ -12,7 +12,7 @@ pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let sj = SegmentedJournal::new(journal::read(&agfs)?);
-    let actions = journal::simplify::simplify(sj.live_records());
+    let actions = journal::simplify::simplify(sj.live().into_records());
     let changeset = actions.collapse();
 
     if changeset.0.is_empty() {

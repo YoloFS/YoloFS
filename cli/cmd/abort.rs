@@ -41,7 +41,7 @@ pub fn run(force: bool) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let sj = crate::journal::SegmentedJournal::new(crate::journal::read(&agfs)?);
-    let live_records = sj.live_records();
+    let live_records = sj.live().into_records();
     let actions = crate::journal::simplify::simplify(live_records);
     let changes = actions.collapse();
     if changes.0.is_empty() {

@@ -837,8 +837,10 @@ O(R) backward walk to build reachable ranges, skip unreachable S records.
 
 1. CLI builds a `SegmentedJournal` and finds the target checkpoint via
    `Markers::find_checkpoint()` (including unreachable regions, to support undo-restore).
-2. CLI calls `live_prefix()` to extract the live records from the prefix
-   up to the target checkpoint, handling any S records in that prefix.
+2. CLI calls `live_prefix_gen(gen_id)` (or `live_prefix(name)` which
+   resolves the name internally) to extract the `LiveSegments` from the
+   prefix up to the target checkpoint, handling any S records in that
+   prefix, then flattens via `.into_records()`.
 3. CLI resolves the live records → changes → entries.
 4. CLI converts changes to dirent entries (path, ino, base, d_type).
    Entries are sorted by path — parents before children — so that

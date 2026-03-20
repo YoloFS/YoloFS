@@ -230,7 +230,8 @@ agfs/
 │   ├── journal/               # journal parsing, timeline, and resolution
 │   │   ├── types.rs           # Record, Change, Action, DType, and related types
 │   │   ├── parse.rs           # journal file parsing
-│   │   ├── segment.rs         # journal pipeline (SegmentedJournal, Segment, Markers)
+│   │   ├── markers.rs          # K/S skeleton (Markers: lookup, range computation)
+│   │   ├── segment.rs         # journal pipeline (SegmentedJournal, Segment)
 │   │   ├── liveness.rs       # reachability filtering (alive_segments, live, live_prefix)
 │   │   ├── simplify.rs        # simplify records into ActionList (chain collapse, cancel, etc.)
 │   │   └── action.rs          # ActionList: apply() to base fs, collapse() to Changeset

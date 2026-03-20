@@ -885,7 +885,7 @@ mod tests {
     /// Helper: run the full pipeline on raw records including K/S markers.
     fn resolve_all(records: Vec<Record>) -> Vec<(String, super::super::types::Change)> {
         let sj = SegmentedJournal::new(RawJournal(records));
-        let live = sj.live_records();
+        let live = sj.live().into_records();
         let al = simplify(live);
         al.collapse().0
     }
