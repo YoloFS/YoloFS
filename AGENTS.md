@@ -40,7 +40,6 @@ make vm-build     # build cli + kmod
 make vm-test      # unit + e2e tests (auto-starts VM if needed)
 make vm-test-unit # unit tests only
 make vm-test-e2e  # e2e tests only
-make fix          # auto-fix lint issues (cargo fmt + clippy --fix)
 ```
 
 ## Code Review

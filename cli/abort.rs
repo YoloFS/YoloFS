@@ -42,8 +42,9 @@ pub fn run(force: bool) -> Result<()> {
 
     let sj = crate::journal::SegmentedJournal::new(crate::journal::read(&agfs)?);
     let live_records = sj.live_records();
-    let changes = crate::journal::resolve::resolve(live_records)?;
-    if changes.is_empty() {
+    let actions = crate::journal::simplify::simplify(live_records);
+    let changes = actions.collapse();
+    if changes.0.is_empty() {
         println!("{}", "Nothing to discard.".yellow());
         return Ok(());
     }
@@ -53,8 +54,8 @@ pub fn run(force: bool) -> Result<()> {
             "{} ",
             format!(
                 "Discard {} staged change{}? [y/N]:",
-                changes.len(),
-                crate::utils::plural(changes.len())
+                changes.0.len(),
+                crate::utils::plural(changes.0.len())
             )
             .bold()
         );

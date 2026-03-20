@@ -15,7 +15,7 @@ fn checkpoint_produces_checkpoint_record() {
 
     let records = journal(&s);
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Checkpoint(c) if c.name == "build")),
         "journal should have an S record named 'build': {records:?}"
@@ -32,7 +32,7 @@ fn recow_after_checkpoint_produces_new_add() {
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 (re-COW)");
 
     let records = journal(&s);
-    let adds: Vec<_> = records
+    let adds: Vec<_> = records.0
         .iter()
         .filter(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
         .collect();
@@ -49,15 +49,15 @@ fn recow_after_checkpoint_produces_new_add() {
     }
 
     // Checkpoint "s1" should sit between the two adds.
-    let chk_pos = records
+    let chk_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Checkpoint(c) if c.name == "s1"))
         .unwrap();
-    let first_add = records
+    let first_add = records.0
         .iter()
         .position(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
         .unwrap();
-    let last_add = records
+    let last_add = records.0
         .iter()
         .rposition(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
         .unwrap();
@@ -82,7 +82,7 @@ fn multiple_checkpoints_have_distinct_ids() {
     s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
 
     let records = journal(&s);
-    let snaps: Vec<_> = records
+    let snaps: Vec<_> = records.0
         .iter()
         .filter_map(|r| match r {
             Record::Checkpoint(c) if c.name != "(initial)" => Some((&c.gen_id, &c.name)),
@@ -110,16 +110,16 @@ fn rename_after_checkpoint() {
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
     let records = journal(&s);
-    let chk_pos = records
+    let chk_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Checkpoint(_)))
         .unwrap();
     // After COW, hello.txt has a staged ino — rename emits Delete + Staged
-    let del_pos = records
+    let del_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Deleted { path } if path.ends_with("/hello.txt")))
         .expect("should have Delete for hello.txt");
-    let staged_pos = records
+    let staged_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/moved.txt")))
         .expect("should have Added for moved.txt");
@@ -143,11 +143,11 @@ fn delete_after_checkpoint() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
 
     let records = journal(&s);
-    let chk_pos = records
+    let chk_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Checkpoint(_)))
         .unwrap();
-    let del_pos = records
+    let del_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Deleted { .. }))
         .unwrap();

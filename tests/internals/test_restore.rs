@@ -20,7 +20,7 @@ fn restore_journal_contains_checkpoint_marker() {
 
     let records = journal(&s);
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Checkpoint(c) if c.name == "chk1")),
         "chk1 marker should be in journal: {records:?}"
@@ -43,13 +43,14 @@ fn restore_journal_has_no_post_checkpoint_records() {
 
     // S (Restore) record should be present in the raw journal.
     assert!(
-        records.iter().any(|r| matches!(r, Record::Restore { .. })),
+        records.0.iter().any(|r| matches!(r, Record::Restore { .. })),
         "Restore record should be in journal: {records:?}"
     );
 
     // reachable + resolve should match the checkpoint state (only a.txt).
     let sj = journal::SegmentedJournal::new(records);
-    let ch = journal::resolve::resolve(sj.live_records()).expect("resolve");
+    let actions = journal::simplify::simplify(sj.live_records());
+    let ch = actions.collapse();
     let debug = format!("{ch:?}");
     assert!(
         debug.contains("a.txt"),
@@ -369,7 +370,7 @@ fn restore_renamed_symlink_in_resolved_changes() {
     // Journal should have the checkpoint marker and records up to it
     let records = journal(&s);
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Checkpoint(c) if c.name == "chk1")),
         "chk1 should be in journal: {records:?}"
@@ -431,7 +432,7 @@ fn restore_journal_is_byte_prefix() {
     // Verify the S record is present.
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Restore { .. })),
+        records.0.iter().any(|r| matches!(r, Record::Restore { .. })),
         "Restore record should be in journal: {records:?}"
     );
 }
@@ -453,7 +454,7 @@ fn restore_s_record_has_correct_gen() {
     let records = journal(&s);
 
     // Find the checkpoint gen_ids and the restore record.
-    let chk1_gen = records
+    let chk1_gen = records.0
         .iter()
         .find_map(|r| match r {
             Record::Checkpoint(c) if c.name == "chk1" => Some(c.gen_id),
@@ -461,7 +462,7 @@ fn restore_s_record_has_correct_gen() {
         })
         .expect("chk1 should exist");
 
-    let chk2_gen = records
+    let chk2_gen = records.0
         .iter()
         .find_map(|r| match r {
             Record::Checkpoint(c) if c.name == "chk2" => Some(c.gen_id),
@@ -469,7 +470,7 @@ fn restore_s_record_has_correct_gen() {
         })
         .expect("chk2 should exist");
 
-    let (s_gen, s_target) = records
+    let (s_gen, s_target) = records.0
         .iter()
         .find_map(|r| match r {
             Record::Restore { gen_id, target_gen } => Some((*gen_id, *target_gen)),

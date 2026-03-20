@@ -14,7 +14,7 @@ fn delete_produces_delete_record() {
 
     let records = journal(&s);
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/hello.txt"))),
         "journal should have a Deleted record for hello.txt: {records:?}"

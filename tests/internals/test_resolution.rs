@@ -24,32 +24,32 @@ fn operations_produce_ordered_records() {
 
     // Verify each type is present
     assert!(
-        records.iter().any(|r| matches!(r, Record::Modified { .. })),
+        records.0.iter().any(|r| matches!(r, Record::Modified { .. })),
         "missing A: {records:?}"
     );
     assert!(
-        records.iter().any(|r| matches!(r, Record::Checkpoint(_))),
+        records.0.iter().any(|r| matches!(r, Record::Checkpoint(_))),
         "missing S: {records:?}"
     );
     assert!(
-        records.iter().any(|r| matches!(r, Record::Deleted { .. })),
+        records.0.iter().any(|r| matches!(r, Record::Deleted { .. })),
         "missing D: {records:?}"
     );
     assert!(
-        records.iter().any(|r| matches!(r, Record::Redirect { .. })),
+        records.0.iter().any(|r| matches!(r, Record::Redirect { .. })),
         "missing R: {records:?}"
     );
 
     // Checkpoint "s1" should appear after the Add (write) and before the Delete.
-    let chk_pos = records
+    let chk_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Checkpoint(c) if c.name == "s1"))
         .unwrap();
-    let add_pos = records
+    let add_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
         .unwrap();
-    let del_pos = records
+    let del_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Deleted { .. }))
         .unwrap();
@@ -57,7 +57,7 @@ fn operations_produce_ordered_records() {
     assert!(chk_pos < del_pos, "Checkpoint s1 should precede Delete");
 }
 
-/// Writing to a renamed file: rename produces R, then write produces A at new path.
+/// Writing to a renamed file: rename produces R, then write produces M at new path.
 #[test]
 fn write_after_rename() {
     let s = AgfsSession::new().expect("session setup");
@@ -67,29 +67,32 @@ fn write_after_rename() {
 
     let records = journal(&s);
     assert!(
-        records
+        records.0
             .iter()
-            .any(|r| matches!(r, Record::Redirect { path, base, .. }
-            if path.ends_with("/moved.txt") && base.ends_with("/hello.txt"))),
+            .any(|r| matches!(r, Record::Redirect { old, new, .. }
+            if new.ends_with("/moved.txt") && old.ends_with("/hello.txt"))),
         "should have R record: {records:?}"
     );
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/moved.txt"))),
-        "should have A record at new path: {records:?}"
+        "should have M record at new path: {records:?}"
     );
 
     // The rename should precede the write
-    let r_pos = records
+    let r_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Redirect { .. }))
         .unwrap();
-    let a_pos = records
+    let a_pos = records.0
         .iter()
         .rposition(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/moved.txt")))
         .unwrap();
-    assert!(r_pos < a_pos, "Rename should precede the Add at new path");
+    assert!(
+        r_pos < a_pos,
+        "Rename should precede the Modify at new path"
+    );
 }
 
 /// Create a new file, then rename it.
@@ -103,13 +106,13 @@ fn create_then_rename() {
 
     let records = journal(&s);
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/temp.txt"))),
         "should have A record for original path: {records:?}"
     );
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Added { path, .. }
             if path.ends_with("/final.txt"))),
@@ -127,13 +130,13 @@ fn create_then_delete() {
 
     let records = journal(&s);
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/ephemeral.txt"))),
         "should have A record: {records:?}"
     );
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/ephemeral.txt"))),
         "should have D record: {records:?}"
@@ -149,11 +152,11 @@ fn modify_then_delete() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
 
     let records = journal(&s);
-    let a_pos = records
+    let a_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
         .expect("missing M");
-    let d_pos = records
+    let d_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Deleted { path } if path.ends_with("/hello.txt")))
         .expect("missing D");
@@ -170,26 +173,89 @@ fn rename_then_delete() {
 
     let records = journal(&s);
     assert!(
-        records
+        records.0
             .iter()
-            .any(|r| matches!(r, Record::Redirect { path, base, .. }
-            if path.ends_with("/moved.txt") && base.ends_with("/hello.txt"))),
+            .any(|r| matches!(r, Record::Redirect { old, new, .. }
+            if new.ends_with("/moved.txt") && old.ends_with("/hello.txt"))),
         "should have R record: {records:?}"
     );
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/moved.txt"))),
         "should have D record at new path: {records:?}"
     );
 
-    let r_pos = records
+    let r_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Redirect { .. }))
         .expect("missing R");
-    let d_pos = records
+    let d_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Deleted { path } if path.ends_with("/moved.txt")))
         .expect("missing D");
     assert!(r_pos < d_pos, "Rename should precede Delete: {records:?}");
+}
+
+/// Kernel emits fused R record with both old and new paths (no separate D).
+#[test]
+fn rename_emits_fused_redirect_record() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
+
+    let records = journal(&s);
+
+    // Should have exactly one Redirect record with both old and new paths.
+    let redirects: Vec<_> = records.0
+        .iter()
+        .filter(|r| matches!(r, Record::Redirect { .. }))
+        .collect();
+    assert_eq!(
+        redirects.len(),
+        1,
+        "expected exactly 1 Redirect record, got: {redirects:?}"
+    );
+    assert!(
+        matches!(&redirects[0], Record::Redirect { old, new, .. }
+            if old.ends_with("/hello.txt") && new.ends_with("/moved.txt")),
+        "Redirect should carry both old and new paths: {:?}",
+        redirects[0]
+    );
+
+    // Should NOT have a separate Delete record for the old path.
+    let has_delete_old = records.0.iter().any(|r| {
+        matches!(r, Record::Deleted { path } if path.ends_with("/hello.txt"))
+    });
+    assert!(
+        !has_delete_old,
+        "fused rename should NOT emit separate D record for old path: {records:?}"
+    );
+}
+
+/// Overwrite rename (mv onto existing file) emits fused P record.
+#[test]
+fn rename_overwrite_emits_fused_replace_record() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // hello.txt and multi.txt both exist in base
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("multi.txt")).expect("overwrite rename");
+
+    let records = journal(&s);
+
+    let replaces: Vec<_> = records.0
+        .iter()
+        .filter(|r| matches!(r, Record::Replace { .. }))
+        .collect();
+    assert_eq!(
+        replaces.len(),
+        1,
+        "expected exactly 1 Replace record, got: {replaces:?}"
+    );
+    assert!(
+        matches!(&replaces[0], Record::Replace { old, new, .. }
+            if old.ends_with("/hello.txt") && new.ends_with("/multi.txt")),
+        "Replace should carry both old and new paths: {:?}",
+        replaces[0]
+    );
 }

@@ -3,12 +3,12 @@ use crate::helpers::AgfsSession;
 use agfs::journal::Record;
 use std::fs;
 
-// ── Tests for the `in_base` dirent flag ─────────────────────────────────────
+// ── Tests for the `overwrites` dirent flag ──────────────────────────────────
 //
-// The kernel tracks whether a path exists in the base layer via a `in_base`
+// The kernel tracks whether a path had existing content via an `overwrites`
 // flag on each dirent. This flag determines the journal record tag:
-// A (add, new file) vs M (modify, existing file). These tests verify that
-// the kernel emits the correct tag for various edge cases.
+// A (add, new path) vs M (modify, overwrites content). These tests verify
+// that the kernel emits the correct tag for various edge cases.
 
 /// Creating a brand-new file emits an A (add) record.
 #[test]
@@ -19,7 +19,7 @@ fn create_new_file_emits_add() {
 
     let records = journal(&s);
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/brandnew.txt"))),
         "new file should produce A record: {records:?}"
@@ -35,7 +35,7 @@ fn modify_base_file_emits_modify() {
 
     let records = journal(&s);
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt"))),
         "modifying base file should produce M record: {records:?}"
@@ -53,7 +53,7 @@ fn delete_recreate_base_file_emits_modify() {
 
     let records = journal(&s);
     // Find the last record for hello.txt — should be M (from re-create).
-    let last = records
+    let last = records.0
         .iter()
         .rev()
         .find(|r| match r {
@@ -81,7 +81,7 @@ fn delete_recreate_staged_file_emits_add() {
 
     let records = journal(&s);
     // Find the last record for ephemeral.txt — should be A.
-    let last = records
+    let last = records.0
         .iter()
         .rev()
         .find(|r| match r {
@@ -111,7 +111,7 @@ fn cow_delete_recreate_emits_modify() {
     fs::write(s.mnt_path("hello.txt"), "again\n").expect("recreate");
 
     let records = journal(&s);
-    let last = records
+    let last = records.0
         .iter()
         .rev()
         .find(|r| match r {
@@ -137,7 +137,7 @@ fn rename_away_then_create_at_old_path_emits_modify() {
     fs::write(s.mnt_path("hello.txt"), "replacement\n").expect("create");
 
     let records = journal(&s);
-    let last = records
+    let last = records.0
         .iter()
         .rev()
         .find(|r| match r {
@@ -164,7 +164,7 @@ fn rename_away_staged_then_create_emits_add() {
     fs::write(s.mnt_path("temp.txt"), "new\n").expect("recreate");
 
     let records = journal(&s);
-    let last = records
+    let last = records.0
         .iter()
         .rev()
         .find(|r| match r {
@@ -177,5 +177,47 @@ fn rename_away_staged_then_create_emits_add() {
     assert!(
         matches!(last, Record::Added { .. }),
         "create at renamed-away staged path should produce A, got: {last:?}"
+    );
+}
+
+/// Create a new file, checkpoint, then write to it again (re-COW).
+/// The re-COW should emit M (Modified) because the path already had
+/// staged content — the `overwrites` flag is true regardless of whether
+/// the file existed in base.
+#[test]
+fn recow_of_staged_file_after_checkpoint_emits_modify() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("created.txt"), "v1\n").expect("create");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
+    fs::write(s.mnt_path("created.txt"), "v2\n").expect("write v2 (re-COW)");
+
+    let records = journal(&s);
+
+    // Find all staged records for created.txt after the checkpoint.
+    let chk_pos = records.0
+        .iter()
+        .position(|r| matches!(r, Record::Checkpoint(c) if c.name == "s1"))
+        .expect("should have checkpoint s1");
+    let post_chk: Vec<_> = records.0[chk_pos + 1..]
+        .iter()
+        .filter(|r| match r {
+            Record::Added { path, .. } | Record::Modified { path, .. } => {
+                path.ends_with("/created.txt")
+            }
+            _ => false,
+        })
+        .collect();
+
+    assert!(
+        !post_chk.is_empty(),
+        "re-COW should produce a record after checkpoint: {records:?}"
+    );
+    // Re-COW of a staged file emits M (overwrites=true) because the
+    // path already had content, even though it was never in base.
+    assert!(
+        matches!(post_chk[0], Record::Modified { .. }),
+        "re-COW of staged file should emit M (overwrites existing content), got: {:?}",
+        post_chk[0]
     );
 }

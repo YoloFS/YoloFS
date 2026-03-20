@@ -62,14 +62,51 @@ impl Change {
     }
 }
 
+/// A simplified journal action — only the 5 operation variants (no K/S).
+/// Used by the simplify → apply/collapse pipeline.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    Add {
+        path: String,
+        ino: u64,
+        dtype: DType,
+    },
+    Modify {
+        path: String,
+        ino: u64,
+        dtype: DType,
+    },
+    Delete {
+        path: String,
+    },
+    Rename {
+        old: String,
+        new: String,
+        dtype: DType,
+    },
+    Replace {
+        old: String,
+        new: String,
+        dtype: DType,
+    },
+}
+
+/// An ordered sequence of simplified actions — directly replayable on
+/// the base filesystem.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionList(pub Vec<Action>);
+
 /// A parsed journal — a flat list of records from disk.
-pub type RawJournal = Vec<Record>;
+#[derive(Debug, Clone, Default)]
+pub struct RawJournal(pub Vec<Record>);
 
 /// The resolved final state — a list of (path, change) pairs.
-pub type Changeset = Vec<(String, Change)>;
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Changeset(pub Vec<(String, Change)>);
 
 /// Live segments — only those that survive restore pruning (Level 2).
-pub type LiveSegments = Vec<Segment>;
+#[derive(Debug, Default)]
+pub struct LiveSegments(pub Vec<Segment>);
 
 /// A named checkpoint in the journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,14 +171,14 @@ pub enum Record {
         path: String,
     },
     Redirect {
-        path: String,
+        old: String,
+        new: String,
         dtype: Option<DType>,
-        base: String,
     },
     Replace {
-        path: String,
+        old: String,
+        new: String,
         dtype: Option<DType>,
-        base: String,
     },
     Checkpoint(Checkpoint),
     Restore {

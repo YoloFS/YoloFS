@@ -99,7 +99,9 @@ for interactive approval.
 **On-disk format**: OverlayFS requires filesystem support for whiteouts
 (`RENAME_WHITEOUT`, ext4/xfs). AgFS uses a flat inode store + append-only
 journal, working on any lower FS. The journal uses typed record tags
-(`A`/`M`/`D`/`R`/`P` for mutations, `K`/`S` for checkpoints/restores) so each record is self-describing.
+(`A`/`M`/`D`/`R`/`P` for mutations, `K`/`S` for checkpoints/restores) so
+each record is self-describing. `R`/`P` records are self-contained — each
+carries both source and destination paths in a single record.
 
 ## Lifecycle Example
 
@@ -176,7 +178,7 @@ $ agfs commit
 
 # 8. Restore to a previous checkpoint (appends S record, no truncation)
 $ agfs restore "after make build"
-   -> CLI: SegmentedJournal → find_checkpoint → live_prefix → resolve
+   -> CLI: SegmentedJournal → find_checkpoint → live_prefix → simplify → collapse
    -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, entries })
    -> kernel: wipe dirents, inject entries, increment gen to 4,
       append S\04\02\n to journal
@@ -220,11 +222,12 @@ agfs/
 │   ├── abort.rs
 │   ├── diff.rs                # `agfs status` + `agfs diff` (summary and verbose views)
 │   ├── journal/               # journal parsing, timeline, and resolution
-│   │   ├── types.rs           # Record, Change, DType, and related types
+│   │   ├── types.rs           # Record, Change, Action, DType, and related types
 │   │   ├── parse.rs           # journal file parsing
 │   │   ├── segment.rs         # journal pipeline (SegmentedJournal, Segment, Markers)
 │   │   ├── liveness.rs       # reachability filtering (alive_segments, live, live_prefix)
-│   │   └── resolve.rs         # journal resolution (collapse records into final ops)
+│   │   ├── simplify.rs        # simplify records into ActionList (chain collapse, cancel, etc.)
+│   │   └── action.rs          # ActionList: apply() to base fs, collapse() to Changeset
 │   ├── restore.rs             # `agfs restore` -- restore to a previous checkpoint
 │   ├── checkpoint.rs          # `agfs checkpoint` (create only)
 │   ├── journal_cmd.rs         # `agfs journal` command (raw record display, --path filter)

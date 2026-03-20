@@ -331,6 +331,40 @@ fn rename_swap_like_commit() {
     );
 }
 
+/// True cyclic swap: mv hello.txt→tmp, mv multi.txt→hello.txt,
+/// mv tmp→multi.txt.  Both files exchange content after commit.
+#[test]
+fn rename_cyclic_swap_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("tmp")).expect("rename hello→tmp");
+    fs::rename(s.mnt_path("multi.txt"), s.mnt_path("hello.txt")).expect("rename multi→hello");
+    fs::rename(s.mnt_path("tmp"), s.mnt_path("multi.txt")).expect("rename tmp→multi");
+
+    // Verify through mount before commit.
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
+        "line1\nline2\n"
+    );
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("multi.txt")).unwrap(),
+        "base content\n"
+    );
+
+    s.cli(&["commit"]).expect("commit");
+
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        "line1\nline2\n",
+        "hello.txt should now have multi.txt's original content"
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("multi.txt")).unwrap(),
+        "base content\n",
+        "multi.txt should now have hello.txt's original content"
+    );
+}
+
 /// Rename a directory and verify contents are accessible through new name.
 #[test]
 fn rename_directory_with_contents() {
@@ -532,22 +566,26 @@ fn complex_multi_operation_commit() {
 
     let agfs_dir = s.root.join(".agfs");
     let records = journal::read(&agfs_dir).expect("read journal");
-    let changes = journal::resolve::resolve(records).expect("resolve");
+    let actions = journal::simplify::simplify(records.0);
+    let changes = actions.collapse();
 
     let has_modified_hello = changes
+        .0
         .iter()
-        .any(|(path, c)| matches!(c, Change::Modified { .. }) && path.ends_with("/hello.txt"));
+        .any(|(path, c): &(String, Change)| matches!(c, Change::Modified { .. }) && path.ends_with("/hello.txt"));
     let has_modified_multi = changes
+        .0
         .iter()
-        .any(|(path, c)| matches!(c, Change::Modified { .. }) && path.ends_with("/multi.txt"));
-    let has_renamed_deep_to_top = changes.iter().any(|(to, c)| {
+        .any(|(path, c): &(String, Change)| matches!(c, Change::Modified { .. }) && path.ends_with("/multi.txt"));
+    let has_renamed_deep_to_top = changes.0.iter().any(|(to, c): &(String, Change)| {
         matches!(c, Change::Renamed { from, .. }
             if from.ends_with("/deep.txt") && to.ends_with("/top.txt"))
     });
     let has_added_link = changes
+        .0
         .iter()
-        .any(|(path, c)| matches!(c, Change::Added { .. }) && path.ends_with("/link.txt"));
-    let has_temp = changes.iter().any(|(path, c)| match c {
+        .any(|(path, c): &(String, Change)| matches!(c, Change::Added { .. }) && path.ends_with("/link.txt"));
+    let has_temp = changes.0.iter().any(|(path, c): &(String, Change)| match c {
         Change::Added { .. } | Change::Modified { .. } | Change::Deleted => {
             path.ends_with("/temp.txt")
         }
@@ -555,7 +593,7 @@ fn complex_multi_operation_commit() {
             from.ends_with("/temp.txt") || path.ends_with("/temp.txt")
         }
     });
-    let has_brand_new = changes.iter().any(|(path, c)| match c {
+    let has_brand_new = changes.0.iter().any(|(path, c): &(String, Change)| match c {
         Change::Added { .. } | Change::Modified { .. } | Change::Deleted => {
             path.ends_with("/brand_new.txt")
         }
@@ -636,5 +674,78 @@ fn complex_multi_operation_commit() {
         fs::read_to_string(s.base_path("test.sh")).unwrap(),
         "#!/bin/sh\necho ok\n",
         "test.sh should be untouched"
+    );
+}
+
+/// Move a child file out of a directory, then rename the parent directory.
+/// Both the extracted file and the renamed directory should appear in base.
+#[test]
+fn rename_child_then_parent_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // Move deep.txt out of subdir, then rename subdir itself.
+    fs::rename(s.mnt_path("subdir/deep.txt"), s.mnt_path("extracted.txt"))
+        .expect("rename deep → extracted");
+    fs::rename(s.mnt_path("subdir"), s.mnt_path("renamed_dir"))
+        .expect("rename subdir → renamed_dir");
+
+    // Verify through mount.
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("extracted.txt")).unwrap(),
+        "nested\n"
+    );
+    assert!(s.mnt_path("renamed_dir").exists());
+    assert!(!s.mnt_path("subdir").exists());
+
+    s.cli(&["commit"]).expect("commit");
+
+    assert_eq!(
+        fs::read_to_string(s.base_path("extracted.txt")).unwrap(),
+        "nested\n",
+        "extracted.txt should have deep.txt's content"
+    );
+    assert!(
+        s.base_path("renamed_dir").exists(),
+        "renamed_dir should exist in base"
+    );
+    assert!(
+        !s.base_path("subdir").exists(),
+        "subdir should be gone from base"
+    );
+    assert!(
+        !s.base_path("subdir/deep.txt").exists(),
+        "subdir/deep.txt should be gone from base"
+    );
+}
+
+/// Same as rename_child_then_parent_commit but with destination names
+/// chosen so the parent rename sorts first alphabetically (BTreeMap order).
+/// This exposes ordering bugs: the parent directory rename must not run
+/// before the child file is extracted.
+#[test]
+fn rename_child_then_parent_commit_reversed_order() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // "a_dir" < "zoo.txt" — forces parent rename first in BTreeMap order.
+    fs::rename(s.mnt_path("subdir/deep.txt"), s.mnt_path("zoo.txt")).expect("rename deep → zoo");
+    fs::rename(s.mnt_path("subdir"), s.mnt_path("a_dir")).expect("rename subdir → a_dir");
+
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("zoo.txt")).unwrap(),
+        "nested\n"
+    );
+    assert!(s.mnt_path("a_dir").exists());
+
+    s.cli(&["commit"]).expect("commit");
+
+    assert_eq!(
+        fs::read_to_string(s.base_path("zoo.txt")).unwrap(),
+        "nested\n",
+        "zoo.txt should have deep.txt's content"
+    );
+    assert!(s.base_path("a_dir").exists(), "a_dir should exist in base");
+    assert!(
+        !s.base_path("subdir").exists(),
+        "subdir should be gone from base"
     );
 }

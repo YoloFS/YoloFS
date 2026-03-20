@@ -67,17 +67,19 @@ impl SegmentedJournal {
     /// Filter to live segments only (Level 1 → Level 2).
     pub fn live(self) -> LiveSegments {
         let alive = self.markers.alive_segments(self.segments.len());
-        self.segments
-            .into_iter()
-            .enumerate()
-            .filter(|(i, _)| alive[*i])
-            .map(|(_, s)| s)
-            .collect()
+        LiveSegments(
+            self.segments
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| alive[*i])
+                .map(|(_, s)| s)
+                .collect(),
+        )
     }
 
     /// Filter to live segments and flatten into a single record list.
     pub fn live_records(self) -> Vec<Record> {
-        self.live().into_iter().flat_map(|s| s.records).collect()
+        self.live().0.into_iter().flat_map(|s| s.records).collect()
     }
 
     /// Take prefix up to a marker index (inclusive), then filter to live.
@@ -87,18 +89,21 @@ impl SegmentedJournal {
     pub fn live_prefix(self, up_to_marker: usize) -> LiveSegments {
         let num_prefix = up_to_marker + 1;
         let alive = self.markers.alive_segments_range(0..num_prefix, num_prefix);
-        self.segments
-            .into_iter()
-            .enumerate()
-            .take(num_prefix)
-            .filter(|(i, _)| alive[*i])
-            .map(|(_, s)| s)
-            .collect()
+        LiveSegments(
+            self.segments
+                .into_iter()
+                .enumerate()
+                .take(num_prefix)
+                .filter(|(i, _)| alive[*i])
+                .map(|(_, s)| s)
+                .collect(),
+        )
     }
 
     /// Like `live_prefix`, but flattens into a single record list.
     pub fn live_prefix_records(self, up_to_marker: usize) -> Vec<Record> {
         self.live_prefix(up_to_marker)
+            .0
             .into_iter()
             .flat_map(|s| s.records)
             .collect()
@@ -138,10 +143,10 @@ mod tests {
     // ── Helper: collect live records (segments + from checkpoints) ────
 
     fn live_records(records: Vec<Record>) -> Vec<Record> {
-        let sj = SegmentedJournal::new(records);
+        let sj = SegmentedJournal::new(RawJournal(records));
         let live = sj.live();
         let mut result = Vec::new();
-        for seg in live {
+        for seg in live.0 {
             if let Some(chk) = seg.from {
                 result.push(Record::Checkpoint(chk));
             }
@@ -192,7 +197,7 @@ mod tests {
                 name: "c5".into(),
             }),
         ];
-        let sj = SegmentedJournal::new(records);
+        let sj = SegmentedJournal::new(RawJournal(records));
         let alive = sj.markers.alive_segments(sj.segments.len());
         // seg0(None)=alive seg1(K1)=alive seg2(K2)=dead seg3(K3)=dead seg4(K2*)=alive seg5(K5)=alive
         assert!(alive[0]);
@@ -563,7 +568,7 @@ mod tests {
                 name: "c3".into(),
             }),
         ];
-        let sj = SegmentedJournal::new(records);
+        let sj = SegmentedJournal::new(RawJournal(records));
         let pairs = sj.live_slice(Some("c3"), None, None).unwrap();
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].0.from.as_ref().unwrap().gen_id, 2);
@@ -607,7 +612,7 @@ mod tests {
                 name: "c4".into(),
             }),
         ];
-        let sj = SegmentedJournal::new(records);
+        let sj = SegmentedJournal::new(RawJournal(records));
         let pairs = sj.live_slice(None, Some("c2"), Some("c3")).unwrap();
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].0.from.as_ref().unwrap().gen_id, 2);
@@ -620,7 +625,7 @@ mod tests {
             gen_id: 1,
             name: "init".into(),
         })];
-        let sj = SegmentedJournal::new(records);
+        let sj = SegmentedJournal::new(RawJournal(records));
         assert!(sj.live_slice(Some("nonexistent"), None, None).is_err());
     }
 
@@ -666,10 +671,11 @@ mod tests {
                 name: "c5".into(),
             }),
         ];
-        let sj = SegmentedJournal::new(records);
+        let sj = SegmentedJournal::new(RawJournal(records));
         let (m_idx, _) = sj.markers.find_checkpoint("c2").unwrap();
         let prefix = sj.live_prefix(m_idx);
         let records: Vec<Record> = prefix
+            .0
             .into_iter()
             .flat_map(|s| {
                 let mut r = Vec::new();
@@ -718,7 +724,7 @@ mod tests {
                 target_gen: 1,
             },
         ];
-        let sj = SegmentedJournal::new(records);
+        let sj = SegmentedJournal::new(RawJournal(records));
         // Markers: K1(0), K2(1), K3(2), S4(3). Segments: 5 total.
         // Range 0..2 means only K1 and K2 markers considered.
         let alive = sj.markers.alive_segments_range(0..2, 2);
@@ -778,11 +784,11 @@ mod tests {
                 name: "c6".into(),
             }),
         ];
-        let sj = SegmentedJournal::new(records);
+        let sj = SegmentedJournal::new(RawJournal(records));
         // Markers: K1(0), K2(1), K3(2), S4(3), K5(4), K6(5)
         let (m_idx, _) = sj.markers.find_checkpoint("c5").unwrap();
         let prefix = sj.live_prefix(m_idx);
-        let result: Vec<Record> = prefix.into_iter().flat_map(|s| s.records).collect();
+        let result: Vec<Record> = prefix.0.into_iter().flat_map(|s| s.records).collect();
         // Live prefix up to K5: [C] from seg4.
         // [A] is dead (killed by S4, which kills segs after K1 marker). [D] is beyond K5.
         assert_eq!(result.len(), 1);
@@ -813,7 +819,7 @@ mod tests {
                 ino: 2,
             },
         ];
-        let sj = SegmentedJournal::new(records);
+        let sj = SegmentedJournal::new(RawJournal(records));
         let alive = sj.markers.alive_segments(sj.segments.len());
         assert!(
             alive.iter().all(|&a| a),

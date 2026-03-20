@@ -18,7 +18,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	struct agfs_dirent *old_de, de;
 	struct path inode_path;
 	unsigned char dt;
-	bool in_base;
+	bool overwrites;
 	u64 ino;
 	int err;
 
@@ -35,15 +35,15 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	agfs_replace_lower_path(dentry, &inode_path);
 	dt = S_ISDIR(mode) ? DT_DIR : S_ISLNK(mode) ? DT_LNK : DT_REG;
 
-	/* Check for deleted dirent to inherit in_base. */
+	/* Check for deleted dirent to inherit overwrites. */
 	old_de = agfs_find_dirent(dir, dentry->d_name.name,
 				  dentry->d_name.len);
-	in_base = old_de && agfs_de_in_base(old_de);
+	overwrites = old_de && old_de->overwrites;
 
 	de = (struct agfs_dirent){
 		.ino = ino,
 		.d_type = dt,
-		.in_base = in_base,
+		.overwrites = overwrites,
 		.gen = (u64)atomic64_read(&sbi->gen),
 	};
 	err = agfs_add_dirent(dir, dentry->d_name.name,
@@ -51,7 +51,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	if (err)
 		return err;
 
-	if (in_base)
+	if (overwrites)
 		agfs_journal_modify(sbi, dentry, ino, dt);
 	else
 		agfs_journal_add(sbi, dentry, ino, dt);
@@ -117,12 +117,10 @@ static int agfs_rename(struct mnt_idmap *idmap,
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
 	struct agfs_dirent *src_de, *dst_de, de;
-	char *redirect_path;
-	char *redirect = NULL;
 	char old_buf[AGFS_PATH_MAX];
 	u64 ino = 0, gen = 0;
 	unsigned char d_type = DT_UNKNOWN;
-	bool dst_in_base;
+	bool dst_overwrites;
 	int err;
 
 	if (flags)
@@ -145,12 +143,6 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		ino = src_de->ino;
 		gen = src_de->gen;
 		d_type = src_de->d_type;
-		if (agfs_ino_is_redirect(ino)) {
-			WARN_ON_ONCE(!src_de->base);
-			redirect = kstrdup(src_de->base, GFP_KERNEL);
-			if (!redirect)
-				return -ENOMEM;
-		}
 	} else if (d_inode(old_dentry)) {
 		d_type = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
 	}
@@ -160,25 +152,23 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		goto out;
 	}
 
-	redirect_path = redirect ? redirect : old_buf;
-
-	/* Check if destination exists in base (for A vs M journal tag).
+	/* Check if destination has existing content (for R vs P journal tag).
 	 * Must be done before add_dirent overwrites the dirent. */
 	dst_de = agfs_find_dirent(new_dir,
 				  new_dentry->d_name.name,
 				  new_dentry->d_name.len);
-	dst_in_base = dst_de ? agfs_de_in_base(dst_de) : false;
+	dst_overwrites = dst_de ? dst_de->overwrites : false;
 	if (!dst_de && d_inode(new_dentry))
-		dst_in_base = true;
+		dst_overwrites = true;
 
 	/* Add destination dirent */
-	de = (struct agfs_dirent){ .d_type = d_type, .in_base = dst_in_base };
+	de = (struct agfs_dirent){ .d_type = d_type, .overwrites = dst_overwrites };
 	if (agfs_ino_is_staged(ino)) {
 		de.ino = ino;
 		de.gen = gen;
 	} else {
 		de.ino = AGFS_INO_REDIRECT;
-		de.base = redirect_path;
+		de.base = old_buf;
 	}
 	err = agfs_add_dirent(new_dir, new_dentry->d_name.name,
 			      new_dentry->d_name.len, &de);
@@ -192,28 +182,26 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (err)
 		goto out;
 
-	/* Emit journal records: D(old) + A/M/R/P(new).
-	 * Staged sources use A (new path) or M (existing path).
-	 * Redirect sources use R (new path) or P (existing path). */
-	err = agfs_journal_delete(sbi, old_dentry);
-	if (!err) {
-		if (agfs_ino_is_staged(ino)) {
-			if (dst_in_base)
+	/* Emit journal records.
+	 * Staged sources: D(old) + A/M(new)  (two records).
+	 * Redirect sources: R/P(old, new)    (one self-contained record). */
+	if (agfs_ino_is_staged(ino)) {
+		err = agfs_journal_delete(sbi, old_dentry);
+		if (!err) {
+			if (dst_overwrites)
 				err = agfs_journal_modify(sbi, new_dentry,
 							  ino, d_type);
 			else
 				err = agfs_journal_add(sbi, new_dentry,
 						       ino, d_type);
-		} else {
-			if (dst_in_base)
-				err = agfs_journal_replace(sbi, new_dentry,
-							   d_type,
-							   redirect_path);
-			else
-				err = agfs_journal_redirect(sbi, new_dentry,
-							    d_type,
-							    redirect_path);
 		}
+	} else {
+		if (dst_overwrites)
+			err = agfs_journal_replace(sbi, old_dentry,
+						   new_dentry, d_type);
+		else
+			err = agfs_journal_redirect(sbi, old_dentry,
+						    new_dentry, d_type);
 	}
 
 	/* Invalidate dcache for both names so next lookup uses dirents */
@@ -221,7 +209,6 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	d_drop(new_dentry);
 
 out:
-	kfree(redirect);
 	return err;
 }
 

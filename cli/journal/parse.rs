@@ -3,13 +3,13 @@
 // Parse the append-only journal file.
 //
 // Record format (NUL-separated fields, newline-terminated):
-//   A\0<dir>\0<name>\0<dtype>\0<ino>\n       — add (staged, new path)
-//   M\0<dir>\0<name>\0<dtype>\0<ino>\n       — modify (staged, existing path)
-//   D\0<dir>\0<name>\n                        — delete
-//   R\0<dir>\0<name>\0<dtype>\0<base>\n       — redirect (rename, new path)
-//   P\0<dir>\0<name>\0<dtype>\0<base>\n       — replace (rename, existing path)
-//   K\0<gen>\0<name>\n                         — checkpoint marker
-//   S\0<gen>\0<target_gen>\n                   — restore marker
+//   A\0<dir>\0<name>\0<dtype>\0<ino>\n                              — add (staged, new path)
+//   M\0<dir>\0<name>\0<dtype>\0<ino>\n                              — modify (staged, existing path)
+//   D\0<dir>\0<name>\n                                               — delete
+//   R\0<old_dir>\0<old_name>\0<new_dir>\0<new_name>\0<dtype>\n      — rename (new path)
+//   P\0<old_dir>\0<old_name>\0<new_dir>\0<new_name>\0<dtype>\n      — replace (existing path)
+//   K\0<gen>\0<name>\n                                               — checkpoint marker
+//   S\0<gen>\0<target_gen>\n                                         — restore marker
 
 use super::types::*;
 use anyhow::{Context, Result};
@@ -38,7 +38,7 @@ fn parse_dtype(field: &[u8]) -> Option<DType> {
 pub fn read(agfs_dir: &Path) -> Result<RawJournal> {
     let journal_path = agfs_dir.join("journal");
     if !journal_path.exists() {
-        return Ok(RawJournal::new());
+        return Ok(RawJournal(Vec::new()));
     }
     let data = fs::read(&journal_path).context("reading journal file")?;
     parse(&data)
@@ -75,15 +75,23 @@ pub fn parse(data: &[u8]) -> Result<RawJournal> {
                 let path = make_path(fields[1], fields[2]);
                 records.push(Record::Deleted { path });
             }
-            b"R" | b"P" if fields.len() >= 5 => {
-                let path = make_path(fields[1], fields[2]);
-                let dtype = parse_dtype(fields[3]);
-                let base = String::from_utf8_lossy(fields[4]).to_string();
+            b"R" | b"P" if fields.len() >= 6 => {
+                let old = make_path(fields[1], fields[2]);
+                let new_path = make_path(fields[3], fields[4]);
+                let dtype = parse_dtype(fields[5]);
 
                 if tag == b"R" {
-                    records.push(Record::Redirect { path, dtype, base });
+                    records.push(Record::Redirect {
+                        old,
+                        new: new_path,
+                        dtype,
+                    });
                 } else {
-                    records.push(Record::Replace { path, dtype, base });
+                    records.push(Record::Replace {
+                        old,
+                        new: new_path,
+                        dtype,
+                    });
                 }
             }
             b"K" if fields.len() >= 3 => {
@@ -105,7 +113,7 @@ pub fn parse(data: &[u8]) -> Result<RawJournal> {
             _ => {}
         }
     }
-    Ok(records)
+    Ok(RawJournal(records))
 }
 
 #[cfg(test)]
@@ -116,32 +124,32 @@ mod tests {
     fn read_missing_journal_returns_empty() {
         let dir = tempfile::tempdir().unwrap();
         let records = read(dir.path()).unwrap();
-        assert!(records.is_empty());
+        assert!(records.0.is_empty());
     }
 
     // ── Parse tests (pure in-memory) ───────────────────────────────────
 
     #[test]
     fn parse_multiple() {
-        let records = parse(b"A\0\0a\0f\01\nD\0\0b\nR\0\0d\0f\0/c\n").unwrap();
-        assert_eq!(records.len(), 3);
+        let records = parse(b"A\0\0a\0f\01\nD\0\0b\nR\0\0c\0\0d\0f\n").unwrap();
+        assert_eq!(records.0.len(), 3);
         assert!(
-            matches!(&records[0], Record::Added { path, ino: 1, dtype: Some(DType::File) } if path == "/a")
+            matches!(&records.0[0], Record::Added { path, ino: 1, dtype: Some(DType::File) } if path == "/a")
         );
-        assert!(matches!(&records[1], Record::Deleted { path } if path == "/b"));
+        assert!(matches!(&records.0[1], Record::Deleted { path } if path == "/b"));
         assert!(
-            matches!(&records[2], Record::Redirect { path, base, dtype: Some(DType::File) } if path == "/d" && base == "/c")
+            matches!(&records.0[2], Record::Redirect { old, new, dtype: Some(DType::File) } if old == "/c" && new == "/d")
         );
     }
 
     #[test]
     fn parse_modified_record() {
         let records = parse(b"M\0/src\0main.rs\0f\03\n").unwrap();
-        assert_eq!(records.len(), 1);
+        assert_eq!(records.0.len(), 1);
         assert!(
-            matches!(&records[0], Record::Modified { path, ino: 3, dtype: Some(DType::File) } if path == "/src/main.rs"),
+            matches!(&records.0[0], Record::Modified { path, ino: 3, dtype: Some(DType::File) } if path == "/src/main.rs"),
             "M record should parse as Modified, got: {:?}",
-            records[0]
+            records.0[0]
         );
     }
 
@@ -150,15 +158,15 @@ mod tests {
     #[test]
     fn parse_checkpoint_record() {
         let records = parse(b"A\0\0a\0f\01\nK\01\0build\nA\0\0a\0f\02\n").unwrap();
-        assert_eq!(records.len(), 3);
-        assert!(matches!(&records[1], Record::Checkpoint(c) if c.gen_id == 1 && c.name == "build"));
+        assert_eq!(records.0.len(), 3);
+        assert!(matches!(&records.0[1], Record::Checkpoint(c) if c.gen_id == 1 && c.name == "build"));
     }
 
     #[test]
     fn parse_restore_record() {
         let records = parse(b"S\x004\x002\n").unwrap();
-        assert_eq!(records.len(), 1);
-        match &records[0] {
+        assert_eq!(records.0.len(), 1);
+        match &records.0[0] {
             Record::Restore { gen_id, target_gen } => {
                 assert_eq!(*gen_id, 4);
                 assert_eq!(*target_gen, 2);
@@ -172,9 +180,9 @@ mod tests {
     #[test]
     fn parse_entry_in_subdirectory() {
         let records = parse(b"A\0/src\0main.rs\0f\01\n").unwrap();
-        assert_eq!(records.len(), 1);
+        assert_eq!(records.0.len(), 1);
         assert!(
-            matches!(&records[0], Record::Added { path, ino: 1, dtype: Some(DType::File) } if path == "/src/main.rs")
+            matches!(&records.0[0], Record::Added { path, ino: 1, dtype: Some(DType::File) } if path == "/src/main.rs")
         );
     }
 
@@ -183,16 +191,16 @@ mod tests {
     #[test]
     fn parse_directory_and_symlink_dtypes() {
         let records = parse(b"A\0\0mydir\0d\01\nA\0\0mylink\0l\02\n").unwrap();
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.0.len(), 2);
         assert!(matches!(
-            &records[0],
+            &records.0[0],
             Record::Added {
                 dtype: Some(DType::Dir),
                 ..
             }
         ));
         assert!(matches!(
-            &records[1],
+            &records.0[1],
             Record::Added {
                 dtype: Some(DType::Link),
                 ..
@@ -211,11 +219,11 @@ mod tests {
     fn parse_entry_missing_dtype_is_none() {
         // A record with empty dtype field
         let records = parse(b"A\0\0file\0\01\n").unwrap();
-        assert_eq!(records.len(), 1);
+        assert_eq!(records.0.len(), 1);
         assert!(
-            matches!(&records[0], Record::Added { dtype: None, .. }),
+            matches!(&records.0[0], Record::Added { dtype: None, .. }),
             "empty dtype field should parse as None, got: {:?}",
-            records[0]
+            records.0[0]
         );
     }
 
@@ -223,11 +231,11 @@ mod tests {
     fn parse_entry_invalid_dtype_is_none() {
         // A record with invalid dtype char 'x'
         let records = parse(b"A\0\0file\0x\01\n").unwrap();
-        assert_eq!(records.len(), 1);
+        assert_eq!(records.0.len(), 1);
         assert!(
-            matches!(&records[0], Record::Added { dtype: None, .. }),
+            matches!(&records.0[0], Record::Added { dtype: None, .. }),
             "invalid dtype char should parse as None, got: {:?}",
-            records[0]
+            records.0[0]
         );
     }
 
@@ -238,13 +246,13 @@ mod tests {
         // A record with only 3 fields (needs 5) — should be skipped
         let records = parse(b"A\0\0file\01\nA\0\0good\0f\02\n").unwrap();
         assert_eq!(
-            records.len(),
+            records.0.len(),
             1,
             "malformed record should be skipped: {:?}",
             records
         );
         assert!(matches!(
-            &records[0],
+            &records.0[0],
             Record::Added { path, ino: 2, .. } if path == "/good"
         ));
     }
@@ -254,45 +262,45 @@ mod tests {
         // D record with only 1 field (needs 3) — should be skipped
         let records = parse(b"D\0\nA\0\0good\0f\01\n").unwrap();
         assert_eq!(
-            records.len(),
+            records.0.len(),
             1,
             "malformed D record should be skipped: {:?}",
             records
         );
         assert!(matches!(
-            &records[0],
+            &records.0[0],
             Record::Added { path, ino: 1, .. } if path == "/good"
         ));
     }
 
     #[test]
     fn malformed_r_record_too_few_fields_skipped() {
-        // R record with only 4 fields (needs 5) — should be skipped
+        // R record with only 4 fields (needs 6) — should be skipped
         let records = parse(b"R\0\0file\0f\nA\0\0good\0f\01\n").unwrap();
         assert_eq!(
-            records.len(),
+            records.0.len(),
             1,
             "malformed R record should be skipped: {:?}",
             records
         );
         assert!(matches!(
-            &records[0],
+            &records.0[0],
             Record::Added { path, ino: 1, .. } if path == "/good"
         ));
     }
 
     #[test]
     fn parse_replace_record() {
-        let records = parse(b"P\0/dir\0newfile\0f\0/oldfile\n").unwrap();
-        assert_eq!(records.len(), 1);
+        let records = parse(b"P\0/dir\0oldfile\0/dir\0newfile\0f\n").unwrap();
+        assert_eq!(records.0.len(), 1);
         assert!(
             matches!(
-                &records[0],
-                Record::Replace { path, base, dtype: Some(DType::File) }
-                    if path == "/dir/newfile" && base == "/oldfile"
+                &records.0[0],
+                Record::Replace { old, new, dtype: Some(DType::File) }
+                    if old == "/dir/oldfile" && new == "/dir/newfile"
             ),
             "P record should parse as Replace, got: {:?}",
-            records[0]
+            records.0[0]
         );
     }
 }

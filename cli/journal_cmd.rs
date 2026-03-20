@@ -82,8 +82,9 @@ fn record_matches_path(record: &journal::Record, filter: &str) -> bool {
         journal::Record::Added { path, .. }
         | journal::Record::Modified { path, .. }
         | journal::Record::Deleted { path } => path == filter,
-        journal::Record::Redirect { path, base, .. }
-        | journal::Record::Replace { path, base, .. } => path == filter || base == filter,
+        journal::Record::Redirect { old, new, .. } | journal::Record::Replace { old, new, .. } => {
+            old == filter || new == filter
+        }
         _ => false,
     }
 }
@@ -113,11 +114,11 @@ fn format_record(record: &journal::Record, chk_names: &HashMap<u64, &str>) -> St
         journal::Record::Deleted { path } => {
             format!("{:10} {}", "deleted".red(), path)
         }
-        journal::Record::Redirect { path, base, .. } => {
-            format!("{:10} {} → {}", "renamed".magenta(), base, path)
+        journal::Record::Redirect { old, new, .. } => {
+            format!("{:10} {} → {}", "renamed".magenta(), old, new)
         }
-        journal::Record::Replace { path, base, .. } => {
-            format!("{:10} {} → {}", "replaced".magenta(), base, path)
+        journal::Record::Replace { old, new, .. } => {
+            format!("{:10} {} → {}", "replaced".magenta(), old, new)
         }
     }
 }
@@ -188,13 +189,13 @@ mod tests {
     #[test]
     fn format_replace() {
         let rec = Record::Replace {
-            path: "/b".into(),
+            old: "/a".into(),
+            new: "/b".into(),
             dtype: Some(DType::File),
-            base: "/a".into(),
         };
         let s = strip_ansi(&format_record(&rec, &HashMap::new()));
         assert!(s.contains("replaced"), "should say replaced: {s}");
-        assert!(s.contains("/a"), "should contain base: {s}");
-        assert!(s.contains("/b"), "should contain path: {s}");
+        assert!(s.contains("/a"), "should contain old: {s}");
+        assert!(s.contains("/b"), "should contain new: {s}");
     }
 }

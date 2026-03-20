@@ -6,12 +6,13 @@
  * commit/abort/status/diff. The kernel never reads it back.
  *
  * Record format (NUL-separated fields, newline-terminated):
- *   A\0<dir>\0<name>\0<dtype>\0<ino>\n       — add (new file)
- *   M\0<dir>\0<name>\0<dtype>\0<ino>\n       — modify (existing file)
- *   D\0<dir>\0<name>\n                        — delete
- *   R\0<dir>\0<name>\0<dtype>\0<base>\n       — redirect (rename)
- *   K\0<id>\0<name>\n                         — checkpoint marker
- *   S\0<gen>\0<target_gen>\n                  — restore
+ *   A\0<dir>\0<name>\0<dtype>\0<ino>\n                              — add (new file)
+ *   M\0<dir>\0<name>\0<dtype>\0<ino>\n                              — modify (existing file)
+ *   D\0<dir>\0<name>\n                                               — delete
+ *   R\0<old_dir>\0<old_name>\0<new_dir>\0<new_name>\0<dtype>\n      — rename (new path)
+ *   P\0<old_dir>\0<old_name>\0<new_dir>\0<new_name>\0<dtype>\n      — replace (existing path)
+ *   K\0<id>\0<name>\n                                                — checkpoint marker
+ *   S\0<gen>\0<target_gen>\n                                         — restore
  */
 
 #include "agfs.h"
@@ -154,43 +155,57 @@ int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry)
 					       NULL });
 }
 
-int agfs_journal_redirect(struct agfs_sb_info *sbi, struct dentry *dentry,
-			  unsigned char d_type, const char *base)
+int agfs_journal_redirect(struct agfs_sb_info *sbi, struct dentry *old_dentry,
+			  struct dentry *new_dentry, unsigned char d_type)
 {
-	char dir_buf[AGFS_PATH_MAX];
+	char old_dir_buf[AGFS_PATH_MAX];
+	char new_dir_buf[AGFS_PATH_MAX];
 	char dtype_str[2] = { '\0', '\0' };
 	int err;
 
-	err = journal_dir(dentry, dir_buf, sizeof(dir_buf));
+	err = journal_dir(old_dentry, old_dir_buf, sizeof(old_dir_buf));
+	if (err)
+		return err;
+
+	err = journal_dir(new_dentry, new_dir_buf, sizeof(new_dir_buf));
 	if (err)
 		return err;
 
 	dtype_str[0] = dtype_to_char(d_type);
 
 	return journal_write(sbi, 'R',
-			     (const char *[]){ dir_buf,
-					       dentry->d_name.name,
-					       dtype_str, base,
+			     (const char *[]){ old_dir_buf,
+					       old_dentry->d_name.name,
+					       new_dir_buf,
+					       new_dentry->d_name.name,
+					       dtype_str,
 					       NULL });
 }
 
-int agfs_journal_replace(struct agfs_sb_info *sbi, struct dentry *dentry,
-			 unsigned char d_type, const char *base)
+int agfs_journal_replace(struct agfs_sb_info *sbi, struct dentry *old_dentry,
+			 struct dentry *new_dentry, unsigned char d_type)
 {
-	char dir_buf[AGFS_PATH_MAX];
+	char old_dir_buf[AGFS_PATH_MAX];
+	char new_dir_buf[AGFS_PATH_MAX];
 	char dtype_str[2] = { '\0', '\0' };
 	int err;
 
-	err = journal_dir(dentry, dir_buf, sizeof(dir_buf));
+	err = journal_dir(old_dentry, old_dir_buf, sizeof(old_dir_buf));
+	if (err)
+		return err;
+
+	err = journal_dir(new_dentry, new_dir_buf, sizeof(new_dir_buf));
 	if (err)
 		return err;
 
 	dtype_str[0] = dtype_to_char(d_type);
 
 	return journal_write(sbi, 'P',
-			     (const char *[]){ dir_buf,
-					       dentry->d_name.name,
-					       dtype_str, base,
+			     (const char *[]){ old_dir_buf,
+					       old_dentry->d_name.name,
+					       new_dir_buf,
+					       new_dentry->d_name.name,
+					       dtype_str,
 					       NULL });
 }
 

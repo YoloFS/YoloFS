@@ -1,11 +1,11 @@
 use crate::helpers::AgfsSession;
 use agfs::journal::Change;
-use agfs::journal::{self, Record};
+use agfs::journal::{self};
 use std::fs;
 use std::path::PathBuf;
 
 /// Read parsed journal records for a session.
-pub fn journal(s: &AgfsSession) -> Vec<Record> {
+pub fn journal(s: &AgfsSession) -> journal::RawJournal {
     journal::read(&s.root.join(".agfs")).expect("read journal")
 }
 
@@ -14,7 +14,8 @@ pub fn journal(s: &AgfsSession) -> Vec<Record> {
 pub fn changes(s: &AgfsSession) -> Vec<(String, Change)> {
     let records = journal(s);
     let sj = journal::SegmentedJournal::new(records);
-    journal::resolve::resolve(sj.live_records()).expect("resolve journal")
+    let actions = journal::simplify::simplify(sj.live_records());
+    actions.collapse().0
 }
 
 /// List numeric inode entries in the inode store.

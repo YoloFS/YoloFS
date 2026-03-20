@@ -223,8 +223,9 @@ pub fn remount(force: bool) -> Result<()> {
 fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
     let records = crate::journal::read(agfs_dir).unwrap_or_default();
     let sj = crate::journal::SegmentedJournal::new(records);
-    let changes = crate::journal::resolve::resolve(sj.live_records()).unwrap_or_default();
-    if changes.is_empty() {
+    let actions = crate::journal::simplify::simplify(sj.live_records());
+    let changes = actions.collapse();
+    if changes.0.is_empty() {
         return Ok(());
     }
 
@@ -232,8 +233,8 @@ fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
         "{}",
         format!(
             "Warning: {} staged change{} will be lost.",
-            changes.len(),
-            crate::utils::plural(changes.len())
+            changes.0.len(),
+            crate::utils::plural(changes.0.len())
         )
         .yellow()
         .bold()

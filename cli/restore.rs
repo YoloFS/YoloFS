@@ -12,7 +12,7 @@ struct RestoreItem {
     path: String,
     ino: u64,
     base: String,
-    in_base: bool,
+    overwrites: bool,
     d_type: u8,
 }
 
@@ -22,7 +22,7 @@ impl RestoreItem {
             path,
             ino: 0,
             base: String::new(),
-            in_base: true,
+            overwrites: true,
             d_type: 0,
         }
     }
@@ -48,12 +48,12 @@ fn changes_to_items(changes: &[(String, journal::Change)]) -> Vec<RestoreItem> {
     for (path, change) in changes {
         match change {
             journal::Change::Added { ino, dtype } | journal::Change::Modified { ino, dtype } => {
-                let in_base = matches!(change, journal::Change::Modified { .. });
+                let overwrites = matches!(change, journal::Change::Modified { .. });
                 items.push(RestoreItem {
                     path: path.clone(),
                     ino: *ino,
                     base: String::new(),
-                    in_base,
+                    overwrites,
                     d_type: dtype.to_libc(),
                 });
             }
@@ -67,7 +67,7 @@ fn changes_to_items(changes: &[(String, journal::Change)]) -> Vec<RestoreItem> {
                         path: path.clone(),
                         ino: journal::INO_REDIRECT,
                         base: from.clone(),
-                        in_base: false,
+                        overwrites: false,
                         d_type: dtype.to_libc(),
                     });
                 }
@@ -79,7 +79,7 @@ fn changes_to_items(changes: &[(String, journal::Change)]) -> Vec<RestoreItem> {
                         path: path.clone(),
                         ino: journal::INO_REDIRECT,
                         base: from.clone(),
-                        in_base: true,
+                        overwrites: true,
                         d_type: dtype.to_libc(),
                     });
                 }
@@ -111,7 +111,7 @@ fn items_to_entries(items: &[RestoreItem]) -> Result<Vec<ioctl::AgfsIocRestoreEn
                 path_ptr: item.path.as_ptr() as u64,
                 path_len,
                 d_type: item.d_type,
-                in_base: item.in_base as u8,
+                overwrites: item.overwrites as u8,
                 _pad1: [0u8; 4],
                 ino: item.ino,
                 base_ptr: item.base.as_ptr() as u64,
@@ -135,8 +135,9 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     // Extract live records from the prefix up to the target checkpoint,
     // handling any S records within that prefix.
     let live_records = sj.live_prefix_records(marker_idx);
-    let changes = journal::resolve::resolve(live_records)?;
-    let items = changes_to_items(&changes);
+    let actions = journal::simplify::simplify(live_records);
+    let changes = actions.collapse();
+    let items = changes_to_items(&changes.0);
     let entries = items_to_entries(&items)?;
 
     // Restore kernel state — if this fails (e.g. EBUSY), the journal is
@@ -148,8 +149,8 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
         "{}",
         format!(
             "Restored to checkpoint \"{chk_label}\" ({} staged change{}).",
-            changes.len(),
-            crate::utils::plural(changes.len())
+            changes.0.len(),
+            crate::utils::plural(changes.0.len())
         )
         .green()
         .bold()
@@ -306,7 +307,7 @@ mod tests {
             path: "/src/main.rs".into(),
             ino: 1,
             base: String::new(),
-            in_base: false,
+            overwrites: false,
             d_type: libc::DT_REG,
         }];
         let entries = items_to_entries(&items).unwrap();
@@ -323,7 +324,7 @@ mod tests {
             path: "a".repeat(u16::MAX as usize + 1),
             ino: 0,
             base: String::new(),
-            in_base: false,
+            overwrites: false,
             d_type: 0,
         }];
         assert!(items_to_entries(&items).is_err());
@@ -335,7 +336,7 @@ mod tests {
             path: "/ok".into(),
             ino: 0,
             base: "a".repeat(u16::MAX as usize + 1),
-            in_base: false,
+            overwrites: false,
             d_type: 0,
         }];
         assert!(items_to_entries(&items).is_err());

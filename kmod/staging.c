@@ -92,7 +92,7 @@ static void agfs_free_de_buckets_locked(struct agfs_inode_info *dii)
 	for (i = 0; i < AGFS_DE_BUCKETS; i++) {
 		hlist_for_each_entry_safe(de, tmp, &buckets[i], node) {
 			hlist_del(&de->node);
-			agfs_de_base_free(de->base);
+			kfree(de->base);
 			kfree(de);
 		}
 	}
@@ -172,14 +172,14 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 	int err;
 
 	if (de->base) {
-		base_copy = agfs_de_base_dup(de->base);
+		base_copy = kstrdup(de->base, GFP_KERNEL);
 		if (!base_copy)
 			return -ENOMEM;
 	}
 
 	err = agfs_ensure_de_buckets(dii, &first_de);
 	if (err) {
-		agfs_de_base_free(base_copy);
+		kfree(base_copy);
 		return err;
 	}
 
@@ -187,14 +187,14 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 	old_de = agfs_find_dirent(dir, name, namelen);
 	if (old_de) {
 		/* For deletes (ino==0), inherit base from what was here
-		 * so that in_base status is preserved. */
+		 * so that overwrites status is preserved. */
 		if (agfs_ino_is_deleted(de->ino)) {
-			agfs_de_base_free(base_copy);
-			/* Keep old_de->base and old_de->in_base as-is. */
+			kfree(base_copy);
+			/* Keep old_de->base and old_de->overwrites as-is. */
 		} else {
-			agfs_de_base_free(old_de->base);
+			kfree(old_de->base);
 			old_de->base = base_copy;
-			old_de->in_base = de->in_base;
+			old_de->overwrites = de->overwrites;
 		}
 		old_de->ino = de->ino;
 		old_de->d_type = de->d_type;
@@ -206,7 +206,7 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 	new_de = kmalloc(offsetof(struct agfs_dirent, name) + namelen + 1,
 			 GFP_KERNEL);
 	if (!new_de) {
-		agfs_de_base_free(base_copy);
+		kfree(base_copy);
 		return -ENOMEM;
 	}
 	memcpy(new_de->name, name, namelen);
@@ -215,13 +215,13 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 	new_de->ino = de->ino;
 	new_de->d_type = de->d_type;
 	new_de->gen = de->gen;
-	/* No prior dirent: if deleting, file was only in base. */
+	/* No prior dirent: if deleting, path had content (base-only file). */
 	if (agfs_ino_is_deleted(de->ino)) {
 		new_de->base = NULL;
-		new_de->in_base = true;
+		new_de->overwrites = true;
 	} else {
 		new_de->base = base_copy;
-		new_de->in_base = de->in_base;
+		new_de->overwrites = de->overwrites;
 	}
 
 	hlist_add_head(&new_de->node,
@@ -364,7 +364,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	de = (struct agfs_dirent){
 		.ino = ino,
 		.d_type = DT_REG,
-		.in_base = true,
+		.overwrites = true,
 		.gen = (u64)atomic64_read(&sbi->gen),
 	};
 	inode_lock(d_inode(dentry->d_parent));

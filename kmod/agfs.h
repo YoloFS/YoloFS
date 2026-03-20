@@ -81,7 +81,7 @@ struct agfs_ioc_restore_entry {
 	__u64	path_ptr;		/* userspace pointer to path string */
 	__u16	path_len;		/* length excluding NUL */
 	__u8	d_type;			/* DT_REG / DT_DIR / DT_LNK */
-	__u8	in_base;		/* 1 if this name existed in base */
+	__u8	overwrites;		/* 1 if this path had existing content */
 	__u8	_pad1[4];
 	__u64	ino;			/* inode store ID; 0 = deleted */
 	__u64	base_ptr;		/* userspace pointer to base path string */
@@ -153,26 +153,10 @@ struct agfs_dirent {
 	u64			gen;		/* sbi->gen when inode was created */
 	unsigned int		name_len;
 	unsigned char		d_type;		/* DT_REG / DT_DIR / DT_LNK for readdir */
-	bool			in_base;	/* path existed in base layer */
+	bool			overwrites;	/* path had existing content */
 	char			name[];
 };
 
-static inline bool agfs_de_in_base(const struct agfs_dirent *de)
-{
-	return de->in_base;
-}
-
-static inline void agfs_de_base_free(char *base)
-{
-	kfree(base);
-}
-
-static inline char *agfs_de_base_dup(const char *base)
-{
-	if (!base)
-		return NULL;
-	return kstrdup(base, GFP_KERNEL);
-}
 
 static inline bool agfs_ino_is_staged(u64 ino)
 {
@@ -429,10 +413,10 @@ int agfs_journal_add(struct agfs_sb_info *sbi, struct dentry *dentry,
 int agfs_journal_modify(struct agfs_sb_info *sbi, struct dentry *dentry,
 			  u64 ino, unsigned char d_type);
 int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry);
-int agfs_journal_redirect(struct agfs_sb_info *sbi, struct dentry *dentry,
-			    unsigned char d_type, const char *base);
-int agfs_journal_replace(struct agfs_sb_info *sbi, struct dentry *dentry,
-			   unsigned char d_type, const char *base);
+int agfs_journal_redirect(struct agfs_sb_info *sbi, struct dentry *old_dentry,
+			    struct dentry *new_dentry, unsigned char d_type);
+int agfs_journal_replace(struct agfs_sb_info *sbi, struct dentry *old_dentry,
+			   struct dentry *new_dentry, unsigned char d_type);
 int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name);
 int agfs_journal_restore(struct agfs_sb_info *sbi, u64 gen, u64 target_gen);
 

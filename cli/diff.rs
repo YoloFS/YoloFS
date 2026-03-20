@@ -140,14 +140,15 @@ fn run(
     let resolved: Vec<(journal::Changeset, Option<journal::Checkpoint>)> = pairs
         .into_iter()
         .map(|(seg, closing)| {
-            let changes = journal::resolve::resolve(seg.records)?;
+            let actions = journal::simplify::simplify(seg.records);
+            let changes = actions.collapse();
             Ok((changes, closing))
         })
         .collect::<Result<Vec<_>>>()?;
 
     let has_changes = resolved
         .iter()
-        .flat_map(|(changes, _)| changes)
+        .flat_map(|(changes, _)| &changes.0)
         .any(|(p, c)| path.is_none_or(|t| c.matches_path(p, t)));
 
     if !has_changes {
@@ -164,10 +165,11 @@ fn run(
     for (changes, closing) in &resolved {
         let changes: Vec<&(String, Change)> = match path {
             Some(target) => changes
+                .0
                 .iter()
                 .filter(|(p, c)| c.matches_path(p, target))
                 .collect(),
-            None => changes.iter().collect(),
+            None => changes.0.iter().collect(),
         };
 
         if has_checkpoints {

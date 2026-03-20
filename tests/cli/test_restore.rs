@@ -889,3 +889,60 @@ fn restore_to_initial_after_restore() {
         "a.txt should be gone after restore to initial: {status}"
     );
 }
+
+/// Create a new file (not in base), checkpoint, write to it again
+/// (triggering re-COW), then restore to the checkpoint and commit.
+/// The file should appear in base — it was staged at checkpoint time.
+///
+/// This exercises a bug where agfs_do_cow hardcodes overwrites=true,
+/// flipping the flag for staged-only files.  If restore uses the
+/// corrupted overwrites=true, the committed file might be missing or
+/// the abort path might leave a ghost entry.
+#[test]
+fn restore_created_file_after_recow_then_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // Create a brand-new file (not in base) and checkpoint.
+    fs::write(s.mnt_path("newfile.txt"), "v1\n").expect("create");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    // Write again — triggers re-COW (allocates new inode, may flip overwrites).
+    fs::write(s.mnt_path("newfile.txt"), "v2\n").expect("write v2 (re-COW)");
+
+    // Restore to chk1 — should see v1 content.
+    s.cli(&["restore", "chk1"]).expect("restore");
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("newfile.txt")).unwrap(),
+        "v1\n",
+        "mount should show checkpoint content after restore"
+    );
+
+    // Commit the restored state.
+    s.cli(&["commit"]).expect("commit");
+
+    // The file should appear in base with v1 content.
+    assert_eq!(
+        fs::read_to_string(s.base_path("newfile.txt")).unwrap(),
+        "v1\n",
+        "committed file should have checkpoint content in base"
+    );
+}
+
+/// Same as above, but abort instead of commit.  The created file
+/// should NOT appear in base (it was never in base).
+#[test]
+fn restore_created_file_after_recow_then_abort() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("newfile.txt"), "v1\n").expect("create");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    fs::write(s.mnt_path("newfile.txt"), "v2\n").expect("write v2 (re-COW)");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["abort"]).expect("abort");
+
+    assert!(
+        !s.base_path("newfile.txt").exists(),
+        "staged-only file should not appear in base after abort"
+    );
+}

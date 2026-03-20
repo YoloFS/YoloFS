@@ -14,7 +14,7 @@ fn symlink_produces_add_record() {
 
     let records = journal(&s);
     assert!(
-        records
+        records.0
             .iter()
             .any(|r| matches!(r, Record::Added { path, dtype: Some(agfs::journal::DType::Link), .. } if path.ends_with("/link.txt"))),
         "journal should have an Added(dtype=Link) record for link.txt: {records:?}"

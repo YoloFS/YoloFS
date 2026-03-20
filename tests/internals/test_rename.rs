@@ -14,10 +14,10 @@ fn rename_produces_rename_record() {
 
     let records = journal(&s);
     assert!(
-        records
+        records.0
             .iter()
-            .any(|r| matches!(r, Record::Redirect { path, dtype: Some(agfs::journal::DType::File), base, .. }
-            if path.ends_with("/moved.txt") && base.ends_with("/hello.txt"))),
+            .any(|r| matches!(r, Record::Redirect { old, new, dtype: Some(agfs::journal::DType::File), .. }
+            if new.ends_with("/moved.txt") && old.ends_with("/hello.txt"))),
         "journal should have a Redirect(dtype=File) record for hello.txt → moved.txt: {records:?}"
     );
 }
@@ -77,9 +77,8 @@ fn write_then_rename_inode_content() {
     );
 }
 
-/// Rename chain: a→b→c. Journal should show Delete + Redirect for each step.
-/// The kernel follows redirect chains (b's base_path points to a, so c's
-/// redirect also points to a).
+/// Rename chain: a→b→c. Journal should show two Redirect records.
+/// Each carries the dentry path as old (no chain resolution in kernel).
 #[test]
 fn rename_chain_journal_records() {
     let s = AgfsSession::new().expect("session setup");
@@ -90,7 +89,7 @@ fn rename_chain_journal_records() {
     let records = journal(&s);
 
     // Both renames should produce Redirect records (base-file renames)
-    let redirects: Vec<_> = records
+    let redirects: Vec<_> = records.0
         .iter()
         .filter(|r| matches!(r, Record::Redirect { .. }))
         .collect();
@@ -113,17 +112,16 @@ fn rename_overwrite_journal() {
 
     let records = journal(&s);
 
-    // Should have Delete(hello.txt) + Replace(subdir/deep.txt, base=hello.txt)
-    let has_delete = records.iter().any(|r| {
-        matches!(r, Record::Deleted { path }
-        if path.ends_with("/hello.txt"))
+    // Should have Replace(hello.txt → subdir/deep.txt) as a single record
+    // (no separate Delete for hello.txt — fused into the R/P record).
+    let has_replace = records.0.iter().any(|r| {
+        matches!(r, Record::Replace { old, new, .. }
+        if new.ends_with("/deep.txt") && old.ends_with("/hello.txt"))
     });
-    let has_replace = records.iter().any(|r| {
-        matches!(r, Record::Replace { path, base, .. }
-        if path.ends_with("/deep.txt") && base.ends_with("/hello.txt"))
-    });
-    assert!(has_delete, "should have Delete for hello.txt: {records:?}");
-    assert!(has_replace, "should have Replace for deep.txt: {records:?}");
+    assert!(
+        has_replace,
+        "should have Replace for hello.txt → deep.txt: {records:?}"
+    );
 }
 
 /// Rename back and forth: a→b→a. After resolution, no staged changes
@@ -156,7 +154,7 @@ fn rename_staged_file_to_base_path() {
     let records = journal(&s);
 
     // Should have Delete for brand_new.txt
-    let has_delete = records
+    let has_delete = records.0
         .iter()
         .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/brand_new.txt")));
     assert!(
@@ -164,7 +162,7 @@ fn rename_staged_file_to_base_path() {
         "should have Delete for brand_new.txt: {records:?}"
     );
     // Destination exists in base → kernel emits Modified (not Added)
-    let has_modified = records
+    let has_modified = records.0
         .iter()
         .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/multi.txt")));
     assert!(
