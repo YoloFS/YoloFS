@@ -96,6 +96,11 @@ impl Resolver {
             _ => dt,
         };
 
+        // Self-rename (e.g. a→b→a) is a no-op — skip.
+        if path == base_path {
+            return;
+        }
+
         if in_base {
             self.state.insert(
                 path,
@@ -157,25 +162,8 @@ impl Resolver {
     }
 
     /// Consume the state and produce the final change list.
-    /// Order: renames, then adds/modifies, then deletes.
     pub fn into_changes(self) -> Changeset {
-        let mut changes: Changeset = self.state.into_iter().collect();
-        // Filter out self-renames (origin == path).
-        changes.retain(|(path, change)| match change {
-            Change::Renamed { from, .. } | Change::Replaced { from, .. } => from != path,
-            _ => true,
-        });
-        changes.sort_by(|(_, a), (_, b)| {
-            fn rank(c: &Change) -> u8 {
-                match c {
-                    Change::Renamed { .. } | Change::Replaced { .. } => 0,
-                    Change::Added { .. } | Change::Modified { .. } => 1,
-                    Change::Deleted => 2,
-                }
-            }
-            rank(a).cmp(&rank(b))
-        });
-        changes
+        self.state.into_iter().collect()
     }
 }
 
@@ -2827,53 +2815,6 @@ mod tests {
         });
         assert!(has_y, "expected Added(y, ino=1): {changes:?}");
         assert!(has_x, "expected Added(x, ino=2): {changes:?}");
-    }
-
-    /// into_changes() must order: renames first, then adds/modifies, then deletes.
-    /// commit.rs depends on this ordering so renames move base files before
-    /// adds write to potentially overlapping paths.
-    #[test]
-    fn into_changes_ordering_renames_writes_deletes() {
-        let records = vec![
-            // Add a new file (will become Added)
-            Record::Added {
-                path: "/nonexistent_test_12345/new.txt".into(),
-                dtype: Some(DType::File),
-                ino: 1,
-            },
-            // Delete an existing file (will become Deleted)
-            Record::Deleted {
-                path: "/etc/hostname".into(),
-            },
-            // Rename a base file (will become Renamed)
-            Record::Deleted {
-                path: "/old/path".into(),
-            },
-            Record::Redirect {
-                path: "/new/path".into(),
-                dtype: Some(DType::File),
-                base: "/old/path".into(),
-            },
-        ];
-
-        let changes = resolve(records).unwrap();
-        assert_eq!(changes.len(), 3, "expected 3 changes, got: {changes:?}");
-
-        assert!(
-            matches!(&changes[0], (_, Change::Renamed { .. })),
-            "first change should be Renamed, got: {:?}",
-            changes[0]
-        );
-        assert!(
-            matches!(&changes[1], (_, Change::Added { .. })),
-            "second change should be Added, got: {:?}",
-            changes[1]
-        );
-        assert!(
-            matches!(&changes[2], (_, Change::Deleted)),
-            "third change should be Deleted, got: {:?}",
-            changes[2]
-        );
     }
 
     // ── reachable tests ────────────────────────────────────────────
