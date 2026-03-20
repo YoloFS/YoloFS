@@ -53,6 +53,8 @@ pub struct FioSpec {
     pub warm_cache: bool,
     pub seed_existing_file: bool,
     pub mix_read_percent: Option<u8>,
+    /// Override io_size (default: FIO_IO_SIZE = "256m").
+    pub io_size: Option<&'static str>,
 }
 
 pub struct WorkloadDetails {
@@ -428,7 +430,7 @@ fn build_fio_job(spec: FioSpec, testfile: &Path) -> String {
         file = testfile.display(),
         rw = spec.rw,
         filesize = FIO_FILE_SIZE,
-        io_size = FIO_IO_SIZE,
+        io_size = spec.io_size.unwrap_or(FIO_IO_SIZE),
     );
 
     if let Some(mix) = spec.mix_read_percent {

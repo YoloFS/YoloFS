@@ -12,6 +12,7 @@ pub fn spec() -> FioSpec {
         warm_cache: false,
         seed_existing_file: true,
         mix_read_percent: Some(70),
+        io_size: None,
     }
 }
 
