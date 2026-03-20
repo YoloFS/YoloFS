@@ -33,7 +33,7 @@ impl Markers {
         let mut gen_to_idx: std::collections::HashMap<u64, usize> =
             std::collections::HashMap::new();
         for i in range.clone() {
-            if let Marker::Checkpoint { checkpoint, .. } = &self.0[i] {
+            if let Marker::Checkpoint(checkpoint) = &self.0[i] {
                 gen_to_idx.insert(checkpoint.gen_id, i);
             }
         }
@@ -147,8 +147,11 @@ mod tests {
         let live = sj.live();
         let mut result = Vec::new();
         for seg in live.0 {
-            if let Some(chk) = seg.from {
-                result.push(Record::Checkpoint(chk));
+            if seg.from > 0 {
+                result.push(Record::Checkpoint(Checkpoint {
+                    gen_id: seg.from,
+                    name: String::new(),
+                }));
             }
             result.extend(seg.records);
         }
@@ -494,7 +497,7 @@ mod tests {
             },
         ];
         let result = live_records(records);
-        assert_eq!(result.len(), 4);
+        assert_eq!(result.len(), 5);
     }
 
     #[test]
@@ -572,7 +575,7 @@ mod tests {
         let sj = SegmentedJournal::new(RawJournal(records));
         let pairs = sj.live_slice(Some("c3"), None, None).unwrap();
         assert_eq!(pairs.len(), 1);
-        assert_eq!(pairs[0].0.from.as_ref().unwrap().gen_id, 2);
+        assert_eq!(pairs[0].0.from, 2);
         assert_eq!(pairs[0].0.records.len(), 1);
         assert!(matches!(&pairs[0].0.records[0], Record::Added { path, .. } if path == "/b"));
         assert_eq!(pairs[0].1.as_ref().unwrap().gen_id, 3);
@@ -616,7 +619,7 @@ mod tests {
         let sj = SegmentedJournal::new(RawJournal(records));
         let pairs = sj.live_slice(None, Some("c2"), Some("c3")).unwrap();
         assert_eq!(pairs.len(), 1);
-        assert_eq!(pairs[0].0.from.as_ref().unwrap().gen_id, 2);
+        assert_eq!(pairs[0].0.from, 2);
         assert!(matches!(&pairs[0].0.records[0], Record::Added { path, .. } if path == "/b"));
     }
 
@@ -680,8 +683,11 @@ mod tests {
             .into_iter()
             .flat_map(|s| {
                 let mut r = Vec::new();
-                if let Some(c) = s.from {
-                    r.push(Record::Checkpoint(c));
+                if s.from > 0 {
+                    r.push(Record::Checkpoint(Checkpoint {
+                        gen_id: s.from,
+                        name: String::new(),
+                    }));
                 }
                 r.extend(s.records);
                 r

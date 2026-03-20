@@ -118,9 +118,9 @@ pub struct Checkpoint {
 /// A group of data records (A/M/D/R) between consecutive K/S boundaries.
 #[derive(Debug)]
 pub struct Segment {
-    /// The checkpoint this segment builds on.
-    /// `None` for the 0-th segment (records before the first checkpoint).
-    pub from: Option<Checkpoint>,
+    /// The gen_id of the checkpoint this segment builds on.
+    /// 0 for the 0-th segment (records before the first checkpoint).
+    pub from: u64,
     /// The A/M/D/R records in this segment (no K/S records).
     pub records: Vec<Record>,
 }
@@ -128,24 +128,17 @@ pub struct Segment {
 /// A boundary event in the journal (checkpoint or restore).
 #[derive(Debug, Clone)]
 pub enum Marker {
-    Checkpoint {
-        pos: usize,
-        checkpoint: Checkpoint,
-    },
-    Restore {
-        pos: usize,
-        gen_id: u64,
-        target_gen: u64,
-    },
+    Checkpoint(Checkpoint),
+    Restore { gen_id: u64, target_gen: u64 },
 }
 
 impl Marker {
     /// Convert to a Record for display formatting.
     pub fn to_record(&self) -> Record {
         match self {
-            Marker::Checkpoint { checkpoint, .. } => Record::Checkpoint(checkpoint.clone()),
+            Marker::Checkpoint(checkpoint) => Record::Checkpoint(checkpoint.clone()),
             Marker::Restore {
-                gen_id, target_gen, ..
+                gen_id, target_gen,
             } => Record::Restore {
                 gen_id: *gen_id,
                 target_gen: *target_gen,

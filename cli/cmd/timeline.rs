@@ -21,7 +21,7 @@ pub fn run() -> anyhow::Result<()> {
     for (m_idx, marker) in sj.markers.iter().enumerate() {
         let reachable = alive[m_idx];
         let line = match marker {
-            Marker::Checkpoint { checkpoint, .. } => {
+            Marker::Checkpoint(checkpoint) => {
                 format!(
                     "{} {}",
                     format!("checkpoint [{}]", checkpoint.gen_id).cyan().bold(),
@@ -29,7 +29,7 @@ pub fn run() -> anyhow::Result<()> {
                 )
             }
             Marker::Restore {
-                gen_id, target_gen, ..
+                gen_id, target_gen,
             } => {
                 format!(
                     "{} {}",
