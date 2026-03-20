@@ -287,7 +287,7 @@ body for every `cache × source` combination.
 | `meta-append-{base,stage,checkpoint}` | Append 4K to 10,000 files | — | Append + COW throughput on base vs stage vs checkpoint files |
 | `meta-open-{cold,warm}-{base,stage,checkpoint}` | Open 10,000 files (`File::open`) | cold / warm | Open-path lookup and inode/dentry resolution overhead across source layers |
 | `meta-stat-{cold,warm}-{base,stage,checkpoint}` | Stat 10,000 files | cold / warm | Inode lookup from disk vs cache, across all source layers |
-| `meta-readdir-{cold,warm}-{base,stage,checkpoint}` | Readdir 1,000 dirs × 10 files | cold / warm | Directory enumeration across all source layers |
+| `meta-readdir-{cold,warm}{,-100}-{base,stage,checkpoint}` | Readdir one directory containing 10,000 or 100 files | cold / warm | Directory enumeration across source layers and directory sizes |
 | `meta-rename-{base,stage,checkpoint}` | Rename 10,000 files | — | Rename + journal overhead across all source layers |
 | `meta-unlink-{base,stage,checkpoint}` | Unlink 10,000 files | — | Delete + journal overhead across all source layers |
 

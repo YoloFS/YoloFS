@@ -1,26 +1,11 @@
 use crate::backend::{self, Backend};
 use crate::workload::{CacheMode, IterResult, Workload};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
 pub struct Overlayfs;
-
-struct OverlayfsMountPaths<'a> {
-    lower: &'a std::path::Path,
-    upper: &'a std::path::Path,
-    work: &'a std::path::Path,
-    merged: &'a std::path::Path,
-}
-
-#[derive(Clone, Copy)]
-struct OverlayfsChildOpts {
-    verbose: bool,
-    prepare_only: bool,
-    inline_prepare: bool,
-    wait_after_ready: bool,
-}
 
 impl Backend for Overlayfs {
     fn name(&self) -> &'static str {
@@ -28,12 +13,13 @@ impl Backend for Overlayfs {
     }
 
     fn available(&self) -> bool {
+        // Check that sudo mount -t overlay works.
         overlayfs_probe()
     }
 
     fn unavailable_reason(&self) -> Option<&'static str> {
         if !overlayfs_probe() {
-            Some("overlayfs in user namespaces not supported (needs kernel >=5.11)")
+            Some("overlayfs mount via sudo failed")
         } else {
             None
         }
@@ -66,67 +52,63 @@ impl Backend for Overlayfs {
         let needs_prepare = workload.needs_prepare_workdir();
         let needs_chkpt = workload.needs_checkpoint();
 
-        if needs_prepare && needs_chkpt {
-            // Checkpoint: prepare in a separate overlay pass, then commit
-            // to lower so files end up in a lower layer and writes trigger
-            // copy-up — same as the base path.
-            let prep_upper = root.path().join("prep-upper");
-            let prep_work = root.path().join("prep-work");
-            let prep_merged = root.path().join("prep-merged");
-            for d in [&prep_upper, &prep_work, &prep_merged] {
-                std::fs::create_dir_all(d)?;
-            }
-            run_overlayfs_child(
-                workload,
-                &OverlayfsMountPaths {
-                    lower: &lower,
-                    upper: &prep_upper,
-                    work: &prep_work,
-                    merged: &prep_merged,
-                },
-                OverlayfsChildOpts {
-                    verbose,
-                    prepare_only: true,
-                    inline_prepare: false,
-                    wait_after_ready: false,
-                },
-            )?;
-            commit_upper_to_lower(&prep_upper, &lower)?;
+        // Mount overlay with sudo (no user namespace).
+        let t_init = Instant::now();
+        sudo_mount_overlay(&lower, &upper, &work, &merged)?;
+        let init_ms = t_init.elapsed().as_millis() as u64;
+
+        let dest = merged.join(workload.work_dir());
+        std::fs::create_dir_all(&dest)?;
+
+        if needs_prepare {
+            workload.prepare_workdir(&dest)?;
         }
-        // For stage (non-checkpoint) workloads that need prepare_workdir,
-        // pass --inline-prepare so files are created inside the actual
-        // overlay upper layer rather than committed to lower.
-        let inline_prepare = needs_prepare && !needs_chkpt;
+        if needs_chkpt {
+            // Checkpoint: unmount, commit upper to lower (demoting files
+            // to a lower layer), remount with fresh upper.
+            sudo_umount(&merged);
+            commit_upper_to_lower(&upper, &lower)?;
+            // Fresh upper/work for the new mount.
+            std::fs::remove_dir_all(&upper).ok();
+            std::fs::remove_dir_all(&work).ok();
+            std::fs::create_dir_all(&upper)?;
+            std::fs::create_dir_all(&work)?;
+            sudo_mount_overlay(&lower, &upper, &work, &merged)?;
+        }
+
         let cold = workload.cache_mode() == CacheMode::DropPageCache;
-        let mut cmd = overlayfs_child_cmd(
-            workload,
-            &OverlayfsMountPaths {
-                lower: &lower,
-                upper: &upper,
-                work: &work,
-                merged: &merged,
-            },
-            OverlayfsChildOpts {
-                verbose,
-                prepare_only: false,
-                inline_prepare,
-                wait_after_ready: cold,
-            },
-        )?;
-        let result = backend::run_workload_subprocess(&mut cmd, cold)?;
+        let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
+        cmd.stderr(if verbose {
+            Stdio::inherit()
+        } else {
+            Stdio::piped()
+        });
+
+        let result = if cold {
+            // For cold: unmount overlay so kernel state is flushed, drop
+            // caches, then remount. The subprocess waits for GO after READY.
+            let sp = backend::spawn_and_await_ready(&mut cmd, true)?;
+            sudo_umount(&merged);
+            crate::workloads::drop_page_cache()?;
+            sudo_mount_overlay(&lower, &upper, &work, &merged)?;
+            sp.go()?
+        } else {
+            backend::run_workload_subprocess(&mut cmd, false)?
+        };
+
+        // Unmount before commit.
+        sudo_umount(&merged);
 
         // Commit: replay upper layer onto lower.
-        // Regular files/dirs are copied; overlayfs whiteouts (char 0,0)
-        // are applied as deletions in lower.
         let t_commit = Instant::now();
         commit_upper_to_lower(&upper, &lower)?;
         let commit_ms = t_commit.elapsed().as_millis() as u64;
 
-        let total_ms = result.startup_ms + result.staging_ms + commit_ms;
+        let total_ms = init_ms + result.staging_ms + commit_ms;
 
         Ok((
             IterResult {
-                init_ms: Some(result.startup_ms),
+                init_ms: Some(init_ms),
                 staging_ms: Some(result.staging_ms),
                 commit_ms: Some(commit_ms),
                 total_ms,
@@ -138,78 +120,43 @@ impl Backend for Overlayfs {
     }
 }
 
-fn run_overlayfs_child(
-    workload: &dyn Workload,
-    paths: &OverlayfsMountPaths<'_>,
-    opts: OverlayfsChildOpts,
+fn sudo_mount_overlay(
+    lower: &std::path::Path,
+    upper: &std::path::Path,
+    work: &std::path::Path,
+    merged: &std::path::Path,
 ) -> Result<()> {
-    let output = overlayfs_child_cmd(workload, paths, opts)?
+    let opts = format!(
+        "lowerdir={},upperdir={},workdir={}",
+        lower.display(),
+        upper.display(),
+        work.display()
+    );
+    let out = Command::new("sudo")
+        .args(["mount", "-t", "overlay", "overlay", "-o"])
+        .arg(&opts)
+        .arg(merged)
         .output()
-        .context("running overlayfs helper subprocess")?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "overlayfs helper failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+        .context("mounting overlayfs with sudo")?;
+    if !out.status.success() {
+        bail!(
+            "sudo mount overlay failed: {}",
+            String::from_utf8_lossy(&out.stderr)
         );
     }
     Ok(())
 }
 
-fn overlayfs_child_cmd(
-    workload: &dyn Workload,
-    paths: &OverlayfsMountPaths<'_>,
-    opts: OverlayfsChildOpts,
-) -> Result<Command> {
-    // Build the inner exec-workload command, then wrap it in unshare.
-    // Inside the namespace, exec-overlayfs mounts the overlay then runs
-    // the workload via the standard exec-workload protocol (READY marker).
-    let self_exe = std::env::current_exe().context("resolving current executable")?;
-
-    let mut cmd = Command::new("unshare");
-    cmd.args(["--user", "--map-root-user", "--mount", "--"])
-        .arg(&self_exe)
-        .arg("exec-overlayfs")
-        .arg("--name")
-        .arg(workload.name())
-        .arg("--lower")
-        .arg(paths.lower)
-        .arg("--upper")
-        .arg(paths.upper)
-        .arg("--work")
-        .arg(paths.work)
-        .arg("--merged")
-        .arg(paths.merged);
-    if opts.verbose {
-        cmd.arg("--verbose");
-    }
-    if opts.prepare_only {
-        cmd.arg("--prepare-only");
-    }
-    if opts.inline_prepare {
-        cmd.arg("--inline-prepare");
-    }
-    if opts.wait_after_ready {
-        cmd.arg("--wait-after-ready");
-        // For cold workloads: subprocess unmounts before READY and remounts
-        // after GO, so the overlay's kernel state is flushed during drop_caches.
-        cmd.arg("--remount-for-cold");
-    }
-    cmd.stderr(if opts.verbose {
-        Stdio::inherit()
-    } else {
-        Stdio::piped()
-    });
-    Ok(cmd)
+fn sudo_umount(merged: &std::path::Path) {
+    let _ = Command::new("sudo")
+        .args(["umount"])
+        .arg(merged)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// Replay the overlayfs upper dir onto the lower dir.
-///
-/// - Regular files/dirs/symlinks: copied (cp -a semantics).
-/// - Character device with major=0, minor=0: overlayfs whiteout → delete
-///   the corresponding path in lower.
-/// - Opaque dirs (trusted.overlay.opaque xattr): the lower dir is cleared
-///   and replaced with the upper dir contents. We approximate this by
-///   removing and re-creating the lower dir.
 fn commit_upper_to_lower(upper: &std::path::Path, lower: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::FileTypeExt;
 
@@ -228,25 +175,20 @@ fn commit_upper_to_lower(upper: &std::path::Path, lower: &std::path::Path) -> Re
                 let _ = std::fs::remove_file(&lower_path);
             }
         } else if ft.is_symlink() {
-            // Recreate symlink.
             let target = std::fs::read_link(&upper_path)?;
             remove_any(&lower_path);
             std::os::unix::fs::symlink(&target, &lower_path)
                 .with_context(|| format!("symlinking {}", lower_path.display()))?;
         } else if ft.is_dir() {
-            // Opaque dir: overlayfs marks dirs with user.overlay.opaque when
-            // they were rm'd and re-created. Wipe the lower dir first.
             if is_opaque_dir(&upper_path) {
                 let _ = std::fs::remove_dir_all(&lower_path);
             }
             std::fs::create_dir_all(&lower_path)?;
             commit_upper_to_lower(&upper_path, &lower_path)?;
         } else {
-            // Regular file: mv from upper to lower (O(1) rename on same fs).
             remove_any(&lower_path);
             std::fs::rename(&upper_path, &lower_path)
                 .or_else(|_| {
-                    // Cross-device fallback.
                     std::fs::copy(&upper_path, &lower_path)?;
                     std::fs::remove_file(&upper_path)?;
                     Ok::<_, std::io::Error>(())
@@ -257,7 +199,6 @@ fn commit_upper_to_lower(upper: &std::path::Path, lower: &std::path::Path) -> Re
     Ok(())
 }
 
-/// Remove a path regardless of type (file, dir, symlink).
 fn remove_any(path: &std::path::Path) {
     if path.is_dir() && !path.is_symlink() {
         let _ = std::fs::remove_dir_all(path);
@@ -266,13 +207,9 @@ fn remove_any(path: &std::path::Path) {
     }
 }
 
-/// Check if an upper dir has the overlayfs opaque xattr, meaning it replaced
-/// (not merged with) the lower dir.
 fn is_opaque_dir(path: &std::path::Path) -> bool {
-    // In user namespaces, overlayfs uses "user.overlay.opaque" (userxattr mount
-    // option) instead of "trusted.overlay.opaque".
     let mut buf = [0u8; 2];
-    for attr in ["user.overlay.opaque", "trusted.overlay.opaque"] {
+    for attr in ["trusted.overlay.opaque", "user.overlay.opaque"] {
         let c_path = match std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) {
             Ok(p) => p,
             Err(_) => continue,
@@ -296,7 +233,7 @@ fn is_opaque_dir(path: &std::path::Path) -> bool {
     false
 }
 
-/// Probe whether overlayfs works inside a user namespace.
+/// Probe whether overlayfs works with sudo mount.
 fn overlayfs_probe() -> bool {
     let dir = match tempfile::tempdir() {
         Ok(d) => d,
@@ -313,22 +250,22 @@ fn overlayfs_probe() -> bool {
         upper = dir.path().join("upper").display(),
         work = dir.path().join("work").display(),
     );
-    Command::new("unshare")
-        .args([
-            "--user",
-            "--map-root-user",
-            "--mount",
-            "--",
-            "mount",
-            "-t",
-            "overlay",
-            "overlay",
-            "-o",
-        ])
+    let merged = dir.path().join("merged");
+    let ok = Command::new("sudo")
+        .args(["mount", "-t", "overlay", "overlay", "-o"])
         .arg(&opts)
-        .arg(dir.path().join("merged"))
+        .arg(&merged)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .is_ok_and(|s| s.success())
+        .is_ok_and(|s| s.success());
+    if ok {
+        let _ = Command::new("sudo")
+            .args(["umount"])
+            .arg(&merged)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    ok
 }

@@ -6,14 +6,18 @@ use std::path::Path;
 
 pub struct MetaStatWarm {
     pub source: MetaSource,
+    pub count: usize,
 }
 
 impl MetaStatWarm {
     pub fn all() -> Vec<Self> {
-        MetaSource::ALL
-            .iter()
-            .map(|&s| Self { source: s })
-            .collect()
+        let mut v = Vec::new();
+        for &count in &[meta_shared::LARGE_DIR, meta_shared::SMALL_DIR] {
+            for &source in &MetaSource::ALL {
+                v.push(Self { source, count });
+            }
+        }
+        v
     }
 }
 
@@ -22,27 +26,37 @@ pub fn details() -> workloads::WorkloadDetails {
         "Stat 10,000 files from warm dcache/icache, measuring per-operation latency.",
         "Fixture varies by source: base populates before mount; stage creates inside the mount; checkpoint snapshots after creation.",
         None,
-        &meta_shared::meta_stat_warm_execution(),
+        &meta_shared::meta_stat_core_execution(),
         file!(),
     )
 }
 
 impl Workload for MetaStatWarm {
     fn name(&self) -> &'static str {
-        match self.source {
-            MetaSource::Base => "meta-stat-warm-base",
-            MetaSource::Stage => "meta-stat-warm-stage",
-            MetaSource::Checkpoint => "meta-stat-warm-checkpoint",
+        match (self.count, self.source) {
+            (100, MetaSource::Base) => "meta-stat-100-base",
+            (100, MetaSource::Stage) => "meta-stat-100-stage",
+            (100, MetaSource::Checkpoint) => "meta-stat-100-checkpoint",
+            (_, MetaSource::Base) => "meta-stat-base",
+            (_, MetaSource::Stage) => "meta-stat-stage",
+            (_, MetaSource::Checkpoint) => "meta-stat-checkpoint",
         }
     }
     fn kind(&self) -> WorkloadKind {
         WorkloadKind::Op
     }
     fn description(&self) -> &'static str {
-        match self.source {
-            MetaSource::Base => "Warm stat over 10,000 base-layer files",
-            MetaSource::Stage => "Warm stat over 10,000 stage-local files",
-            MetaSource::Checkpoint => "Warm stat over 10,000 checkpoint-layer files",
+        match (self.count, self.source) {
+            (100, MetaSource::Base) => "Warm stat over 100 base-layer files (small dir)",
+            (100, MetaSource::Stage) => "Warm stat over 100 stage-local files (small dir)",
+            (100, MetaSource::Checkpoint) => {
+                "Warm stat over 100 checkpoint-layer files (small dir)"
+            }
+            (_, MetaSource::Base) => "Warm stat over 10,000 base-layer files (large dir)",
+            (_, MetaSource::Stage) => "Warm stat over 10,000 stage-local files (large dir)",
+            (_, MetaSource::Checkpoint) => {
+                "Warm stat over 10,000 checkpoint-layer files (large dir)"
+            }
         }
     }
     fn work_dir(&self) -> &'static str {
@@ -55,10 +69,10 @@ impl Workload for MetaStatWarm {
         workloads::allow_rw_rules(session_root)
     }
     fn populate_base(&self, base_work_dir: &Path) -> Result<()> {
-        meta_shared::populate_files_for_source(self.source, base_work_dir)
+        meta_shared::populate_files_for_source(self.source, base_work_dir, self.count)
     }
     fn prepare_workdir(&self, dest: &Path) -> Result<()> {
-        meta_shared::prepare_files_for_source(self.source, dest)
+        meta_shared::prepare_files_for_source(self.source, dest, self.count)
     }
     fn needs_prepare_workdir(&self) -> bool {
         meta_shared::needs_prepare(self.source)
@@ -67,6 +81,6 @@ impl Workload for MetaStatWarm {
         meta_shared::needs_checkpoint(self.source)
     }
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        meta_shared::run_meta_stat_warm(dest)
+        meta_shared::run_meta_stat(dest, self.count)
     }
 }

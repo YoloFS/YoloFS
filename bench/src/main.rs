@@ -1283,6 +1283,7 @@ fn main() -> Result<()> {
         workloads::by_kind(workload::WorkloadKind::Macro)
     } else if cli.op {
         let mut selected = workloads::by_kind(workload::WorkloadKind::Op);
+        selected.retain(|w| !w.hidden());
         if let Some(group) = cli.op_group {
             selected.retain(|w| match group {
                 OpGroup::Meta => w.name().starts_with("meta-"),
@@ -1292,6 +1293,9 @@ fn main() -> Result<()> {
         selected
     } else {
         workloads::all()
+            .into_iter()
+            .filter(|w| !w.hidden())
+            .collect()
     };
 
     // Fail hard if any selected workload needs fio and it's not installed.
