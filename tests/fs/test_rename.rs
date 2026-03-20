@@ -303,6 +303,34 @@ fn rename_chain_commit() {
     assert!(!s.base_path("step1.txt").exists());
 }
 
+/// Rename two different base files such that one's destination is the other's
+/// original path: mv hello.txt→moved.txt, mv multi.txt→hello.txt, then commit.
+/// Both files should land at their new paths with their original content.
+#[test]
+fn rename_swap_like_commit() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename hello→moved");
+    fs::rename(s.mnt_path("multi.txt"), s.mnt_path("hello.txt")).expect("rename multi→hello");
+
+    s.cli(&["commit"]).expect("commit");
+
+    assert_eq!(
+        fs::read_to_string(s.base_path("moved.txt")).unwrap(),
+        "base content\n",
+        "moved.txt should have hello.txt's original content"
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        "line1\nline2\n",
+        "hello.txt should have multi.txt's original content"
+    );
+    assert!(
+        !s.base_path("multi.txt").exists(),
+        "multi.txt should be gone from base"
+    );
+}
+
 /// Rename a directory and verify contents are accessible through new name.
 #[test]
 fn rename_directory_with_contents() {
