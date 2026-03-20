@@ -347,7 +347,7 @@ fn render_op_workload(
     }
     table.push_str("</table>\n");
 
-    // If any backend has a latency series, render a line chart.
+    // If any backend has a latency series, write a separate line chart HTML.
     let has_series = sorted.iter().any(|b| b.latency_series.is_some());
     let series_html = if has_series {
         let mut series_plot = Plot::new();
@@ -366,17 +366,20 @@ fn render_op_workload(
         series_plot.set_layout(
             Layout::new()
                 .title(Title::with_text(format!(
-                    "{} — latency vs file count",
+                    "{} — latency vs operation count",
                     wl.workload
                 )))
-                .x_axis(Axis::new().title(Title::with_text("files created")))
+                .x_axis(Axis::new().title(Title::with_text("operations completed")))
                 .y_axis(Axis::new().title(Title::with_text("avg latency (µs)")))
                 .show_legend(true),
         );
-        series_plot.set_configuration(Configuration::new().responsive(true));
+        series_plot.set_configuration(Configuration::new().responsive(true).fill_frame(true));
+        let series_path = out_dir.join(format!("report-{}-series.html", wl.workload));
+        series_plot.write_html(&series_path);
         format!(
-            "<div style=\"width:100%;height:400px;margin-top:1em\">{}</div>",
-            series_plot.to_inline_html(Some("latency-series"))
+            "<iframe src=\"report-{}-series.html\" \
+             style=\"width:100%;height:420px;border:1px solid #ddd;border-radius:4px;margin-top:1em\"></iframe>",
+            wl.workload
         )
     } else {
         String::new()
