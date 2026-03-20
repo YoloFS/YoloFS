@@ -485,14 +485,15 @@ fn rename_staged_file_overwrite_base_commit() {
 ///      (staged rename to base path → D + M; overwrites base file)
 ///   3. Create temp.txt then delete it (A + D cancel out)
 ///   4. Rename subdir/deep.txt → subdir/shallow.txt (base rename → D + R)
-///   5. Rename subdir/shallow.txt → top.txt (chained rename → D + R collapses)
+///   5. Rename subdir/shallow.txt → top.txt (second rename → D + R)
 ///   6. Create link.txt as symlink (A with dtype=Link)
 ///   7. Modify hello.txt again (second COW → M; multiple modifies keep final ino)
 ///
 /// Expected resolved state before commit:
 ///   - Modified(hello.txt)           — double COW, final ino wins
 ///   - Modified(multi.txt)           — staged file overwrote base via rename
-///   - Renamed(subdir/deep.txt → top.txt) — chained redirect collapse
+///   - Renamed(subdir/shallow.txt → top.txt) — second rename
+///   - Deleted(subdir/deep.txt)      — first rename source
 ///   - Added(link.txt)               — new symlink
 ///   - (temp.txt absent)             — A + D cancelled
 ///
@@ -577,10 +578,14 @@ fn complex_multi_operation_commit() {
         .0
         .iter()
         .any(|(path, c): &(String, Change)| matches!(c, Change::Modified { .. }) && path.ends_with("/multi.txt"));
-    let has_renamed_deep_to_top = changes.0.iter().any(|(to, c): &(String, Change)| {
+    let has_renamed_shallow_to_top = changes.0.iter().any(|(to, c): &(String, Change)| {
         matches!(c, Change::Renamed { from, .. }
-            if from.ends_with("/deep.txt") && to.ends_with("/top.txt"))
+            if from.ends_with("/shallow.txt") && to.ends_with("/top.txt"))
     });
+    let has_deleted_deep = changes
+        .0
+        .iter()
+        .any(|(path, c): &(String, Change)| matches!(c, Change::Deleted) && path.ends_with("/deep.txt"));
     let has_added_link = changes
         .0
         .iter()
@@ -611,8 +616,12 @@ fn complex_multi_operation_commit() {
         "expected Modified(multi.txt): {changes:?}"
     );
     assert!(
-        has_renamed_deep_to_top,
-        "expected Renamed(deep.txt → top.txt): {changes:?}"
+        has_renamed_shallow_to_top,
+        "expected Renamed(shallow.txt → top.txt): {changes:?}"
+    );
+    assert!(
+        has_deleted_deep,
+        "expected Deleted(deep.txt): {changes:?}"
     );
     assert!(has_added_link, "expected Added(link.txt): {changes:?}");
     assert!(
