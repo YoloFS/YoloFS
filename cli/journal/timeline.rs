@@ -8,7 +8,9 @@
 
 use super::types::*;
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(test)]
+use std::collections::HashSet;
 
 /// A group of records between checkpoint/restore boundaries.
 #[derive(Debug)]
@@ -171,6 +173,11 @@ impl Timeline {
     pub fn all_records(&self) -> &[Record] {
         &self.all_records
     }
+
+    /// Consume the Timeline and return the original flat record list.
+    pub fn into_all_records(self) -> Vec<Record> {
+        self.all_records
+    }
 }
 
 /// Compute reachable ranges from journal records.
@@ -242,7 +249,8 @@ fn compute_reachable_mask(records: &[Record]) -> Vec<bool> {
 }
 
 /// Build the set of record indices that are reachable (not killed by restores).
-pub fn reachable_indices(records: &[Record]) -> HashSet<usize> {
+#[cfg(test)]
+pub(crate) fn reachable_indices(records: &[Record]) -> HashSet<usize> {
     let n = records.len();
     let Some(ranges) = compute_reachable_ranges(records) else {
         return (0..n).collect();
@@ -269,7 +277,8 @@ pub fn reachable_indices(records: &[Record]) -> HashSet<usize> {
 ///
 /// O(N) to collect positions + O(R) to build ranges where R = number of
 /// restore records.
-pub fn reachable(records: Vec<Record>) -> Vec<Record> {
+#[cfg(test)]
+pub(crate) fn reachable(records: Vec<Record>) -> Vec<Record> {
     let Some(mut ranges) = compute_reachable_ranges(&records) else {
         return records;
     };
@@ -293,7 +302,7 @@ pub fn reachable(records: Vec<Record>) -> Vec<Record> {
 /// Find the record index of a checkpoint by name or numeric ID.
 /// Tries parsing as a numeric ID first, then falls back to name match
 /// (using the latest occurrence if names are duplicated).
-pub fn find_checkpoint_index(records: &[Record], name_or_id: &str) -> Result<usize> {
+pub(crate) fn find_checkpoint_index(records: &[Record], name_or_id: &str) -> Result<usize> {
     // Try numeric ID first
     if let Ok(target_id) = name_or_id.parse::<u64>() {
         for (i, record) in records.iter().enumerate() {
@@ -327,7 +336,8 @@ pub fn find_checkpoint_index(records: &[Record], name_or_id: &str) -> Result<usi
 /// - `to`   → records from start up to (and including) that checkpoint
 /// - both   → records between the two checkpoints (inclusive)
 /// - none   → all records (unchanged)
-pub fn slice_records(
+#[cfg(test)]
+pub(crate) fn slice_records(
     mut records: Vec<Record>,
     at: Option<&str>,
     from: Option<&str>,

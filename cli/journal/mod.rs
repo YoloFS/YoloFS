@@ -5,7 +5,7 @@
 // Submodules:
 //   types     — Record, Dirent, Checkpoint, DType, INO_REDIRECT
 //   parse     — read(), inode_path(), truncate()
-//   timeline  — Timeline, Segment, reachable(), find_checkpoint_index(), slice_records()
+//   timeline  — Timeline, Segment; flat helpers (pub(crate)): reachable(), find_checkpoint_index(), slice_records()
 //   resolve   — Resolver, ResolvedSegment, resolve(), resolve_segments()
 
 pub mod parse;

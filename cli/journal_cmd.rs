@@ -4,6 +4,7 @@
 // `agfs journal --path <path>`  — trace operations on a specific file.
 
 use crate::journal;
+use crate::journal::timeline::Timeline;
 use anyhow::Result;
 use colored::Colorize;
 use std::collections::HashMap;
@@ -19,11 +20,11 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    // Compute reachable record indices so we can dim unreachable ones.
-    let reachable_set = journal::timeline::reachable_indices(&records);
+    let timeline = Timeline::new(records);
 
     // Collect checkpoint names by gen for restore display.
-    let chk_names: HashMap<u64, &str> = records
+    let chk_names: HashMap<u64, &str> = timeline
+        .all_records()
         .iter()
         .filter_map(|r| match r {
             journal::Record::Checkpoint(c) => Some((c.gen_id, c.name.as_str())),
@@ -31,8 +32,8 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
         })
         .collect();
 
-    for (i, record) in records.iter().enumerate() {
-        let reachable = reachable_set.contains(&i);
+    for (i, record) in timeline.all_records().iter().enumerate() {
+        let reachable = timeline.is_reachable(i);
 
         if let Some(filter) = path_filter.as_deref()
             && !record_matches_path(record, filter)

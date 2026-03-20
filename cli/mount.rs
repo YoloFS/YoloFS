@@ -224,7 +224,8 @@ fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
     let records = crate::journal::read(agfs_dir)
         .map(|j| j.records)
         .unwrap_or_default();
-    let changes = crate::journal::resolve::resolve(records).unwrap_or_default();
+    let timeline = crate::journal::timeline::Timeline::new(records);
+    let changes = crate::journal::resolve::resolve(timeline.reachable_records()).unwrap_or_default();
     if changes.is_empty() {
         return Ok(());
     }

@@ -5,6 +5,7 @@
 
 use crate::journal;
 use crate::journal::Dirent;
+use crate::journal::timeline::Timeline;
 use crate::utils::to_base_path;
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -123,8 +124,8 @@ pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let records = journal::read(&agfs)?.records;
-    let reachable = journal::timeline::reachable(records);
-    let changes = journal::resolve::resolve(reachable)?;
+    let timeline = Timeline::new(records);
+    let changes = journal::resolve::resolve(timeline.reachable_records())?;
 
     if changes.is_empty() {
         println!("{}", "Nothing to commit.".yellow());

@@ -41,7 +41,8 @@ pub fn run(force: bool) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let records = crate::journal::read(&agfs)?.records;
-    let changes = crate::journal::resolve::resolve(records)?;
+    let timeline = crate::journal::timeline::Timeline::new(records);
+    let changes = crate::journal::resolve::resolve(timeline.reachable_records())?;
     if changes.is_empty() {
         println!("{}", "Nothing to discard.".yellow());
         return Ok(());

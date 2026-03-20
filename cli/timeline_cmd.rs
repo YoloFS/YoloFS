@@ -3,6 +3,7 @@
 // `agfs timeline` — show checkpoint/restore DAG with unreachable branches dimmed.
 
 use crate::journal;
+use crate::journal::timeline::Timeline;
 use colored::Colorize;
 use std::collections::HashMap;
 
@@ -11,8 +12,11 @@ pub fn run() -> anyhow::Result<()> {
     let agfs = crate::utils::session_dir()?;
     let records = journal::read(&agfs)?.records;
 
+    let timeline = Timeline::new(records);
+
     // Collect checkpoint names by gen for restore display.
-    let chk_names: HashMap<u64, &str> = records
+    let chk_names: HashMap<u64, &str> = timeline
+        .all_records()
         .iter()
         .filter_map(|r| match r {
             journal::Record::Checkpoint(c) => Some((c.gen_id, c.name.as_str())),
@@ -20,7 +24,8 @@ pub fn run() -> anyhow::Result<()> {
         })
         .collect();
 
-    let events: Vec<(usize, &journal::Record)> = records
+    let events: Vec<(usize, &journal::Record)> = timeline
+        .all_records()
         .iter()
         .enumerate()
         .filter(|(_, r)| {
@@ -36,11 +41,8 @@ pub fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Compute reachable record indices so we can dim unreachable ones.
-    let reachable_set = journal::timeline::reachable_indices(&records);
-
     for (i, rec) in &events {
-        let reachable = reachable_set.contains(i);
+        let reachable = timeline.is_reachable(*i);
         let line = match rec {
             journal::Record::Checkpoint(c) => {
                 format!(

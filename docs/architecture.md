@@ -176,12 +176,12 @@ $ agfs commit
 
 # 8. Restore to a previous checkpoint (appends S record, no truncation)
 $ agfs restore "after make build"
-   -> CLI: reachable(journal[0..checkpoint]) → resolved changes
+   -> CLI: Timeline::find_checkpoint + reachable_records → resolved changes
    -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, entries })
    -> kernel: wipe dirents, inject entries, increment gen to 4,
       append S\04\02\n to journal
    -> journal is append-only — dead records remain but are filtered
-      by reachable() on subsequent operations
+      by Timeline reachability on subsequent operations
 ```
 
 ## Source File Layout

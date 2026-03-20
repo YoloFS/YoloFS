@@ -10,6 +10,7 @@
 use crate::journal;
 use crate::journal::Dirent;
 use crate::journal::resolve::ResolvedSegment;
+use crate::journal::timeline::Timeline;
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -135,8 +136,8 @@ fn run(
 ) -> Result<bool> {
     let agfs = crate::utils::session_dir()?;
     let records = journal::read(&agfs)?.records;
-    let records = journal::timeline::reachable(records);
-    let records = journal::timeline::slice_records(records, at, from, to)?;
+    let timeline = Timeline::new(records);
+    let records = timeline.slice(at, from, to)?;
     let segments = journal::resolve::resolve_segments(records)?;
 
     let has_changes = segments

@@ -18,7 +18,7 @@
 - Do not modify existing tests when fixing a bug. If you are unsure, ask.
 - When adding new features or making changes, add tests if applicable: unit tests (inline `#[cfg(test)]`), white-box tests (`tests/internals/`), and black-box tests (`tests/fs/`, `tests/cli/`, `tests/perm/`).
 - Do not use git (commit, push, rebase, etc.) unless explicitly asked.
-- For refactoring, save a plan under `docs/plans/` (numbered: `0-name.md`, `1-name.md`, ...) before implementing.
+- For refactoring, save a plan under `docs/plans/` (numbered: `0-name.md`, `1-name.md`, ...) before implementing. When the plan is fully implemented, move it to `docs/plans/done/`.
 - Before finalizing changes, run a code review (see **Code Review** section below).
 
 ## Project Structure

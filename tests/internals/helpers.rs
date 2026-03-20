@@ -12,11 +12,11 @@ pub fn journal(s: &AgfsSession) -> Vec<Record> {
 }
 
 /// Resolve the journal to get the final Dirent list.
-/// Uses `reachable` to filter out dead records (e.g. after restore).
+/// Uses `Timeline` to filter out dead records (e.g. after restore).
 pub fn changes(s: &AgfsSession) -> Vec<(String, Dirent)> {
     let records = journal(s);
-    let reachable = journal::timeline::reachable(records);
-    journal::resolve::resolve(reachable).expect("resolve journal")
+    let timeline = journal::timeline::Timeline::new(records);
+    journal::resolve::resolve(timeline.reachable_records()).expect("resolve journal")
 }
 
 /// List numeric inode entries in the inode store.

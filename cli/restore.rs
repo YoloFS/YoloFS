@@ -2,6 +2,7 @@
 //
 // `agfs restore <name|id>` — restore to a previous checkpoint.
 
+use crate::journal::timeline::Timeline;
 use crate::{ioctl, journal};
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -127,18 +128,15 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     let journal = journal::read(&agfs)?;
     // Search all records (including dead zones) for the target checkpoint,
     // so that undo-restore (restoring to a dead checkpoint) works.
-    let chk_idx = journal::timeline::find_checkpoint_index(&journal.records, checkpoint_name)?;
-
-    let (target_gen, chk_label) = match &journal.records[chk_idx] {
-        journal::Record::Checkpoint(c) => (c.gen_id, c.name.clone()),
-        _ => unreachable!("find_checkpoint_index returned non-checkpoint record"),
-    };
+    let timeline = Timeline::new(journal.records);
+    let (chk_idx, checkpoint) = timeline.find_checkpoint(checkpoint_name)?;
+    let target_gen = checkpoint.gen_id;
+    let chk_label = checkpoint.name.clone();
 
     // Extract live records from the prefix up to the target checkpoint,
     // handling any S records within that prefix.
-    let prefix: Vec<journal::Record> = journal.records.into_iter().take(chk_idx + 1).collect();
-    let reachable = journal::timeline::reachable(prefix);
-    let changes = journal::resolve::resolve(reachable)?;
+    let prefix: Vec<journal::Record> = timeline.into_all_records().into_iter().take(chk_idx + 1).collect();
+    let changes = journal::resolve::resolve(Timeline::new(prefix).reachable_records())?;
     let items = changes_to_items(&changes);
     let entries = items_to_entries(&items)?;
 
