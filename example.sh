@@ -26,7 +26,7 @@ section "Build up checkpoints (each exec auto-creates one)"
 run agfs exec -- sh -c 'echo step1 > step1.txt'
 run agfs exec -- sh -c 'echo step2 > step2.txt'
 run agfs exec -- sh -c 'echo step3 > step3.txt'
-run agfs log
+run agfs journal
 
 # ─── Query across checkpoints ──────────────────────────────────────
 
