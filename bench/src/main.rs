@@ -1208,9 +1208,7 @@ fn main() -> Result<()> {
             run_profile(&env, &wname, bname, !no_bpftrace)?;
         }
         // Generate cross-backend comparison if multiple backends were profiled.
-        let prof_workload_dir = results_dir(&env, false)
-            .join("profiling")
-            .join(&wname);
+        let prof_workload_dir = results_dir(&env, false).join("profiling").join(&wname);
         if prof_workload_dir.exists() {
             profiler::generate_comparison(&prof_workload_dir)?;
         }

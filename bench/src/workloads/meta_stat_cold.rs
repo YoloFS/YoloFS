@@ -59,7 +59,11 @@ impl Workload for MetaStatCold {
         workloads::allow_rw_rules(session_root)
     }
     fn populate_base(&self, base_work_dir: &Path) -> Result<()> {
-        meta_shared::populate_files_for_source_cold(self.source, base_work_dir, meta_shared::LARGE_DIR)
+        meta_shared::populate_files_for_source_cold(
+            self.source,
+            base_work_dir,
+            meta_shared::LARGE_DIR,
+        )
     }
     fn prepare_workdir(&self, dest: &Path) -> Result<()> {
         meta_shared::prepare_files_for_source_cold(self.source, dest, meta_shared::LARGE_DIR)

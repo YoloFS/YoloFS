@@ -23,7 +23,7 @@ impl MetaReaddirWarm {
 
 pub fn details() -> workloads::WorkloadDetails {
     workloads::workload_details(
-        "Enumerate 1,000 directories (10 files each) from warm dcache, measuring per-directory latency.",
+        "Enumerate one warm directory containing 100 or 10,000 files, measuring per-readdir latency.",
         "Fixture varies by source: base populates before mount; stage creates inside the mount; checkpoint snapshots after creation.",
         None,
         &meta_shared::meta_readdir_core_execution(),
@@ -47,19 +47,23 @@ impl Workload for MetaReaddirWarm {
     }
     fn description(&self) -> &'static str {
         match (self.count, self.source) {
-            (100, MetaSource::Base) => "Warm readdir over a base-layer 100-dir tree (small dir)",
+            (100, MetaSource::Base) => {
+                "Warm readdir over one base-layer directory with 100 files (small dir)"
+            }
             (100, MetaSource::Stage) => {
-                "Warm readdir over a stage-local 100-dir tree (small dir)"
+                "Warm readdir over one stage-local directory with 100 files (small dir)"
             }
             (100, MetaSource::Checkpoint) => {
-                "Warm readdir over a checkpoint-layer 100-dir tree (small dir)"
+                "Warm readdir over one checkpoint-layer directory with 100 files (small dir)"
             }
-            (_, MetaSource::Base) => "Warm readdir over a base-layer 10,000-dir tree (large dir)",
+            (_, MetaSource::Base) => {
+                "Warm readdir over one base-layer directory with 10,000 files (large dir)"
+            }
             (_, MetaSource::Stage) => {
-                "Warm readdir over a stage-local 10,000-dir tree (large dir)"
+                "Warm readdir over one stage-local directory with 10,000 files (large dir)"
             }
             (_, MetaSource::Checkpoint) => {
-                "Warm readdir over a checkpoint-layer 10,000-dir tree (large dir)"
+                "Warm readdir over one checkpoint-layer directory with 10,000 files (large dir)"
             }
         }
     }

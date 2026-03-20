@@ -102,7 +102,11 @@ pub fn populate_readdir_for_source(source: MetaSource, path: &Path, count: usize
     Ok(())
 }
 
-pub fn populate_readdir_for_source_cold(source: MetaSource, path: &Path, count: usize) -> Result<()> {
+pub fn populate_readdir_for_source_cold(
+    source: MetaSource,
+    path: &Path,
+    count: usize,
+) -> Result<()> {
     if source == MetaSource::Base {
         workloads::populate_readdir_dir(&path.join(COLD_DATA_SUBDIR), count)?;
     }
@@ -116,7 +120,11 @@ pub fn prepare_readdir_for_source(source: MetaSource, path: &Path, count: usize)
     Ok(())
 }
 
-pub fn prepare_readdir_for_source_cold(source: MetaSource, path: &Path, count: usize) -> Result<()> {
+pub fn prepare_readdir_for_source_cold(
+    source: MetaSource,
+    path: &Path,
+    count: usize,
+) -> Result<()> {
     if matches!(source, MetaSource::Stage | MetaSource::Checkpoint) {
         workloads::populate_readdir_dir(&path.join(COLD_DATA_SUBDIR), count)?;
     }
@@ -270,56 +278,92 @@ workloads::define_rust_execution!(
 pub fn run_meta_append(dest: &Path, count: usize) -> Result<()> {
     let total = Instant::now();
     let latencies = meta_append_core(dest, count)?;
-    workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
+    workloads::emit_op_result(&workloads::summarize_latencies(
+        latencies,
+        total.elapsed(),
+        None,
+    ))
 }
 
 pub fn run_meta_rename(dest: &Path, count: usize) -> Result<()> {
     let total = Instant::now();
     let latencies = meta_rename_core(dest, count)?;
-    workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
+    workloads::emit_op_result(&workloads::summarize_latencies(
+        latencies,
+        total.elapsed(),
+        None,
+    ))
 }
 
 pub fn run_meta_unlink(dest: &Path, count: usize) -> Result<()> {
     let total = Instant::now();
     let latencies = meta_unlink_core(dest, count)?;
-    workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
+    workloads::emit_op_result(&workloads::summarize_latencies(
+        latencies,
+        total.elapsed(),
+        None,
+    ))
 }
 
 pub fn run_meta_stat(dest: &Path, count: usize) -> Result<()> {
     workloads::warm_metadata(dest, count)?;
     let total = Instant::now();
     let latencies = meta_stat_core(dest, count)?;
-    workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
+    workloads::emit_op_result(&workloads::summarize_latencies(
+        latencies,
+        total.elapsed(),
+        None,
+    ))
 }
 
 pub fn run_meta_open(dest: &Path, count: usize) -> Result<()> {
     workloads::warm_metadata(dest, count)?;
     let total = Instant::now();
     let latencies = meta_open_core(dest, count)?;
-    workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
+    workloads::emit_op_result(&workloads::summarize_latencies(
+        latencies,
+        total.elapsed(),
+        None,
+    ))
 }
 
 pub fn run_meta_readdir(dest: &Path, count: usize) -> Result<()> {
     workloads::warm_readdir_dir(dest, count)?;
     let total = Instant::now();
     let latencies = meta_readdir_core(dest, count)?;
-    workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
+    workloads::emit_op_result(&workloads::summarize_latencies(
+        latencies,
+        total.elapsed(),
+        None,
+    ))
 }
 
 pub fn run_meta_stat_cold(dest: &Path) -> Result<()> {
     let total = Instant::now();
     let latencies = meta_stat_cold_core(dest)?;
-    workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
+    workloads::emit_op_result(&workloads::summarize_latencies(
+        latencies,
+        total.elapsed(),
+        None,
+    ))
 }
 
 pub fn run_meta_open_cold(dest: &Path) -> Result<()> {
     let total = Instant::now();
     let latencies = meta_open_cold_core(dest)?;
-    workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
+    workloads::emit_op_result(&workloads::summarize_latencies(
+        latencies,
+        total.elapsed(),
+        None,
+    ))
 }
 
 pub fn run_meta_readdir_cold(dest: &Path, count: usize) -> Result<()> {
     let total = Instant::now();
     let latencies = meta_readdir_cold_core(dest, count)?;
-    workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
+    workloads::emit_op_result(&workloads::summarize_latencies(
+        latencies,
+        total.elapsed(),
+        None,
+    ))
 }

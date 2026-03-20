@@ -65,7 +65,11 @@ impl Workload for MetaOpenCold {
     }
 
     fn populate_base(&self, base_work_dir: &Path) -> Result<()> {
-        meta_shared::populate_files_for_source_cold(self.source, base_work_dir, meta_shared::LARGE_DIR)
+        meta_shared::populate_files_for_source_cold(
+            self.source,
+            base_work_dir,
+            meta_shared::LARGE_DIR,
+        )
     }
 
     fn prepare_workdir(&self, dest: &Path) -> Result<()> {

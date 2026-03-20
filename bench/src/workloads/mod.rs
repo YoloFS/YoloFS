@@ -99,8 +99,12 @@ pub fn all() -> Vec<Box<dyn Workload>> {
         Box::new(fio_rand_write::FioRandWrite),
         Box::new(fio_randrw_cold::FioRandRwCold),
         Box::new(fio_randrw_warm::FioRandRwWarm),
-        Box::new(meta_create::MetaCreate { count: meta_shared::LARGE_DIR }),
-        Box::new(meta_create::MetaCreate { count: meta_shared::SMALL_DIR }),
+        Box::new(meta_create::MetaCreate {
+            count: meta_shared::LARGE_DIR,
+        }),
+        Box::new(meta_create::MetaCreate {
+            count: meta_shared::SMALL_DIR,
+        }),
     ];
     for w in meta_append::MetaAppend::all() {
         v.push(Box::new(w));
