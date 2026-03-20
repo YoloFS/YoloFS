@@ -149,6 +149,13 @@ pub trait Workload: Send + Sync {
         false
     }
 
+    /// Whether this workload should be hidden from default listing.
+    /// Hidden workloads are still runnable but not shown unless explicitly
+    /// requested.
+    fn hidden(&self) -> bool {
+        false
+    }
+
     /// Perform the workload. `dest` is the target path — inside the agfs mount
     /// for agfs scenarios, or a direct base path for native.
     ///

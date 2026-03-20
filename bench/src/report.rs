@@ -1085,6 +1085,23 @@ fn is_stale_group_name(name: &str, results: &BenchResults) -> bool {
     })
 }
 
+fn normalize_legacy_workload_name(name: &str) -> String {
+    let Some(suffix) = name
+        .strip_suffix("-base")
+        .or_else(|| name.strip_suffix("-stage"))
+        .or_else(|| name.strip_suffix("-checkpoint"))
+    else {
+        return name.to_string();
+    };
+
+    match suffix {
+        "meta-open-warm" => format!("meta-open{}", &name["meta-open-warm".len()..]),
+        "meta-stat-warm" => format!("meta-stat{}", &name["meta-stat-warm".len()..]),
+        "meta-readdir-warm" => format!("meta-readdir{}", &name["meta-readdir-warm".len()..]),
+        _ => name.to_string(),
+    }
+}
+
 fn source_pattern(label: &str) -> Pattern {
     match label {
         "base" => Pattern::new()
@@ -1301,34 +1318,52 @@ pub fn render_index(
     let known: std::collections::HashMap<&str, WorkloadKind> =
         all_workloads.iter().map(|w| (w.name(), w.kind())).collect();
 
-    let mut session_micros: Vec<&str> = Vec::new();
-    let mut session_macros: Vec<&str> = Vec::new();
+    let mut session_micros: Vec<String> = Vec::new();
+    let mut session_macros: Vec<String> = Vec::new();
     let mut op_data: Vec<String> = Vec::new();
     let mut op_metadata: Vec<String> = Vec::new();
+    let mut op_metadata_cold: Vec<String> = Vec::new();
     let mut op_other: Vec<String> = Vec::new();
     let mut seen_groups: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_session: std::collections::HashSet<String> = std::collections::HashSet::new();
     for wl in &results.workloads {
+        let canonical = normalize_legacy_workload_name(&wl.workload);
         // Skip stale entries superseded by source variants (e.g. "meta-rename"
         // when "meta-rename-base" exists). These aren't in the registered
         // workload list so they'd fall through to the wrong category.
-        if is_stale_group_name(&wl.workload, results) {
+        if is_stale_group_name(&canonical, results) {
             continue;
         }
-        let kind = known
-            .get(wl.workload.as_str())
-            .copied()
-            .unwrap_or(WorkloadKind::Micro);
+        let kind = known.get(canonical.as_str()).copied().unwrap_or_else(|| {
+            if canonical.starts_with("meta-") || canonical.starts_with("fio-") {
+                WorkloadKind::Op
+            } else {
+                WorkloadKind::Micro
+            }
+        });
         match kind {
-            WorkloadKind::Micro => session_micros.push(&wl.workload),
-            WorkloadKind::Macro => session_macros.push(&wl.workload),
+            WorkloadKind::Micro => {
+                if seen_session.insert(canonical.clone()) {
+                    session_micros.push(canonical);
+                }
+            }
+            WorkloadKind::Macro => {
+                if seen_session.insert(canonical.clone()) {
+                    session_macros.push(canonical);
+                }
+            }
             WorkloadKind::Op => {
                 // Deduplicate source variants into groups.
-                let display_name = source_group_name(&wl.workload)
+                let display_name = source_group_name(&canonical)
                     .map(|g| g.to_string())
-                    .unwrap_or_else(|| wl.workload.clone());
+                    .unwrap_or(canonical);
                 if seen_groups.insert(display_name.clone()) {
                     if display_name.starts_with("meta-") {
-                        op_metadata.push(display_name);
+                        if display_name.contains("-cold") {
+                            op_metadata_cold.push(display_name);
+                        } else {
+                            op_metadata.push(display_name);
+                        }
                     } else if display_name.starts_with("fio-") {
                         op_data.push(display_name);
                     } else {
@@ -1351,6 +1386,7 @@ pub fn render_index(
     session_macros.sort_by_key(|n| pos(n));
     op_data.sort_by_key(|n| pos(n));
     op_metadata.sort_by_key(|n| pos(n));
+    op_metadata_cold.sort_by_key(|n| pos(n));
     op_other.sort_by_key(|n| pos(n));
 
     let descriptions = workloads::descriptions();
@@ -1385,6 +1421,8 @@ pub fn render_index(
     html.push_str("  .status-fresh { color:#1f7a1f; background:#eaf7ea; }\n");
     html.push_str("  .status-stale { color:#b54a00; background:#fff1e8; }\n");
     html.push_str("  .status-unknown { color:#666; background:#f1f1f1; }\n");
+    html.push_str("  details.cold-meta-collapsed { margin-top: 1.4em; }\n");
+    html.push_str("  details.cold-meta-collapsed > summary { cursor: pointer; font-size: 1.02em; color: #555; border-bottom: 1px solid #ddd; padding-bottom: 0.3em; }\n");
     html.push_str("</style>\n");
     html.push_str("</head><body>\n");
 
@@ -1444,11 +1482,11 @@ pub fn render_index(
         None
     };
 
-    let emit_section = |html: &mut String, heading: &str, names: &[&str]| {
+    let emit_section = |html: &mut String, heading: &str, names: &[&str], h_tag: &str| {
         if names.is_empty() {
             return;
         }
-        html.push_str(&format!("<h2>{heading}</h2>\n"));
+        html.push_str(&format!("<{h_tag}>{heading}</{h_tag}>\n"));
         html.push_str("<div class=\"grid\">\n");
         for name in names {
             let variant = resolve_variant(name);
@@ -1537,24 +1575,47 @@ pub fn render_index(
 
     let op_data_refs: Vec<&str> = op_data.iter().map(|s| s.as_str()).collect();
     let op_metadata_refs: Vec<&str> = op_metadata.iter().map(|s| s.as_str()).collect();
+    let op_metadata_cold_refs: Vec<&str> = op_metadata_cold.iter().map(|s| s.as_str()).collect();
     let op_other_refs: Vec<&str> = op_other.iter().map(|s| s.as_str()).collect();
+    let session_micros_refs: Vec<&str> = session_micros.iter().map(|s| s.as_str()).collect();
+    let session_macros_refs: Vec<&str> = session_macros.iter().map(|s| s.as_str()).collect();
     emit_section(
         &mut html,
         "Per-op Micro-benchmark: Big File Data Operations",
         &op_data_refs,
+        "h2",
     );
     emit_section(
         &mut html,
         "Per-op Micro-benchmark: Small File Metadata Operations",
         &op_metadata_refs,
+        "h2",
     );
-    emit_section(&mut html, "Per-op Micro-benchmark: Other", &op_other_refs);
+    if !op_metadata_cold_refs.is_empty() {
+        html.push_str(
+            "<details class=\"cold-meta-collapsed\"><summary>Per-op Micro-benchmark: Small File Metadata Operations (Cold Cache)</summary>\n",
+        );
+        emit_section(&mut html, "", &op_metadata_cold_refs, "h3");
+        html.push_str("</details>\n");
+    }
+    emit_section(
+        &mut html,
+        "Per-op Micro-benchmark: Other",
+        &op_other_refs,
+        "h2",
+    );
     emit_section(
         &mut html,
         "Session Micro-benchmark (init/run/commit)",
-        &session_micros,
+        &session_micros_refs,
+        "h2",
     );
-    emit_section(&mut html, "Session Macro-benchmark", &session_macros);
+    emit_section(
+        &mut html,
+        "Session Macro-benchmark",
+        &session_macros_refs,
+        "h2",
+    );
 
     html.push_str("</body></html>\n");
 

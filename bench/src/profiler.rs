@@ -487,10 +487,10 @@ fn generate_flamegraph(out_dir: &Path) -> Result<()> {
 /// Generate a function-level breakdown from collapsed stacks, sorted by
 /// sample count. Each line shows the percentage of total samples and the
 /// estimated wall-time contribution based on the profiled duration.
-fn workload_run_pattern(out_dir: &Path) -> String {
-    // Derive the run function name pattern from the workload directory name.
-    // e.g. "meta-open-warm-stage" → "run_meta_open_warm"
-    // Strip the source suffix (-base/-stage/-checkpoint) first.
+/// Return patterns that identify the workload's run function in collapsed
+/// stacks. We match either the shared `run_meta_*` helper or the trait
+/// impl `Workload>::run`.
+fn workload_run_patterns(out_dir: &Path) -> Vec<String> {
     let workload_name = out_dir
         .parent()
         .and_then(|p| p.file_name())
@@ -498,7 +498,17 @@ fn workload_run_pattern(out_dir: &Path) -> String {
         .unwrap_or("");
     let base =
         crate::workloads::meta_shared::source_group_name(workload_name).unwrap_or(workload_name);
-    format!("run_{}", base.replace('-', "_"))
+    let snake = base.replace('-', "_");
+    vec![
+        // Shared helper: agfs_bench::workloads::meta_shared::run_meta_open_warm
+        format!("run_{snake}"),
+        // Trait impl: <...::MetaCreate as ...::Workload>::run
+        "::Workload>::run".to_string(),
+    ]
+}
+
+fn stack_matches_run(stack: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|p| stack.contains(p))
 }
 
 // ── Call tree ─────────────────────────────────────────────────────────────────
@@ -637,7 +647,7 @@ fn generate_breakdown(out_dir: &Path, wall_ms: u64, iters: u32) -> Result<()> {
         .unwrap_or("?");
 
     let per_op_us = lookup_per_op_latency(out_dir, workload_name, backend_name);
-    let run_pattern = workload_run_pattern(out_dir);
+    let run_patterns = workload_run_patterns(out_dir);
 
     let skip = |func: &str| -> bool {
         func == "agfs-bench"
@@ -674,7 +684,7 @@ fn generate_breakdown(out_dir: &Path, wall_ms: u64, iters: u32) -> Result<()> {
             continue;
         }
         all_total += count;
-        let is_run = stack.contains(&run_pattern);
+        let is_run = stack_matches_run(stack, &run_patterns);
         let is_warmup =
             is_run && (stack.contains("warm_metadata") || stack.contains("warm_readdir"));
         if is_run {
