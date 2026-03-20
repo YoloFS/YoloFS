@@ -371,9 +371,19 @@ mod tests {
     #[test]
     fn reachable_no_restores() {
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
         ];
         let tl = Timeline::new(records);
         let reachable = tl.reachable_records();
@@ -384,14 +394,41 @@ mod tests {
     fn reachable_single_restore() {
         // K1 [A] K2 [B] K3 S4(K2) [D] K5
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Added { path: "/b".into(), dtype: Some(DType::File), ino: 2 },
-            Record::Checkpoint(Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Restore { gen_id: 4, target_gen: 2 },
-            Record::Added { path: "/d".into(), dtype: Some(DType::File), ino: 3 },
-            Record::Checkpoint(Checkpoint { gen_id: 5, name: "c5".into() }),
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Restore {
+                gen_id: 4,
+                target_gen: 2,
+            },
+            Record::Added {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
         ];
         let tl = Timeline::new(records);
         let reachable = tl.reachable_records();
@@ -408,15 +445,45 @@ mod tests {
     fn reachable_multiple_restores_last_wins() {
         // K1 [A] K2 [B] K3 S4(K2) [D] K5 S6(K1)
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Added { path: "/b".into(), dtype: Some(DType::File), ino: 2 },
-            Record::Checkpoint(Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Restore { gen_id: 4, target_gen: 2 },
-            Record::Added { path: "/d".into(), dtype: Some(DType::File), ino: 3 },
-            Record::Checkpoint(Checkpoint { gen_id: 5, name: "c5".into() }),
-            Record::Restore { gen_id: 6, target_gen: 1 },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Restore {
+                gen_id: 4,
+                target_gen: 2,
+            },
+            Record::Added {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
+            Record::Restore {
+                gen_id: 6,
+                target_gen: 1,
+            },
         ];
         let tl = Timeline::new(records);
         let reachable = tl.reachable_records();
@@ -429,17 +496,54 @@ mod tests {
     fn reachable_nested_s_in_dead_zone() {
         // K1 [A] K2 [B] K3 S4(K1) [D] K5 [E] K6 S7(K5)
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Added { path: "/b".into(), dtype: Some(DType::File), ino: 2 },
-            Record::Checkpoint(Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Restore { gen_id: 4, target_gen: 1 },
-            Record::Added { path: "/d".into(), dtype: Some(DType::File), ino: 3 },
-            Record::Checkpoint(Checkpoint { gen_id: 5, name: "c5".into() }),
-            Record::Added { path: "/e".into(), dtype: Some(DType::File), ino: 4 },
-            Record::Checkpoint(Checkpoint { gen_id: 6, name: "c6".into() }),
-            Record::Restore { gen_id: 7, target_gen: 5 },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Restore {
+                gen_id: 4,
+                target_gen: 1,
+            },
+            Record::Added {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
+            Record::Added {
+                path: "/e".into(),
+                dtype: Some(DType::File),
+                ino: 4,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 6,
+                name: "c6".into(),
+            }),
+            Record::Restore {
+                gen_id: 7,
+                target_gen: 5,
+            },
         ];
         let tl = Timeline::new(records);
         let reachable = tl.reachable_records();
@@ -457,15 +561,45 @@ mod tests {
     fn reachable_undo_restore() {
         // K1 [A] K2 [B] K3 S4(K1) [D] K5 S6(K3)
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Added { path: "/b".into(), dtype: Some(DType::File), ino: 2 },
-            Record::Checkpoint(Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Restore { gen_id: 4, target_gen: 1 },
-            Record::Added { path: "/d".into(), dtype: Some(DType::File), ino: 3 },
-            Record::Checkpoint(Checkpoint { gen_id: 5, name: "c5".into() }),
-            Record::Restore { gen_id: 6, target_gen: 3 },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Restore {
+                gen_id: 4,
+                target_gen: 1,
+            },
+            Record::Added {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
+            Record::Restore {
+                gen_id: 6,
+                target_gen: 3,
+            },
         ];
         let tl = Timeline::new(records);
         let reachable = tl.reachable_records();
@@ -483,10 +617,23 @@ mod tests {
     fn reachable_restore_to_initial() {
         // K1 [A] K2 S3(K1)
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Restore { gen_id: 3, target_gen: 1 },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Restore {
+                gen_id: 3,
+                target_gen: 1,
+            },
         ];
         let tl = Timeline::new(records);
         let reachable = tl.reachable_records();
@@ -499,11 +646,28 @@ mod tests {
     fn reachable_corrupt_s_record_skipped() {
         // S record references non-existent checkpoint gen 99 — should be skipped.
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Restore { gen_id: 3, target_gen: 99 },
-            Record::Added { path: "/b".into(), dtype: Some(DType::File), ino: 2 },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Restore {
+                gen_id: 3,
+                target_gen: 99,
+            },
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
         ];
         let tl = Timeline::new(records);
         let reachable = tl.reachable_records();
@@ -523,13 +687,36 @@ mod tests {
         // K1 [A] K2 [B] K3 S4(K2) S5(K1)
         // Two consecutive restores: second one "wins" and goes further back.
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Added { path: "/b".into(), dtype: Some(DType::File), ino: 2 },
-            Record::Checkpoint(Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Restore { gen_id: 4, target_gen: 2 },
-            Record::Restore { gen_id: 5, target_gen: 1 },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Restore {
+                gen_id: 4,
+                target_gen: 2,
+            },
+            Record::Restore {
+                gen_id: 5,
+                target_gen: 1,
+            },
         ];
         let tl = Timeline::new(records);
         let reachable = tl.reachable_records();
@@ -541,9 +728,19 @@ mod tests {
     #[test]
     fn find_checkpoint_by_id() {
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "first".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "second".into() }),
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "first".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "second".into(),
+            }),
         ];
         let tl = Timeline::new(records);
         let (idx, c) = tl.find_checkpoint("1").unwrap();
@@ -554,9 +751,19 @@ mod tests {
     #[test]
     fn find_checkpoint_by_name() {
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "first".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "second".into() }),
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "first".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "second".into(),
+            }),
         ];
         let tl = Timeline::new(records);
         let (idx, c) = tl.find_checkpoint("second").unwrap();
@@ -566,9 +773,10 @@ mod tests {
 
     #[test]
     fn find_checkpoint_not_found() {
-        let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "first".into() }),
-        ];
+        let records = vec![Record::Checkpoint(Checkpoint {
+            gen_id: 1,
+            name: "first".into(),
+        })];
         let tl = Timeline::new(records);
         assert!(tl.find_checkpoint("nonexistent").is_err());
     }
@@ -577,14 +785,41 @@ mod tests {
     fn segment_reachability() {
         // K1 [A] K2 [B] K3 S4(K2) [D] K5
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Added { path: "/b".into(), dtype: Some(DType::File), ino: 2 },
-            Record::Checkpoint(Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Restore { gen_id: 4, target_gen: 2 },
-            Record::Added { path: "/d".into(), dtype: Some(DType::File), ino: 3 },
-            Record::Checkpoint(Checkpoint { gen_id: 5, name: "c5".into() }),
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Restore {
+                gen_id: 4,
+                target_gen: 2,
+            },
+            Record::Added {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
         ];
         let tl = Timeline::new(records);
 
@@ -602,10 +837,24 @@ mod tests {
     #[test]
     fn records_before_first_checkpoint_skipped() {
         let records = vec![
-            Record::Added { path: "/orphan".into(), dtype: Some(DType::File), ino: 999 },
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
+            Record::Added {
+                path: "/orphan".into(),
+                dtype: Some(DType::File),
+                ino: 999,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
         ];
         let tl = Timeline::new(records);
         assert_eq!(tl.segments.len(), 1);
@@ -616,11 +865,28 @@ mod tests {
     #[test]
     fn timeline_slice_at() {
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Added { path: "/b".into(), dtype: Some(DType::File), ino: 2 },
-            Record::Checkpoint(Checkpoint { gen_id: 3, name: "c3".into() }),
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
         ];
         let tl = Timeline::new(records);
         let sliced = tl.slice(Some("c3"), None, None).unwrap();
@@ -634,13 +900,37 @@ mod tests {
     #[test]
     fn timeline_slice_from_to() {
         let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Added { path: "/a".into(), dtype: Some(DType::File), ino: 1 },
-            Record::Checkpoint(Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Added { path: "/b".into(), dtype: Some(DType::File), ino: 2 },
-            Record::Checkpoint(Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Added { path: "/c".into(), dtype: Some(DType::File), ino: 3 },
-            Record::Checkpoint(Checkpoint { gen_id: 4, name: "c4".into() }),
+            Record::Checkpoint(Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Added {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Added {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Added {
+                path: "/c".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            },
+            Record::Checkpoint(Checkpoint {
+                gen_id: 4,
+                name: "c4".into(),
+            }),
         ];
         let tl = Timeline::new(records);
         let sliced = tl.slice(None, Some("c2"), Some("c3")).unwrap();
@@ -653,9 +943,10 @@ mod tests {
 
     #[test]
     fn timeline_slice_not_found() {
-        let records = vec![
-            Record::Checkpoint(Checkpoint { gen_id: 1, name: "init".into() }),
-        ];
+        let records = vec![Record::Checkpoint(Checkpoint {
+            gen_id: 1,
+            name: "init".into(),
+        })];
         let tl = Timeline::new(records);
         assert!(tl.slice(Some("nonexistent"), None, None).is_err());
     }

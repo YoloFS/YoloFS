@@ -125,13 +125,13 @@ fn mkdir_with_file_creates_separate_inodes() {
     // Parent directories should also have inode entries
     let dir_ids: Vec<u64> = ch
         .iter()
-        .filter_map(|c| match c {
-            agfs::journal::resolve::Change::Added { path, ino, .. }
-                if path.ends_with("/parent") || path.ends_with("/child") =>
-            {
-                Some(*ino)
+        .filter_map(|(path, c)| {
+            if path.ends_with("/parent") || path.ends_with("/child") {
+                if let agfs::journal::Dirent::Added { ino, .. } = c {
+                    return Some(*ino);
+                }
             }
-            _ => None,
+            None
         })
         .collect();
     for ino in &dir_ids {

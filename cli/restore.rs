@@ -27,8 +27,8 @@ impl RestoreItem {
     }
 }
 
-/// Convert a resolved Change list into restore items (owned data, sortable).
-fn changes_to_items(changes: &[journal::resolve::Change]) -> Vec<RestoreItem> {
+/// Convert a resolved Dirent list into restore items (owned data, sortable).
+fn changes_to_items(changes: &[(String, journal::Dirent)]) -> Vec<RestoreItem> {
     use std::collections::BTreeSet;
 
     // Collect destination paths that have staged content (Added/Modified).
@@ -36,21 +36,18 @@ fn changes_to_items(changes: &[journal::resolve::Change]) -> Vec<RestoreItem> {
     // takes precedence over a redirect — skip the redundant redirect.
     let staged_paths: BTreeSet<&str> = changes
         .iter()
-        .filter_map(|c| match c {
-            journal::resolve::Change::Added { path, .. } | journal::resolve::Change::Modified { path, .. } => {
-                Some(path.as_str())
-            }
+        .filter_map(|(path, c)| match c {
+            journal::Dirent::Added { .. } | journal::Dirent::Modified { .. } => Some(path.as_str()),
             _ => None,
         })
         .collect();
 
     let mut items = Vec::new();
 
-    for change in changes {
+    for (path, change) in changes {
         match change {
-            journal::resolve::Change::Added { path, ino, dtype }
-            | journal::resolve::Change::Modified { path, ino, dtype } => {
-                let in_base = matches!(change, journal::resolve::Change::Modified { .. });
+            journal::Dirent::Added { ino, dtype } | journal::Dirent::Modified { ino, dtype } => {
+                let in_base = matches!(change, journal::Dirent::Modified { .. });
                 items.push(RestoreItem {
                     path: path.clone(),
                     ino: *ino,
@@ -59,14 +56,14 @@ fn changes_to_items(changes: &[journal::resolve::Change]) -> Vec<RestoreItem> {
                     d_type: dtype.to_libc(),
                 });
             }
-            journal::resolve::Change::Deleted(path) => {
+            journal::Dirent::Deleted => {
                 items.push(RestoreItem::deleted(path.clone()));
             }
-            journal::resolve::Change::Renamed { from, to, dtype } => {
+            journal::Dirent::Renamed { from, dtype } => {
                 items.push(RestoreItem::deleted(from.clone()));
-                if !staged_paths.contains(to.as_str()) {
+                if !staged_paths.contains(path.as_str()) {
                     items.push(RestoreItem {
-                        path: to.clone(),
+                        path: path.clone(),
                         ino: journal::INO_REDIRECT,
                         base: from.clone(),
                         in_base: false,
@@ -74,11 +71,11 @@ fn changes_to_items(changes: &[journal::resolve::Change]) -> Vec<RestoreItem> {
                     });
                 }
             }
-            journal::resolve::Change::Replaced { from, to, dtype } => {
+            journal::Dirent::Replaced { from, dtype } => {
                 items.push(RestoreItem::deleted(from.clone()));
-                if !staged_paths.contains(to.as_str()) {
+                if !staged_paths.contains(path.as_str()) {
                     items.push(RestoreItem {
-                        path: to.clone(),
+                        path: path.clone(),
                         ino: journal::INO_REDIRECT,
                         base: from.clone(),
                         in_base: true,
@@ -168,15 +165,17 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::journal::DType;
-    use crate::journal::resolve::Change;
+    use crate::journal::Dirent;
 
     #[test]
     fn added_produces_single_entry() {
-        let changes = vec![Change::Added {
-            path: "/src/main.rs".into(),
-            ino: 1,
-            dtype: DType::File,
-        }];
+        let changes = vec![(
+            "/src/main.rs".into(),
+            Dirent::Added {
+                ino: 1,
+                dtype: DType::File,
+            },
+        )];
         let items = changes_to_items(&changes);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].path, "/src/main.rs");
@@ -187,7 +186,7 @@ mod tests {
 
     #[test]
     fn deleted_produces_zero_entry() {
-        let changes = vec![Change::Deleted("/old.txt".into())];
+        let changes = vec![("/old.txt".into(), Dirent::Deleted)];
         let items = changes_to_items(&changes);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].path, "/old.txt");
@@ -197,11 +196,13 @@ mod tests {
 
     #[test]
     fn renamed_produces_delete_and_redirect() {
-        let changes = vec![Change::Renamed {
-            from: "/a.txt".into(),
-            to: "/b.txt".into(),
-            dtype: DType::File,
-        }];
+        let changes = vec![(
+            "/b.txt".into(),
+            Dirent::Renamed {
+                from: "/a.txt".into(),
+                dtype: DType::File,
+            },
+        )];
         let items = changes_to_items(&changes);
         assert_eq!(items.len(), 2);
 
@@ -217,16 +218,20 @@ mod tests {
     #[test]
     fn renamed_modified_produces_delete_and_ino() {
         let changes = vec![
-            Change::Renamed {
-                from: "/old.rs".into(),
-                to: "/new.rs".into(),
-                dtype: DType::File,
-            },
-            Change::Modified {
-                path: "/new.rs".into(),
-                ino: 5,
-                dtype: DType::File,
-            },
+            (
+                "/new.rs".into(),
+                Dirent::Renamed {
+                    from: "/old.rs".into(),
+                    dtype: DType::File,
+                },
+            ),
+            (
+                "/new.rs".into(),
+                Dirent::Modified {
+                    ino: 5,
+                    dtype: DType::File,
+                },
+            ),
         ];
         let items = changes_to_items(&changes);
         assert_eq!(items.len(), 2);
@@ -243,21 +248,27 @@ mod tests {
     #[test]
     fn entries_sorted_by_path() {
         let changes = vec![
-            Change::Added {
-                path: "/z/file.rs".into(),
-                ino: 1,
-                dtype: DType::File,
-            },
-            Change::Added {
-                path: "/a/file.rs".into(),
-                ino: 2,
-                dtype: DType::File,
-            },
-            Change::Added {
-                path: "/a".into(),
-                ino: 3,
-                dtype: DType::Dir,
-            },
+            (
+                "/z/file.rs".into(),
+                Dirent::Added {
+                    ino: 1,
+                    dtype: DType::File,
+                },
+            ),
+            (
+                "/a/file.rs".into(),
+                Dirent::Added {
+                    ino: 2,
+                    dtype: DType::File,
+                },
+            ),
+            (
+                "/a".into(),
+                Dirent::Added {
+                    ino: 3,
+                    dtype: DType::Dir,
+                },
+            ),
         ];
         let items = changes_to_items(&changes);
         assert_eq!(items.len(), 3);
@@ -268,22 +279,26 @@ mod tests {
 
     #[test]
     fn directory_inode_gets_dt_dir() {
-        let changes = vec![Change::Added {
-            path: "/newdir".into(),
-            ino: 1,
-            dtype: DType::Dir,
-        }];
+        let changes = vec![(
+            "/newdir".into(),
+            Dirent::Added {
+                ino: 1,
+                dtype: DType::Dir,
+            },
+        )];
         let items = changes_to_items(&changes);
         assert_eq!(items[0].d_type, libc::DT_DIR);
     }
 
     #[test]
     fn symlink_inode_gets_dt_lnk() {
-        let changes = vec![Change::Added {
-            path: "/link".into(),
-            ino: 1,
-            dtype: DType::Link,
-        }];
+        let changes = vec![(
+            "/link".into(),
+            Dirent::Added {
+                ino: 1,
+                dtype: DType::Link,
+            },
+        )];
         let items = changes_to_items(&changes);
         assert_eq!(items[0].d_type, libc::DT_LNK);
     }
@@ -338,11 +353,13 @@ mod tests {
     /// Renamed directory must produce DT_DIR, not DT_REG.
     #[test]
     fn renamed_directory_gets_dt_dir() {
-        let changes = vec![Change::Renamed {
-            from: "/mydir".into(),
-            to: "/newdir".into(),
-            dtype: DType::Dir,
-        }];
+        let changes = vec![(
+            "/newdir".into(),
+            Dirent::Renamed {
+                from: "/mydir".into(),
+                dtype: DType::Dir,
+            },
+        )];
         let items = changes_to_items(&changes);
 
         let to_item = items.iter().find(|e| e.path == "/newdir").unwrap();
@@ -357,11 +374,13 @@ mod tests {
     /// Renamed symlink must produce DT_LNK, not DT_REG.
     #[test]
     fn renamed_symlink_gets_dt_lnk() {
-        let changes = vec![Change::Renamed {
-            from: "/mylink".into(),
-            to: "/newlink".into(),
-            dtype: DType::Link,
-        }];
+        let changes = vec![(
+            "/newlink".into(),
+            Dirent::Renamed {
+                from: "/mylink".into(),
+                dtype: DType::Link,
+            },
+        )];
         let items = changes_to_items(&changes);
 
         let to_item = items.iter().find(|e| e.path == "/newlink").unwrap();

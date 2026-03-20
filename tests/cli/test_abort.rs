@@ -43,10 +43,7 @@ fn abort_after_restore_discards_all() {
     s.cli(&["restore", "chk1"]).expect("restore");
 
     // Verify we're at chk1 state
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
-        "v1\n"
-    );
+    assert_eq!(fs::read_to_string(s.mnt_path("hello.txt")).unwrap(), "v1\n");
 
     // Abort should discard everything
     let output = s.cli(&["abort", "--force"]).expect("abort");
@@ -60,8 +57,5 @@ fn abort_after_restore_discards_all() {
 
     // Status should show nothing staged
     let status = s.cli(&["status"]).expect("status");
-    assert!(
-        status.contains("No changes staged"),
-        "status: {status}"
-    );
+    assert!(status.contains("No changes staged"), "status: {status}");
 }

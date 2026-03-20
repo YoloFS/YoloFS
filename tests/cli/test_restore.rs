@@ -632,7 +632,10 @@ fn timeline_after_restore() {
     s.cli(&["restore", "first"]).expect("restore");
 
     let timeline = s.cli(&["timeline"]).expect("timeline");
-    assert!(timeline.contains("first"), "first should be in timeline: {timeline}");
+    assert!(
+        timeline.contains("first"),
+        "first should be in timeline: {timeline}"
+    );
     assert!(
         timeline.contains("second"),
         "second should still be in timeline (append-only journal): {timeline}"
@@ -780,8 +783,14 @@ fn timeline_shows_restore_event() {
     s.cli(&["restore", "build"]).expect("restore");
 
     let timeline = s.cli(&["timeline"]).expect("timeline");
-    assert!(timeline.contains("restore"), "timeline should show restore event: {timeline}");
-    assert!(timeline.contains("build"), "timeline should reference target checkpoint: {timeline}");
+    assert!(
+        timeline.contains("restore"),
+        "timeline should show restore event: {timeline}"
+    );
+    assert!(
+        timeline.contains("build"),
+        "timeline should reference target checkpoint: {timeline}"
+    );
 }
 
 /// Restore, make changes, checkpoint, then restore again (further back).

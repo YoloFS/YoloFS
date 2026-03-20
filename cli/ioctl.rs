@@ -204,11 +204,7 @@ pub fn remove_rule(fd: &File, path: &str) -> Result<()> {
 /// Send AGFS_IOC_RESTORE ioctl. Resets staging state and optionally injects
 /// dirent entries. For commit/abort, pass empty entries with target_gen=0.
 /// For restore, pass target_gen > 0; returns the new generation assigned.
-pub fn restore(
-    fd: &File,
-    target_gen: u64,
-    entries: &[AgfsIocRestoreEntry],
-) -> Result<u64> {
+pub fn restore(fd: &File, target_gen: u64, entries: &[AgfsIocRestoreEntry]) -> Result<u64> {
     let mut hdr = AgfsIocRestore {
         target_gen,
         new_gen: 0,

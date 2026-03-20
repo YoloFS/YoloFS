@@ -496,8 +496,8 @@ fn workload_run_pattern(out_dir: &Path) -> String {
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    let base = crate::workloads::meta_shared::source_group_name(workload_name)
-        .unwrap_or(workload_name);
+    let base =
+        crate::workloads::meta_shared::source_group_name(workload_name).unwrap_or(workload_name);
     format!("run_{}", base.replace('-', "_"))
 }
 
@@ -629,10 +629,7 @@ fn generate_breakdown(out_dir: &Path, wall_ms: u64, iters: u32) -> Result<()> {
     }
     let raw = fs::read_to_string(&stacks_path).context("reading stacks.txt")?;
 
-    let backend_name = out_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("?");
+    let backend_name = out_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
     let workload_name = out_dir
         .parent()
         .and_then(|p| p.file_name())
@@ -734,10 +731,7 @@ fn generate_breakdown(out_dir: &Path, wall_ms: u64, iters: u32) -> Result<()> {
 
     let unit = if per_op_us.is_some() { "µs/op" } else { "~ms" };
     buf.push_str(&format!("  {:>6}  {:>5}  call tree\n", "incl", "self"));
-    buf.push_str(&format!(
-        "  {:>6}  {:>5}\n",
-        unit, unit
-    ));
+    buf.push_str(&format!("  {:>6}  {:>5}\n", unit, unit));
     buf.push_str(&format!("  {}\n", "-".repeat(60)));
 
     // Render from the root's children (skip the synthetic root node).
@@ -845,14 +839,8 @@ pub fn generate_comparison(prof_workload_dir: &Path) -> Result<()> {
                 .collect();
             let child = merge_trees(&child_trees, scales, n);
             // Skip nodes where all backends have < 1% of max inclusive.
-            let max_incl = child
-                .inclusive
-                .iter()
-                .fold(0.0f64, |a, &b| a.max(b));
-            let parent_max = merged
-                .inclusive
-                .iter()
-                .fold(0.0f64, |a, &b| a.max(b));
+            let max_incl = child.inclusive.iter().fold(0.0f64, |a, &b| a.max(b));
+            let parent_max = merged.inclusive.iter().fold(0.0f64, |a, &b| a.max(b));
             if max_incl >= parent_max * 0.01 {
                 merged.children.push(child);
             }
@@ -862,7 +850,9 @@ pub fn generate_comparison(prof_workload_dir: &Path) -> Result<()> {
         merged.children.sort_by(|a, b| {
             let max_a = a.inclusive.iter().fold(0.0f64, |x, &y| x.max(y));
             let max_b = b.inclusive.iter().fold(0.0f64, |x, &y| x.max(y));
-            max_b.partial_cmp(&max_a).unwrap_or(std::cmp::Ordering::Equal)
+            max_b
+                .partial_cmp(&max_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         merged
@@ -878,10 +868,7 @@ pub fn generate_comparison(prof_workload_dir: &Path) -> Result<()> {
     let n = metas.len();
     let scales: Vec<f64> = metas
         .iter()
-        .map(|m| {
-            m.per_op_us.unwrap_or(m.wall_ms as f64)
-                / m.timed_samples.max(1) as f64
-        })
+        .map(|m| m.per_op_us.unwrap_or(m.wall_ms as f64) / m.timed_samples.max(1) as f64)
         .collect();
 
     // Get root children from each tree (skip the synthetic root).
@@ -905,24 +892,29 @@ pub fn generate_comparison(prof_workload_dir: &Path) -> Result<()> {
     let backend_labels: Vec<&str> = metas.iter().map(|m| m.backend.as_str()).collect();
     buf.push_str(&format!("  {:<35}", ""));
     for label in &backend_labels {
-        let short = if label.len() > 10 { &label[..10] } else { label };
+        let short = if label.len() > 10 {
+            &label[..10]
+        } else {
+            label
+        };
         buf.push_str(&format!(" {:>10}", short));
     }
     if n == 2 {
         buf.push_str(&format!(" {:>8}", "delta"));
     }
     buf.push('\n');
-    buf.push_str(&format!("  {}\n", "-".repeat(35 + n * 11 + if n == 2 { 9 } else { 0 })));
+    buf.push_str(&format!(
+        "  {}\n",
+        "-".repeat(35 + n * 11 + if n == 2 { 9 } else { 0 })
+    ));
 
-    fn render_merged(
-        node: &MergedNode,
-        buf: &mut String,
-        prefix: &str,
-        is_last: bool,
-        n: usize,
-    ) {
+    fn render_merged(node: &MergedNode, buf: &mut String, prefix: &str, is_last: bool, n: usize) {
         let connector = if is_last { "└─ " } else { "├─ " };
-        buf.push_str(&format!("  {prefix}{connector}{:<width$}", node.name, width = 33_usize.saturating_sub(prefix.len() + 3)));
+        buf.push_str(&format!(
+            "  {prefix}{connector}{:<width$}",
+            node.name,
+            width = 33_usize.saturating_sub(prefix.len() + 3)
+        ));
         for &us in &node.inclusive {
             if us > 0.005 {
                 buf.push_str(&format!(" {:>9.2}", us));

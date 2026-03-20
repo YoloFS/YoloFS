@@ -500,7 +500,7 @@ fn complex_multi_operation_commit() {
 
     // ── Verify resolved changes ──
     use agfs::journal;
-    use agfs::journal::resolve::Change;
+    use agfs::journal::Dirent;
 
     let agfs_dir = s.root.join(".agfs");
     let records = journal::read(&agfs_dir).expect("read journal").records;
@@ -508,31 +508,31 @@ fn complex_multi_operation_commit() {
 
     let has_modified_hello = changes
         .iter()
-        .any(|c| matches!(c, Change::Modified { path, .. } if path.ends_with("/hello.txt")));
+        .any(|(path, c)| matches!(c, Dirent::Modified { .. }) && path.ends_with("/hello.txt"));
     let has_modified_multi = changes
         .iter()
-        .any(|c| matches!(c, Change::Modified { path, .. } if path.ends_with("/multi.txt")));
-    let has_renamed_deep_to_top = changes.iter().any(|c| {
-        matches!(c, Change::Renamed { from, to, .. }
+        .any(|(path, c)| matches!(c, Dirent::Modified { .. }) && path.ends_with("/multi.txt"));
+    let has_renamed_deep_to_top = changes.iter().any(|(to, c)| {
+        matches!(c, Dirent::Renamed { from, .. }
             if from.ends_with("/deep.txt") && to.ends_with("/top.txt"))
     });
     let has_added_link = changes
         .iter()
-        .any(|c| matches!(c, Change::Added { path, .. } if path.ends_with("/link.txt")));
-    let has_temp = changes.iter().any(|c| match c {
-        Change::Added { path, .. } | Change::Modified { path, .. } | Change::Deleted(path) => {
+        .any(|(path, c)| matches!(c, Dirent::Added { .. }) && path.ends_with("/link.txt"));
+    let has_temp = changes.iter().any(|(path, c)| match c {
+        Dirent::Added { .. } | Dirent::Modified { .. } | Dirent::Deleted => {
             path.ends_with("/temp.txt")
         }
-        Change::Renamed { from, to, .. } | Change::Replaced { from, to, .. } => {
-            from.ends_with("/temp.txt") || to.ends_with("/temp.txt")
+        Dirent::Renamed { from, .. } | Dirent::Replaced { from, .. } => {
+            from.ends_with("/temp.txt") || path.ends_with("/temp.txt")
         }
     });
-    let has_brand_new = changes.iter().any(|c| match c {
-        Change::Added { path, .. } | Change::Modified { path, .. } | Change::Deleted(path) => {
+    let has_brand_new = changes.iter().any(|(path, c)| match c {
+        Dirent::Added { .. } | Dirent::Modified { .. } | Dirent::Deleted => {
             path.ends_with("/brand_new.txt")
         }
-        Change::Renamed { from, to, .. } | Change::Replaced { from, to, .. } => {
-            from.ends_with("/brand_new.txt") || to.ends_with("/brand_new.txt")
+        Dirent::Renamed { from, .. } | Dirent::Replaced { from, .. } => {
+            from.ends_with("/brand_new.txt") || path.ends_with("/brand_new.txt")
         }
     });
 

@@ -278,8 +278,14 @@ fn multiple_checkpoints_interleaved_writes() {
     // Each checkpoint state is independently verifiable via CLI — no need to count inodes.
     // The timeline should list both checkpoints.
     let timeline = s.cli(&["timeline"]).expect("timeline");
-    assert!(timeline.contains("s1"), "timeline should list s1: {timeline}");
-    assert!(timeline.contains("s2"), "timeline should list s2: {timeline}");
+    assert!(
+        timeline.contains("s1"),
+        "timeline should list s1: {timeline}"
+    );
+    assert!(
+        timeline.contains("s2"),
+        "timeline should list s2: {timeline}"
+    );
 }
 
 /// `--from` shows changes after a checkpoint to end.
@@ -645,10 +651,22 @@ fn timeline_interleaves_checkpoints_and_restores() {
     let timeline = s.cli(&["timeline"]).expect("timeline");
 
     // All events should be present
-    assert!(timeline.contains("chk1"), "timeline should list chk1: {timeline}");
-    assert!(timeline.contains("chk2"), "timeline should list chk2: {timeline}");
-    assert!(timeline.contains("chk3"), "timeline should list chk3: {timeline}");
-    assert!(timeline.contains("restore"), "timeline should show restore: {timeline}");
+    assert!(
+        timeline.contains("chk1"),
+        "timeline should list chk1: {timeline}"
+    );
+    assert!(
+        timeline.contains("chk2"),
+        "timeline should list chk2: {timeline}"
+    );
+    assert!(
+        timeline.contains("chk3"),
+        "timeline should list chk3: {timeline}"
+    );
+    assert!(
+        timeline.contains("restore"),
+        "timeline should show restore: {timeline}"
+    );
 
     // Restore should appear between chk2 and chk3 in the output
     let restore_pos = timeline.find("restore").unwrap();

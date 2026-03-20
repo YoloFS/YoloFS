@@ -4,7 +4,7 @@
 // Journal is resolved first, then changes are applied sequentially.
 
 use crate::journal;
-use crate::journal::resolve::Change;
+use crate::journal::Dirent;
 use crate::utils::to_base_path;
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -81,35 +81,35 @@ fn apply_inode(
     Ok(())
 }
 
-fn apply_changes(agfs: &Path, changes: &[Change]) -> Result<()> {
+fn apply_changes(agfs: &Path, changes: &[(String, Dirent)]) -> Result<()> {
     let mut ensured: HashSet<PathBuf> = HashSet::new();
 
-    for change in changes {
+    for (path, change) in changes {
         match change {
-            Change::Renamed { from, to, .. } | Change::Replaced { from, to, .. } => {
+            Dirent::Renamed { from, .. } | Dirent::Replaced { from, .. } => {
                 let base_old = to_base_path(from);
-                let base_new = to_base_path(to);
+                let base_new = to_base_path(path);
                 ensure_parent(&base_new, &mut ensured)?;
                 // Guard: source may not exist in base when a staged-only
                 // file was renamed; the content is handled by a separate
                 // Modified change via apply_inode.
                 if base_old.exists() {
                     fs::rename(&base_old, &base_new)
-                        .with_context(|| format!("rename {from} → {to}"))?;
+                        .with_context(|| format!("rename {from} → {path}"))?;
                 }
             }
-            Change::Deleted(p) => {
-                let base_file = to_base_path(p);
+            Dirent::Deleted => {
+                let base_file = to_base_path(path);
                 if base_file.exists() {
                     if base_file.is_dir() {
                         fs::remove_dir_all(&base_file)
                     } else {
                         fs::remove_file(&base_file)
                     }
-                    .with_context(|| format!("deleting {p}"))?;
+                    .with_context(|| format!("deleting {path}"))?;
                 }
             }
-            Change::Added { path, ino, .. } | Change::Modified { path, ino, .. } => {
+            Dirent::Added { ino, .. } | Dirent::Modified { ino, .. } => {
                 let base_file = to_base_path(path);
                 apply_inode(agfs, *ino, &base_file, &mut ensured)?;
             }

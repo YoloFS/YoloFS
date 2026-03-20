@@ -73,15 +73,9 @@ fn journal_path_filter() {
     let output = s
         .cli(&["journal", "--path", "a.txt"])
         .expect("journal --path");
-    assert!(
-        output.contains("a.txt"),
-        "should include a.txt: {output}"
-    );
+    assert!(output.contains("a.txt"), "should include a.txt: {output}");
     // b.txt data records should be filtered out (only structural records pass through)
-    let data_lines: Vec<&str> = output
-        .lines()
-        .filter(|l| l.contains("b.txt"))
-        .collect();
+    let data_lines: Vec<&str> = output.lines().filter(|l| l.contains("b.txt")).collect();
     assert!(
         data_lines.is_empty(),
         "should not show b.txt data records: {output}"

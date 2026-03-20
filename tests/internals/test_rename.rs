@@ -123,10 +123,7 @@ fn rename_overwrite_journal() {
         if path.ends_with("/deep.txt") && base.ends_with("/hello.txt"))
     });
     assert!(has_delete, "should have Delete for hello.txt: {records:?}");
-    assert!(
-        has_replace,
-        "should have Replace for deep.txt: {records:?}"
-    );
+    assert!(has_replace, "should have Replace for deep.txt: {records:?}");
 }
 
 /// Rename back and forth: a→b→a. After resolution, no staged changes

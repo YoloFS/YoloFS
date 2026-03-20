@@ -220,7 +220,7 @@ agfs/
 │   ├── abort.rs
 │   ├── diff.rs                # `agfs status` + `agfs diff` (summary and verbose views)
 │   ├── journal/               # journal parsing, timeline, and resolution
-│   │   ├── types.rs           # Record, Change, and related types
+│   │   ├── types.rs           # Record, Dirent, DType, and related types
 │   │   ├── parse.rs           # journal file parsing
 │   │   ├── timeline.rs        # checkpoint/restore DAG (Timeline, Segment)
 │   │   └── resolve.rs         # journal resolution (collapse records into final ops)

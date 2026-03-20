@@ -1,6 +1,9 @@
 // agfs CLI — main.rs
 
-use agfs::{abort, checkpoint, commit, config, diff, exec, journal_cmd, kmod, mount, restore, timeline_cmd, watch};
+use agfs::{
+    abort, checkpoint, commit, config, diff, exec, journal_cmd, kmod, mount, restore, timeline_cmd,
+    watch,
+};
 use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};

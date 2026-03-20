@@ -28,9 +28,7 @@ fn operations_produce_ordered_records() {
         "missing A: {records:?}"
     );
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Checkpoint(_))),
+        records.iter().any(|r| matches!(r, Record::Checkpoint(_))),
         "missing S: {records:?}"
     );
     assert!(

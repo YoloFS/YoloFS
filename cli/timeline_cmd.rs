@@ -52,10 +52,7 @@ pub fn run() -> anyhow::Result<()> {
             journal::Record::Restore {
                 gen_id, target_gen, ..
             } => {
-                let target_name = chk_names
-                    .get(target_gen)
-                    .copied()
-                    .unwrap_or("(unknown)");
+                let target_name = chk_names.get(target_gen).copied().unwrap_or("(unknown)");
                 format!(
                     "{} {}",
                     format!("restore    [{gen_id}]").yellow().bold(),

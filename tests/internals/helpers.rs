@@ -1,6 +1,6 @@
 use crate::helpers::AgfsSession;
+use agfs::journal::Dirent;
 use agfs::journal::{self, Record};
-use agfs::journal::resolve::Change;
 use std::fs;
 use std::path::PathBuf;
 
@@ -11,9 +11,9 @@ pub fn journal(s: &AgfsSession) -> Vec<Record> {
         .records
 }
 
-/// Resolve the journal to get the final Change list.
+/// Resolve the journal to get the final Dirent list.
 /// Uses `reachable` to filter out dead records (e.g. after restore).
-pub fn changes(s: &AgfsSession) -> Vec<Change> {
+pub fn changes(s: &AgfsSession) -> Vec<(String, Dirent)> {
     let records = journal(s);
     let reachable = journal::timeline::reachable(records);
     journal::resolve::resolve(reachable).expect("resolve journal")
@@ -36,16 +36,15 @@ pub fn inode_path(s: &AgfsSession, ino: u64) -> PathBuf {
 }
 
 /// Find the ino for a change matching a path suffix.
-pub fn ino_for(changes: &[Change], suffix: &str) -> u64 {
+pub fn ino_for(changes: &[(String, Dirent)], suffix: &str) -> u64 {
     changes
         .iter()
-        .find_map(|c| match c {
-            Change::Added { path, .. } | Change::Modified { path, .. }
-                if path.ends_with(suffix) =>
-            {
+        .find_map(|(path, c)| {
+            if path.ends_with(suffix) {
                 c.ino()
+            } else {
+                None
             }
-            _ => None,
         })
         .unwrap_or_else(|| panic!("no inode found for path ending with {suffix}"))
 }

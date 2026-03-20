@@ -103,7 +103,9 @@ pub fn parse(data: &[u8]) -> Result<Journal> {
             b"S" if fields.len() >= 3 => {
                 let gen_str = String::from_utf8_lossy(fields[1]);
                 let target_str = String::from_utf8_lossy(fields[2]);
-                if let (Ok(gen_id), Ok(target_gen)) = (gen_str.parse::<u64>(), target_str.parse::<u64>()) {
+                if let (Ok(gen_id), Ok(target_gen)) =
+                    (gen_str.parse::<u64>(), target_str.parse::<u64>())
+                {
                     records.push(Record::Restore { gen_id, target_gen });
                 }
             }

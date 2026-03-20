@@ -32,7 +32,7 @@ Three layers, each building on the previous:
 ### Layer 2: Resolver State at Checkpoint Boundaries
 
 **Key:** checkpoint gen_id (u64)
-**Value:** serialized `BTreeMap<String, Change>` — the resolver's internal state after processing all reachable records up to and including that checkpoint. After the Action/Change merge, this is the same type that `into_changes()` drains, so a cached state can be resumed directly.
+**Value:** serialized `BTreeMap<String, Dirent>` — the resolver's internal state after processing all reachable records up to and including that checkpoint. After the Action/Dirent merge (now `Dirent`), this is the same type that `into_changes()` drains, so a cached state can be resumed directly.
 **Benefit:** Instead of replaying the entire reachable prefix, load the cached resolver state at the latest reachable checkpoint before the region of interest, then replay only the trailing records.
 
 | Operation | Without cache | With cache |
@@ -45,7 +45,7 @@ Three layers, each building on the previous:
 ### Layer 3: Resolved Segment Changes
 
 **Key:** `(from_gen, to_gen)` — the two bounding checkpoints
-**Value:** serialized `Vec<Change>` — the final collapsed changes for that segment.
+**Value:** serialized `Vec<Dirent>` — the final collapsed changes for that segment.
 **Benefit:** `status`/`diff` can load pre-resolved segments directly without running the resolver at all for completed segments. Only the trailing (unsaved) segment needs resolution.
 
 ## Cache Properties
@@ -116,12 +116,12 @@ No caching benefit — abort just wipes everything including the cache.
 
 ## Serialization of Resolver State
 
-After the Action/Change merge (plan 3), the `Resolver` holds a
-`BTreeMap<String, Change>` directly — `Change` is both the internal
+After the Action/Dirent merge (now `Dirent`) (plan 3), the `Resolver` holds a
+`BTreeMap<String, Dirent>` directly — `Dirent` is both the internal
 accumulator and the output type:
 
 ```rust
-pub enum Change {
+pub enum Dirent {
     Added { ino: u64, dtype: DType },
     Modified { ino: u64, dtype: DType },
     Deleted,
@@ -133,18 +133,18 @@ pub enum Change {
 This simplifies caching significantly:
 
 - **One type to serialize.** The resolver state and the segment cache
-  use the same `Change` enum — no conversion layer between internal
+  use the same `Dirent` enum — no conversion layer between internal
   and external representations.
 - **`into_changes()` is just `drain().collect()`.** The cached
-  `BTreeMap<String, Change>` can be resumed directly without
+  `BTreeMap<String, Dirent>` can be resumed directly without
   reconstructing an intermediate type.
 - **Segment caches reuse the same format.** A cached segment is
-  `Vec<(String, Change)>` — identical to what `into_changes()` returns.
+  `Vec<(String, Dirent)>` — identical to what `into_changes()` returns.
 
 All fields are simple scalars and strings — straightforward to
 serialize. `DType` is a 3-variant enum (File/Dir/Link).
 
-Consider deriving `serde::Serialize`/`Deserialize` on `Change` and
+Consider deriving `serde::Serialize`/`Deserialize` on `Dirent` and
 `DType` behind a `cache` feature flag, or writing a manual compact
 binary format.
 
@@ -155,8 +155,8 @@ binary format.
 | cache-infra | Create `.agfs/cache/` dir, version header, read/write helpers | `cli/cache.rs` (new) | — |
 | cache-clear | Clear cache on commit and abort | `cli/abort.rs`, `cli/commit.rs` | cache-infra |
 | cache-positions | S/K position index with incremental update | `cli/cache.rs`, `cli/journal/timeline.rs` | cache-infra |
-| cache-resolver | Serialize/deserialize `BTreeMap<String, Change>`; write at checkpoint time | `cli/journal/resolve.rs`, `cli/checkpoint.rs` | cache-infra |
-| cache-segments | Serialize/deserialize `Vec<(String, Change)>` per segment | `cli/journal/resolve.rs`, `cli/checkpoint.rs` | cache-resolver |
+| cache-resolver | Serialize/deserialize `BTreeMap<String, Dirent>`; write at checkpoint time | `cli/journal/resolve.rs`, `cli/checkpoint.rs` | cache-infra |
+| cache-segments | Serialize/deserialize `Vec<(String, Dirent)>` per segment | `cli/journal/resolve.rs`, `cli/checkpoint.rs` | cache-resolver |
 | cache-read-commit | Load cached resolver state in commit path | `cli/commit.rs` | cache-resolver |
 | cache-read-status | Load cached segments in status/diff path | `cli/diff.rs` | cache-segments |
 | cache-read-restore | Load cached resolver state in restore path | `cli/restore.rs` | cache-resolver |

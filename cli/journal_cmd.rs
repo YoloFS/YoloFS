@@ -52,7 +52,6 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-
 fn is_structural(record: &journal::Record) -> bool {
     matches!(
         record,
@@ -74,19 +73,12 @@ fn record_matches_path(record: &journal::Record, filter: &str) -> bool {
 fn format_record(record: &journal::Record, chk_names: &HashMap<u64, &str>) -> String {
     match record {
         journal::Record::Checkpoint(c) => {
-            format!(
-                "{} {}",
-                format!("[{}]", c.gen_id).cyan().bold(),
-                c.name
-            )
+            format!("{} {}", format!("[{}]", c.gen_id).cyan().bold(), c.name)
         }
         journal::Record::Restore {
             gen_id, target_gen, ..
         } => {
-            let target_name = chk_names
-                .get(target_gen)
-                .copied()
-                .unwrap_or("(unknown)");
+            let target_name = chk_names.get(target_gen).copied().unwrap_or("(unknown)");
             format!(
                 "{} restored to [{}] {}",
                 format!("[{gen_id}]").yellow().bold(),
@@ -137,7 +129,10 @@ mod tests {
 
     #[test]
     fn format_checkpoint() {
-        let rec = Record::Checkpoint(Checkpoint { gen_id: 3, name: "build".into() });
+        let rec = Record::Checkpoint(Checkpoint {
+            gen_id: 3,
+            name: "build".into(),
+        });
         let s = strip_ansi(&format_record(&rec, &HashMap::new()));
         assert!(s.contains("[3]"), "should contain gen_id: {s}");
         assert!(s.contains("build"), "should contain name: {s}");
@@ -145,17 +140,27 @@ mod tests {
 
     #[test]
     fn format_restore() {
-        let rec = Record::Restore { gen_id: 5, target_gen: 2 };
+        let rec = Record::Restore {
+            gen_id: 5,
+            target_gen: 2,
+        };
         let mut names = HashMap::new();
         names.insert(2u64, "build");
         let s = strip_ansi(&format_record(&rec, &names));
         assert!(s.contains("[5]"), "should contain gen_id: {s}");
-        assert!(s.contains("restored to [2] build"), "should reference target: {s}");
+        assert!(
+            s.contains("restored to [2] build"),
+            "should reference target: {s}"
+        );
     }
 
     #[test]
     fn format_added() {
-        let rec = Record::Added { path: "/src/main.rs".into(), dtype: Some(DType::File), ino: 42 };
+        let rec = Record::Added {
+            path: "/src/main.rs".into(),
+            dtype: Some(DType::File),
+            ino: 42,
+        };
         let s = strip_ansi(&format_record(&rec, &HashMap::new()));
         assert!(s.contains("added"), "should say added: {s}");
         assert!(s.contains("/src/main.rs"), "should contain path: {s}");
@@ -164,7 +169,11 @@ mod tests {
 
     #[test]
     fn format_replace() {
-        let rec = Record::Replace { path: "/b".into(), dtype: Some(DType::File), base: "/a".into() };
+        let rec = Record::Replace {
+            path: "/b".into(),
+            dtype: Some(DType::File),
+            base: "/a".into(),
+        };
         let s = strip_ansi(&format_record(&rec, &HashMap::new()));
         assert!(s.contains("replaced"), "should say replaced: {s}");
         assert!(s.contains("/a"), "should contain base: {s}");
