@@ -80,7 +80,7 @@ impl SegmentedJournal {
 
     /// Take prefix up to a checkpoint (inclusive), then filter to live.
     /// Used by restore to get live records up to a target checkpoint.
-    /// Reachability is computed only within the prefix (S records after the
+    /// Reachability is computed only within the prefix (RST records after the
     /// prefix boundary do not affect it).
     pub fn live_prefix(self, checkpoint: &str) -> Result<LiveSegments> {
         let (gen_id, _) = self.markers.find_checkpoint(checkpoint)?;

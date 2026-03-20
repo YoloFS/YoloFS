@@ -27,7 +27,7 @@ fn restore_journal_contains_checkpoint_marker() {
     );
 }
 
-/// Restore appends an S record; reachable + resolve excludes post-checkpoint mutations.
+/// Restore appends an RST record; reachable + resolve excludes post-checkpoint mutations.
 #[test]
 fn restore_journal_has_no_post_checkpoint_records() {
     let s = AgfsSession::new().expect("session setup");
@@ -401,7 +401,7 @@ fn restore_preserves_journal_inode() {
     );
 }
 
-/// After restore, the journal grows (S record appended) and original bytes are preserved.
+/// After restore, the journal grows (RST record appended) and original bytes are preserved.
 #[test]
 fn restore_journal_is_byte_prefix() {
     let s = AgfsSession::new().expect("session setup");
@@ -419,7 +419,7 @@ fn restore_journal_is_byte_prefix() {
     let bytes_after = fs::read(&journal_path).expect("read after");
     assert!(
         bytes_after.len() > bytes_before.len(),
-        "journal should grow after restore (S record appended): before={} after={}",
+        "journal should grow after restore (RST record appended): before={} after={}",
         bytes_before.len(),
         bytes_after.len()
     );
@@ -429,7 +429,7 @@ fn restore_journal_is_byte_prefix() {
         "original journal bytes must be preserved as a prefix"
     );
 
-    // Verify the S record is present.
+    // Verify the RST record is present.
     let records = journal(&s);
     assert!(
         records.0.iter().any(|r| matches!(r, Record::Restore { .. })),
@@ -437,7 +437,7 @@ fn restore_journal_is_byte_prefix() {
     );
 }
 
-/// The S record written by restore should have a gen_id higher than the
+/// The RST record written by restore should have a gen_id higher than the
 /// target checkpoint's gen_id (monotonically increasing).
 #[test]
 fn restore_s_record_has_correct_gen() {
@@ -478,9 +478,9 @@ fn restore_s_record_has_correct_gen() {
         })
         .expect("restore record should exist");
 
-    assert_eq!(s_target, chk1_gen, "S record should target chk1");
+    assert_eq!(s_target, chk1_gen, "RST record should target chk1");
     assert!(
         s_gen > chk2_gen,
-        "S record gen ({s_gen}) should be greater than chk2 gen ({chk2_gen})"
+        "RST record gen ({s_gen}) should be greater than chk2 gen ({chk2_gen})"
     );
 }

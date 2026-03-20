@@ -69,7 +69,7 @@ struct agfs_ioc_rule {
 };
 
 /* Checkpoint flags */
-#define AGFS_CHK_IF_CHANGED	(1 << 0)	/* skip if no data records since last K/S */
+#define AGFS_CHK_IF_CHANGED	(1 << 0)	/* skip if no data records since last CKP/RST */
 
 /* userspace ↔ kernel: AGFS_IOC_CHECKPOINT (name in, gen out) */
 struct agfs_ioc_checkpoint {
@@ -207,7 +207,7 @@ struct agfs_sb_info {
 	atomic64_t		next_ino;	/* counter for inode store IDs */
 	atomic64_t		gen;		/* bumped on each checkpoint; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
-	bool			dirty;		/* data records written since last K/S */
+	bool			dirty;		/* data records written since last CKP/RST */
 	struct list_head	pinned_dirs;	/* igrab()'d directory inodes with dirents */
 	spinlock_t		pinned_dirs_lock;/* protects pinned_dirs */
 

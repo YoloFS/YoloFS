@@ -71,13 +71,13 @@ fn write_after_rename() {
             .iter()
             .any(|r| matches!(r, Record::Redirect { old, new, .. }
             if new.ends_with("/moved.txt") && old.ends_with("/hello.txt"))),
-        "should have R record: {records:?}"
+        "should have RDR record: {records:?}"
     );
     assert!(
         records.0
             .iter()
             .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/moved.txt"))),
-        "should have M record at new path: {records:?}"
+        "should have MOD record at new path: {records:?}"
     );
 
     // The rename should precede the write
@@ -109,7 +109,7 @@ fn create_then_rename() {
         records.0
             .iter()
             .any(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/temp.txt"))),
-        "should have A record for original path: {records:?}"
+        "should have ADD record for original path: {records:?}"
     );
     assert!(
         records.0
@@ -120,7 +120,7 @@ fn create_then_rename() {
     );
 }
 
-/// Create a file, then delete it — both A and D records should be present.
+/// Create a file, then delete it — both ADD and DEL records should be present.
 #[test]
 fn create_then_delete() {
     let s = AgfsSession::new().expect("session setup");
@@ -133,17 +133,17 @@ fn create_then_delete() {
         records.0
             .iter()
             .any(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/ephemeral.txt"))),
-        "should have A record: {records:?}"
+        "should have ADD record: {records:?}"
     );
     assert!(
         records.0
             .iter()
             .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/ephemeral.txt"))),
-        "should have D record: {records:?}"
+        "should have DEL record: {records:?}"
     );
 }
 
-/// Modify a base file, then delete it — produces A then D.
+/// Modify a base file, then delete it — produces ADD then DEL.
 #[test]
 fn modify_then_delete() {
     let s = AgfsSession::new().expect("session setup");
@@ -163,7 +163,7 @@ fn modify_then_delete() {
     assert!(a_pos < d_pos, "Add should precede Delete: {records:?}");
 }
 
-/// Rename a file, then delete the new name — produces R then D.
+/// Rename a file, then delete the new name — produces RDR then DEL.
 #[test]
 fn rename_then_delete() {
     let s = AgfsSession::new().expect("session setup");
@@ -177,13 +177,13 @@ fn rename_then_delete() {
             .iter()
             .any(|r| matches!(r, Record::Redirect { old, new, .. }
             if new.ends_with("/moved.txt") && old.ends_with("/hello.txt"))),
-        "should have R record: {records:?}"
+        "should have RDR record: {records:?}"
     );
     assert!(
         records.0
             .iter()
             .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/moved.txt"))),
-        "should have D record at new path: {records:?}"
+        "should have DEL record at new path: {records:?}"
     );
 
     let r_pos = records.0
@@ -197,7 +197,7 @@ fn rename_then_delete() {
     assert!(r_pos < d_pos, "Rename should precede Delete: {records:?}");
 }
 
-/// Kernel emits fused R record with both old and new paths (no separate D).
+/// Kernel emits fused RDR record with both old and new paths (no separate DEL).
 #[test]
 fn rename_emits_fused_redirect_record() {
     let s = AgfsSession::new().expect("session setup");
@@ -229,11 +229,11 @@ fn rename_emits_fused_redirect_record() {
     });
     assert!(
         !has_delete_old,
-        "fused rename should NOT emit separate D record for old path: {records:?}"
+        "fused rename should NOT emit separate DEL record for old path: {records:?}"
     );
 }
 
-/// Overwrite rename (mv onto existing file) emits fused P record.
+/// Overwrite rename (mv onto existing file) emits fused REP record.
 #[test]
 fn rename_overwrite_emits_fused_replace_record() {
     let s = AgfsSession::new().expect("session setup");

@@ -474,13 +474,13 @@ fn rename_staged_file_overwrite_base_commit() {
     );
 }
 
-/// Complex multi-operation scenario exercising the A/M/D/R journal format,
+/// Complex multi-operation scenario exercising the ADD/MOD/DEL/RDR journal format,
 /// resolver edge cases, and commit correctness in a single session.
 ///
 /// Base files: hello.txt, multi.txt, subdir/deep.txt, test.sh
 ///
 /// Operations (grouped by the edge case they exercise):
-///   1. Modify hello.txt (COW → M record)
+///   1. Modify hello.txt (COW → MOD record)
 ///   2. Create brand_new.txt then rename it to multi.txt
 ///      (staged rename to base path → D + M; overwrites base file)
 ///   3. Create temp.txt then delete it (A + D cancel out)
@@ -522,10 +522,10 @@ fn complex_multi_operation_commit() {
     fs::rename(s.mnt_path("subdir/shallow.txt"), s.mnt_path("top.txt"))
         .expect("rename shallow → top");
 
-    // ── 6. Create a symlink (A record, dtype=Link) ──
+    // ── 6. Create a symlink (ADD record, dtype=Link) ──
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
 
-    // ── 7. Second COW on hello.txt (multiple M records → final ino wins) ──
+    // ── 7. Second COW on hello.txt (multiple MOD records → final ino wins) ──
     fs::write(s.mnt_path("hello.txt"), "second edit\n").expect("write hello v2");
 
     // ── Verify mount view before commit ──

@@ -18,7 +18,7 @@ fn checkpoint_produces_checkpoint_record() {
         records.0
             .iter()
             .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "build")),
-        "journal should have an S record named 'build': {records:?}"
+        "journal should have a CKP record named 'build': {records:?}"
     );
 }
 
@@ -38,7 +38,7 @@ fn recow_after_checkpoint_produces_new_add() {
         .collect();
     assert!(
         adds.len() >= 2,
-        "re-COW should produce a second A record: {records:?}"
+        "re-COW should produce a second ADD record: {records:?}"
     );
 
     // The two adds should have different ino values (re-COW allocates a new inode)
@@ -99,7 +99,7 @@ fn multiple_checkpoints_have_distinct_ids() {
     assert_eq!(snaps[1].1, "s2");
 }
 
-/// Rename after checkpoint: the Delete + Staged records appear after the K record.
+/// Rename after checkpoint: the Delete + Staged records appear after the CKP record.
 /// Writing to a base file triggers COW (staged inode), then renaming keeps the ino.
 #[test]
 fn rename_after_checkpoint() {
@@ -133,7 +133,7 @@ fn rename_after_checkpoint() {
     );
 }
 
-/// Delete after checkpoint: the D record appears after the S record.
+/// Delete after checkpoint: the DEL record appears after the CKP record.
 #[test]
 fn delete_after_checkpoint() {
     let s = AgfsSession::new().expect("session setup");

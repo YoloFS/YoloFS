@@ -515,7 +515,7 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 		return 0;
 	}
 
-	/* Restore mode: increment gen, inject entries, write S record */
+	/* Restore mode: increment gen, inject entries, write RST record */
 	new_gen = atomic64_inc_return(&sbi->gen);
 
 	err = agfs_restore_inject(file, sbi, &hdr, new_gen);

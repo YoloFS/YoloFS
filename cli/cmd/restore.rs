@@ -132,7 +132,7 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     let chk_label = chk_name.to_owned();
 
     // Extract live records from the prefix up to the target checkpoint,
-    // handling any S records within that prefix.
+    // handling any RST records within that prefix.
     let live_records = sj.live_prefix_gen(target_gen).into_records();
     let actions = journal::compact::compact(live_records);
     let changes = actions.collapse();

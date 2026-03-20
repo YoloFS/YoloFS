@@ -62,7 +62,7 @@ impl Change {
     }
 }
 
-/// A simplified journal action — only the 5 operation variants (no K/S).
+/// A simplified journal action — only the 5 operation variants (no CKP/RST).
 /// Used by the compact → apply/collapse pipeline.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -162,13 +162,13 @@ mod live_segments_tests {
     }
 }
 
-/// A group of data records (A/M/D/R) between consecutive K/S boundaries.
+/// A group of data records (ADD/MOD/DEL/RDR/REP) between consecutive CKP/RST boundaries.
 #[derive(Debug)]
 pub struct Segment {
     /// The gen_id of the checkpoint this segment builds on.
     /// 0 for the 0-th segment (records before the first checkpoint).
     pub from: u64,
-    /// The A/M/D/R records in this segment (no K/S records).
+    /// The ADD/MOD/DEL/RDR/REP records in this segment (no CKP/RST records).
     pub records: Vec<Record>,
 }
 

@@ -22,7 +22,7 @@ fn create_new_file_emits_add() {
         records.0
             .iter()
             .any(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/brandnew.txt"))),
-        "new file should produce A record: {records:?}"
+        "new file should produce ADD record: {records:?}"
     );
 }
 
@@ -38,7 +38,7 @@ fn modify_base_file_emits_modify() {
         records.0
             .iter()
             .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt"))),
-        "modifying base file should produce M record: {records:?}"
+        "modifying base file should produce MOD record: {records:?}"
     );
 }
 

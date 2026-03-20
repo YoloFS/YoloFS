@@ -66,7 +66,7 @@ identifier and the re-COW generation. Unify the naming:
 | Kernel sbi field | `checkpoint_gen` | `gen` |
 | Kernel dirent field | `checkpoint_gen` | `gen` |
 | Ioctl struct fields | `checkpoint_gen` | `target_gen` / `new_gen` |
-| Journal K record | `K\0<id>\0<name>\n` | `K\0<gen>\0<name>\n` |
+| Journal CKP record | `K\0<id>\0<name>\n` | `K\0<gen>\0<name>\n` |
 | Rust `Checkpoint` struct | `id: u64` | `gen_id: u64` |
 | Docs | "checkpoint ID" / "generation counter" | "gen" |
 
@@ -95,8 +95,8 @@ Kernel behavior by `target_gen`:
 
 | `target_gen` | `entry_count` | Mode | Behavior |
 |-------------|---------------|------|----------|
-| `0` | `0` | Reset (commit/abort) | Wipe dirents, set gen=1, no S record |
-| `> 0` | `≥ 0` | Restore | Wipe dirents, inject entries, increment gen, stamp dirents with new gen, append S record, return new_gen |
+| `0` | `0` | Reset (commit/abort) | Wipe dirents, set gen=1, no RST record |
+| `> 0` | `≥ 0` | Restore | Wipe dirents, inject entries, increment gen, stamp dirents with new gen, append RST record, return new_gen |
 
 Restore to a named checkpoint (`target_gen>0`, `entry_count≥0`) is distinct
 from commit/abort (`target_gen=0`) by the target_gen value.
@@ -104,7 +104,7 @@ from commit/abort (`target_gen=0`) by the target_gen value.
 ### 2.5 Reachable record extraction
 
 S records create unreachable records — journal records between the target checkpoint
-and the S record that no longer reflect the current state. All consumers
+and the RST record that no longer reflect the current state. All consumers
 (commit, status, diff, restore) must filter these out before resolving.
 
 **Algorithm** — O(N) single pass + O(R) backward walk:
@@ -112,10 +112,10 @@ and the S record that no longer reflect the current state. All consumers
 ```
 reachable(records):
     // Pass 1: collect S and K positions — O(N)
-    s_list = [(pos, target_gen) for each S record]
-    k_map  = {gen: pos for each K record}
+    s_list = [(pos, target_gen) for each RST record]
+    k_map  = {gen: pos for each CKP record}
 
-    // Pass 2: walk S records right-to-left — O(R)
+    // Pass 2: walk RST records right-to-left — O(R)
     ranges = []
     end = len(records)
 
@@ -130,7 +130,7 @@ reachable(records):
     return concat(records[start..end] for (start, end) in ranges)
 ```
 
-After extraction, the output contains only `A/M/D/R/K` records. All downstream
+After extraction, the output contains only ADD/MOD/DEL/RDR/CKP records. All downstream
 logic (`resolve`, `resolve_segments`, `slice_records`) works unchanged.
 
 **Worked example:**
@@ -179,7 +179,7 @@ All other commands (status, diff, commit, restore) work on reachable records onl
 
 | Actor | Reads journal | Writes journal |
 |-------|---------------|----------------|
-| Kernel | Never | Always (`A/M/D/R/K/S` via `kernel_write`) |
+| Kernel | Never | Always (ADD/MOD/DEL/RDR/REP/CKP/RST via `kernel_write`) |
 | CLI | Yes (resolve, status, diff, commit) | Never (except `set_len(0)` on commit/abort to clear) |
 
 The journal is append-only within a session. Commit and abort are session
@@ -204,7 +204,7 @@ the full journal on each CLI invocation.
 
 - **Immutable by design**: checkpoint caches never change (no open fds during
   checkpoint = no mutations can slip in).
-- **No invalidation needed for S records**: unreachable caches just go unused.
+- **No invalidation needed for RST records**: unreachable caches just go unused.
 - **Commit/abort clears all caches** (session boundary).
 - **Eager build**: compute and persist caches right after `agfs checkpoint`
   returns.
@@ -225,8 +225,8 @@ the full journal on each CLI invocation.
 
 | ID | Task | Files |
 |----|------|-------|
-| docs-staging | S record format, append-only semantics, `reachable` algorithm, gen naming | `docs/staging.md` |
-| docs-internals | RESTORE ioctl changes (`_IOWR`, `target_gen`/`new_gen`, S record write), gen naming | `docs/internals.md` |
+| docs-staging | RST record format, append-only semantics, `reachable` algorithm, gen naming | `docs/staging.md` |
+| docs-internals | RESTORE ioctl changes (`_IOWR`, `target_gen`/`new_gen`, RST record write), gen naming | `docs/internals.md` |
 | docs-cli | `agfs log` shows restore events, gen naming | `docs/cli.md` |
 | docs-architecture | Lifecycle example with restore | `docs/architecture.md` |
 
@@ -235,7 +235,7 @@ the full journal on each CLI invocation.
 | ID | Task | Files | Depends on |
 |----|------|-------|------------|
 | kmod-rename-gen | Rename `checkpoint_gen` → `gen` | `kmod/agfs.h`, `kmod/*.c` | docs-staging, docs-internals |
-| kmod-journal-restore | Add `agfs_journal_restore()` for S records | `kmod/journal.c` | docs-staging, docs-internals |
+| kmod-journal-restore | Add `agfs_journal_restore()` for RST records | `kmod/journal.c` | docs-staging, docs-internals |
 | kmod-ioctl-restore | Modify RESTORE handler: `_IOWR`, increment gen, write S, return `new_gen` | `kmod/ioctl.c`, `kmod/agfs.h` | kmod-rename-gen, kmod-journal-restore |
 | kmod-ioctl-checkpoint | Update CHECKPOINT for gen naming | `kmod/ioctl.c` | kmod-rename-gen |
 
@@ -255,7 +255,7 @@ the full journal on each CLI invocation.
 | cli-restore | Remove truncation, use `reachable` on prefix, pass `target_gen` | `cli/restore.rs` | cli-reachable, cli-ioctl-struct |
 | cli-commit | Call `reachable` before `resolve` | `cli/commit.rs` | cli-reachable |
 | cli-diff-status | Call `reachable` before `slice_records`/`resolve_segments` | `cli/diff.rs` | cli-reachable |
-| cli-log | Show S records in `agfs log` | `cli/checkpoint.rs` | cli-journal-parse-S |
+| cli-log | Show RST records in `agfs log` | `cli/checkpoint.rs` | cli-journal-parse-S |
 | cli-find-checkpoint | All records for restore targets, reachable records for `--at`/`--from`/`--to` | `cli/resolve.rs` | cli-reachable |
 
 ### Phase 5: Tests
@@ -263,7 +263,7 @@ the full journal on each CLI invocation.
 | ID | Task | Depends on |
 |----|------|------------|
 | test-reachable | Unit tests: no S, single restore, multiple restores, unreachable S, undo restore | cli-reachable |
-| test-resolve-with-S | Unit tests: `resolve()` produces correct changes with S records in input | cli-reachable |
+| test-resolve-with-S | Unit tests: `resolve()` produces correct changes with RST records in input | cli-reachable |
 | test-segments-with-S | Unit tests: `resolve_segments` correct segment boundaries after `reachable` | cli-reachable |
 | test-e2e-restore | E2E: restore + work + commit, multiple restores, undo restore, `agfs log` audit trail | cli-restore, cli-commit, cli-diff-status, cli-log |
 

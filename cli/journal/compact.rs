@@ -326,7 +326,7 @@ mod tests {
         assert!(al.0.is_empty());
     }
 
-    // ── K/S records filtered ────────────────────────────────────────
+    // ── CKP/RST records filtered ────────────────────────────────────────
 
     #[test]
     fn checkpoint_and_restore_filtered() {
@@ -535,7 +535,7 @@ mod tests {
     use super::super::segment::SegmentedJournal;
     use super::super::types::RawJournal;
 
-    /// Helper: run the full pipeline on raw records including K/S markers.
+    /// Helper: run the full pipeline on raw records including CKP/RST markers.
     fn resolve_all(records: Vec<Record>) -> Vec<(String, super::super::types::Change)> {
         let sj = SegmentedJournal::new(RawJournal(records));
         let live = sj.live().into_records();

@@ -70,13 +70,13 @@ journal records  →  simplify()  →  ActionList    (ordered, for commit)
                                    .collapse()  →  Changeset   (for diff/restore/abort)
 ```
 
-K/S records are already stripped by segmentation, so `simplify()` and
-`collapse()` only see A/M/D/R/P records.  After fusing D+R/P in the
-kernel, R/P records are self-contained (old + new path).
+CKP/RST records are already stripped by segmentation, so `simplify()` and
+`collapse()` only see ADD/MOD/DEL/RDR/REP records.  After fusing DEL+RDR/REP in the
+kernel, RDR/REP records are self-contained (old + new path).
 
 `simplify()` outputs `ActionList` — a newtype over `Vec<Action>` with
 methods for applying and collapsing.  `Action` is a separate type from
-`Record` with only the 5 operation variants (no K/S).  The type system
+`Record` with only the 5 operation variants (no CKP/RST).  The type system
 enforces that checkpoint/restore markers can't leak into the replay
 pipeline.
 
@@ -224,7 +224,7 @@ kmod-dentry-path ─→ kmod-fuse-records ─→ parse-new-format ─→ simplif
 
 - `simplify()` is pure: it takes `Vec<Record>` and returns `ActionList`.
   No filesystem access.  Fully unit-testable.  `Action` is a separate
-  type from `Record` — 5 operation variants only, no K/S.
+  type from `Record` — 5 operation variants only, no CKP/RST.
   `ActionList` is a newtype over `Vec<Action>` with `apply()` and
   `collapse()` methods, living in `cli/journal/action.rs`.
 

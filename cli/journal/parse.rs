@@ -3,13 +3,13 @@
 // Parse the append-only journal file.
 //
 // Record format (NUL-separated fields, newline-terminated):
-//   A\0<dir>\0<name>\0<dtype>\0<ino>\n                              — add (staged, new path)
-//   M\0<dir>\0<name>\0<dtype>\0<ino>\n                              — modify (staged, existing path)
-//   D\0<dir>\0<name>\n                                               — delete
-//   R\0<old_dir>\0<old_name>\0<new_dir>\0<new_name>\0<dtype>\n      — rename (new path)
-//   P\0<old_dir>\0<old_name>\0<new_dir>\0<new_name>\0<dtype>\n      — replace (existing path)
-//   K\0<gen>\0<name>\n                                               — checkpoint marker
-//   S\0<gen>\0<target_gen>\n                                         — restore marker
+//   A\0<dir>\0<name>\0<dtype>\0<ino>\n                              — ADD (staged, new path)
+//   M\0<dir>\0<name>\0<dtype>\0<ino>\n                              — MOD (staged, existing path)
+//   D\0<dir>\0<name>\n                                               — DEL
+//   R\0<old_dir>\0<old_name>\0<new_dir>\0<new_name>\0<dtype>\n      — RDR (rename, new path)
+//   P\0<old_dir>\0<old_name>\0<new_dir>\0<new_name>\0<dtype>\n      — REP (rename, existing path)
+//   K\0<gen>\0<name>\n                                               — CKP (checkpoint marker)
+//   S\0<gen>\0<target_gen>\n                                         — RST (restore marker)
 
 use super::types::*;
 use anyhow::{Context, Result};
@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(records.0.len(), 1);
         assert!(
             matches!(&records.0[0], Record::Modified { path, ino: 3, dtype: Some(DType::File) } if path == "/src/main.rs"),
-            "M record should parse as Modified, got: {:?}",
+            "MOD record should parse as Modified, got: {:?}",
             records.0[0]
         );
     }
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn parse_entry_missing_dtype_is_none() {
-        // A record with empty dtype field
+        // ADD record with empty dtype field
         let records = parse(b"A\0\0file\0\01\n").unwrap();
         assert_eq!(records.0.len(), 1);
         assert!(
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn parse_entry_invalid_dtype_is_none() {
-        // A record with invalid dtype char 'x'
+        // ADD record with invalid dtype char 'x'
         let records = parse(b"A\0\0file\0x\01\n").unwrap();
         assert_eq!(records.0.len(), 1);
         assert!(
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn malformed_a_record_too_few_fields_skipped() {
-        // A record with only 3 fields (needs 5) — should be skipped
+        // ADD record with only 3 fields (needs 5) — should be skipped
         let records = parse(b"A\0\0file\01\nA\0\0good\0f\02\n").unwrap();
         assert_eq!(
             records.0.len(),
@@ -259,12 +259,12 @@ mod tests {
 
     #[test]
     fn malformed_d_record_too_few_fields_skipped() {
-        // D record with only 1 field (needs 3) — should be skipped
+        // DEL record with only 1 field (needs 3) — should be skipped
         let records = parse(b"D\0\nA\0\0good\0f\01\n").unwrap();
         assert_eq!(
             records.0.len(),
             1,
-            "malformed D record should be skipped: {:?}",
+            "malformed DEL record should be skipped: {:?}",
             records
         );
         assert!(matches!(
@@ -275,12 +275,12 @@ mod tests {
 
     #[test]
     fn malformed_r_record_too_few_fields_skipped() {
-        // R record with only 4 fields (needs 6) — should be skipped
+        // RDR record with only 4 fields (needs 6) — should be skipped
         let records = parse(b"R\0\0file\0f\nA\0\0good\0f\01\n").unwrap();
         assert_eq!(
             records.0.len(),
             1,
-            "malformed R record should be skipped: {:?}",
+            "malformed RDR record should be skipped: {:?}",
             records
         );
         assert!(matches!(
@@ -299,7 +299,7 @@ mod tests {
                 Record::Replace { old, new, dtype: Some(DType::File) }
                     if old == "/dir/oldfile" && new == "/dir/newfile"
             ),
-            "P record should parse as Replace, got: {:?}",
+            "REP record should parse as Replace, got: {:?}",
             records.0[0]
         );
     }

@@ -142,7 +142,7 @@ fn mkdir_with_file_creates_separate_inodes() {
     }
 }
 
-/// rmdir does NOT create a staged inode (only journal D record).
+/// rmdir does NOT create a staged inode (only journal DEL record).
 #[test]
 fn rmdir_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
@@ -161,7 +161,7 @@ fn rmdir_creates_no_inode() {
     );
 }
 
-/// Pure directory rename creates no new inode (only journal R record).
+/// Pure directory rename creates no new inode (only journal RDR record).
 #[test]
 fn rename_dir_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");

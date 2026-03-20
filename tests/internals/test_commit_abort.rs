@@ -6,7 +6,7 @@ use std::os::unix::fs::MetadataExt;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Restore to a checkpoint appends an S record (append-only journal).
+/// Restore to a checkpoint appends an RST record (append-only journal).
 #[test]
 fn restore_to_checkpoint_appends_s_record() {
     let s = AgfsSession::new().expect("session setup");
@@ -21,7 +21,7 @@ fn restore_to_checkpoint_appends_s_record() {
 
     let records = journal(&s);
 
-    // Restore appends exactly one S record.
+    // Restore appends exactly one RST record.
     assert_eq!(
         records.0.len(),
         count_before + 1,

@@ -99,8 +99,9 @@ for interactive approval.
 **On-disk format**: OverlayFS requires filesystem support for whiteouts
 (`RENAME_WHITEOUT`, ext4/xfs). AgFS uses a flat inode store + append-only
 journal, working on any lower FS. The journal uses typed record tags
-(`A`/`M`/`D`/`R`/`P` for mutations, `K`/`S` for checkpoints/restores) so
-each record is self-describing. `R`/`P` records are self-contained — each
+(`A`/`M`/`D`/`R`/`P` for mutations, `K`/`S` for checkpoints/restores;
+referred to as ADD/MOD/DEL/RDR/REP and CKP/RST) so
+each record is self-describing. RDR/REP records are self-contained — each
 carries both source and destination paths in a single record.
 
 ## Lifecycle Example
@@ -176,12 +177,12 @@ $ agfs commit
    -> kernel: release dirents, invalidate dentry + inode caches
    -> umount .agfs/mnt
 
-# 8. Restore to a previous checkpoint (appends S record, no truncation)
+# 8. Restore to a previous checkpoint (appends RST record, no truncation)
 $ agfs restore "after make build"
    -> CLI: SegmentedJournal → find_checkpoint → live_prefix → compact → collapse
    -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, entries })
    -> kernel: wipe dirents, inject entries, increment gen to 4,
-      append S\04\02\n to journal
+      append RST record to journal
    -> journal is append-only — dead records remain but are filtered
       by SegmentedJournal reachability on subsequent operations
 ```
@@ -230,7 +231,7 @@ agfs/
 │   ├── journal/               # journal parsing, timeline, and resolution
 │   │   ├── types.rs           # Record, Change, Action, DType, and related types
 │   │   ├── parse.rs           # journal file parsing
-│   │   ├── markers.rs          # K/S skeleton (Markers: lookup, range computation)
+│   │   ├── markers.rs          # CKP/RST skeleton (Markers: lookup, range computation)
 │   │   ├── segment.rs         # journal pipeline (SegmentedJournal, Segment)
 │   │   ├── liveness.rs       # reachability filtering (alive_segments, live, live_prefix)
 │   │   ├── compact.rs         # compact records into ActionList (decompose, cancel, merge)

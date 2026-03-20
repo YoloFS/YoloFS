@@ -2,14 +2,14 @@
 //
 // Segmentation: split a flat record stream into segments at checkpoint (K)
 // and restore (S) boundaries. Each segment contains only data records
-// (A/M/D/R); checkpoint and restore records are stored in Markers.
+// (ADD/MOD/DEL/RDR/REP); checkpoint and restore records are stored in Markers.
 
 use super::markers::Markers;
 use super::types::*;
 
 // ── SegmentedJournal ─────────────────────────────────────────────────
 
-/// All segments + K/S skeleton. Level 1 of the pipeline.
+/// All segments + CKP/RST skeleton. Level 1 of the pipeline.
 pub struct SegmentedJournal {
     pub segments: Vec<Segment>,
     pub markers: Markers,
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn segmentation_only_s_records() {
-        // S record with no preceding K — target not found, treated as orphan boundary.
+        // RST record with no preceding CKP — target not found, treated as orphan boundary.
         let records = vec![Record::Restore {
             gen_id: 1,
             target_gen: 99,

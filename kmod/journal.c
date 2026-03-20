@@ -6,13 +6,13 @@
  * commit/abort/status/diff. The kernel never reads it back.
  *
  * Record format (NUL-separated fields, newline-terminated):
- *   A\0<dir>\0<name>\0<dtype>\0<ino>\n                              — add (new file)
- *   M\0<dir>\0<name>\0<dtype>\0<ino>\n                              — modify (existing file)
- *   D\0<dir>\0<name>\n                                               — delete
- *   R\0<old_dir>\0<old_name>\0<new_dir>\0<new_name>\0<dtype>\n      — rename (new path)
- *   P\0<old_dir>\0<old_name>\0<new_dir>\0<new_name>\0<dtype>\n      — replace (existing path)
- *   K\0<id>\0<name>\n                                                — checkpoint marker
- *   S\0<gen>\0<target_gen>\n                                         — restore
+ *   A\0<dir>\0<name>\0<dtype>\0<ino>\n                              — ADD (new file)
+ *   M\0<dir>\0<name>\0<dtype>\0<ino>\n                              — MOD (existing file)
+ *   D\0<dir>\0<name>\n                                               — DEL
+ *   R\0<old_dir>\0<old_name>\0<new_dir>\0<new_name>\0<dtype>\n      — RDR (rename, new path)
+ *   P\0<old_dir>\0<old_name>\0<new_dir>\0<new_name>\0<dtype>\n      — REP (rename, existing path)
+ *   K\0<id>\0<name>\n                                                — CKP (checkpoint marker)
+ *   S\0<gen>\0<target_gen>\n                                         — RST (restore)
  */
 
 #include "agfs.h"

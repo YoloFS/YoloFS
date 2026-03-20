@@ -152,7 +152,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		goto out;
 	}
 
-	/* Check if destination has existing content (for R vs P journal tag).
+	/* Check if destination has existing content (for RDR vs REP journal tag).
 	 * Must be done before add_dirent overwrites the dirent. */
 	dst_de = agfs_find_dirent(new_dir,
 				  new_dentry->d_name.name,

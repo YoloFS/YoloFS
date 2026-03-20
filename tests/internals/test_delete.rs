@@ -23,7 +23,7 @@ fn delete_produces_delete_record() {
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// Deleting a file does NOT create a new inode (only a journal D record).
+/// Deleting a file does NOT create a new inode (only a journal DEL record).
 #[test]
 fn delete_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");

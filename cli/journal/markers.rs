@@ -1,12 +1,12 @@
 // agfs CLI — journal/markers.rs
 //
-// The K/S skeleton: checkpoint and restore records extracted from the journal.
+// The CKP/RST skeleton: checkpoint and restore records extracted from the journal.
 // Provides lookup by gen_id or name, and segment range computation.
 
 use super::types::*;
 use anyhow::Result;
 
-/// The K/S skeleton of the journal.
+/// The CKP/RST skeleton of the journal.
 pub struct Markers(pub(super) Vec<Record>);
 
 impl Markers {

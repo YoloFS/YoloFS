@@ -80,7 +80,7 @@ table on directory inodes.
 | `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
 | `gen` | Atomic counter, starts at 1, bumped by each checkpoint and restore ioctl. Compared against `dirent.gen` at open time to decide COW / re-COW. |
 | `staging_fd_count` | Atomic counter of open staging fds (opened for write). Checkpoint ioctl rejects with `-EBUSY` when > 0. |
-| `dirty` | Boolean flag set on every data journal write (A/M/D/R/P), cleared on checkpoint or restore. Used by `AGFS_CHK_IF_CHANGED` to skip empty auto-checkpoints. |
+| `dirty` | Boolean flag set on every data journal write (ADD/MOD/DEL/RDR/REP), cleared on checkpoint or restore. Used by `AGFS_CHK_IF_CHANGED` to skip empty auto-checkpoints. |
 | `pinned_dirs` | List head tracking `igrab()`-pinned directory inodes (those with dirents) for bulk release at cache invalidation / unmount. |
 | `pinned_dirs_lock` | Spinlock protecting `pinned_dirs`. |
 
@@ -120,7 +120,7 @@ time is valid for the lifetime of the fd.
 |-------|---------|
 | `ino` | Discriminant: `>0` → staged in `inodes/<ino>`, `0` → deleted, `AGFS_INO_REDIRECT` → content at `base` |
 | `base` | `NULL` for non-redirects; otherwise → absolute base path for zero-copy rename (redirect). |
-| `overwrites` | `true` if this path existed in the base layer. Orthogonal to `ino`/`base`; inherited through deletes. Used at journal-write time to distinguish `A` (add) from `M` (modify) and `R` (redirect) from `P` (replace). See [Tracking `overwrites`](#tracking-overwrites). |
+| `overwrites` | `true` if this path existed in the base layer. Orthogonal to `ino`/`base`; inherited through deletes. Used at journal-write time to distinguish ADD from MOD and RDR from REP. See [Tracking `overwrites`](#tracking-overwrites). |
 | `d_type` | File type (`DT_REG` / `DT_DIR` / `DT_LNK`) for correct readdir emission |
 | `gen` | `sbi->gen` at the time this inode was created. Used at open time: if `gen < sbi->gen`, a re-COW is needed. |
 
@@ -388,10 +388,10 @@ Rename is decomposed into a delete of the old name + creation at the new
 name. No file content is copied — only dirent metadata changes.
 
 For **staged** sources (file has a staged inode), two records are emitted:
-`D` for the old name and `A`/`M` for the new name.
+DEL for the old name and ADD/MOD for the new name.
 
 For **redirect** sources (zero-copy base-only renames), a single
-self-contained `R` or `P` record carries both old and new paths.
+self-contained RDR or REP record carries both old and new paths.
 
 ```
 agfs_rename(old_parent, old_name, new_parent, new_name):
@@ -416,8 +416,8 @@ agfs_rename(old_parent, old_name, new_parent, new_name):
     add_dirent(old_parent, old_name)   # ino=0, inherits overwrites
 
     # Emit journal records.
-    # Staged sources: D(old) + A/M(new)  (two records).
-    # Redirect sources: R/P(old, new)    (one self-contained record).
+    # Staged sources: DEL(old) + ADD/MOD(new)  (two records).
+    # Redirect sources: RDR/REP(old, new)    (one self-contained record).
     if staged:
         journal(D, old_dir_path, old_name)
         if dst_overwrites:
@@ -440,7 +440,7 @@ recorded as a separate journal entry and replayed in order at commit time.
 **Rename + recreate** (`mv a->b`, then `touch a`) works because the new
 `touch a` sees the deleted dirent (with `overwrites` inherited from the
 rename) and creates a new staged dirent that supersedes it. The staged
-rename emits `D(a) + A(b)` (not `R`), so the journal sees `A(old) + D(old)`
+rename emits `D(a) + A(b)` (not RDR), so the journal sees `A(old) + D(old)`
 which cancel in compaction.
 
 **Read after rename**: lookup of the new name finds the dirent ->
@@ -454,16 +454,16 @@ base file is copied into a new inode; the dirent changes from
 Commit and abort handling for renames is covered in
 [Staging Operations](#staging-operations-userspace).
 
-### Rename Overwrite: `P` Tag for Redirect Renames
+### Rename Overwrite: REP Tag for Redirect Renames
 
 When a redirect rename overwrites an existing base file at the destination,
-the kernel emits `P` (replace) instead of `R` (redirect). The `P` tag
+the kernel emits REP instead of RDR. The REP tag
 tells the resolver that the destination path existed in base. This way the
 `collapse()` step can produce `Replaced` (instead of `Renamed`) and
 re-emit a `Deleted` for the overwritten base path if the destination is
 later moved or deleted.
 
-Staged renames already encode this via `M` (vs `A`), so `P` is only
+Staged renames already encode this via MOD (vs ADD), so REP is only
 needed for redirect (zero-copy) renames.
 
 ```
@@ -538,18 +538,18 @@ S\0<gen>\0<target_gen>\n                                         # restore marke
 ```
 
 Each mutation type has its own record tag and carries exactly the fields
-it needs. `A`/`M` and `R`/`P` form symmetric pairs encoding whether the
+it needs. ADD/MOD and RDR/REP form symmetric pairs encoding whether the
 destination path existed in the base layer (`overwrites`):
 
 | Tag | Fields | `overwrites` | Meaning |
 |-----|--------|:---------:|---------|
-| `A` | `<dir>`, `<name>`, `<dtype>`, `<ino>` | false | Staged content at new path |
-| `M` | `<dir>`, `<name>`, `<dtype>`, `<ino>` | true | Staged content replacing base file |
-| `D` | `<dir>`, `<name>` | — | Entry deleted |
-| `R` | `<old_dir>`, `<old_name>`, `<new_dir>`, `<new_name>`, `<dtype>` | false | Rename to new path |
-| `P` | `<old_dir>`, `<old_name>`, `<new_dir>`, `<new_name>`, `<dtype>` | true | Rename replacing base file |
-| `K` | `<gen>`, `<name>` | — | Checkpoint marker |
-| `S` | `<gen>`, `<target_gen>` | — | Restore to checkpoint |
+| `A` (ADD) | `<dir>`, `<name>`, `<dtype>`, `<ino>` | false | Staged content at new path |
+| `M` (MOD) | `<dir>`, `<name>`, `<dtype>`, `<ino>` | true | Staged content replacing base file |
+| `D` (DEL) | `<dir>`, `<name>` | — | Entry deleted |
+| `R` (RDR) | `<old_dir>`, `<old_name>`, `<new_dir>`, `<new_name>`, `<dtype>` | false | Rename to new path |
+| `P` (REP) | `<old_dir>`, `<old_name>`, `<new_dir>`, `<new_name>`, `<dtype>` | true | Rename replacing base file |
+| `K` (CKP) | `<gen>`, `<name>` | — | Checkpoint marker |
+| `S` (RST) | `<gen>`, `<target_gen>` | — | Restore to checkpoint |
 
 `<dir>` is the parent directory path (empty string for root).
 `<name>` is the entry name within that directory.
@@ -558,12 +558,12 @@ destination path existed in the base layer (`overwrites`):
 `<old_dir>`/`<old_name>` is the rename source path.
 `<new_dir>`/`<new_name>` is the rename destination path.
 
-`R`/`P` records are self-contained — each carries both source and
-destination.  No D+R/P pairing convention for consumers to know.  Staged
-renames still emit `D` + `A`/`M` (two separate records) because the
+RDR/REP records are self-contained — each carries both source and
+destination.  No D+RDR/REP pairing convention for consumers to know.  Staged
+renames still emit DEL + ADD/MOD (two separate records) because the
 staged inode carries the content.
 
-The `A`/`M` and `R`/`P` distinctions encode whether the path had
+The ADD/MOD and RDR/REP distinctions encode whether the path had
 existing content before the mutation (`overwrites`). This removes the
 need for filesystem checks during resolution — each record is
 self-describing.
@@ -590,29 +590,29 @@ indicator.
 
 When `agfs_create_staged` is called and a deleted dirent already exists
 for that name (re-create after delete), the deleted dirent's `overwrites`
-determines the journal tag: `M` if true, `A` if false.
+determines the journal tag: MOD if true, ADD if false.
 
 **Edge cases:**
 
 - **Delete + re-create of a base file** (`rm x && touch x`): Delete
   inherits `overwrites=true` (file was in base). Re-create sees the deleted
-  dirent with `overwrites=true` → emits `M`. The resolver correctly
+  dirent with `overwrites=true` → emits MOD. The resolver correctly
   produces `Modified`.
 
 - **Delete + re-create of a staged-only file** (`touch x && rm x && touch x`
   within a session): The first create sets `overwrites=false`. Delete
-  inherits `overwrites=false`. Re-create sees `overwrites=false` → emits `A`.
+  inherits `overwrites=false`. Re-create sees `overwrites=false` → emits ADD.
   The resolver correctly produces `Added`.
 
 - **COW + delete + re-create** (`echo hi >> existing && rm existing && touch existing`):
   COW sets `overwrites=true`. Delete inherits it. Re-create
-  sees `overwrites=true` → emits `M`.
+  sees `overwrites=true` → emits MOD.
 
 - **Rename + delete + re-create at source** (`mv a b && touch a`):
   The rename emits `R(a, b)` (redirect source). `touch a` sees the
   deleted dirent with inherited `overwrites=true` (base file existed) →
-  emits `M`. If `a` had been staged-only, the deleted dirent inherits
-  `overwrites=false` → emits `A`.
+  emits MOD. If `a` had been staged-only, the deleted dirent inherits
+  `overwrites=false` → emits ADD.
 
 - **Rename-overwrite + move** (`mv b a && mv a c`, both `a` and `b` in
   base): The first rename overwrites base `a`. Because `dst_overwrites` is
@@ -631,9 +631,9 @@ determines the journal tag: `M` if true, `A` if false.
 The CLI resolves per-checkpoint deltas by iterating over segments from the
 `SegmentedJournal` pipeline. Each segment is resolved independently via
 `resolve()` (which calls `compact().collapse()`) — records between
-consecutive K/S markers form one segment. This is O(N) total.
+consecutive CKP/RST markers form one segment. This is O(N) total.
 
-`K` records a checkpoint. The CLI can slice segments with
+CKP records a checkpoint. The CLI can slice segments with
 `SegmentedJournal::live_slice(at, from, to)`, so that only the requested
 range of segments is resolved and displayed.
 
@@ -670,14 +670,14 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
    No temp files, no sorting, no conflict detection — the temporal order
    from compaction is the correct replay order.
 4. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
-5. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `entry_count=0` — reset mode, no S record written).
+5. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `entry_count=0` — reset mode, no RST record written).
 
 **Abort** (`agfs abort`):
 
 1. Count staged changes; if none, print "nothing to discard" and exit.
 2. Prompt for confirmation: `Discard N staged changes? [y/N]`.
 3. Remove all files under `.agfs/inodes/` and truncate `.agfs/journal`.
-4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `entry_count=0` — reset mode, no S record written).
+4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `entry_count=0` — reset mode, no RST record written).
 
 **Status** (`agfs status`):
 
@@ -736,7 +736,7 @@ looking up by name, `--at` and `--from` match the latest one.
 
 Auto-checkpointing after `agfs exec` is skipped when the command produced no
 staged changes. The kernel tracks a `dirty` flag on `agfs_sb_info` that is set
-on every data journal write (A/M/D/R/P) and cleared on checkpoint or restore.
+on every data journal write (ADD/MOD/DEL/RDR/REP) and cleared on checkpoint or restore.
 When the CLI passes the `AGFS_CHK_IF_CHANGED` flag in the checkpoint ioctl, the
 kernel returns `gen = 0` (skipped) if the flag is clear, avoiding empty
 checkpoints from read-only or no-op commands.
@@ -827,20 +827,20 @@ output always preserves checkpoint boundaries within the requested range.
 - `--at` conflicts with `--from`/`--to`.
 
 **`agfs restore <name|gen>`**: Restore the mounted view to the state at the
-named checkpoint. The journal is **append-only** — restore appends an `S`
-record instead of truncating. `S` records create unreachable records — records
-between the target checkpoint and the `S` record that no longer reflect
+named checkpoint. The journal is **append-only** — restore appends an RST
+record instead of truncating. RST records create unreachable records — records
+between the target checkpoint and the RST record that no longer reflect
 current state. All CLI consumers (commit, status, diff, restore) build a
 `SegmentedJournal` to filter unreachable records before resolving.
 
 The reachability algorithm: O(N) single pass to collect S/K positions,
-O(R) backward walk to build reachable ranges, skip unreachable S records.
+O(R) backward walk to build reachable ranges, skip unreachable RST records.
 
 1. CLI builds a `SegmentedJournal` and finds the target checkpoint via
    `Markers::find_checkpoint()` (including unreachable regions, to support undo-restore).
 2. CLI calls `live_prefix_gen(gen_id)` (or `live_prefix(name)` which
    resolves the name internally) to extract the `LiveSegments` from the
-   prefix up to the target checkpoint, handling any S records in that
+   prefix up to the target checkpoint, handling any RST records in that
    prefix, then flattens via `.into_records()`.
 3. CLI resolves the live records → changes → entries.
 4. CLI converts changes to dirent entries (path, ino, base, d_type).

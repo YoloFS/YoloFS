@@ -23,7 +23,7 @@ fn modify_produces_add_record() {
     );
 }
 
-/// Overwrite an existing file multiple times — each write produces an A record
+/// Overwrite an existing file multiple times — each write produces an ADD record
 /// (the kernel doesn't coalesce; the CLI resolver handles that).
 #[test]
 fn multiple_writes_produce_multiple_adds() {
@@ -38,11 +38,11 @@ fn multiple_writes_produce_multiple_adds() {
         .iter()
         .filter(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
         .count();
-    // At least 1 A record; the kernel may coalesce O_TRUNC reopens on the
+    // At least 1 ADD record; the kernel may coalesce O_TRUNC reopens on the
     // same inode, but the first COW always produces one.
     assert!(
         add_count >= 1,
-        "should have at least 1 A record, got {add_count}: {records:?}"
+        "should have at least 1 ADD record, got {add_count}: {records:?}"
     );
 }
 

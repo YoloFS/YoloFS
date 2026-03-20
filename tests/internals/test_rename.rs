@@ -24,7 +24,7 @@ fn rename_produces_rename_record() {
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// Pure rename of a base file creates no new inode (only journal R record).
+/// Pure rename of a base file creates no new inode (only journal RDR record).
 #[test]
 fn pure_rename_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
@@ -113,7 +113,7 @@ fn rename_overwrite_journal() {
     let records = journal(&s);
 
     // Should have Replace(hello.txt → subdir/deep.txt) as a single record
-    // (no separate Delete for hello.txt — fused into the R/P record).
+    // (no separate Delete for hello.txt — fused into the RDR/REP record).
     let has_replace = records.0.iter().any(|r| {
         matches!(r, Record::Replace { old, new, .. }
         if new.ends_with("/deep.txt") && old.ends_with("/hello.txt"))

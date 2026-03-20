@@ -51,12 +51,12 @@ the ioctl wire format.
 | Operation    | Perm check                                                   | Staging layer                                                                     | Passthrough                               |
 | ------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------- |
 | `lookup`     | --                                                           | Check dirent table first (deleted -> ENOENT, ino -> staged inode, base redirect -> redirect); fall back to base. | `lookup_one_len()` on base dir. |
-| `create`     | -- (dir perm via lower FS)                                   | Allocate inode, add dirent + journal `A` record.                                | `vfs_create()` on inode store.  |
-| `mkdir`      | -- (dir perm via lower FS)                                   | Allocate directory inode, add dirent + journal `A` record.                      | --                               |
-| `unlink`     | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal `D` record.                                         | --                                         |
-| `rmdir`      | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal `D` record.                                         | --                                         |
-| `rename`     | -- (dir perm via lower FS)                                   | See [Rename Handling](staging.md#rename-handling). Emits `D` + `A`/`M`/`R`/`P`.   | --                                         |
-| `symlink`    | -- (dir perm via lower FS)                                   | Allocate inode (symlink), add dirent + journal `A` record.                      | `vfs_symlink()`.                          |
+| `create`     | -- (dir perm via lower FS)                                   | Allocate inode, add dirent + journal ADD record.                                | `vfs_create()` on inode store.  |
+| `mkdir`      | -- (dir perm via lower FS)                                   | Allocate directory inode, add dirent + journal ADD record.                      | --                               |
+| `unlink`     | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal DEL record.                                         | --                                         |
+| `rmdir`      | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal DEL record.                                         | --                                         |
+| `rename`     | -- (dir perm via lower FS)                                   | See [Rename Handling](staging.md#rename-handling). Emits DEL + ADD/MOD/RDR/REP.   | --                                         |
+| `symlink`    | -- (dir perm via lower FS)                                   | Allocate inode (symlink), add dirent + journal ADD record.                      | `vfs_symlink()`.                          |
 | `permission` | **Gating for regular files (O(1) cached); delegate to lower FS for dirs.** | --                                                                                 | `inode_permission()` on lower inode.      |
 | `setattr`    | Gated (regular files only).                                  | Setattr on resolved lower file (staged inode or base). No COW triggered.           | `notify_change()` on lower.               |
 | `getattr`    | Gated (regular files only).                                  | Stat from resolved path (staged inode or base).                                   | `vfs_getattr()` on lower.                 |
@@ -95,8 +95,8 @@ descriptor (typically `.agfs/mnt`). Ioctl command macros are defined in
 | `AGFS_IOC_PUT_RESPONSE`    | Submit a decision: one `struct agfs_ctl_response`. Wakes the sleeping thread.                                                                               |
 | `AGFS_IOC_RULE_ADD`     | Add a permission rule to a dentry. Kernel resolves the path, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps `perm_gen`.                                                |
 | `AGFS_IOC_RULE_REMOVE`  | Remove a rule from a dentry. Kernel sets `perm = NONE`, unpins the dentry, and bumps `perm_gen`.                                                                                |
-| `AGFS_IOC_RESTORE`    | Atomically reset staging state and optionally inject dirent entries. Two modes: reset (`target_gen=0`) for commit/abort, restore (`target_gen>0`) for restore. Restore mode: increments `gen`, injects entries with new gen, appends `S` record to journal, returns `new_gen`. Reset mode: wipes dirents, sets `gen=1`, no journal write. Ioctl is `_IOWR` to return `new_gen`. Rejects with `-EBUSY` if staging fds are open. See detailed steps below and [staging.md — Restore](staging.md#checkpoint-aware-cli-operations). |
-| `AGFS_IOC_CHECKPOINT`     | Bump `gen`, append `K` record to journal, return checkpoint ID. Rejects with `-EBUSY` if staging fds are open. Triggers re-COW on next open-for-write to any staged file (see [staging.md — Checkpoints](staging.md#checkpoint-mechanism)). |
+| `AGFS_IOC_RESTORE`    | Atomically reset staging state and optionally inject dirent entries. Two modes: reset (`target_gen=0`) for commit/abort, restore (`target_gen>0`) for restore. Restore mode: increments `gen`, injects entries with new gen, appends RST record to journal, returns `new_gen`. Reset mode: wipes dirents, sets `gen=1`, no journal write. Ioctl is `_IOWR` to return `new_gen`. Rejects with `-EBUSY` if staging fds are open. See detailed steps below and [staging.md — Restore](staging.md#checkpoint-aware-cli-operations). |
+| `AGFS_IOC_CHECKPOINT`     | Bump `gen`, append CKP record to journal, return checkpoint ID. Rejects with `-EBUSY` if staging fds are open. Triggers re-COW on next open-for-write to any staged file (see [staging.md — Checkpoints](staging.md#checkpoint-mechanism)). |
 
 `AGFS_IOC_RESTORE` is called by userspace after commit/abort (with
 `entry_count=0`, `target_gen=0` to reset) and for restore (with entries
@@ -119,7 +119,7 @@ It:
    the parent path via `vfs_path_lookup` on the mount root, takes
    `inode_lock(parent)`, calls `agfs_add_dirent()` to install the
    dirent with `gen = new_gen`, then releases.
-8. **Restore mode**: Appends `S\0<new_gen>\0<target_gen>\n` to journal.
+8. **Restore mode**: Appends RST record (`S\0<new_gen>\0<target_gen>\n`) to journal.
 9. **Restore mode**: Writes back `new_gen` to userspace struct.
 
 On the first `AGFS_IOC_GET_REQUEST`, a per-fd `agfs_ctl_private` is lazily
@@ -133,7 +133,7 @@ resolved immediately using `ask_default`.
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + `dirent.gen`). Also serializes restore (S record write). | `rw_semaphore` (write for COW/checkpoint/restore). Create/mkdir/symlink/unlink/rmdir/rename are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
+| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + `dirent.gen`). Also serializes restore (RST record write). | `rw_semaphore` (write for COW/checkpoint/restore). Create/mkdir/symlink/unlink/rmdir/rename are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
 | `inode->i_rwsem` (VFS) | Per-directory dirent table | `rw_semaphore` (held by VFS for lookup/readdir/mutations) |
 | `dentry_info->lock` | Cached lower path | `spinlock` |

@@ -19,7 +19,7 @@ journal::parse::read()  →  Timeline::new()  →  timeline.resolve()
 
 | Level | Internal type | CLI command | What it shows |
 |-------|--------------|-------------|---------------|
-| Raw records | `Vec<Record>` | `agfs journal` | Every A/M/D/R/K/S record |
+| Raw records | `Vec<Record>` | `agfs journal` | Every ADD/MOD/DEL/RDR/REP/CKP/RST record |
 | Structured segments | `Timeline` | `agfs timeline` | Checkpoints + restores (DAG, unreachable dimmed) |
 | Collapsed changes | `Vec<Change>` | `agfs status` / `agfs diff` | Final effect per path |
 
@@ -50,7 +50,7 @@ pub struct Segment {
     pub from: Checkpoint,
     pub to: Option<Checkpoint>,   // None = trailing unsaved changes
     pub reachable: bool,
-    pub records: Vec<Record>,     // raw A/M/D/R records in this segment
+    pub records: Vec<Record>,     // raw ADD/MOD/DEL/RDR/REP records in this segment
 }
 
 pub struct Timeline {
@@ -58,7 +58,7 @@ pub struct Timeline {
 }
 
 impl Timeline {
-    /// Build from raw journal records. Computes segment boundaries (K/S)
+    /// Build from raw journal records. Computes segment boundaries (CKP/RST)
     /// and reachability.
     pub fn new(records: Vec<Record>) -> Self;
 
