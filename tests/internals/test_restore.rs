@@ -41,7 +41,7 @@ fn restore_journal_has_no_post_checkpoint_records() {
 
     let records = journal(&s);
 
-    // S (Restore) record should be present in the raw journal.
+    // RST (Restore) record should be present in the raw journal.
     assert!(
         records.0.iter().any(|r| matches!(r, Record::Restore { .. })),
         "Restore record should be in journal: {records:?}"

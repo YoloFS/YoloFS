@@ -183,8 +183,8 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		goto out;
 
 	/* Emit journal records.
-	 * Staged sources: D(old) + A/M(new)  (two records).
-	 * Redirect sources: R/P(old, new)    (one self-contained record). */
+	 * Staged sources: DEL(old) + ADD/MOD(new)  (two records).
+	 * Redirect sources: RDR/REP(old, new)    (one self-contained record). */
 	if (agfs_ino_is_staged(ino)) {
 		err = agfs_journal_delete(sbi, old_dentry);
 		if (!err) {

@@ -448,7 +448,7 @@ fn rename_staged_file_to_new_path_commit() {
 }
 
 /// Create a staged file and rename it to overwrite a base file, then commit.
-/// Tests the D + M path: the base file is replaced with staged content.
+/// Tests the DEL + MOD path: the base file is replaced with staged content.
 #[test]
 fn rename_staged_file_overwrite_base_commit() {
     let s = AgfsSession::new().expect("session setup");
@@ -482,10 +482,10 @@ fn rename_staged_file_overwrite_base_commit() {
 /// Operations (grouped by the edge case they exercise):
 ///   1. Modify hello.txt (COW → MOD record)
 ///   2. Create brand_new.txt then rename it to multi.txt
-///      (staged rename to base path → D + M; overwrites base file)
-///   3. Create temp.txt then delete it (A + D cancel out)
-///   4. Rename subdir/deep.txt → subdir/shallow.txt (base rename → D + R)
-///   5. Rename subdir/shallow.txt → top.txt (second rename → D + R)
+///      (staged rename to base path → DEL + MOD; overwrites base file)
+///   3. Create temp.txt then delete it (ADD + DEL cancel out)
+///   4. Rename subdir/deep.txt → subdir/shallow.txt (base rename → DEL + RDR)
+///   5. Rename subdir/shallow.txt → top.txt (second rename → DEL + RDR)
 ///   6. Create link.txt as symlink (A with dtype=Link)
 ///   7. Modify hello.txt again (second COW → M; multiple modifies keep final ino)
 ///
@@ -495,7 +495,7 @@ fn rename_staged_file_overwrite_base_commit() {
 ///   - Renamed(subdir/shallow.txt → top.txt) — second rename
 ///   - Deleted(subdir/deep.txt)      — first rename source
 ///   - Added(link.txt)               — new symlink
-///   - (temp.txt absent)             — A + D cancelled
+///   - (temp.txt absent)             — ADD + DEL cancelled
 ///
 /// After commit all changes are applied to base.
 #[test]
@@ -505,12 +505,12 @@ fn complex_multi_operation_commit() {
     // ── 1. COW modify hello.txt ──
     fs::write(s.mnt_path("hello.txt"), "first edit\n").expect("write hello v1");
 
-    // ── 2. Create staged file, rename onto base file (D + M path) ──
+    // ── 2. Create staged file, rename onto base file (DEL + MOD path) ──
     fs::write(s.mnt_path("brand_new.txt"), "replacement\n").expect("create brand_new");
     fs::rename(s.mnt_path("brand_new.txt"), s.mnt_path("multi.txt"))
         .expect("rename brand_new → multi");
 
-    // ── 3. Create then immediately delete (A + D cancel) ──
+    // ── 3. Create then immediately delete (ADD + DEL cancel) ──
     fs::write(s.mnt_path("temp.txt"), "ephemeral\n").expect("create temp");
     fs::remove_file(s.mnt_path("temp.txt")).expect("delete temp");
 

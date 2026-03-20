@@ -202,8 +202,8 @@ fn truncate_only_produces_empty_inode() {
     );
 }
 
-/// Opening a base file with O_TRUNC produces a Modified (M) journal record,
-/// not an Added (A) — the file already exists in the base layer.
+/// Opening a base file with O_TRUNC produces a Modified (MOD) journal record,
+/// not an Added (ADD) — the file already exists in the base layer.
 #[test]
 fn truncate_open_base_file_produces_modify_record() {
     let s = AgfsSession::new().expect("session setup");

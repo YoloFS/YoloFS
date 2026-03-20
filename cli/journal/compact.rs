@@ -4,10 +4,10 @@
 // that is directly replayable on the base filesystem.
 //
 // Rules (applied in order):
-//   1. Decompose rename+modify: R(a,b) + M(b, ino) → D(a) + A(b, ino);
-//      P(a,b) + M(b, ino) → D(a) + M(b, ino).
-//   2. Cancel: A(x) + D(x) → removed; M(x) + D(x) → D(x).
-//   3. Merge modifies: M(x, ino=1) + M(x, ino=2) → M(x, ino=2).
+//   1. Decompose rename+modify: RDR(a,b) + MOD(b, ino) → DEL(a) + ADD(b, ino);
+//      REP(a,b) + MOD(b, ino) → DEL(a) + MOD(b, ino).
+//   2. Cancel: ADD(x) + DEL(x) → removed; MOD(x) + DEL(x) → DEL(x).
+//   3. Merge modifies: MOD(x, ino=1) + MOD(x, ino=2) → MOD(x, ino=2).
 
 use super::types::{Action, ActionList, DType, Record};
 use std::collections::{HashMap, HashSet};
@@ -53,8 +53,8 @@ pub fn compact(records: Vec<Record>) -> ActionList {
 //
 // When a Rename/Replace is followed by a Modify at the same destination,
 // decompose:
-//   R(a, b) + M(b, ino) → D(a) + A(b, ino)   (b is new to base)
-//   P(a, b) + M(b, ino) → D(a) + M(b, ino)   (b existed in base)
+//   RDR(a, b) + MOD(b, ino) → DEL(a) + ADD(b, ino)   (b is new to base)
+//   REP(a, b) + MOD(b, ino) → DEL(a) + MOD(b, ino)   (b existed in base)
 
 fn decompose_rename_modify(actions: &mut [Action]) {
     let mut rename_dest: HashMap<&str, usize> = HashMap::new();
@@ -88,7 +88,7 @@ fn decompose_rename_modify(actions: &mut [Action]) {
         };
         actions[rename_idx] = Action::Delete { path: old };
         if !is_replace {
-            // R(a,b) + M(b, ino) → D(a) + A(b, ino)
+            // RDR(a,b) + MOD(b, ino) → DEL(a) + ADD(b, ino)
             if let Action::Modify { path, ino, dtype } = &actions[modify_idx] {
                 actions[modify_idx] = Action::Add {
                     path: path.clone(),
@@ -97,14 +97,14 @@ fn decompose_rename_modify(actions: &mut [Action]) {
                 };
             }
         }
-        // P(a,b) + M(b, ino) → D(a) + M(b, ino) — Modify stays as-is
+        // REP(a,b) + MOD(b, ino) → DEL(a) + MOD(b, ino) — Modify stays as-is
     }
 }
 
 // ── Pass 2: Cancel ───────────────────────────────────────────────────
 //
-// A(x, ino) + D(x) → removed.
-// M(x, ino) + D(x) → D(x).
+// ADD(x, ino) + DEL(x) → removed.
+// MOD(x, ino) + DEL(x) → DEL(x).
 
 fn cancel(actions: &mut Vec<Action>) {
     let mut add_at: HashMap<&str, usize> = HashMap::new();
@@ -118,10 +118,10 @@ fn cancel(actions: &mut Vec<Action>) {
             Action::Delete { path } => {
                 if let Some(add_idx) = add_at.remove(path.as_str()) {
                     if matches!(&actions[add_idx], Action::Modify { .. }) {
-                        // M(x) + D(x) → D(x) — remove M, keep D
+                        // MOD(x) + DEL(x) → DEL(x) — remove MOD, keep DEL
                         to_remove.insert(add_idx);
                     } else {
-                        // A(x) + D(x) → removed — remove both
+                        // ADD(x) + DEL(x) → removed — remove both
                         to_remove.insert(add_idx);
                         to_remove.insert(i);
                     }
@@ -139,7 +139,7 @@ fn cancel(actions: &mut Vec<Action>) {
 
 // ── Pass 3: Merge modifies ──────────────────────────────────────────
 //
-// M(x, ino=1) + M(x, ino=2) → M(x, ino=2).
+// MOD(x, ino=1) + MOD(x, ino=2) → MOD(x, ino=2).
 
 fn merge_modifies(actions: &mut Vec<Action>) {
     let mut modify_at: HashMap<&str, usize> = HashMap::new();
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn staged_rename_cancels_old_add() {
-        // touch x (staged), mv x y → kernel emits: A(x,1) + D(x) + A(y,1)
+        // touch x (staged), mv x y → kernel emits: ADD(x,1) + DEL(x) + ADD(y,1)
         let records = vec![
             Record::Added {
                 path: "/x".into(),
@@ -353,8 +353,8 @@ mod tests {
 
     #[test]
     fn intervening_add_prevents_decompose() {
-        // R(a,b) + A(b,5) + M(b,7): the Add at /b should cancel
-        // the rename-dest tracking so M(b) is NOT decomposed with R(a,b).
+        // RDR(a,b) + ADD(b,5) + MOD(b,7): the Add at /b should cancel
+        // the rename-dest tracking so MOD(b) is NOT decomposed with RDR(a,b).
         let records = vec![
             Record::Redirect {
                 old: "/a".into(),
@@ -382,8 +382,8 @@ mod tests {
 
     #[test]
     fn intervening_delete_prevents_decompose() {
-        // R(a,b) + D(b) + M(b,5): the Delete at /b should cancel
-        // the rename-dest tracking so M(b) is NOT decomposed with R(a,b).
+        // RDR(a,b) + DEL(b) + MOD(b,5): the Delete at /b should cancel
+        // the rename-dest tracking so MOD(b) is NOT decomposed with RDR(a,b).
         let records = vec![
             Record::Redirect {
                 old: "/a".into(),
@@ -398,7 +398,7 @@ mod tests {
             },
         ];
         let al = compact(records);
-        // R(a,b) stays as Rename, D(b) cancels with M(b), leaving just the rename.
+        // RDR(a,b) stays as Rename, DEL(b) cancels with MOD(b), leaving just the rename.
         assert!(
             al.0.iter().any(|a| matches!(a, Action::Rename { old, new, .. } if old == "/a" && new == "/b")),
             "rename should survive intact, got: {:?}",
@@ -455,7 +455,7 @@ mod tests {
         assert!(matches!(&al.0[0], Action::Delete { path } if path == "/a"));
         assert!(
             matches!(&al.0[1], Action::Add { path, ino: 5, dtype: DType::Dir } if path == "/b"),
-            "dir R+M should decompose to D+A(dir), got: {:?}",
+            "dir RDR+MOD should decompose to DEL+ADD(dir), got: {:?}",
             al.0[1]
         );
     }
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn replace_then_delete_at_dest() {
-        // P(a,b) + D(b): Delete at destination does not cancel Replace;
+        // REP(a,b) + DEL(b): Delete at destination does not cancel Replace;
         // Rename tracking is cleared so both survive.
         let records = vec![
             Record::Replace {
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn replace_then_rename_from_dest() {
-        // P(a,b) + R(b,c): Replace followed by Rename from destination.
+        // REP(a,b) + RDR(b,c): Replace followed by Rename from destination.
         let records = vec![
             Record::Replace {
                 old: "/a".into(),
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn segments_add_delete_readd_across_checkpoints() {
-        // Seg0: A(x) | K1 | Seg1: D(x) | K2 | Seg2: A(x, new ino)
+        // Seg0: ADD(x) | CKP1 | Seg1: DEL(x) | CKP2 | Seg2: ADD(x, new ino)
         let records = vec![
             Record::Added {
                 path: "/x".into(),
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn segments_base_modify_across_checkpoints() {
-        // Seg0: M(x, ino=1) | K1 | Seg1: M(x, ino=2)
+        // Seg0: MOD(x, ino=1) | CKP1 | Seg1: MOD(x, ino=2)
         let records = vec![
             Record::Modified {
                 path: "/x".into(),
@@ -606,7 +606,7 @@ mod tests {
 
     #[test]
     fn segments_delete_in_later_segment() {
-        // Seg0: M(x, ino=1) | K1 | Seg1: D(x)
+        // Seg0: MOD(x, ino=1) | CKP1 | Seg1: DEL(x)
         let records = vec![
             Record::Modified {
                 path: "/x".into(),
@@ -629,8 +629,8 @@ mod tests {
 
     #[test]
     fn segments_rename_across_checkpoints() {
-        // Seg0: R(a, b) | K1 | Seg1: M(b, ino=5)
-        // After decompose: R(a,b) + M(b,5) → D(a) + A(b,5)
+        // Seg0: RDR(a, b) | CKP1 | Seg1: MOD(b, ino=5)
+        // After decompose: RDR(a,b) + MOD(b,5) → DEL(a) + ADD(b,5)
         let records = vec![
             Record::Redirect {
                 old: "/a".into(),
@@ -659,8 +659,8 @@ mod tests {
     }
     #[test]
     fn segments_restore_kills_dead_segment() {
-        // Seg0: A(x) | K1 | Seg1: A(y) | K2 | S3(target=K1) | Seg3: A(z)
-        // Restore to K1 means Seg1 is dead.
+        // Seg0: ADD(x) | CKP1 | Seg1: ADD(y) | CKP2 | RST3(target=CKP1) | Seg3: ADD(z)
+        // Restore to CKP1 means Seg1 is dead.
         let records = vec![
             Record::Added {
                 path: "/x".into(),
@@ -705,7 +705,7 @@ mod tests {
 
     #[test]
     fn segments_delete_recreate_same_path_across_checkpoints() {
-        // Seg0: D(x) | K1 | Seg1: A(x, ino=2)
+        // Seg0: DEL(x) | CKP1 | Seg1: ADD(x, ino=2)
         let records = vec![
             Record::Deleted { path: "/x".into() },
             Record::Checkpoint {

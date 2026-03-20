@@ -7,10 +7,10 @@ use std::fs;
 //
 // The kernel tracks whether a path had existing content via an `overwrites`
 // flag on each dirent. This flag determines the journal record tag:
-// A (add, new path) vs M (modify, overwrites content). These tests verify
+// ADD (add, new path) vs MOD (modify, overwrites content). These tests verify
 // that the kernel emits the correct tag for various edge cases.
 
-/// Creating a brand-new file emits an A (add) record.
+/// Creating a brand-new file emits an ADD (add) record.
 #[test]
 fn create_new_file_emits_add() {
     let s = AgfsSession::new().expect("session setup");
@@ -26,7 +26,7 @@ fn create_new_file_emits_add() {
     );
 }
 
-/// Modifying an existing base file emits an M (modify) record.
+/// Modifying an existing base file emits a MOD (modify) record.
 #[test]
 fn modify_base_file_emits_modify() {
     let s = AgfsSession::new().expect("session setup");
@@ -42,8 +42,8 @@ fn modify_base_file_emits_modify() {
     );
 }
 
-/// Delete a base file then re-create it: the re-create should emit M
-/// (the path existed in base), not A.
+/// Delete a base file then re-create it: the re-create should emit MOD
+/// (the path existed in base), not ADD.
 #[test]
 fn delete_recreate_base_file_emits_modify() {
     let s = AgfsSession::new().expect("session setup");
@@ -65,12 +65,12 @@ fn delete_recreate_base_file_emits_modify() {
         .expect("should have a staged record for hello.txt");
     assert!(
         matches!(last, Record::Modified { .. }),
-        "re-create of base file should produce M, got: {last:?}"
+        "re-create of base file should produce MOD, got: {last:?}"
     );
 }
 
 /// Delete a newly-created file then re-create it: the re-create should
-/// emit A (the path never existed in base).
+/// emit ADD (the path never existed in base).
 #[test]
 fn delete_recreate_staged_file_emits_add() {
     let s = AgfsSession::new().expect("session setup");
@@ -80,7 +80,7 @@ fn delete_recreate_staged_file_emits_add() {
     fs::write(s.mnt_path("ephemeral.txt"), "v2\n").expect("recreate");
 
     let records = journal(&s);
-    // Find the last record for ephemeral.txt — should be A.
+    // Find the last record for ephemeral.txt — should be ADD.
     let last = records.0
         .iter()
         .rev()
@@ -93,11 +93,11 @@ fn delete_recreate_staged_file_emits_add() {
         .expect("should have a staged record for ephemeral.txt");
     assert!(
         matches!(last, Record::Added { .. }),
-        "re-create of staged-only file should produce A, got: {last:?}"
+        "re-create of staged-only file should produce ADD, got: {last:?}"
     );
 }
 
-/// Modify a base file (COW), delete it, re-create: should emit M
+/// Modify a base file (COW), delete it, re-create: should emit MOD
 /// because the path existed in base.
 #[test]
 fn cow_delete_recreate_emits_modify() {
@@ -123,12 +123,12 @@ fn cow_delete_recreate_emits_modify() {
         .expect("should have a staged record for hello.txt");
     assert!(
         matches!(last, Record::Modified { .. }),
-        "re-create after COW+delete of base file should produce M, got: {last:?}"
+        "re-create after COW+delete of base file should produce MOD, got: {last:?}"
     );
 }
 
 /// Rename a base file away, then create at the old path: the create
-/// should emit M (the path existed in base).
+/// should emit MOD (the path existed in base).
 #[test]
 fn rename_away_then_create_at_old_path_emits_modify() {
     let s = AgfsSession::new().expect("session setup");
@@ -149,12 +149,12 @@ fn rename_away_then_create_at_old_path_emits_modify() {
         .expect("should have a staged record for hello.txt");
     assert!(
         matches!(last, Record::Modified { .. }),
-        "create at renamed-away base path should produce M, got: {last:?}"
+        "create at renamed-away base path should produce MOD, got: {last:?}"
     );
 }
 
 /// Rename a staged-only file away, then create at the old path: the
-/// create should emit A (the path never existed in base).
+/// create should emit ADD (the path never existed in base).
 #[test]
 fn rename_away_staged_then_create_emits_add() {
     let s = AgfsSession::new().expect("session setup");
@@ -176,12 +176,12 @@ fn rename_away_staged_then_create_emits_add() {
         .expect("should have a staged record for temp.txt");
     assert!(
         matches!(last, Record::Added { .. }),
-        "create at renamed-away staged path should produce A, got: {last:?}"
+        "create at renamed-away staged path should produce ADD, got: {last:?}"
     );
 }
 
 /// Create a new file, checkpoint, then write to it again (re-COW).
-/// The re-COW should emit M (Modified) because the path already had
+/// The re-COW should emit MOD (Modified) because the path already had
 /// staged content — the `overwrites` flag is true regardless of whether
 /// the file existed in base.
 #[test]
@@ -213,11 +213,11 @@ fn recow_of_staged_file_after_checkpoint_emits_modify() {
         !post_chk.is_empty(),
         "re-COW should produce a record after checkpoint: {records:?}"
     );
-    // Re-COW of a staged file emits M (overwrites=true) because the
+    // Re-COW of a staged file emits MOD (overwrites=true) because the
     // path already had content, even though it was never in base.
     assert!(
         matches!(post_chk[0], Record::Modified { .. }),
-        "re-COW of staged file should emit M (overwrites existing content), got: {:?}",
+        "re-COW of staged file should emit MOD (overwrites existing content), got: {:?}",
         post_chk[0]
     );
 }

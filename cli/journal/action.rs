@@ -396,7 +396,7 @@ mod tests {
             Action::Delete { path: "/b".into() },
         ]);
         let cs = al.collapse();
-        // Rename(a→b) then D(b) → Deleted(a) + Deleted(b)
+        // Rename(a→b) then DEL(b) → Deleted(a) + Deleted(b)
         assert_eq!(cs.0.len(), 2, "expected 2 deletes, got: {cs:?}");
         let has_del_a = cs.0
             .iter()
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn collapse_delete_then_modify_same_path() {
-        // D(x) + M(x): collapse keeps latest (Modified)
+        // DEL(x) + MOD(x): collapse keeps latest (Modified)
         let al = ActionList(vec![
             Action::Delete { path: "/x".into() },
             Action::Modify {
@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn collapse_replace_overwrite_tracking() {
-        // P(a→b) then P(c→b): b's prior origin (a) should be deleted
+        // REP(a→b) then REP(c→b): b's prior origin (a) should be deleted
         let al = ActionList(vec![
             Action::Replace {
                 old: "/a".into(),
@@ -536,7 +536,7 @@ mod tests {
             dtype: DType::File,
         }]);
         let cs = al.collapse();
-        assert!(cs.0.is_empty(), "R(a,a) should be a no-op, got: {cs:?}");
+        assert!(cs.0.is_empty(), "RDR(a,a) should be a no-op, got: {cs:?}");
     }
 
     #[test]
@@ -547,7 +547,7 @@ mod tests {
             dtype: DType::File,
         }]);
         let cs = al.collapse();
-        assert!(cs.0.is_empty(), "P(a,a) should be a no-op, got: {cs:?}");
+        assert!(cs.0.is_empty(), "REP(a,a) should be a no-op, got: {cs:?}");
     }
 
     #[test]

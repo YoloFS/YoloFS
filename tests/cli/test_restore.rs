@@ -730,7 +730,7 @@ fn kernel_appends_to_journal_after_restore() {
     );
 }
 
-// ── Append-only journal / S-record tests ─────────────────────────────
+// ── Append-only journal / RST-record tests ─────────────────────────────
 
 /// After restore, the journal is append-only (not truncated).
 /// Verify that `agfs timeline` shows the restore event.

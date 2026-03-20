@@ -149,7 +149,7 @@ struct agfs_dirent {
 
 Discrimination is by `ino` alone. `overwrites` is orthogonal — it tracks
 whether the destination name existed in the base filesystem, inherited
-through deletes and used to select journal tags (A/M for staged, R/P
+through deletes and used to select journal tags (ADD/MOD for staged, RDR/REP
 for redirects):
 
 - `ino > 0` (and `!= AGFS_INO_REDIRECT`) → staged file, symlink, or directory
@@ -419,16 +419,16 @@ agfs_rename(old_parent, old_name, new_parent, new_name):
     # Staged sources: DEL(old) + ADD/MOD(new)  (two records).
     # Redirect sources: RDR/REP(old, new)    (one self-contained record).
     if staged:
-        journal(D, old_dir_path, old_name)
+        journal(DEL, old_dir_path, old_name)
         if dst_overwrites:
-            journal(M, new_dir_path, new_name, dtype, ino)
+            journal(MOD, new_dir_path, new_name, dtype, ino)
         else:
-            journal(A, new_dir_path, new_name, dtype, ino)
+            journal(ADD, new_dir_path, new_name, dtype, ino)
     else:
         if dst_overwrites:
-            journal(P, old_dir_path, old_name, new_dir_path, new_name, dtype)
+            journal(REP, old_dir_path, old_name, new_dir_path, new_name, dtype)
         else:
-            journal(R, old_dir_path, old_name, new_dir_path, new_name, dtype)
+            journal(RDR, old_dir_path, old_name, new_dir_path, new_name, dtype)
 ```
 
 **Rename chains** (`mv a->b`, then `mv b->c`) work naturally: the second
@@ -440,7 +440,7 @@ recorded as a separate journal entry and replayed in order at commit time.
 **Rename + recreate** (`mv a->b`, then `touch a`) works because the new
 `touch a` sees the deleted dirent (with `overwrites` inherited from the
 rename) and creates a new staged dirent that supersedes it. The staged
-rename emits `D(a) + A(b)` (not RDR), so the journal sees `A(old) + D(old)`
+rename emits `DEL(a) + ADD(b)` (not RDR), so the journal sees `ADD(old) + DEL(old)`
 which cancel in compaction.
 
 **Read after rename**: lookup of the new name finds the dirent ->
@@ -468,12 +468,12 @@ needed for redirect (zero-copy) renames.
 
 ```
 # Both a and b exist in base.
-mv b a      # Journal: P(b, a)
-            #          P carries overwrites=true for destination "a"
-mv a c      # Journal: R(a, c)
+mv b a      # Journal: REP(b, a)
+            #          REP carries overwrites=true for destination "a"
+mv a c      # Journal: RDR(a, c)
 
 # compact().collapse() produces: Renamed(b→c) + Deleted(a)
-# The P/R distinction ensures Deleted(a) is emitted when
+# The REP/RDR distinction ensures Deleted(a) is emitted when
 # the Replaced action at "a" is unwound by the second rename.
 ```
 
@@ -609,21 +609,21 @@ determines the journal tag: MOD if true, ADD if false.
   sees `overwrites=true` → emits MOD.
 
 - **Rename + delete + re-create at source** (`mv a b && touch a`):
-  The rename emits `R(a, b)` (redirect source). `touch a` sees the
+  The rename emits `RDR(a, b)` (redirect source). `touch a` sees the
   deleted dirent with inherited `overwrites=true` (base file existed) →
   emits MOD. If `a` had been staged-only, the deleted dirent inherits
   `overwrites=false` → emits ADD.
 
 - **Rename-overwrite + move** (`mv b a && mv a c`, both `a` and `b` in
   base): The first rename overwrites base `a`. Because `dst_overwrites` is
-  true, the kernel emits `P(b, a)`. The second rename emits `R(a, c)`.
+  true, the kernel emits `REP(b, a)`. The second rename emits `RDR(a, c)`.
   `compact().collapse()` sees `Replace(b→a)` followed by `Rename(a→c)`,
   which produces `Replace(b→a)` + `Rename(a→c)`, and emits `Deleted(a)` for
   the overwritten base file and `Deleted(b)` for the source.
   Final result: `Replaced(b→a) + Renamed(a→c) + Deleted(b)`.
 
 - **Rename-overwrite + delete** (`mv b a && rm a`, both in base):
-  Same mechanism — kernel emits `P(b, a)`, then `D(a)`.
+  Same mechanism — kernel emits `REP(b, a)`, then `DEL(a)`.
   `compact().collapse()` produces `Deleted(a) + Deleted(b)`.
 
 ### Checkpoint Segments
@@ -803,8 +803,8 @@ A\0/src\0util.rs\0f\04\n                          # create util.rs -> ino 4
 K\04\0after make fix\n                             # checkpoint 4
 ```
 
-Reachable records (after `reachable`): M(main.rs→1), A(lib.rs→2), K1, A(util.rs→4), K4
-Unreachable region: M(main.rs→3), D(lib.rs), K2, S3
+Reachable records (after `reachable`): MOD(main.rs→1), ADD(lib.rs→2), CKP1, ADD(util.rs→4), CKP4
+Unreachable region: MOD(main.rs→3), DEL(lib.rs), CKP2, RST3
 
 State at current:
 

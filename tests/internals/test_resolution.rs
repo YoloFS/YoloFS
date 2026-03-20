@@ -25,19 +25,19 @@ fn operations_produce_ordered_records() {
     // Verify each type is present
     assert!(
         records.0.iter().any(|r| matches!(r, Record::Modified { .. })),
-        "missing A: {records:?}"
+        "missing MOD: {records:?}"
     );
     assert!(
         records.0.iter().any(|r| matches!(r, Record::Checkpoint { .. })),
-        "missing S: {records:?}"
+        "missing CKP: {records:?}"
     );
     assert!(
         records.0.iter().any(|r| matches!(r, Record::Deleted { .. })),
-        "missing D: {records:?}"
+        "missing DEL: {records:?}"
     );
     assert!(
         records.0.iter().any(|r| matches!(r, Record::Redirect { .. })),
-        "missing R: {records:?}"
+        "missing RDR: {records:?}"
     );
 
     // Checkpoint "s1" should appear after the Add (write) and before the Delete.
@@ -57,7 +57,7 @@ fn operations_produce_ordered_records() {
     assert!(chk_pos < del_pos, "Checkpoint s1 should precede Delete");
 }
 
-/// Writing to a renamed file: rename produces R, then write produces M at new path.
+/// Writing to a renamed file: rename produces RDR, then write produces MOD at new path.
 #[test]
 fn write_after_rename() {
     let s = AgfsSession::new().expect("session setup");
@@ -155,11 +155,11 @@ fn modify_then_delete() {
     let a_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
-        .expect("missing M");
+        .expect("missing MOD");
     let d_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Deleted { path } if path.ends_with("/hello.txt")))
-        .expect("missing D");
+        .expect("missing DEL");
     assert!(a_pos < d_pos, "Add should precede Delete: {records:?}");
 }
 
@@ -189,11 +189,11 @@ fn rename_then_delete() {
     let r_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Redirect { .. }))
-        .expect("missing R");
+        .expect("missing RDR");
     let d_pos = records.0
         .iter()
         .position(|r| matches!(r, Record::Deleted { path } if path.ends_with("/moved.txt")))
-        .expect("missing D");
+        .expect("missing DEL");
     assert!(r_pos < d_pos, "Rename should precede Delete: {records:?}");
 }
 

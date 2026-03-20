@@ -14,8 +14,8 @@ use anyhow::Result;
 impl Markers {
     /// Compute alive flags for all segments.
     ///
-    /// Walks restore (S) markers right-to-left. Each S(target_gen) kills
-    /// segments between the target checkpoint and the S marker.
+    /// Walks restore (RST) markers right-to-left. Each RST(target_gen) kills
+    /// segments between the target checkpoint and the RST marker.
     pub fn alive_segments(&self, num_segments: usize) -> Vec<bool> {
         self.alive_segments_range(0..self.len(), num_segments)
     }

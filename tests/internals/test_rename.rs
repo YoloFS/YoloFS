@@ -141,7 +141,7 @@ fn rename_back_and_forth_no_changes() {
 }
 
 /// Rename a staged (newly created) file to overwrite a base file.
-/// The destination exists in base, so the kernel emits D + M (not D + A).
+/// The destination exists in base, so the kernel emits DEL + MOD (not DEL + ADD).
 #[test]
 fn rename_staged_file_to_base_path() {
     let s = AgfsSession::new().expect("session setup");
