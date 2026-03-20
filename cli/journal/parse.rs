@@ -48,6 +48,11 @@ pub fn read(agfs_dir: &Path) -> Result<Journal> {
         });
     }
     let data = fs::read(&journal_path).context("reading journal file")?;
+    parse(&data)
+}
+
+/// Parse journal bytes into records.
+pub fn parse(data: &[u8]) -> Result<Journal> {
     let mut records = Vec::new();
 
     for line in data.split(|&b| b == b'\n') {
@@ -127,34 +132,28 @@ pub fn truncate(agfs_dir: &Path, offset: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::path::Path;
 
-    fn setup_test_dir() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("inodes")).unwrap();
-        dir
-    }
+    // ── IO tests (genuinely need a filesystem) ─────────────────────────
 
     #[test]
-    fn read_empty() {
-        let dir = setup_test_dir();
+    fn read_missing_journal_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
         let journal = read(dir.path()).unwrap();
         assert!(journal.records.is_empty());
     }
 
     #[test]
-    fn read_multiple() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // A: added file "a" at root with ino=1, dtype=f
-        data.extend_from_slice(b"A\0\0a\0f\01\n");
-        // D: deleted "b" at root
-        data.extend_from_slice(b"D\0\0b\n");
-        // R: redirect "d" at root from /c
-        data.extend_from_slice(b"R\0\0d\0f\0/c\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+    fn inode_path_format() {
+        let p = inode_path(Path::new("/tmp/fake"), 42);
+        assert!(p.ends_with("inodes/42"));
+    }
 
-        let journal = read(dir.path()).unwrap();
+    // ── Parse tests (pure in-memory) ───────────────────────────────────
+
+    #[test]
+    fn parse_multiple() {
+        let journal = parse(b"A\0\0a\0f\01\nD\0\0b\nR\0\0d\0f\0/c\n").unwrap();
         assert_eq!(journal.records.len(), 3);
         assert!(
             matches!(&journal.records[0], Record::Added { path, ino: 1, dtype: Some(DType::File) } if path == "/a")
@@ -166,13 +165,8 @@ mod tests {
     }
 
     #[test]
-    fn read_modified_record() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"M\0/src\0main.rs\0f\03\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-
-        let journal = read(dir.path()).unwrap();
+    fn parse_modified_record() {
+        let journal = parse(b"M\0/src\0main.rs\0f\03\n").unwrap();
         assert_eq!(journal.records.len(), 1);
         assert!(
             matches!(&journal.records[0], Record::Modified { path, ino: 3, dtype: Some(DType::File) } if path == "/src/main.rs"),
@@ -181,25 +175,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn inode_path_format() {
-        let dir = setup_test_dir();
-        let p = inode_path(dir.path(), 42);
-        assert!(p.ends_with("inodes/42"));
-    }
-
     // ── Checkpoint tests ───────────────────────────────────────────────
 
     #[test]
-    fn read_checkpoint_record() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0\0a\0f\01\n");
-        data.extend_from_slice(b"K\01\0build\n");
-        data.extend_from_slice(b"A\0\0a\0f\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-
-        let journal = read(dir.path()).unwrap();
+    fn parse_checkpoint_record() {
+        let journal = parse(b"A\0\0a\0f\01\nK\01\0build\nA\0\0a\0f\02\n").unwrap();
         assert_eq!(journal.records.len(), 3);
         assert!(
             matches!(&journal.records[1], Record::Checkpoint(c) if c.gen_id == 1 && c.name == "build")
@@ -208,9 +188,7 @@ mod tests {
 
     #[test]
     fn parse_restore_record() {
-        let dir = setup_test_dir();
-        fs::write(dir.path().join("journal"), b"S\x004\x002\n").unwrap();
-        let journal = read(dir.path()).unwrap();
+        let journal = parse(b"S\x004\x002\n").unwrap();
         assert_eq!(journal.records.len(), 1);
         match &journal.records[0] {
             Record::Restore { gen_id, target_gen } => {
@@ -221,30 +199,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn read_entry_in_subdirectory() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        // File "main.rs" in directory "/src"
-        data.extend_from_slice(b"A\0/src\0main.rs\0f\01\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+    // ── Path construction tests ────────────────────────────────────────
 
-        let journal = read(dir.path()).unwrap();
+    #[test]
+    fn parse_entry_in_subdirectory() {
+        let journal = parse(b"A\0/src\0main.rs\0f\01\n").unwrap();
         assert_eq!(journal.records.len(), 1);
         assert!(
             matches!(&journal.records[0], Record::Added { path, ino: 1, dtype: Some(DType::File) } if path == "/src/main.rs")
         );
     }
 
-    #[test]
-    fn read_directory_and_symlink_dtypes() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
-        data.extend_from_slice(b"A\0\0mydir\0d\01\n");
-        data.extend_from_slice(b"A\0\0mylink\0l\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
+    // ── DType tests ────────────────────────────────────────────────────
 
-        let journal = read(dir.path()).unwrap();
+    #[test]
+    fn parse_directory_and_symlink_dtypes() {
+        let journal = parse(b"A\0\0mydir\0d\01\nA\0\0mylink\0l\02\n").unwrap();
         assert_eq!(journal.records.len(), 2);
         assert!(matches!(
             &journal.records[0],
@@ -270,12 +240,9 @@ mod tests {
     }
 
     #[test]
-    fn read_entry_missing_dtype_is_none() {
-        let dir = setup_test_dir();
+    fn parse_entry_missing_dtype_is_none() {
         // A record with empty dtype field
-        fs::write(dir.path().join("journal"), b"A\0\0file\0\01\n").unwrap();
-
-        let journal = read(dir.path()).unwrap();
+        let journal = parse(b"A\0\0file\0\01\n").unwrap();
         assert_eq!(journal.records.len(), 1);
         assert!(
             matches!(&journal.records[0], Record::Added { dtype: None, .. }),
@@ -285,12 +252,9 @@ mod tests {
     }
 
     #[test]
-    fn read_entry_invalid_dtype_is_none() {
-        let dir = setup_test_dir();
+    fn parse_entry_invalid_dtype_is_none() {
         // A record with invalid dtype char 'x'
-        fs::write(dir.path().join("journal"), b"A\0\0file\0x\01\n").unwrap();
-
-        let journal = read(dir.path()).unwrap();
+        let journal = parse(b"A\0\0file\0x\01\n").unwrap();
         assert_eq!(journal.records.len(), 1);
         assert!(
             matches!(&journal.records[0], Record::Added { dtype: None, .. }),
@@ -299,17 +263,12 @@ mod tests {
         );
     }
 
+    // ── Malformed record tests ─────────────────────────────────────────
+
     #[test]
     fn malformed_a_record_too_few_fields_skipped() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
         // A record with only 3 fields (needs 5) — should be skipped
-        data.extend_from_slice(b"A\0\0file\01\n");
-        // Valid record after it
-        data.extend_from_slice(b"A\0\0good\0f\02\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-
-        let journal = read(dir.path()).unwrap();
+        let journal = parse(b"A\0\0file\01\nA\0\0good\0f\02\n").unwrap();
         assert_eq!(
             journal.records.len(),
             1,
@@ -324,15 +283,8 @@ mod tests {
 
     #[test]
     fn malformed_d_record_too_few_fields_skipped() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
         // D record with only 1 field (needs 3) — should be skipped
-        data.extend_from_slice(b"D\0\n");
-        // Valid record after it
-        data.extend_from_slice(b"A\0\0good\0f\01\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-
-        let journal = read(dir.path()).unwrap();
+        let journal = parse(b"D\0\nA\0\0good\0f\01\n").unwrap();
         assert_eq!(
             journal.records.len(),
             1,
@@ -347,15 +299,8 @@ mod tests {
 
     #[test]
     fn malformed_r_record_too_few_fields_skipped() {
-        let dir = setup_test_dir();
-        let mut data = Vec::new();
         // R record with only 4 fields (needs 5) — should be skipped
-        data.extend_from_slice(b"R\0\0file\0f\n");
-        // Valid record after it
-        data.extend_from_slice(b"A\0\0good\0f\01\n");
-        fs::write(dir.path().join("journal"), &data).unwrap();
-
-        let journal = read(dir.path()).unwrap();
+        let journal = parse(b"R\0\0file\0f\nA\0\0good\0f\01\n").unwrap();
         assert_eq!(
             journal.records.len(),
             1,
