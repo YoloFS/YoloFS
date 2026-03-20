@@ -8,9 +8,7 @@
 // `--from <name> --to <name>` — diff changes between two checkpoints.
 
 use crate::journal;
-use crate::journal::Dirent;
-use crate::journal::resolve::ResolvedSegment;
-use crate::journal::timeline::Timeline;
+use crate::journal::{Change, Checkpoint, SegmentedJournal};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -24,7 +22,7 @@ fn read_file_lossy(path: &Path) -> String {
 }
 
 fn read_inode(agfs: &Path, ino: u64) -> String {
-    read_file_lossy(&journal::inode_path(agfs, ino))
+    read_file_lossy(&crate::utils::inode_path(agfs, ino))
 }
 
 fn read_base(rel_path: &str) -> String {
@@ -59,8 +57,8 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
 
 // ── Segment display helpers ──────────────────────────────────────────
 
-fn print_segment_footer(segment: &ResolvedSegment) {
-    if let Some(c) = &segment.to {
+fn print_segment_footer(closing: &Option<Checkpoint>) {
+    if let Some(c) = closing {
         println!(
             "{} {}",
             format!("checkpoint [{}]", c.gen_id).cyan().bold(),
@@ -71,15 +69,15 @@ fn print_segment_footer(segment: &ResolvedSegment) {
 
 // ── Per-change printing (summary vs verbose) ─────────────────────────
 
-fn print_change(agfs: &Path, path: &str, change: &Dirent, verbose: bool) {
+fn print_change(agfs: &Path, path: &str, change: &Change, verbose: bool) {
     match change {
-        Dirent::Added { ino, .. } => {
+        Change::Added { ino, .. } => {
             println!("{} {}", path.bold(), "(added)".green());
             if verbose {
                 print_unified_diff("", &read_inode(agfs, *ino));
             }
         }
-        Dirent::Modified { ino, .. } => {
+        Change::Modified { ino, .. } => {
             if verbose {
                 let old_text = read_base(path);
                 let new_text = read_inode(agfs, *ino);
@@ -91,16 +89,16 @@ fn print_change(agfs: &Path, path: &str, change: &Dirent, verbose: bool) {
                 println!("{} {}", path.bold(), "(modified)".yellow());
             }
         }
-        Dirent::Deleted => {
+        Change::Deleted => {
             println!("{} {}", path.bold(), "(deleted)".red());
             if verbose {
                 print_unified_diff(&read_base(path), "");
             }
         }
-        Dirent::Renamed { from, .. } => {
+        Change::Renamed { from, .. } => {
             println!("{} → {} {}", from.bold(), path.bold(), "(renamed)".cyan());
         }
-        Dirent::Replaced { from, .. } => {
+        Change::Replaced { from, .. } => {
             println!("{} → {} {}", from.bold(), path.bold(), "(replaced)".cyan());
         }
     }
@@ -135,14 +133,21 @@ fn run(
     path: Option<&str>,
 ) -> Result<bool> {
     let agfs = crate::utils::session_dir()?;
-    let records = journal::read(&agfs)?.records;
-    let timeline = Timeline::new(records);
-    let records = timeline.slice(at, from, to)?;
-    let segments = journal::resolve::resolve_segments(records)?;
+    let sj = SegmentedJournal::new(journal::read(&agfs)?);
+    let pairs = sj.live_slice(at, from, to)?;
 
-    let has_changes = segments
+    // Resolve all segments upfront.
+    let resolved: Vec<(journal::Changeset, Option<journal::Checkpoint>)> = pairs
+        .into_iter()
+        .map(|(seg, closing)| {
+            let changes = journal::resolve::resolve(seg.records)?;
+            Ok((changes, closing))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let has_changes = resolved
         .iter()
-        .flat_map(|s| &s.changes)
+        .flat_map(|(changes, _)| changes)
         .any(|(p, c)| path.is_none_or(|t| c.matches_path(p, t)));
 
     if !has_changes {
@@ -153,28 +158,27 @@ fn run(
         return Ok(false);
     }
 
-    let has_checkpoints = segments.iter().any(|s| s.to.is_some());
+    let has_checkpoints = resolved.iter().any(|(_, closing)| closing.is_some());
     let mut total = 0usize;
 
-    for segment in &segments {
-        let changes: Vec<&(String, Dirent)> = match path {
-            Some(target) => segment
-                .changes
+    for (changes, closing) in &resolved {
+        let changes: Vec<&(String, Change)> = match path {
+            Some(target) => changes
                 .iter()
                 .filter(|(p, c)| c.matches_path(p, target))
                 .collect(),
-            None => segment.changes.iter().collect(),
+            None => changes.iter().collect(),
         };
 
         if has_checkpoints {
             if changes.is_empty() && path.is_some() {
                 continue;
             }
-            if segment.to.is_none() {
+            if closing.is_none() {
                 println!("{}", "── (unsaved changes) ──".dimmed());
             }
             if changes.is_empty() {
-                print_segment_footer(segment);
+                print_segment_footer(closing);
                 continue;
             }
         }
@@ -185,7 +189,7 @@ fn run(
         total += changes.len();
 
         if has_checkpoints {
-            print_segment_footer(segment);
+            print_segment_footer(closing);
         }
     }
 
@@ -217,25 +221,25 @@ fn range_label(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::Dirent;
+    use crate::journal::Change;
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::TempDir;
 
     fn state_map<'a>(
         agfs: &Path,
-        changes: &'a [(String, Dirent)],
+        changes: &'a [(String, Change)],
     ) -> BTreeMap<&'a str, Option<String>> {
         let mut map = BTreeMap::new();
         for (path, change) in changes {
             match change {
-                Dirent::Added { ino, .. } | Dirent::Modified { ino, .. } => {
+                Change::Added { ino, .. } | Change::Modified { ino, .. } => {
                     map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
                 }
-                Dirent::Deleted => {
+                Change::Deleted => {
                     map.insert(path.as_str(), None);
                 }
-                Dirent::Renamed { from, .. } | Dirent::Replaced { from, .. } => {
+                Change::Renamed { from, .. } | Change::Replaced { from, .. } => {
                     map.insert(from.as_str(), None);
                     map.insert(path.as_str(), Some(read_base(from)));
                 }
@@ -268,7 +272,7 @@ mod tests {
         let tmp = make_agfs(&[(1, "hello\n")]);
         let changes = vec![(
             "/src/main.rs".into(),
-            Dirent::Added {
+            Change::Added {
                 ino: 1,
                 dtype: crate::journal::DType::File,
             },
@@ -283,7 +287,7 @@ mod tests {
         let tmp = make_agfs(&[(5, "new content")]);
         let changes = vec![(
             "/etc/config".into(),
-            Dirent::Modified {
+            Change::Modified {
                 ino: 5,
                 dtype: crate::journal::DType::File,
             },
@@ -296,7 +300,7 @@ mod tests {
     #[test]
     fn state_map_deleted() {
         let tmp = make_agfs(&[]);
-        let changes = vec![("/old/file.txt".into(), Dirent::Deleted)];
+        let changes = vec![("/old/file.txt".into(), Change::Deleted)];
         let map = state_map(tmp.path(), &changes);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/old/file.txt"], None);
@@ -309,7 +313,7 @@ mod tests {
         let tmp = make_agfs(&[]);
         let changes = vec![(
             "/nonexistent/new.rs".into(),
-            Dirent::Renamed {
+            Change::Renamed {
                 from: "/nonexistent/old.rs".into(),
                 dtype: crate::journal::DType::File,
             },
@@ -327,14 +331,14 @@ mod tests {
         let changes = vec![
             (
                 "/nonexistent/new.rs".into(),
-                Dirent::Renamed {
+                Change::Renamed {
                     from: "/nonexistent/old.rs".into(),
                     dtype: crate::journal::DType::File,
                 },
             ),
             (
                 "/nonexistent/new.rs".into(),
-                Dirent::Modified {
+                Change::Modified {
                     ino: 7,
                     dtype: crate::journal::DType::File,
                 },
@@ -352,19 +356,19 @@ mod tests {
         let changes = vec![
             (
                 "/a.txt".into(),
-                Dirent::Added {
+                Change::Added {
                     ino: 1,
                     dtype: crate::journal::DType::File,
                 },
             ),
             (
                 "/b.txt".into(),
-                Dirent::Modified {
+                Change::Modified {
                     ino: 2,
                     dtype: crate::journal::DType::File,
                 },
             ),
-            ("/c.txt".into(), Dirent::Deleted),
+            ("/c.txt".into(), Change::Deleted),
         ];
         let map = state_map(tmp.path(), &changes);
         assert_eq!(map.len(), 3);

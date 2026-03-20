@@ -176,12 +176,12 @@ $ agfs commit
 
 # 8. Restore to a previous checkpoint (appends S record, no truncation)
 $ agfs restore "after make build"
-   -> CLI: Timeline::find_checkpoint + reachable_records → resolved changes
+   -> CLI: SegmentedJournal → find_checkpoint → live_prefix → resolve
    -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, entries })
    -> kernel: wipe dirents, inject entries, increment gen to 4,
       append S\04\02\n to journal
    -> journal is append-only — dead records remain but are filtered
-      by Timeline reachability on subsequent operations
+      by SegmentedJournal reachability on subsequent operations
 ```
 
 ## Source File Layout
@@ -222,7 +222,8 @@ agfs/
 │   ├── journal/               # journal parsing, timeline, and resolution
 │   │   ├── types.rs           # Record, Dirent, DType, and related types
 │   │   ├── parse.rs           # journal file parsing
-│   │   ├── timeline.rs        # checkpoint/restore DAG (Timeline, Segment)
+│   │   ├── segment.rs         # journal pipeline (SegmentedJournal, Segment, Markers)
+│   │   ├── liveness.rs       # reachability filtering (alive_segments, live, live_prefix)
 │   │   └── resolve.rs         # journal resolution (collapse records into final ops)
 │   ├── restore.rs             # `agfs restore` -- restore to a previous checkpoint
 │   ├── checkpoint.rs          # `agfs checkpoint` (create only)

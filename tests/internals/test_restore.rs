@@ -48,8 +48,9 @@ fn restore_journal_has_no_post_checkpoint_records() {
     );
 
     // reachable + resolve should match the checkpoint state (only a.txt).
-    let timeline = journal::timeline::Timeline::new(records);
-    let ch = journal::resolve::resolve(timeline.reachable_records()).expect("resolve");
+    let sj = journal::SegmentedJournal::new(records);
+    let live_records: Vec<Record> = sj.live().into_iter().flat_map(|s| s.records).collect();
+    let ch = journal::resolve::resolve(live_records).expect("resolve");
     let debug = format!("{ch:?}");
     assert!(
         debug.contains("a.txt"),

@@ -1,6 +1,11 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+/// Get the staged inode path for a given ino.
+pub fn inode_path(agfs_dir: &Path, ino: u64) -> PathBuf {
+    agfs_dir.join("inodes").join(ino.to_string())
+}
+
 /// Returns "s" when count != 1, "" otherwise.
 pub fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }

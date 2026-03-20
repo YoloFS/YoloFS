@@ -127,7 +127,7 @@ fn mkdir_with_file_creates_separate_inodes() {
         .iter()
         .filter_map(|(path, c)| {
             if path.ends_with("/parent") || path.ends_with("/child") {
-                if let agfs::journal::Dirent::Added { ino, .. } = c {
+                if let agfs::journal::Change::Added { ino, .. } = c {
                     return Some(*ino);
                 }
             }

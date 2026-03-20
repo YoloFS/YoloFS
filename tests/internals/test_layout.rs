@@ -1,6 +1,6 @@
 use super::helpers::{changes, ino_for, inode_path, inos};
 use crate::helpers::AgfsSession;
-use agfs::journal;
+use agfs::utils;
 use std::fs;
 
 // ── Inode store structure and properties ───────────────────────────────
@@ -66,7 +66,7 @@ fn staged_inode_owned_by_caller() {
     );
 }
 
-/// journal::inode_path() returns the correct inode store path.
+/// utils::inode_path() returns the correct inode store path.
 #[test]
 fn inode_path_matches_library_api() {
     let s = AgfsSession::new().expect("session setup");
@@ -77,7 +77,7 @@ fn inode_path_matches_library_api() {
     let ino = ino_for(&ch, "/hello.txt");
 
     let agfs_dir = s.root.join(".agfs");
-    let lib_path = journal::inode_path(&agfs_dir, ino);
+    let lib_path = utils::inode_path(&agfs_dir, ino);
     let manual_path = s.inodes_dir().join(ino.to_string());
     assert_eq!(
         lib_path, manual_path,

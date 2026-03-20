@@ -32,9 +32,9 @@ impl DType {
 
 /// A resolved change — the final effect of replaying the journal.
 /// Path-free: the primary path (destination) is carried externally as the
-/// first element of `(String, Dirent)` tuples returned by `resolve()`.
+/// first element of `(String, Change)` tuples returned by `resolve()`.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Dirent {
+pub enum Change {
     Added { ino: u64, dtype: DType },
     Modified { ino: u64, dtype: DType },
     Deleted,
@@ -42,11 +42,11 @@ pub enum Dirent {
     Replaced { from: String, dtype: DType },
 }
 
-impl Dirent {
+impl Change {
     /// Return the staged inode ID if this change carries one.
     pub fn ino(&self) -> Option<u64> {
         match self {
-            Dirent::Added { ino, .. } | Dirent::Modified { ino, .. } => Some(*ino),
+            Change::Added { ino, .. } | Change::Modified { ino, .. } => Some(*ino),
             _ => None,
         }
     }
@@ -54,19 +54,67 @@ impl Dirent {
     /// True if this change involves the given path (as source or destination).
     pub fn matches_path(&self, path: &str, target: &str) -> bool {
         match self {
-            Dirent::Added { .. } | Dirent::Modified { .. } | Dirent::Deleted => path == target,
-            Dirent::Renamed { from, .. } | Dirent::Replaced { from, .. } => {
+            Change::Added { .. } | Change::Modified { .. } | Change::Deleted => path == target,
+            Change::Renamed { from, .. } | Change::Replaced { from, .. } => {
                 path == target || from == target
             }
         }
     }
 }
 
+/// A parsed journal — a flat list of records from disk.
+pub type RawJournal = Vec<Record>;
+
+/// The resolved final state — a list of (path, change) pairs.
+pub type Changeset = Vec<(String, Change)>;
+
+/// Live segments — only those that survive restore pruning (Level 2).
+pub type LiveSegments = Vec<Segment>;
+
 /// A named checkpoint in the journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checkpoint {
     pub gen_id: u64,
     pub name: String,
+}
+
+/// A group of data records (A/M/D/R) between consecutive K/S boundaries.
+#[derive(Debug)]
+pub struct Segment {
+    /// The checkpoint this segment builds on.
+    /// `None` for the 0-th segment (records before the first checkpoint).
+    pub from: Option<Checkpoint>,
+    /// The A/M/D/R records in this segment (no K/S records).
+    pub records: Vec<Record>,
+}
+
+/// A boundary event in the journal (checkpoint or restore).
+#[derive(Debug, Clone)]
+pub enum Marker {
+    Checkpoint {
+        pos: usize,
+        checkpoint: Checkpoint,
+    },
+    Restore {
+        pos: usize,
+        gen_id: u64,
+        target_gen: u64,
+    },
+}
+
+impl Marker {
+    /// Convert to a Record for display formatting.
+    pub fn to_record(&self) -> Record {
+        match self {
+            Marker::Checkpoint { checkpoint, .. } => Record::Checkpoint(checkpoint.clone()),
+            Marker::Restore {
+                gen_id, target_gen, ..
+            } => Record::Restore {
+                gen_id: *gen_id,
+                target_gen: *target_gen,
+            },
+        }
+    }
 }
 
 /// A journal record: either an entry (dirent mutation) or a checkpoint.
@@ -100,4 +148,102 @@ pub enum Record {
         gen_id: u64,
         target_gen: u64,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Change::ino() ────────────────────────────────────────────────
+
+    #[test]
+    fn ino_added() {
+        let d = Change::Added {
+            ino: 42,
+            dtype: DType::File,
+        };
+        assert_eq!(d.ino(), Some(42));
+    }
+
+    #[test]
+    fn ino_modified() {
+        let d = Change::Modified {
+            ino: 7,
+            dtype: DType::Dir,
+        };
+        assert_eq!(d.ino(), Some(7));
+    }
+
+    #[test]
+    fn ino_deleted_is_none() {
+        assert_eq!(Change::Deleted.ino(), None);
+    }
+
+    #[test]
+    fn ino_renamed_is_none() {
+        let d = Change::Renamed {
+            from: "/old".into(),
+            dtype: DType::File,
+        };
+        assert_eq!(d.ino(), None);
+    }
+
+    #[test]
+    fn ino_replaced_is_none() {
+        let d = Change::Replaced {
+            from: "/old".into(),
+            dtype: DType::File,
+        };
+        assert_eq!(d.ino(), None);
+    }
+
+    // ── Change::matches_path() ───────────────────────────────────────
+
+    #[test]
+    fn matches_path_added() {
+        let d = Change::Added {
+            ino: 1,
+            dtype: DType::File,
+        };
+        assert!(d.matches_path("/a", "/a"));
+        assert!(!d.matches_path("/a", "/b"));
+    }
+
+    #[test]
+    fn matches_path_modified() {
+        let d = Change::Modified {
+            ino: 1,
+            dtype: DType::File,
+        };
+        assert!(d.matches_path("/x", "/x"));
+        assert!(!d.matches_path("/x", "/y"));
+    }
+
+    #[test]
+    fn matches_path_deleted() {
+        assert!(Change::Deleted.matches_path("/a", "/a"));
+        assert!(!Change::Deleted.matches_path("/a", "/b"));
+    }
+
+    #[test]
+    fn matches_path_renamed_checks_both() {
+        let d = Change::Renamed {
+            from: "/old".into(),
+            dtype: DType::File,
+        };
+        assert!(d.matches_path("/new", "/new"), "matches destination");
+        assert!(d.matches_path("/new", "/old"), "matches source");
+        assert!(!d.matches_path("/new", "/other"));
+    }
+
+    #[test]
+    fn matches_path_replaced_checks_both() {
+        let d = Change::Replaced {
+            from: "/old".into(),
+            dtype: DType::File,
+        };
+        assert!(d.matches_path("/new", "/new"), "matches destination");
+        assert!(d.matches_path("/new", "/old"), "matches source");
+        assert!(!d.matches_path("/new", "/other"));
+    }
 }

@@ -614,14 +614,14 @@ determines the journal tag: `M` if true, `A` if false.
 
 ### Checkpoint Segments
 
-The CLI uses `resolve_segments` to display per-checkpoint deltas. Each
-segment is resolved independently with a fresh `Resolver` — records
-between consecutive `K` markers form one segment. This is O(N) total.
+The CLI resolves per-checkpoint deltas by iterating over segments from the
+`SegmentedJournal` pipeline. Each segment is resolved independently with
+a fresh `Resolver` — records between consecutive K/S markers form one
+segment. This is O(N) total.
 
-`K` records a checkpoint. The CLI can slice the timeline with
-`Timeline::slice(at, from, to)` before passing to
-`resolve_segments`, so that only the requested range of segments is
-resolved and displayed.
+`K` records a checkpoint. The CLI can slice segments with
+`SegmentedJournal::live_slice(at, from, to)`, so that only the requested
+range of segments is resolved and displayed.
 
 Slicing semantics:
 - `--at <name>` — isolate the single segment at that checkpoint
@@ -640,8 +640,8 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 
 **Commit** (`agfs commit`):
 
-1. Build a `Timeline` from the journal records and call `reachable_records()` to filter
-   unreachable records from restores.
+1. Build a `SegmentedJournal` from the journal records, then call `live()` to get
+   only reachable segments (filtering out dead branches from restores).
 2. Replay reachable records in order to build a resolved operation list. Each path
    is tracked through its lifetime of mutations so that intermediate
    operations collapse into their final effect:
@@ -670,17 +670,17 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 
 **Status** (`agfs status`):
 
-1. Build a `Timeline` from the journal records and call `slice()` to filter
+1. Build a `SegmentedJournal` from the journal records and call `live_slice()` to filter
    unreachable records and optionally narrow to a range (`--at`, `--from`, `--to`).
-2. Resolve into segments grouped by checkpoint boundaries.
+2. Resolve each segment independently.
 3. Display one-line summaries under checkpoint headers (and any trailing
    unsaved changes). Print total count.
 
 **Diff** (`agfs diff`):
 
-1. Build a `Timeline` from the journal records and call `slice()` to filter
+1. Build a `SegmentedJournal` from the journal records and call `live_slice()` to filter
    unreachable records and optionally narrow to a range (`--at`, `--from`, `--to`).
-2. Resolve into segments grouped by checkpoint boundaries.
+2. Resolve each segment independently.
 3. For modified/added files, diff `inodes/<ino>` vs base.
    For renames, show rename metadata. For deletes, show as deleted file.
 4. Output in git-style unified diff format under checkpoint headers.
@@ -821,16 +821,16 @@ named checkpoint. The journal is **append-only** — restore appends an `S`
 record instead of truncating. `S` records create unreachable records — records
 between the target checkpoint and the `S` record that no longer reflect
 current state. All CLI consumers (commit, status, diff, restore) build a
-`Timeline` to filter unreachable records before resolving.
+`SegmentedJournal` to filter unreachable records before resolving.
 
 The reachability algorithm: O(N) single pass to collect S/K positions,
 O(R) backward walk to build reachable ranges, skip unreachable S records.
 
-1. CLI builds a `Timeline` and finds the target checkpoint (including
-   unreachable regions, to support undo-restore).
-2. CLI extracts the prefix `records[0..=target]`, builds a prefix `Timeline`,
-   and calls `reachable_records()` to handle any S records in that prefix.
-3. CLI resolves the reachable records → changes → entries.
+1. CLI builds a `SegmentedJournal` and finds the target checkpoint via
+   `Markers::find_checkpoint()` (including unreachable regions, to support undo-restore).
+2. CLI calls `live_prefix()` to extract the live records from the prefix
+   up to the target checkpoint, handling any S records in that prefix.
+3. CLI resolves the live records → changes → entries.
 4. CLI converts changes to dirent entries (path, ino, base, d_type).
    Entries are sorted by path — parents before children — so that
    `vfs_path_lookup` in the kernel can find staged parent directories

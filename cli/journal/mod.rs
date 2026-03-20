@@ -3,16 +3,19 @@
 // Structured access to the append-only journal.
 //
 // Submodules:
-//   types     — Record, Dirent, Checkpoint, DType, INO_REDIRECT
-//   parse     — read(), inode_path(), truncate()
-//   timeline  — Timeline, Segment; flat helpers (pub(crate)): reachable(), find_checkpoint_index(), slice_records()
-//   resolve   — Resolver, ResolvedSegment, resolve(), resolve_segments()
+//   types     — Record, Change, Checkpoint, DType, INO_REDIRECT
+//   parse     — read(), inode_path()
+//   segment   — Segment, Marker, Markers, SegmentedJournal (split records at K/S boundaries)
+//   liveness  — alive_segments(), live(), live_prefix(), live_slice() (reachability filtering)
+//   resolve   — Resolver, resolve()
 
+pub mod liveness;
 pub mod parse;
 pub mod resolve;
-pub mod timeline;
+pub mod segment;
 pub mod types;
 
 // Re-export types and parse so callers can write journal::Record, journal::read(), etc.
 pub use parse::*;
+pub use segment::{Markers, SegmentedJournal};
 pub use types::*;

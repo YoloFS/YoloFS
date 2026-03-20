@@ -4,7 +4,7 @@
 // `agfs journal --path <path>`  — trace operations on a specific file.
 
 use crate::journal;
-use crate::journal::timeline::Timeline;
+use crate::journal::{Marker, SegmentedJournal};
 use anyhow::Result;
 use colored::Colorize;
 use std::collections::HashMap;
@@ -12,41 +12,58 @@ use std::collections::HashMap;
 /// Display the full journal with dead branches dimmed.
 pub fn run(path_filter: Option<&str>) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
-    let records = journal::read(&agfs)?.records;
     let path_filter = path_filter.map(crate::utils::normalize_path);
 
-    if records.is_empty() {
+    let sj = SegmentedJournal::new(journal::read(&agfs)?);
+
+    if sj.segments.iter().all(|s| s.records.is_empty()) && sj.markers.is_empty() {
         println!("{}", "No journal records.".yellow());
         return Ok(());
     }
 
-    let timeline = Timeline::new(records);
+    let alive = sj.markers.alive_segments(sj.segments.len());
 
     // Collect checkpoint names by gen for restore display.
-    let chk_names: HashMap<u64, &str> = timeline
-        .all_records()
+    let chk_names: HashMap<u64, &str> = sj
+        .markers
         .iter()
-        .filter_map(|r| match r {
-            journal::Record::Checkpoint(c) => Some((c.gen_id, c.name.as_str())),
+        .filter_map(|m| match m {
+            Marker::Checkpoint { checkpoint, .. } => {
+                Some((checkpoint.gen_id, checkpoint.name.as_str()))
+            }
             _ => None,
         })
         .collect();
 
-    for (i, record) in timeline.all_records().iter().enumerate() {
-        let reachable = timeline.is_reachable(i);
+    for (seg_idx, segment) in sj.segments.iter().enumerate() {
+        let reachable = alive[seg_idx];
 
-        if let Some(filter) = path_filter.as_deref()
-            && !record_matches_path(record, filter)
-            && !is_structural(record)
-        {
-            continue;
+        for record in &segment.records {
+            if let Some(filter) = path_filter.as_deref()
+                && !record_matches_path(record, filter)
+            {
+                continue;
+            }
+
+            let line = format_record(record, &chk_names);
+            if reachable {
+                println!("  {line}");
+            } else {
+                println!("{} {}", "~".dimmed(), line.dimmed());
+            }
         }
 
-        let line = format_record(record, &chk_names);
-        if reachable {
-            println!("  {line}");
-        } else {
-            println!("{} {}", "~".dimmed(), line.dimmed());
+        // Print the marker after this segment (if any).
+        if let Some(marker) = sj.markers.get(seg_idx) {
+            let marker_record = marker.to_record();
+            if path_filter.is_none() || is_structural(&marker_record) {
+                let line = format_record(&marker_record, &chk_names);
+                if reachable {
+                    println!("  {line}");
+                } else {
+                    println!("{} {}", "~".dimmed(), line.dimmed());
+                }
+            }
         }
     }
 

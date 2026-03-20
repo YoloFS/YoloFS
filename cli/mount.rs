@@ -221,24 +221,14 @@ pub fn remount(force: bool) -> Result<()> {
 
 /// If there are staged changes, ask the user to commit or abort before proceeding.
 fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
-    let records = crate::journal::read(agfs_dir)
-        .map(|j| j.records)
-        .unwrap_or_default();
-    let timeline = crate::journal::timeline::Timeline::new(records);
-    let changes = crate::journal::resolve::resolve(timeline.reachable_records()).unwrap_or_default();
-    if changes.is_empty() {
+    let records = crate::journal::read(agfs_dir).unwrap_or_default();
+    if records.is_empty() {
         return Ok(());
     }
 
     eprintln!(
         "{}",
-        format!(
-            "Warning: {} staged change{} will be lost.",
-            changes.len(),
-            crate::utils::plural(changes.len())
-        )
-        .yellow()
-        .bold()
+        "Warning: staged changes will be lost.".yellow().bold()
     );
     eprint!(
         "{} ",

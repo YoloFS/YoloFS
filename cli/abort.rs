@@ -40,24 +40,14 @@ pub fn reset_staging(agfs: &Path) -> Result<()> {
 pub fn run(force: bool) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
-    let records = crate::journal::read(&agfs)?.records;
-    let timeline = crate::journal::timeline::Timeline::new(records);
-    let changes = crate::journal::resolve::resolve(timeline.reachable_records())?;
-    if changes.is_empty() {
+    let records = crate::journal::read(&agfs)?;
+    if records.is_empty() {
         println!("{}", "Nothing to discard.".yellow());
         return Ok(());
     }
 
     if !force {
-        eprint!(
-            "{} ",
-            format!(
-                "Discard {} staged change{}? [y/N]:",
-                changes.len(),
-                crate::utils::plural(changes.len())
-            )
-            .bold()
-        );
+        eprint!("{} ", "Discard staged changes? [y/N]:".bold());
         io::stderr().flush().ok();
 
         let mut line = String::new();

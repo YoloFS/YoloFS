@@ -3,55 +3,45 @@
 // `agfs timeline` — show checkpoint/restore DAG with unreachable branches dimmed.
 
 use crate::journal;
-use crate::journal::timeline::Timeline;
+use crate::journal::{Marker, SegmentedJournal};
 use colored::Colorize;
 use std::collections::HashMap;
 
 /// Display the checkpoint/restore timeline (full DAG, unreachable dimmed).
 pub fn run() -> anyhow::Result<()> {
     let agfs = crate::utils::session_dir()?;
-    let records = journal::read(&agfs)?.records;
+    let sj = SegmentedJournal::new(journal::read(&agfs)?);
 
-    let timeline = Timeline::new(records);
-
-    // Collect checkpoint names by gen for restore display.
-    let chk_names: HashMap<u64, &str> = timeline
-        .all_records()
-        .iter()
-        .filter_map(|r| match r {
-            journal::Record::Checkpoint(c) => Some((c.gen_id, c.name.as_str())),
-            _ => None,
-        })
-        .collect();
-
-    let events: Vec<(usize, &journal::Record)> = timeline
-        .all_records()
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| {
-            matches!(
-                r,
-                journal::Record::Checkpoint(_) | journal::Record::Restore { .. }
-            )
-        })
-        .collect();
-
-    if events.is_empty() {
+    if sj.markers.is_empty() {
         println!("{}", "No checkpoints.".yellow());
         return Ok(());
     }
 
-    for (i, rec) in &events {
-        let reachable = timeline.is_reachable(*i);
-        let line = match rec {
-            journal::Record::Checkpoint(c) => {
+    let alive = sj.markers.alive_segments(sj.segments.len());
+
+    // Collect checkpoint names by gen for restore display.
+    let chk_names: HashMap<u64, &str> = sj
+        .markers
+        .iter()
+        .filter_map(|m| match m {
+            Marker::Checkpoint { checkpoint, .. } => {
+                Some((checkpoint.gen_id, checkpoint.name.as_str()))
+            }
+            _ => None,
+        })
+        .collect();
+
+    for (m_idx, marker) in sj.markers.iter().enumerate() {
+        let reachable = alive[m_idx];
+        let line = match marker {
+            Marker::Checkpoint { checkpoint, .. } => {
                 format!(
                     "{} {}",
-                    format!("checkpoint [{}]", c.gen_id).cyan().bold(),
-                    c.name.dimmed(),
+                    format!("checkpoint [{}]", checkpoint.gen_id).cyan().bold(),
+                    checkpoint.name.dimmed(),
                 )
             }
-            journal::Record::Restore {
+            Marker::Restore {
                 gen_id, target_gen, ..
             } => {
                 let target_name = chk_names.get(target_gen).copied().unwrap_or("(unknown)");
@@ -61,7 +51,6 @@ pub fn run() -> anyhow::Result<()> {
                     format!("restored to [{target_gen}] {target_name}").dimmed(),
                 )
             }
-            _ => unreachable!(),
         };
         if reachable {
             println!("  {line}");

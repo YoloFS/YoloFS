@@ -4,8 +4,8 @@
 // Journal is resolved first, then changes are applied sequentially.
 
 use crate::journal;
-use crate::journal::Dirent;
-use crate::journal::timeline::Timeline;
+use crate::journal::Change;
+use crate::journal::SegmentedJournal;
 use crate::utils::to_base_path;
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -32,7 +32,7 @@ fn apply_inode(
     base_path: &Path,
     ensured: &mut HashSet<PathBuf>,
 ) -> Result<()> {
-    let staged = journal::inode_path(agfs_dir, ino);
+    let staged = crate::utils::inode_path(agfs_dir, ino);
     let meta = fs::symlink_metadata(&staged)
         .with_context(|| format!("stat staged inode {}", staged.display()))?;
 
@@ -82,12 +82,12 @@ fn apply_inode(
     Ok(())
 }
 
-fn apply_changes(agfs: &Path, changes: &[(String, Dirent)]) -> Result<()> {
+fn apply_changes(agfs: &Path, changes: &[(String, Change)]) -> Result<()> {
     let mut ensured: HashSet<PathBuf> = HashSet::new();
 
     for (path, change) in changes {
         match change {
-            Dirent::Renamed { from, .. } | Dirent::Replaced { from, .. } => {
+            Change::Renamed { from, .. } | Change::Replaced { from, .. } => {
                 let base_old = to_base_path(from);
                 let base_new = to_base_path(path);
                 ensure_parent(&base_new, &mut ensured)?;
@@ -99,7 +99,7 @@ fn apply_changes(agfs: &Path, changes: &[(String, Dirent)]) -> Result<()> {
                         .with_context(|| format!("rename {from} → {path}"))?;
                 }
             }
-            Dirent::Deleted => {
+            Change::Deleted => {
                 let base_file = to_base_path(path);
                 if base_file.exists() {
                     if base_file.is_dir() {
@@ -110,7 +110,7 @@ fn apply_changes(agfs: &Path, changes: &[(String, Dirent)]) -> Result<()> {
                     .with_context(|| format!("deleting {path}"))?;
                 }
             }
-            Dirent::Added { ino, .. } | Dirent::Modified { ino, .. } => {
+            Change::Added { ino, .. } | Change::Modified { ino, .. } => {
                 let base_file = to_base_path(path);
                 apply_inode(agfs, *ino, &base_file, &mut ensured)?;
             }
@@ -123,9 +123,10 @@ fn apply_changes(agfs: &Path, changes: &[(String, Dirent)]) -> Result<()> {
 pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
-    let records = journal::read(&agfs)?.records;
-    let timeline = Timeline::new(records);
-    let changes = journal::resolve::resolve(timeline.reachable_records())?;
+    let sj = SegmentedJournal::new(journal::read(&agfs)?);
+    let live_records: Vec<journal::Record> =
+        sj.live().into_iter().flat_map(|s| s.records).collect();
+    let changes = journal::resolve::resolve(live_records)?;
 
     if changes.is_empty() {
         println!("{}", "Nothing to commit.".yellow());

@@ -2,7 +2,7 @@
 //
 // `agfs restore <name|id>` — restore to a previous checkpoint.
 
-use crate::journal::timeline::Timeline;
+use crate::journal::SegmentedJournal;
 use crate::{ioctl, journal};
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -28,8 +28,8 @@ impl RestoreItem {
     }
 }
 
-/// Convert a resolved Dirent list into restore items (owned data, sortable).
-fn changes_to_items(changes: &[(String, journal::Dirent)]) -> Vec<RestoreItem> {
+/// Convert a resolved Change list into restore items (owned data, sortable).
+fn changes_to_items(changes: &[(String, journal::Change)]) -> Vec<RestoreItem> {
     use std::collections::BTreeSet;
 
     // Collect destination paths that have staged content (Added/Modified).
@@ -38,7 +38,7 @@ fn changes_to_items(changes: &[(String, journal::Dirent)]) -> Vec<RestoreItem> {
     let staged_paths: BTreeSet<&str> = changes
         .iter()
         .filter_map(|(path, c)| match c {
-            journal::Dirent::Added { .. } | journal::Dirent::Modified { .. } => Some(path.as_str()),
+            journal::Change::Added { .. } | journal::Change::Modified { .. } => Some(path.as_str()),
             _ => None,
         })
         .collect();
@@ -47,8 +47,8 @@ fn changes_to_items(changes: &[(String, journal::Dirent)]) -> Vec<RestoreItem> {
 
     for (path, change) in changes {
         match change {
-            journal::Dirent::Added { ino, dtype } | journal::Dirent::Modified { ino, dtype } => {
-                let in_base = matches!(change, journal::Dirent::Modified { .. });
+            journal::Change::Added { ino, dtype } | journal::Change::Modified { ino, dtype } => {
+                let in_base = matches!(change, journal::Change::Modified { .. });
                 items.push(RestoreItem {
                     path: path.clone(),
                     ino: *ino,
@@ -57,10 +57,10 @@ fn changes_to_items(changes: &[(String, journal::Dirent)]) -> Vec<RestoreItem> {
                     d_type: dtype.to_libc(),
                 });
             }
-            journal::Dirent::Deleted => {
+            journal::Change::Deleted => {
                 items.push(RestoreItem::deleted(path.clone()));
             }
-            journal::Dirent::Renamed { from, dtype } => {
+            journal::Change::Renamed { from, dtype } => {
                 items.push(RestoreItem::deleted(from.clone()));
                 if !staged_paths.contains(path.as_str()) {
                     items.push(RestoreItem {
@@ -72,7 +72,7 @@ fn changes_to_items(changes: &[(String, journal::Dirent)]) -> Vec<RestoreItem> {
                     });
                 }
             }
-            journal::Dirent::Replaced { from, dtype } => {
+            journal::Change::Replaced { from, dtype } => {
                 items.push(RestoreItem::deleted(from.clone()));
                 if !staged_paths.contains(path.as_str()) {
                     items.push(RestoreItem {
@@ -125,18 +125,21 @@ fn items_to_entries(items: &[RestoreItem]) -> Result<Vec<ioctl::AgfsIocRestoreEn
 pub fn run(checkpoint_name: &str) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
-    let journal = journal::read(&agfs)?;
-    // Search all records (including dead zones) for the target checkpoint,
+    // Search all markers (including dead zones) for the target checkpoint,
     // so that undo-restore (restoring to a dead checkpoint) works.
-    let timeline = Timeline::new(journal.records);
-    let (chk_idx, checkpoint) = timeline.find_checkpoint(checkpoint_name)?;
+    let sj = SegmentedJournal::new(journal::read(&agfs)?);
+    let (marker_idx, checkpoint) = sj.markers.find_checkpoint(checkpoint_name)?;
     let target_gen = checkpoint.gen_id;
     let chk_label = checkpoint.name.clone();
 
     // Extract live records from the prefix up to the target checkpoint,
     // handling any S records within that prefix.
-    let prefix: Vec<journal::Record> = timeline.into_all_records().into_iter().take(chk_idx + 1).collect();
-    let changes = journal::resolve::resolve(Timeline::new(prefix).reachable_records())?;
+    let live_records: Vec<journal::Record> = sj
+        .live_prefix(marker_idx)
+        .into_iter()
+        .flat_map(|s| s.records)
+        .collect();
+    let changes = journal::resolve::resolve(live_records)?;
     let items = changes_to_items(&changes);
     let entries = items_to_entries(&items)?;
 
@@ -162,14 +165,14 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::journal::Change;
     use crate::journal::DType;
-    use crate::journal::Dirent;
 
     #[test]
     fn added_produces_single_entry() {
         let changes = vec![(
             "/src/main.rs".into(),
-            Dirent::Added {
+            Change::Added {
                 ino: 1,
                 dtype: DType::File,
             },
@@ -184,7 +187,7 @@ mod tests {
 
     #[test]
     fn deleted_produces_zero_entry() {
-        let changes = vec![("/old.txt".into(), Dirent::Deleted)];
+        let changes = vec![("/old.txt".into(), Change::Deleted)];
         let items = changes_to_items(&changes);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].path, "/old.txt");
@@ -196,7 +199,7 @@ mod tests {
     fn renamed_produces_delete_and_redirect() {
         let changes = vec![(
             "/b.txt".into(),
-            Dirent::Renamed {
+            Change::Renamed {
                 from: "/a.txt".into(),
                 dtype: DType::File,
             },
@@ -218,14 +221,14 @@ mod tests {
         let changes = vec![
             (
                 "/new.rs".into(),
-                Dirent::Renamed {
+                Change::Renamed {
                     from: "/old.rs".into(),
                     dtype: DType::File,
                 },
             ),
             (
                 "/new.rs".into(),
-                Dirent::Modified {
+                Change::Modified {
                     ino: 5,
                     dtype: DType::File,
                 },
@@ -248,21 +251,21 @@ mod tests {
         let changes = vec![
             (
                 "/z/file.rs".into(),
-                Dirent::Added {
+                Change::Added {
                     ino: 1,
                     dtype: DType::File,
                 },
             ),
             (
                 "/a/file.rs".into(),
-                Dirent::Added {
+                Change::Added {
                     ino: 2,
                     dtype: DType::File,
                 },
             ),
             (
                 "/a".into(),
-                Dirent::Added {
+                Change::Added {
                     ino: 3,
                     dtype: DType::Dir,
                 },
@@ -279,7 +282,7 @@ mod tests {
     fn directory_inode_gets_dt_dir() {
         let changes = vec![(
             "/newdir".into(),
-            Dirent::Added {
+            Change::Added {
                 ino: 1,
                 dtype: DType::Dir,
             },
@@ -292,7 +295,7 @@ mod tests {
     fn symlink_inode_gets_dt_lnk() {
         let changes = vec![(
             "/link".into(),
-            Dirent::Added {
+            Change::Added {
                 ino: 1,
                 dtype: DType::Link,
             },
@@ -353,7 +356,7 @@ mod tests {
     fn renamed_directory_gets_dt_dir() {
         let changes = vec![(
             "/newdir".into(),
-            Dirent::Renamed {
+            Change::Renamed {
                 from: "/mydir".into(),
                 dtype: DType::Dir,
             },
@@ -374,7 +377,7 @@ mod tests {
     fn renamed_symlink_gets_dt_lnk() {
         let changes = vec![(
             "/newlink".into(),
-            Dirent::Renamed {
+            Change::Renamed {
                 from: "/mylink".into(),
                 dtype: DType::Link,
             },

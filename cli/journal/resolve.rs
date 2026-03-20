@@ -8,12 +8,14 @@
 // - Redirect chains collapse: `Redirect(b, a)` then `Redirect(c, b)` → `Rename(a, c)`.
 // - Multiple records for the same path keep only the final state.
 
-use super::types::{Checkpoint, DType, Dirent, Record};
+#[cfg(test)]
+use super::types::Checkpoint;
+use super::types::{Change, Changeset, DType, Record};
 use anyhow::Result;
 use std::collections::BTreeMap;
 
 /// Resolve records into their final collapsed changes.
-pub fn resolve(records: Vec<Record>) -> Result<Vec<(String, Dirent)>> {
+pub fn resolve(records: Vec<Record>) -> Result<Changeset> {
     let mut r = Resolver::new();
     for record in records {
         r.process(record);
@@ -22,13 +24,13 @@ pub fn resolve(records: Vec<Record>) -> Result<Vec<(String, Dirent)>> {
 }
 
 /// Incremental resolution state — processes records one at a time.
-/// Each path maps to one `Dirent` describing what commit should do.
+/// Each path maps to one `Change` describing what commit should do.
 ///
 /// Public so callers can drive iteration for single-pass processing
 /// (e.g. snapshot at a checkpoint, then continue to the end).
 #[derive(Clone, Default)]
 pub struct Resolver {
-    state: BTreeMap<String, Dirent>,
+    state: BTreeMap<String, Change>,
 }
 
 impl Resolver {
@@ -39,20 +41,20 @@ impl Resolver {
     fn process_stage(&mut self, path: String, dtype: Option<DType>, ino: u64, in_base: bool) {
         let dt = dtype.unwrap_or(DType::File);
         match self.state.remove(&path) {
-            Some(Dirent::Renamed { from: origin, .. } | Dirent::Replaced { from: origin, .. }) => {
+            Some(Change::Renamed { from: origin, .. } | Change::Replaced { from: origin, .. }) => {
                 // Rename + modify at same path: decompose into
                 // delete(origin) + modified(path).
-                self.state.insert(origin, Dirent::Deleted);
-                self.state.insert(path, Dirent::Modified { ino, dtype: dt });
+                self.state.insert(origin, Change::Deleted);
+                self.state.insert(path, Change::Modified { ino, dtype: dt });
             }
-            Some(Dirent::Deleted) => {
-                self.state.insert(path, Dirent::Modified { ino, dtype: dt });
+            Some(Change::Deleted) => {
+                self.state.insert(path, Change::Modified { ino, dtype: dt });
             }
             _ => {
                 if in_base {
-                    self.state.insert(path, Dirent::Modified { ino, dtype: dt });
+                    self.state.insert(path, Change::Modified { ino, dtype: dt });
                 } else {
-                    self.state.insert(path, Dirent::Added { ino, dtype: dt });
+                    self.state.insert(path, Change::Added { ino, dtype: dt });
                 }
             }
         }
@@ -71,33 +73,33 @@ impl Resolver {
         // If a prior redirect existed, its origin becomes a Delete.
         // Other prior states are silently replaced — the R/P record
         // from the kernel is authoritative.
-        if let Some(Dirent::Renamed { from: origin, .. } | Dirent::Replaced { from: origin, .. }) =
+        if let Some(Change::Renamed { from: origin, .. } | Change::Replaced { from: origin, .. }) =
             self.state.remove(&path)
         {
-            self.state.insert(origin, Dirent::Deleted);
+            self.state.insert(origin, Change::Deleted);
         }
 
         // The kernel emits D(old) before R/P(new, old).
         // Remove that spurious delete.
-        if matches!(self.state.get(&base_path), Some(Dirent::Deleted)) {
+        if matches!(self.state.get(&base_path), Some(Change::Deleted)) {
             self.state.remove(&base_path);
         }
 
         // If the source was staged, decompose: emit delete for base
         // files and preserve the dtype from the staged action.
         let final_dt = match self.state.remove(&base_path) {
-            Some(Dirent::Modified { dtype: prev_dt, .. }) => {
-                self.state.insert(base_path.clone(), Dirent::Deleted);
+            Some(Change::Modified { dtype: prev_dt, .. }) => {
+                self.state.insert(base_path.clone(), Change::Deleted);
                 prev_dt
             }
-            Some(Dirent::Added { dtype: prev_dt, .. }) => prev_dt,
+            Some(Change::Added { dtype: prev_dt, .. }) => prev_dt,
             _ => dt,
         };
 
         if in_base {
             self.state.insert(
                 path,
-                Dirent::Replaced {
+                Change::Replaced {
                     from: base_path,
                     dtype: final_dt,
                 },
@@ -105,7 +107,7 @@ impl Resolver {
         } else {
             self.state.insert(
                 path,
-                Dirent::Renamed {
+                Change::Renamed {
                     from: base_path,
                     dtype: final_dt,
                 },
@@ -122,18 +124,18 @@ impl Resolver {
                 self.process_stage(path, dtype, ino, true);
             }
             Record::Deleted { path } => match self.state.remove(&path) {
-                Some(Dirent::Added { .. }) => {
+                Some(Change::Added { .. }) => {
                     // Staged-only file deleted — cancels out.
                 }
-                Some(Dirent::Renamed { from: origin, .. }) => {
-                    self.state.insert(origin, Dirent::Deleted);
+                Some(Change::Renamed { from: origin, .. }) => {
+                    self.state.insert(origin, Change::Deleted);
                 }
-                Some(Dirent::Replaced { from: origin, .. }) => {
-                    self.state.insert(origin, Dirent::Deleted);
-                    self.state.insert(path, Dirent::Deleted);
+                Some(Change::Replaced { from: origin, .. }) => {
+                    self.state.insert(origin, Change::Deleted);
+                    self.state.insert(path, Change::Deleted);
                 }
                 _ => {
-                    self.state.insert(path, Dirent::Deleted);
+                    self.state.insert(path, Change::Deleted);
                 }
             },
             Record::Redirect {
@@ -156,19 +158,19 @@ impl Resolver {
 
     /// Consume the state and produce the final change list.
     /// Order: renames, then adds/modifies, then deletes.
-    pub fn into_changes(self) -> Vec<(String, Dirent)> {
-        let mut changes: Vec<(String, Dirent)> = self.state.into_iter().collect();
+    pub fn into_changes(self) -> Changeset {
+        let mut changes: Changeset = self.state.into_iter().collect();
         // Filter out self-renames (origin == path).
         changes.retain(|(path, change)| match change {
-            Dirent::Renamed { from, .. } | Dirent::Replaced { from, .. } => from != path,
+            Change::Renamed { from, .. } | Change::Replaced { from, .. } => from != path,
             _ => true,
         });
         changes.sort_by(|(_, a), (_, b)| {
-            fn rank(c: &Dirent) -> u8 {
+            fn rank(c: &Change) -> u8 {
                 match c {
-                    Dirent::Renamed { .. } | Dirent::Replaced { .. } => 0,
-                    Dirent::Added { .. } | Dirent::Modified { .. } => 1,
-                    Dirent::Deleted => 2,
+                    Change::Renamed { .. } | Change::Replaced { .. } => 0,
+                    Change::Added { .. } | Change::Modified { .. } => 1,
+                    Change::Deleted => 2,
                 }
             }
             rank(a).cmp(&rank(b))
@@ -178,13 +180,14 @@ impl Resolver {
 }
 
 /// A group of resolved changes between two checkpoint boundaries.
+#[cfg(test)]
 #[derive(Debug)]
 pub struct ResolvedSegment {
     /// The checkpoint at the start of this segment.
     pub from: Checkpoint,
     /// The checkpoint at the end, or None for trailing (unsaved) changes.
     pub to: Option<Checkpoint>,
-    pub changes: Vec<(String, Dirent)>,
+    pub changes: Changeset,
 }
 
 /// Resolve the journal into segments grouped by checkpoint boundaries.
@@ -195,6 +198,7 @@ pub struct ResolvedSegment {
 ///
 /// Records before the first checkpoint are skipped (the initial checkpoint
 /// is always created at mount time).
+#[cfg(test)]
 pub fn resolve_segments(records: Vec<Record>) -> Result<Vec<ResolvedSegment>> {
     // Collect checkpoint boundary indices.
     let chk_indices: Vec<usize> = records
@@ -291,7 +295,7 @@ pub fn resolve_segments(records: Vec<Record>) -> Result<Vec<ResolvedSegment>> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::timeline::{find_checkpoint_index, reachable, slice_records};
+    use super::super::liveness::{find_checkpoint_index, reachable, slice_records};
     use super::super::types::{Checkpoint, DType, Record};
     use super::*;
 
@@ -311,7 +315,7 @@ mod tests {
 
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
-        assert!(matches!(&changes[0], (path, Dirent::Added { .. }) if path.contains("new.txt")));
+        assert!(matches!(&changes[0], (path, Change::Added { .. }) if path.contains("new.txt")));
     }
 
     #[test]
@@ -322,7 +326,7 @@ mod tests {
 
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
-        assert!(matches!(&changes[0], (p, Dirent::Deleted) if p.contains("hostname")));
+        assert!(matches!(&changes[0], (p, Change::Deleted) if p.contains("hostname")));
     }
 
     #[test]
@@ -336,7 +340,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(
-            matches!(&changes[0], (path, Dirent::Modified { ino: 1, dtype: DType::File }) if path == "/etc/hostname"),
+            matches!(&changes[0], (path, Change::Modified { ino: 1, dtype: DType::File }) if path == "/etc/hostname"),
             "expected Modified(/etc/hostname, ino=1), got: {:?}",
             changes[0]
         );
@@ -359,7 +363,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(
-            matches!(&changes[0], (to, Dirent::Renamed { from, .. }) if from == "/old/path" && to == "/new/path")
+            matches!(&changes[0], (to, Change::Renamed { from, .. }) if from == "/old/path" && to == "/new/path")
         );
     }
 
@@ -381,7 +385,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(
-            matches!(&changes[0], (to, Dirent::Renamed { from, dtype: DType::Dir, .. }) if from == "/olddir" && to == "/newdir"),
+            matches!(&changes[0], (to, Change::Renamed { from, dtype: DType::Dir, .. }) if from == "/olddir" && to == "/newdir"),
             "expected Renamed with DType::Dir, got: {:?}",
             changes[0]
         );
@@ -410,7 +414,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(
-            matches!(&changes[0], (to, Dirent::Renamed { from, dtype: DType::Dir, .. }) if from == "/a" && to == "/c"),
+            matches!(&changes[0], (to, Change::Renamed { from, dtype: DType::Dir, .. }) if from == "/a" && to == "/c"),
             "expected Renamed(a->c) with DType::Dir, got: {:?}",
             changes[0]
         );
@@ -441,10 +445,10 @@ mod tests {
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
         let has_deleted = changes
             .iter()
-            .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/old.txt"));
+            .any(|c| matches!(c, (p, Change::Deleted) if p == "/old.txt"));
         let has_modified = changes
             .iter()
-            .any(|c| matches!(c, (path, Dirent::Modified { ino: 5, .. }) if path == "/new.txt"));
+            .any(|c| matches!(c, (path, Change::Modified { ino: 5, .. }) if path == "/new.txt"));
         assert!(has_deleted, "expected Deleted(/old.txt), got: {changes:?}");
         assert!(
             has_modified,
@@ -477,7 +481,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], (path, Dirent::Added { ino, .. }) if path == "/nonexistent_test_12345/y" && *ino == 1),
+            matches!(&changes[0], (path, Change::Added { ino, .. }) if path == "/nonexistent_test_12345/y" && *ino == 1),
             "expected Added at y with ino 1, got: {:?}",
             changes[0]
         );
@@ -508,10 +512,10 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
         let has_rename = changes.iter().any(|c| {
-            matches!(c, (to, Dirent::Renamed { from, .. }) if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/b")
+            matches!(c, (to, Change::Renamed { from, .. }) if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/b")
         });
         let has_add = changes.iter().any(|c| {
-            matches!(c, (path, Dirent::Added { ino, .. }) if path == "/nonexistent_test_12345/a" && *ino == 2)
+            matches!(c, (path, Change::Added { ino, .. }) if path == "/nonexistent_test_12345/a" && *ino == 2)
         });
         assert!(has_rename, "expected Renamed(a->b), got: {changes:?}");
         assert!(has_add, "expected Added(a, 2), got: {changes:?}");
@@ -545,7 +549,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], (to, Dirent::Renamed { from, .. }) if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/c"),
+            matches!(&changes[0], (to, Change::Renamed { from, .. }) if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/c"),
             "expected Renamed(a->c), got: {:?}",
             changes[0]
         );
@@ -605,7 +609,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         // Should have a rename from hostname -> hosts
         let has_rename = changes.iter().any(|c| {
-            matches!(c, (to, Dirent::Renamed { from, .. }) if from == "/etc/hostname" && to == "/etc/hosts")
+            matches!(c, (to, Change::Renamed { from, .. }) if from == "/etc/hostname" && to == "/etc/hosts")
         });
         assert!(
             has_rename,
@@ -639,7 +643,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], (to, Dirent::Renamed { from, .. }) if from == "/nonexistent_test_12345/y" && to == "/nonexistent_test_12345/x"),
+            matches!(&changes[0], (to, Change::Renamed { from, .. }) if from == "/nonexistent_test_12345/y" && to == "/nonexistent_test_12345/x"),
             "expected Renamed(y→x), got: {:?}",
             changes[0]
         );
@@ -672,11 +676,11 @@ mod tests {
 
         let changes = resolve(records).unwrap();
         let has_rename = changes.iter().any(|c| {
-            matches!(c, (to, Dirent::Renamed { from, .. }) if from == "/nonexistent_test_12345/c" && to == "/nonexistent_test_12345/b")
+            matches!(c, (to, Change::Renamed { from, .. }) if from == "/nonexistent_test_12345/c" && to == "/nonexistent_test_12345/b")
         });
         let has_delete = changes
             .iter()
-            .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/nonexistent_test_12345/a"));
+            .any(|c| matches!(c, (p, Change::Deleted) if p == "/nonexistent_test_12345/a"));
         assert!(has_rename, "expected Renamed(c→b), got: {changes:?}");
         assert!(has_delete, "expected Deleted(a), got: {changes:?}");
     }
@@ -724,7 +728,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], (to, Dirent::Renamed { from, .. }) if from == "/etc/hosts" && to == "/etc/hostname"),
+            matches!(&changes[0], (to, Change::Renamed { from, .. }) if from == "/etc/hosts" && to == "/etc/hostname"),
             "expected Renamed(hosts→hostname), modification should be dropped, got: {:?}",
             changes[0]
         );
@@ -749,7 +753,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], (path, Dirent::Modified { ino: 2, .. }) if path == "/etc/hostname"),
+            matches!(&changes[0], (path, Change::Modified { ino: 2, .. }) if path == "/etc/hostname"),
             "expected Modified with final ino=2, got: {:?}",
             changes[0]
         );
@@ -773,7 +777,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], (path, Dirent::Modified { ino: 1, .. }) if path == "/etc/hostname"),
+            matches!(&changes[0], (path, Change::Modified { ino: 1, .. }) if path == "/etc/hostname"),
             "expected Modified (base file replaced), got: {:?}",
             changes[0]
         );
@@ -802,7 +806,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], (to, Dirent::Renamed { from, .. }) if from == "/etc/hosts" && to == "/etc/hostname"),
+            matches!(&changes[0], (to, Change::Renamed { from, .. }) if from == "/etc/hosts" && to == "/etc/hostname"),
             "expected Renamed(hosts→hostname), got: {:?}",
             changes[0]
         );
@@ -827,7 +831,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], (p, Dirent::Deleted) if p == "/etc/hostname"),
+            matches!(&changes[0], (p, Change::Deleted) if p == "/etc/hostname"),
             "expected Deleted(/etc/hostname), got: {:?}",
             changes[0]
         );
@@ -858,11 +862,11 @@ mod tests {
         // Should have: Add(/etc/hostname.bak, 1) + Delete(/etc/hostname)
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
         let has_add = changes.iter().any(|c| {
-            matches!(c, (path, Dirent::Added { ino, .. }) if path == "/etc/hostname.bak" && *ino == 1)
+            matches!(c, (path, Change::Added { ino, .. }) if path == "/etc/hostname.bak" && *ino == 1)
         });
         let has_delete = changes
             .iter()
-            .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/etc/hostname"));
+            .any(|c| matches!(c, (p, Change::Deleted) if p == "/etc/hostname"));
         assert!(
             has_add,
             "expected Added(/etc/hostname.bak, 1), got: {changes:?}"
@@ -906,11 +910,11 @@ mod tests {
 
         let changes = resolve(records).unwrap();
         let has_rename = changes.iter().any(|c| {
-            matches!(c, (to, Dirent::Renamed { from, .. }) if from == "/dir/b" && to == "/dir/c")
+            matches!(c, (to, Change::Renamed { from, .. }) if from == "/dir/b" && to == "/dir/c")
         });
         let has_delete = changes
             .iter()
-            .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/dir/a"));
+            .any(|c| matches!(c, (p, Change::Deleted) if p == "/dir/a"));
         assert!(has_rename, "expected Renamed(b→c), got: {changes:?}");
         assert!(
             has_delete,
@@ -946,10 +950,10 @@ mod tests {
         let changes = resolve(records).unwrap();
         let has_delete_a = changes
             .iter()
-            .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/dir/a"));
+            .any(|c| matches!(c, (p, Change::Deleted) if p == "/dir/a"));
         let has_delete_b = changes
             .iter()
-            .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/dir/b"));
+            .any(|c| matches!(c, (p, Change::Deleted) if p == "/dir/b"));
         assert!(
             has_delete_a,
             "expected Deleted(a) for overwritten base file, got: {changes:?}"
@@ -984,7 +988,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], (p, Dirent::Deleted) if p == "/dir/a"),
+            matches!(&changes[0], (p, Change::Deleted) if p == "/dir/a"),
             "expected Deleted(a), got: {changes:?}"
         );
     }
@@ -1011,10 +1015,10 @@ mod tests {
         let changes = resolve(records).unwrap();
         let has_delete_a = changes
             .iter()
-            .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/dir/a"));
+            .any(|c| matches!(c, (p, Change::Deleted) if p == "/dir/a"));
         let has_delete_b = changes
             .iter()
-            .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/dir/b"));
+            .any(|c| matches!(c, (p, Change::Deleted) if p == "/dir/b"));
         assert!(has_delete_a, "expected Deleted(a), got: {changes:?}");
         assert!(has_delete_b, "expected Deleted(b), got: {changes:?}");
     }
@@ -1037,7 +1041,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], (to, Dirent::Replaced { from, .. }) if from == "/dir/a" && to == "/dir/b"),
+            matches!(&changes[0], (to, Change::Replaced { from, .. }) if from == "/dir/a" && to == "/dir/b"),
             "expected Replaced(a→b), got: {changes:?}"
         );
     }
@@ -1066,7 +1070,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], (to, Dirent::Renamed { from, .. }) if from == "/dir/a" && to == "/dir/b"),
+            matches!(&changes[0], (to, Change::Renamed { from, .. }) if from == "/dir/a" && to == "/dir/b"),
             "expected Renamed(a→b), staged add silently replaced, got: {changes:?}"
         );
     }
@@ -1095,7 +1099,7 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1, "expected 1 change, got: {changes:?}");
         assert!(
-            matches!(&changes[0], (to, Dirent::Replaced { from, .. }) if from == "/dir/a" && to == "/dir/b"),
+            matches!(&changes[0], (to, Change::Replaced { from, .. }) if from == "/dir/a" && to == "/dir/b"),
             "expected Replaced(a→b), prior modify dropped, got: {changes:?}"
         );
     }
@@ -1126,11 +1130,11 @@ mod tests {
 
         let changes = resolve(records).unwrap();
         let has_rename = changes.iter().any(|c| {
-            matches!(c, (to, Dirent::Renamed { from, .. }) if from == "/dir/b" && to == "/dir/c")
+            matches!(c, (to, Change::Renamed { from, .. }) if from == "/dir/b" && to == "/dir/c")
         });
         let has_delete = changes
             .iter()
-            .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/dir/a"));
+            .any(|c| matches!(c, (p, Change::Deleted) if p == "/dir/a"));
         assert!(has_rename, "expected Renamed(b→c), got: {changes:?}");
         assert!(
             has_delete,
@@ -1173,9 +1177,9 @@ mod tests {
         let changes = resolve(records).unwrap();
         let has_delete_a = changes
             .iter()
-            .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/dir/a"));
+            .any(|c| matches!(c, (p, Change::Deleted) if p == "/dir/a"));
         let has_replaced = changes.iter().any(|c| {
-            matches!(c, (to, Dirent::Replaced { from, .. }) if from == "/dir/c" && to == "/dir/b")
+            matches!(c, (to, Change::Replaced { from, .. }) if from == "/dir/c" && to == "/dir/b")
         });
         assert!(
             has_delete_a,
@@ -1187,7 +1191,7 @@ mod tests {
     // -- Checkpoint tests --
 
     /// Helper: slice at a checkpoint and resolve.
-    fn resolve_at(records: Vec<Record>, name: &str) -> Result<Vec<(String, Dirent)>> {
+    fn resolve_at(records: Vec<Record>, name: &str) -> Result<Vec<(String, Change)>> {
         resolve(slice_records(records, Some(name), None, None)?)
     }
 
@@ -1218,7 +1222,7 @@ mod tests {
         let changes = resolve_at(records.clone(), "chk1").unwrap();
         assert_eq!(changes.len(), 1, "at chk1: {changes:?}");
         assert!(
-            matches!(&changes[0], (path, Dirent::Added { ino, .. }) if path == "/nonexistent_test_12345/x" && *ino == 1)
+            matches!(&changes[0], (path, Change::Added { ino, .. }) if path == "/nonexistent_test_12345/x" && *ino == 1)
         );
 
         let all = resolve(records).unwrap();
@@ -1257,7 +1261,7 @@ mod tests {
         // Latest "dup" is the second checkpoint; its segment contains only A(y).
         assert_eq!(changes.len(), 1, "at latest dup: {changes:?}");
         assert!(
-            matches!(&changes[0], (path, Dirent::Added { ino, .. }) if path == "/nonexistent_test_12345/y" && *ino == 2)
+            matches!(&changes[0], (path, Change::Added { ino, .. }) if path == "/nonexistent_test_12345/y" && *ino == 2)
         );
     }
 
@@ -1399,7 +1403,7 @@ mod tests {
 
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 1);
-        assert!(matches!(&changes[0], (_, Dirent::Added { .. })));
+        assert!(matches!(&changes[0], (_, Change::Added { .. })));
     }
 
     // -- resolve_segments tests --
@@ -1538,7 +1542,7 @@ mod tests {
         );
         assert_eq!(segments[0].changes.len(), 1);
         assert!(
-            matches!(&segments[0].changes[0], (path, Dirent::Modified { ino, .. }) if path == "/nonexistent_test_12345/x" && *ino == 2)
+            matches!(&segments[0].changes[0], (path, Change::Modified { ino, .. }) if path == "/nonexistent_test_12345/x" && *ino == 2)
         );
     }
 
@@ -1571,7 +1575,7 @@ mod tests {
 
         assert_eq!(segments[0].changes.len(), 1);
         assert!(
-            matches!(&segments[0].changes[0], (path, Dirent::Modified { ino, .. }) if path == "/etc/hostname" && *ino == 2),
+            matches!(&segments[0].changes[0], (path, Change::Modified { ino, .. }) if path == "/etc/hostname" && *ino == 2),
             "seg: expected Modified(hostname, 2), got: {:?}",
             segments[0].changes
         );
@@ -1662,7 +1666,7 @@ mod tests {
         let chk2 = &segments[0].changes;
         assert!(!chk2.is_empty(), "chk2 should have changes: {chk2:?}");
         let has_b = chk2.iter().any(|c| {
-            matches!(c, (path, Dirent::Added { ino, .. }) if path == "/nonexistent_test_12345/b" && *ino == 1)
+            matches!(c, (path, Change::Added { ino, .. }) if path == "/nonexistent_test_12345/b" && *ino == 1)
         });
         assert!(has_b, "expected /b added in chk2, got: {chk2:?}");
     }
@@ -1705,7 +1709,7 @@ mod tests {
         // Segment should contain the rename
         let chk2 = &segments[0].changes;
         let has_rename = chk2.iter().any(|c| {
-            matches!(c, (to, Dirent::Renamed { from, .. }) if from == "/nonexistent_test_12345/c" && to == "/nonexistent_test_12345/b")
+            matches!(c, (to, Change::Renamed { from, .. }) if from == "/nonexistent_test_12345/c" && to == "/nonexistent_test_12345/b")
         });
         assert!(has_rename, "expected Renamed(c→b) in chk2, got: {chk2:?}");
     }
@@ -1898,7 +1902,7 @@ mod tests {
         );
         assert!(
             matches!(
-                &segments[0].changes[0], (path, Dirent::Modified { ino, .. }) if path == "/nonexistent_test_12345/x" && *ino == 2
+                &segments[0].changes[0], (path, Change::Modified { ino, .. }) if path == "/nonexistent_test_12345/x" && *ino == 2
             ),
             "expected Modified in chk2, got: {:?}",
             segments[0].changes[0]
@@ -1938,7 +1942,7 @@ mod tests {
         let has_delete = segments[0]
             .changes
             .iter()
-            .any(|c| matches!(c, (path, Dirent::Deleted) if path == "/nonexistent_test_12345/x"));
+            .any(|c| matches!(c, (path, Change::Deleted) if path == "/nonexistent_test_12345/x"));
         assert!(
             has_delete,
             "expected Deleted in K1→K2, got: {:?}",
@@ -1947,7 +1951,7 @@ mod tests {
 
         // Segment 1 (K2→None): re-Added
         let has_x = segments[1].changes.iter().any(|c| {
-            matches!(c, (path, Dirent::Added { ino, .. }) if path == "/nonexistent_test_12345/x" && *ino == 2)
+            matches!(c, (path, Change::Added { ino, .. }) if path == "/nonexistent_test_12345/x" && *ino == 2)
         });
         assert!(
             has_x,
@@ -2027,7 +2031,7 @@ mod tests {
         // chk1→chk2: file added — dtype must be File
         assert_eq!(segments[0].changes.len(), 1);
         assert!(
-            matches!(&segments[0].changes[0], (path, Dirent::Added { dtype: DType::File, .. })
+            matches!(&segments[0].changes[0], (path, Change::Added { dtype: DType::File, .. })
             if path == "/nonexistent_test_12345/file"),
             "expected Added with DType::File, got: {:?}",
             segments[0].changes[0]
@@ -2070,14 +2074,14 @@ mod tests {
         let chk2 = &segments[0].changes;
         let link2 = chk2
             .iter()
-            .find(|c| matches!(c, (path, Dirent::Added { .. }) if path.ends_with("/link2")));
+            .find(|c| matches!(c, (path, Change::Added { .. }) if path.ends_with("/link2")));
         assert!(link2.is_some(), "expected link2 in chk2: {chk2:?}");
         assert!(
             matches!(
                 link2.unwrap(),
                 (
                     _,
-                    Dirent::Added {
+                    Change::Added {
                         dtype: DType::Link,
                         ..
                     }
@@ -2123,7 +2127,7 @@ mod tests {
                 &segments[0].changes[0],
                 (
                     _,
-                    Dirent::Modified {
+                    Change::Modified {
                         dtype: DType::Dir,
                         ..
                     }
@@ -2193,7 +2197,7 @@ mod tests {
         let changes = resolve(sliced).unwrap();
         assert_eq!(changes.len(), 1, "{changes:?}");
         assert!(
-            matches!(&changes[0], (path, Dirent::Added { .. }) if path == "/nonexistent_test_12345/b")
+            matches!(&changes[0], (path, Change::Added { .. }) if path == "/nonexistent_test_12345/b")
         );
     }
 
@@ -2221,7 +2225,7 @@ mod tests {
         let changes = resolve(sliced).unwrap();
         assert_eq!(changes.len(), 1, "{changes:?}");
         assert!(
-            matches!(&changes[0], (path, Dirent::Added { .. }) if path == "/nonexistent_test_12345/a")
+            matches!(&changes[0], (path, Change::Added { .. }) if path == "/nonexistent_test_12345/a")
         );
     }
 
@@ -2292,7 +2296,7 @@ mod tests {
         let changes = resolve(sliced).unwrap();
         assert_eq!(changes.len(), 1, "{changes:?}");
         assert!(
-            matches!(&changes[0], (path, Dirent::Added { .. }) if path == "/nonexistent_test_12345/a")
+            matches!(&changes[0], (path, Change::Added { .. }) if path == "/nonexistent_test_12345/a")
         );
     }
 
@@ -2339,10 +2343,10 @@ mod tests {
         assert_eq!(changes.len(), 2, "{changes:?}");
         // Should have b and c, not a or d
         assert!(changes.iter().any(
-            |c| matches!(c, (path, Dirent::Added { .. }) if path == "/nonexistent_test_12345/b")
+            |c| matches!(c, (path, Change::Added { .. }) if path == "/nonexistent_test_12345/b")
         ));
         assert!(changes.iter().any(
-            |c| matches!(c, (path, Dirent::Added { .. }) if path == "/nonexistent_test_12345/c")
+            |c| matches!(c, (path, Change::Added { .. }) if path == "/nonexistent_test_12345/c")
         ));
     }
 
@@ -2467,12 +2471,12 @@ mod tests {
         assert!(slice_records(records, None, None, Some("nope")).is_err());
     }
 
-    // -- Dirent method tests --
+    // -- Change method tests --
 
     #[test]
     fn change_ino() {
         assert_eq!(
-            Dirent::Added {
+            Change::Added {
                 ino: 42,
                 dtype: DType::File
             }
@@ -2480,16 +2484,16 @@ mod tests {
             Some(42)
         );
         assert_eq!(
-            Dirent::Modified {
+            Change::Modified {
                 ino: 7,
                 dtype: DType::File
             }
             .ino(),
             Some(7)
         );
-        assert_eq!(Dirent::Deleted.ino(), None);
+        assert_eq!(Change::Deleted.ino(), None);
         assert_eq!(
-            Dirent::Renamed {
+            Change::Renamed {
                 from: "/a".into(),
                 dtype: DType::File,
             }
@@ -2500,7 +2504,7 @@ mod tests {
 
     #[test]
     fn matches_path_added() {
-        let c = Dirent::Added {
+        let c = Change::Added {
             ino: 1,
             dtype: DType::File,
         };
@@ -2510,7 +2514,7 @@ mod tests {
 
     #[test]
     fn matches_path_modified() {
-        let c = Dirent::Modified {
+        let c = Change::Modified {
             ino: 5,
             dtype: DType::File,
         };
@@ -2520,14 +2524,14 @@ mod tests {
 
     #[test]
     fn matches_path_deleted() {
-        let c = Dirent::Deleted;
+        let c = Change::Deleted;
         assert!(c.matches_path("/old/file.txt", "/old/file.txt"));
         assert!(!c.matches_path("/old/file.txt", "/old/other.txt"));
     }
 
     #[test]
     fn matches_path_renamed_from() {
-        let c = Dirent::Renamed {
+        let c = Change::Renamed {
             from: "/a.txt".into(),
             dtype: DType::File,
         };
@@ -2574,7 +2578,7 @@ mod tests {
         let chk2 = &segments[0].changes;
         assert!(!chk2.is_empty(), "chk2 should have changes: {chk2:?}");
         let has_rename = chk2.iter().any(|c| {
-            matches!(c, (to, Dirent::Renamed { from, .. }) if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/b")
+            matches!(c, (to, Change::Renamed { from, .. }) if from == "/nonexistent_test_12345/a" && to == "/nonexistent_test_12345/b")
         });
         assert!(has_rename, "expected Renamed(a->b) in chk2, got: {chk2:?}");
     }
@@ -2626,7 +2630,7 @@ mod tests {
 
         // chk1→chk2: Renamed Dir (mydir -> dir2)
         let chk2_rename = segments[0].changes.iter().find(
-            |c| matches!(c, (to, Dirent::Renamed { .. }) if to == "/nonexistent_test_12345/dir2"),
+            |c| matches!(c, (to, Change::Renamed { .. }) if to == "/nonexistent_test_12345/dir2"),
         );
         assert!(
             chk2_rename.is_some(),
@@ -2638,7 +2642,7 @@ mod tests {
                 chk2_rename.unwrap(),
                 (
                     _,
-                    Dirent::Renamed {
+                    Change::Renamed {
                         dtype: DType::Dir,
                         ..
                     }
@@ -2650,7 +2654,7 @@ mod tests {
 
         // chk2→chk3: Renamed Dir (dir2 -> dir3)
         let chk3_rename = segments[1].changes.iter().find(
-            |c| matches!(c, (to, Dirent::Renamed { .. }) if to == "/nonexistent_test_12345/dir3"),
+            |c| matches!(c, (to, Change::Renamed { .. }) if to == "/nonexistent_test_12345/dir3"),
         );
         assert!(
             chk3_rename.is_some(),
@@ -2662,7 +2666,7 @@ mod tests {
                 chk3_rename.unwrap(),
                 (
                     _,
-                    Dirent::Renamed {
+                    Change::Renamed {
                         dtype: DType::Dir,
                         ..
                     }
@@ -2699,9 +2703,9 @@ mod tests {
         let changes = resolve(records).unwrap();
         let has_deleted = changes
             .iter()
-            .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/nonexistent_test_12345/a"));
+            .any(|c| matches!(c, (p, Change::Deleted) if p == "/nonexistent_test_12345/a"));
         let has_modified = changes.iter().any(|c| {
-            matches!(c, (path, Dirent::Modified { ino: 2, .. }) if path == "/nonexistent_test_12345/b")
+            matches!(c, (path, Change::Modified { ino: 2, .. }) if path == "/nonexistent_test_12345/b")
         });
         assert!(has_deleted, "expected Deleted(a), got: {changes:?}");
         assert!(
@@ -2734,13 +2738,13 @@ mod tests {
         assert!(
             changes
                 .iter()
-                .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/etc/hostname")),
+                .any(|c| matches!(c, (p, Change::Deleted) if p == "/etc/hostname")),
             "expected Deleted(/etc/hostname), got: {changes:?}"
         );
         assert!(
             !changes
                 .iter()
-                .any(|c| matches!(c, (_, Dirent::Renamed { .. }))),
+                .any(|c| matches!(c, (_, Change::Renamed { .. }))),
             "should have no renames, got: {changes:?}"
         );
     }
@@ -2773,11 +2777,11 @@ mod tests {
         let changes = resolve(records).unwrap();
         // Final: Renamed(hosts → target) + Deleted(hostname)
         let has_rename = changes.iter().any(|c| {
-            matches!(c, (to, Dirent::Renamed { from, .. }) if from == "/etc/hosts" && to == "/etc/target")
+            matches!(c, (to, Change::Renamed { from, .. }) if from == "/etc/hosts" && to == "/etc/target")
         });
         let has_delete = changes
             .iter()
-            .any(|c| matches!(c, (p, Dirent::Deleted) if p == "/etc/hostname"));
+            .any(|c| matches!(c, (p, Change::Deleted) if p == "/etc/hostname"));
         assert!(has_rename, "expected Renamed(hosts→target): {changes:?}");
         assert!(
             has_delete,
@@ -2816,10 +2820,10 @@ mod tests {
         let changes = resolve(records).unwrap();
         assert_eq!(changes.len(), 2, "expected 2 changes, got: {changes:?}");
         let has_y = changes.iter().any(|c| {
-            matches!(c, (path, Dirent::Added { ino: 1, .. }) if path == "/nonexistent_test_12345/y")
+            matches!(c, (path, Change::Added { ino: 1, .. }) if path == "/nonexistent_test_12345/y")
         });
         let has_x = changes.iter().any(|c| {
-            matches!(c, (path, Dirent::Added { ino: 2, .. }) if path == "/nonexistent_test_12345/x")
+            matches!(c, (path, Change::Added { ino: 2, .. }) if path == "/nonexistent_test_12345/x")
         });
         assert!(has_y, "expected Added(y, ino=1): {changes:?}");
         assert!(has_x, "expected Added(x, ino=2): {changes:?}");
@@ -2856,17 +2860,17 @@ mod tests {
         assert_eq!(changes.len(), 3, "expected 3 changes, got: {changes:?}");
 
         assert!(
-            matches!(&changes[0], (_, Dirent::Renamed { .. })),
+            matches!(&changes[0], (_, Change::Renamed { .. })),
             "first change should be Renamed, got: {:?}",
             changes[0]
         );
         assert!(
-            matches!(&changes[1], (_, Dirent::Added { .. })),
+            matches!(&changes[1], (_, Change::Added { .. })),
             "second change should be Added, got: {:?}",
             changes[1]
         );
         assert!(
-            matches!(&changes[2], (_, Dirent::Deleted)),
+            matches!(&changes[2], (_, Change::Deleted)),
             "third change should be Deleted, got: {:?}",
             changes[2]
         );
@@ -3218,12 +3222,12 @@ mod tests {
         assert!(
             changes
                 .iter()
-                .any(|c| matches!(c, (path, Dirent::Added { ino: 1, .. }) if path == "/x"))
+                .any(|c| matches!(c, (path, Change::Added { ino: 1, .. }) if path == "/x"))
         );
         assert!(
             changes
                 .iter()
-                .any(|c| matches!(c, (path, Dirent::Added { ino: 3, .. }) if path == "/y"))
+                .any(|c| matches!(c, (path, Change::Added { ino: 3, .. }) if path == "/y"))
         );
     }
 
