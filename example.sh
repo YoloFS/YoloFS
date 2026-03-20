@@ -40,7 +40,7 @@ section "Restore to checkpoint 2"
 run agfs exec -- sh -c 'ls step*.txt'
 run agfs restore 2
 run agfs exec -- sh -c 'ls step*.txt'
-run agfs log
+run agfs journal
 
 # ─── Teardown ───────────────────────────────────────────────────────
 
