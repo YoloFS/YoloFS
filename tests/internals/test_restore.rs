@@ -49,7 +49,7 @@ fn restore_journal_has_no_post_checkpoint_records() {
 
     // reachable + resolve should match the checkpoint state (only a.txt).
     let sj = journal::SegmentedJournal::new(records);
-    let actions = journal::simplify::simplify(sj.live().into_records());
+    let actions = journal::compact::compact(sj.live().into_records());
     let ch = actions.collapse();
     let debug = format!("{ch:?}");
     assert!(

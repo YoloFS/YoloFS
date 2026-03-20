@@ -223,7 +223,7 @@ pub fn remount(force: bool) -> Result<()> {
 fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
     let records = crate::journal::read(agfs_dir).unwrap_or_default();
     let sj = crate::journal::SegmentedJournal::new(records);
-    let actions = crate::journal::simplify::simplify(sj.live().into_records());
+    let actions = crate::journal::compact::compact(sj.live().into_records());
     let changes = actions.collapse();
     if changes.0.is_empty() {
         return Ok(());

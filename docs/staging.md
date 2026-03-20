@@ -434,14 +434,14 @@ agfs_rename(old_parent, old_name, new_parent, new_name):
 **Rename chains** (`mv a->b`, then `mv b->c`) work naturally: the second
 rename finds the REDIRECTED dirent on `b`, uses its dentry path as the old
 path, and creates a new REDIRECTED dirent on `c`. The dirent stores the
-current dentry path (not the resolved base path) — userspace
-simplification collapses these chains at commit time.
+current dentry path (not the resolved base path) — each rename is
+recorded as a separate journal entry and replayed in order at commit time.
 
 **Rename + recreate** (`mv a->b`, then `touch a`) works because the new
 `touch a` sees the deleted dirent (with `overwrites` inherited from the
 rename) and creates a new staged dirent that supersedes it. The staged
 rename emits `D(a) + A(b)` (not `R`), so the journal sees `A(old) + D(old)`
-which cancel in simplify.
+which cancel in compaction.
 
 **Read after rename**: lookup of the new name finds the dirent ->
 opens the base file at the redirected path (or the staged inode).
@@ -472,7 +472,7 @@ mv b a      # Journal: P(b, a)
             #          P carries overwrites=true for destination "a"
 mv a c      # Journal: R(a, c)
 
-# simplify().collapse() produces: Renamed(b→c) + Deleted(a)
+# compact().collapse() produces: Renamed(b→c) + Deleted(a)
 # The P/R distinction ensures Deleted(a) is emitted when
 # the Replaced action at "a" is unwound by the second rename.
 ```
@@ -617,19 +617,20 @@ determines the journal tag: `M` if true, `A` if false.
 - **Rename-overwrite + move** (`mv b a && mv a c`, both `a` and `b` in
   base): The first rename overwrites base `a`. Because `dst_overwrites` is
   true, the kernel emits `P(b, a)`. The second rename emits `R(a, c)`.
-  `simplify().collapse()` sees `Replace(b→a)` followed by `Rename(a→c)`,
-  which chain-collapses to `Replace(b→c)`, and emits `Deleted(a)` for
-  the overwritten base file. Final result: `Replaced(b→c) + Deleted(a)`.
+  `compact().collapse()` sees `Replace(b→a)` followed by `Rename(a→c)`,
+  which produces `Replace(b→a)` + `Rename(a→c)`, and emits `Deleted(a)` for
+  the overwritten base file and `Deleted(b)` for the source.
+  Final result: `Replaced(b→a) + Renamed(a→c) + Deleted(b)`.
 
 - **Rename-overwrite + delete** (`mv b a && rm a`, both in base):
   Same mechanism — kernel emits `P(b, a)`, then `D(a)`.
-  `simplify().collapse()` produces `Deleted(a) + Deleted(b)`.
+  `compact().collapse()` produces `Deleted(a) + Deleted(b)`.
 
 ### Checkpoint Segments
 
 The CLI resolves per-checkpoint deltas by iterating over segments from the
 `SegmentedJournal` pipeline. Each segment is resolved independently via
-`resolve()` (which calls `simplify().collapse()`) — records between
+`resolve()` (which calls `compact().collapse()`) — records between
 consecutive K/S markers form one segment. This is O(N) total.
 
 `K` records a checkpoint. The CLI can slice segments with
@@ -655,11 +656,11 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 
 1. Build a `SegmentedJournal` from the journal records, then call `live()` to get
    only reachable segments (filtering out dead branches from restores).
-2. `simplify()` the live records into an ordered `ActionList` — a sequence of
+2. `compact()` the live records into an ordered `ActionList` — a sequence of
    `Add`, `Modify`, `Delete`, `Rename`, `Replace` actions that can be
-   replayed sequentially on the base filesystem. Simplification collapses
-   rename chains, cancels staged-then-deleted files, merges multiple
-   modifies, and decomposes rename+modify into delete+add/modify.
+   replayed sequentially on the base filesystem. Compaction cancels
+   staged-then-deleted files, merges multiple modifies, and decomposes
+   rename+modify into delete+add/modify.
 3. `ActionList::apply()` replays each action in order on the base filesystem:
    - **Add/Modify**: move `inodes/<ino> -> base/path` (stat inode to
      determine type: regular file -> copy/rename, symlink -> recreate,
@@ -667,7 +668,7 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
    - **Rename/Replace**: `rename(base/old, base/new)`.
    - **Delete**: `rm base/path`.
    No temp files, no sorting, no conflict detection — the temporal order
-   from simplify is the correct replay order.
+   from compaction is the correct replay order.
 4. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
 5. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `entry_count=0` — reset mode, no S record written).
 

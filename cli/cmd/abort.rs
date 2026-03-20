@@ -42,7 +42,7 @@ pub fn run(force: bool) -> Result<()> {
 
     let sj = crate::journal::SegmentedJournal::new(crate::journal::read(&agfs)?);
     let live_records = sj.live().into_records();
-    let actions = crate::journal::simplify::simplify(live_records);
+    let actions = crate::journal::compact::compact(live_records);
     let changes = actions.collapse();
     if changes.0.is_empty() {
         println!("{}", "Nothing to discard.".yellow());

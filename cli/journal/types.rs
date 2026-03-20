@@ -63,7 +63,7 @@ impl Change {
 }
 
 /// A simplified journal action — only the 5 operation variants (no K/S).
-/// Used by the simplify → apply/collapse pipeline.
+/// Used by the compact → apply/collapse pipeline.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Add {

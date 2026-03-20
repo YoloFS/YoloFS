@@ -140,7 +140,7 @@ fn run(
     let resolved: Vec<(journal::Changeset, Option<(u64, String)>)> = pairs
         .into_iter()
         .map(|(seg, closing)| {
-            let actions = journal::simplify::simplify(seg.records);
+            let actions = journal::compact::compact(seg.records);
             let changes = actions.collapse();
             Ok((changes, closing))
         })

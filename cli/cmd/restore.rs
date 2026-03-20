@@ -134,7 +134,7 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     // Extract live records from the prefix up to the target checkpoint,
     // handling any S records within that prefix.
     let live_records = sj.live_prefix_gen(target_gen).into_records();
-    let actions = journal::simplify::simplify(live_records);
+    let actions = journal::compact::compact(live_records);
     let changes = actions.collapse();
     let items = changes_to_items(&changes.0);
     let entries = items_to_entries(&items)?;

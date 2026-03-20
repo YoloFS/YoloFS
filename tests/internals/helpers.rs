@@ -14,7 +14,7 @@ pub fn journal(s: &AgfsSession) -> journal::RawJournal {
 pub fn changes(s: &AgfsSession) -> Vec<(String, Change)> {
     let records = journal(s);
     let sj = journal::SegmentedJournal::new(records);
-    let actions = journal::simplify::simplify(sj.live().into_records());
+    let actions = journal::compact::compact(sj.live().into_records());
     actions.collapse().0
 }
 

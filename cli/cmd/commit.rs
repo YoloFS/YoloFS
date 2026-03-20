@@ -1,7 +1,7 @@
 // agfs CLI — commit.rs
 //
 // `agfs commit` — apply staged changes to base.
-// Journal is simplified first, then actions are applied sequentially.
+// Journal is compacted first, then actions are applied sequentially.
 
 use crate::journal;
 use crate::journal::SegmentedJournal;
@@ -12,7 +12,7 @@ pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let sj = SegmentedJournal::new(journal::read(&agfs)?);
-    let actions = journal::simplify::simplify(sj.live().into_records());
+    let actions = journal::compact::compact(sj.live().into_records());
     let changeset = actions.collapse();
 
     if changeset.0.is_empty() {

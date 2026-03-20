@@ -178,7 +178,7 @@ $ agfs commit
 
 # 8. Restore to a previous checkpoint (appends S record, no truncation)
 $ agfs restore "after make build"
-   -> CLI: SegmentedJournal → find_checkpoint → live_prefix → simplify → collapse
+   -> CLI: SegmentedJournal → find_checkpoint → live_prefix → compact → collapse
    -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, entries })
    -> kernel: wipe dirents, inject entries, increment gen to 4,
       append S\04\02\n to journal
@@ -233,7 +233,7 @@ agfs/
 │   │   ├── markers.rs          # K/S skeleton (Markers: lookup, range computation)
 │   │   ├── segment.rs         # journal pipeline (SegmentedJournal, Segment)
 │   │   ├── liveness.rs       # reachability filtering (alive_segments, live, live_prefix)
-│   │   ├── simplify.rs        # simplify records into ActionList (chain collapse, cancel, etc.)
+│   │   ├── compact.rs         # compact records into ActionList (decompose, cancel, merge)
 │   │   └── action.rs          # ActionList: apply() to base fs, collapse() to Changeset
 │   ├── ioctl.rs               # binary protocol structs + ioctl helpers
 │   ├── kmsg.rs                # kernel log reading via /dev/kmsg

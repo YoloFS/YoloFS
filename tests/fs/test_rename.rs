@@ -566,7 +566,7 @@ fn complex_multi_operation_commit() {
 
     let agfs_dir = s.root.join(".agfs");
     let records = journal::read(&agfs_dir).expect("read journal");
-    let actions = journal::simplify::simplify(records.0);
+    let actions = journal::compact::compact(records.0);
     let changes = actions.collapse();
 
     let has_modified_hello = changes
@@ -612,7 +612,7 @@ fn complex_multi_operation_commit() {
     );
     assert!(
         has_renamed_deep_to_top,
-        "expected Renamed(deep.txt → top.txt) (chain collapsed): {changes:?}"
+        "expected Renamed(deep.txt → top.txt): {changes:?}"
     );
     assert!(has_added_link, "expected Added(link.txt): {changes:?}");
     assert!(

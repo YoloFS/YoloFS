@@ -8,7 +8,7 @@
 //   markers   — Markers (K/S skeleton: lookup, range computation)
 //   segment   — Segment, SegmentedJournal (split records at K/S boundaries)
 //   liveness  — alive_segments(), live(), live_prefix(), live_slice() (reachability filtering)
-//   simplify  — simplify() records into ActionList (chain collapse, cancel, etc.)
+//   compact   — compact() records into ActionList (decompose, cancel, merge)
 //   action    — ActionList: apply() to base fs, collapse() to Changeset
 
 pub mod action;
@@ -16,7 +16,7 @@ pub mod liveness;
 pub mod markers;
 pub mod parse;
 pub mod segment;
-pub mod simplify;
+pub mod compact;
 pub mod types;
 
 // Re-export types and parse so callers can write journal::Record, journal::read(), etc.
