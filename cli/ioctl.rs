@@ -66,13 +66,17 @@ pub struct AgfsCtlResponse {
     pub _pad: [u8; 7],
 }
 
+/// Checkpoint ioctl flag: skip if no data records since last checkpoint.
+pub const AGFS_CHK_IF_CHANGED: u8 = 1;
+
 /// Matches `struct agfs_ioc_checkpoint` in the kernel.
 #[repr(C)]
 pub struct AgfsIocCheckpoint {
     pub gen_id: u64,
     pub name_ptr: u64,
     pub name_len: u16,
-    pub _pad: [u8; 6],
+    pub flags: u8,
+    pub _pad: [u8; 5],
 }
 
 /// Matches `struct agfs_ioc_restore_entry` in the kernel.
@@ -219,8 +223,9 @@ pub fn restore(fd: &File, target_gen: u64, entries: &[AgfsIocRestoreEntry]) -> R
     Ok(hdr.new_gen)
 }
 
-/// Send AGFS_IOC_CHECKPOINT ioctl. Returns the assigned gen.
-pub fn create_checkpoint(fd: &File, name: &str) -> Result<u64> {
+/// Send AGFS_IOC_CHECKPOINT ioctl. Returns the assigned gen, or 0 if
+/// skipped due to `AGFS_CHK_IF_CHANGED` with no pending changes.
+pub fn create_checkpoint(fd: &File, name: &str, flags: u8) -> Result<u64> {
     let name_bytes = name.as_bytes();
     let name_len: u16 = name_bytes
         .len()
@@ -230,7 +235,8 @@ pub fn create_checkpoint(fd: &File, name: &str) -> Result<u64> {
         gen_id: 0,
         name_ptr: name_bytes.as_ptr() as u64,
         name_len,
-        _pad: [0u8; 6],
+        flags,
+        _pad: [0u8; 5],
     };
     unsafe { ioctl_checkpoint(fd.as_raw_fd(), &mut chk) }.context("ioctl CHECKPOINT")?;
     Ok(chk.gen_id)

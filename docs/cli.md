@@ -90,7 +90,7 @@ Configured via top-level keys in `agfs.toml`:
 | `ask_default` | `deny` | Fallback when no daemon is connected or on timeout |
 | `permission` | true | Enable permission gating |
 | `staging` | true | Enable staging area |
-| `checkpoint` | true | Auto-checkpoint after each `agfs exec` invocation |
+| `checkpoint` | true | Auto-checkpoint after each `agfs exec` invocation (skipped when no changes) |
 
 ## Execution Environment
 

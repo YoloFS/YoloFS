@@ -5,8 +5,8 @@
 // When config.checkpoint=true, a checkpoint is created after the command
 // finishes, capturing what the command did.
 
-use super::checkpoint;
 use crate::config;
+use crate::ioctl;
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
 use std::env;
@@ -80,7 +80,8 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         eprintln!("{} {}", "agfs: command exited with".red(), code);
     }
 
-    // Checkpoint after the command so the checkpoint captures what the command did
+    // Checkpoint after the command so the checkpoint captures what the command did.
+    // Skip if the command produced no staged changes to avoid empty checkpoints.
     if config::load_config().checkpoint {
         let cmd_desc = if exec_args.is_empty() {
             default_shell.clone()
@@ -88,10 +89,36 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
             exec_args.join(" ")
         };
         let chk_name = format!("after {cmd_desc}");
-        if let Err(e) = checkpoint::create(Some(&chk_name)) {
-            eprintln!("{} {:#}", "agfs: checkpoint failed:".yellow(), e);
+
+        match auto_checkpoint(&chk_name) {
+            Ok(true) => {} // checkpoint created (message printed by checkpoint::create path)
+            Ok(false) => {
+                eprintln!(
+                    "{}",
+                    "agfs: no changes, skipping checkpoint".dimmed()
+                );
+            }
+            Err(e) => {
+                eprintln!("{} {:#}", "agfs: checkpoint failed:".yellow(), e);
+            }
         }
     }
 
     Ok(code)
+}
+
+/// Create a checkpoint only if there are staged changes (kernel-side check).
+fn auto_checkpoint(name: &str) -> Result<bool> {
+    let agfs = crate::utils::session_dir()?;
+    let ctl_file = ioctl::open(&agfs).context("opening ctl for checkpoint")?;
+    let gen_id = ioctl::create_checkpoint(&ctl_file, name, ioctl::AGFS_CHK_IF_CHANGED)?;
+    if gen_id == 0 {
+        return Ok(false);
+    }
+    eprintln!(
+        "{} {}",
+        format!("checkpoint [{gen_id}]").cyan().bold(),
+        name.dimmed()
+    );
+    Ok(true)
 }

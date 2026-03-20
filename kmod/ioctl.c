@@ -349,8 +349,16 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 		up_write(&sbi->staging_sem);
 		return -EBUSY;
 	}
+	if ((chk.flags & AGFS_CHK_IF_CHANGED) && !READ_ONCE(sbi->dirty)) {
+		up_write(&sbi->staging_sem);
+		chk.gen = 0;
+		if (copy_to_user((void __user *)arg, &chk, sizeof(chk)))
+			return -EFAULT;
+		return 0;
+	}
 	gen = atomic64_inc_return(&sbi->gen);
 	agfs_journal_checkpoint(sbi, gen, name_buf);
+	WRITE_ONCE(sbi->dirty, false);
 	up_write(&sbi->staging_sem);
 
 	/* Best-effort: checkpoint is already committed to the journal,
@@ -502,6 +510,7 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	if (hdr.target_gen == 0) {
 		/* Reset mode (commit/abort): no entries, no journal write */
 		atomic64_set(&sbi->gen, 1);
+		WRITE_ONCE(sbi->dirty, false);
 		up_write(&sbi->staging_sem);
 		return 0;
 	}
@@ -516,6 +525,8 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	 * with new_gen.  Rolling back would leave those dirents with a gen
 	 * higher than sbi->gen, breaking COW checks.  The CLI can retry
 	 * the operation or abort (which resets gen to 1). */
+	if (!err)
+		WRITE_ONCE(sbi->dirty, false);
 
 	up_write(&sbi->staging_sem);
 

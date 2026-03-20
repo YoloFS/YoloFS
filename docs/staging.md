@@ -80,6 +80,7 @@ table on directory inodes.
 | `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
 | `gen` | Atomic counter, starts at 1, bumped by each checkpoint and restore ioctl. Compared against `dirent.gen` at open time to decide COW / re-COW. |
 | `staging_fd_count` | Atomic counter of open staging fds (opened for write). Checkpoint ioctl rejects with `-EBUSY` when > 0. |
+| `dirty` | Boolean flag set on every data journal write (A/M/D/R/P), cleared on checkpoint or restore. Used by `AGFS_CHK_IF_CHANGED` to skip empty auto-checkpoints. |
 | `pinned_dirs` | List head tracking `igrab()`-pinned directory inodes (those with dirents) for bulk release at cache invalidation / unmount. |
 | `pinned_dirs_lock` | Spinlock protecting `pinned_dirs`. |
 
@@ -735,6 +736,13 @@ The name defaults to `"after <cmd>"` when auto-checkpointing via `agfs exec`
 `chk-20260315-043807` when run via `agfs checkpoint` with no argument. Names need
 not be unique; checkpoints can also be addressed by their numeric gen. When
 looking up by name, `--at` and `--from` match the latest one.
+
+Auto-checkpointing after `agfs exec` is skipped when the command produced no
+staged changes. The kernel tracks a `dirty` flag on `agfs_sb_info` that is set
+on every data journal write (A/M/D/R/P) and cleared on checkpoint or restore.
+When the CLI passes the `AGFS_CHK_IF_CHANGED` flag in the checkpoint ioctl, the
+kernel returns `gen = 0` (skipped) if the flag is clear, avoiding empty
+checkpoints from read-only or no-op commands.
 
 ### Re-COW on First Open-for-Write After Checkpoint
 

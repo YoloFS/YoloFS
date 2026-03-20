@@ -72,6 +72,8 @@ static int journal_write(struct agfs_sb_info *sbi, char tag,
 
 	pos = f->f_pos;
 	err = kernel_write(f, buf, off, &pos);
+	if (err >= 0 && tag != 'K' && tag != 'S')
+		WRITE_ONCE(sbi->dirty, true);
 	return err < 0 ? err : 0;
 }
 
