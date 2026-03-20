@@ -31,15 +31,16 @@ run agfs audit
 # ─── Query across checkpoints ──────────────────────────────────────
 
 section "Query across checkpoints"
-run agfs status --at 3
-run agfs diff   --from 2 --to 4
+run agfs status --at 2
+run agfs diff   --from 1 --to 3
 
 # ─── Restore to an earlier checkpoint ──────────────────────────────
 
-section "Restore to checkpoint 2"
+section "Restore to checkpoint 1"
 run agfs exec -- sh -c 'ls step*.txt'
-run agfs restore 2
+run agfs restore 1
 run agfs exec -- sh -c 'ls step*.txt'
+run agfs exec -- sh -c 'echo step2_new > step2_new.txt'
 run agfs audit
 
 # ─── Teardown ───────────────────────────────────────────────────────
