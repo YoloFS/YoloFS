@@ -6,7 +6,6 @@
 
 use super::types::*;
 use anyhow::Result;
-use std::collections::HashMap;
 
 /// The K/S skeleton of the journal.
 pub struct Markers(pub(super) Vec<Marker>);
@@ -28,28 +27,40 @@ impl Markers {
         self.0.iter()
     }
 
-    /// Find a checkpoint by name or numeric ID (searches all markers).
+    /// Find a checkpoint by numeric gen ID. O(1) via direct indexing.
     /// Returns (marker index, checkpoint reference).
-    pub fn find_checkpoint(&self, name_or_id: &str) -> Result<(usize, &Checkpoint)> {
-        if let Ok(target_id) = name_or_id.parse::<u64>() {
-            for (i, marker) in self.0.iter().enumerate() {
-                if let Marker::Checkpoint { checkpoint, .. } = marker
-                    && checkpoint.gen_id == target_id
-                {
-                    return Ok((i, checkpoint));
+    pub fn find_checkpoint_by_gen_id(&self, gen_id: u64) -> Result<(usize, &Checkpoint)> {
+        let idx = gen_id.checked_sub(1).and_then(|i| usize::try_from(i).ok());
+        if let Some(idx) = idx {
+            if let Some(Marker::Checkpoint { checkpoint, .. }) = self.0.get(idx) {
+                if checkpoint.gen_id == gen_id {
+                    return Ok((idx, checkpoint));
                 }
             }
         }
+        anyhow::bail!("checkpoint not found: {gen_id}");
+    }
 
+    /// Find a checkpoint by name. Returns the last match (names may repeat).
+    /// Returns (marker index, checkpoint reference).
+    pub fn find_checkpoint_by_name(&self, name: &str) -> Result<(usize, &Checkpoint)> {
         let mut last = None;
         for (i, marker) in self.0.iter().enumerate() {
             if let Marker::Checkpoint { checkpoint, .. } = marker
-                && checkpoint.name == name_or_id
+                && checkpoint.name == name
             {
                 last = Some((i, checkpoint));
             }
         }
-        last.ok_or_else(|| anyhow::anyhow!("checkpoint not found: {name_or_id}"))
+        last.ok_or_else(|| anyhow::anyhow!("checkpoint not found: {name}"))
+    }
+
+    /// Find a checkpoint by name or numeric ID (user input).
+    pub fn find_checkpoint(&self, name_or_id: &str) -> Result<(usize, &Checkpoint)> {
+        if let Ok(id) = name_or_id.parse::<u64>() {
+            return self.find_checkpoint_by_gen_id(id);
+        }
+        self.find_checkpoint_by_name(name_or_id)
     }
 
     /// Get the checkpoint at this marker index (returns `None` for restore markers).
@@ -115,10 +126,9 @@ impl SegmentedJournal {
     /// Splits at both checkpoint (K) and restore (S) boundaries.
     pub fn new(journal: RawJournal) -> Self {
         let mut segments = Vec::new();
-        let mut markers_vec = Vec::new();
+        let mut markers_vec: Vec<Marker> = Vec::new();
         let mut current_records = Vec::new();
         let mut current_from: Option<Checkpoint> = None;
-        let mut k_map: HashMap<u64, Checkpoint> = HashMap::new();
 
         for (pos, record) in journal.0.into_iter().enumerate() {
             match record {
@@ -129,7 +139,6 @@ impl SegmentedJournal {
                     });
                     current_from = Some(c);
                     let checkpoint = current_from.as_ref().unwrap();
-                    k_map.insert(checkpoint.gen_id, checkpoint.clone());
                     markers_vec.push(Marker::Checkpoint {
                         pos,
                         checkpoint: checkpoint.clone(),
@@ -145,7 +154,13 @@ impl SegmentedJournal {
                         gen_id,
                         target_gen,
                     });
-                    current_from = k_map.get(&target_gen).cloned();
+                    // Gen IDs are sequential (1, 2, 3, ...), so index directly.
+                    current_from = markers_vec
+                        .get((target_gen - 1) as usize)
+                        .and_then(|m| match m {
+                            Marker::Checkpoint { checkpoint, .. } => Some(checkpoint.clone()),
+                            _ => None,
+                        });
                 }
                 _ => {
                     current_records.push(record);
@@ -296,7 +311,7 @@ mod tests {
     // ── Markers tests ────────────────────────────────────────────────
 
     #[test]
-    fn find_checkpoint_by_id() {
+    fn find_checkpoint_by_gen_id() {
         let records = vec![
             Record::Checkpoint(Checkpoint {
                 gen_id: 1,
@@ -313,7 +328,7 @@ mod tests {
             }),
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
-        let (m_idx, c) = sj.markers.find_checkpoint("1").unwrap();
+        let (m_idx, c) = sj.markers.find_checkpoint_by_gen_id(1).unwrap();
         assert_eq!(m_idx, 0);
         assert_eq!(c.gen_id, 1);
     }
@@ -336,7 +351,7 @@ mod tests {
             }),
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
-        let (m_idx, c) = sj.markers.find_checkpoint("second").unwrap();
+        let (m_idx, c) = sj.markers.find_checkpoint_by_name("second").unwrap();
         assert_eq!(m_idx, 1);
         assert_eq!(c.gen_id, 2);
     }
@@ -348,7 +363,7 @@ mod tests {
             name: "first".into(),
         })];
         let sj = SegmentedJournal::new(RawJournal(records));
-        assert!(sj.markers.find_checkpoint("nonexistent").is_err());
+        assert!(sj.markers.find_checkpoint_by_name("nonexistent").is_err());
     }
 
     #[test]
@@ -369,7 +384,7 @@ mod tests {
             }),
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
-        let (m_idx, c) = sj.markers.find_checkpoint("dup").unwrap();
+        let (m_idx, c) = sj.markers.find_checkpoint_by_name("dup").unwrap();
         assert_eq!(m_idx, 1, "should return the last matching checkpoint");
         assert_eq!(c.gen_id, 2);
     }

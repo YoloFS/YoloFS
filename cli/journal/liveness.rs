@@ -673,7 +673,7 @@ mod tests {
             }),
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
-        let (m_idx, _) = sj.markers.find_checkpoint("c2").unwrap();
+        let (m_idx, _) = sj.markers.find_checkpoint_by_name("c2").unwrap();
         let prefix = sj.live_prefix(m_idx);
         let records: Vec<Record> = prefix
             .0
@@ -787,7 +787,7 @@ mod tests {
         ];
         let sj = SegmentedJournal::new(RawJournal(records));
         // Markers: K1(0), K2(1), K3(2), S4(3), K5(4), K6(5)
-        let (m_idx, _) = sj.markers.find_checkpoint("c5").unwrap();
+        let (m_idx, _) = sj.markers.find_checkpoint_by_name("c5").unwrap();
         let prefix = sj.live_prefix(m_idx);
         let result: Vec<Record> = prefix.0.into_iter().flat_map(|s| s.records).collect();
         // Live prefix up to K5: [C] from seg4.

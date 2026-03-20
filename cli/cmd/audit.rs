@@ -4,7 +4,7 @@
 // `agfs audit --path <path>`  — trace operations on a specific file.
 
 use crate::journal;
-use crate::journal::{Marker, SegmentedJournal};
+use crate::journal::SegmentedJournal;
 use anyhow::Result;
 use colored::Colorize;
 
