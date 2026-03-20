@@ -347,46 +347,8 @@ fn render_op_workload(
     }
     table.push_str("</table>\n");
 
-    // If any backend has a latency series, write a separate line chart HTML.
-    let has_series = sorted.iter().any(|b| b.latency_series.is_some());
-    let series_html = if has_series {
-        let mut series_plot = Plot::new();
-        for b in &sorted {
-            if let Some(ref series) = b.latency_series {
-                let xs: Vec<usize> = series.iter().map(|p| p.op_index).collect();
-                let ys: Vec<f64> = series.iter().map(|p| p.avg_lat_us).collect();
-                series_plot.add_trace(
-                    Scatter::new(xs, ys)
-                        .mode(Mode::Lines)
-                        .name(&b.backend)
-                        .line(plotly::common::Line::new().color(backend_color(&b.backend))),
-                );
-            }
-        }
-        series_plot.set_layout(
-            Layout::new()
-                .title(Title::with_text(format!(
-                    "{} — latency vs operation count",
-                    wl.workload
-                )))
-                .x_axis(Axis::new().title(Title::with_text("operations completed")))
-                .y_axis(Axis::new().title(Title::with_text("avg latency (µs)")))
-                .show_legend(true),
-        );
-        series_plot.set_configuration(Configuration::new().responsive(true).fill_frame(true));
-        let series_path = out_dir.join(format!("report-{}-series.html", wl.workload));
-        series_plot.write_html(&series_path);
-        format!(
-            "<iframe src=\"report-{}-series.html\" \
-             style=\"width:100%;height:420px;border:1px solid #ddd;border-radius:4px;margin-top:1em\"></iframe>",
-            wl.workload
-        )
-    } else {
-        String::new()
-    };
-
     full_html = inject_workload_status(full_html, &status);
-    full_html = full_html.replace("</body>", &format!("{table}{series_html}</body>"));
+    full_html = full_html.replace("</body>", &format!("{table}</body>"));
 
     std::fs::write(&html_path, full_html)
         .with_context(|| format!("writing {}", html_path.display()))?;

@@ -225,9 +225,6 @@ struct BackendResult {
     repo_state: Option<RepoState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     checkpoint_series: Option<crate::workload::CheckpointLatencySeries>,
-    /// Averaged latency-vs-operation-index series across iterations.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    latency_series: Option<Vec<crate::workload::LatencyPoint>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -624,7 +621,6 @@ fn run_backend(
         mean_write_lat_us_p99: None,
         repo_state: repo_state.clone(),
         checkpoint_series: aggregate_checkpoint_series(&checkpoint_series_runs),
-        latency_series: None,
     })
 }
 
@@ -830,34 +826,7 @@ fn run_backend_op(
         mean_write_lat_us_p99,
         repo_state: repo_state.clone(),
         checkpoint_series: None,
-        latency_series: aggregate_latency_series(&op_results),
     })
-}
-
-fn aggregate_latency_series(
-    op_results: &[crate::workload::OpResult],
-) -> Option<Vec<crate::workload::LatencyPoint>> {
-    let series: Vec<&Vec<crate::workload::LatencyPoint>> = op_results
-        .iter()
-        .filter_map(|r| r.latency_series.as_ref())
-        .collect();
-    let first = series.first()?;
-    if first.is_empty() {
-        return None;
-    }
-    let len = first.len();
-    // All iterations must have the same number of points.
-    if series.iter().any(|s| s.len() != len) {
-        return None;
-    }
-    let n = series.len() as f64;
-    let points = (0..len)
-        .map(|i| crate::workload::LatencyPoint {
-            op_index: first[i].op_index,
-            avg_lat_us: series.iter().map(|s| s[i].avg_lat_us).sum::<f64>() / n,
-        })
-        .collect();
-    Some(points)
 }
 
 // ── Statistics ────────────────────────────────────────────────────────────────
@@ -1316,6 +1285,7 @@ fn main() -> Result<()> {
         workloads::by_kind(workload::WorkloadKind::Macro)
     } else if cli.op {
         let mut selected = workloads::by_kind(workload::WorkloadKind::Op);
+        selected.retain(|w| !w.hidden());
         if let Some(group) = cli.op_group {
             selected.retain(|w| match group {
                 OpGroup::Meta => w.name().starts_with("meta-"),
@@ -1325,6 +1295,9 @@ fn main() -> Result<()> {
         selected
     } else {
         workloads::all()
+            .into_iter()
+            .filter(|w| !w.hidden())
+            .collect()
     };
 
     // Fail hard if any selected workload needs fio and it's not installed.

@@ -6,14 +6,18 @@ use std::path::Path;
 
 pub struct MetaReaddirWarm {
     pub source: MetaSource,
+    pub count: usize,
 }
 
 impl MetaReaddirWarm {
     pub fn all() -> Vec<Self> {
-        MetaSource::ALL
-            .iter()
-            .map(|&s| Self { source: s })
-            .collect()
+        let mut v = Vec::new();
+        for &count in &[meta_shared::LARGE_DIR, meta_shared::SMALL_DIR] {
+            for &source in &MetaSource::ALL {
+                v.push(Self { source, count });
+            }
+        }
+        v
     }
 }
 
@@ -22,27 +26,41 @@ pub fn details() -> workloads::WorkloadDetails {
         "Enumerate 1,000 directories (10 files each) from warm dcache, measuring per-directory latency.",
         "Fixture varies by source: base populates before mount; stage creates inside the mount; checkpoint snapshots after creation.",
         None,
-        &meta_shared::meta_readdir_warm_execution(),
+        &meta_shared::meta_readdir_core_execution(),
         file!(),
     )
 }
 
 impl Workload for MetaReaddirWarm {
     fn name(&self) -> &'static str {
-        match self.source {
-            MetaSource::Base => "meta-readdir-warm-base",
-            MetaSource::Stage => "meta-readdir-warm-stage",
-            MetaSource::Checkpoint => "meta-readdir-warm-checkpoint",
+        match (self.count, self.source) {
+            (100, MetaSource::Base) => "meta-readdir-100-base",
+            (100, MetaSource::Stage) => "meta-readdir-100-stage",
+            (100, MetaSource::Checkpoint) => "meta-readdir-100-checkpoint",
+            (_, MetaSource::Base) => "meta-readdir-base",
+            (_, MetaSource::Stage) => "meta-readdir-stage",
+            (_, MetaSource::Checkpoint) => "meta-readdir-checkpoint",
         }
     }
     fn kind(&self) -> WorkloadKind {
         WorkloadKind::Op
     }
     fn description(&self) -> &'static str {
-        match self.source {
-            MetaSource::Base => "Warm readdir over a base-layer 1,000-dir tree",
-            MetaSource::Stage => "Warm readdir over a stage-local 1,000-dir tree",
-            MetaSource::Checkpoint => "Warm readdir over a checkpoint-layer 1,000-dir tree",
+        match (self.count, self.source) {
+            (100, MetaSource::Base) => "Warm readdir over a base-layer 100-dir tree (small dir)",
+            (100, MetaSource::Stage) => {
+                "Warm readdir over a stage-local 100-dir tree (small dir)"
+            }
+            (100, MetaSource::Checkpoint) => {
+                "Warm readdir over a checkpoint-layer 100-dir tree (small dir)"
+            }
+            (_, MetaSource::Base) => "Warm readdir over a base-layer 10,000-dir tree (large dir)",
+            (_, MetaSource::Stage) => {
+                "Warm readdir over a stage-local 10,000-dir tree (large dir)"
+            }
+            (_, MetaSource::Checkpoint) => {
+                "Warm readdir over a checkpoint-layer 10,000-dir tree (large dir)"
+            }
         }
     }
     fn work_dir(&self) -> &'static str {
@@ -55,10 +73,10 @@ impl Workload for MetaReaddirWarm {
         workloads::allow_rw_rules(session_root)
     }
     fn populate_base(&self, base_work_dir: &Path) -> Result<()> {
-        meta_shared::populate_readdir_for_source(self.source, base_work_dir)
+        meta_shared::populate_readdir_for_source(self.source, base_work_dir, self.count)
     }
     fn prepare_workdir(&self, dest: &Path) -> Result<()> {
-        meta_shared::prepare_readdir_for_source(self.source, dest)
+        meta_shared::prepare_readdir_for_source(self.source, dest, self.count)
     }
     fn needs_prepare_workdir(&self) -> bool {
         meta_shared::needs_prepare(self.source)
@@ -67,6 +85,6 @@ impl Workload for MetaReaddirWarm {
         meta_shared::needs_checkpoint(self.source)
     }
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        meta_shared::run_meta_readdir_warm(dest)
+        meta_shared::run_meta_readdir(dest, self.count)
     }
 }

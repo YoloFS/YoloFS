@@ -6,9 +6,6 @@ use std::fs::File;
 use std::path::Path;
 use std::time::Instant;
 
-/// Bucket size for the latency-vs-file-count series.
-const LATENCY_SERIES_BUCKET: usize = 100;
-
 pub struct MetaCreate {
     pub count: usize,
 }
@@ -25,16 +22,10 @@ fn run_create(dest: &Path, count: usize) -> Result<()> {
         latencies.push(t0.elapsed());
     }
 
-    let bucket = if count >= LATENCY_SERIES_BUCKET {
-        LATENCY_SERIES_BUCKET
-    } else {
-        0
-    };
-    workloads::emit_op_result(&workloads::summarize_latencies_with_series(
+    workloads::emit_op_result(&workloads::summarize_latencies(
         latencies,
         total.elapsed(),
         None,
-        bucket,
     ))
 }
 
@@ -51,9 +42,7 @@ crate::workloads::define_rust_execution!(
             latencies.push(t0.elapsed());
         }
 
-        workloads::emit_op_result(&workloads::summarize_latencies_with_series(
-            latencies, total.elapsed(), None, 100,
-        ))
+        workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
     } => meta_create_execution
 );
 
@@ -70,7 +59,8 @@ pub fn details() -> workloads::WorkloadDetails {
 impl Workload for MetaCreate {
     fn name(&self) -> &'static str {
         match self.count {
-            10 => "meta-create-10",
+            100 => "meta-create-100",
+            10000 => "meta-create",
             _ => "meta-create",
         }
     }
@@ -81,16 +71,13 @@ impl Workload for MetaCreate {
 
     fn description(&self) -> &'static str {
         match self.count {
-            10 => "Create 10 empty files (isolates per-create overhead)",
-            _ => "Create 10,000 empty files (file creation throughput)",
+            100 => "Create 100 empty files (small directory)",
+            _ => "Create 10,000 empty files (large directory)",
         }
     }
 
     fn work_dir(&self) -> &'static str {
-        match self.count {
-            10 => "meta-create-10",
-            _ => "meta-create",
-        }
+        self.name()
     }
 
     fn ensure_fixture(&self) -> Result<()> {

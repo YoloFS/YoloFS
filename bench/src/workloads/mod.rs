@@ -66,8 +66,8 @@ pub struct WorkloadDetails {
 }
 
 macro_rules! define_rust_execution {
-    (fn $name:ident($($arg:ident : $arg_ty:ty),* $(,)?) -> Result<()> $body:block => $render_name:ident) => {
-        pub(crate) fn $name($($arg: $arg_ty),*) -> Result<()> $body
+    (fn $name:ident($($arg:ident : $arg_ty:ty),* $(,)?) -> $ret:ty $body:block => $render_name:ident) => {
+        pub(crate) fn $name($($arg: $arg_ty),*) -> $ret $body
 
         pub(crate) fn $render_name() -> String {
             crate::workloads::rust_execution(stringify!($body))
@@ -99,8 +99,8 @@ pub fn all() -> Vec<Box<dyn Workload>> {
         Box::new(fio_rand_write::FioRandWrite),
         Box::new(fio_randrw_cold::FioRandRwCold),
         Box::new(fio_randrw_warm::FioRandRwWarm),
-        Box::new(meta_create::MetaCreate { count: OP_FILE_COUNT }),
-        Box::new(meta_create::MetaCreate { count: 10 }),
+        Box::new(meta_create::MetaCreate { count: meta_shared::LARGE_DIR }),
+        Box::new(meta_create::MetaCreate { count: meta_shared::SMALL_DIR }),
     ];
     for w in meta_append::MetaAppend::all() {
         v.push(Box::new(w));
@@ -174,7 +174,9 @@ pub fn descriptions() -> std::collections::HashMap<&'static str, &'static str> {
 }
 
 pub fn details(name: &str) -> Option<WorkloadDetails> {
-    Some(match name {
+    // Strip source suffix to get the group name for meta workloads.
+    let group = meta_shared::source_group_name(name).unwrap_or(name);
+    Some(match group {
         "write-files" => write_files::details(),
         "read-files" => read_files::details(),
         "stat-files" => stat_files::details(),
@@ -183,34 +185,16 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
         "checkpoint-scalability" => checkpoint_scalability::details(),
         "worktree" => worktree::details(),
         "linux-untar" => linux_untar::details(),
-        "meta-create" | "meta-create-10" => meta_create::details(),
-        "meta-append-base" | "meta-append-stage" | "meta-append-checkpoint" => {
-            meta_append::details()
-        }
-        "meta-open-cold-base" | "meta-open-cold-stage" | "meta-open-cold-checkpoint" => {
-            meta_open_cold::details()
-        }
-        "meta-open-warm-base" | "meta-open-warm-stage" | "meta-open-warm-checkpoint" => {
-            meta_open_warm::details()
-        }
-        "meta-stat-cold-base" | "meta-stat-cold-stage" | "meta-stat-cold-checkpoint" => {
-            meta_stat_cold::details()
-        }
-        "meta-stat-warm-base" | "meta-stat-warm-stage" | "meta-stat-warm-checkpoint" => {
-            meta_stat_warm::details()
-        }
-        "meta-readdir-cold-base" | "meta-readdir-cold-stage" | "meta-readdir-cold-checkpoint" => {
-            meta_readdir_cold::details()
-        }
-        "meta-readdir-warm-base" | "meta-readdir-warm-stage" | "meta-readdir-warm-checkpoint" => {
-            meta_readdir_warm::details()
-        }
-        "meta-rename-base" | "meta-rename-stage" | "meta-rename-checkpoint" => {
-            meta_rename::details()
-        }
-        "meta-unlink-base" | "meta-unlink-stage" | "meta-unlink-checkpoint" => {
-            meta_unlink::details()
-        }
+        "meta-create" | "meta-create-100" => meta_create::details(),
+        "meta-append" | "meta-append-100" => meta_append::details(),
+        "meta-open-cold" => meta_open_cold::details(),
+        "meta-open" | "meta-open-100" => meta_open_warm::details(),
+        "meta-stat-cold" => meta_stat_cold::details(),
+        "meta-stat" | "meta-stat-100" => meta_stat_warm::details(),
+        "meta-readdir-cold" => meta_readdir_cold::details(),
+        "meta-readdir" | "meta-readdir-100" => meta_readdir_warm::details(),
+        "meta-rename" | "meta-rename-100" => meta_rename::details(),
+        "meta-unlink" | "meta-unlink-100" => meta_unlink::details(),
         "fio-seq-read-cold" => fio_seq_read_cold::details(),
         "fio-seq-read-warm" => fio_seq_read_warm::details(),
         "fio-seq-write" => fio_seq_write::details(),
@@ -306,44 +290,8 @@ pub fn summarize_latencies(
     total: Duration,
     throughput_kbps: Option<u64>,
 ) -> OpResult {
-    summarize_latencies_with_series(latencies, total, throughput_kbps, 0)
-}
-
-/// Like `summarize_latencies` but also records a latency-vs-index series
-/// by averaging every `bucket_size` consecutive operations. Pass 0 to skip.
-pub fn summarize_latencies_with_series(
-    mut latencies: Vec<Duration>,
-    total: Duration,
-    throughput_kbps: Option<u64>,
-    bucket_size: usize,
-) -> OpResult {
-    use crate::workload::LatencyPoint;
-
-    let len = latencies.len();
-
-    // Build the series BEFORE sorting (preserves insertion order).
-    let latency_series = if bucket_size > 0 && len >= bucket_size {
-        let mut points = Vec::with_capacity(len / bucket_size);
-        for chunk_start in (0..len).step_by(bucket_size) {
-            let chunk_end = (chunk_start + bucket_size).min(len);
-            let n = (chunk_end - chunk_start) as f64;
-            let avg_us = latencies[chunk_start..chunk_end]
-                .iter()
-                .map(|d| d.as_secs_f64() * 1_000_000.0)
-                .sum::<f64>()
-                / n;
-            points.push(LatencyPoint {
-                op_index: chunk_end,
-                avg_lat_us: avg_us,
-            });
-        }
-        Some(points)
-    } else {
-        None
-    };
-
-    // Sort for percentile computation.
     latencies.sort_unstable();
+    let len = latencies.len();
     let percentile_us = |numerator: usize, denominator: usize| -> f64 {
         let idx = ((len * numerator).div_ceil(denominator)).saturating_sub(1);
         latencies[idx.min(len.saturating_sub(1))].as_secs_f64() * 1_000_000.0
@@ -361,7 +309,6 @@ pub fn summarize_latencies_with_series(
         read_lat_us_p99: None,
         write_lat_us_p50: None,
         write_lat_us_p99: None,
-        latency_series,
     }
 }
 
@@ -520,7 +467,6 @@ fn parse_fio_result(fio_json: &Value) -> Result<OpResult> {
         read_lat_us_p99: (read_iops > 0.0).then_some(read_lats.1),
         write_lat_us_p50: (write_iops > 0.0).then_some(write_lats.0),
         write_lat_us_p99: (write_iops > 0.0).then_some(write_lats.1),
-        latency_series: None,
     })
 }
 
@@ -553,27 +499,17 @@ fn weighted_percentiles(
     )
 }
 
-pub fn populate_op_files(dir: &Path) -> Result<()> {
-    populate_files(dir, OP_FILE_COUNT, OP_FILE_SIZE)
+pub fn populate_op_files(dir: &Path, count: usize) -> Result<()> {
+    populate_files(dir, count, OP_FILE_SIZE)
 }
 
-pub fn populate_readdir_tree(dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(dir).context("creating readdir work dir")?;
-    let buf = vec![0u8; OP_FILE_SIZE];
-    for d in 0..READDIR_DIR_COUNT {
-        let subdir = dir.join(format!("dir-{d:04}"));
-        std::fs::create_dir_all(&subdir)
-            .with_context(|| format!("creating {}", subdir.display()))?;
-        for f in 0..READDIR_FILES_PER_DIR {
-            let path = subdir.join(format!("file-{f:02}.dat"));
-            std::fs::write(&path, &buf).with_context(|| format!("writing {}", path.display()))?;
-        }
-    }
-    Ok(())
+/// Populate a single directory with `count` files for readdir benchmarks.
+pub fn populate_readdir_dir(dir: &Path, count: usize) -> Result<()> {
+    populate_files(dir, count, OP_FILE_SIZE)
 }
 
-pub fn warm_metadata(dest: &Path) -> Result<()> {
-    for i in 0..OP_FILE_COUNT {
+pub fn warm_metadata(dest: &Path, count: usize) -> Result<()> {
+    for i in 0..count {
         let path = dest.join(format!("file-{i:04}.dat"));
         let meta = std::fs::metadata(&path).with_context(|| format!("stat {}", path.display()))?;
         std::hint::black_box(meta);
@@ -581,23 +517,16 @@ pub fn warm_metadata(dest: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn warm_readdir_tree(dest: &Path) -> Result<()> {
-    for d in 0..READDIR_DIR_COUNT {
-        let subdir = dest.join(format!("dir-{d:04}"));
-        let mut count = 0usize;
-        for entry in
-            std::fs::read_dir(&subdir).with_context(|| format!("reading {}", subdir.display()))?
-        {
-            let entry = entry.with_context(|| format!("iterating {}", subdir.display()))?;
-            std::hint::black_box(entry.file_name());
-            count += 1;
-        }
-        if count != READDIR_FILES_PER_DIR {
-            bail!(
-                "expected {READDIR_FILES_PER_DIR} entries in {}, found {count}",
-                subdir.display()
-            );
-        }
+/// Warm a single directory's readdir cache.
+pub fn warm_readdir_dir(dest: &Path, count: usize) -> Result<()> {
+    let mut n = 0usize;
+    for entry in std::fs::read_dir(dest).with_context(|| format!("reading {}", dest.display()))? {
+        let entry = entry.with_context(|| format!("iterating {}", dest.display()))?;
+        std::hint::black_box(entry.file_name());
+        n += 1;
+    }
+    if n != count {
+        bail!("expected {count} entries in {}, found {n}", dest.display());
     }
     Ok(())
 }
