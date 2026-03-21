@@ -1,7 +1,7 @@
 use super::helpers::{dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal;
-use agfs::journal::Record;
+use agfs::journal::{Marker, Record};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
@@ -22,7 +22,7 @@ fn restore_journal_contains_checkpoint_marker() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "chk1")),
+            .any(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "chk1")),
         "chk1 marker should be in journal: {records:?}"
     );
 }
@@ -43,14 +43,13 @@ fn restore_journal_has_no_post_checkpoint_records() {
 
     // RST (Restore) record should be present in the raw journal.
     assert!(
-        records.iter().any(|r| matches!(r, Record::Restore { .. })),
+        records.iter().any(|r| matches!(r, Record::Marker(Marker::Restore { .. }))),
         "Restore record should be in journal: {records:?}"
     );
 
     // reachable + resolve should match the checkpoint state (only a.txt).
-    let sj = journal::SegmentedJournal::new(records);
-    let records = sj.live();
-    let tree = journal::DirTree::build(&records);
+    let journal = journal::Journal::new(records);
+    let tree = journal::DirTree::build_from_segments(journal.live_segments());
     let ch = tree.into_dirents();
     let debug = format!("{ch:?}");
     assert!(
@@ -373,7 +372,7 @@ fn restore_renamed_symlink_in_resolved_changes() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "chk1")),
+            .any(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "chk1")),
         "chk1 should be in journal: {records:?}"
     );
 }
@@ -433,7 +432,7 @@ fn restore_journal_is_byte_prefix() {
     // Verify the RST record is present.
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Restore { .. })),
+        records.iter().any(|r| matches!(r, Record::Marker(Marker::Restore { .. }))),
         "Restore record should be in journal: {records:?}"
     );
 }
@@ -458,7 +457,7 @@ fn restore_s_record_has_correct_gen() {
     let chk1_gen = records
         .iter()
         .find_map(|r| match r {
-            Record::Checkpoint { gen_id, name } if name == "chk1" => Some(*gen_id),
+            Record::Marker(Marker::Checkpoint { gen_id, name }) if name == "chk1" => Some(*gen_id),
             _ => None,
         })
         .expect("chk1 should exist");
@@ -466,7 +465,7 @@ fn restore_s_record_has_correct_gen() {
     let chk2_gen = records
         .iter()
         .find_map(|r| match r {
-            Record::Checkpoint { gen_id, name } if name == "chk2" => Some(*gen_id),
+            Record::Marker(Marker::Checkpoint { gen_id, name }) if name == "chk2" => Some(*gen_id),
             _ => None,
         })
         .expect("chk2 should exist");
@@ -474,7 +473,7 @@ fn restore_s_record_has_correct_gen() {
     let (s_gen, s_target) = records
         .iter()
         .find_map(|r| match r {
-            Record::Restore { gen_id, target_gen } => Some((*gen_id, *target_gen)),
+            Record::Marker(Marker::Restore { gen_id, target_gen }) => Some((*gen_id, *target_gen)),
             _ => None,
         })
         .expect("restore record should exist");

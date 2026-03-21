@@ -29,7 +29,7 @@ fn field_str(field: &[u8]) -> String {
 }
 
 /// Read and parse the journal file.
-pub fn read(agfs_dir: &Path) -> Result<Vec<Record>> {
+pub(super) fn read(agfs_dir: &Path) -> Result<Vec<Record>> {
     let journal_path = agfs_dir.join("journal");
     if !journal_path.exists() {
         return Ok(Vec::new());
@@ -39,7 +39,7 @@ pub fn read(agfs_dir: &Path) -> Result<Vec<Record>> {
 }
 
 /// Parse journal bytes into records.
-pub fn parse(data: &[u8]) -> Result<Vec<Record>> {
+pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
     let mut records = Vec::new();
 
     for line in data.split(|&b| b == b'\n') {
@@ -59,16 +59,16 @@ pub fn parse(data: &[u8]) -> Result<Vec<Record>> {
 
                 if let Ok(ino) = ino_str.parse::<u64>() {
                     if tag == b"A" {
-                        records.push(Record::Added { path, dtype, ino });
+                        records.push(Record::Action(Action::Add { path, dtype, ino }));
                     } else {
-                        records.push(Record::Modified { path, dtype, ino });
+                        records.push(Record::Action(Action::Modify { path, dtype, ino }));
                     }
                 }
             }
             b"D" if fields.len() >= 3 => {
                 let path = field_str(fields[1]);
                 let dtype = parse_dtype(fields[2]);
-                records.push(Record::Deleted { path, dtype });
+                records.push(Record::Action(Action::Delete { path, dtype }));
             }
             b"R" | b"P" if fields.len() >= 4 => {
                 let dst = field_str(fields[1]);
@@ -76,16 +76,16 @@ pub fn parse(data: &[u8]) -> Result<Vec<Record>> {
                 let dtype = parse_dtype(fields[3]);
 
                 if tag == b"R" {
-                    records.push(Record::Redirect { src, dst, dtype });
+                    records.push(Record::Action(Action::Rename { src, dst, dtype }));
                 } else {
-                    records.push(Record::Replace { src, dst, dtype });
+                    records.push(Record::Action(Action::Replace { src, dst, dtype }));
                 }
             }
             b"K" if fields.len() >= 3 => {
                 let gen_str = String::from_utf8_lossy(fields[1]);
                 let name = field_str(fields[2]);
                 if let Ok(gen_id) = gen_str.parse::<u64>() {
-                    records.push(Record::Checkpoint { gen_id, name });
+                    records.push(Record::Marker(Marker::Checkpoint { gen_id, name }));
                 }
             }
             b"T" if fields.len() >= 3 => {
@@ -94,7 +94,7 @@ pub fn parse(data: &[u8]) -> Result<Vec<Record>> {
                 if let (Ok(gen_id), Ok(target_gen)) =
                     (gen_str.parse::<u64>(), target_str.parse::<u64>())
                 {
-                    records.push(Record::Restore { gen_id, target_gen });
+                    records.push(Record::Marker(Marker::Restore { gen_id, target_gen }));
                 }
             }
             _ => {}
@@ -122,11 +122,11 @@ mod tests {
             parse(b"A\0/a\0f\01\nD\0/b\0f\nR\0/d\0/c\0f\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
-            matches!(&records[0], Record::Added { path, ino: 1, dtype: Some(DType::File) } if path == "/a")
+            matches!(&records[0], Record::Action(Action::Add { path, ino: 1, dtype: Some(DType::File) }) if path == "/a")
         );
-        assert!(matches!(&records[1], Record::Deleted { path, .. } if path == "/b"));
+        assert!(matches!(&records[1], Record::Action(Action::Delete { path, .. }) if path == "/b"));
         assert!(
-            matches!(&records[2], Record::Redirect { dst, src, dtype: Some(DType::File) } if dst == "/d" && src == "/c")
+            matches!(&records[2], Record::Action(Action::Rename { dst, src, dtype: Some(DType::File) }) if dst == "/d" && src == "/c")
         );
     }
 
@@ -135,8 +135,8 @@ mod tests {
         let records = parse(b"M\0/src/main.rs\0f\03\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
-            matches!(&records[0], Record::Modified { path, ino: 3, dtype: Some(DType::File) } if path == "/src/main.rs"),
-            "M record should parse as Modified, got: {:?}",
+            matches!(&records[0], Record::Action(Action::Modify { path, ino: 3, dtype: Some(DType::File) }) if path == "/src/main.rs"),
+            "M record should parse as Modify, got: {:?}",
             records[0]
         );
     }
@@ -147,7 +147,7 @@ mod tests {
     fn parse_checkpoint_record() {
         let records = parse(b"A\0/a\0f\01\nK\01\0build\nA\0/a\0f\02\n").unwrap();
         assert_eq!(records.len(), 3);
-        assert!(matches!(&records[1], Record::Checkpoint { gen_id, name } if *gen_id == 1 && name == "build"));
+        assert!(matches!(&records[1], Record::Marker(Marker::Checkpoint { gen_id, name }) if *gen_id == 1 && name == "build"));
     }
 
     #[test]
@@ -155,7 +155,7 @@ mod tests {
         let records = parse(b"T\x004\x002\n").unwrap();
         assert_eq!(records.len(), 1);
         match &records[0] {
-            Record::Restore { gen_id, target_gen } => {
+            Record::Marker(Marker::Restore { gen_id, target_gen }) => {
                 assert_eq!(*gen_id, 4);
                 assert_eq!(*target_gen, 2);
             }
@@ -170,7 +170,7 @@ mod tests {
         let records = parse(b"A\0/src/main.rs\0f\01\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
-            matches!(&records[0], Record::Added { path, ino: 1, dtype: Some(DType::File) } if path == "/src/main.rs")
+            matches!(&records[0], Record::Action(Action::Add { path, ino: 1, dtype: Some(DType::File) }) if path == "/src/main.rs")
         );
     }
 
@@ -182,17 +182,17 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert!(matches!(
             &records[0],
-            Record::Added {
+            Record::Action(Action::Add {
                 dtype: Some(DType::Dir),
                 ..
-            }
+            })
         ));
         assert!(matches!(
             &records[1],
-            Record::Added {
+            Record::Action(Action::Add {
                 dtype: Some(DType::Link),
                 ..
-            }
+            })
         ));
     }
 
@@ -208,7 +208,7 @@ mod tests {
         let records = parse(b"A\0/file\0\01\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
-            matches!(&records[0], Record::Added { dtype: None, .. }),
+            matches!(&records[0], Record::Action(Action::Add { dtype: None, .. })),
             "empty dtype field should parse as None, got: {:?}",
             records[0]
         );
@@ -219,7 +219,7 @@ mod tests {
         let records = parse(b"A\0/file\0x\01\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
-            matches!(&records[0], Record::Added { dtype: None, .. }),
+            matches!(&records[0], Record::Action(Action::Add { dtype: None, .. })),
             "invalid dtype char should parse as None, got: {:?}",
             records[0]
         );
@@ -239,7 +239,7 @@ mod tests {
         );
         assert!(matches!(
             &records[0],
-            Record::Added { path, ino: 2, .. } if path == "/good"
+            Record::Action(Action::Add { path, ino: 2, .. }) if path == "/good"
         ));
     }
 
@@ -255,7 +255,7 @@ mod tests {
         );
         assert!(matches!(
             &records[0],
-            Record::Added { path, ino: 1, .. } if path == "/good"
+            Record::Action(Action::Add { path, ino: 1, .. }) if path == "/good"
         ));
     }
 
@@ -271,7 +271,7 @@ mod tests {
         );
         assert!(matches!(
             &records[0],
-            Record::Added { path, ino: 1, .. } if path == "/good"
+            Record::Action(Action::Add { path, ino: 1, .. }) if path == "/good"
         ));
     }
 
@@ -282,7 +282,7 @@ mod tests {
         assert!(
             matches!(
                 &records[0],
-                Record::Replace { dst, src, dtype: Some(DType::File) }
+                Record::Action(Action::Replace { dst, src, dtype: Some(DType::File) })
                     if dst == "/dir/newfile" && src == "/dir/oldfile"
             ),
             "P record should parse as Replace, got: {:?}",
@@ -295,7 +295,7 @@ mod tests {
         let records = parse(b"D\0/foo\0f\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
-            matches!(&records[0], Record::Deleted { path, dtype: Some(DType::File) } if path == "/foo")
+            matches!(&records[0], Record::Action(Action::Delete { path, dtype: Some(DType::File) }) if path == "/foo")
         );
     }
 }

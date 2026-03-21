@@ -104,10 +104,10 @@ impl DirTree {
         }
     }
 
-    /// Apply a single journal record to the tree.
-    pub fn apply(&mut self, record: &Record) {
-        match record {
-            Record::Added { path, dtype, ino } => {
+    /// Apply a single journal action to the tree.
+    pub fn apply(&mut self, action: &Action) {
+        match action {
+            Action::Add { path, dtype, ino } => {
                 let dtype = dtype.unwrap_or(DType::File);
                 let dirent = Dirent::Inode {
                     ino: *ino,
@@ -116,7 +116,7 @@ impl DirTree {
                 };
                 self.set_dirent(path, dirent);
             }
-            Record::Modified { path, dtype, ino } => {
+            Action::Modify { path, dtype, ino } => {
                 let dtype = dtype.unwrap_or(DType::File);
                 let dirent = Dirent::Inode {
                     ino: *ino,
@@ -125,10 +125,10 @@ impl DirTree {
                 };
                 self.set_dirent(path, dirent);
             }
-            Record::Deleted { path, dtype } => {
+            Action::Delete { path, dtype } => {
                 self.apply_delete(path, *dtype);
             }
-            Record::Redirect {
+            Action::Rename {
                 dst,
                 src,
                 dtype,
@@ -136,7 +136,7 @@ impl DirTree {
                 let dtype = dtype.unwrap_or(DType::File);
                 self.apply_rename(dst, src, dtype, false);
             }
-            Record::Replace {
+            Action::Replace {
                 dst,
                 src,
                 dtype,
@@ -144,19 +144,23 @@ impl DirTree {
                 let dtype = dtype.unwrap_or(DType::File);
                 self.apply_rename(dst, src, dtype, true);
             }
-            Record::Checkpoint { .. } | Record::Restore { .. } => {}
         }
     }
 
-    /// Apply a sequence of records.
-    pub fn apply_all(&mut self, records: &[Record]) {
-        for record in records {
-            self.apply(record);
+    /// Apply a sequence of actions.
+    pub fn apply_all(&mut self, actions: &[Action]) {
+        for action in actions {
+            self.apply(action);
         }
     }
 
-    /// Build a tree from segments.
+    /// Build a tree from segments (slice).
     pub fn build(segments: &[Segment]) -> Self {
+        Self::build_from_segments(segments)
+    }
+
+    /// Build a tree from an iterator of segments.
+    pub fn build_from_segments<'a>(segments: impl IntoIterator<Item = &'a Segment>) -> Self {
         let mut tree = Self::new();
         for seg in segments {
             tree.apply_all(&seg.records);
@@ -358,90 +362,90 @@ impl DirTree {
 mod tests {
     use super::*;
 
-    fn build(records: &[Record]) -> DirTree {
-        DirTree::build(&[Segment { from: 0, records: records.to_vec() }])
+    fn build(actions: &[Action]) -> DirTree {
+        DirTree::build(&[Segment { from: 0, records: actions.to_vec() }])
     }
 
-    fn add(path: &str, ino: u64) -> Record {
-        Record::Added {
+    fn add(path: &str, ino: u64) -> Action {
+        Action::Add {
             path: path.into(),
             dtype: Some(DType::File),
             ino,
         }
     }
 
-    fn add_dir(path: &str, ino: u64) -> Record {
-        Record::Added {
+    fn add_dir(path: &str, ino: u64) -> Action {
+        Action::Add {
             path: path.into(),
             dtype: Some(DType::Dir),
             ino,
         }
     }
 
-    fn modify(path: &str, ino: u64) -> Record {
-        Record::Modified {
+    fn modify(path: &str, ino: u64) -> Action {
+        Action::Modify {
             path: path.into(),
             dtype: Some(DType::File),
             ino,
         }
     }
 
-    fn delete(path: &str) -> Record {
-        Record::Deleted {
+    fn delete(path: &str) -> Action {
+        Action::Delete {
             path: path.into(),
             dtype: Some(DType::File),
         }
     }
 
-    fn delete_dir(path: &str) -> Record {
-        Record::Deleted {
+    fn delete_dir(path: &str) -> Action {
+        Action::Delete {
             path: path.into(),
             dtype: Some(DType::Dir),
         }
     }
 
-    fn rename(dest: &str, src: &str) -> Record {
-        Record::Redirect {
+    fn rename(dest: &str, src: &str) -> Action {
+        Action::Rename {
             dst: dest.into(),
             src: src.into(),
             dtype: Some(DType::File),
         }
     }
 
-    fn rename_dir(dest: &str, src: &str) -> Record {
-        Record::Redirect {
+    fn rename_dir(dest: &str, src: &str) -> Action {
+        Action::Rename {
             dst: dest.into(),
             src: src.into(),
             dtype: Some(DType::Dir),
         }
     }
 
-    fn replace(dest: &str, src: &str) -> Record {
-        Record::Replace {
+    fn replace(dest: &str, src: &str) -> Action {
+        Action::Replace {
             dst: dest.into(),
             src: src.into(),
             dtype: Some(DType::File),
         }
     }
 
-    fn replace_dir(dest: &str, src: &str) -> Record {
-        Record::Replace {
+    fn replace_dir(dest: &str, src: &str) -> Action {
+        Action::Replace {
             dst: dest.into(),
             src: src.into(),
             dtype: Some(DType::Dir),
         }
     }
 
-    fn add_symlink(path: &str, ino: u64) -> Record {
-        Record::Added {
+    fn add_symlink(path: &str, ino: u64) -> Action {
+        Action::Add {
             path: path.into(),
             dtype: Some(DType::Link),
             ino,
         }
     }
 
-    fn rename_symlink(dest: &str, src: &str) -> Record {
-        Record::Redirect {
+    fn rename_symlink(dest: &str, src: &str) -> Action {
+        Action::Rename {
             dst: dest.into(),
             src: src.into(),
             dtype: Some(DType::Link),
@@ -757,8 +761,7 @@ mod tests {
     fn checkpoint_records_ignored_in_stream() {
         let tree = build(&[
             modify("/x", 1),
-            Record::Checkpoint { gen_id: 1, name: "k1".into() },
-            modify("/x", 2),
+            Action::Modify { path: "/x".into(), dtype: Some(DType::File), ino: 2 },
         ]);
         let dirents = tree.into_dirents();
         assert_eq!(dirents.len(), 1);
@@ -769,7 +772,6 @@ mod tests {
     fn restore_records_ignored_in_stream() {
         let tree = build(&[
             add("/a", 1),
-            Record::Restore { gen_id: 3, target_gen: 1 },
             add("/b", 2),
         ]);
         let dirents = tree.into_dirents();
@@ -851,7 +853,7 @@ mod tests {
     fn add_then_delete_symlink_cancels() {
         let tree = build(&[
             add_symlink("/link", 1),
-            Record::Deleted { path: "/link".into(), dtype: Some(DType::Link) },
+            Action::Delete { path: "/link".into(), dtype: Some(DType::Link) },
         ]);
         let dirents = tree.into_dirents();
         assert!(dirents.is_empty(), "A + D should cancel for symlinks: {:?}", dirents);

@@ -1,6 +1,6 @@
 use super::helpers::{dirents, ino_for, inode_path, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::Record;
+use agfs::journal::{Action, Record};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ fn symlink_produces_add_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Added { path, dtype: Some(agfs::journal::DType::Link), .. } if path.ends_with("/link.txt"))),
+            .any(|r| matches!(r, Record::Action(Action::Add { path, dtype: Some(agfs::journal::DType::Link), .. }) if path.ends_with("/link.txt"))),
         "journal should have an Added(dtype=Link) record for link.txt: {records:?}"
     );
 }

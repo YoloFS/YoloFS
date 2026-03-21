@@ -566,9 +566,8 @@ fn complex_multi_operation_commit() {
     use agfs::journal::Dirent;
 
     let agfs_dir = s.root.join(".agfs");
-    let records = journal::read(&agfs_dir).expect("read journal");
-    let sj = journal::SegmentedJournal::new(records);
-    let tree = journal::DirTree::build(&sj.live());
+    let journal_obj = journal::Journal::read(&agfs_dir).expect("read journal");
+    let tree = journal::DirTree::build_from_segments(journal_obj.live_segments());
     let dirents = tree.into_dirents();
 
     let has_modified_hello = dirents

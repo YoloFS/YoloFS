@@ -7,7 +7,7 @@
 // `--to <name>` — diff changes up to a checkpoint.
 // `--from <name> --to <name>` — diff changes between two checkpoints.
 
-use crate::journal::{self, DirTree, Dirent, SegmentedJournal};
+use crate::journal::{DirTree, Dirent, Journal};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -56,7 +56,7 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
 
 // ── Segment display helpers ──────────────────────────────────────────
 
-fn print_segment_footer(closing: &Option<(u64, String)>) {
+fn print_segment_footer(closing: &Option<(u64, &str)>) {
     if let Some((gen_id, name)) = closing {
         println!(
             "{} {}",
@@ -129,18 +129,23 @@ fn run(
     path: Option<&str>,
 ) -> Result<bool> {
     let agfs = crate::utils::session_dir()?;
-    let sj = SegmentedJournal::new(journal::read(&agfs)?);
-    let pairs = sj.live_slice(at, from, to)?;
+    let journal = Journal::read(&agfs)?;
+    let num = journal.segments.len();
+    let (start, end) = journal.markers.segment_range(at, from, to, num)?;
 
-    // Resolve all segments upfront.
-    let resolved: Vec<(Vec<(String, Dirent)>, Option<(u64, String)>)> = pairs
-        .into_iter()
-        .map(|(seg, closing)| {
-            let tree = DirTree::build(std::slice::from_ref(&seg));
+    // Resolve all live segments in the range upfront.
+    let resolved: Vec<(Vec<(String, Dirent)>, Option<(u64, &str)>)> = journal
+        .segments
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i >= start && *i < end && journal.is_alive(*i))
+        .map(|(i, seg)| {
+            let tree = DirTree::build(std::slice::from_ref(seg));
             let dirents = tree.into_dirents();
-            Ok((dirents, closing))
+            let closing = journal.markers.checkpoint_at(i);
+            (dirents, closing)
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect();
 
     let has_changes = resolved
         .iter()

@@ -3,7 +3,7 @@
 // `agfs commit` — apply staged changes to base.
 // Journal records are replayed sequentially on the base filesystem.
 
-use crate::journal::{self, DirTree, SegmentedJournal};
+use crate::journal::{self, Journal};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::HashSet;
@@ -87,32 +87,31 @@ fn apply_inode(
     Ok(())
 }
 
-/// Replay live records sequentially on the base filesystem.
-fn apply_records(agfs: &Path, segments: &[journal::Segment]) -> Result<()> {
+/// Replay live actions sequentially on the base filesystem.
+fn apply_records(agfs: &Path, segments: &[&journal::Segment]) -> Result<()> {
     let mut ensured: HashSet<PathBuf> = HashSet::new();
 
-    for record in segments.iter().flat_map(|s| &s.records) {
-        match record {
-            journal::Record::Added { path, ino, .. }
-            | journal::Record::Modified { path, ino, .. } => {
+    for action in segments.iter().flat_map(|s| &s.records) {
+        match action {
+            journal::Action::Add { path, ino, .. }
+            | journal::Action::Modify { path, ino, .. } => {
                 let base_path = crate::utils::to_base_path(path);
                 apply_inode(agfs, *ino, &base_path, &mut ensured)?;
             }
-            journal::Record::Deleted { path, .. } => {
+            journal::Action::Delete { path, .. } => {
                 let base_path = crate::utils::to_base_path(path);
                 if let Ok(meta) = base_path.symlink_metadata() {
                     remove_existing(&base_path, &meta)?;
                 }
             }
-            journal::Record::Redirect { dst, src, .. }
-            | journal::Record::Replace { dst, src, .. } => {
+            journal::Action::Rename { dst, src, .. }
+            | journal::Action::Replace { dst, src, .. } => {
                 let base_src = crate::utils::to_base_path(src);
                 let base_dst = crate::utils::to_base_path(dst);
                 ensure_parent(&base_dst, &mut ensured)?;
                 fs::rename(&base_src, &base_dst)
                     .with_context(|| format!("renaming {} → {}", base_src.display(), base_dst.display()))?;
             }
-            _ => {}
         }
     }
     Ok(())
@@ -121,17 +120,14 @@ fn apply_records(agfs: &Path, segments: &[journal::Segment]) -> Result<()> {
 pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
-    let sj = SegmentedJournal::new(journal::read(&agfs)?);
-    let live = sj.live();
-    let tree = DirTree::build(&live);
-    let dirents = tree.into_dirents();
+    let journal = Journal::read(&agfs)?;
+    let live: Vec<_> = journal.live_segments().collect();
+    let committed: usize = live.iter().map(|s| s.records.len()).sum();
 
-    if dirents.is_empty() {
+    if committed == 0 {
         println!("{}", "Nothing to commit.".yellow());
         return Ok(());
     }
-
-    let committed = dirents.len();
 
     apply_records(&agfs, &live)?;
 

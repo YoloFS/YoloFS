@@ -1,20 +1,43 @@
 use crate::helpers::AgfsSession;
-use agfs::journal::{self, Dirent};
+use agfs::journal::{self, Action, Dirent, Marker, Record};
 use std::fs;
 use std::path::PathBuf;
 
-/// Read parsed journal records for a session.
-pub fn journal(s: &AgfsSession) -> Vec<journal::Record> {
-    journal::read(&s.root.join(".agfs")).expect("read journal")
+/// Read the journal for a session.
+pub fn journal(s: &AgfsSession) -> journal::Journal {
+    journal::Journal::read(&s.root.join(".agfs")).expect("read journal")
+}
+
+/// Collect all actions from the journal in order.
+pub fn actions(j: &journal::Journal) -> Vec<&Action> {
+    j.segments.iter().flat_map(|s| &s.records).collect()
+}
+
+/// Collect all markers from the journal in order.
+pub fn markers(j: &journal::Journal) -> Vec<&Marker> {
+    j.markers.iter().collect()
+}
+
+/// Reconstruct the flat interleaved record stream (for positional assertions).
+pub fn records(j: &journal::Journal) -> Vec<Record> {
+    let mut out = Vec::new();
+    let mut marker_iter = j.markers.iter();
+    for seg in &j.segments {
+        for action in &seg.records {
+            out.push(Record::Action(action.clone()));
+        }
+        if let Some(marker) = marker_iter.next() {
+            out.push(Record::Marker(marker.clone()));
+        }
+    }
+    out
 }
 
 /// Resolve the journal to get the final Dirent list.
-/// Uses `SegmentedJournal` to filter out dead records (e.g. after restore).
+/// Uses `Journal` to filter out dead records (e.g. after restore).
 pub fn dirents(s: &AgfsSession) -> Vec<(String, Dirent)> {
-    let records = journal(s);
-    let sj = journal::SegmentedJournal::new(records);
-    let records = sj.live();
-    let tree = journal::DirTree::build(&records);
+    let j = journal(s);
+    let tree = journal::DirTree::build_from_segments(j.live_segments());
     tree.into_dirents()
 }
 

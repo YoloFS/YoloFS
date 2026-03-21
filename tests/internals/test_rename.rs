@@ -1,6 +1,6 @@
 use super::helpers::{dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::Record;
+use agfs::journal::{Action, Record};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ fn rename_produces_rename_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Redirect { src, dst, dtype: Some(agfs::journal::DType::File), .. }
+            .any(|r| matches!(r, Record::Action(Action::Rename { src, dst, dtype: Some(agfs::journal::DType::File), .. })
             if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))),
         "journal should have a Redirect(dtype=File) record for hello.txt → moved.txt: {records:?}"
     );
@@ -91,7 +91,7 @@ fn rename_chain_journal_records() {
     // Both renames should produce Redirect records (base-file renames)
     let redirects: Vec<_> = records
         .iter()
-        .filter(|r| matches!(r, Record::Redirect { .. }))
+        .filter(|r| matches!(r, Record::Action(Action::Rename { .. })))
         .collect();
     assert_eq!(
         redirects.len(),
@@ -115,7 +115,7 @@ fn rename_overwrite_journal() {
     // Should have Replace(hello.txt → subdir/deep.txt) as a single record
     // (no separate Delete for hello.txt — fused into the RDR/REP record).
     let has_replace = records.iter().any(|r| {
-        matches!(r, Record::Replace { src, dst, .. }
+        matches!(r, Record::Action(Action::Replace { src, dst, .. })
         if dst.ends_with("/deep.txt") && src.ends_with("/hello.txt"))
     });
     assert!(
@@ -157,7 +157,7 @@ fn rename_staged_file_to_base_path() {
     // Destination exists in base → P (Replace).
     let has_replace = records
         .iter()
-        .any(|r| matches!(r, Record::Replace { dst, src, .. }
+        .any(|r| matches!(r, Record::Action(Action::Replace { dst, src, .. })
             if dst.ends_with("/multi.txt") && src.ends_with("/brand_new.txt")));
     assert!(
         has_replace,

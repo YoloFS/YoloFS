@@ -533,6 +533,11 @@ destination path existed in the base layer (`in_base`):
 | `K` | `<gen>`, `<name>` | — | Checkpoint marker |
 | `T` | `<gen>`, `<target_gen>` | — | Restore marker |
 
+**Gen_id invariant.** The kernel increments `sbi->gen` via
+`atomic64_inc_return()` on every K and T record. Gen_id values are
+strictly sequential: marker\[i\] has gen_id = i + 1. The `Markers` type
+relies on this for O(1) checkpoint lookup by gen_id.
+
 `<path>` is the full overlay path (e.g. `/dir/file`).
 `<src>` is the overlay path before the rename (R/P only).
 `<dtype>` is `f` (regular file), `d` (directory), or `l` (symlink).
@@ -576,12 +581,12 @@ determines the journal tag: M if true, A if false.
 - **Delete + re-create of a base file** (`rm x && touch x`): Delete
   inherits `in_base=true` (file was in base). Re-create sees the deleted
   dirent with `in_base=true` → emits M. The tree builder correctly
-  produces `Modified`.
+  processes the `Modify` action.
 
 - **Delete + re-create of a staged-only file** (`touch x && rm x && touch x`
   within a session): The first create sets `in_base=false`. Delete
   inherits `in_base=false`. Re-create sees `in_base=false` → emits A.
-  The tree builder correctly produces `Added`.
+  The tree builder correctly processes the `Add` action.
 
 - **COW + delete + re-create** (`echo hi >> existing && rm existing && touch existing`):
   COW sets `in_base=true`. Delete inherits it. Re-create
@@ -613,12 +618,12 @@ determines the journal tag: M if true, A if false.
 ### Checkpoint Segments
 
 The CLI resolves per-checkpoint deltas by iterating over segments from the
-`SegmentedJournal` pipeline. Each segment is resolved independently by
+`Journal` pipeline. Each segment is resolved independently by
 building a dir tree from its records — records between
 consecutive K/T markers form one segment. This is O(N) total.
 
 K records a checkpoint. The CLI can slice segments with
-`SegmentedJournal::live_slice(at, from, to)`, so that only the requested
+`Journal::live_segments_slice(at, from, to)`, so that only the requested
 range of segments is resolved and displayed.
 
 Slicing semantics:
@@ -638,7 +643,7 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 
 **Commit** (`agfs commit`):
 
-1. Build a `SegmentedJournal` from the journal records, then call `live()` to get
+1. Build a `Journal` from the journal records, then call `live_segments()` to get
    only reachable segments (filtering out dead branches from restores).
 2. Replay live records in journal order directly on the base filesystem.
    Each record is applied one by one:
@@ -661,7 +666,7 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 
 **Status** (`agfs status`):
 
-1. Build a `SegmentedJournal` from the journal records and call `live_slice()` to filter
+1. Build a `Journal` from the journal records and call `live_segments_slice()` to filter
    unreachable records and optionally narrow to a range (`--at`, `--from`, `--to`).
 2. Build a dir tree from each segment's records independently.
 3. Walk the tree for display: one-line summaries under checkpoint headers (and any trailing
@@ -669,7 +674,7 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 
 **Diff** (`agfs diff`):
 
-1. Build a `SegmentedJournal` from the journal records and call `live_slice()` to filter
+1. Build a `Journal` from the journal records and call `live_segments_slice()` to filter
    unreachable records and optionally narrow to a range (`--at`, `--from`, `--to`).
 2. Build a dir tree from each segment's records independently.
 3. For modified/added files, diff `inodes/<ino>` vs base.
@@ -811,17 +816,17 @@ named checkpoint. The journal is **append-only** — restore appends a T
 record instead of truncating. T records create unreachable records — records
 between the target checkpoint and the T record that no longer reflect
 current state. All CLI consumers (commit, status, diff, restore) build a
-`SegmentedJournal` to filter unreachable records before resolving.
+`Journal` to filter unreachable records before resolving.
 
 The reachability algorithm: O(N) single pass to collect T/K positions,
 O(R) backward walk to build reachable ranges, skip unreachable T records.
 
-1. CLI builds a `SegmentedJournal` and finds the target checkpoint via
+1. CLI builds a `Journal` and finds the target checkpoint via
    `Markers::find_checkpoint()` (including unreachable regions, to support undo-restore).
-2. CLI calls `live_prefix_gen(gen_id)` (or `live_prefix(name)` which
-   resolves the name internally) to extract the `LiveSegments` from the
+2. CLI calls `live_segments_at(gen_id)` (or `live_segments_at_name(name)` which
+   resolves the name internally) to get an iterator over live segments in the
    prefix up to the target checkpoint, handling any T records in that
-   prefix, then flattens via `.into_records()`.
+   prefix.
 3. CLI builds the dir tree from live records → dirents.
 4. CLI converts the dir tree to dirent entries (path, ino, base, d_type).
    Entries are sorted by path — parents before children — so that

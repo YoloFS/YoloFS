@@ -30,35 +30,24 @@ impl DType {
     }
 }
 
-/// A group of data records (A/M/D/R/P) between consecutive K/T boundaries.
-#[derive(Debug)]
-pub struct Segment {
-    /// The gen_id of the checkpoint this segment builds on.
-    /// 0 for the 0-th segment (records before the first checkpoint).
-    pub from: u64,
-    /// The A/M/D/R/P records in this segment (no K/T records).
-    pub records: Vec<Record>,
-}
-
-
-/// A journal record: either an entry (dirent mutation) or a marker.
+/// A data mutation applied to the dir tree (A/M/D/R/P).
 #[derive(Debug, Clone)]
-pub enum Record {
-    Added {
+pub enum Action {
+    Add {
         path: String,
         dtype: Option<DType>,
         ino: u64,
     },
-    Modified {
+    Modify {
         path: String,
         dtype: Option<DType>,
         ino: u64,
     },
-    Deleted {
+    Delete {
         path: String,
         dtype: Option<DType>,
     },
-    Redirect {
+    Rename {
         src: String,
         dst: String,
         dtype: Option<DType>,
@@ -68,9 +57,28 @@ pub enum Record {
         dst: String,
         dtype: Option<DType>,
     },
+}
+
+/// A control marker (K/T).
+#[derive(Debug, Clone)]
+pub enum Marker {
     Checkpoint { gen_id: u64, name: String },
-    Restore {
-        gen_id: u64,
-        target_gen: u64,
-    },
+    Restore { gen_id: u64, target_gen: u64 },
+}
+
+/// A parsed journal record (interleaved actions and markers).
+#[derive(Debug, Clone)]
+pub enum Record {
+    Action(Action),
+    Marker(Marker),
+}
+
+/// A group of data records (A/M/D/R/P) between consecutive K/T boundaries.
+#[derive(Debug)]
+pub struct Segment {
+    /// The gen_id of the checkpoint this segment builds on.
+    /// 0 for the 0-th segment (records before the first checkpoint).
+    pub from: u64,
+    /// The A/M/D/R/P records in this segment (no K/T records).
+    pub records: Vec<Action>,
 }

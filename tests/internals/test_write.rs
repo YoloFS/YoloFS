@@ -1,6 +1,6 @@
 use super::helpers::{dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::Record;
+use agfs::journal::{Action, Record};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -18,7 +18,7 @@ fn modify_produces_add_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt"))),
+            .any(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt"))),
         "journal should have a Modified record for hello.txt: {records:?}"
     );
 }
@@ -36,7 +36,7 @@ fn multiple_writes_produce_multiple_adds() {
     let records = journal(&s);
     let add_count = records
         .iter()
-        .filter(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
+        .filter(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
         .count();
     // At least 1 ADD record; the kernel may coalesce O_TRUNC reopens on the
     // same inode, but the first COW always produces one.
@@ -221,13 +221,13 @@ fn truncate_open_base_file_produces_modify_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt"))),
+            .any(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt"))),
         "O_TRUNC on a base file should produce a Modified record, got: {records:?}"
     );
     assert!(
         !records
             .iter()
-            .any(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/hello.txt"))),
+            .any(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/hello.txt"))),
         "O_TRUNC on a base file should NOT produce an Added record, got: {records:?}"
     );
 }

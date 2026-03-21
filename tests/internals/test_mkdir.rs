@@ -1,6 +1,6 @@
 use super::helpers::{dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::Record;
+use agfs::journal::{Action, Record};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ fn mkdir_produces_add_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Added { path, dtype: Some(agfs::journal::DType::Dir), .. } if path.ends_with("/newdir"))),
+            .any(|r| matches!(r, Record::Action(Action::Add { path, dtype: Some(agfs::journal::DType::Dir), .. }) if path.ends_with("/newdir"))),
         "journal should have an Added(dtype=Dir) record for newdir: {records:?}"
     );
 }
@@ -34,7 +34,7 @@ fn rmdir_produces_delete_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Deleted { path, .. } if path.ends_with("/tmpdir"))),
+            .any(|r| matches!(r, Record::Action(Action::Delete { path, .. }) if path.ends_with("/tmpdir"))),
         "journal should have a Deleted record for tmpdir: {records:?}"
     );
 }
@@ -52,7 +52,7 @@ fn rmdir_base_dir_produces_delete_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Deleted { path, .. } if path.ends_with("/subdir"))),
+            .any(|r| matches!(r, Record::Action(Action::Delete { path, .. }) if path.ends_with("/subdir"))),
         "journal should have a Deleted record for base dir: {records:?}"
     );
 }
@@ -67,7 +67,7 @@ fn rename_dir_produces_rename_record() {
 
     let records = journal(&s);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Redirect { dst, src, .. }
+        records.iter().any(|r| matches!(r, Record::Action(Action::Rename { dst, src, .. })
             if dst.ends_with("/newdir") && src.ends_with("/olddir"))),
         "journal should have a Redirect record for olddir → newdir: {records:?}"
     );

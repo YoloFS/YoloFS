@@ -2,32 +2,30 @@
 //
 // `agfs timeline` — show checkpoint/restore DAG with unreachable branches dimmed.
 
-use crate::journal::{self, SegmentedJournal};
+use crate::journal::{self, Journal};
 use colored::Colorize;
 
 /// Display the checkpoint/restore timeline (full DAG, unreachable dimmed).
 pub fn run() -> anyhow::Result<()> {
     let agfs = crate::utils::session_dir()?;
-    let sj = SegmentedJournal::new(journal::read(&agfs)?);
+    let journal = Journal::read(&agfs)?;
 
-    if sj.markers.is_empty() {
+    if journal.markers.is_empty() {
         println!("{}", "No checkpoints.".yellow());
         return Ok(());
     }
 
-    let alive = sj.markers.alive_segments(sj.segments.len());
-
-    for (m_idx, marker) in sj.markers.iter().enumerate() {
-        let reachable = alive[m_idx];
+    for (m_idx, marker) in journal.markers.iter().enumerate() {
+        let reachable = journal.is_alive(m_idx);
         let line = match marker {
-            journal::Record::Checkpoint { gen_id, name } => {
+            journal::Marker::Checkpoint { gen_id, name } => {
                 format!(
                     "{} {}",
                     format!("checkpoint [{gen_id}]").cyan().bold(),
                     name.dimmed(),
                 )
             }
-            journal::Record::Restore {
+            journal::Marker::Restore {
                 gen_id, target_gen,
             } => {
                 format!(
@@ -36,7 +34,6 @@ pub fn run() -> anyhow::Result<()> {
                     format!("restored to [{target_gen}]").dimmed(),
                 )
             }
-            _ => unreachable!("markers only contain checkpoint/restore records"),
         };
         if reachable {
             println!("  {line}");

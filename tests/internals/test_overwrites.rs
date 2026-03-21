@@ -1,6 +1,6 @@
 use super::helpers::journal;
 use crate::helpers::AgfsSession;
-use agfs::journal::Record;
+use agfs::journal::{Action, Marker, Record};
 use std::fs;
 
 // ── Tests for the `overwrites` dirent flag ──────────────────────────────────
@@ -21,7 +21,7 @@ fn create_new_file_emits_add() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/brandnew.txt"))),
+            .any(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/brandnew.txt"))),
         "new file should produce ADD record: {records:?}"
     );
 }
@@ -37,7 +37,7 @@ fn modify_base_file_emits_modify() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt"))),
+            .any(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt"))),
         "modifying base file should produce MOD record: {records:?}"
     );
 }
@@ -57,14 +57,14 @@ fn delete_recreate_base_file_emits_modify() {
         .iter()
         .rev()
         .find(|r| match r {
-            Record::Added { path, .. } | Record::Modified { path, .. } => {
+            Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
                 path.ends_with("/hello.txt")
             }
             _ => false,
         })
         .expect("should have a staged record for hello.txt");
     assert!(
-        matches!(last, Record::Modified { .. }),
+        matches!(last, Record::Action(Action::Modify { .. })),
         "re-create of base file should produce MOD, got: {last:?}"
     );
 }
@@ -85,14 +85,14 @@ fn delete_recreate_staged_file_emits_add() {
         .iter()
         .rev()
         .find(|r| match r {
-            Record::Added { path, .. } | Record::Modified { path, .. } => {
+            Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
                 path.ends_with("/ephemeral.txt")
             }
             _ => false,
         })
         .expect("should have a staged record for ephemeral.txt");
     assert!(
-        matches!(last, Record::Added { .. }),
+        matches!(last, Record::Action(Action::Add { .. })),
         "re-create of staged-only file should produce ADD, got: {last:?}"
     );
 }
@@ -115,14 +115,14 @@ fn cow_delete_recreate_emits_modify() {
         .iter()
         .rev()
         .find(|r| match r {
-            Record::Added { path, .. } | Record::Modified { path, .. } => {
+            Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
                 path.ends_with("/hello.txt")
             }
             _ => false,
         })
         .expect("should have a staged record for hello.txt");
     assert!(
-        matches!(last, Record::Modified { .. }),
+        matches!(last, Record::Action(Action::Modify { .. })),
         "re-create after COW+delete of base file should produce MOD, got: {last:?}"
     );
 }
@@ -141,14 +141,14 @@ fn rename_away_then_create_at_old_path_emits_modify() {
         .iter()
         .rev()
         .find(|r| match r {
-            Record::Added { path, .. } | Record::Modified { path, .. } => {
+            Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
                 path.ends_with("/hello.txt")
             }
             _ => false,
         })
         .expect("should have a staged record for hello.txt");
     assert!(
-        matches!(last, Record::Modified { .. }),
+        matches!(last, Record::Action(Action::Modify { .. })),
         "create at renamed-away base path should produce MOD, got: {last:?}"
     );
 }
@@ -168,14 +168,14 @@ fn rename_away_staged_then_create_emits_add() {
         .iter()
         .rev()
         .find(|r| match r {
-            Record::Added { path, .. } | Record::Modified { path, .. } => {
+            Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
                 path.ends_with("/temp.txt")
             }
             _ => false,
         })
         .expect("should have a staged record for temp.txt");
     assert!(
-        matches!(last, Record::Added { .. }),
+        matches!(last, Record::Action(Action::Add { .. })),
         "create at renamed-away staged path should produce ADD, got: {last:?}"
     );
 }
@@ -197,12 +197,12 @@ fn recow_of_staged_file_after_checkpoint_emits_modify() {
     // Find all staged records for created.txt after the checkpoint.
     let chk_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1"))
+        .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1"))
         .expect("should have checkpoint s1");
     let post_chk: Vec<_> = records[chk_pos + 1..]
         .iter()
         .filter(|r| match r {
-            Record::Added { path, .. } | Record::Modified { path, .. } => {
+            Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
                 path.ends_with("/created.txt")
             }
             _ => false,
@@ -216,7 +216,7 @@ fn recow_of_staged_file_after_checkpoint_emits_modify() {
     // Re-COW of a staged file emits MOD (overwrites=true) because the
     // path already had content, even though it was never in base.
     assert!(
-        matches!(post_chk[0], Record::Modified { .. }),
+        matches!(post_chk[0], Record::Action(Action::Modify { .. })),
         "re-COW of staged file should emit MOD (overwrites existing content), got: {:?}",
         post_chk[0]
     );

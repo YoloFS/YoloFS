@@ -178,12 +178,12 @@ $ agfs commit
 
 # 8. Restore to a previous checkpoint (appends T record, no truncation)
 $ agfs restore "after make build"
-   -> CLI: SegmentedJournal → find_checkpoint → live_prefix → build tree → restore entries
+   -> CLI: Journal → find_checkpoint → live_segments_at_name → build tree → restore entries
    -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, entries })
    -> kernel: wipe dirents, inject entries, increment gen to 4,
       append T record to journal
    -> journal is append-only — dead records remain but are filtered
-      by SegmentedJournal reachability on subsequent operations
+      by Journal reachability on subsequent operations
 ```
 
 ## Source File Layout
@@ -228,12 +228,11 @@ agfs/
 │   │   ├── timeline.rs        # `agfs timeline` command (checkpoint/restore DAG)
 │   │   └── watch.rs           # permission prompt daemon (handles TTY ownership)
 │   ├── journal/               # journal parsing, timeline, and resolution
-│   │   ├── types.rs           # Record, DType, RawJournal, LiveSegments, Segment
-│   │   ├── parse.rs           # journal file parsing
-│   │   ├── markers.rs          # K/T skeleton (Markers: lookup, range computation)
-│   │   ├── segment.rs         # journal pipeline (SegmentedJournal, Segment)
-│   │   ├── liveness.rs       # reachability filtering (alive_segments, live, live_prefix)
-│   │   └── tree.rs            # DirTree builder: apply records → tree, changeset/restore walks
+│   │   ├── types.rs           # Action, Marker, Record, DType, Segment, INO_REDIRECT
+│   │   ├── parse.rs           # parse()  (pub(super))
+│   │   ├── markers.rs         # Markers (lookup + range + alive_segments + checkpoint_at)
+│   │   ├── journal.rs         # Journal (struct + new + read + live_segments_*)
+│   │   └── tree.rs            # DirTree, Dirent, DirNode
 │   ├── ioctl.rs               # binary protocol structs + ioctl helpers
 │   ├── kmsg.rs                # kernel log reading via /dev/kmsg
 │   └── utils.rs               # shared helpers (session_dir, plural)

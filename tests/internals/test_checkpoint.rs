@@ -1,6 +1,6 @@
 use super::helpers::{dirents, ino_for, inode_path, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::Record;
+use agfs::journal::{Action, Marker, Record};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -17,7 +17,7 @@ fn checkpoint_produces_checkpoint_record() {
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "build")),
+            .any(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "build")),
         "journal should have a CKP record named 'build': {records:?}"
     );
 }
@@ -34,7 +34,7 @@ fn recow_after_checkpoint_produces_new_add() {
     let records = journal(&s);
     let adds: Vec<_> = records
         .iter()
-        .filter(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
+        .filter(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
         .collect();
     assert!(
         adds.len() >= 2,
@@ -42,7 +42,7 @@ fn recow_after_checkpoint_produces_new_add() {
     );
 
     // The two adds should have different ino values (re-COW allocates a new inode)
-    if let (Record::Modified { ino: ino1, .. }, Record::Modified { ino: ino2, .. }) =
+    if let (Record::Action(Action::Modify { ino: ino1, .. }), Record::Action(Action::Modify { ino: ino2, .. })) =
         (adds[0], adds[1])
     {
         assert_ne!(ino1, ino2, "re-COW ino values should differ: {records:?}");
@@ -51,15 +51,15 @@ fn recow_after_checkpoint_produces_new_add() {
     // Checkpoint "s1" should sit between the two adds.
     let chk_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1"))
+        .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1"))
         .unwrap();
     let first_add = records
         .iter()
-        .position(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
+        .position(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
         .unwrap();
     let last_add = records
         .iter()
-        .rposition(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
+        .rposition(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
         .unwrap();
     assert!(
         first_add < chk_pos,
@@ -85,7 +85,7 @@ fn multiple_checkpoints_have_distinct_ids() {
     let snaps: Vec<_> = records
         .iter()
         .filter_map(|r| match r {
-            Record::Checkpoint { gen_id, name } => Some((gen_id, name)),
+            Record::Marker(Marker::Checkpoint { gen_id, name }) => Some((gen_id, name)),
             _ => None,
         })
         .collect();
@@ -112,12 +112,12 @@ fn rename_after_checkpoint() {
     let records = journal(&s);
     let chk_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Checkpoint { .. }))
+        .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { .. })))
         .unwrap();
     // After COW, hello.txt has a staged ino — rename emits single R record
     let rename_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Redirect { dst, .. } if dst.ends_with("/moved.txt")))
+        .position(|r| matches!(r, Record::Action(Action::Rename { dst, .. }) if dst.ends_with("/moved.txt")))
         .expect("should have Redirect for moved.txt");
     assert!(
         chk_pos < rename_pos,
@@ -137,11 +137,11 @@ fn delete_after_checkpoint() {
     let records = journal(&s);
     let chk_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Checkpoint { .. }))
+        .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { .. })))
         .unwrap();
     let del_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Deleted { .. }))
+        .position(|r| matches!(r, Record::Action(Action::Delete { .. })))
         .unwrap();
     assert!(
         chk_pos < del_pos,

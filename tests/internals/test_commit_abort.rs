@@ -1,6 +1,6 @@
 use super::helpers::{dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::Record;
+use agfs::journal::{Marker, Record};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
@@ -28,14 +28,14 @@ fn restore_to_checkpoint_appends_s_record() {
         "restore should append exactly one record: {records:?}"
     );
     assert!(
-        matches!(records.last(), Some(Record::Restore { .. })),
+        matches!(records.last(), Some(Record::Marker(Marker::Restore { .. }))),
         "last record should be Restore: {records:?}"
     );
     // The s1 checkpoint itself should still be present
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1")),
+            .any(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1")),
         "s1 checkpoint should be preserved: {records:?}"
     );
 }

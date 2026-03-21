@@ -3,7 +3,7 @@
 // `agfs restore <name|id>` — restore to a previous checkpoint.
 
 use crate::ioctl;
-use crate::journal::{self, DirTree, Dirent, SegmentedJournal, INO_REDIRECT};
+use crate::journal::{DirTree, Dirent, Journal, INO_REDIRECT};
 use anyhow::{Context, Result};
 use colored::Colorize;
 
@@ -60,14 +60,13 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 
     // Search all markers (including dead zones) for the target checkpoint,
     // so that undo-restore (restoring to a dead checkpoint) works.
-    let sj = SegmentedJournal::new(journal::read(&agfs)?);
-    let (target_gen, chk_name) = sj.markers.find_checkpoint(checkpoint_name)?;
+    let journal = Journal::read(&agfs)?;
+    let (target_gen, chk_name) = journal.markers.find_checkpoint(checkpoint_name)?;
     let chk_label = chk_name.to_owned();
 
     // Extract live records from the prefix up to the target checkpoint,
     // handling any RST records within that prefix.
-    let live = sj.live_prefix_gen(target_gen);
-    let tree = DirTree::build(&live);
+    let tree = DirTree::build_from_segments(journal.live_segments_at(target_gen));
     let dirents = tree.into_dirents();
     let entries = dirents_to_entries(&dirents)?;
 
@@ -93,11 +92,11 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{DType, Record, Segment};
+    use crate::journal::{Action, DType, Segment};
 
-    /// Helper: build a tree from records and get dirents.
-    fn build_dirents(records: &[Record]) -> Vec<(String, Dirent)> {
-        DirTree::build(&[Segment { from: 0, records: records.to_vec() }]).into_dirents()
+    /// Helper: build a tree from actions and get dirents.
+    fn build_dirents(actions: &[Action]) -> Vec<(String, Dirent)> {
+        DirTree::build(&[Segment { from: 0, records: actions.to_vec() }]).into_dirents()
     }
 
     /// Helper: find a dirent by path suffix.
@@ -107,7 +106,7 @@ mod tests {
 
     #[test]
     fn added_produces_single_entry() {
-        let cs = build_dirents(&[Record::Added {
+        let cs = build_dirents(&[Action::Add {
             path: "/src/main.rs".into(),
             ino: 1,
             dtype: Some(DType::File),
@@ -121,12 +120,12 @@ mod tests {
     #[test]
     fn deleted_produces_tombstone_entry() {
         let cs = build_dirents(&[
-            Record::Modified {
+            Action::Modify {
                 path: "/old.txt".into(),
                 ino: 1,
                 dtype: Some(DType::File),
             },
-            Record::Deleted {
+            Action::Delete {
                 path: "/old.txt".into(),
                 dtype: Some(DType::File),
             },
@@ -138,7 +137,7 @@ mod tests {
 
     #[test]
     fn renamed_produces_tombstone_and_redirect() {
-        let cs = build_dirents(&[Record::Redirect {
+        let cs = build_dirents(&[Action::Rename {
             src: "/a.txt".into(),
             dst: "/b.txt".into(),
             dtype: Some(DType::File),
@@ -154,12 +153,12 @@ mod tests {
     #[test]
     fn renamed_then_modified_produces_tombstone_and_inode() {
         let cs = build_dirents(&[
-            Record::Redirect {
+            Action::Rename {
                 src: "/old.rs".into(),
                 dst: "/new.rs".into(),
                 dtype: Some(DType::File),
             },
-            Record::Modified {
+            Action::Modify {
                 path: "/new.rs".into(),
                 ino: 5,
                 dtype: Some(DType::File),
@@ -175,7 +174,7 @@ mod tests {
 
     #[test]
     fn directory_inode_gets_dir_dtype() {
-        let cs = build_dirents(&[Record::Added {
+        let cs = build_dirents(&[Action::Add {
             path: "/newdir".into(),
             ino: 1,
             dtype: Some(DType::Dir),
@@ -185,7 +184,7 @@ mod tests {
 
     #[test]
     fn symlink_inode_gets_link_dtype() {
-        let cs = build_dirents(&[Record::Added {
+        let cs = build_dirents(&[Action::Add {
             path: "/link".into(),
             ino: 1,
             dtype: Some(DType::Link),
@@ -241,7 +240,7 @@ mod tests {
 
     #[test]
     fn renamed_directory_gets_dir_dtype() {
-        let cs = build_dirents(&[Record::Redirect {
+        let cs = build_dirents(&[Action::Rename {
             src: "/mydir".into(),
             dst: "/newdir".into(),
             dtype: Some(DType::Dir),
@@ -252,7 +251,7 @@ mod tests {
 
     #[test]
     fn renamed_symlink_gets_link_dtype() {
-        let cs = build_dirents(&[Record::Redirect {
+        let cs = build_dirents(&[Action::Rename {
             src: "/mylink".into(),
             dst: "/newlink".into(),
             dtype: Some(DType::Link),

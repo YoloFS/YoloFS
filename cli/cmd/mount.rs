@@ -4,7 +4,7 @@
 // `agfs unmount`  — unmount and clean up .agfs/.
 // `agfs remount`  — unmount then mount again (picks up new agfs.toml options).
 
-use crate::journal::{self, DirTree, SegmentedJournal};
+use crate::journal::{DirTree, Journal};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::env;
@@ -222,9 +222,8 @@ pub fn remount(force: bool) -> Result<()> {
 
 /// If there are staged changes, ask the user to commit or abort before proceeding.
 fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
-    let records = journal::read(agfs_dir).unwrap_or_default();
-    let sj = SegmentedJournal::new(records);
-    let tree = DirTree::build(&sj.live());
+    let journal = Journal::read(agfs_dir).unwrap_or_else(|_| Journal::new(vec![]));
+    let tree = DirTree::build_from_segments(journal.live_segments());
     let dirents = tree.into_dirents();
     if dirents.is_empty() {
         return Ok(());

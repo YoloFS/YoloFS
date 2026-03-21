@@ -3,23 +3,19 @@
 // Structured access to the append-only journal.
 //
 // Submodules:
-//   types     — Record, DType, INO_REDIRECT
-//   parse     — read()
-//   markers   — Markers (K/T skeleton: lookup, range computation)
-//   segment   — Segment, SegmentedJournal (split records at K/T boundaries)
-//   liveness  — alive_segments(), live(), live_prefix(), live_slice() (reachability filtering)
-//   tree      — DirTree builder: apply records → dir tree, walk for display/restore
+//   types     — Action, Marker, Record, DType, Segment, INO_REDIRECT
+//   parse     — read(), parse()  (pub(super) only)
+//   markers   — Markers (K/T skeleton: lookup, range, liveness computation)
+//   journal   — Journal (segments + markers + precomputed liveness, borrowing filters)
+//   tree      — DirTree builder: apply actions → dir tree, walk for display/restore
 
-pub mod liveness;
+pub(crate) mod journal;
 pub mod markers;
-pub mod parse;
-pub mod segment;
+mod parse;
 pub mod tree;
 pub mod types;
 
-// Re-export types and parse so callers can write journal::Record, journal::read(), etc.
+pub use journal::Journal;
 pub use markers::Markers;
-pub use parse::*;
-pub use segment::SegmentedJournal;
 pub use tree::{DirTree, Dirent};
 pub use types::*;
