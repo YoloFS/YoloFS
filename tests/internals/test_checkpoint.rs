@@ -210,3 +210,35 @@ fn multiple_checkpoints_preserve_all_inodes() {
     assert_eq!(fs::read_to_string(inode_path(&s, id_v2)).unwrap(), "v2\n");
     assert_eq!(fs::read_to_string(inode_path(&s, id_v3)).unwrap(), "v3\n");
 }
+
+/// Writing an untouched base file after checkpoint triggers COW correctly.
+/// This exercises the path where the dentry's cached dirent pointer is NULL
+/// (no prior staged entry), so agfs_read_dirent returns packed=0 (tombstone)
+/// and the slow COW path runs.
+#[test]
+fn untouched_base_file_cow_after_checkpoint() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // Touch hello.txt to make the session dirty, then checkpoint.
+    fs::write(s.mnt_path("hello.txt"), "dirty\n").expect("write");
+    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
+
+    // multi.txt was never touched — its dirent pointer is NULL.
+    fs::write(s.mnt_path("multi.txt"), "updated\n").expect("write untouched base file");
+
+    // Verify the written content is readable through the mount.
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("multi.txt")).unwrap(),
+        "updated\n",
+        "untouched base file should be readable after COW"
+    );
+
+    // Verify a new inode was allocated in the store.
+    let ch = dirents(&s);
+    let ino = ino_for(&ch, "/multi.txt");
+    assert_eq!(
+        fs::read_to_string(inode_path(&s, ino)).unwrap(),
+        "updated\n",
+        "COW inode should contain written content"
+    );
+}

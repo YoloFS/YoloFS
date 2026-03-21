@@ -238,8 +238,15 @@ struct agfs_dirent *agfs_add_dirent(struct inode *dir, const char *name,
 out:
 	if (first_de) {
 		err = agfs_pin_dir(dii, AGFS_SB(dir->i_sb));
-		if (err)
+		if (err) {
+			/* Undo the insertion we just made. */
+			if (new_de) {
+				hlist_del(&new_de->node);
+				agfs_pde_free(new_de->packed);
+				kfree(new_de);
+			}
 			return ERR_PTR(err);
+		}
 	}
 	return new_de;
 }
