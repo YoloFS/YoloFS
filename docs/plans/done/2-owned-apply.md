@@ -16,9 +16,9 @@ Change `apply` to take `Action` by value. Internal methods (`set_dirent`,
 `String::drain` (zero allocation). A new `walk_to_parent_lookup` avoids
 allocation in `detach` (lookup-only, no `entry`).
 
-Callers that own their segments (abort, mount, restore) use a new
-`build_owned`. The borrowing `build_from_segments` remains for diff.rs,
-cloning each Action (same cost as today's `.to_string()`).
+Single `DirTree::build()` takes `impl IntoIterator<Item = Segment>` (owned).
+Consuming `Journal` methods (`into_tree`, `into_live_segments_range`, etc.)
+let all callers pass owned segments.
 
 ## Changes
 
@@ -30,19 +30,20 @@ cloning each Action (same cost as today's `.to_string()`).
 - `apply_delete(String, Option<DType>)` — owned path.
 - `apply_rename(String, String, DType, bool)` — owned dst/src.
 - `apply(Action)` — by value, destructures and moves.
-- `apply_all(impl IntoIterator<Item = Action>)` — consuming iterator.
-- `build_from_segments` — clones Actions from borrowed segments.
-- `build_owned(impl IntoIterator<Item = Segment>)` — consuming, zero-clone.
+- `build(impl IntoIterator<Item = Segment>)` — single method, takes owned.
 - `detach` uses `walk_to_parent_lookup`.
-- Test helper `build()` uses `build_owned`.
 
 ### journal.rs
+- `into_tree(self) → DirTree` — build tree from all live segments.
+- `into_tree_at(self, u64) → DirTree` — build tree up to a checkpoint.
 - `into_live_segments(self) → impl Iterator<Item = Segment>`.
 - `into_live_segments_at(self, u64) → impl Iterator<Item = Segment>`.
+- `into_live_segments_range(self, start, end) → impl Iterator<Item = Segment>`.
 
 ### Callers
-- abort.rs, mount.rs, restore.rs: use `into_live_segments` + `build_owned`.
-- diff.rs: unchanged (borrowing path).
+- abort.rs, mount.rs: use `journal.into_tree()`.
+- restore.rs: uses `journal.into_tree_at(gen)`.
+- diff.rs: precomputes labels, then streams via `into_live_segments_range`.
 
 ## Allocation savings per Action type
 
