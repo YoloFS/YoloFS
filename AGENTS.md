@@ -2,13 +2,10 @@
 
 ## Principles
 
-- Keep code simple and easy to understand.
-- No backwards compatibility needed — remove deprecated code. Freely change interfaces and update all callers.
-- Do not repeat the same code — extract shared logic.
+- Keep code simple: short functions, no duplication, extract shared logic, remove deprecated code.
+- Freely refactor and change any interface — rename, restructure, move, split, or merge. No backwards compatibility needed. This includes the kernel-userspace contract (ioctls, shared structs, protocol), kernel-internal interfaces, and userspace-internal interfaces.
 - Think through problems and implement the best solution; avoid fallbacks.
-- Keep functions short. Extract helpers when a function does multiple distinct things.
 - Do not change or remove existing comments unless they are outdated.
-- Freely refactor code — rename, restructure, move, split, or merge files and modules whenever it improves clarity or design. Do not be afraid of large-scale refactoring.
 
 ## Workflow
 
