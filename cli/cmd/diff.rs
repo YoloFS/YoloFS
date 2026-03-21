@@ -56,7 +56,7 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
 
 // ── Segment display helpers ──────────────────────────────────────────
 
-fn print_segment_footer(closing: &Option<(u64, &str)>) {
+fn print_segment_footer(closing: &Option<(u64, String)>) {
     if let Some((gen_id, name)) = closing {
         println!(
             "{} {}",
@@ -133,37 +133,17 @@ fn run(
     let num = journal.segments.len();
     let (start, end) = journal.markers.segment_range(at, from, to, num)?;
 
-    // Resolve all live segments in the range upfront.
-    let resolved: Vec<(Vec<(String, Dirent)>, Option<(u64, &str)>)> = journal
-        .segments
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i >= start && *i < end && journal.is_alive(*i))
-        .map(|(i, seg)| {
-            let tree = DirTree::build(std::slice::from_ref(seg));
-            let dirents = tree.into_dirents();
-            let closing = journal.markers.checkpoint_at(i);
-            (dirents, closing)
-        })
+    // Precompute checkpoint labels for live segments before consuming the journal.
+    let labels: Vec<Option<(u64, String)>> = (start..end)
+        .filter(|i| journal.is_alive(*i))
+        .map(|i| journal.markers.checkpoint_at(i).map(|(g, n)| (g, n.to_owned())))
         .collect();
+    let has_checkpoints = labels.iter().any(|c| c.is_some());
 
-    let has_changes = resolved
-        .iter()
-        .flat_map(|(dirents, _)| dirents)
-        .any(|(p, c)| path.is_none_or(|t| c.matches_path(p, t)));
-
-    if !has_changes {
-        println!(
-            "{}",
-            format!("No changes{}.", range_label(at, from, to)).yellow()
-        );
-        return Ok(false);
-    }
-
-    let has_checkpoints = resolved.iter().any(|(_, closing)| closing.is_some());
     let mut total = 0usize;
 
-    for (dirents, closing) in &resolved {
+    for (seg, closing) in journal.into_live_segments_range(start, end).zip(labels) {
+        let dirents = DirTree::build(std::iter::once(seg)).into_dirents();
         let dirents: Vec<&(String, Dirent)> = match path {
             Some(target) => dirents
                 .iter()
@@ -180,7 +160,7 @@ fn run(
                 println!("{}", "── (unsaved changes) ──".dimmed());
             }
             if dirents.is_empty() {
-                print_segment_footer(closing);
+                print_segment_footer(&closing);
                 continue;
             }
         }
@@ -191,8 +171,16 @@ fn run(
         total += dirents.len();
 
         if has_checkpoints {
-            print_segment_footer(closing);
+            print_segment_footer(&closing);
         }
+    }
+
+    if total == 0 {
+        println!(
+            "{}",
+            format!("No changes{}.", range_label(at, from, to)).yellow()
+        );
+        return Ok(false);
     }
 
     if !verbose {

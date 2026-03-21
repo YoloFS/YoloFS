@@ -2,7 +2,7 @@
 //
 // `agfs abort` — discard staged changes.
 
-use crate::journal::{DirTree, Journal};
+use crate::journal::Journal;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
@@ -42,8 +42,7 @@ pub fn run(force: bool) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let journal = Journal::read(&agfs)?;
-    let tree = DirTree::build_from_segments(journal.live_segments());
-    let dirents = tree.into_dirents();
+    let dirents = journal.into_tree().into_dirents();
     if dirents.is_empty() {
         println!("{}", "Nothing to discard.".yellow());
         return Ok(());

@@ -5,6 +5,7 @@
 
 use super::markers::Markers;
 use super::parse;
+use super::tree::DirTree;
 use super::types::*;
 use anyhow::Result;
 use std::path::Path;
@@ -98,6 +99,52 @@ impl Journal {
     /// Whether segment at this index is alive (for audit/timeline display).
     pub fn is_alive(&self, segment_index: usize) -> bool {
         self.alive.get(segment_index).copied().unwrap_or(false)
+    }
+
+    /// Consume the journal and return owned live segments.
+    pub fn into_live_segments(self) -> impl Iterator<Item = Segment> {
+        let alive = self.alive;
+        self.segments
+            .into_iter()
+            .enumerate()
+            .filter(move |(i, _)| alive[*i])
+            .map(|(_, s)| s)
+    }
+
+    /// Consume the journal and return owned live segments up to a checkpoint.
+    pub fn into_live_segments_at(self, gen_id: u64) -> impl Iterator<Item = Segment> {
+        let num_prefix = (gen_id as usize).min(self.markers.len());
+        let alive = self.markers.alive_segments_range(0..num_prefix, num_prefix);
+        self.segments
+            .into_iter()
+            .enumerate()
+            .take(num_prefix)
+            .filter(move |(i, _)| alive[*i])
+            .map(|(_, s)| s)
+    }
+
+    /// Consume the journal and build a DirTree from all live segments.
+    pub fn into_tree(self) -> DirTree {
+        DirTree::build(self.into_live_segments())
+    }
+
+    /// Consume the journal and build a DirTree from live segments up to a checkpoint.
+    pub fn into_tree_at(self, gen_id: u64) -> DirTree {
+        DirTree::build(self.into_live_segments_at(gen_id))
+    }
+
+    /// Consume the journal and return live segments in `[start, end)`.
+    pub fn into_live_segments_range(
+        self,
+        start: usize,
+        end: usize,
+    ) -> impl Iterator<Item = Segment> {
+        let alive = self.alive;
+        self.segments
+            .into_iter()
+            .enumerate()
+            .filter(move |(i, _)| *i >= start && *i < end && alive[*i])
+            .map(|(_, seg)| seg)
     }
 }
 

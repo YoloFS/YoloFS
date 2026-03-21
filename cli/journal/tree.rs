@@ -104,13 +104,13 @@ impl DirTree {
         }
     }
 
-    /// Apply a single journal action to the tree.
-    pub fn apply(&mut self, action: &Action) {
+    /// Apply a single journal action to the tree (consumes the action).
+    pub fn apply(&mut self, action: Action) {
         match action {
             Action::Add { path, dtype, ino } => {
                 let dtype = dtype.unwrap_or(DType::File);
                 let dirent = Dirent::Inode {
-                    ino: *ino,
+                    ino,
                     dtype,
                     in_base: false,
                 };
@@ -119,14 +119,14 @@ impl DirTree {
             Action::Modify { path, dtype, ino } => {
                 let dtype = dtype.unwrap_or(DType::File);
                 let dirent = Dirent::Inode {
-                    ino: *ino,
+                    ino,
                     dtype,
                     in_base: true,
                 };
                 self.set_dirent(path, dirent);
             }
             Action::Delete { path, dtype } => {
-                self.apply_delete(path, *dtype);
+                self.apply_delete(path, dtype);
             }
             Action::Rename {
                 dst,
@@ -147,23 +147,13 @@ impl DirTree {
         }
     }
 
-    /// Apply a sequence of actions.
-    pub fn apply_all(&mut self, actions: &[Action]) {
-        for action in actions {
-            self.apply(action);
-        }
-    }
-
-    /// Build a tree from segments (slice).
-    pub fn build(segments: &[Segment]) -> Self {
-        Self::build_from_segments(segments)
-    }
-
-    /// Build a tree from an iterator of segments.
-    pub fn build_from_segments<'a>(segments: impl IntoIterator<Item = &'a Segment>) -> Self {
+    /// Build a tree from owned segments.
+    pub fn build(segments: impl IntoIterator<Item = Segment>) -> Self {
         let mut tree = Self::new();
         for seg in segments {
-            tree.apply_all(&seg.records);
+            for action in seg.records {
+                tree.apply(action);
+            }
         }
         tree
     }
@@ -178,12 +168,12 @@ impl DirTree {
 
     // ── Internal helpers ──────────────────────────────────────────────
 
-    /// Walk to a path, creating intermediate Dir(None, ..) nodes as needed.
-    /// Returns a mutable reference to the parent DirTree and the final component name.
-    fn walk_to_parent<'a>(&'a mut self, path: &'a str) -> Option<(&'a mut DirTree, &'a str)> {
+    /// Walk to a path (owned), creating intermediate Dir(None, ..) nodes as
+    /// needed.  Extracts the leaf name from the path in-place via `drain`,
+    /// avoiding allocation for the leaf component.
+    fn walk_to_parent_owned(&mut self, mut path: String) -> Option<(&mut DirTree, String)> {
         let last_slash = path.rfind('/')?;
-        let name = &path[last_slash + 1..];
-        if name.is_empty() {
+        if last_slash + 1 >= path.len() {
             return None;
         }
         let mut current = self;
@@ -197,32 +187,52 @@ impl DirTree {
                 DirNode::File(_) => return None,
             }
         }
+        path.drain(..last_slash + 1);
+        Some((current, path))
+    }
+
+    /// Walk to a path (borrowed) for lookup only — no intermediate creation.
+    fn walk_to_parent_lookup<'a>(
+        &'a mut self,
+        path: &'a str,
+    ) -> Option<(&'a mut DirTree, &'a str)> {
+        let last_slash = path.rfind('/')?;
+        let name = &path[last_slash + 1..];
+        if name.is_empty() {
+            return None;
+        }
+        let mut current = self;
+        for part in path[..last_slash].split('/').filter(|s| !s.is_empty()) {
+            match current.nodes.get_mut(part) {
+                Some(DirNode::Dir(_, subtree)) => current = subtree,
+                _ => return None,
+            }
+        }
         Some((current, name))
     }
 
-    /// Set a dirent at the given path.
-    fn set_dirent(&mut self, path: &str, dirent: Dirent) {
-        let Some((parent, name)) = self.walk_to_parent(path) else {
+    /// Set a dirent at the given path (owned).
+    fn set_dirent(&mut self, path: String, dirent: Dirent) {
+        let Some((parent, name)) = self.walk_to_parent_owned(path) else {
             return;
         };
-        match parent.nodes.get_mut(name) {
-            Some(DirNode::Dir(existing_dirent, _)) if dirent.dtype() == DType::Dir => {
+        if dirent.dtype() == DType::Dir {
+            if let Some(DirNode::Dir(existing_dirent, _)) = parent.nodes.get_mut(name.as_str()) {
                 *existing_dirent = Some(dirent);
-            }
-            _ => {
-                parent.nodes.insert(name.to_string(), DirNode::leaf(dirent));
+                return;
             }
         }
+        parent.nodes.insert(name, DirNode::leaf(dirent));
     }
 
-    /// Apply a D record.
-    fn apply_delete(&mut self, path: &str, dtype: Option<DType>) {
-        let Some((parent, name)) = self.walk_to_parent(path) else {
+    /// Apply a D record (owned path).
+    fn apply_delete(&mut self, path: String, dtype: Option<DType>) {
+        let Some((parent, name)) = self.walk_to_parent_owned(path) else {
             return;
         };
 
         // Check what to do based on current state.
-        let tombstone_dtype = match parent.nodes.get(name) {
+        let tombstone_dtype = match parent.nodes.get(name.as_str()) {
             None => Some(dtype.unwrap_or(DType::File)),
             Some(DirNode::Dir(None, _)) => Some(dtype.unwrap_or(DType::Dir)),
             Some(DirNode::File(d)) | Some(DirNode::Dir(Some(d), _)) => {
@@ -233,12 +243,12 @@ impl DirTree {
         match tombstone_dtype {
             Some(dtype) => {
                 // Place or overwrite with tombstone (preserves Dir subtree).
-                match parent.nodes.get_mut(name) {
+                match parent.nodes.get_mut(name.as_str()) {
                     Some(DirNode::File(d)) => *d = Dirent::Tombstone { dtype },
                     Some(DirNode::Dir(d, _)) => *d = Some(Dirent::Tombstone { dtype }),
                     None => {
                         parent.nodes.insert(
-                            name.to_string(),
+                            name,
                             DirNode::leaf(Dirent::Tombstone { dtype }),
                         );
                     }
@@ -246,19 +256,25 @@ impl DirTree {
             }
             None => {
                 // in_base=false → cancel (remove)
-                parent.nodes.remove(name);
+                parent.nodes.remove(name.as_str());
             }
         }
     }
 
-    /// Apply R/P rename.
-    fn apply_rename(&mut self, dst_path: &str, src_path: &str, dtype: DType, dst_in_base: bool) {
+    /// Apply R/P rename (owned paths).
+    fn apply_rename(
+        &mut self,
+        dst_path: String,
+        src_path: String,
+        dtype: DType,
+        dst_in_base: bool,
+    ) {
         if dst_path == src_path {
             return;
         }
 
         // Detach source node
-        let src_node = self.detach(src_path);
+        let src_node = self.detach(&src_path);
 
         // Determine if source position had base content (for tombstone)
         let source_had_base = match &src_node {
@@ -278,7 +294,7 @@ impl DirTree {
                     DirNode::Dir(d @ None, _) => {
                         // Intermediate dir being explicitly renamed — create Link
                         *d = Some(Dirent::Link {
-                            base_path: src_path.to_string(),
+                            base_path: src_path.clone(),
                             dtype,
                             in_base: dst_in_base,
                         });
@@ -289,7 +305,7 @@ impl DirTree {
             None => {
                 // No source node — base-only file. Create Link.
                 DirNode::leaf(Dirent::Link {
-                    base_path: src_path.to_string(),
+                    base_path: src_path.clone(),
                     dtype,
                     in_base: dst_in_base,
                 })
@@ -305,31 +321,33 @@ impl DirTree {
         // the rename chain was a no-op (e.g. a→b→a). Remove instead of inserting.
         let is_roundtrip = match &dst_node {
             DirNode::File(Dirent::Link { base_path, .. })
-            | DirNode::Dir(Some(Dirent::Link { base_path, .. }), _) => base_path == dst_path,
+            | DirNode::Dir(Some(Dirent::Link { base_path, .. }), _) => base_path == &dst_path,
             _ => false,
         };
 
         // Place at destination (handle directory merging)
-        if let Some((parent, name)) = self.walk_to_parent(dst_path) {
-            if is_roundtrip {
-                parent.nodes.remove(name);
-            } else {
-                // If dest is a Dir and we're moving a Dir, merge children
-                if let DirNode::Dir(_, src_subtree) = &mut dst_node {
-                    if let Some(DirNode::Dir(_, existing_subtree)) = parent.nodes.remove(name) {
-                        for (k, v) in existing_subtree.nodes {
-                            src_subtree.nodes.entry(k).or_insert(v);
-                        }
+        let Some((parent, name)) = self.walk_to_parent_owned(dst_path) else {
+            return;
+        };
+        if is_roundtrip {
+            parent.nodes.remove(name.as_str());
+        } else {
+            // If dest is a Dir and we're moving a Dir, merge children
+            if let DirNode::Dir(_, src_subtree) = &mut dst_node {
+                if let Some(DirNode::Dir(_, existing_subtree)) = parent.nodes.remove(name.as_str())
+                {
+                    for (k, v) in existing_subtree.nodes {
+                        src_subtree.nodes.entry(k).or_insert(v);
                     }
                 }
-                parent.nodes.insert(name.to_string(), dst_node);
             }
+            parent.nodes.insert(name, dst_node);
         }
     }
 
     /// Detach a node from the tree, returning it. Returns None if not found.
     fn detach(&mut self, path: &str) -> Option<DirNode> {
-        let (parent, name) = self.walk_to_parent(path)?;
+        let (parent, name) = self.walk_to_parent_lookup(path)?;
         parent.nodes.remove(name)
     }
 
@@ -363,7 +381,7 @@ mod tests {
     use super::*;
 
     fn build(actions: &[Action]) -> DirTree {
-        DirTree::build(&[Segment { from: 0, records: actions.to_vec() }])
+        DirTree::build(std::iter::once(Segment { from: 0, records: actions.to_vec() }))
     }
 
     fn add(path: &str, ino: u64) -> Action {

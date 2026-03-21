@@ -3,7 +3,7 @@
 // `agfs restore <name|id>` — restore to a previous checkpoint.
 
 use crate::ioctl;
-use crate::journal::{DirTree, Dirent, Journal, INO_REDIRECT};
+use crate::journal::{Dirent, Journal, INO_REDIRECT};
 use anyhow::{Context, Result};
 use colored::Colorize;
 
@@ -66,8 +66,7 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 
     // Extract live records from the prefix up to the target checkpoint,
     // handling any RST records within that prefix.
-    let tree = DirTree::build_from_segments(journal.live_segments_at(target_gen));
-    let dirents = tree.into_dirents();
+    let dirents = journal.into_tree_at(target_gen).into_dirents();
     let entries = dirents_to_entries(&dirents)?;
 
     // Restore kernel state — if this fails (e.g. EBUSY), the journal is
@@ -92,11 +91,11 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{Action, DType, Segment};
+    use crate::journal::{Action, DType, DirTree, Segment};
 
     /// Helper: build a tree from actions and get dirents.
     fn build_dirents(actions: &[Action]) -> Vec<(String, Dirent)> {
-        DirTree::build(&[Segment { from: 0, records: actions.to_vec() }]).into_dirents()
+        DirTree::build(std::iter::once(Segment { from: 0, records: actions.to_vec() })).into_dirents()
     }
 
     /// Helper: find a dirent by path suffix.
