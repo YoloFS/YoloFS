@@ -4,7 +4,7 @@ use crate::backends;
 use crate::workload::WorkloadKind;
 use crate::workloads;
 use crate::{BenchResults, RepoState, WorkloadResult};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use plotly::common::{
     ErrorData, ErrorType, Font, HoverInfo, Mode, Pattern, PatternFillMode, PatternShape,
     TextPosition, Title,
@@ -29,13 +29,13 @@ pub fn render(results: &BenchResults, out_dir: &Path) -> Result<()> {
             render_workload(wl, results, out_dir, current_repo_state.as_ref())?;
         }
     }
-    render_paper_artifacts(results, out_dir)?;
+    crate::paper::render(results, out_dir)?;
     render_index(results, out_dir, current_repo_state.as_ref())?;
     Ok(())
 }
 
 pub fn render_paper_only(results: &BenchResults, out_dir: &Path) -> Result<()> {
-    render_paper_artifacts(results, out_dir)
+    crate::paper::render(results, out_dir)
 }
 
 pub fn render_one(results: &BenchResults, workload_name: &str, out_dir: &Path) -> Result<()> {
@@ -656,7 +656,7 @@ fn repo_state_drift(recorded: &RepoState, current: &RepoState) -> Vec<String> {
     reasons
 }
 
-fn report_backend_visible(name: &str) -> bool {
+pub fn report_backend_visible(name: &str) -> bool {
     // Hide stale pre-rename results from report plots/tables.
     name != "agfs-allow-all"
 }
@@ -693,7 +693,7 @@ fn inject_workload_status(mut full_html: String, status: &WorkloadFreshness) -> 
     full_html
 }
 
-fn escape_html(s: &str) -> String {
+pub fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -1090,7 +1090,7 @@ fn is_stale_group_name(name: &str, results: &BenchResults) -> bool {
     })
 }
 
-fn normalize_legacy_workload_name(name: &str) -> String {
+pub fn normalize_legacy_workload_name(name: &str) -> String {
     let Some(suffix) = name
         .strip_suffix("-base")
         .or_else(|| name.strip_suffix("-stage"))
@@ -1105,168 +1105,6 @@ fn normalize_legacy_workload_name(name: &str) -> String {
         "meta-readdir-warm" => format!("meta-readdir{}", &name["meta-readdir-warm".len()..]),
         _ => name.to_string(),
     }
-}
-
-fn render_paper_artifacts(results: &BenchResults, out_dir: &Path) -> Result<()> {
-    let paper_dir = out_dir.join("paper");
-    std::fs::create_dir_all(&paper_dir)
-        .with_context(|| format!("creating {}", paper_dir.display()))?;
-
-    let op_tex_path = paper_dir.join("op-data-summary.tex");
-    let op_pdf_path = paper_dir.join("op-data-summary.pdf");
-    let op_svg_path = paper_dir.join("op-data-summary.svg");
-
-    let mut op_rows: Vec<(&str, Vec<(String, u64)>)> = Vec::new();
-    for wl in &results.workloads {
-        let canonical = normalize_legacy_workload_name(&wl.workload);
-        let kind = workloads::all()
-            .into_iter()
-            .find(|w| w.name() == canonical)
-            .map(|w| w.kind())
-            .unwrap_or_else(|| {
-                if canonical.starts_with("meta-") || canonical.starts_with("fio-") {
-                    WorkloadKind::Op
-                } else {
-                    WorkloadKind::Micro
-                }
-            });
-        if kind != WorkloadKind::Op || !canonical.starts_with("fio-") {
-            continue;
-        }
-
-        let mut backend_vals = Vec::new();
-        for b in &wl.backends {
-            if !report_backend_visible(&b.backend) {
-                continue;
-            }
-            if let Some(kbps) = b.mean_throughput_kbps {
-                backend_vals.push((b.backend.clone(), kbps));
-            }
-        }
-        backend_vals.sort_by_key(|(name, _)| {
-            backends::display_order()
-                .iter()
-                .position(|&n| n == name)
-                .unwrap_or(usize::MAX)
-        });
-        op_rows.push((wl.workload.as_str(), backend_vals));
-    }
-
-    let mut op_tex = String::new();
-    op_tex.push_str("\\documentclass{article}\n");
-    op_tex.push_str("\\pagestyle{empty}\n");
-    op_tex.push_str("\\usepackage[margin=0.2in]{geometry}\n");
-    op_tex.push_str("\\usepackage{booktabs}\n");
-    op_tex.push_str("\\begin{document}\n");
-    op_tex.push_str("\\scriptsize\n");
-    op_tex.push_str("\\begin{tabular}{l l l}\\toprule\n");
-    op_tex.push_str("Workload & Backend & Throughput (MB/s) \\\\ \\midrule\n");
-    for (workload, vals) in op_rows {
-        let native = vals
-            .iter()
-            .find(|(b, _)| b == "native")
-            .map(|(_, kbps)| *kbps as f64 / 1024.0);
-        let mut first = true;
-        for (backend, kbps) in vals {
-            let mbps = kbps as f64 / 1024.0;
-            let rendered = if backend == "native" {
-                format!("{mbps:.1}")
-            } else if let Some(base) = native {
-                let delta_pct = ((mbps / base) - 1.0) * 100.0;
-                if delta_pct.abs() < 5.0 {
-                    "same as baseline".to_string()
-                } else {
-                    format!("{mbps:.1} ({delta_pct:+.1}\\%)")
-                }
-            } else {
-                format!("{mbps:.1}")
-            };
-            if first {
-                op_tex.push_str(&format!(
-                    "{} & {} & {} \\\\ \n",
-                    latex_escape(workload),
-                    latex_escape(&backend),
-                    latex_escape(&rendered)
-                ));
-                first = false;
-            } else {
-                op_tex.push_str(&format!(
-                    " & {} & {} \\\\ \n",
-                    latex_escape(&backend),
-                    latex_escape(&rendered)
-                ));
-            }
-        }
-        op_tex.push_str("\\midrule\n");
-    }
-    op_tex.push_str("\\bottomrule\\end{tabular}\n");
-    op_tex.push_str("\\end{document}\n");
-    std::fs::write(&op_tex_path, op_tex)
-        .with_context(|| format!("writing {}", op_tex_path.display()))?;
-
-    let mut rendered_op_pdf = false;
-    let mut rendered_op_svg = false;
-    if let Ok(out) = std::process::Command::new("pdflatex")
-        .arg("-interaction=nonstopmode")
-        .arg("-halt-on-error")
-        .arg("-output-directory")
-        .arg(&paper_dir)
-        .arg(&op_tex_path)
-        .output()
-        && out.status.success()
-        && op_pdf_path.exists()
-    {
-        rendered_op_pdf = true;
-    }
-    if rendered_op_pdf
-        && let Ok(out) = std::process::Command::new("pdftocairo")
-            .arg("-svg")
-            .arg(&op_pdf_path)
-            .arg(&op_svg_path)
-            .output()
-        && out.status.success()
-        && op_svg_path.exists()
-    {
-        rendered_op_svg = true;
-    }
-
-    let mut html = String::new();
-    html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\">\n");
-    html.push_str("<title>agfs-bench paper report</title>\n");
-    html.push_str("<style>body{font-family:system-ui,sans-serif;margin:1.5em;background:#fafafa}h1{font-size:1.2em}ul{line-height:1.6}</style>\n");
-    html.push_str("</head><body>\n<h1>Data-op Summary (fio)</h1>\n<ul>");
-    html.push_str("<li><a href=\"paper/op-data-summary.tex\">op-data-summary.tex</a></li>");
-    if rendered_op_pdf {
-        html.push_str("<li><a href=\"paper/op-data-summary.pdf\">op-data-summary.pdf</a></li>");
-    }
-    if rendered_op_svg {
-        html.push_str("<li><a href=\"paper/op-data-summary.svg\">op-data-summary.svg</a></li>");
-    }
-    if !rendered_op_pdf && !rendered_op_svg {
-        html.push_str("<li>PDF/SVG generation unavailable (need pdflatex and/or pdftocairo)</li>");
-    }
-    html.push_str("</ul>");
-    if rendered_op_pdf {
-        html.push_str("<iframe src=\"paper/op-data-summary.pdf\" style=\"width:100%;height:820px;border:1px solid #ddd;background:#fff\"></iframe>");
-    }
-    html.push_str("</body></html>");
-    std::fs::write(out_dir.join("paper-report.html"), html)
-        .with_context(|| format!("writing {}", out_dir.join("paper-report.html").display()))?;
-
-    Ok(())
-}
-
-fn latex_escape(s: &str) -> String {
-    s.replace('\\', "\\textbackslash{}")
-        .replace('&', "\\&")
-        .replace('%', "\\%")
-        .replace('$', "\\$")
-        .replace('#', "\\#")
-        .replace('_', "\\_")
-        .replace('{', "\\{")
-        .replace('}', "\\}")
-        .replace('~', "\\textasciitilde{}")
-        .replace('^', "\\textasciicircum{}")
 }
 
 fn source_pattern(label: &str) -> Pattern {

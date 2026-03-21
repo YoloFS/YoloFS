@@ -22,6 +22,7 @@ use std::time::Duration;
 pub struct Profiler {
     bpftrace: Option<Child>,
     perf: Child,
+    perf_stat: Option<Child>,
     bpf_output: Option<PathBuf>,
     out_dir: PathBuf,
 }
@@ -53,6 +54,20 @@ impl Profiler {
             .stderr(Stdio::null())
             .spawn()
             .context("spawning perf record (is perf installed?)")?;
+
+        // Spawn perf stat for block I/O counters.
+        let perf_stat = Command::new("sudo")
+            .args([
+                "perf",
+                "stat",
+                "-e",
+                "block:block_rq_issue,block:block_rq_complete",
+                "-a",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped()) // perf stat writes to stderr
+            .spawn()
+            .ok();
 
         // Give perf time to initialise before the workload starts.
         std::thread::sleep(Duration::from_millis(300));
@@ -119,6 +134,7 @@ impl Profiler {
         Ok(Self {
             bpftrace,
             perf,
+            perf_stat,
             bpf_output,
             out_dir: out_dir.to_path_buf(),
         })
@@ -139,10 +155,28 @@ impl Profiler {
             .args(["kill", "-INT"])
             .arg(self.perf.id().to_string())
             .status();
+        // Stop perf stat and capture block I/O counters.
+        if let Some(ref ps) = self.perf_stat {
+            let _ = Command::new("sudo")
+                .args(["kill", "-INT"])
+                .arg(ps.id().to_string())
+                .status();
+        }
+
         if let Some(mut bpftrace) = self.bpftrace.take() {
             bpftrace.wait().context("waiting for bpftrace")?;
         }
         self.perf.wait().context("waiting for perf")?;
+
+        if let Some(mut ps) = self.perf_stat.take() {
+            let output = ps.wait_with_output().context("waiting for perf stat")?;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                let io_path = self.out_dir.join("block-io.txt");
+                fs::write(&io_path, stderr.as_bytes()).context("writing block-io.txt")?;
+                eprint!("{stderr}");
+            }
+        }
 
         let ops = if let Some(ref bpf_output) = self.bpf_output {
             let raw = fs::read_to_string(bpf_output).context("reading bpftrace output")?;
@@ -176,6 +210,15 @@ impl Drop for Profiler {
             let _ = bpftrace.wait();
         }
         let _ = self.perf.wait();
+        if let Some(ref ps) = self.perf_stat {
+            let _ = Command::new("sudo")
+                .args(["kill", "-INT"])
+                .arg(ps.id().to_string())
+                .status();
+        }
+        if let Some(ref mut ps) = self.perf_stat {
+            let _ = ps.wait();
+        }
     }
 }
 
@@ -660,11 +703,15 @@ fn generate_breakdown(out_dir: &Path, wall_ms: u64, iters: u32) -> Result<()> {
     let per_op_us = lookup_per_op_latency(out_dir, workload_name, backend_name);
     let run_patterns = workload_run_patterns(out_dir);
 
+    let is_fio_workload = workload_name.starts_with("fio-");
+
     let skip = |func: &str| -> bool {
         func == "agfs-bench"
+            || func == "fio"
             || func == "_start"
             || func == "main"
             || func == "[libc.so.6]"
+            || func == "[ld-linux-x86-64.so.2]"
             || func.starts_with("std::")
             || func.starts_with("core::")
             || func.starts_with("_Z")
@@ -691,11 +738,23 @@ fn generate_breakdown(out_dir: &Path, wall_ms: u64, iters: u32) -> Result<()> {
         let Ok(count) = count_str.parse::<u64>() else {
             continue;
         };
-        if !stack.contains("agfs-bench") {
+        // For fio workloads, include both agfs-bench and fio process stacks.
+        // For all others, only agfs-bench.
+        let dominated = if is_fio_workload {
+            stack.starts_with("agfs-bench") || stack.starts_with("fio")
+        } else {
+            stack.contains("agfs-bench")
+        };
+        if !dominated {
             continue;
         }
         all_total += count;
-        let is_run = stack_matches_run(stack, &run_patterns);
+        // For fio workloads, fio-process stacks are always timed work.
+        let is_run = if is_fio_workload && stack.starts_with("fio") {
+            true
+        } else {
+            stack_matches_run(stack, &run_patterns)
+        };
         let is_warmup =
             is_run && (stack.contains("warm_metadata") || stack.contains("warm_readdir"));
         if is_run {

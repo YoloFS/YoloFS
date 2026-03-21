@@ -38,10 +38,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-pub const OP_FILE_COUNT: usize = 10_000;
 pub const OP_FILE_SIZE: usize = 4096;
-pub const READDIR_DIR_COUNT: usize = 1_000;
-pub const READDIR_FILES_PER_DIR: usize = 10;
 pub const FIO_FILE_SIZE: &str = "1g";
 pub const FIO_IO_SIZE: &str = "256m";
 pub const FIO_FILE_NAME: &str = "testfile.dat";
