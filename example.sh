@@ -8,7 +8,7 @@ run()     { echo "\$ $*"; "$@"; echo; }
 # ─── Setup ──────────────────────────────────────────────────────────
 
 section "Setup: load kernel module, init config, mount filesystem"
-run agfs load
+run agfs reload
 run agfs init
 run agfs mount
 

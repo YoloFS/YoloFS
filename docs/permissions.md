@@ -185,16 +185,14 @@ static int agfs_permission(struct mnt_idmap *idmap,
         return inode_permission(info->lower_inode, mask);
 
     // Check generation -- re-resolve if stale.
-    enum agfs_perm perm = info->cached_perm;
     if (info->perm_gen != atomic64_read(&sbi->perm_gen)) {
         struct dentry *dentry = d_find_alias(inode);
         if (dentry) {
-            perm = agfs_resolve_perm(dentry);
-            info->cached_perm = perm;
-            info->perm_gen = atomic64_read(&sbi->perm_gen);
+            agfs_cache_perm(inode, dentry);
             dput(dentry);
         }
     }
+    enum agfs_perm perm = info->cached_perm;
 
     if (perm == AGFS_PERM_ASK)
         return 0;  // ask is handled in open(), not here
