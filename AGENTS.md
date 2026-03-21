@@ -41,7 +41,7 @@ make vm-test-e2e  # e2e tests only
 
 ## Code Review
 
-Before finalizing any change set, run a full review of the current changes. Launch all review checks **in parallel as separate sub-agents**. Each sub-agent examines `git diff` for one category:
+Before finalizing any change set, run a full review of the current changes. Launch all review checks **in parallel as separate sub-agents**. If the user specifies a commit to review, use `git show <commit>` for the diff; otherwise, use `git diff` for unstaged changes. Each sub-agent examines the diff for one category:
 
 1. **Bugs & correctness** — logic errors, off-by-one, unhandled errors, null/unwrap panics, race conditions, use-after-free, unsafe code, unchecked inputs.
 2. **Code quality** — unnecessary allocations/clones, redundant operations, overly complex logic, code that could be simplified or deduplicated, more idiomatic Rust/C patterns.

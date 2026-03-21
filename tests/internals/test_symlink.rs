@@ -1,6 +1,6 @@
-use super::helpers::{dirents, ino_for, inode_path, journal};
+use super::helpers::{actions, dirents, ino_for, inode_path, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::{Action, Record};
+use agfs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -12,12 +12,12 @@ fn symlink_produces_add_record() {
 
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Add { path, dtype: Some(agfs::journal::DType::Link), .. }) if path.ends_with("/link.txt"))),
-        "journal should have an Added(dtype=Link) record for link.txt: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Add { path, dtype: Some(agfs::journal::DType::Link), .. } if path.ends_with("/link.txt"))),
+        "journal should have an Added(dtype=Link) record for link.txt: {acts:?}"
     );
 }
 

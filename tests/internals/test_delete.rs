@@ -1,6 +1,6 @@
-use super::helpers::{dirents, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::{Action, Record};
+use agfs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -12,12 +12,12 @@ fn delete_produces_delete_record() {
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Delete { path, .. }) if path.ends_with("/hello.txt"))),
-        "journal should have a Deleted record for hello.txt: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Delete { path, .. } if path.ends_with("/hello.txt"))),
+        "journal should have a Deleted record for hello.txt: {acts:?}"
     );
 }
 

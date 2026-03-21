@@ -269,6 +269,42 @@ mod tests {
         assert_eq!(end, 1);
     }
 
+    #[test]
+    fn segment_range_at_middle_checkpoint() {
+        let records = vec![
+            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "c1".into() }),
+            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
+            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
+            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
+            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
+        ];
+        let j = Journal::new(records);
+        // --at c2: prev K is marker 0 (K1), so start=1, end=2
+        let (start, end) = j.markers.segment_range(Some("c2"), None, None, j.segments.len()).unwrap();
+        assert_eq!(start, 1);
+        assert_eq!(end, 2);
+    }
+
+    #[test]
+    fn segment_range_at_checkpoint_after_restore() {
+        // K1 [A] K2 [B] K3 S4(K2) [D] K5
+        let records = vec![
+            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "c1".into() }),
+            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
+            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
+            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
+            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
+            Record::Marker(Marker::Restore { gen_id: 4, target_gen: 2 }),
+            Record::Action(Action::Add { path: "/d".into(), dtype: Some(DType::File), ino: 3 }),
+            Record::Marker(Marker::Checkpoint { gen_id: 5, name: "c5".into() }),
+        ];
+        let j = Journal::new(records);
+        // --at c5: prev K is marker[2] (K3), so start=3, end=5
+        let (start, end) = j.markers.segment_range(Some("c5"), None, None, j.segments.len()).unwrap();
+        assert_eq!(start, 3);
+        assert_eq!(end, 5);
+    }
+
     // ── Alive computation tests (migrated from liveness.rs) ──────────
 
     #[test]
@@ -366,7 +402,7 @@ mod tests {
         assert!(!alive[3], "seg3 dead");
         assert!(!alive[4], "seg4 dead");
         assert!(!alive[5], "seg5 dead");
-        assert!(!alive[6], "seg6 dead (trailing)");
+        assert!(alive[6], "seg6 alive (trailing, empty)");
     }
 
     #[test]
@@ -401,7 +437,7 @@ mod tests {
         assert!(alive[0], "seg0 before K1 alive");
         assert!(!alive[1], "seg1 dead (after K1, before K2)");
         assert!(!alive[2], "seg2 dead");
-        assert!(!alive[3], "seg3 dead (after S3)");
+        assert!(alive[3], "seg3 alive (trailing, empty)");
     }
 
     #[test]
@@ -429,7 +465,7 @@ mod tests {
         assert!(alive[4], "seg4 alive (after S4, before K5)");
         assert!(!alive[5], "seg5 dead (killed by S7)");
         assert!(!alive[6], "seg6 dead (killed by S7)");
-        assert!(!alive[7], "seg7 dead (trailing after S7)");
+        assert!(alive[7], "seg7 alive (trailing, empty)");
     }
 
     #[test]
@@ -454,6 +490,6 @@ mod tests {
         assert!(!alive[3], "seg3 dead (S4 segment)");
         assert!(!alive[4], "seg4 dead (killed by S6)");
         assert!(!alive[5], "seg5 dead (killed by S6)");
-        assert!(!alive[6], "seg6 dead (trailing after S6)");
+        assert!(alive[6], "seg6 alive (trailing, empty)");
     }
 }

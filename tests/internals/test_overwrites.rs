@@ -1,4 +1,4 @@
-use super::helpers::journal;
+use super::helpers::{actions, journal, records};
 use crate::helpers::AgfsSession;
 use agfs::journal::{Action, Marker, Record};
 use std::fs;
@@ -17,12 +17,12 @@ fn create_new_file_emits_add() {
 
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/brandnew.txt"))),
-        "new file should produce ADD record: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/brandnew.txt"))),
+        "new file should produce ADD record: {acts:?}"
     );
 }
 
@@ -33,12 +33,12 @@ fn modify_base_file_emits_modify() {
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").expect("write");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt"))),
-        "modifying base file should produce MOD record: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt"))),
+        "modifying base file should produce MOD record: {acts:?}"
     );
 }
 
@@ -51,20 +51,21 @@ fn delete_recreate_base_file_emits_modify() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
     fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     // Find the last record for hello.txt — should be M (from re-create).
-    let last = records
+    let last = acts
         .iter()
         .rev()
-        .find(|r| match r {
-            Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
+        .find(|a| match a {
+            Action::Add { path, .. } | Action::Modify { path, .. } => {
                 path.ends_with("/hello.txt")
             }
             _ => false,
         })
         .expect("should have a staged record for hello.txt");
     assert!(
-        matches!(last, Record::Action(Action::Modify { .. })),
+        matches!(last, Action::Modify { .. }),
         "re-create of base file should produce MOD, got: {last:?}"
     );
 }
@@ -79,20 +80,21 @@ fn delete_recreate_staged_file_emits_add() {
     fs::remove_file(s.mnt_path("ephemeral.txt")).expect("delete");
     fs::write(s.mnt_path("ephemeral.txt"), "v2\n").expect("recreate");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     // Find the last record for ephemeral.txt — should be ADD.
-    let last = records
+    let last = acts
         .iter()
         .rev()
-        .find(|r| match r {
-            Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
+        .find(|a| match a {
+            Action::Add { path, .. } | Action::Modify { path, .. } => {
                 path.ends_with("/ephemeral.txt")
             }
             _ => false,
         })
         .expect("should have a staged record for ephemeral.txt");
     assert!(
-        matches!(last, Record::Action(Action::Add { .. })),
+        matches!(last, Action::Add { .. }),
         "re-create of staged-only file should produce ADD, got: {last:?}"
     );
 }
@@ -110,19 +112,20 @@ fn cow_delete_recreate_emits_modify() {
     // Re-create at the same path
     fs::write(s.mnt_path("hello.txt"), "again\n").expect("recreate");
 
-    let records = journal(&s);
-    let last = records
+    let j = journal(&s);
+    let acts = actions(&j);
+    let last = acts
         .iter()
         .rev()
-        .find(|r| match r {
-            Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
+        .find(|a| match a {
+            Action::Add { path, .. } | Action::Modify { path, .. } => {
                 path.ends_with("/hello.txt")
             }
             _ => false,
         })
         .expect("should have a staged record for hello.txt");
     assert!(
-        matches!(last, Record::Action(Action::Modify { .. })),
+        matches!(last, Action::Modify { .. }),
         "re-create after COW+delete of base file should produce MOD, got: {last:?}"
     );
 }
@@ -136,19 +139,20 @@ fn rename_away_then_create_at_old_path_emits_modify() {
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
     fs::write(s.mnt_path("hello.txt"), "replacement\n").expect("create");
 
-    let records = journal(&s);
-    let last = records
+    let j = journal(&s);
+    let acts = actions(&j);
+    let last = acts
         .iter()
         .rev()
-        .find(|r| match r {
-            Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
+        .find(|a| match a {
+            Action::Add { path, .. } | Action::Modify { path, .. } => {
                 path.ends_with("/hello.txt")
             }
             _ => false,
         })
         .expect("should have a staged record for hello.txt");
     assert!(
-        matches!(last, Record::Action(Action::Modify { .. })),
+        matches!(last, Action::Modify { .. }),
         "create at renamed-away base path should produce MOD, got: {last:?}"
     );
 }
@@ -163,19 +167,20 @@ fn rename_away_staged_then_create_emits_add() {
     fs::rename(s.mnt_path("temp.txt"), s.mnt_path("moved.txt")).expect("rename");
     fs::write(s.mnt_path("temp.txt"), "new\n").expect("recreate");
 
-    let records = journal(&s);
-    let last = records
+    let j = journal(&s);
+    let acts = actions(&j);
+    let last = acts
         .iter()
         .rev()
-        .find(|r| match r {
-            Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
+        .find(|a| match a {
+            Action::Add { path, .. } | Action::Modify { path, .. } => {
                 path.ends_with("/temp.txt")
             }
             _ => false,
         })
         .expect("should have a staged record for temp.txt");
     assert!(
-        matches!(last, Record::Action(Action::Add { .. })),
+        matches!(last, Action::Add { .. }),
         "create at renamed-away staged path should produce ADD, got: {last:?}"
     );
 }
@@ -192,14 +197,14 @@ fn recow_of_staged_file_after_checkpoint_emits_modify() {
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::write(s.mnt_path("created.txt"), "v2\n").expect("write v2 (re-COW)");
 
-    let records = journal(&s);
+    let recs = records(&journal(&s));
 
     // Find all staged records for created.txt after the checkpoint.
-    let chk_pos = records
+    let chk_pos = recs
         .iter()
         .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1"))
         .expect("should have checkpoint s1");
-    let post_chk: Vec<_> = records[chk_pos + 1..]
+    let post_chk: Vec<_> = recs[chk_pos + 1..]
         .iter()
         .filter(|r| match r {
             Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
@@ -211,7 +216,7 @@ fn recow_of_staged_file_after_checkpoint_emits_modify() {
 
     assert!(
         !post_chk.is_empty(),
-        "re-COW should produce a record after checkpoint: {records:?}"
+        "re-COW should produce a record after checkpoint: {recs:?}"
     );
     // Re-COW of a staged file emits MOD (overwrites=true) because the
     // path already had content, even though it was never in base.

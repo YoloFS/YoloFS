@@ -1,6 +1,6 @@
-use super::helpers::{dirents, ino_for, inode_path, journal};
+use super::helpers::{actions, dirents, ino_for, inode_path, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::{Action, Record};
+use agfs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -12,12 +12,12 @@ fn create_produces_add_record() {
 
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Add { path, dtype: Some(agfs::journal::DType::File), .. }) if path.ends_with("/brandnew.txt"))),
-        "journal should have an Added(dtype=File) record for brandnew.txt: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Add { path, dtype: Some(agfs::journal::DType::File), .. } if path.ends_with("/brandnew.txt"))),
+        "journal should have an Added(dtype=File) record for brandnew.txt: {acts:?}"
     );
 }
 

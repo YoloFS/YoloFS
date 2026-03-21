@@ -1,6 +1,6 @@
-use super::helpers::{dirents, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::{Action, Record};
+use agfs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -12,12 +12,12 @@ fn mkdir_produces_add_record() {
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Add { path, dtype: Some(agfs::journal::DType::Dir), .. }) if path.ends_with("/newdir"))),
-        "journal should have an Added(dtype=Dir) record for newdir: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Add { path, dtype: Some(agfs::journal::DType::Dir), .. } if path.ends_with("/newdir"))),
+        "journal should have an Added(dtype=Dir) record for newdir: {acts:?}"
     );
 }
 
@@ -30,12 +30,12 @@ fn rmdir_produces_delete_record() {
     fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
     fs::remove_dir(s.mnt_path("tmpdir")).expect("rmdir");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Delete { path, .. }) if path.ends_with("/tmpdir"))),
-        "journal should have a Deleted record for tmpdir: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Delete { path, .. } if path.ends_with("/tmpdir"))),
+        "journal should have a Deleted record for tmpdir: {acts:?}"
     );
 }
 
@@ -48,12 +48,12 @@ fn rmdir_base_dir_produces_delete_record() {
     fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink nested file");
     fs::remove_dir(s.mnt_path("subdir")).expect("rmdir base dir");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Delete { path, .. }) if path.ends_with("/subdir"))),
-        "journal should have a Deleted record for base dir: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Delete { path, .. } if path.ends_with("/subdir"))),
+        "journal should have a Deleted record for base dir: {acts:?}"
     );
 }
 
@@ -65,11 +65,12 @@ fn rename_dir_produces_rename_record() {
     fs::create_dir(s.mnt_path("olddir")).expect("mkdir");
     fs::rename(s.mnt_path("olddir"), s.mnt_path("newdir")).expect("rename dir");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Action(Action::Rename { dst, src, .. })
+        acts.iter().any(|a| matches!(a, Action::Rename { dst, src, .. }
             if dst.ends_with("/newdir") && src.ends_with("/olddir"))),
-        "journal should have a Redirect record for olddir → newdir: {records:?}"
+        "journal should have a Redirect record for olddir → newdir: {acts:?}"
     );
 }
 

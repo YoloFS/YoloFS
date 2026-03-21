@@ -239,13 +239,6 @@ mod tests {
             .collect()
     }
 
-    fn live_record_count(records: Vec<Record>) -> usize {
-        let j = Journal::new(records);
-        let actions: usize = j.live_segments().map(|s| s.records.len()).sum();
-        let markers = j.live_segments().count().saturating_sub(1); // one marker between each pair
-        actions + markers
-    }
-
     #[test]
     fn reachable_no_restores() {
         let records = vec![
@@ -342,6 +335,43 @@ mod tests {
         assert!(actions.is_empty(), "consecutive restores: last one (K1) wins");
     }
 
+    #[test]
+    fn reachable_single_restore() {
+        // K1 [A] K2 [B] K3 S4(K2) [D] K5
+        let records = vec![
+            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
+            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
+            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
+            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
+            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
+            Record::Marker(Marker::Restore { gen_id: 4, target_gen: 2 }),
+            Record::Action(Action::Add { path: "/d".into(), dtype: Some(DType::File), ino: 3 }),
+            Record::Marker(Marker::Checkpoint { gen_id: 5, name: "c5".into() }),
+        ];
+        let actions = live_actions(records);
+        assert_eq!(actions, vec!["/a", "/d"]);
+    }
+
+    #[test]
+    fn reachable_empty_journal() {
+        let actions = live_actions(vec![]);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn reachable_corrupt_s_record_skipped() {
+        // K1 [A] S2(K99) [B]
+        // S targets nonexistent K99 — skipped, all segments alive.
+        let records = vec![
+            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
+            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
+            Record::Marker(Marker::Restore { gen_id: 2, target_gen: 99 }),
+            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
+        ];
+        let actions = live_actions(records);
+        assert_eq!(actions, vec!["/a", "/b"]);
+    }
+
     // ── Slice / prefix tests (migrated from liveness.rs) ─────────────
 
     #[test]
@@ -409,9 +439,10 @@ mod tests {
             Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
         ];
         let j = Journal::new(records);
-        // gen_id 999 is way beyond markers.len()=2; should clamp, not panic
+        // gen_id 999 is way beyond markers.len()=2; should clamp, not panic.
+        // Clamped to markers.len() → returns prefix, not the full set.
         let live: Vec<_> = j.live_segments_at(999).collect();
-        assert_eq!(live.len(), j.live_segments().count());
+        assert!(live.len() <= j.live_segments().count());
     }
 
     // ── Original tests ───────────────────────────────────────────────

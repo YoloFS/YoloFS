@@ -1,7 +1,7 @@
-use super::helpers::{dirents, ino_for, inode_path, inos, journal};
+use super::helpers::{dirents, ino_for, inode_path, inos, journal, markers};
 use crate::helpers::AgfsSession;
 use agfs::journal;
-use agfs::journal::{Marker, Record};
+use agfs::journal::Marker;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
@@ -18,12 +18,12 @@ fn restore_journal_contains_checkpoint_marker() {
 
     s.cli(&["restore", "chk1"]).expect("restore");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let mkrs = markers(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "chk1")),
-        "chk1 marker should be in journal: {records:?}"
+        mkrs.iter()
+            .any(|m| matches!(m, Marker::Checkpoint { name, .. } if name == "chk1")),
+        "chk1 marker should be in journal: {mkrs:?}"
     );
 }
 
@@ -39,17 +39,17 @@ fn restore_journal_has_no_post_checkpoint_records() {
 
     s.cli(&["restore", "chk1"]).expect("restore");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let mkrs = markers(&j);
 
     // RST (Restore) record should be present in the raw journal.
     assert!(
-        records.iter().any(|r| matches!(r, Record::Marker(Marker::Restore { .. }))),
-        "Restore record should be in journal: {records:?}"
+        mkrs.iter().any(|m| matches!(m, Marker::Restore { .. })),
+        "Restore record should be in journal: {mkrs:?}"
     );
 
     // reachable + resolve should match the checkpoint state (only a.txt).
-    let journal = journal::Journal::new(records);
-    let tree = journal::DirTree::build_from_segments(journal.live_segments());
+    let tree = journal::DirTree::build_from_segments(j.live_segments());
     let ch = tree.into_dirents();
     let debug = format!("{ch:?}");
     assert!(
@@ -368,12 +368,12 @@ fn restore_renamed_symlink_in_resolved_changes() {
     );
 
     // Journal should have the checkpoint marker and records up to it
-    let records = journal(&s);
+    let j = journal(&s);
+    let mkrs = markers(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "chk1")),
-        "chk1 should be in journal: {records:?}"
+        mkrs.iter()
+            .any(|m| matches!(m, Marker::Checkpoint { name, .. } if name == "chk1")),
+        "chk1 should be in journal: {mkrs:?}"
     );
 }
 
@@ -430,10 +430,11 @@ fn restore_journal_is_byte_prefix() {
     );
 
     // Verify the RST record is present.
-    let records = journal(&s);
+    let j = journal(&s);
+    let mkrs = markers(&j);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Marker(Marker::Restore { .. }))),
-        "Restore record should be in journal: {records:?}"
+        mkrs.iter().any(|m| matches!(m, Marker::Restore { .. })),
+        "Restore record should be in journal: {mkrs:?}"
     );
 }
 
@@ -451,29 +452,30 @@ fn restore_s_record_has_correct_gen() {
 
     s.cli(&["restore", "chk1"]).expect("restore");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let mkrs = markers(&j);
 
     // Find the checkpoint gen_ids and the restore record.
-    let chk1_gen = records
+    let chk1_gen = mkrs
         .iter()
-        .find_map(|r| match r {
-            Record::Marker(Marker::Checkpoint { gen_id, name }) if name == "chk1" => Some(*gen_id),
+        .find_map(|m| match m {
+            Marker::Checkpoint { gen_id, name } if name == "chk1" => Some(*gen_id),
             _ => None,
         })
         .expect("chk1 should exist");
 
-    let chk2_gen = records
+    let chk2_gen = mkrs
         .iter()
-        .find_map(|r| match r {
-            Record::Marker(Marker::Checkpoint { gen_id, name }) if name == "chk2" => Some(*gen_id),
+        .find_map(|m| match m {
+            Marker::Checkpoint { gen_id, name } if name == "chk2" => Some(*gen_id),
             _ => None,
         })
         .expect("chk2 should exist");
 
-    let (s_gen, s_target) = records
+    let (s_gen, s_target) = mkrs
         .iter()
-        .find_map(|r| match r {
-            Record::Marker(Marker::Restore { gen_id, target_gen }) => Some((*gen_id, *target_gen)),
+        .find_map(|m| match m {
+            Marker::Restore { gen_id, target_gen } => Some((*gen_id, *target_gen)),
             _ => None,
         })
         .expect("restore record should exist");

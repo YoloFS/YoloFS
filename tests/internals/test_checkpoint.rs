@@ -1,4 +1,4 @@
-use super::helpers::{dirents, ino_for, inode_path, journal};
+use super::helpers::{dirents, ino_for, inode_path, journal, markers, records};
 use crate::helpers::AgfsSession;
 use agfs::journal::{Action, Marker, Record};
 use std::fs;
@@ -13,12 +13,12 @@ fn checkpoint_produces_checkpoint_record() {
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     s.cli(&["checkpoint", "build"]).expect("checkpoint");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let mkrs = markers(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "build")),
-        "journal should have a CKP record named 'build': {records:?}"
+        mkrs.iter()
+            .any(|m| matches!(m, Marker::Checkpoint { name, .. } if name == "build")),
+        "journal should have a CKP record named 'build': {mkrs:?}"
     );
 }
 
@@ -31,33 +31,33 @@ fn recow_after_checkpoint_produces_new_add() {
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 (re-COW)");
 
-    let records = journal(&s);
-    let adds: Vec<_> = records
+    let recs = records(&journal(&s));
+    let adds: Vec<_> = recs
         .iter()
         .filter(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
         .collect();
     assert!(
         adds.len() >= 2,
-        "re-COW should produce a second ADD record: {records:?}"
+        "re-COW should produce a second ADD record: {recs:?}"
     );
 
     // The two adds should have different ino values (re-COW allocates a new inode)
     if let (Record::Action(Action::Modify { ino: ino1, .. }), Record::Action(Action::Modify { ino: ino2, .. })) =
         (adds[0], adds[1])
     {
-        assert_ne!(ino1, ino2, "re-COW ino values should differ: {records:?}");
+        assert_ne!(ino1, ino2, "re-COW ino values should differ: {recs:?}");
     }
 
     // Checkpoint "s1" should sit between the two adds.
-    let chk_pos = records
+    let chk_pos = recs
         .iter()
         .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1"))
         .unwrap();
-    let first_add = records
+    let first_add = recs
         .iter()
         .position(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
         .unwrap();
-    let last_add = records
+    let last_add = recs
         .iter()
         .rposition(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
         .unwrap();
@@ -81,18 +81,19 @@ fn multiple_checkpoints_have_distinct_ids() {
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write");
     s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
 
-    let records = journal(&s);
-    let snaps: Vec<_> = records
+    let j = journal(&s);
+    let mkrs = markers(&j);
+    let snaps: Vec<_> = mkrs
         .iter()
-        .filter_map(|r| match r {
-            Record::Marker(Marker::Checkpoint { gen_id, name }) => Some((gen_id, name)),
+        .filter_map(|m| match m {
+            Marker::Checkpoint { gen_id, name } => Some((gen_id, name)),
             _ => None,
         })
         .collect();
     assert_eq!(
         snaps.len(),
         2,
-        "should have 2 user checkpoint records: {records:?}"
+        "should have 2 user checkpoint records: {mkrs:?}"
     );
     assert_ne!(snaps[0].0, snaps[1].0, "checkpoint ids should differ");
     assert_eq!(snaps[0].1, "s1");
@@ -109,19 +110,19 @@ fn rename_after_checkpoint() {
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
-    let records = journal(&s);
-    let chk_pos = records
+    let recs = records(&journal(&s));
+    let chk_pos = recs
         .iter()
         .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { .. })))
         .unwrap();
     // After COW, hello.txt has a staged ino — rename emits single R record
-    let rename_pos = records
+    let rename_pos = recs
         .iter()
         .position(|r| matches!(r, Record::Action(Action::Rename { dst, .. }) if dst.ends_with("/moved.txt")))
         .expect("should have Redirect for moved.txt");
     assert!(
         chk_pos < rename_pos,
-        "Checkpoint should precede Rename: {records:?}"
+        "Checkpoint should precede Rename: {recs:?}"
     );
 }
 
@@ -134,18 +135,18 @@ fn delete_after_checkpoint() {
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
 
-    let records = journal(&s);
-    let chk_pos = records
+    let recs = records(&journal(&s));
+    let chk_pos = recs
         .iter()
         .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { .. })))
         .unwrap();
-    let del_pos = records
+    let del_pos = recs
         .iter()
         .position(|r| matches!(r, Record::Action(Action::Delete { .. })))
         .unwrap();
     assert!(
         chk_pos < del_pos,
-        "Checkpoint should precede Delete: {records:?}"
+        "Checkpoint should precede Delete: {recs:?}"
     );
 }
 

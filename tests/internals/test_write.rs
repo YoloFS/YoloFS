@@ -1,6 +1,6 @@
-use super::helpers::{dirents, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::{Action, Record};
+use agfs::journal::Action;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -14,12 +14,12 @@ fn modify_produces_add_record() {
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt"))),
-        "journal should have a Modified record for hello.txt: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt"))),
+        "journal should have a Modified record for hello.txt: {acts:?}"
     );
 }
 
@@ -33,16 +33,17 @@ fn multiple_writes_produce_multiple_adds() {
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
 
-    let records = journal(&s);
-    let add_count = records
+    let j = journal(&s);
+    let acts = actions(&j);
+    let add_count = acts
         .iter()
-        .filter(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
+        .filter(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt")))
         .count();
     // At least 1 ADD record; the kernel may coalesce O_TRUNC reopens on the
     // same inode, but the first COW always produces one.
     assert!(
         add_count >= 1,
-        "should have at least 1 ADD record, got {add_count}: {records:?}"
+        "should have at least 1 ADD record, got {add_count}: {acts:?}"
     );
 }
 
@@ -217,18 +218,17 @@ fn truncate_open_base_file_produces_modify_record() {
     f.write_all(b"truncated\n").expect("write");
     drop(f);
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt"))),
-        "O_TRUNC on a base file should produce a Modified record, got: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt"))),
+        "O_TRUNC on a base file should produce a Modified record, got: {acts:?}"
     );
     assert!(
-        !records
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/hello.txt"))),
-        "O_TRUNC on a base file should NOT produce an Added record, got: {records:?}"
+        !acts.iter()
+            .any(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/hello.txt"))),
+        "O_TRUNC on a base file should NOT produce an Added record, got: {acts:?}"
     );
 }
 
