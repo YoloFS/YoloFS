@@ -171,7 +171,7 @@ impl DirTree {
     /// Walk to a path (owned), creating intermediate Dir(None, ..) nodes as
     /// needed.  Extracts the leaf name from the path in-place via `drain`,
     /// avoiding allocation for the leaf component.
-    fn walk_to_parent_owned(&mut self, mut path: String) -> Option<(&mut DirTree, String)> {
+    fn walk_or_create_parent(&mut self, mut path: String) -> Option<(&mut DirTree, String)> {
         let last_slash = path.rfind('/')?;
         if last_slash + 1 >= path.len() {
             return None;
@@ -192,7 +192,7 @@ impl DirTree {
     }
 
     /// Walk to a path (borrowed) for lookup only — no intermediate creation.
-    fn walk_to_parent_lookup<'a>(
+    fn walk_to_parent<'a>(
         &'a mut self,
         path: &'a str,
     ) -> Option<(&'a mut DirTree, &'a str)> {
@@ -213,7 +213,7 @@ impl DirTree {
 
     /// Set a dirent at the given path (owned).
     fn set_dirent(&mut self, path: String, dirent: Dirent) {
-        let Some((parent, name)) = self.walk_to_parent_owned(path) else {
+        let Some((parent, name)) = self.walk_or_create_parent(path) else {
             return;
         };
         if dirent.dtype() == DType::Dir {
@@ -227,7 +227,7 @@ impl DirTree {
 
     /// Apply a D record (owned path).
     fn apply_delete(&mut self, path: String, dtype: Option<DType>) {
-        let Some((parent, name)) = self.walk_to_parent_owned(path) else {
+        let Some((parent, name)) = self.walk_or_create_parent(path) else {
             return;
         };
 
@@ -326,7 +326,7 @@ impl DirTree {
         };
 
         // Place at destination (handle directory merging)
-        let Some((parent, name)) = self.walk_to_parent_owned(dst_path) else {
+        let Some((parent, name)) = self.walk_or_create_parent(dst_path) else {
             return;
         };
         if is_roundtrip {
@@ -347,7 +347,7 @@ impl DirTree {
 
     /// Detach a node from the tree, returning it. Returns None if not found.
     fn detach(&mut self, path: &str) -> Option<DirNode> {
-        let (parent, name) = self.walk_to_parent_lookup(path)?;
+        let (parent, name) = self.walk_to_parent(path)?;
         parent.nodes.remove(name)
     }
 
