@@ -92,7 +92,7 @@ static void agfs_free_de_buckets_locked(struct agfs_inode_info *dii)
 	for (i = 0; i < AGFS_DE_BUCKETS; i++) {
 		hlist_for_each_entry_safe(de, tmp, &buckets[i], node) {
 			hlist_del(&de->node);
-			kfree(de->base);
+			agfs_pde_free(de->packed);
 			kfree(de);
 		}
 	}
@@ -152,18 +152,19 @@ static int agfs_pin_dir(struct agfs_inode_info *dii, struct agfs_sb_info *sbi)
 }
 
 /*
- * Add or update a dirent. All-zero de means deleted.
+ * Add or update a dirent. All-zero de (packed==0) means tombstone.
+ * Cancelled-entry removal: when transitioning to tombstone and the
+ * existing entry has in_base=false, the entry is removed entirely.
  * Caller must hold inode_lock(dir) (exclusive).
  */
 int agfs_del_dirent(struct inode *dir, const char *name,
 		      unsigned int namelen)
 {
-	return agfs_add_dirent(dir, name, namelen, &(struct agfs_dirent){0});
+	return agfs_add_dirent(dir, name, namelen, (agfs_pde_t){0});
 }
 
 int agfs_add_dirent(struct inode *dir, const char *name,
-		      unsigned int namelen,
-		      const struct agfs_dirent *de)
+		      unsigned int namelen, agfs_pde_t packed)
 {
 	struct agfs_inode_info *dii = AGFS_I(dir);
 	struct agfs_dirent *old_de, *new_de;
@@ -171,10 +172,15 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 	bool first_de;
 	int err;
 
-	if (de->base) {
-		base_copy = kstrdup(de->base, GFP_KERNEL);
+	/* If packed is a link, duplicate the base string */
+	if (agfs_pde_is_link(packed)) {
+		unsigned char dt = agfs_pde_d_type(packed);
+		bool ib = agfs_pde_in_base(packed);
+
+		base_copy = kstrdup(agfs_pde_base(packed), GFP_KERNEL);
 		if (!base_copy)
 			return -ENOMEM;
+		packed = agfs_pde_link(base_copy, dt, ib);
 	}
 
 	err = agfs_ensure_de_buckets(dii, &first_de);
@@ -186,19 +192,24 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 	/* Update existing entry in place */
 	old_de = agfs_find_dirent(dir, name, namelen);
 	if (old_de) {
-		/* For deletes (ino==0), inherit base from what was here
-		 * so that in_base status is preserved. */
-		if (agfs_ino_is_deleted(de->ino)) {
-			kfree(base_copy);
-			/* Keep old_de->base and old_de->in_base as-is. */
+		if (agfs_pde_is_tombstone(packed)) {
+			/* Transitioning to tombstone */
+			bool was_in_base = agfs_pde_in_base(old_de->packed);
+
+			agfs_pde_free(old_de->packed);
+			if (was_in_base) {
+				/* Entry was in base: keep as tombstone */
+				old_de->packed = (agfs_pde_t){0};
+			} else {
+				/* Cancelled entry: in_base=false tombstone
+				 * is useless — remove entirely. */
+				hlist_del(&old_de->node);
+				kfree(old_de);
+			}
 		} else {
-			kfree(old_de->base);
-			old_de->base = base_copy;
-			old_de->in_base = de->in_base;
+			agfs_pde_free(old_de->packed);
+			old_de->packed = packed;
 		}
-		old_de->ino = de->ino;
-		old_de->d_type = de->d_type;
-		old_de->gen = de->gen;
 		goto out;
 	}
 
@@ -212,17 +223,11 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 	memcpy(new_de->name, name, namelen);
 	new_de->name[namelen] = '\0';
 	new_de->name_len = namelen;
-	new_de->ino = de->ino;
-	new_de->d_type = de->d_type;
-	new_de->gen = de->gen;
-	/* No prior dirent: if deleting, path had content (base-only file). */
-	if (agfs_ino_is_deleted(de->ino)) {
-		new_de->base = NULL;
-		new_de->in_base = true;
-	} else {
-		new_de->base = base_copy;
-		new_de->in_base = de->in_base;
-	}
+	/* No prior dirent: if tombstone, path had content (base-only file). */
+	if (agfs_pde_is_tombstone(packed))
+		new_de->packed = (agfs_pde_t){0}; /* in_base=true is implicit for tombstone */
+	else
+		new_de->packed = packed;
 
 	hlist_add_head(&new_de->node,
 		       &dii->de_buckets[agfs_de_hash(name, namelen)]);
@@ -333,7 +338,6 @@ static int agfs_copy_to_inode(struct dentry *dentry,
 int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 		struct file **new_file, int flags, bool truncate)
 {
-	struct agfs_dirent de;
 	struct path inode_path;
 	u64 ino;
 	int err;
@@ -361,16 +365,12 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	 * Orphaned inodes are cleaned up on the next `agfs commit` or
 	 * `agfs abort` because the entire inode store is removed.
 	 */
-	de = (struct agfs_dirent){
-		.ino = ino,
-		.d_type = DT_REG,
-		.in_base = true,
-		.gen = (u64)atomic64_read(&sbi->gen),
-	};
 	inode_lock(d_inode(dentry->d_parent));
 	err = agfs_add_dirent(d_inode(dentry->d_parent),
 			      dentry->d_name.name,
-			      dentry->d_name.len, &de);
+			      dentry->d_name.len,
+			      agfs_pde_inode(ino, (u64)atomic64_read(&sbi->gen),
+					    DT_REG, true));
 	inode_unlock(d_inode(dentry->d_parent));
 	if (err) {
 		path_put(&inode_path);

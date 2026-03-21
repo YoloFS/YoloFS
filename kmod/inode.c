@@ -15,7 +15,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 			      umode_t mode, const char *symname)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
-	struct agfs_dirent *old_de, de;
+	struct agfs_dirent *old_de;
 	struct path inode_path;
 	unsigned char dt;
 	bool in_base;
@@ -35,19 +35,16 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	agfs_replace_lower_path(dentry, &inode_path);
 	dt = S_ISDIR(mode) ? DT_DIR : S_ISLNK(mode) ? DT_LNK : DT_REG;
 
-	/* Check for deleted dirent to inherit in_base. */
+	/* Check for tombstone dirent to inherit in_base. */
 	old_de = agfs_find_dirent(dir, dentry->d_name.name,
 				  dentry->d_name.len);
-	in_base = old_de && old_de->in_base;
+	in_base = old_de && agfs_pde_in_base(old_de->packed);
 
-	de = (struct agfs_dirent){
-		.ino = ino,
-		.d_type = dt,
-		.in_base = in_base,
-		.gen = (u64)atomic64_read(&sbi->gen),
-	};
 	err = agfs_add_dirent(dir, dentry->d_name.name,
-			      dentry->d_name.len, &de);
+			      dentry->d_name.len,
+			      agfs_pde_inode(ino,
+					    (u64)atomic64_read(&sbi->gen),
+					    dt, in_base));
 	if (err)
 		return err;
 
@@ -120,10 +117,10 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		       unsigned int flags)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
-	struct agfs_dirent *src_de, *dst_de, de;
+	struct agfs_dirent *src_de, *dst_de;
 	char old_buf[AGFS_PATH_MAX];
-	u64 ino = 0, gen = 0;
 	unsigned char d_type = DT_UNKNOWN;
+	agfs_pde_t packed;
 	bool dst_in_base;
 	int err;
 
@@ -144,16 +141,11 @@ static int agfs_rename(struct mnt_idmap *idmap,
 				  old_dentry->d_name.name,
 				  old_dentry->d_name.len);
 	if (src_de) {
-		ino = src_de->ino;
-		gen = src_de->gen;
-		d_type = src_de->d_type;
+		if (agfs_pde_is_tombstone(src_de->packed))
+			return -ENOENT;
+		d_type = agfs_pde_d_type(src_de->packed);
 	} else if (d_inode(old_dentry)) {
 		d_type = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
-	}
-
-	if (src_de && agfs_ino_is_deleted(ino)) {
-		err = -ENOENT;
-		goto out;
 	}
 
 	/* Check if destination has existing base content (for R vs P tag).
@@ -161,21 +153,20 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	dst_de = agfs_find_dirent(new_dir,
 				  new_dentry->d_name.name,
 				  new_dentry->d_name.len);
-	dst_in_base = dst_de ? dst_de->in_base : false;
+	dst_in_base = dst_de ? agfs_pde_in_base(dst_de->packed) : false;
 	if (!dst_de && d_inode(new_dentry))
 		dst_in_base = true;
 
 	/* Add destination dirent */
-	de = (struct agfs_dirent){ .d_type = d_type, .in_base = dst_in_base };
-	if (agfs_ino_is_staged(ino)) {
-		de.ino = ino;
-		de.gen = gen;
+	if (src_de && agfs_pde_is_inode(src_de->packed)) {
+		packed = agfs_pde_inode(agfs_pde_ino(src_de->packed),
+				       agfs_pde_gen(src_de->packed),
+				       d_type, dst_in_base);
 	} else {
-		de.ino = AGFS_INO_REDIRECT;
-		de.base = old_buf;
+		packed = agfs_pde_link(old_buf, d_type, dst_in_base);
 	}
 	err = agfs_add_dirent(new_dir, new_dentry->d_name.name,
-			      new_dentry->d_name.len, &de);
+			      new_dentry->d_name.len, packed);
 	if (err)
 		goto out;
 

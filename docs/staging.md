@@ -78,7 +78,7 @@ table on directory inodes.
 | `journal_file` | Open file handle to `.agfs/journal` (`O_APPEND`). The kernel only appends; it never reads the journal back. |
 | `staging_sem` | rw\_semaphore serializing COW / re-COW, checkpoint, and journal writes |
 | `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
-| `gen` | Atomic counter, starts at 1, bumped by each checkpoint and restore ioctl. Compared against `dirent.gen` at open time to decide COW / re-COW. |
+| `gen` | Atomic counter, starts at 1, bumped by each checkpoint and restore ioctl. Compared against the gen field in the packed dirent at open time to decide COW / re-COW. |
 | `staging_fd_count` | Atomic counter of open staging fds (opened for write). Checkpoint ioctl rejects with `-EBUSY` when > 0. |
 | `dirty` | Boolean flag set on every data journal write (A/M/D/R/P), cleared on checkpoint or restore. Used by `AGFS_CHK_IF_CHANGED` to skip empty auto-checkpoints. |
 | `pinned_dirs` | List head tracking `igrab()`-pinned directory inodes (those with dirents) for bulk release at cache invalidation / unmount. |
@@ -118,11 +118,7 @@ time is valid for the lifetime of the fd.
 
 | Field | Purpose |
 |-------|---------|
-| `ino` | Discriminant: `>0` → staged in `inodes/<ino>`, `0` → deleted, `AGFS_INO_REDIRECT` → content at `base` |
-| `base` | `NULL` for non-redirects; otherwise → absolute base path for zero-copy rename (redirect). |
-| `in_base` | `true` if this path existed in the base layer. Orthogonal to `ino`/`base`; inherited through deletes. Used at journal-write time to distinguish A from M and R from P. See [Tracking `in_base`](#tracking-in_base). |
-| `d_type` | File type (`DT_REG` / `DT_DIR` / `DT_LNK`) for correct readdir emission |
-| `gen` | `sbi->gen` at the time this inode was created. Used at open time: if `gen < sbi->gen`, a re-COW is needed. |
+| `packed` | Single `u64` encoding the dirent state. Three mutually exclusive variants discriminated by bit 0 and zero: **tombstone** (`packed == 0`, always `in_base=true`), **link** (`packed & 1`, pointer with tag bit — zero-copy rename), **inode** (even, non-zero — staged in `inodes/<ino>`). Bits [63:62] encode `d_type` (2-bit private encoding), bit [61] encodes `in_base`. Inode variant packs `ino` (45 bits) and `gen` (15 bits). See [Packed Encoding](#packed-encoding). |
 
 ## Path Resolution
 
@@ -131,34 +127,96 @@ Each directory inode holds a **dirent hash table** of child dirents
 current state of a child name:
 
 ```c
-#define AGFS_INO_DELETED   0ULL
-#define AGFS_INO_REDIRECT  ((u64)-1)
-
 struct agfs_dirent {
-    struct hlist_node node;
-    u64               ino;        /* >0 = staged, 0 = deleted, (u64)-1 = redirect */
-    char              *base;      /* redirect source path (non-NULL only for
-                                   * redirects); NULL for staged/deleted */
-    u64               gen;        /* sbi->gen when inode was created */
-    bool              in_base;       /* true if this path had existing content */
-    unsigned int      name_len;
-    unsigned char     d_type;     /* DT_REG / DT_DIR / DT_LNK for readdir */
-    char              name[];
-};
+    struct hlist_node   node;       /* 16 bytes */
+    u64                 packed;     /*  8 bytes */
+    unsigned int        name_len;   /*  4 bytes */
+    char                name[];     /*  flexible */
+};  /* 28 bytes fixed overhead before name[] */
 ```
 
-Discrimination is by `ino` alone. `in_base` is orthogonal — it tracks
-whether the destination name existed in the base filesystem, inherited
-through deletes and used to select journal tags (A/M for staged, R/P
-for renames):
+### Packed Encoding
 
-- `ino > 0` (and `!= AGFS_INO_REDIRECT`) → staged file, symlink, or directory
-  in `inodes/<ino>`. `gen` records when the inode was created; if
-  `gen < sbi->gen`, a re-COW is needed on the next
-  open-for-write.
-- `ino == AGFS_INO_REDIRECT` → redirect to `base` path (zero-copy rename)
-- `ino == 0` → deleted (lookup returns negative dentry)
+Three mutually exclusive states discriminated by **bit 0** and zero:
+
+- `packed == 0` → **tombstone** (deleted). Always `in_base=true`.
+  A delete of an `in_base=false` entry removes the entry entirely
+  (cancelled-entry removal) rather than creating a tombstone.
+- `packed & 1 == 1` → **link** (odd — pointer with bit 0 set).
+  Zero-copy rename redirect to a base path.
+- `packed != 0 && !(packed & 1)` → **inode** (even, non-zero).
+  Staged content in `inodes/<ino>`.
 - no entry at all → fall through to base filesystem
+
+`d_type` (bits [63:62]) and `in_base` (bit [61]) occupy the same
+position in both inode and link variants, making common accessors
+branchless.
+
+**Inode layout** (even, non-zero):
+
+```
+[63:62]  d_type    2 bits  (private 2-bit encoding)
+[61]     in_base   1 bit
+[60:16]  ino      45 bits  (max ~35.2 trillion; always > 0)
+[15:1]   gen      15 bits  (max 32767)
+[0]      0                 (tag: even = inode)
+```
+
+**Link layout** (odd):
+
+The `kstrdup` pointer (≥ 8-byte aligned, so bit 0 = 0) is stored with
+bit 0 flipped to 1 as the tag. `d_type` and `in_base` borrow bits
+[63:61] from kernel sign-extension (safe on x86_64 — at least bits
+[63:57] are sign extension for kernel addresses).
+
+```
+[63:62]  d_type    2 bits  (borrowed from sign extension)
+[61]     in_base   1 bit   (borrowed from sign extension)
+[60:1]   pointer bits [60:1]  (real address bits)
+[0]      1                    (tag — pointer bit 0 was 0)
+```
+
+Pointer recovery: `(packed & 0x1FFFFFFFFFFFFFFE) | 0xE000000000000000`
+(restore sign-extension bits [63:61] = 111, clear tag bit 0).
+
+**d_type 2-bit encoding**: The libc `DT_*` constants need 4 bits.
+We compress to 2 bits with a private encoding, converting at
+encode/decode boundaries:
+
+| 2-bit | Meaning   | Libc       |
+|-------|-----------|------------|
+| `00`  | regular   | `DT_REG`   |
+| `01`  | directory | `DT_DIR`   |
+| `10`  | symlink   | `DT_LNK`   |
+| `11`  | invalid   | bug check  |
+
+**Cancelled-entry removal**: When `add_dirent` transitions an entry to
+tombstone and the existing entry has `in_base=false`, the entry is
+removed from the hash table entirely (`hlist_del` + `kfree`) instead of
+being kept as a tombstone. This is safe because lookup treats `!de`
+(fall through to base) and `in_base=false` tombstone identically — no
+base entry exists in either case. Benefits: less memory, faster
+lookups/readdir, and the tombstone becomes a single zero constant (no
+`in_base` variation).
+
+**Branchless accessors**:
+
+```c
+is_tombstone = !packed
+is_link      = packed & 1
+is_inode     = packed && !(packed & 1)
+d_type       = agfs_dtype_unpack((packed >> 62) & 3)  // inode + link
+in_base      = (packed >> 61) & 1                      // inode + link
+ino          = (packed >> 16) & 0x1FFFFFFFFFFF         // inode only
+gen          = (packed >> 1) & 0x7FFF                  // inode only
+base         = (packed & 0x1FFFFFFFFFFFFFFE)
+             | 0xE000000000000000                      // link only
+```
+
+`in_base` is orthogonal to the variant — it tracks whether the
+destination name existed in the base filesystem, inherited through
+deletes and used to select journal tags (A/M for staged, R/P for
+renames).
 
 **`find_dirent`** — hash lookup in the parent directory's dirent table:
 
@@ -170,9 +228,9 @@ find_dirent(dir, name):
     return NULL
 ```
 
-`base` is always owned by the dirent entry. Readers that outlive the
-VFS `i_rwsem` (e.g. rename) must duplicate it before resolving, because
-writers are free to replace the string in place when publishing a new dirent.
+Link base pointers are owned by the packed encoding. Readers that
+outlive the VFS `i_rwsem` (e.g. rename) must duplicate the base string
+before resolving, because writers are free to replace the entry.
 
 **`add_dirent`** — upsert: update existing dirent or insert into bucket:
 
@@ -180,29 +238,34 @@ writers are free to replace the string in place when publishing a new dirent.
 add_dirent(dir, name, de_template):
     de = find_dirent(dir, name)
     if de:
-        de.ino = de_template.ino
-        de.gen = de_template.gen
-        if de_template.ino == 0:
-            # Deleting: keep existing base (inherit from what was here)
+        if de_template is tombstone:
+            if agfs_pde_in_base(de.packed):
+                # Transitioning to tombstone, entry was in base:
+                # free any link pointer, set packed = 0.
+                free_link_if_needed(de.packed)
+                de.packed = 0
+            else:
+                # Cancelled entry: in_base=false tombstone is useless.
+                # Remove entirely — lookup treats !de same as
+                # in_base=false tombstone.
+                free_link_if_needed(de.packed)
+                hlist_del(de)
+                kfree(de)
         else:
-            de.base = dup(de_template.base)   # replace owned copy
-            de.in_base = de_template.in_base
+            free_link_if_needed(de.packed)
+            de.packed = de_template.packed
     else:
         de = alloc_dirent(name)
-        de.ino = de_template.ino
-        de.gen = de_template.gen
-        if de_template.ino == 0:
-            de.base = NULL          # no prior dirent → file was only in base
-            de.in_base = true
+        if de_template is tombstone:
+            de.packed = 0           # no prior dirent → file was only in base
         else:
-            de.base = dup(de_template.base)
-            de.in_base = de_template.in_base
+            de.packed = de_template.packed
         bucket = hash(name) >> (32 - shift)
         dir.de_buckets[bucket].add(de)
 ```
 
-A dirent is **deleted** when `ino == 0`
-(i.e. `add_dirent(dir, name)` with no other arguments).
+A dirent is **tombstoned** when `packed == 0`
+(i.e. `del_dirent(dir, name)` which passes an all-zero template).
 
 **Lookup** (`agfs_lookup`) — called by the VFS when a name is first
 accessed in a directory:
@@ -211,11 +274,11 @@ accessed in a directory:
 agfs_lookup(dir, name):
     de = find_dirent(dir, name)
     if de:
-        if de.ino > 0 and de.ino != AGFS_INO_REDIRECT:
-            return inode for inodes/<de.ino>   # staged
-        if de.ino == AGFS_INO_REDIRECT:
-            return inode for base/<de.base>  # redirect
-        return negative dentry  # deleted (ino == 0)
+        if agfs_pde_is_inode(de.packed):
+            return inode for inodes/<agfs_pde_ino(de.packed)>   # staged
+        if agfs_pde_is_link(de.packed):
+            return inode for base/<agfs_pde_base(de.packed)>  # link
+        return negative dentry  # tombstone (packed == 0)
     return base_lookup(dir, name)   # fall through to base
 ```
 
@@ -224,7 +287,8 @@ agfs_lookup(dir, name):
 ```
 agfs_readdir(dir):
     for de in dir.de_buckets[*]:
-        if not de.is_deleted:  dir_emit(de.name)
+        if not agfs_pde_is_tombstone(de.packed):
+            dir_emit(de.name, agfs_pde_emit_ino(de.packed), agfs_pde_d_type(de.packed))
     for entry in base_readdir(dir):
         if not find_dirent(dir, entry.name):  dir_emit(entry.name)
 ```
@@ -254,18 +318,18 @@ Create/mkdir/symlink/unlink/rmdir/rename are already serialized by the VFS
 
 ```
 agfs_open(inode, file):
-    de = find_dirent(parent, name)
+    packed = read_dirent(parent, name)   # returns u64 packed (0 if no entry)
 
     if file->f_flags & (O_WRONLY | O_RDWR):
-        if de and agfs_ino_is_staged(de.ino) and de.gen >= sbi->gen:
+        if agfs_pde_is_current(packed, sbi->gen):
             // Inode is current — open it directly (O_TRUNC truncates in place).
             down_read(staging_sem)
             atomic_inc(staging_fd_count)
             up_read(staging_sem)
-            file_info->lower_file = open(inodes/<ino>, file->f_flags)
+            file_info->lower_file = open(inodes/<agfs_pde_ino(packed)>, file->f_flags)
 
         else:
-            // Needs COW (base file, redirected, or stale inode).
+            // Needs COW (base file, link, or stale inode).
             // agfs_do_cow copies from dentry's current lower_path
             // to a fresh inode. With O_TRUNC, creates an empty inode.
             down_write(staging_sem)
@@ -273,8 +337,8 @@ agfs_open(inode, file):
             // already COW'd this file since our check above.
             atomic_inc(staging_fd_count)
             new_file = agfs_do_cow(sbi, dentry, flags, O_TRUNC in flags)
-            // agfs_do_cow updates: dirent (ino, gen,
-            //   sets in_base=true), dentry lower_path, journal
+            // agfs_do_cow updates: dirent (packed with new ino, gen,
+            //   in_base=true), dentry lower_path, journal
             up_write(staging_sem)
             file_info->lower_file = new_file
 
@@ -326,10 +390,9 @@ agfs_create(dir, name, mode):
     ino = next_ino++
     create file inodes/<ino>
     old_de = find_dirent(dir, name)
-    in_base = old_de ? old_de.in_base : false   # inherit from deleted dirent
-    add_dirent(dir, name, ino=ino,
-               in_base=in_base,
-               gen=sbi->gen)
+    in_base = old_de ? agfs_pde_in_base(old_de.packed) : false   # inherit from tombstone
+    add_dirent(dir, name,
+               packed=agfs_pde_inode(ino, sbi->gen, dt, in_base))
     if in_base:
         journal(M, path, dtype, ino)
     else:
@@ -339,10 +402,9 @@ agfs_mkdir(dir, name, mode):
     ino = next_ino++
     create dir inodes/<ino>/
     old_de = find_dirent(dir, name)
-    in_base = old_de ? old_de.in_base : false
-    add_dirent(dir, name, ino=ino,
-               in_base=in_base,
-               gen=sbi->gen)
+    in_base = old_de ? agfs_pde_in_base(old_de.packed) : false
+    add_dirent(dir, name,
+               packed=agfs_pde_inode(ino, sbi->gen, dt, in_base))
     if in_base:
         journal(M, path, dtype, ino)
     else:
@@ -352,10 +414,9 @@ agfs_symlink(dir, name, target):
     ino = next_ino++
     create symlink inodes/<ino> -> target
     old_de = find_dirent(dir, name)
-    in_base = old_de ? old_de.in_base : false
-    add_dirent(dir, name, ino=ino,
-               in_base=in_base,
-               gen=sbi->gen)
+    in_base = old_de ? agfs_pde_in_base(old_de.packed) : false
+    add_dirent(dir, name,
+               packed=agfs_pde_inode(ino, sbi->gen, dt, in_base))
     if in_base:
         journal(M, path, dtype, ino)
     else:
@@ -367,15 +428,17 @@ visible in `agfs status` / `agfs diff` and cleanly discarded by abort.
 
 ## Delete / Rmdir Path
 
-Delete adds a "deleted" dirent (`ino = 0`) and appends to the journal:
+Delete adds a tombstone dirent (`packed = 0`) and appends to the journal.
+If the existing entry has `in_base=false`, the entry is removed entirely
+(cancelled-entry removal) instead of creating a tombstone:
 
 ```
 agfs_unlink(dir, name):
-    add_dirent(dir, name)   # ino=0 = deleted
+    del_dirent(dir, name)   # packed=0 = tombstone (or cancel if in_base=false)
     journal(D, path, dtype)
 
 agfs_rmdir(dir, name):
-    add_dirent(dir, name)   # ino=0 = deleted
+    del_dirent(dir, name)   # packed=0 = tombstone (or cancel if in_base=false)
     journal(D, path, dtype)
 ```
 
@@ -394,24 +457,25 @@ record. R if the destination is NOT in base; P if the destination IS in base.
 agfs_rename(old_parent, old_name, new_parent, new_name):
     old_de = find_dirent(old_parent, old_name)
     dst_de = find_dirent(new_parent, new_name)
-    dst_in_base = dst_de ? dst_de.in_base : file_exists_in_base(new_name)
+    dst_in_base = dst_de ? agfs_pde_in_base(dst_de.packed) : file_exists_in_base(new_name)
     dst = join(new_parent, new_name)
     src = join(old_parent, old_name)
 
-    if old_de and agfs_ino_is_staged(old_de.ino):
+    if old_de and agfs_pde_is_inode(old_de.packed):
         # File has a staged inode -- move the dirent, keep same ino.
-        add_dirent(new_parent, new_name, ino=old_de.ino,
-                     in_base=dst_in_base,
-                     gen=old_de.gen)
+        add_dirent(new_parent, new_name,
+                     packed=agfs_pde_inode(agfs_pde_ino(old_de.packed),
+                                          agfs_pde_gen(old_de.packed),
+                                          d_type, dst_in_base))
     else:
-        # File only in base or already redirected -- redirect to
+        # File only in base or already a link -- create link to
         # the current dentry path (no chain resolution).
-        add_dirent(new_parent, new_name, ino=AGFS_INO_REDIRECT,
-                     base=src,
-                     in_base=dst_in_base)
+        add_dirent(new_parent, new_name,
+                     packed=agfs_pde_link(src, d_type, dst_in_base))
 
-    # Hide the old name (ino=0 = deleted). in_base is inherited.
-    add_dirent(old_parent, old_name)   # ino=0, inherits in_base
+    # Tombstone the old name. in_base is inherited via cancelled-entry
+    # removal (in_base=false entries are removed entirely).
+    del_dirent(old_parent, old_name)
 
     # All renames emit a single R or P record.
     if dst_in_base:
@@ -421,24 +485,25 @@ agfs_rename(old_parent, old_name, new_parent, new_name):
 ```
 
 **Rename chains** (`mv a->b`, then `mv b->c`) work naturally: the second
-rename finds the REDIRECTED dirent on `b`, uses its dentry path as the old
-path, and creates a new REDIRECTED dirent on `c`. The dirent stores the
+rename finds the link dirent on `b`, uses its dentry path as the old
+path, and creates a new link dirent on `c`. The dirent stores the
 current dentry path (not the resolved base path) — each rename is
 recorded as a separate journal entry and replayed in order at commit time.
 
 **Rename + recreate** (`mv a->b`, then `touch a`) works because the new
-`touch a` sees the deleted dirent (with `in_base` inherited from the
+`touch a` sees the tombstone dirent (with `in_base` inherited from the
 rename) and creates a new staged dirent that supersedes it. The rename
 emits `R(b, a)` (or `P(b, a)` if `b` was in base), so the journal sees
 `R(b, a)` for the rename, then `A(a)` or `M(a)` for the recreate.
 
 **Read after rename**: lookup of the new name finds the dirent ->
-opens the base file at the redirected path (or the staged inode).
-Lookup of the old name finds the DELETED dirent -> returns `-ENOENT`.
+opens the base file at the link's base path (or the staged inode).
+Lookup of the old name finds the tombstone dirent -> returns `-ENOENT`
+(or no entry if cancelled).
 
 **Write after rename**: opening for write triggers COW at open time. The
-base file is copied into a new inode; the dirent changes from
-`base=<path>` to `ino=N`.
+base file is copied into a new inode; the dirent changes from a link
+to an inode variant.
 
 Commit and abort handling for renames is covered in
 [Staging Operations](#staging-operations-userspace).
@@ -466,10 +531,12 @@ then base entries that aren't overridden.
 
 ```
 agfs_readdir(dir, ctx):
-    # 1. Emit non-deleted dirents.
+    # 1. Emit non-tombstone dirents.
     for de in dir.de_buckets[*]:
-        if not de.is_deleted:
-            dir_emit(ctx, de.name)
+        if not agfs_pde_is_tombstone(de.packed):
+            dir_emit(ctx, de.name,
+                     agfs_pde_emit_ino(de.packed),
+                     agfs_pde_d_type(de.packed))
 
     # 2. Emit base entries not overridden by dirents.
     for entry in base_readdir(dir):
@@ -478,9 +545,9 @@ agfs_readdir(dir, ctx):
 ```
 
 Dirent entries are emitted with the correct `d_type` (DT_REG, DT_DIR,
-DT_LNK) stored in each dirent. The `ino` passed to `dir_emit` is
-`de->ino` directly — staged inodes use their inode-store ID, redirects
-use `AGFS_INO_REDIRECT` (non-zero, so entries are never silently skipped).
+DT_LNK) decoded from the packed field. The `ino` passed to `dir_emit`
+is the real ino for inode entries and `(u64)-1` for links (preserving
+the `AGFS_INO_REDIRECT` behavior so readdir output is unchanged).
 
 The merged list is built fresh on every `readdir` call — no caching.
 This ensures creates, deletes, and renames between `getdents64` calls
@@ -499,7 +566,7 @@ triggered by setattr itself.
 **`getattr`** (e.g., `stat`): Stats from the resolved path — the staged
 inode if the file has been modified, otherwise the base file.
 
-**`fsync`**: If the file is staged (`agfs_ino_is_staged(de->ino)`),
+**`fsync`**: If the file is staged (`agfs_pde_is_inode(packed)`),
 returns 0 immediately — staged inodes are ephemeral and will be committed or
 discarded as a batch. For base files opened read-only, fsync is delegated to
 the lower filesystem as usual.
@@ -554,27 +621,30 @@ self-describing.
 
 ### Tracking `in_base`
 
-The kernel determines the journal tag at write time using the `in_base`
-field on `agfs_dirent`. This flag means "the path had existing content
-at operation time" — it applies to both base and staged content.
-The field is set at staging time and inherited through deletes:
+The kernel determines the journal tag at write time using `in_base`
+decoded from the packed dirent (`agfs_pde_in_base(de->packed)`). This
+flag means "the path had existing content at operation time" — it
+applies to both base and staged content. The field is set at staging
+time and inherited through deletes:
 
 | Operation | `in_base` | Rationale |
 |-----------|:---------:|-----------|
 | `agfs_create_staged` (touch/mkdir/symlink) | `false` | New path, no prior content |
-| `agfs_create_staged` (re-create after delete) | inherited | Inherits from deleted dirent |
+| `agfs_create_staged` (re-create after delete) | inherited | Inherits from tombstone dirent |
 | `agfs_do_cow` (write to existing) | `true` | Path had content (base or staged) |
 | Rename (any source) | `dst_in_base` | Whether destination had content |
-| `agfs_del_dirent` (with prior dirent) | inherited | Preserves origin info |
+| `agfs_del_dirent` (with prior dirent, in_base=true) | inherited | Tombstone preserves origin info |
+| `agfs_del_dirent` (with prior dirent, in_base=false) | — | Entry removed entirely (cancelled) |
 | `agfs_del_dirent` (no prior dirent) | `true` | Path had content (base only) |
 
-The `base` field on the dirent is used only for redirect source paths
-(non-NULL for redirects, NULL otherwise). It is not used as an `in_base`
-indicator.
+The link base pointer in the packed encoding is used only for link
+source paths. It is not used as an `in_base` indicator.
 
-When `agfs_create_staged` is called and a deleted dirent already exists
-for that name (re-create after delete), the deleted dirent's `in_base`
-determines the journal tag: M if true, A if false.
+When `agfs_create_staged` is called and a tombstone dirent already exists
+for that name (re-create after delete), the tombstone's `in_base`
+determines the journal tag: M if true, A if false. (Tombstones always
+have `in_base=true` after cancelled-entry removal, so re-creates after
+a base file delete always emit M.)
 
 **Edge cases:**
 
@@ -584,9 +654,10 @@ determines the journal tag: M if true, A if false.
   processes the `Modify` action.
 
 - **Delete + re-create of a staged-only file** (`touch x && rm x && touch x`
-  within a session): The first create sets `in_base=false`. Delete
-  inherits `in_base=false`. Re-create sees `in_base=false` → emits A.
-  The tree builder correctly processes the `Add` action.
+  within a session): The first create sets `in_base=false`. Delete triggers
+  cancelled-entry removal (entry removed entirely). Re-create finds no
+  dirent, defaults `in_base=false` → emits A. The tree builder correctly
+  processes the `Add` action.
 
 - **COW + delete + re-create** (`echo hi >> existing && rm existing && touch existing`):
   COW sets `in_base=true`. Delete inherits it. Re-create
@@ -595,8 +666,8 @@ determines the journal tag: M if true, A if false.
 - **Rename + delete + re-create at source** (`mv a b && touch a`):
   The rename emits `R(b, a)` (or `P(b, a)` if `b` was in base). `touch a` sees the
   deleted dirent with inherited `in_base=true` (base file existed) →
-  emits M. If `a` had been staged-only, the deleted dirent inherits
-  `in_base=false` → emits A.
+  emits M. If `a` had been staged-only, delete triggers cancelled-entry
+  removal, so `touch a` finds no dirent, defaults `in_base=false` → emits A.
 
 - **Rename-overwrite + move** (`mv b a && mv a c`, both `a` and `b` in
   base): The first rename overwrites base `a`. Because `dst_in_base` is
@@ -728,23 +799,23 @@ checkpoints from read-only or no-op commands.
 
 ### Re-COW on First Open-for-Write After Checkpoint
 
-The COW check is per-dirent: `dirent.gen` records the
-`sbi->gen` at which the current inode was created.
-`sbi->gen` starts at 1. Newly created files set
+The COW check is per-dirent: `agfs_pde_gen(de->packed)` records the
+`sbi->gen` at which the current inode was created (truncated to 15
+bits). `sbi->gen` starts at 1. Newly created files set
 `gen = sbi->gen` at creation time, so they are already
 up-to-date and skip the COW check. Base files that have no dirent
-(or have `ino == 0`) naturally trigger COW on the first
+(or are tombstoned) naturally trigger COW on the first
 open-for-write.
 
 At open time, the COW check in `agfs_open` (see [Open / Read / Write
 Path](#open--read--write-path)) handles both base→staged COW and
-staged→staged re-COW: if the dirent is missing, has no ino, or has a
+staged→staged re-COW: if the dirent is missing, is a tombstone, or has a
 stale `gen`, a fresh inode is created.
 
 `agfs_do_cow` copies from the dentry's current `lower_path` — which is
 the base file before any COW, or the current staged inode after one.
 The same function handles both cases; no separate re-COW path.
-`agfs_do_cow` also updates `dirent.gen` after a successful COW.
+`agfs_do_cow` also updates the gen field in the packed dirent after a successful COW.
 
 Because no fd spans a checkpoint boundary (enforced by `staging_fd_count`),
 the write and mmap paths need no COW checks — they are pure pass-throughs.

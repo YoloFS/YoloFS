@@ -93,24 +93,20 @@ static struct file *agfs_open_staged_ino(struct agfs_sb_info *sbi,
 	return f;
 }
 
-/* Read ino + gen from the parent's dirent table. */
-static void agfs_read_dirent(struct dentry *dentry, u64 *ino, u64 *gen)
+/* Read packed dirent from the parent's dirent table. */
+static agfs_pde_t agfs_read_dirent(struct dentry *dentry)
 {
 	struct inode *dir = d_inode(dentry->d_parent);
 	struct agfs_dirent *de;
+	agfs_pde_t packed;
 
 	/* open() does not hold parent's i_rwsem — take it explicitly */
 	inode_lock_shared(dir);
 	de = agfs_find_dirent(dir, dentry->d_name.name,
 				 dentry->d_name.len);
-	if (de) {
-		*ino = de->ino;
-		*gen = de->gen;
-	} else {
-		*ino = 0;
-		*gen = 0;
-	}
+	packed = de ? de->packed : (agfs_pde_t){0};
 	inode_unlock_shared(dir);
+	return packed;
 }
 
 /* Open the right file for a staged regular file.
@@ -122,39 +118,36 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 {
 	struct file *new_file = NULL;
 	bool truncate;
-	u64 ino, gen;
+	agfs_pde_t packed;
 	int err;
-
-	agfs_read_dirent(dentry, &ino, &gen);
 
 	if (!(file->f_flags & (O_WRONLY | O_RDWR)))
 		return agfs_open_lower(dentry, file->f_flags);
 
-	/* Fast path: inode is current — open directly */
-	if (agfs_ino_is_staged(ino) &&
-	    gen >= (u64)atomic64_read(&sbi->gen)) {
-		down_read(&sbi->staging_sem);
-		/* Re-check under lock — a checkpoint may have raced */
-		if (gen >= (u64)atomic64_read(&sbi->gen)) {
-			atomic_inc(&sbi->staging_fd_count);
-			up_read(&sbi->staging_sem);
-			return agfs_open_staged_ino(sbi, ino, file->f_flags);
-		}
+	/* Fast path: inode is current — open directly.
+	 * staging_sem excludes checkpoint, so gen is stable under the lock. */
+	down_read(&sbi->staging_sem);
+	packed = agfs_read_dirent(dentry);
+	if (agfs_pde_is_current(packed, atomic64_read(&sbi->gen))) {
+		atomic_inc(&sbi->staging_fd_count);
 		up_read(&sbi->staging_sem);
+		return agfs_open_staged_ino(sbi, agfs_pde_ino(packed),
+					    file->f_flags);
 	}
+	up_read(&sbi->staging_sem);
 
-	/* Slow path: needs COW (base file, redirected, or stale inode) */
+	/* Slow path: needs COW (base file, link, or stale inode) */
 	truncate = !!(file->f_flags & O_TRUNC);
 
 	down_write(&sbi->staging_sem);
 
-	/* Re-check under sem — a concurrent open may have COW'd */
-	agfs_read_dirent(dentry, &ino, &gen);
-	if (agfs_ino_is_staged(ino) &&
-	    gen >= (u64)atomic64_read(&sbi->gen)) {
+	/* Re-check — a concurrent open may have COW'd */
+	packed = agfs_read_dirent(dentry);
+	if (agfs_pde_is_current(packed, atomic64_read(&sbi->gen))) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_write(&sbi->staging_sem);
-		return agfs_open_staged_ino(sbi, ino, file->f_flags);
+		return agfs_open_staged_ino(sbi, agfs_pde_ino(packed),
+					    file->f_flags);
 	}
 
 	atomic_inc(&sbi->staging_fd_count);
@@ -408,7 +401,7 @@ static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
 
 	for (bi = 0; bi < AGFS_DE_BUCKETS; bi++) {
 		hlist_for_each_entry(de, &dii->de_buckets[bi], node) {
-			if (agfs_ino_is_deleted(de->ino)) {
+			if (agfs_pde_is_tombstone(de->packed)) {
 				(*off)++;
 				continue;
 			}
@@ -418,7 +411,8 @@ static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
 			}
 
 			if (!dir_emit(ctx, de->name, de->name_len,
-				      de->ino, de->d_type))
+				      agfs_pde_emit_ino(de->packed),
+				      agfs_pde_d_type(de->packed)))
 				return true;
 			(*off)++;
 			ctx->pos++;

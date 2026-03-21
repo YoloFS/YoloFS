@@ -383,6 +383,9 @@ static int __init agfs_init(void)
 {
 	int err;
 
+	BUILD_BUG_ON(ARCH_KMALLOC_MINALIGN < 8);
+	BUILD_BUG_ON(!IS_ENABLED(CONFIG_X86_64));
+
 	agfs_inode_cachep = kmem_cache_create("agfs_inode_cache",
 					      sizeof(struct agfs_inode_info), 0,
 					      SLAB_RECLAIM_ACCOUNT | SLAB_ACCOUNT,

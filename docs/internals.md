@@ -12,8 +12,8 @@ avoiding the 512-byte allocation. See [staging.md — Path Resolution](staging.m
 `agfs_dirent` struct.
 
 No per-fd checkpoint state is needed. The COW check uses
-`dirent.gen < sbi->gen` (purely per-dirent). The fsync
-optimization uses `agfs_ino_is_staged(de->ino)`. The CLI enforces that
+`agfs_pde_gen(packed) < sbi->gen` (purely per-dirent). The fsync
+optimization uses `agfs_pde_is_inode(de->packed)`. The CLI enforces that
 checkpoints are only taken when no staging file handles are open
 (see [staging.md — Re-COW](staging.md#re-cow-on-first-open-for-write-after-checkpoint)),
 so there are no stale cross-checkpoint handles to track.
@@ -50,11 +50,11 @@ the ioctl wire format.
 
 | Operation    | Perm check                                                   | Staging layer                                                                     | Passthrough                               |
 | ------------ | ------------------------------------------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------- |
-| `lookup`     | --                                                           | Check dirent table first (deleted -> ENOENT, ino -> staged inode, base redirect -> redirect); fall back to base. | `lookup_one_len()` on base dir. |
+| `lookup`     | --                                                           | Check dirent table first (tombstone -> ENOENT, inode -> staged inode, link -> base redirect); fall back to base. | `lookup_one_len()` on base dir. |
 | `create`     | -- (dir perm via lower FS)                                   | Allocate inode, add dirent + journal A record.                                  | `vfs_create()` on inode store.  |
 | `mkdir`      | -- (dir perm via lower FS)                                   | Allocate directory inode, add dirent + journal A record.                        | --                               |
-| `unlink`     | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal D record.                                           | --                                         |
-| `rmdir`      | -- (dir perm via lower FS)                                   | Add DELETED dirent, journal D record.                                           | --                                         |
+| `unlink`     | -- (dir perm via lower FS)                                   | Add tombstone dirent, journal D record.                                           | --                                         |
+| `rmdir`      | -- (dir perm via lower FS)                                   | Add tombstone dirent, journal D record.                                           | --                                         |
 | `rename`     | -- (dir perm via lower FS)                                   | See [Rename Handling](staging.md#rename-handling). Emits single R or P record.    | --                                         |
 | `symlink`    | -- (dir perm via lower FS)                                   | Allocate inode (symlink), add dirent + journal A record.                        | `vfs_symlink()`.                          |
 | `permission` | **Gating for regular files (O(1) cached); delegate to lower FS for dirs.** | --                                                                                 | `inode_permission()` on lower inode.      |
@@ -70,7 +70,7 @@ the ioctl wire format.
 | `write_iter` | Pure pass-through — COW already resolved at open time. Delegate to `lower->write_iter()`. |
 | `fallocate`  | Pure pass-through to `lower->f_op->fallocate()` when supported by the lower fs. |
 | `mmap`       | Pure pass-through — COW already resolved at open time. Delegate to lower file. |
-| `fsync`      | If `agfs_ino_is_staged(de->ino)`: return 0 (staged inodes are ephemeral). Otherwise delegate to lower.                                                            |
+| `fsync`      | If `agfs_pde_is_inode(packed)`: return 0 (staged inodes are ephemeral). Otherwise delegate to lower.                                                            |
 | `release`    | Decrement `staging_fd_count` if write-mode. `fput()` lower file. Free `agfs_file_info`.                                                                                                           |
 | `llseek`     | Delegate to lower.                                                                                                                                                                                |
 
@@ -133,7 +133,7 @@ resolved immediately using `ask_default`.
 
 | Lock | Protects | Type |
 |---|---|---|
-| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + `dirent.gen`). Also serializes restore (T record write). | `rw_semaphore` (write for COW/checkpoint/restore). Create/mkdir/symlink/unlink/rmdir/rename are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
+| `sb->staging_sem` | Publishing staging mutations atomically (dirent + journal + dentry swap + packed gen). Also serializes restore (T record write). | `rw_semaphore` (write for COW/checkpoint/restore). Create/mkdir/symlink/unlink/rmdir/rename are serialized by VFS `inode_lock(dir)` and do not need `staging_sem`. |
 | `sb->pending_lock` | Pending request queue | `spinlock` |
 | `inode->i_rwsem` (VFS) | Per-directory dirent table | `rw_semaphore` (held by VFS for lookup/readdir/mutations) |
 | `dentry_info->lock` | Cached lower path | `spinlock` |

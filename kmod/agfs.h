@@ -150,31 +150,164 @@ struct agfs_perm_request {
 
 /* ── Per-directory dirent ─────────────────────────────────────── */
 
+/* Opaque packed dirent value — use agfs_pde_* helpers to access. */
+typedef struct { u64 val; } agfs_pde_t;
+
 struct agfs_dirent {
 	struct hlist_node	node;
-	u64			ino;		/* >0 = staged, 0 = deleted, (u64)-1 = redirect */
-	char			*base;		/* redirect: source path; else NULL */
-	u64			gen;		/* sbi->gen when inode was created */
+	agfs_pde_t		packed;
 	unsigned int		name_len;
-	unsigned char		d_type;		/* DT_REG / DT_DIR / DT_LNK for readdir */
-	bool			in_base;	/* path had existing content */
 	char			name[];
 };
 
+/* ── Packed dirent encoding ────────────────────────────────────── */
 
-static inline bool agfs_ino_is_staged(u64 ino)
+/*
+ * Three mutually exclusive states in a single u64:
+ *   val == 0              → tombstone (always in_base=true)
+ *   val & 1               → link (kstrdup pointer with bit 0 tagged)
+ *   val != 0 && !(val & 1) → inode (even, non-zero)
+ *
+ * Inode layout:
+ *   [63:62] d_type   2 bits (private encoding)
+ *   [61]    in_base  1 bit
+ *   [60:16] ino      45 bits (always > 0)
+ *   [15:1]  gen      15 bits
+ *   [0]     0
+ *
+ * Link layout:
+ *   [63:62] d_type   2 bits (borrowed from sign extension)
+ *   [61]    in_base  1 bit  (borrowed from sign extension)
+ *   [60:1]  pointer bits [60:1]
+ *   [0]     1        (tag)
+ *
+ * Pointer recovery: (val & 0x1FFFFFFFFFFFFFFE) | 0xE000000000000000
+ */
+
+/* ── d_type 2-bit private encoding ─────────────────────────────── */
+
+static inline u64 agfs_dtype_pack(unsigned char libc_dt)
 {
-	return ino != AGFS_INO_DELETED && ino != AGFS_INO_REDIRECT;
+	switch (libc_dt) {
+	case DT_REG: return 0;
+	case DT_DIR: return 1;
+	case DT_LNK: return 2;
+	default:
+		WARN_ON_ONCE(1);
+		return 3;
+	}
 }
 
-static inline bool agfs_ino_is_redirect(u64 ino)
+static inline unsigned char agfs_dtype_unpack(u64 packed_dt)
 {
-	return ino == AGFS_INO_REDIRECT;
+	switch (packed_dt) {
+	case 0: return DT_REG;
+	case 1: return DT_DIR;
+	case 2: return DT_LNK;
+	default:
+		WARN_ON_ONCE(1);
+		return DT_UNKNOWN;
+	}
 }
 
-static inline bool agfs_ino_is_deleted(u64 ino)
+/* ── Predicates ────────────────────────────────────────────────── */
+
+static inline bool agfs_pde_is_tombstone(agfs_pde_t p)
 {
-	return ino == AGFS_INO_DELETED;
+	return p.val == 0;
+}
+
+static inline bool agfs_pde_is_link(agfs_pde_t p)
+{
+	return p.val & 1;
+}
+
+static inline bool agfs_pde_is_inode(agfs_pde_t p)
+{
+	return p.val && !(p.val & 1);
+}
+
+/* ── Decoders (valid for both inode and link unless noted) ──────── */
+
+static inline unsigned char agfs_pde_d_type(agfs_pde_t p)
+{
+	return agfs_dtype_unpack((p.val >> 62) & 3);
+}
+
+static inline bool agfs_pde_in_base(agfs_pde_t p)
+{
+	if (agfs_pde_is_tombstone(p))
+		return true; /* tombstones are always in_base */
+	return (p.val >> 61) & 1;
+}
+
+/* inode only */
+static inline u64 agfs_pde_ino(agfs_pde_t p)
+{
+	return (p.val >> 16) & 0x1FFFFFFFFFFF;
+}
+
+/* inode only */
+static inline u64 agfs_pde_gen(agfs_pde_t p)
+{
+	return (p.val >> 1) & 0x7FFF;
+}
+
+/* True if packed is a current-generation inode (no COW needed). */
+static inline bool agfs_pde_is_current(agfs_pde_t p, u64 gen)
+{
+	return agfs_pde_is_inode(p) && agfs_pde_gen(p) >= gen;
+}
+
+/* link only — recover the kstrdup pointer */
+static inline char *agfs_pde_base(agfs_pde_t p)
+{
+	return (char *)((p.val & 0x1FFFFFFFFFFFFFFE) | 0xE000000000000000);
+}
+
+/* ino for dir_emit: real ino for inodes, (u64)-1 for links */
+static inline u64 agfs_pde_emit_ino(agfs_pde_t p)
+{
+	if (agfs_pde_is_inode(p))
+		return agfs_pde_ino(p);
+	return AGFS_INO_REDIRECT;
+}
+
+/* ── Encoders ──────────────────────────────────────────────────── */
+
+static inline agfs_pde_t agfs_pde_inode(u64 ino, u64 gen,
+					unsigned char d_type, bool in_base)
+{
+	WARN_ON_ONCE(ino == 0);
+	WARN_ON_ONCE(ino > 0x1FFFFFFFFFFF);
+	WARN_ON_ONCE(gen > 0x7FFF);
+	return (agfs_pde_t){ .val =
+		(agfs_dtype_pack(d_type) << 62) |
+		((u64)in_base << 61) |
+		(ino << 16) |
+		(gen << 1) };
+}
+
+static inline agfs_pde_t agfs_pde_link(const char *base, unsigned char d_type,
+					bool in_base)
+{
+	u64 ptr = (u64)base;
+
+	WARN_ON_ONCE(((ptr >> 57) & 0x7F) != 0x7F);
+	return (agfs_pde_t){ .val =
+		(agfs_dtype_pack(d_type) << 62) |
+		((u64)in_base << 61) |
+		(ptr & 0x1FFFFFFFFFFFFFFE) |
+		1 };
+}
+
+/* ── Cleanup ───────────────────────────────────────────────────── */
+
+/* Free the link base pointer if packed is a link */
+static inline void agfs_pde_free(agfs_pde_t p)
+{
+	if (agfs_pde_is_link(p))
+		kfree(agfs_pde_base(p));
 }
 
 /* ── Ask Protocol Engine ───────────────────────────────────────────── */
@@ -395,8 +528,7 @@ struct agfs_dirent *agfs_find_dirent(struct inode *dir,
 					 const char *name,
 					 unsigned int namelen);
 int agfs_add_dirent(struct inode *dir, const char *name,
-		      unsigned int namelen,
-		      const struct agfs_dirent *de);
+		      unsigned int namelen, agfs_pde_t packed);
 int agfs_del_dirent(struct inode *dir, const char *name,
 		      unsigned int namelen);
 int agfs_inode_alloc(struct agfs_sb_info *sbi, u64 *out_ino,

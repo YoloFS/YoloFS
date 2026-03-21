@@ -85,7 +85,7 @@ directly — zero copy for the most common agent write pattern.
 
 **Rename**: OverlayFS does a real `vfs_rename()` in the upper directory,
 which requires copy-up. AgFS does zero-copy renames by adding dirents
-(DELETED on old parent, REDIRECTED on new parent). Rename chains
+(tombstone on old parent, link on new parent). Rename chains
 resolve naturally through the dirent table.
 
 **Lookup**: OverlayFS does two lookups per component (upper + lower) and

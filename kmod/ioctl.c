@@ -357,6 +357,7 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 		return 0;
 	}
 	gen = atomic64_inc_return(&sbi->gen);
+	WARN_ON_ONCE(gen > 0x7FFF);
 	agfs_journal_checkpoint(sbi, gen, name_buf);
 	WRITE_ONCE(sbi->dirty, false);
 	up_write(&sbi->staging_sem);
@@ -409,7 +410,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 	for (i = 0; i < hdr->entry_count; i++) {
 		char path_buf[AGFS_PATH_MAX];
 		char bp_buf[AGFS_PATH_MAX];
-		struct agfs_dirent de;
+		agfs_pde_t packed = {0};
 		const char *child;
 		int parent_len;
 		char saved;
@@ -463,15 +464,14 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 
 		dir = d_inode(parent_path.dentry);
 
-		de = (struct agfs_dirent){
-			.ino = ent.ino,
-			.base = bp,
-			.in_base = ent.in_base,
-			.d_type = ent.d_type,
-			.gen = gen,
-		};
+		if (ent.ino == AGFS_INO_REDIRECT) {
+			packed = agfs_pde_link(bp, ent.d_type, ent.in_base);
+		} else if (ent.ino != AGFS_INO_DELETED) {
+			packed = agfs_pde_inode(ent.ino, gen,
+					       ent.d_type, ent.in_base);
+		}
 		inode_lock(dir);
-		err = agfs_add_dirent(dir, child, strlen(child), &de);
+		err = agfs_add_dirent(dir, child, strlen(child), packed);
 		inode_unlock(dir);
 		path_put(&parent_path);
 
@@ -517,6 +517,7 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 
 	/* Restore mode: increment gen, inject entries, write RST record */
 	new_gen = atomic64_inc_return(&sbi->gen);
+	WARN_ON_ONCE(new_gen > 0x7FFF);
 
 	err = agfs_restore_inject(file, sbi, &hdr, new_gen);
 	if (!err)
@@ -524,7 +525,7 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	/* Don't rollback gen on failure — dirents may already be injected
 	 * with new_gen.  Rolling back would leave those dirents with a gen
 	 * higher than sbi->gen, breaking COW checks.  The CLI can retry
-	 * the operation or abort (which resets gen to 1). */
+	 * the operation or abort (which resets gen to 0). */
 	if (!err)
 		WRITE_ONCE(sbi->dirty, false);
 
