@@ -88,7 +88,7 @@ fn apply_inode(
 }
 
 /// Replay live actions sequentially on the base filesystem.
-fn apply_records(agfs: &Path, segments: &[&journal::Segment]) -> Result<()> {
+fn apply_records(agfs: &Path, segments: &[journal::Segment]) -> Result<()> {
     let mut ensured: HashSet<PathBuf> = HashSet::new();
 
     for action in segments.iter().flat_map(|s| &s.records) {
@@ -121,7 +121,7 @@ pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let journal = Journal::read(&agfs)?;
-    let live: Vec<_> = journal.live_segments().collect();
+    let live: Vec<_> = journal.into_live_segments_range(0, usize::MAX).collect();
     let committed: usize = live.iter().map(|s| s.records.len()).sum();
 
     if committed == 0 {

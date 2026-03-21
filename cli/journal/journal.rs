@@ -70,57 +70,9 @@ impl Journal {
         Ok(Self::new(parse::read(agfs_dir)?))
     }
 
-    /// All live segments (filtered by precomputed alive mask).
-    pub fn live_segments(&self) -> impl Iterator<Item = &Segment> {
-        self.segments
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| self.alive[*i])
-            .map(|(_, s)| s)
-    }
-
-    /// Live segments up to a checkpoint (by gen_id).
-    /// Computes its own alive mask scoped to the prefix, because
-    /// restore records after the prefix boundary do not affect it.
-    ///
-    /// Callers must ensure gen_id ≤ markers.len() (use `live_segments_at_name`
-    /// for a safe wrapper that validates by name).
-    pub fn live_segments_at(&self, gen_id: u64) -> impl Iterator<Item = &Segment> {
-        let num_prefix = (gen_id as usize).min(self.markers.len());
-        let alive = self.markers.alive_segments_range(0..num_prefix, num_prefix);
-        self.segments
-            .iter()
-            .enumerate()
-            .take(num_prefix)
-            .filter(move |(i, _)| alive[*i])
-            .map(|(_, s)| s)
-    }
-
     /// Whether segment at this index is alive (for audit/timeline display).
     pub fn is_alive(&self, segment_index: usize) -> bool {
         self.alive.get(segment_index).copied().unwrap_or(false)
-    }
-
-    /// Consume the journal and return owned live segments.
-    pub fn into_live_segments(self) -> impl Iterator<Item = Segment> {
-        let alive = self.alive;
-        self.segments
-            .into_iter()
-            .enumerate()
-            .filter(move |(i, _)| alive[*i])
-            .map(|(_, s)| s)
-    }
-
-    /// Consume the journal and return owned live segments up to a checkpoint.
-    pub fn into_live_segments_at(self, gen_id: u64) -> impl Iterator<Item = Segment> {
-        let num_prefix = (gen_id as usize).min(self.markers.len());
-        let alive = self.markers.alive_segments_range(0..num_prefix, num_prefix);
-        self.segments
-            .into_iter()
-            .enumerate()
-            .take(num_prefix)
-            .filter(move |(i, _)| alive[*i])
-            .map(|(_, s)| s)
     }
 
     /// Consume the journal and build a DirTree from all live segments.
@@ -133,7 +85,8 @@ impl Journal {
         DirTree::build(self.into_live_segments_at(gen_id))
     }
 
-    /// Consume the journal and return live segments in `[start, end)`.
+    /// Consume the journal and return owned live segments in `[start, end)`.
+    /// When `start == 0` and `end == segments.len()`, returns all live segments.
     pub fn into_live_segments_range(
         self,
         start: usize,
@@ -145,6 +98,24 @@ impl Journal {
             .enumerate()
             .filter(move |(i, _)| *i >= start && *i < end && alive[*i])
             .map(|(_, seg)| seg)
+    }
+
+    // ── Private helpers ──────────────────────────────────────────────
+
+    fn into_live_segments(self) -> impl Iterator<Item = Segment> {
+        let len = self.segments.len();
+        self.into_live_segments_range(0, len)
+    }
+
+    fn into_live_segments_at(self, gen_id: u64) -> impl Iterator<Item = Segment> {
+        let num_prefix = (gen_id as usize).min(self.markers.len());
+        let alive = self.markers.alive_segments_range(0..num_prefix, num_prefix);
+        self.segments
+            .into_iter()
+            .enumerate()
+            .take(num_prefix)
+            .filter(move |(i, _)| alive[*i])
+            .map(|(_, s)| s)
     }
 }
 
@@ -245,7 +216,7 @@ mod tests {
             Record::Marker(Marker::Checkpoint { gen_id: 5, name: "c5".into() }),
         ];
         let j = Journal::new(records);
-        let live: Vec<_> = j.live_segments().collect();
+        let live: Vec<_> = j.into_live_segments_range(0, usize::MAX).collect();
         // seg0, seg1 alive; seg2,seg3 dead; seg4,seg5 alive → 4 live
         assert_eq!(live.len(), 4);
     }
@@ -264,7 +235,7 @@ mod tests {
         ];
         let j = Journal::new(records);
         // Live prefix up to K2: seg0 (empty) + seg1 ([A])
-        let live: Vec<_> = j.live_segments_at(2).collect();
+        let live: Vec<_> = j.into_live_segments_at(2).collect();
         let actions: Vec<_> = live.iter().flat_map(|s| &s.records).collect();
         assert_eq!(actions.len(), 1);
         assert!(matches!(actions[0], Action::Add { path, .. } if path == "/a"));
@@ -272,16 +243,16 @@ mod tests {
 
     // ── Reachability tests (via live_segments, migrated from liveness.rs) ──
 
-    fn live_actions(records: Vec<Record>) -> Vec<&'static str> {
+    fn live_actions(records: Vec<Record>) -> Vec<String> {
         let j = Journal::new(records);
-        j.live_segments()
-            .flat_map(|s| &s.records)
+        j.into_live_segments_range(0, usize::MAX)
+            .flat_map(|s| s.records)
             .map(|a| match a {
-                Action::Add { path, .. } => Box::leak(path.clone().into_boxed_str()) as &str,
-                Action::Modify { path, .. } => Box::leak(path.clone().into_boxed_str()) as &str,
-                Action::Delete { path, .. } => Box::leak(path.clone().into_boxed_str()) as &str,
-                Action::Rename { dst, .. } => Box::leak(dst.clone().into_boxed_str()) as &str,
-                Action::Replace { dst, .. } => Box::leak(dst.clone().into_boxed_str()) as &str,
+                Action::Add { path, .. } => path,
+                Action::Modify { path, .. } => path,
+                Action::Delete { path, .. } => path,
+                Action::Rename { dst, .. } => dst,
+                Action::Replace { dst, .. } => dst,
             })
             .collect()
     }
@@ -295,7 +266,7 @@ mod tests {
         ];
         // 3 segments (seg0 empty, seg1 [/a], seg2 empty), all alive, 1 action
         let j = Journal::new(records);
-        assert_eq!(j.live_segments().count(), 3);
+        assert_eq!(j.into_live_segments_range(0, usize::MAX).count(), 3);
     }
 
     #[test]
@@ -472,7 +443,7 @@ mod tests {
         ];
         let j = Journal::new(records);
         let (gen_id, _) = j.markers.find_checkpoint("c5").unwrap();
-        let live: Vec<_> = j.live_segments_at(gen_id).collect();
+        let live: Vec<_> = j.into_live_segments_at(gen_id).collect();
         let actions: Vec<_> = live.iter().flat_map(|s| &s.records).collect();
         assert_eq!(actions.len(), 1);
         assert!(matches!(actions[0], Action::Add { path, .. } if path == "/c"));
@@ -485,11 +456,13 @@ mod tests {
             Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
             Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
         ];
-        let j = Journal::new(records);
+        let j = Journal::new(records.clone());
+        let all_live = j.into_live_segments_range(0, usize::MAX).count();
+        let j2 = Journal::new(records);
         // gen_id 999 is way beyond markers.len()=2; should clamp, not panic.
         // Clamped to markers.len() → returns prefix, not the full set.
-        let live: Vec<_> = j.live_segments_at(999).collect();
-        assert!(live.len() <= j.live_segments().count());
+        let live: Vec<_> = j2.into_live_segments_at(999).collect();
+        assert!(live.len() <= all_live);
     }
 
     // ── Original tests ───────────────────────────────────────────────
