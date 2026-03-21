@@ -27,15 +27,14 @@ static int agfs_check_open_perm(struct agfs_sb_info *sbi,
 				struct dentry *dentry,
 				struct file *file, char *buf)
 {
-	struct agfs_inode_info *ii = AGFS_I(d_inode(dentry));
-	enum agfs_perm perm = ii->cached_perm;
+	struct inode *inode = d_inode(dentry);
+	struct agfs_inode_info *ii = AGFS_I(inode);
+	enum agfs_perm perm;
 	int err;
 
-	if (ii->perm_gen != atomic64_read(&sbi->perm_gen)) {
-		perm = agfs_resolve_perm(dentry);
-		ii->cached_perm = perm;
-		ii->perm_gen = atomic64_read(&sbi->perm_gen);
-	}
+	if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
+		agfs_cache_perm(inode, dentry);
+	perm = ii->cached_perm;
 
 	if (perm == AGFS_PERM_ASK) {
 		unsigned int op;

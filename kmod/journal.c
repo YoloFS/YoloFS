@@ -89,19 +89,6 @@ static char dtype_to_char(unsigned char d_type)
 	}
 }
 
-/* Compute path_buf = relpath of dentry. Returns 0 or -errno. */
-static int journal_path(struct dentry *dentry, char *path_buf, size_t size)
-{
-	char *p;
-
-	p = dentry_path_raw(dentry, path_buf, size);
-	if (IS_ERR(p))
-		return PTR_ERR(p);
-	if (p != path_buf)
-		memmove(path_buf, p, strlen(p) + 1);
-	return 0;
-}
-
 /* ── Public: typed journal record writers ──────────────────────────── */
 
 static int journal_emit_ino(struct agfs_sb_info *sbi,
@@ -111,17 +98,15 @@ static int journal_emit_ino(struct agfs_sb_info *sbi,
 	char path_buf[AGFS_PATH_MAX];
 	char ino_str[21];
 	char dtype_str[2] = { '\0', '\0' };
-	int err;
-
-	err = journal_path(dentry, path_buf, sizeof(path_buf));
-	if (err)
-		return err;
+	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
+	if (IS_ERR(path))
+		return PTR_ERR(path);
 
 	snprintf(ino_str, sizeof(ino_str), "%llu", (unsigned long long)ino);
 	dtype_str[0] = dtype_to_char(d_type);
 
 	return journal_write(sbi, tag,
-			     (const char *[]){ path_buf,
+			     (const char *[]){ path,
 					       dtype_str, ino_str,
 					       NULL });
 }
@@ -143,16 +128,14 @@ int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry,
 {
 	char path_buf[AGFS_PATH_MAX];
 	char dtype_str[2] = { '\0', '\0' };
-	int err;
-
-	err = journal_path(dentry, path_buf, sizeof(path_buf));
-	if (err)
-		return err;
+	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
+	if (IS_ERR(path))
+		return PTR_ERR(path);
 
 	dtype_str[0] = dtype_to_char(d_type);
 
 	return journal_write(sbi, 'D',
-			     (const char *[]){ path_buf,
+			     (const char *[]){ path,
 					       dtype_str,
 					       NULL });
 }
@@ -162,18 +145,18 @@ static int journal_emit_paths(struct agfs_sb_info *sbi,
 			       struct dentry *new_dentry,
 			       unsigned char d_type, char tag)
 {
-	char dst_path[AGFS_PATH_MAX];
-	char src_path[AGFS_PATH_MAX];
+	char dst_buf[AGFS_PATH_MAX];
+	char src_buf[AGFS_PATH_MAX];
 	char dtype_str[2] = { '\0', '\0' };
-	int err;
+	char *dst_path, *src_path;
 
-	err = journal_path(new_dentry, dst_path, sizeof(dst_path));
-	if (err)
-		return err;
+	dst_path = dentry_path_raw(new_dentry, dst_buf, sizeof(dst_buf));
+	if (IS_ERR(dst_path))
+		return PTR_ERR(dst_path);
 
-	err = journal_path(old_dentry, src_path, sizeof(src_path));
-	if (err)
-		return err;
+	src_path = dentry_path_raw(old_dentry, src_buf, sizeof(src_buf));
+	if (IS_ERR(src_path))
+		return PTR_ERR(src_path);
 
 	dtype_str[0] = dtype_to_char(d_type);
 

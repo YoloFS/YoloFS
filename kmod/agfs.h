@@ -356,11 +356,6 @@ static inline struct vfsmount *agfs_lower_mnt(const struct dentry *d)
 	return info ? info->lower_path.mnt : NULL;
 }
 
-static inline struct super_block *agfs_lower_super(const struct super_block *sb)
-{
-	return AGFS_SB(sb)->lower_sb;
-}
-
 /* ── Extern Declarations ───────────────────────────────────────────── */
 
 /* super.c */
