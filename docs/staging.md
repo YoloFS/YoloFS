@@ -626,6 +626,20 @@ determines the journal tag: MOD if true, ADD if false.
   Same mechanism — kernel emits `REP(b, a)`, then `DEL(a)`.
   `compact().collapse()` produces `Deleted(a) + Deleted(b)`.
 
+- **Directory rename with staged children** (`echo x > dir/f &&
+  mv dir newdir`): the kernel does not retroactively update journal
+  entries for children staged before the rename. The MOD for `dir/f`
+  retains the old parent path; the file's actual path is now
+  `newdir/f`. Commit currently works by accident (journal-order replay
+  writes the file before the directory moves), but the changeset itself
+  contains a stale path. Affects diff (wrong path displayed, base
+  lookup may fail), restore (ioctl fails on nonexistent parent), and
+  any future commit that does not replay in journal order. The stale
+  path self-heals if the child is touched again after the rename.
+  Applies equally to redirect and staged directory renames, nested
+  renames (`echo x > a/b/f && mv a x`), and chained renames
+  (`mv dir d2 && mv d2 d3`).
+
 ### Checkpoint Segments
 
 The CLI resolves per-checkpoint deltas by iterating over segments from the
