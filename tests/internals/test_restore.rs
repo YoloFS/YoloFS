@@ -1,6 +1,5 @@
 use super::helpers::{dirents, ino_for, inode_path, inos, journal, markers};
 use crate::helpers::AgfsSession;
-use agfs::journal;
 use agfs::journal::Marker;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -49,8 +48,7 @@ fn restore_journal_has_no_post_checkpoint_records() {
     );
 
     // reachable + resolve should match the checkpoint state (only a.txt).
-    let tree = journal::DirTree::build_from_segments(j.live_segments());
-    let ch = tree.into_dirents();
+    let ch = j.into_tree().into_dirents();
     let debug = format!("{ch:?}");
     assert!(
         debug.contains("a.txt"),
