@@ -36,6 +36,12 @@ instead of keeping it. This means a surviving tombstone always has
 `in_base=true`, matching the CLI's `Dirent::Tombstone` which hardcodes
 `in_base=true`.
 
+This is safe in lookup: `lookup.c` distinguishes `!de` (fall through to
+base, return 0) from `de && tombstone` (negative dentry, return 1).  After
+cancellation, an `in_base=false` tombstone becomes `!de`, hitting the
+"fall through to base" path — which is correct because `in_base=false`
+means no base entry exists, so the base lookup also returns nothing.
+
 Benefits:
 - Less memory and faster lookups/readdir (fewer dead entries)
 - Tombstone becomes a single constant in the packed encoding (no `in_base` bit)
@@ -98,6 +104,11 @@ tombstoned file.
 [0]      0
 ```
 
+`agfs_de_inode` must `WARN_ON_ONCE` if `ino` exceeds 45 bits, `ino == 0`,
+or `gen` exceeds 15 bits — these indicate bugs in the caller.  The gen
+comparison in `agfs_open_staged` must mask `sbi->gen` to 15 bits so it
+matches the truncated stored value.
+
 ### Link (odd)
 
 The `kstrdup` pointer (≥ 8-byte aligned, so bit [0] = 0) is stored with
@@ -108,6 +119,10 @@ paging — at least bits [63:57] are sign extension for kernel addresses).
 Add `BUILD_BUG_ON(ARCH_KMALLOC_MINALIGN < 8)` to validate the alignment
 assumption.  Add `BUILD_BUG_ON(!IS_ENABLED(CONFIG_X86_64))` since the
 link encoding relies on x86_64 canonical-form sign extension.
+
+`agfs_de_link` must `WARN_ON_ONCE` if the pointer's bits [63:57] are not
+all 1s (validating the sign-extension assumption at runtime, not just the
+alignment `BUILD_BUG_ON`).
 
 ```
 [63:62]  d_type    2 bits  (borrowed from sign extension)
@@ -137,7 +152,19 @@ base         = (packed & 0x1FFFFFFFFFFFFFFE)
 
 `dir_emit` needs a VFS ino for all non-tombstone entries. `agfs_de_ino()`
 only works for inode entries. Add `agfs_de_emit_ino(packed)`: returns the
-real ino for inode entries, a fixed constant (e.g. `(u64)-1`) for links.
+real ino for inode entries, `(u64)-1` for links (preserving the current
+`AGFS_INO_REDIRECT` behavior so readdir output is unchanged).
+
+## Resulting struct layout
+
+```c
+struct agfs_dirent {
+	struct hlist_node	node;       /* 16 bytes */
+	u64			packed;     /*  8 bytes */
+	unsigned int		name_len;   /*  4 bytes */
+	char			name[];     /*  flexible */
+};  /* 28 bytes fixed overhead before name[] */
+```
 
 ## Call-site changes
 
@@ -199,16 +226,16 @@ Map UAPI `ent.ino` (0 / -1 / >0) to the packed encoding:
 
 ## Todos
 
-| ID | Task |
-|----|------|
-| doc-update | Update `docs/staging.md`, `docs/internals.md`, and `docs/architecture.md`: replace dirent struct (5 fields) with `u64 packed` encoding layout, document `d_type` 2-bit private encoding and conversion helpers, replace terminology (staged→inode, redirect→link, deleted→tombstone), describe cancelled-entry removal, and update all pseudocode/helper references (`agfs_ino_is_staged` → `agfs_de_is_inode`, etc.) |
-| struct-helpers | Replace five fields with `u64 packed` in `struct agfs_dirent`. Add encoders (`agfs_de_inode`, `agfs_de_link`), predicates (`agfs_de_is_inode`, `agfs_de_is_link`, `agfs_de_is_tombstone`), decoders (`agfs_de_ino`, `agfs_de_gen`, `agfs_de_base`, `agfs_de_d_type`, `agfs_de_in_base`, `agfs_de_emit_ino`), cleanup (`agfs_de_free_base`), `d_type` pack/unpack with WARN_ON for invalid values, and `BUILD_BUG_ON(ARCH_KMALLOC_MINALIGN < 8)` in `agfs.h`. Tombstone is just `packed == 0` (no constant needed). Remove old `agfs_ino_is_*` helpers. Keep `AGFS_INO_DELETED`/`AGFS_INO_REDIRECT` for UAPI only. |
-| staging-update | Update `staging.c`: `add_dirent` (cancelled-entry removal + packed ops), `del_dirent` (use tombstone constant), `free_de_buckets` (free link pointer), `do_cow` (packed init) |
-| lookup-update | Update `lookup.c`: inode/link/tombstone dispatch using packed helpers |
-| file-update | Update `file.c`: `read_dirent` returns packed, `emit_dirents` uses `agfs_de_emit_ino` + `agfs_de_d_type` |
-| inode-update | Update `inode.c`: create and rename use packed encode/decode with new names |
-| ioctl-update | Update `ioctl.c`: restore inject maps UAPI ino to packed encoding |
-| test-encode | Add encode/decode round-trip tests: max ino (45-bit), max gen (15-bit), all `d_type` values, `in_base` true/false, link pointer recovery, and tombstone zero-value |
-| test-dtype | Add `d_type` pack/unpack tests: valid values round-trip, invalid input returns `11` / `DT_UNKNOWN` |
-| test-cancel | Add cancelled-entry removal tests: delete of `in_base=false` entry removes it entirely; lookup and readdir confirm absence |
-| build-test | Build and run all tests in VM |
+| ID | Task | Depends on |
+|----|------|------------|
+| doc-update | Update `docs/staging.md`, `docs/internals.md`, and `docs/architecture.md`: replace dirent struct (5 fields) with `u64 packed` encoding layout, document `d_type` 2-bit private encoding and conversion helpers, replace terminology (staged→inode, redirect→link, deleted→tombstone), describe cancelled-entry removal, and update all pseudocode/helper references (`agfs_ino_is_staged` → `agfs_de_is_inode`, etc.) | — |
+| struct-helpers | Replace five fields with `u64 packed` in `struct agfs_dirent`. Add encoders (`agfs_de_inode`, `agfs_de_link`) with `WARN_ON_ONCE` for out-of-range ino/gen/pointer, predicates (`agfs_de_is_inode`, `agfs_de_is_link`, `agfs_de_is_tombstone`), decoders (`agfs_de_ino`, `agfs_de_gen`, `agfs_de_base`, `agfs_de_d_type`, `agfs_de_in_base`, `agfs_de_emit_ino`), cleanup (`agfs_de_free_base`), `d_type` pack/unpack with WARN_ON for invalid values, and `BUILD_BUG_ON(ARCH_KMALLOC_MINALIGN < 8)` in `agfs.h`. Tombstone is just `packed == 0` (no constant needed). Remove old `agfs_ino_is_*` helpers. Keep `AGFS_INO_DELETED`/`AGFS_INO_REDIRECT` for UAPI only. | doc-update |
+| staging-update | Update `staging.c`: `add_dirent` (cancelled-entry removal + packed ops), `del_dirent` (use tombstone constant), `free_de_buckets` (free link pointer), `do_cow` (packed init) | struct-helpers |
+| lookup-update | Update `lookup.c`: inode/link/tombstone dispatch using packed helpers | struct-helpers |
+| file-update | Update `file.c`: `read_dirent` returns packed, `emit_dirents` uses `agfs_de_emit_ino` + `agfs_de_d_type`. Gen comparison in `agfs_open_staged` masks `sbi->gen` to 15 bits. | struct-helpers |
+| inode-update | Update `inode.c`: create and rename use packed encode/decode with new names | struct-helpers |
+| ioctl-update | Update `ioctl.c`: restore inject maps UAPI ino to packed encoding | struct-helpers |
+| test-encode | Add encode/decode round-trip tests: max ino (45-bit), max gen (15-bit), all `d_type` values, `in_base` true/false, link pointer recovery, tombstone zero-value, and `WARN_ON` triggers for out-of-range values | struct-helpers |
+| test-dtype | Add `d_type` pack/unpack tests: valid values round-trip, invalid input returns `11` / `DT_UNKNOWN` | struct-helpers |
+| test-cancel | Add cancelled-entry removal tests: delete of `in_base=false` entry removes it entirely; lookup and readdir confirm absence | staging-update |
+| build-test | Build and run all tests in VM | staging-update, lookup-update, file-update, inode-update, ioctl-update, test-encode, test-dtype, test-cancel |
