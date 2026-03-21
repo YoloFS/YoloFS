@@ -98,14 +98,14 @@ pub struct DirTree {
 }
 
 impl DirTree {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             nodes: HashMap::new(),
         }
     }
 
     /// Apply a single journal action to the tree (consumes the action).
-    pub fn apply(&mut self, action: Action) {
+    fn apply(&mut self, action: Action) {
         match action {
             Action::Add { path, dtype, ino } => {
                 let dtype = dtype.unwrap_or(DType::File);

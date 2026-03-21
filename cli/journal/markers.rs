@@ -35,7 +35,7 @@ impl Markers {
     /// This relies on the gen_id invariant: the kernel increments `sbi->gen`
     /// via `atomic64_inc_return()` on every K and T record, so gen_id values
     /// are strictly sequential — marker\[i\] has gen_id = i + 1.
-    pub fn find_checkpoint_by_gen_id(&self, gen_id: u64) -> Result<(u64, &str)> {
+    fn find_checkpoint_by_gen_id(&self, gen_id: u64) -> Result<(u64, &str)> {
         let idx = gen_id.checked_sub(1).and_then(|i| usize::try_from(i).ok());
         if let Some(idx) = idx {
             if let Some(Marker::Checkpoint { gen_id: g, name }) = self.0.get(idx) {
@@ -48,7 +48,7 @@ impl Markers {
     }
 
     /// Find a checkpoint by name. Returns the last match (names may repeat).
-    pub fn find_checkpoint_by_name(&self, name: &str) -> Result<(u64, &str)> {
+    fn find_checkpoint_by_name(&self, name: &str) -> Result<(u64, &str)> {
         let mut last = None;
         for marker in self.0.iter() {
             if let Marker::Checkpoint { gen_id, name: n } = marker
