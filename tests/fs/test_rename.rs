@@ -497,7 +497,7 @@ fn rename_staged_file_overwrite_base_commit() {
 ///   - Added(link.txt)               — new symlink
 ///   - (temp.txt absent)             — ADD + DEL cancelled
 ///
-/// After commit all changes are applied to base.
+/// After commit all dirents are applied to base.
 #[test]
 fn complex_multi_operation_commit() {
     let s = AgfsSession::new().expect("session setup");
@@ -561,76 +561,71 @@ fn complex_multi_operation_commit() {
         std::path::Path::new("hello.txt")
     );
 
-    // ── Verify resolved changes ──
+    // ── Verify resolved dirents ──
     use agfs::journal;
-    use agfs::journal::Change;
+    use agfs::journal::Dirent;
 
     let agfs_dir = s.root.join(".agfs");
     let records = journal::read(&agfs_dir).expect("read journal");
-    let actions = journal::compact::compact(records.0);
-    let changes = actions.collapse();
+    let sj = journal::SegmentedJournal::new(records);
+    let tree = journal::DirTree::build(&sj.live());
+    let dirents = tree.into_dirents();
 
-    let has_modified_hello = changes
-        .0
+    let has_modified_hello = dirents
         .iter()
-        .any(|(path, c): &(String, Change)| matches!(c, Change::Modified { .. }) && path.ends_with("/hello.txt"));
-    let has_modified_multi = changes
-        .0
+        .any(|(path, c): &(String, Dirent)| matches!(c, Dirent::Inode { in_base: true, .. }) && path.ends_with("/hello.txt"));
+    let has_modified_multi = dirents
         .iter()
-        .any(|(path, c): &(String, Change)| matches!(c, Change::Modified { .. }) && path.ends_with("/multi.txt"));
-    let has_renamed_shallow_to_top = changes.0.iter().any(|(to, c): &(String, Change)| {
-        matches!(c, Change::Renamed { from, .. }
-            if from.ends_with("/shallow.txt") && to.ends_with("/top.txt"))
+        .any(|(path, c): &(String, Dirent)| matches!(c, Dirent::Inode { in_base: true, .. }) && path.ends_with("/multi.txt"));
+    // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
+    // Tree builder preserves original base path through rename chains.
+    let has_renamed_deep_to_top = dirents.iter().any(|(to, c): &(String, Dirent)| {
+        matches!(c, Dirent::Link { base_path, .. }
+            if base_path.ends_with("/subdir/deep.txt") && to.ends_with("/top.txt"))
     });
-    let has_deleted_deep = changes
-        .0
+    let has_deleted_deep = dirents
         .iter()
-        .any(|(path, c): &(String, Change)| matches!(c, Change::Deleted) && path.ends_with("/deep.txt"));
-    let has_added_link = changes
-        .0
+        .any(|(path, c): &(String, Dirent)| matches!(c, Dirent::Tombstone { .. }) && path.ends_with("/deep.txt"));
+    let has_added_link = dirents
         .iter()
-        .any(|(path, c): &(String, Change)| matches!(c, Change::Added { .. }) && path.ends_with("/link.txt"));
-    let has_temp = changes.0.iter().any(|(path, c): &(String, Change)| match c {
-        Change::Added { .. } | Change::Modified { .. } | Change::Deleted => {
-            path.ends_with("/temp.txt")
+        .any(|(path, c): &(String, Dirent)| matches!(c, Dirent::Inode { in_base: false, .. }) && path.ends_with("/link.txt"));
+    let has_temp = dirents.iter().any(|(path, c): &(String, Dirent)| {
+        if path.ends_with("/temp.txt") {
+            return true;
         }
-        Change::Renamed { from, .. } | Change::Replaced { from, .. } => {
-            from.ends_with("/temp.txt") || path.ends_with("/temp.txt")
-        }
+        matches!(c, Dirent::Link { base_path, .. } if base_path.ends_with("/temp.txt"))
     });
-    let has_brand_new = changes.0.iter().any(|(path, c): &(String, Change)| match c {
-        Change::Added { .. } | Change::Modified { .. } | Change::Deleted => {
-            path.ends_with("/brand_new.txt")
+    let has_brand_new = dirents.iter().any(|(path, c): &(String, Dirent)| {
+        if path.ends_with("/brand_new.txt") {
+            return true;
         }
-        Change::Renamed { from, .. } | Change::Replaced { from, .. } => {
-            from.ends_with("/brand_new.txt") || path.ends_with("/brand_new.txt")
-        }
+        matches!(c, Dirent::Link { base_path, .. } if base_path.ends_with("/brand_new.txt"))
     });
 
     assert!(
         has_modified_hello,
-        "expected Modified(hello.txt): {changes:?}"
+        "expected Modified(hello.txt): {dirents:?}"
     );
     assert!(
         has_modified_multi,
-        "expected Modified(multi.txt): {changes:?}"
+        "expected Modified(multi.txt): {dirents:?}"
     );
     assert!(
-        has_renamed_shallow_to_top,
-        "expected Renamed(shallow.txt → top.txt): {changes:?}"
+        has_renamed_deep_to_top,
+        "expected Renamed(subdir/deep.txt → top.txt): {dirents:?}"
     );
     assert!(
         has_deleted_deep,
-        "expected Deleted(deep.txt): {changes:?}"
+        "expected Deleted(deep.txt): {dirents:?}"
     );
-    assert!(has_added_link, "expected Added(link.txt): {changes:?}");
+    assert!(has_added_link, "expected Added(link.txt): {dirents:?}");
     assert!(
         !has_temp,
-        "temp.txt should have cancelled out (A+D): {changes:?}"
+        "temp.txt should have cancelled out (A+D): {dirents:?}"
     );
     assert!(
         !has_brand_new,
-        "brand_new.txt should not appear (staged rename absorbed): {changes:?}"
+        "brand_new.txt should not appear (staged rename absorbed): {dirents:?}"
     );
 
     // ── Commit and verify base ──

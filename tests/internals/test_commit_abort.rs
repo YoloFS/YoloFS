@@ -1,4 +1,4 @@
-use super::helpers::{changes, ino_for, inode_path, inos, journal};
+use super::helpers::{dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
 use std::fs;
@@ -15,7 +15,7 @@ fn restore_to_checkpoint_appends_s_record() {
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
     fs::write(s.mnt_path("multi.txt"), "post-chk\n").expect("write after checkpoint");
 
-    let count_before = journal(&s).0.len();
+    let count_before = journal(&s).len();
 
     s.cli(&["restore", "s1"]).expect("restore");
 
@@ -23,17 +23,17 @@ fn restore_to_checkpoint_appends_s_record() {
 
     // Restore appends exactly one RST record.
     assert_eq!(
-        records.0.len(),
+        records.len(),
         count_before + 1,
         "restore should append exactly one record: {records:?}"
     );
     assert!(
-        matches!(records.0.last(), Some(Record::Restore { .. })),
+        matches!(records.last(), Some(Record::Restore { .. })),
         "last record should be Restore: {records:?}"
     );
     // The s1 checkpoint itself should still be present
     assert!(
-        records.0
+        records
             .iter()
             .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1")),
         "s1 checkpoint should be preserved: {records:?}"
@@ -47,7 +47,7 @@ fn commit_clears_journal() {
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     assert!(
-        !journal(&s).0.is_empty(),
+        !journal(&s).is_empty(),
         "journal should have records before commit"
     );
 
@@ -55,7 +55,7 @@ fn commit_clears_journal() {
 
     let records = journal(&s);
     assert!(
-        records.0.is_empty(),
+        records.is_empty(),
         "journal should be empty after commit: {records:?}"
     );
 }
@@ -67,7 +67,7 @@ fn abort_clears_journal() {
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     assert!(
-        !journal(&s).0.is_empty(),
+        !journal(&s).is_empty(),
         "journal should have records before abort"
     );
 
@@ -75,7 +75,7 @@ fn abort_clears_journal() {
 
     let records = journal(&s);
     assert!(
-        records.0.is_empty(),
+        records.is_empty(),
         "journal should be empty after abort: {records:?}"
     );
 }
@@ -215,7 +215,7 @@ fn restore_preserves_all_inodes() {
     fs::write(s.mnt_path("multi.txt"), "post-chk\n").expect("write post");
 
     // Grab the post-checkpoint inode id before restore
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let post_id = ino_for(&ch, "/multi.txt");
 
     s.cli(&["restore", "s1"]).expect("restore");

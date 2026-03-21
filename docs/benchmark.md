@@ -763,11 +763,12 @@ kfunctions via BTF (`kfunc`/`kretfunc` probes):
 | `agfs_do_cow` | Copy-on-write execution (at open time) |
 | `agfs_staging_alloc` | Inode allocation in inode store |
 | `agfs_readdir` | Directory listing merged from base + staging |
-| `agfs_journal_add` | Journal ADD record for new entry (create/mkdir/symlink) |
-| `agfs_journal_modify` | Journal MOD record for modified entry (COW) |
-| `agfs_journal_delete` | Journal DEL record for deletion |
-| `agfs_journal_redirect` | Journal RDR record for redirect (rename from base) |
-| `agfs_journal_checkpoint` | Journal CKP record for checkpoint |
+| `agfs_journal_add` | Journal A record for new entry (create/mkdir/symlink) |
+| `agfs_journal_modify` | Journal M record for modified entry (COW) |
+| `agfs_journal_delete` | Journal D record for deletion |
+| `agfs_journal_rename` | Journal R record for rename (destination is new) |
+| `agfs_journal_replace` | Journal P record for replace (destination existed in base) |
+| `agfs_journal_checkpoint` | Journal K record for checkpoint |
 | `agfs_release` | File release |
 | `agfs_find_dirent` | Staging index lookup |
 

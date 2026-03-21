@@ -1,4 +1,4 @@
-use super::helpers::{changes, ino_for, inode_path, journal};
+use super::helpers::{dirents, ino_for, inode_path, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
 use std::fs;
@@ -14,7 +14,7 @@ fn create_produces_add_record() {
 
     let records = journal(&s);
     assert!(
-        records.0
+        records
             .iter()
             .any(|r| matches!(r, Record::Added { path, dtype: Some(agfs::journal::DType::File), .. } if path.ends_with("/brandnew.txt"))),
         "journal should have an Added(dtype=File) record for brandnew.txt: {records:?}"
@@ -30,7 +30,7 @@ fn create_file_produces_inode() {
 
     fs::write(s.mnt_path("brandnew.txt"), "fresh content\n").expect("create");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/brandnew.txt");
     let path = inode_path(&s, ino);
 
@@ -45,7 +45,7 @@ fn empty_file_creates_empty_inode() {
 
     fs::write(s.mnt_path("empty.txt"), "").expect("touch");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/empty.txt");
     let path = inode_path(&s, ino);
 

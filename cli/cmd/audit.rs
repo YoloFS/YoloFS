@@ -3,8 +3,7 @@
 // `agfs audit`                — full session history (every record, dead branches dimmed).
 // `agfs audit --path <path>`  — trace operations on a specific file.
 
-use crate::journal;
-use crate::journal::SegmentedJournal;
+use crate::journal::{self, SegmentedJournal};
 use anyhow::Result;
 use colored::Colorize;
 
@@ -58,9 +57,9 @@ fn record_matches_path(record: &journal::Record, filter: &str) -> bool {
     match record {
         journal::Record::Added { path, .. }
         | journal::Record::Modified { path, .. }
-        | journal::Record::Deleted { path } => path == filter,
-        journal::Record::Redirect { old, new, .. } | journal::Record::Replace { old, new, .. } => {
-            old == filter || new == filter
+        | journal::Record::Deleted { path, .. } => path == filter,
+        journal::Record::Redirect { dst, src, .. } | journal::Record::Replace { dst, src, .. } => {
+            src == filter || dst == filter
         }
         _ => false,
     }
@@ -86,14 +85,14 @@ fn format_record(record: &journal::Record) -> String {
         journal::Record::Modified { path, ino, .. } => {
             format!("{:10} {}  (ino {})", "modified".blue(), path, ino)
         }
-        journal::Record::Deleted { path } => {
+        journal::Record::Deleted { path, .. } => {
             format!("{:10} {}", "deleted".red(), path)
         }
-        journal::Record::Redirect { old, new, .. } => {
-            format!("{:10} {} → {}", "renamed".magenta(), old, new)
+        journal::Record::Redirect { src, dst, .. } => {
+            format!("{:10} {} → {}", "renamed".magenta(), src, dst)
         }
-        journal::Record::Replace { old, new, .. } => {
-            format!("{:10} {} → {}", "replaced".magenta(), old, new)
+        journal::Record::Replace { src, dst, .. } => {
+            format!("{:10} {} → {}", "replaced".magenta(), src, dst)
         }
     }
 }
@@ -162,8 +161,8 @@ mod tests {
     #[test]
     fn format_replace() {
         let rec = Record::Replace {
-            old: "/a".into(),
-            new: "/b".into(),
+            src: "/a".into(),
+            dst: "/b".into(),
             dtype: Some(DType::File),
         };
         let s = strip_ansi(&format_record(&rec));

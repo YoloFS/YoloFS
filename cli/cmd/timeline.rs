@@ -2,8 +2,7 @@
 //
 // `agfs timeline` — show checkpoint/restore DAG with unreachable branches dimmed.
 
-use crate::journal;
-use crate::journal::SegmentedJournal;
+use crate::journal::{self, SegmentedJournal};
 use colored::Colorize;
 
 /// Display the checkpoint/restore timeline (full DAG, unreachable dimmed).

@@ -18,7 +18,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	struct agfs_dirent *old_de, de;
 	struct path inode_path;
 	unsigned char dt;
-	bool overwrites;
+	bool in_base;
 	u64 ino;
 	int err;
 
@@ -35,15 +35,15 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	agfs_replace_lower_path(dentry, &inode_path);
 	dt = S_ISDIR(mode) ? DT_DIR : S_ISLNK(mode) ? DT_LNK : DT_REG;
 
-	/* Check for deleted dirent to inherit overwrites. */
+	/* Check for deleted dirent to inherit in_base. */
 	old_de = agfs_find_dirent(dir, dentry->d_name.name,
 				  dentry->d_name.len);
-	overwrites = old_de && old_de->overwrites;
+	in_base = old_de && old_de->in_base;
 
 	de = (struct agfs_dirent){
 		.ino = ino,
 		.d_type = dt,
-		.overwrites = overwrites,
+		.in_base = in_base,
 		.gen = (u64)atomic64_read(&sbi->gen),
 	};
 	err = agfs_add_dirent(dir, dentry->d_name.name,
@@ -51,7 +51,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	if (err)
 		return err;
 
-	if (overwrites)
+	if (in_base)
 		agfs_journal_modify(sbi, dentry, ino, dt);
 	else
 		agfs_journal_add(sbi, dentry, ino, dt);
@@ -76,7 +76,11 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
+	unsigned char d_type;
 	int err;
+
+	d_type = d_inode(dentry) ?
+		 fs_umode_to_dtype(d_inode(dentry)->i_mode) : DT_UNKNOWN;
 
 	err = agfs_del_dirent(dir,
 				dentry->d_name.name,
@@ -84,7 +88,7 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 	if (err)
 		return err;
 
-	err = agfs_journal_delete(sbi, dentry);
+	err = agfs_journal_delete(sbi, dentry, d_type);
 	if (!err)
 		d_drop(dentry);
 	return err;
@@ -120,7 +124,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	char old_buf[AGFS_PATH_MAX];
 	u64 ino = 0, gen = 0;
 	unsigned char d_type = DT_UNKNOWN;
-	bool dst_overwrites;
+	bool dst_in_base;
 	int err;
 
 	if (flags)
@@ -152,17 +156,17 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		goto out;
 	}
 
-	/* Check if destination has existing content (for RDR vs REP journal tag).
-	 * Must be done before add_dirent overwrites the dirent. */
+	/* Check if destination has existing base content (for R vs P tag).
+	 * Must be done before add_dirent replaces the dirent. */
 	dst_de = agfs_find_dirent(new_dir,
 				  new_dentry->d_name.name,
 				  new_dentry->d_name.len);
-	dst_overwrites = dst_de ? dst_de->overwrites : false;
+	dst_in_base = dst_de ? dst_de->in_base : false;
 	if (!dst_de && d_inode(new_dentry))
-		dst_overwrites = true;
+		dst_in_base = true;
 
 	/* Add destination dirent */
-	de = (struct agfs_dirent){ .d_type = d_type, .overwrites = dst_overwrites };
+	de = (struct agfs_dirent){ .d_type = d_type, .in_base = dst_in_base };
 	if (agfs_ino_is_staged(ino)) {
 		de.ino = ino;
 		de.gen = gen;
@@ -182,27 +186,12 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (err)
 		goto out;
 
-	/* Emit journal records.
-	 * Staged sources: DEL(old) + ADD/MOD(new)  (two records).
-	 * Redirect sources: RDR/REP(old, new)    (one self-contained record). */
-	if (agfs_ino_is_staged(ino)) {
-		err = agfs_journal_delete(sbi, old_dentry);
-		if (!err) {
-			if (dst_overwrites)
-				err = agfs_journal_modify(sbi, new_dentry,
-							  ino, d_type);
-			else
-				err = agfs_journal_add(sbi, new_dentry,
-						       ino, d_type);
-		}
-	} else {
-		if (dst_overwrites)
-			err = agfs_journal_replace(sbi, old_dentry,
-						   new_dentry, d_type);
-		else
-			err = agfs_journal_redirect(sbi, old_dentry,
-						    new_dentry, d_type);
-	}
+	/* All renames emit a single R or P record.
+	 * R if destination is new, P if destination existed in base. */
+	if (dst_in_base)
+		err = agfs_journal_replace(sbi, old_dentry, new_dentry, d_type);
+	else
+		err = agfs_journal_rename(sbi, old_dentry, new_dentry, d_type);
 
 	/* Invalidate dcache for both names so next lookup uses dirents */
 	d_drop(old_dentry);

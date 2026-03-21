@@ -7,8 +7,7 @@
 // `--to <name>` — diff changes up to a checkpoint.
 // `--from <name> --to <name>` — diff changes between two checkpoints.
 
-use crate::journal;
-use crate::journal::{Change, SegmentedJournal};
+use crate::journal::{self, DirTree, Dirent, SegmentedJournal};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -69,15 +68,15 @@ fn print_segment_footer(closing: &Option<(u64, String)>) {
 
 // ── Per-change printing (summary vs verbose) ─────────────────────────
 
-fn print_change(agfs: &Path, path: &str, change: &Change, verbose: bool) {
-    match change {
-        Change::Added { ino, .. } => {
+fn print_change(agfs: &Path, path: &str, dirent: &Dirent, verbose: bool) {
+    match dirent {
+        Dirent::Inode { ino, in_base: false, .. } => {
             println!("{} {}", path.bold(), "(added)".green());
             if verbose {
                 print_unified_diff("", &read_inode(agfs, *ino));
             }
         }
-        Change::Modified { ino, .. } => {
+        Dirent::Inode { ino, in_base: true, .. } => {
             if verbose {
                 let old_text = read_base(path);
                 let new_text = read_inode(agfs, *ino);
@@ -89,17 +88,14 @@ fn print_change(agfs: &Path, path: &str, change: &Change, verbose: bool) {
                 println!("{} {}", path.bold(), "(modified)".yellow());
             }
         }
-        Change::Deleted => {
+        Dirent::Tombstone { .. } => {
             println!("{} {}", path.bold(), "(deleted)".red());
             if verbose {
                 print_unified_diff(&read_base(path), "");
             }
         }
-        Change::Renamed { from, .. } => {
-            println!("{} → {} {}", from.bold(), path.bold(), "(renamed)".cyan());
-        }
-        Change::Replaced { from, .. } => {
-            println!("{} → {} {}", from.bold(), path.bold(), "(replaced)".cyan());
+        Dirent::Link { base_path, .. } => {
+            println!("{} → {} {}", base_path.bold(), path.bold(), "(renamed)".cyan());
         }
     }
 }
@@ -137,18 +133,18 @@ fn run(
     let pairs = sj.live_slice(at, from, to)?;
 
     // Resolve all segments upfront.
-    let resolved: Vec<(journal::Changeset, Option<(u64, String)>)> = pairs
+    let resolved: Vec<(Vec<(String, Dirent)>, Option<(u64, String)>)> = pairs
         .into_iter()
         .map(|(seg, closing)| {
-            let actions = journal::compact::compact(seg.records);
-            let changes = actions.collapse();
-            Ok((changes, closing))
+            let tree = DirTree::build(std::slice::from_ref(&seg));
+            let dirents = tree.into_dirents();
+            Ok((dirents, closing))
         })
         .collect::<Result<Vec<_>>>()?;
 
     let has_changes = resolved
         .iter()
-        .flat_map(|(changes, _)| &changes.0)
+        .flat_map(|(dirents, _)| dirents)
         .any(|(p, c)| path.is_none_or(|t| c.matches_path(p, t)));
 
     if !has_changes {
@@ -162,33 +158,32 @@ fn run(
     let has_checkpoints = resolved.iter().any(|(_, closing)| closing.is_some());
     let mut total = 0usize;
 
-    for (changes, closing) in &resolved {
-        let changes: Vec<&(String, Change)> = match path {
-            Some(target) => changes
-                .0
+    for (dirents, closing) in &resolved {
+        let dirents: Vec<&(String, Dirent)> = match path {
+            Some(target) => dirents
                 .iter()
                 .filter(|(p, c)| c.matches_path(p, target))
                 .collect(),
-            None => changes.0.iter().collect(),
+            None => dirents.iter().collect(),
         };
 
         if has_checkpoints {
-            if changes.is_empty() && path.is_some() {
+            if dirents.is_empty() && path.is_some() {
                 continue;
             }
             if closing.is_none() {
                 println!("{}", "── (unsaved changes) ──".dimmed());
             }
-            if changes.is_empty() {
+            if dirents.is_empty() {
                 print_segment_footer(closing);
                 continue;
             }
         }
 
-        for (p, change) in &changes {
-            print_change(&agfs, p, change, verbose);
+        for (p, dirent) in &dirents {
+            print_change(&agfs, p, dirent, verbose);
         }
-        total += changes.len();
+        total += dirents.len();
 
         if has_checkpoints {
             print_segment_footer(closing);
@@ -223,27 +218,27 @@ fn range_label(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::Change;
+    use crate::journal::Dirent;
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::TempDir;
 
     fn state_map<'a>(
         agfs: &Path,
-        changes: &'a [(String, Change)],
+        dirents: &'a [(String, Dirent)],
     ) -> BTreeMap<&'a str, Option<String>> {
         let mut map = BTreeMap::new();
-        for (path, change) in changes {
-            match change {
-                Change::Added { ino, .. } | Change::Modified { ino, .. } => {
+        for (path, dirent) in dirents {
+            match dirent {
+                Dirent::Inode { ino, .. } => {
                     map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
                 }
-                Change::Deleted => {
+                Dirent::Tombstone { .. } => {
                     map.insert(path.as_str(), None);
                 }
-                Change::Renamed { from, .. } | Change::Replaced { from, .. } => {
-                    map.insert(from.as_str(), None);
-                    map.insert(path.as_str(), Some(read_base(from)));
+                Dirent::Link { base_path, .. } => {
+                    map.insert(base_path.as_str(), None);
+                    map.insert(path.as_str(), Some(read_base(base_path)));
                 }
             }
         }
@@ -272,14 +267,15 @@ mod tests {
     #[test]
     fn state_map_added() {
         let tmp = make_agfs(&[(1, "hello\n")]);
-        let changes = vec![(
+        let dirents = vec![(
             "/src/main.rs".into(),
-            Change::Added {
+            Dirent::Inode {
                 ino: 1,
                 dtype: crate::journal::DType::File,
+                in_base: false,
             },
         )];
-        let map = state_map(tmp.path(), &changes);
+        let map = state_map(tmp.path(), &dirents);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/src/main.rs"], Some("hello\n".into()));
     }
@@ -287,14 +283,15 @@ mod tests {
     #[test]
     fn state_map_modified() {
         let tmp = make_agfs(&[(5, "new content")]);
-        let changes = vec![(
+        let dirents = vec![(
             "/etc/config".into(),
-            Change::Modified {
+            Dirent::Inode {
                 ino: 5,
                 dtype: crate::journal::DType::File,
+                in_base: true,
             },
         )];
-        let map = state_map(tmp.path(), &changes);
+        let map = state_map(tmp.path(), &dirents);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/etc/config"], Some("new content".into()));
     }
@@ -302,8 +299,13 @@ mod tests {
     #[test]
     fn state_map_deleted() {
         let tmp = make_agfs(&[]);
-        let changes = vec![("/old/file.txt".into(), Change::Deleted)];
-        let map = state_map(tmp.path(), &changes);
+        let dirents = vec![(
+            "/old/file.txt".into(),
+            Dirent::Tombstone {
+                dtype: crate::journal::DType::File,
+            },
+        )];
+        let map = state_map(tmp.path(), &dirents);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/old/file.txt"], None);
     }
@@ -313,14 +315,15 @@ mod tests {
         // Renamed reads base content via read_base(from). Since the `from` path
         // won't exist on the real filesystem, read_file_lossy returns "".
         let tmp = make_agfs(&[]);
-        let changes = vec![(
+        let dirents = vec![(
             "/nonexistent/new.rs".into(),
-            Change::Renamed {
-                from: "/nonexistent/old.rs".into(),
+            Dirent::Link {
+                base_path: "/nonexistent/old.rs".into(),
                 dtype: crate::journal::DType::File,
+                in_base: false,
             },
         )];
-        let map = state_map(tmp.path(), &changes);
+        let map = state_map(tmp.path(), &dirents);
         assert_eq!(map.len(), 2);
         assert_eq!(map["/nonexistent/old.rs"], None);
         // read_base on a missing path returns ""
@@ -330,23 +333,25 @@ mod tests {
     #[test]
     fn state_map_renamed_modified() {
         let tmp = make_agfs(&[(7, "modified content")]);
-        let changes = vec![
+        let dirents = vec![
             (
                 "/nonexistent/new.rs".into(),
-                Change::Renamed {
-                    from: "/nonexistent/old.rs".into(),
+                Dirent::Link {
+                    base_path: "/nonexistent/old.rs".into(),
                     dtype: crate::journal::DType::File,
+                    in_base: false,
                 },
             ),
             (
                 "/nonexistent/new.rs".into(),
-                Change::Modified {
+                Dirent::Inode {
                     ino: 7,
                     dtype: crate::journal::DType::File,
+                    in_base: true,
                 },
             ),
         ];
-        let map = state_map(tmp.path(), &changes);
+        let map = state_map(tmp.path(), &dirents);
         assert_eq!(map.len(), 2);
         assert_eq!(map["/nonexistent/old.rs"], None);
         assert_eq!(map["/nonexistent/new.rs"], Some("modified content".into()));
@@ -355,24 +360,31 @@ mod tests {
     #[test]
     fn state_map_multiple_changes() {
         let tmp = make_agfs(&[(1, "aaa"), (2, "bbb")]);
-        let changes = vec![
+        let dirents = vec![
             (
                 "/a.txt".into(),
-                Change::Added {
+                Dirent::Inode {
                     ino: 1,
                     dtype: crate::journal::DType::File,
+                    in_base: false,
                 },
             ),
             (
                 "/b.txt".into(),
-                Change::Modified {
+                Dirent::Inode {
                     ino: 2,
+                    dtype: crate::journal::DType::File,
+                    in_base: true,
+                },
+            ),
+            (
+                "/c.txt".into(),
+                Dirent::Tombstone {
                     dtype: crate::journal::DType::File,
                 },
             ),
-            ("/c.txt".into(), Change::Deleted),
         ];
-        let map = state_map(tmp.path(), &changes);
+        let map = state_map(tmp.path(), &dirents);
         assert_eq!(map.len(), 3);
         assert_eq!(map["/a.txt"], Some("aaa".into()));
         assert_eq!(map["/b.txt"], Some("bbb".into()));

@@ -33,7 +33,7 @@ the final state. This is complex:
 
 4. **Per-checkpoint diff.** Given two checkpoints, produce a diff showing what
    changed between them. This is purely journal-derived — no base filesystem
-   access needed. A/M tags distinguish added from modified; R carries `prev`
+   access needed. A/M tags distinguish added from modified; R carries `src`
    for rename display.
 
 ## Proposed Approach
@@ -65,7 +65,7 @@ children's paths are always up to date.
    mark deletions, move subtrees. Diff/status/restore walk the tree directly.
    Commit does not use the tree — it replays records sequentially on base.
 3. **R is a move operation.** R moves a node (file) or subtree (directory) from
-   `prev` to `path`. Children of renamed directories follow automatically.
+   `src` to `dst`. Children of renamed directories follow automatically.
 4. **No crash consistency.** The journal is not designed for crash recovery.
 
 ## Journal Format
@@ -80,14 +80,14 @@ Records are either operations (A/M/D/R/P) or markers (K/T):
 A\0<path>\0<dtype>\0<ino>\n       — Add (new path)
 M\0<path>\0<dtype>\0<ino>\n       — Modify (existing path)
 D\0<path>\0<dtype>\n              — Delete
-R\0<path>\0<prev>\0<dtype>\n      — Rename (destination is new)
-P\0<path>\0<prev>\0<dtype>\n      — Replace (destination existed in base)
+R\0<dst>\0<src>\0<dtype>\n        — Rename (destination is new)
+P\0<dst>\0<src>\0<dtype>\n        — Replace (destination existed in base)
 K\0<gen>\0<name>\n                — Checkpoint
 T\0<gen>\0<target_gen>\n          — Restore
 ```
 
-**Field order:** In all data records, `path` (the primary subject) is the first
-field. For R/P, `path` is the destination and `prev` is the source — this is the
+**Field order:** In all data records, the primary subject is the first
+field. For R/P, `dst` is the destination and `src` is the source — this is the
 reverse of the current `(old_dir, old_name, new_dir, new_name)` convention.
 
 **R vs P:** R means the destination path did not exist in base. P means it did —
@@ -102,8 +102,8 @@ with "Staging" / "Snapshot" terminology. T stands for "Time-travel."
 
 | Field    | Type        | Description                                        |
 |----------|-------------|----------------------------------------------------|
-| `path`   | UTF-8 str   | Full overlay path (e.g. `/dir/file`)               |
-| `prev`   | UTF-8 str   | Overlay path before the rename (R/P only)          |
+| `dst`    | UTF-8 str   | Destination overlay path (e.g. `/dir/file`)        |
+| `src`    | UTF-8 str   | Source overlay path before the rename (R/P only)   |
 | `dtype`  | char        | `f` (file), `d` (dir), `l` (symlink)               |
 | `ino`    | ASCII u64   | Inode store ID in `.agfs/inodes/` (A/M only)       |
 | `gen`    | ASCII u64   | Generation / checkpoint ID                         |
@@ -167,8 +167,8 @@ Processing records in journal order. Three rules govern `in_base` and Tombstones
 | A(path, dtype, ino) | Walk/create path. Set dirent to `Inode { ino, dtype, in_base: false }`. |
 | M(path, dtype, ino) | Walk/create path. Set dirent to `Inode { ino, dtype, in_base: true }`. |
 | D(path, dtype) | Find node. If `in_base=false`, remove node (cancel). Otherwise, set dirent to `Tombstone { dtype }`. |
-| R(path, prev, dtype) | If node exists at `prev`: detach, reattach at `path`. If source `in_base=true`, Tombstone at `prev`. Set `in_base=false`. For directories, entire subtree moves. Inode stays Inode. If no node at `prev` (base-only): create `Link { base_path: prev, dtype, in_base: false }` at `path`, Tombstone at `prev`. |
-| P(path, prev, dtype) | Same as R, but set `in_base=true`. |
+| R(dst, src, dtype) | If node exists at `src`: detach, reattach at `dst`. If source `in_base=true`, Tombstone at `src`. Set `in_base=false`. For directories, entire subtree moves. Inode stays Inode. If no node at `src` (base-only): create `Link { base_path: src, dtype, in_base: false }` at `dst`, Tombstone at `src`. |
+| P(dst, src, dtype) | Same as R, but set `in_base=true`. |
 
 ### Cancellation
 
@@ -227,8 +227,8 @@ rewriting, no kernel re-emission of child records.
 Chained renames resolve automatically through sequential processing:
 
 ```
-R(/b, prev=/a, f)   →  move /a node to /b; Tombstone at /a (was in base)
-R(/c, prev=/b, f)   →  move /b node to /c; no Tombstone at /b (not in base)
+R(/b, src=/a, f)    →  move /a node to /b; Tombstone at /a (was in base)
+R(/c, src=/b, f)    →  move /b node to /c; no Tombstone at /b (not in base)
 ```
 
 No separate chain resolution step. The second R finds the node where the
@@ -285,8 +285,8 @@ current design). Then apply each live record one by one:
 - A(path, dtype, ino) → for files/symlinks: copy `inodes/{ino}` to base `path` (create parents as needed). For directories: `mkdir(base/path)`.
 - M(path, dtype, ino) → copy `inodes/{ino}` to base `path` (overwrite). Directories are never M (they have no staged content to modify).
 - D(path, dtype) → remove base `path` (unlink for files/symlinks, rmdir for directories)
-- R(path, prev, dtype) → `rename(base/prev, base/path)`. Destination must not exist.
-- P(path, prev, dtype) → `rename(base/prev, base/path)`. POSIX rename overwrites the existing file at `base/path`. Both are the same syscall; the R/P distinction exists for the tree builder, not for commit.
+- R(dst, src, dtype) → `rename(base/src, base/dst)`. Destination must not exist.
+- P(dst, src, dtype) → `rename(base/src, base/dst)`. POSIX rename overwrites the existing file at `base/dst`. Both are the same syscall; the R/P distinction exists for the tree builder, not for commit.
 
 Each record is applied one by one. The base filesystem state after each
 record matches what the overlay saw at the time of the next record — no
@@ -353,14 +353,14 @@ All renames — staged or redirect, file or directory — emit a single R or P
 record. R if the destination is new; P if it overwrites a base path. The
 tree builder handles the rest.
 
-### Determining `prev` (R/P records)
+### Determining `src` (R/P records)
 
 The kernel writes the **overlay path before the rename** — the dentry's current
 path at rename time (`dentry_path_raw`). This is the immediate source, not the
 resolved base path.
 
 For chained renames (`mv a b`, then `mv b c`), the second rename writes
-`prev = /b`. The tree builder resolves this by moving /b (which was
+`src = /b`. The tree builder resolves this by moving /b (which was
 already moved from /a) to /c.
 
 ## Key Changes from Current Design
@@ -373,7 +373,7 @@ already moved from /a) to /c.
 | Resolution | Compaction pipeline (decompose, cancel, merge, ~700 lines) | Tree builder (insert, delete, move) |
 | Directory renames | Stale child paths (bug) | Subtree move (correct by construction) |
 | Chain resolution | Userspace multi-pass (compact.rs) | Sequential tree moves (automatic) |
-| Per-segment diff | Requires comparing two states | Self-contained (A/M/D tags + tree for R/P prev) |
+| Per-segment diff | Requires comparing two states | Self-contained (A/M/D tags + tree for R/P src) |
 
 ## What This Eliminates
 

@@ -1,4 +1,4 @@
-use super::helpers::{changes, ino_for, inode_path, journal};
+use super::helpers::{dirents, ino_for, inode_path, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
 use std::fs;
@@ -14,7 +14,7 @@ fn symlink_produces_add_record() {
 
     let records = journal(&s);
     assert!(
-        records.0
+        records
             .iter()
             .any(|r| matches!(r, Record::Added { path, dtype: Some(agfs::journal::DType::Link), .. } if path.ends_with("/link.txt"))),
         "journal should have an Added(dtype=Link) record for link.txt: {records:?}"
@@ -30,7 +30,7 @@ fn symlink_creates_symlink_inode() {
 
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/link.txt");
     let path = inode_path(&s, ino);
 
@@ -53,7 +53,7 @@ fn symlink_absolute_target() {
 
     std::os::unix::fs::symlink("/etc/hostname", s.mnt_path("abs_link")).expect("symlink");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/abs_link");
     let target = fs::read_link(inode_path(&s, ino)).unwrap();
     assert_eq!(target.to_str().unwrap(), "/etc/hostname");
@@ -66,7 +66,7 @@ fn symlink_relative_with_dirs() {
 
     std::os::unix::fs::symlink("../hello.txt", s.mnt_path("subdir/uplink")).expect("symlink");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/uplink");
     let target = fs::read_link(inode_path(&s, ino)).unwrap();
     assert_eq!(target.to_str().unwrap(), "../hello.txt");

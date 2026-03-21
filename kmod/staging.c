@@ -187,14 +187,14 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 	old_de = agfs_find_dirent(dir, name, namelen);
 	if (old_de) {
 		/* For deletes (ino==0), inherit base from what was here
-		 * so that overwrites status is preserved. */
+		 * so that in_base status is preserved. */
 		if (agfs_ino_is_deleted(de->ino)) {
 			kfree(base_copy);
-			/* Keep old_de->base and old_de->overwrites as-is. */
+			/* Keep old_de->base and old_de->in_base as-is. */
 		} else {
 			kfree(old_de->base);
 			old_de->base = base_copy;
-			old_de->overwrites = de->overwrites;
+			old_de->in_base = de->in_base;
 		}
 		old_de->ino = de->ino;
 		old_de->d_type = de->d_type;
@@ -218,10 +218,10 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 	/* No prior dirent: if deleting, path had content (base-only file). */
 	if (agfs_ino_is_deleted(de->ino)) {
 		new_de->base = NULL;
-		new_de->overwrites = true;
+		new_de->in_base = true;
 	} else {
 		new_de->base = base_copy;
-		new_de->overwrites = de->overwrites;
+		new_de->in_base = de->in_base;
 	}
 
 	hlist_add_head(&new_de->node,
@@ -364,7 +364,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	de = (struct agfs_dirent){
 		.ino = ino,
 		.d_type = DT_REG,
-		.overwrites = true,
+		.in_base = true,
 		.gen = (u64)atomic64_read(&sbi->gen),
 	};
 	inode_lock(d_inode(dentry->d_parent));

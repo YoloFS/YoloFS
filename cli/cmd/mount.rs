@@ -4,6 +4,7 @@
 // `agfs unmount`  — unmount and clean up .agfs/.
 // `agfs remount`  — unmount then mount again (picks up new agfs.toml options).
 
+use crate::journal::{self, DirTree, SegmentedJournal};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::env;
@@ -221,11 +222,11 @@ pub fn remount(force: bool) -> Result<()> {
 
 /// If there are staged changes, ask the user to commit or abort before proceeding.
 fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
-    let records = crate::journal::read(agfs_dir).unwrap_or_default();
-    let sj = crate::journal::SegmentedJournal::new(records);
-    let actions = crate::journal::compact::compact(sj.live().into_records());
-    let changes = actions.collapse();
-    if changes.0.is_empty() {
+    let records = journal::read(agfs_dir).unwrap_or_default();
+    let sj = SegmentedJournal::new(records);
+    let tree = DirTree::build(&sj.live());
+    let dirents = tree.into_dirents();
+    if dirents.is_empty() {
         return Ok(());
     }
 
@@ -233,8 +234,8 @@ fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
         "{}",
         format!(
             "Warning: {} staged change{} will be lost.",
-            changes.0.len(),
-            crate::utils::plural(changes.0.len())
+            dirents.len(),
+            crate::utils::plural(dirents.len())
         )
         .yellow()
         .bold()

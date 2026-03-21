@@ -1,4 +1,4 @@
-use super::helpers::{changes, ino_for, inode_path, inos, journal};
+use super::helpers::{dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
 use std::fs;
@@ -14,9 +14,9 @@ fn delete_produces_delete_record() {
 
     let records = journal(&s);
     assert!(
-        records.0
+        records
             .iter()
-            .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/hello.txt"))),
+            .any(|r| matches!(r, Record::Deleted { path, .. } if path.ends_with("/hello.txt"))),
         "journal should have a Deleted record for hello.txt: {records:?}"
     );
 }
@@ -46,7 +46,7 @@ fn delete_recreate_gets_new_inode() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
     fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/hello.txt");
     assert_eq!(
         fs::read_to_string(inode_path(&s, ino)).unwrap(),

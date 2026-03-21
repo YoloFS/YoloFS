@@ -19,7 +19,7 @@ fn create_new_file_emits_add() {
 
     let records = journal(&s);
     assert!(
-        records.0
+        records
             .iter()
             .any(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/brandnew.txt"))),
         "new file should produce ADD record: {records:?}"
@@ -35,7 +35,7 @@ fn modify_base_file_emits_modify() {
 
     let records = journal(&s);
     assert!(
-        records.0
+        records
             .iter()
             .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt"))),
         "modifying base file should produce MOD record: {records:?}"
@@ -53,7 +53,7 @@ fn delete_recreate_base_file_emits_modify() {
 
     let records = journal(&s);
     // Find the last record for hello.txt — should be M (from re-create).
-    let last = records.0
+    let last = records
         .iter()
         .rev()
         .find(|r| match r {
@@ -81,7 +81,7 @@ fn delete_recreate_staged_file_emits_add() {
 
     let records = journal(&s);
     // Find the last record for ephemeral.txt — should be ADD.
-    let last = records.0
+    let last = records
         .iter()
         .rev()
         .find(|r| match r {
@@ -111,7 +111,7 @@ fn cow_delete_recreate_emits_modify() {
     fs::write(s.mnt_path("hello.txt"), "again\n").expect("recreate");
 
     let records = journal(&s);
-    let last = records.0
+    let last = records
         .iter()
         .rev()
         .find(|r| match r {
@@ -137,7 +137,7 @@ fn rename_away_then_create_at_old_path_emits_modify() {
     fs::write(s.mnt_path("hello.txt"), "replacement\n").expect("create");
 
     let records = journal(&s);
-    let last = records.0
+    let last = records
         .iter()
         .rev()
         .find(|r| match r {
@@ -164,7 +164,7 @@ fn rename_away_staged_then_create_emits_add() {
     fs::write(s.mnt_path("temp.txt"), "new\n").expect("recreate");
 
     let records = journal(&s);
-    let last = records.0
+    let last = records
         .iter()
         .rev()
         .find(|r| match r {
@@ -195,11 +195,11 @@ fn recow_of_staged_file_after_checkpoint_emits_modify() {
     let records = journal(&s);
 
     // Find all staged records for created.txt after the checkpoint.
-    let chk_pos = records.0
+    let chk_pos = records
         .iter()
         .position(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1"))
         .expect("should have checkpoint s1");
-    let post_chk: Vec<_> = records.0[chk_pos + 1..]
+    let post_chk: Vec<_> = records[chk_pos + 1..]
         .iter()
         .filter(|r| match r {
             Record::Added { path, .. } | Record::Modified { path, .. } => {

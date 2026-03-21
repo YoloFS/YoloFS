@@ -106,7 +106,7 @@ impl Session {
         let agfs_dir = self.root.path().join(".agfs");
         match agfs::journal::read(&agfs_dir) {
             Ok(journal) => journal
-                .records
+                .0
                 .iter()
                 .map(|r| format!("  {r:?}"))
                 .collect::<Vec<_>>()

@@ -1,21 +1,21 @@
 use crate::helpers::AgfsSession;
-use agfs::journal::Change;
-use agfs::journal::{self};
+use agfs::journal::{self, Dirent};
 use std::fs;
 use std::path::PathBuf;
 
 /// Read parsed journal records for a session.
-pub fn journal(s: &AgfsSession) -> journal::RawJournal {
+pub fn journal(s: &AgfsSession) -> Vec<journal::Record> {
     journal::read(&s.root.join(".agfs")).expect("read journal")
 }
 
-/// Resolve the journal to get the final Change list.
+/// Resolve the journal to get the final Dirent list.
 /// Uses `SegmentedJournal` to filter out dead records (e.g. after restore).
-pub fn changes(s: &AgfsSession) -> Vec<(String, Change)> {
+pub fn dirents(s: &AgfsSession) -> Vec<(String, Dirent)> {
     let records = journal(s);
     let sj = journal::SegmentedJournal::new(records);
-    let actions = journal::compact::compact(sj.live().into_records());
-    actions.collapse().0
+    let records = sj.live();
+    let tree = journal::DirTree::build(&records);
+    tree.into_dirents()
 }
 
 /// List numeric inode entries in the inode store.
@@ -35,8 +35,8 @@ pub fn inode_path(s: &AgfsSession, ino: u64) -> PathBuf {
 }
 
 /// Find the ino for a change matching a path suffix.
-pub fn ino_for(changes: &[(String, Change)], suffix: &str) -> u64 {
-    changes
+pub fn ino_for(dirents: &[(String, Dirent)], suffix: &str) -> u64 {
+    dirents
         .iter()
         .find_map(|(path, c)| {
             if path.ends_with(suffix) {

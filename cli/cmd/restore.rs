@@ -2,119 +2,52 @@
 //
 // `agfs restore <name|id>` — restore to a previous checkpoint.
 
-use crate::journal::SegmentedJournal;
-use crate::{ioctl, journal};
+use crate::ioctl;
+use crate::journal::{self, DirTree, Dirent, SegmentedJournal, INO_REDIRECT};
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-/// Intermediate representation of a restore entry with owned path data.
-struct RestoreItem {
-    path: String,
-    ino: u64,
-    base: String,
-    overwrites: bool,
-    d_type: u8,
-}
-
-impl RestoreItem {
-    fn deleted(path: String) -> Self {
-        Self {
-            path,
-            ino: 0,
-            base: String::new(),
-            overwrites: true,
-            d_type: 0,
-        }
-    }
-}
-
-/// Convert a resolved Change list into restore items (owned data, sortable).
-fn changes_to_items(changes: &[(String, journal::Change)]) -> Vec<RestoreItem> {
-    use std::collections::BTreeSet;
-
-    // Collect destination paths that have staged content (Added/Modified).
-    // When a Renamed destination also has a Modified entry, the staged inode
-    // takes precedence over a redirect — skip the redundant redirect.
-    let staged_paths: BTreeSet<&str> = changes
+/// Convert (path, Dirent) pairs into ioctl entries with pointers into the source data.
+/// The returned entries are valid as long as `dirents` is alive.
+fn dirents_to_entries(
+    dirents: &[(String, Dirent)],
+) -> Result<Vec<ioctl::AgfsIocRestoreEntry>> {
+    dirents
         .iter()
-        .filter_map(|(path, c)| match c {
-            journal::Change::Added { .. } | journal::Change::Modified { .. } => Some(path.as_str()),
-            _ => None,
-        })
-        .collect();
-
-    let mut items = Vec::new();
-
-    for (path, change) in changes {
-        match change {
-            journal::Change::Added { ino, dtype } | journal::Change::Modified { ino, dtype } => {
-                let overwrites = matches!(change, journal::Change::Modified { .. });
-                items.push(RestoreItem {
-                    path: path.clone(),
-                    ino: *ino,
-                    base: String::new(),
-                    overwrites,
-                    d_type: dtype.to_libc(),
-                });
-            }
-            journal::Change::Deleted => {
-                items.push(RestoreItem::deleted(path.clone()));
-            }
-            journal::Change::Renamed { from, dtype } => {
-                items.push(RestoreItem::deleted(from.clone()));
-                if !staged_paths.contains(path.as_str()) {
-                    items.push(RestoreItem {
-                        path: path.clone(),
-                        ino: journal::INO_REDIRECT,
-                        base: from.clone(),
-                        overwrites: false,
-                        d_type: dtype.to_libc(),
-                    });
-                }
-            }
-            journal::Change::Replaced { from, dtype } => {
-                items.push(RestoreItem::deleted(from.clone()));
-                if !staged_paths.contains(path.as_str()) {
-                    items.push(RestoreItem {
-                        path: path.clone(),
-                        ino: journal::INO_REDIRECT,
-                        base: from.clone(),
-                        overwrites: true,
-                        d_type: dtype.to_libc(),
-                    });
-                }
-            }
-        }
-    }
-
-    items.sort_by(|a, b| a.path.cmp(&b.path));
-    items
-}
-
-/// Convert owned RestoreItems into ioctl entries with pointers into items.
-/// The returned entries are valid as long as `items` is alive.
-fn items_to_entries(items: &[RestoreItem]) -> Result<Vec<ioctl::AgfsIocRestoreEntry>> {
-    items
-        .iter()
-        .map(|item| {
-            let path_len: u16 = item
-                .path
+        .map(|(path, dirent)| {
+            let path_len: u16 = path
                 .len()
                 .try_into()
                 .context("restore path too long")?;
-            let base_len: u16 = item
-                .base
-                .len()
-                .try_into()
-                .context("restore base too long")?;
+
+            let (ino, d_type, in_base, base_ptr, base_len) = match dirent {
+                Dirent::Inode {
+                    ino, dtype, in_base,
+                } => (*ino, dtype.to_libc(), *in_base as u8, path.as_ptr() as u64, 0u16),
+                Dirent::Link {
+                    base_path,
+                    dtype,
+                    in_base,
+                } => {
+                    let blen: u16 = base_path
+                        .len()
+                        .try_into()
+                        .context("restore base too long")?;
+                    (INO_REDIRECT, dtype.to_libc(), *in_base as u8, base_path.as_ptr() as u64, blen)
+                }
+                Dirent::Tombstone { dtype } => {
+                    (0, dtype.to_libc(), 1u8, path.as_ptr() as u64, 0u16)
+                }
+            };
+
             Ok(ioctl::AgfsIocRestoreEntry {
-                path_ptr: item.path.as_ptr() as u64,
+                path_ptr: path.as_ptr() as u64,
                 path_len,
-                d_type: item.d_type,
-                overwrites: item.overwrites as u8,
+                d_type,
+                in_base,
                 _pad1: [0u8; 4],
-                ino: item.ino,
-                base_ptr: item.base.as_ptr() as u64,
+                ino,
+                base_ptr,
                 base_len,
                 _pad2: [0u8; 6],
             })
@@ -133,11 +66,10 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 
     // Extract live records from the prefix up to the target checkpoint,
     // handling any RST records within that prefix.
-    let live_records = sj.live_prefix_gen(target_gen).into_records();
-    let actions = journal::compact::compact(live_records);
-    let changes = actions.collapse();
-    let items = changes_to_items(&changes.0);
-    let entries = items_to_entries(&items)?;
+    let live = sj.live_prefix_gen(target_gen);
+    let tree = DirTree::build(&live);
+    let dirents = tree.into_dirents();
+    let entries = dirents_to_entries(&dirents)?;
 
     // Restore kernel state — if this fails (e.g. EBUSY), the journal is
     // still intact (append-only) and the operation can be retried.
@@ -148,8 +80,8 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
         "{}",
         format!(
             "Restored to checkpoint \"{chk_label}\" ({} staged change{}).",
-            changes.0.len(),
-            crate::utils::plural(changes.0.len())
+            dirents.len(),
+            crate::utils::plural(dirents.len())
         )
         .green()
         .bold()
@@ -161,155 +93,117 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::Change;
-    use crate::journal::DType;
+    use crate::journal::{DType, Record, Segment};
+
+    /// Helper: build a tree from records and get dirents.
+    fn build_dirents(records: &[Record]) -> Vec<(String, Dirent)> {
+        DirTree::build(&[Segment { from: 0, records: records.to_vec() }]).into_dirents()
+    }
+
+    /// Helper: find a dirent by path suffix.
+    fn find<'a>(cs: &'a [(String, Dirent)], suffix: &str) -> &'a (String, Dirent) {
+        cs.iter().find(|(p, _)| p.ends_with(suffix)).unwrap()
+    }
 
     #[test]
     fn added_produces_single_entry() {
-        let changes = vec![(
-            "/src/main.rs".into(),
-            Change::Added {
-                ino: 1,
-                dtype: DType::File,
-            },
-        )];
-        let items = changes_to_items(&changes);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].path, "/src/main.rs");
-        assert_eq!(items[0].ino, 1);
-        assert_eq!(items[0].d_type, libc::DT_REG);
-        assert_eq!(items[0].base, "");
-    }
-
-    #[test]
-    fn deleted_produces_zero_entry() {
-        let changes = vec![("/old.txt".into(), Change::Deleted)];
-        let items = changes_to_items(&changes);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].path, "/old.txt");
-        assert_eq!(items[0].ino, 0);
-        assert_eq!(items[0].base, "");
-    }
-
-    #[test]
-    fn renamed_produces_delete_and_redirect() {
-        let changes = vec![(
-            "/b.txt".into(),
-            Change::Renamed {
-                from: "/a.txt".into(),
-                dtype: DType::File,
-            },
-        )];
-        let items = changes_to_items(&changes);
-        assert_eq!(items.len(), 2);
-
-        let del = items.iter().find(|e| e.path == "/a.txt").unwrap();
-        assert_eq!(del.ino, 0);
-
-        let redirect = items.iter().find(|e| e.path == "/b.txt").unwrap();
-        assert_eq!(redirect.ino, journal::INO_REDIRECT);
-        assert_eq!(redirect.base, "/a.txt");
-        assert_eq!(redirect.d_type, libc::DT_REG);
-    }
-
-    #[test]
-    fn renamed_modified_produces_delete_and_ino() {
-        let changes = vec![
-            (
-                "/new.rs".into(),
-                Change::Renamed {
-                    from: "/old.rs".into(),
-                    dtype: DType::File,
-                },
-            ),
-            (
-                "/new.rs".into(),
-                Change::Modified {
-                    ino: 5,
-                    dtype: DType::File,
-                },
-            ),
-        ];
-        let items = changes_to_items(&changes);
-        assert_eq!(items.len(), 2);
-
-        // Sorted: /new.rs before /old.rs
-        assert_eq!(items[0].path, "/new.rs");
-        assert_eq!(items[0].ino, 5);
-        assert_eq!(items[0].base, "");
-
-        assert_eq!(items[1].path, "/old.rs");
-        assert_eq!(items[1].ino, 0);
-    }
-
-    #[test]
-    fn entries_sorted_by_path() {
-        let changes = vec![
-            (
-                "/z/file.rs".into(),
-                Change::Added {
-                    ino: 1,
-                    dtype: DType::File,
-                },
-            ),
-            (
-                "/a/file.rs".into(),
-                Change::Added {
-                    ino: 2,
-                    dtype: DType::File,
-                },
-            ),
-            (
-                "/a".into(),
-                Change::Added {
-                    ino: 3,
-                    dtype: DType::Dir,
-                },
-            ),
-        ];
-        let items = changes_to_items(&changes);
-        assert_eq!(items.len(), 3);
-        assert_eq!(items[0].path, "/a");
-        assert_eq!(items[1].path, "/a/file.rs");
-        assert_eq!(items[2].path, "/z/file.rs");
-    }
-
-    #[test]
-    fn directory_inode_gets_dt_dir() {
-        let changes = vec![(
-            "/newdir".into(),
-            Change::Added {
-                ino: 1,
-                dtype: DType::Dir,
-            },
-        )];
-        let items = changes_to_items(&changes);
-        assert_eq!(items[0].d_type, libc::DT_DIR);
-    }
-
-    #[test]
-    fn symlink_inode_gets_dt_lnk() {
-        let changes = vec![(
-            "/link".into(),
-            Change::Added {
-                ino: 1,
-                dtype: DType::Link,
-            },
-        )];
-        let items = changes_to_items(&changes);
-        assert_eq!(items[0].d_type, libc::DT_LNK);
-    }
-
-    #[test]
-    fn items_to_entries_sets_pointers() {
-        let items = vec![RestoreItem {
+        let cs = build_dirents(&[Record::Added {
             path: "/src/main.rs".into(),
             ino: 1,
-            base: String::new(),
-            overwrites: false,
-            d_type: libc::DT_REG,
-        }];
-        let entries = items_to_entries(&items).unwrap();
+            dtype: Some(DType::File),
+        }]);
+        assert_eq!(cs.len(), 1);
+        let (path, dirent) = &cs[0];
+        assert_eq!(path, "/src/main.rs");
+        assert!(matches!(dirent, Dirent::Inode { ino: 1, in_base: false, .. }));
+    }
+
+    #[test]
+    fn deleted_produces_tombstone_entry() {
+        let cs = build_dirents(&[
+            Record::Modified {
+                path: "/old.txt".into(),
+                ino: 1,
+                dtype: Some(DType::File),
+            },
+            Record::Deleted {
+                path: "/old.txt".into(),
+                dtype: Some(DType::File),
+            },
+        ]);
+        assert_eq!(cs.len(), 1);
+        assert_eq!(cs[0].0, "/old.txt");
+        assert!(matches!(cs[0].1, Dirent::Tombstone { .. }));
+    }
+
+    #[test]
+    fn renamed_produces_tombstone_and_redirect() {
+        let cs = build_dirents(&[Record::Redirect {
+            src: "/a.txt".into(),
+            dst: "/b.txt".into(),
+            dtype: Some(DType::File),
+        }]);
+
+        let (_, del) = find(&cs, "/a.txt");
+        assert!(matches!(del, Dirent::Tombstone { .. }));
+
+        let (_, redirect) = find(&cs, "/b.txt");
+        assert!(matches!(redirect, Dirent::Link { base_path, .. } if base_path == "/a.txt"));
+    }
+
+    #[test]
+    fn renamed_then_modified_produces_tombstone_and_inode() {
+        let cs = build_dirents(&[
+            Record::Redirect {
+                src: "/old.rs".into(),
+                dst: "/new.rs".into(),
+                dtype: Some(DType::File),
+            },
+            Record::Modified {
+                path: "/new.rs".into(),
+                ino: 5,
+                dtype: Some(DType::File),
+            },
+        ]);
+
+        let (_, new) = find(&cs, "/new.rs");
+        assert!(matches!(new, Dirent::Inode { ino: 5, .. }));
+
+        let (_, old) = find(&cs, "/old.rs");
+        assert!(matches!(old, Dirent::Tombstone { .. }));
+    }
+
+    #[test]
+    fn directory_inode_gets_dir_dtype() {
+        let cs = build_dirents(&[Record::Added {
+            path: "/newdir".into(),
+            ino: 1,
+            dtype: Some(DType::Dir),
+        }]);
+        assert_eq!(cs[0].1.dtype(), DType::Dir);
+    }
+
+    #[test]
+    fn symlink_inode_gets_link_dtype() {
+        let cs = build_dirents(&[Record::Added {
+            path: "/link".into(),
+            ino: 1,
+            dtype: Some(DType::Link),
+        }]);
+        assert_eq!(cs[0].1.dtype(), DType::Link);
+    }
+
+    #[test]
+    fn dirents_to_entries_sets_pointers() {
+        let cs = vec![(
+            "/src/main.rs".to_string(),
+            Dirent::Inode {
+                ino: 1,
+                dtype: DType::File,
+                in_base: false,
+            },
+        )];
+        let entries = dirents_to_entries(&cs).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path_len, 12);
         assert_eq!(entries[0].ino, 1);
@@ -318,74 +212,52 @@ mod tests {
     }
 
     #[test]
-    fn items_to_entries_rejects_oversized_path() {
-        let items = vec![RestoreItem {
-            path: "a".repeat(u16::MAX as usize + 1),
-            ino: 0,
-            base: String::new(),
-            overwrites: false,
-            d_type: 0,
-        }];
-        assert!(items_to_entries(&items).is_err());
+    fn dirents_to_entries_rejects_oversized_path() {
+        let cs = vec![(
+            "a".repeat(u16::MAX as usize + 1),
+            Dirent::Tombstone { dtype: DType::File },
+        )];
+        assert!(dirents_to_entries(&cs).is_err());
     }
 
     #[test]
-    fn items_to_entries_rejects_oversized_base() {
-        let items = vec![RestoreItem {
-            path: "/ok".into(),
-            ino: 0,
-            base: "a".repeat(u16::MAX as usize + 1),
-            overwrites: false,
-            d_type: 0,
-        }];
-        assert!(items_to_entries(&items).is_err());
-    }
-
-    #[test]
-    fn empty_changes_produces_no_entries() {
-        let items = changes_to_items(&[]);
-        assert!(items.is_empty());
-    }
-
-    /// Renamed directory must produce DT_DIR, not DT_REG.
-    #[test]
-    fn renamed_directory_gets_dt_dir() {
-        let changes = vec![(
-            "/newdir".into(),
-            Change::Renamed {
-                from: "/mydir".into(),
-                dtype: DType::Dir,
+    fn dirents_to_entries_rejects_oversized_base() {
+        let cs = vec![(
+            "/ok".into(),
+            Dirent::Link {
+                base_path: "a".repeat(u16::MAX as usize + 1),
+                dtype: DType::File,
+                in_base: false,
             },
         )];
-        let items = changes_to_items(&changes);
-
-        let to_item = items.iter().find(|e| e.path == "/newdir").unwrap();
-        assert_eq!(
-            to_item.d_type,
-            libc::DT_DIR,
-            "renamed directory should have DT_DIR, got {}",
-            to_item.d_type
-        );
+        assert!(dirents_to_entries(&cs).is_err());
     }
 
-    /// Renamed symlink must produce DT_LNK, not DT_REG.
     #[test]
-    fn renamed_symlink_gets_dt_lnk() {
-        let changes = vec![(
-            "/newlink".into(),
-            Change::Renamed {
-                from: "/mylink".into(),
-                dtype: DType::Link,
-            },
-        )];
-        let items = changes_to_items(&changes);
+    fn empty_records_produces_no_entries() {
+        let cs = build_dirents(&[]);
+        assert!(cs.is_empty());
+    }
 
-        let to_item = items.iter().find(|e| e.path == "/newlink").unwrap();
-        assert_eq!(
-            to_item.d_type,
-            libc::DT_LNK,
-            "renamed symlink should have DT_LNK, got {}",
-            to_item.d_type
-        );
+    #[test]
+    fn renamed_directory_gets_dir_dtype() {
+        let cs = build_dirents(&[Record::Redirect {
+            src: "/mydir".into(),
+            dst: "/newdir".into(),
+            dtype: Some(DType::Dir),
+        }]);
+        let (_, dirent) = find(&cs, "/newdir");
+        assert_eq!(dirent.dtype(), DType::Dir);
+    }
+
+    #[test]
+    fn renamed_symlink_gets_link_dtype() {
+        let cs = build_dirents(&[Record::Redirect {
+            src: "/mylink".into(),
+            dst: "/newlink".into(),
+            dtype: Some(DType::Link),
+        }]);
+        let (_, dirent) = find(&cs, "/newlink");
+        assert_eq!(dirent.dtype(), DType::Link);
     }
 }

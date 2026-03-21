@@ -1,15 +1,15 @@
 // agfs CLI — journal/segment.rs
 //
 // Segmentation: split a flat record stream into segments at checkpoint (K)
-// and restore (S) boundaries. Each segment contains only data records
-// (ADD/MOD/DEL/RDR/REP); checkpoint and restore records are stored in Markers.
+// and restore (T) boundaries. Each segment contains only data records
+// (A/M/D/R/P); checkpoint and restore records are stored in Markers.
 
 use super::markers::Markers;
 use super::types::*;
 
 // ── SegmentedJournal ─────────────────────────────────────────────────
 
-/// All segments + CKP/RST skeleton. Level 1 of the pipeline.
+/// All segments + K/T skeleton. Level 1 of the pipeline.
 pub struct SegmentedJournal {
     pub segments: Vec<Segment>,
     pub markers: Markers,
@@ -17,14 +17,14 @@ pub struct SegmentedJournal {
 
 impl SegmentedJournal {
     /// Build from a parsed journal.
-    /// Splits at both checkpoint (K) and restore (S) boundaries.
-    pub fn new(journal: RawJournal) -> Self {
+    /// Splits at both checkpoint (K) and restore (T) boundaries.
+    pub fn new(journal: Vec<Record>) -> Self {
         let mut segments = Vec::new();
         let mut markers_vec: Vec<Record> = Vec::new();
         let mut current_records = Vec::new();
         let mut current_from: u64 = 0;
 
-        for record in journal.0.into_iter() {
+        for record in journal.into_iter() {
             match record {
                 Record::Checkpoint { gen_id, .. } => {
                     segments.push(Segment {
@@ -92,7 +92,7 @@ mod tests {
                 name: "c3".into(),
             },
         ];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         // seg0(None,[]) seg1(K1,[A]) seg2(K2,[B]) seg3(K3,[])
         assert_eq!(sj.segments.len(), 4);
         assert_eq!(sj.segments[0].from, 0);
@@ -145,7 +145,7 @@ mod tests {
                 name: "c5".into(),
             },
         ];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         // seg0(None,[]) seg1(K1,[A]) seg2(K2,[B]) seg3(K3,[]) seg4(K2,[D]) seg5(K5,[])
         assert_eq!(sj.segments.len(), 6);
         // seg4 inherits from=K2 (restore target)
@@ -176,7 +176,7 @@ mod tests {
                 name: "c2".into(),
             },
         ];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         // seg0(None,[/orphan]) seg1(K1,[/a]) seg2(K2,[])
         assert_eq!(sj.segments.len(), 3);
         assert_eq!(sj.segments[0].from, 0);
@@ -207,7 +207,7 @@ mod tests {
                 name: "second".into(),
             },
         ];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         let (gen_id, _) = sj.markers.find_checkpoint_by_gen_id(1).unwrap();
         assert_eq!(gen_id, 1);
     }
@@ -229,7 +229,7 @@ mod tests {
                 name: "second".into(),
             },
         ];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         let (gen_id, _) = sj.markers.find_checkpoint_by_name("second").unwrap();
         assert_eq!(gen_id, 2);
     }
@@ -240,7 +240,7 @@ mod tests {
             gen_id: 1,
             name: "first".into(),
         }];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         assert!(sj.markers.find_checkpoint_by_name("nonexistent").is_err());
     }
 
@@ -261,7 +261,7 @@ mod tests {
                 name: "dup".into(),
             },
         ];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         let (gen_id, _) = sj.markers.find_checkpoint_by_name("dup").unwrap();
         assert_eq!(gen_id, 2, "should return the last matching checkpoint");
     }
@@ -288,7 +288,7 @@ mod tests {
                 target_gen: 1,
             },
         ];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         // Marker 0 is K1, Marker 1 is K2, Marker 2 is S3
         assert!(sj.markers.closing_checkpoint(0).is_some());
         assert!(sj.markers.closing_checkpoint(1).is_some());
@@ -325,7 +325,7 @@ mod tests {
                 name: "c3".into(),
             },
         ];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         let result = sj
             .markers
             .segment_range(None, Some("c3"), Some("c1"), sj.segments.len());
@@ -359,7 +359,7 @@ mod tests {
                 name: "c3".into(),
             },
         ];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         // --at c1: no previous K → start=0, end=1
         let (start, end) = sj
             .markers
@@ -396,7 +396,7 @@ mod tests {
                 name: "c3".into(),
             },
         ];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         // --at c2: prev K is marker 0 (K1), so start=1, end=2
         let (start, end) = sj
             .markers
@@ -419,7 +419,7 @@ mod tests {
             Record::Added { path: "/d".into(), dtype: Some(DType::File), ino: 3 },
             Record::Checkpoint { gen_id: 5, name: "c5".into() },
         ];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         // --at c5: prev K is marker[2] (K3), so start=3, end=5
         let (start, end) = sj
             .markers
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn segmentation_empty_journal() {
-        let sj = SegmentedJournal::new(RawJournal(vec![]));
+        let sj = SegmentedJournal::new(vec![]);
         // Even empty journal produces one trailing segment.
         assert_eq!(sj.segments.len(), 1);
         assert_eq!(sj.segments[0].from, 0);
@@ -446,7 +446,7 @@ mod tests {
             gen_id: 1,
             target_gen: 99,
         }];
-        let sj = SegmentedJournal::new(RawJournal(records));
+        let sj = SegmentedJournal::new(records);
         // seg0(None,[]) + seg1(None,[]) (split at S, target not in k_map)
         assert_eq!(sj.segments.len(), 2);
         assert_eq!(sj.segments[0].from, 0);

@@ -24,32 +24,32 @@ fn operations_produce_ordered_records() {
 
     // Verify each type is present
     assert!(
-        records.0.iter().any(|r| matches!(r, Record::Modified { .. })),
+        records.iter().any(|r| matches!(r, Record::Modified { .. })),
         "missing MOD: {records:?}"
     );
     assert!(
-        records.0.iter().any(|r| matches!(r, Record::Checkpoint { .. })),
+        records.iter().any(|r| matches!(r, Record::Checkpoint { .. })),
         "missing CKP: {records:?}"
     );
     assert!(
-        records.0.iter().any(|r| matches!(r, Record::Deleted { .. })),
+        records.iter().any(|r| matches!(r, Record::Deleted { .. })),
         "missing DEL: {records:?}"
     );
     assert!(
-        records.0.iter().any(|r| matches!(r, Record::Redirect { .. })),
+        records.iter().any(|r| matches!(r, Record::Redirect { .. })),
         "missing RDR: {records:?}"
     );
 
     // Checkpoint "s1" should appear after the Add (write) and before the Delete.
-    let chk_pos = records.0
+    let chk_pos = records
         .iter()
         .position(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1"))
         .unwrap();
-    let add_pos = records.0
+    let add_pos = records
         .iter()
         .position(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
         .unwrap();
-    let del_pos = records.0
+    let del_pos = records
         .iter()
         .position(|r| matches!(r, Record::Deleted { .. }))
         .unwrap();
@@ -67,25 +67,25 @@ fn write_after_rename() {
 
     let records = journal(&s);
     assert!(
-        records.0
+        records
             .iter()
-            .any(|r| matches!(r, Record::Redirect { old, new, .. }
-            if new.ends_with("/moved.txt") && old.ends_with("/hello.txt"))),
+            .any(|r| matches!(r, Record::Redirect { src, dst, .. }
+            if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))),
         "should have RDR record: {records:?}"
     );
     assert!(
-        records.0
+        records
             .iter()
             .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/moved.txt"))),
         "should have MOD record at new path: {records:?}"
     );
 
     // The rename should precede the write
-    let r_pos = records.0
+    let r_pos = records
         .iter()
         .position(|r| matches!(r, Record::Redirect { .. }))
         .unwrap();
-    let a_pos = records.0
+    let a_pos = records
         .iter()
         .rposition(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/moved.txt")))
         .unwrap();
@@ -96,7 +96,7 @@ fn write_after_rename() {
 }
 
 /// Create a new file, then rename it.
-/// Staged file rename produces Delete + Staged (same ino), not Redirect.
+/// All renames now emit a single R record.
 #[test]
 fn create_then_rename() {
     let s = AgfsSession::new().expect("session setup");
@@ -106,17 +106,17 @@ fn create_then_rename() {
 
     let records = journal(&s);
     assert!(
-        records.0
+        records
             .iter()
             .any(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/temp.txt"))),
         "should have ADD record for original path: {records:?}"
     );
     assert!(
-        records.0
+        records
             .iter()
-            .any(|r| matches!(r, Record::Added { path, .. }
-            if path.ends_with("/final.txt"))),
-        "should have Staged record at new path: {records:?}"
+            .any(|r| matches!(r, Record::Redirect { dst, src, .. }
+            if dst.ends_with("/final.txt") && src.ends_with("/temp.txt"))),
+        "should have Redirect record for temp.txt → final.txt: {records:?}"
     );
 }
 
@@ -130,15 +130,15 @@ fn create_then_delete() {
 
     let records = journal(&s);
     assert!(
-        records.0
+        records
             .iter()
             .any(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/ephemeral.txt"))),
         "should have ADD record: {records:?}"
     );
     assert!(
-        records.0
+        records
             .iter()
-            .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/ephemeral.txt"))),
+            .any(|r| matches!(r, Record::Deleted { path, .. } if path.ends_with("/ephemeral.txt"))),
         "should have DEL record: {records:?}"
     );
 }
@@ -152,13 +152,13 @@ fn modify_then_delete() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
 
     let records = journal(&s);
-    let a_pos = records.0
+    let a_pos = records
         .iter()
         .position(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
         .expect("missing MOD");
-    let d_pos = records.0
+    let d_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Deleted { path } if path.ends_with("/hello.txt")))
+        .position(|r| matches!(r, Record::Deleted { path, .. } if path.ends_with("/hello.txt")))
         .expect("missing DEL");
     assert!(a_pos < d_pos, "Add should precede Delete: {records:?}");
 }
@@ -173,26 +173,26 @@ fn rename_then_delete() {
 
     let records = journal(&s);
     assert!(
-        records.0
+        records
             .iter()
-            .any(|r| matches!(r, Record::Redirect { old, new, .. }
-            if new.ends_with("/moved.txt") && old.ends_with("/hello.txt"))),
+            .any(|r| matches!(r, Record::Redirect { src, dst, .. }
+            if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))),
         "should have RDR record: {records:?}"
     );
     assert!(
-        records.0
+        records
             .iter()
-            .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/moved.txt"))),
+            .any(|r| matches!(r, Record::Deleted { path, .. } if path.ends_with("/moved.txt"))),
         "should have DEL record at new path: {records:?}"
     );
 
-    let r_pos = records.0
+    let r_pos = records
         .iter()
         .position(|r| matches!(r, Record::Redirect { .. }))
         .expect("missing RDR");
-    let d_pos = records.0
+    let d_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Deleted { path } if path.ends_with("/moved.txt")))
+        .position(|r| matches!(r, Record::Deleted { path, .. } if path.ends_with("/moved.txt")))
         .expect("missing DEL");
     assert!(r_pos < d_pos, "Rename should precede Delete: {records:?}");
 }
@@ -207,7 +207,7 @@ fn rename_emits_fused_redirect_record() {
     let records = journal(&s);
 
     // Should have exactly one Redirect record with both old and new paths.
-    let redirects: Vec<_> = records.0
+    let redirects: Vec<_> = records
         .iter()
         .filter(|r| matches!(r, Record::Redirect { .. }))
         .collect();
@@ -217,15 +217,15 @@ fn rename_emits_fused_redirect_record() {
         "expected exactly 1 Redirect record, got: {redirects:?}"
     );
     assert!(
-        matches!(&redirects[0], Record::Redirect { old, new, .. }
-            if old.ends_with("/hello.txt") && new.ends_with("/moved.txt")),
+        matches!(&redirects[0], Record::Redirect { src, dst, .. }
+            if src.ends_with("/hello.txt") && dst.ends_with("/moved.txt")),
         "Redirect should carry both old and new paths: {:?}",
         redirects[0]
     );
 
     // Should NOT have a separate Delete record for the old path.
-    let has_delete_old = records.0.iter().any(|r| {
-        matches!(r, Record::Deleted { path } if path.ends_with("/hello.txt"))
+    let has_delete_old = records.iter().any(|r| {
+        matches!(r, Record::Deleted { path, .. } if path.ends_with("/hello.txt"))
     });
     assert!(
         !has_delete_old,
@@ -243,7 +243,7 @@ fn rename_overwrite_emits_fused_replace_record() {
 
     let records = journal(&s);
 
-    let replaces: Vec<_> = records.0
+    let replaces: Vec<_> = records
         .iter()
         .filter(|r| matches!(r, Record::Replace { .. }))
         .collect();
@@ -253,8 +253,8 @@ fn rename_overwrite_emits_fused_replace_record() {
         "expected exactly 1 Replace record, got: {replaces:?}"
     );
     assert!(
-        matches!(&replaces[0], Record::Replace { old, new, .. }
-            if old.ends_with("/hello.txt") && new.ends_with("/multi.txt")),
+        matches!(&replaces[0], Record::Replace { src, dst, .. }
+            if src.ends_with("/hello.txt") && dst.ends_with("/multi.txt")),
         "Replace should carry both old and new paths: {:?}",
         replaces[0]
     );

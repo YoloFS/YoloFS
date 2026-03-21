@@ -1,4 +1,4 @@
-use super::helpers::{changes, ino_for, inode_path, journal};
+use super::helpers::{dirents, ino_for, inode_path, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Record;
 use std::fs;
@@ -15,7 +15,7 @@ fn checkpoint_produces_checkpoint_record() {
 
     let records = journal(&s);
     assert!(
-        records.0
+        records
             .iter()
             .any(|r| matches!(r, Record::Checkpoint { name, .. } if name == "build")),
         "journal should have a CKP record named 'build': {records:?}"
@@ -32,7 +32,7 @@ fn recow_after_checkpoint_produces_new_add() {
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 (re-COW)");
 
     let records = journal(&s);
-    let adds: Vec<_> = records.0
+    let adds: Vec<_> = records
         .iter()
         .filter(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
         .collect();
@@ -49,15 +49,15 @@ fn recow_after_checkpoint_produces_new_add() {
     }
 
     // Checkpoint "s1" should sit between the two adds.
-    let chk_pos = records.0
+    let chk_pos = records
         .iter()
         .position(|r| matches!(r, Record::Checkpoint { name, .. } if name == "s1"))
         .unwrap();
-    let first_add = records.0
+    let first_add = records
         .iter()
         .position(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
         .unwrap();
-    let last_add = records.0
+    let last_add = records
         .iter()
         .rposition(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
         .unwrap();
@@ -82,7 +82,7 @@ fn multiple_checkpoints_have_distinct_ids() {
     s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
 
     let records = journal(&s);
-    let snaps: Vec<_> = records.0
+    let snaps: Vec<_> = records
         .iter()
         .filter_map(|r| match r {
             Record::Checkpoint { gen_id, name } => Some((gen_id, name)),
@@ -99,8 +99,8 @@ fn multiple_checkpoints_have_distinct_ids() {
     assert_eq!(snaps[1].1, "s2");
 }
 
-/// Rename after checkpoint: the Delete + Staged records appear after the CKP record.
-/// Writing to a base file triggers COW (staged inode), then renaming keeps the ino.
+/// Rename after checkpoint: the R record appears after the CKP record.
+/// Writing to a base file triggers COW (staged inode), then renaming emits R.
 #[test]
 fn rename_after_checkpoint() {
     let s = AgfsSession::new().expect("session setup");
@@ -110,26 +110,18 @@ fn rename_after_checkpoint() {
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
     let records = journal(&s);
-    let chk_pos = records.0
+    let chk_pos = records
         .iter()
         .position(|r| matches!(r, Record::Checkpoint { .. }))
         .unwrap();
-    // After COW, hello.txt has a staged ino — rename emits Delete + Staged
-    let del_pos = records.0
+    // After COW, hello.txt has a staged ino — rename emits single R record
+    let rename_pos = records
         .iter()
-        .position(|r| matches!(r, Record::Deleted { path } if path.ends_with("/hello.txt")))
-        .expect("should have Delete for hello.txt");
-    let staged_pos = records.0
-        .iter()
-        .position(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/moved.txt")))
-        .expect("should have Added for moved.txt");
+        .position(|r| matches!(r, Record::Redirect { dst, .. } if dst.ends_with("/moved.txt")))
+        .expect("should have Redirect for moved.txt");
     assert!(
-        chk_pos < del_pos,
-        "Checkpoint should precede Delete: {records:?}"
-    );
-    assert!(
-        del_pos < staged_pos,
-        "Delete should precede Staged at new name: {records:?}"
+        chk_pos < rename_pos,
+        "Checkpoint should precede Rename: {records:?}"
     );
 }
 
@@ -143,11 +135,11 @@ fn delete_after_checkpoint() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
 
     let records = journal(&s);
-    let chk_pos = records.0
+    let chk_pos = records
         .iter()
         .position(|r| matches!(r, Record::Checkpoint { .. }))
         .unwrap();
-    let del_pos = records.0
+    let del_pos = records
         .iter()
         .position(|r| matches!(r, Record::Deleted { .. }))
         .unwrap();
@@ -166,7 +158,7 @@ fn recow_preserves_pre_checkpoint_inode() {
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
 
-    let ch_v1 = changes(&s);
+    let ch_v1 = dirents(&s);
     let id_v1 = ino_for(&ch_v1, "/hello.txt");
 
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
@@ -180,7 +172,7 @@ fn recow_preserves_pre_checkpoint_inode() {
     );
 
     // v2 should be in a different inode
-    let ch_v2 = changes(&s);
+    let ch_v2 = dirents(&s);
     let id_v2 = ino_for(&ch_v2, "/hello.txt");
     assert_ne!(id_v1, id_v2, "re-COW should allocate a new inode ID");
     assert_eq!(
@@ -197,15 +189,15 @@ fn multiple_checkpoints_preserve_all_inodes() {
 
     // v1 → chk → v2 → chk → v3
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    let id_v1 = ino_for(&changes(&s), "/hello.txt");
+    let id_v1 = ino_for(&dirents(&s), "/hello.txt");
 
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
-    let id_v2 = ino_for(&changes(&s), "/hello.txt");
+    let id_v2 = ino_for(&dirents(&s), "/hello.txt");
 
     s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
-    let id_v3 = ino_for(&changes(&s), "/hello.txt");
+    let id_v3 = ino_for(&dirents(&s), "/hello.txt");
 
     // All three inode IDs should be different
     assert_ne!(id_v1, id_v2);
