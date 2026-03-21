@@ -79,7 +79,7 @@ static struct file *agfs_open_staged_ino(struct agfs_sb_info *sbi,
 		atomic_dec(&sbi->staging_fd_count);
 		return ERR_PTR(err);
 	}
-	if (flags & O_TRUNC) {
+	if ((flags & O_TRUNC) && i_size_read(d_inode(ino_p.dentry))) {
 		err = vfs_truncate(&ino_p, 0);
 		if (err) {
 			path_put(&ino_p);
