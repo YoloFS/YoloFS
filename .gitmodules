@@ -22,3 +22,6 @@
 [submodule "paper-plan"]
 	path = paper-plan
 	url = git@github.com:ShawnZhong/AgFS-Paper-Plan.git
+[submodule "paper"]
+	path = paper
+	url = git@github.com:ShawnZhong/AgFS-Paper.git
