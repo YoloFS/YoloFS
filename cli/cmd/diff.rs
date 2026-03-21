@@ -143,32 +143,37 @@ fn run(
     let mut total = 0usize;
 
     for (seg, closing) in journal.into_live_segments_range(start, end).zip(labels) {
-        let dirents = DirTree::build(std::iter::once(seg)).into_dirents();
-        let dirents: Vec<&(String, Dirent)> = match path {
-            Some(target) => dirents
-                .iter()
-                .filter(|(p, c)| c.matches_path(p, target))
-                .collect(),
-            None => dirents.iter().collect(),
+        let tree = DirTree::build(std::iter::once(seg));
+
+        // Count entries (filtered if a path is given).
+        let count = match path {
+            Some(target) => {
+                let mut n = 0usize;
+                tree.for_each(|p, d| if d.matches_path(p, target) { n += 1; });
+                n
+            }
+            None => tree.len(),
         };
 
         if has_checkpoints {
-            if dirents.is_empty() && path.is_some() {
+            if count == 0 && path.is_some() {
                 continue;
             }
             if closing.is_none() {
                 println!("{}", "── (unsaved changes) ──".dimmed());
             }
-            if dirents.is_empty() {
+            if count == 0 {
                 print_segment_footer(&closing);
                 continue;
             }
         }
 
-        for (p, dirent) in &dirents {
-            print_change(&agfs, p, dirent, verbose);
-        }
-        total += dirents.len();
+        tree.for_each(|p, dirent| {
+            if path.is_none() || dirent.matches_path(p, path.unwrap()) {
+                print_change(&agfs, p, dirent, verbose);
+            }
+        });
+        total += count;
 
         if has_checkpoints {
             print_segment_footer(&closing);
