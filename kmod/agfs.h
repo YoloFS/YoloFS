@@ -165,23 +165,23 @@ struct agfs_dirent {
 /*
  * Three mutually exclusive states in a single u64:
  *   val == 0              → tombstone (always in_base=true)
- *   val & 1               → link (kstrdup pointer with bit 0 tagged)
- *   val != 0 && !(val & 1) → inode (even, non-zero)
+ *   (s64)val < 0          → link (kernel pointer with bit 63 as tag)
+ *   (s64)val > 0              → inode
  *
  * Inode layout:
- *   [63:62] d_type   2 bits (private encoding)
- *   [61]    in_base  1 bit
- *   [60:16] ino      45 bits (always > 0)
- *   [15:1]  gen      15 bits
- *   [0]     0
+ *   [63]    0        (tag)
+ *   [62:61] d_type   2 bits (private encoding)
+ *   [60]    in_base  1 bit
+ *   [59:16] ino      44 bits (always > 0)
+ *   [15:0]  gen      16 bits
  *
  * Link layout:
- *   [63:62] d_type   2 bits (borrowed from sign extension)
- *   [61]    in_base  1 bit  (borrowed from sign extension)
- *   [60:1]  pointer bits [60:1]
- *   [0]     1        (tag)
+ *   [63]    1        (tag — matches kernel sign extension)
+ *   [62:61] d_type   2 bits (borrowed from sign extension)
+ *   [60]    in_base  1 bit  (borrowed from sign extension)
+ *   [59:0]  pointer bits [59:0]
  *
- * Pointer recovery: (val & 0x1FFFFFFFFFFFFFFE) | 0xE000000000000000
+ * Pointer recovery: val | 0x7000000000000000
  */
 
 /* ── d_type 2-bit private encoding ─────────────────────────────── */
@@ -219,42 +219,42 @@ static inline bool agfs_pde_is_tombstone(agfs_pde_t p)
 
 static inline bool agfs_pde_is_link(agfs_pde_t p)
 {
-	return p.val & 1;
+	return (s64)p.val < 0;
 }
 
 static inline bool agfs_pde_is_inode(agfs_pde_t p)
 {
-	return p.val && !(p.val & 1);
+	return (s64)p.val > 0;
 }
 
 /* ── Decoders (valid for both inode and link unless noted) ──────── */
 
 static inline unsigned char agfs_pde_d_type(agfs_pde_t p)
 {
-	return agfs_dtype_unpack((p.val >> 62) & 3);
+	return agfs_dtype_unpack((p.val >> 61) & 3);
 }
 
 static inline bool agfs_pde_in_base(agfs_pde_t p)
 {
 	if (agfs_pde_is_tombstone(p))
 		return true; /* tombstones are always in_base */
-	return (p.val >> 61) & 1;
+	return (p.val >> 60) & 1;
 }
 
 /* inode only */
 static inline u64 agfs_pde_ino(agfs_pde_t p)
 {
-	return (p.val >> 16) & 0x1FFFFFFFFFFF;
+	return (p.val >> 16) & 0xFFFFFFFFFFF;
 }
 
 /* inode only */
-static inline u64 agfs_pde_gen(agfs_pde_t p)
+static inline u16 agfs_pde_gen(agfs_pde_t p)
 {
-	return (p.val >> 1) & 0x7FFF;
+	return (u16)p.val;
 }
 
 /* True if packed is a current-generation inode (no COW needed). */
-static inline bool agfs_pde_is_current(agfs_pde_t p, u64 gen)
+static inline bool agfs_pde_is_current(agfs_pde_t p, u16 gen)
 {
 	return agfs_pde_is_inode(p) && agfs_pde_gen(p) >= gen;
 }
@@ -262,7 +262,7 @@ static inline bool agfs_pde_is_current(agfs_pde_t p, u64 gen)
 /* link only — recover the kstrdup pointer */
 static inline char *agfs_pde_base(agfs_pde_t p)
 {
-	return (char *)((p.val & 0x1FFFFFFFFFFFFFFE) | 0xE000000000000000);
+	return (char *)(p.val | 0x7000000000000000);
 }
 
 /* ino for dir_emit: real ino for inodes, (u64)-1 for links */
@@ -275,17 +275,16 @@ static inline u64 agfs_pde_emit_ino(agfs_pde_t p)
 
 /* ── Encoders ──────────────────────────────────────────────────── */
 
-static inline agfs_pde_t agfs_pde_inode(u64 ino, u64 gen,
+static inline agfs_pde_t agfs_pde_inode(u64 ino, u16 gen,
 					unsigned char d_type, bool in_base)
 {
 	WARN_ON_ONCE(ino == 0);
-	WARN_ON_ONCE(ino > 0x1FFFFFFFFFFF);
-	WARN_ON_ONCE(gen > 0x7FFF);
+	WARN_ON_ONCE(ino > 0xFFFFFFFFFFF);
 	return (agfs_pde_t){ .val =
-		(agfs_dtype_pack(d_type) << 62) |
-		((u64)in_base << 61) |
+		(agfs_dtype_pack(d_type) << 61) |
+		((u64)in_base << 60) |
 		(ino << 16) |
-		(gen << 1) };
+		gen };
 }
 
 static inline agfs_pde_t agfs_pde_link(const char *base, unsigned char d_type,
@@ -293,12 +292,12 @@ static inline agfs_pde_t agfs_pde_link(const char *base, unsigned char d_type,
 {
 	u64 ptr = (u64)base;
 
-	WARN_ON_ONCE(((ptr >> 57) & 0x7F) != 0x7F);
+	WARN_ON_ONCE((ptr >> 60) != 0xF);
 	return (agfs_pde_t){ .val =
-		(agfs_dtype_pack(d_type) << 62) |
-		((u64)in_base << 61) |
-		(ptr & 0x1FFFFFFFFFFFFFFE) |
-		1 };
+		(1ULL << 63) |
+		(agfs_dtype_pack(d_type) << 61) |
+		((u64)in_base << 60) |
+		(ptr & 0x0FFFFFFFFFFFFFFF) };
 }
 
 /* ── Cleanup ───────────────────────────────────────────────────── */
@@ -338,7 +337,7 @@ struct agfs_sb_info {
 	struct file		*journal_file;	/* ./agfs/journal (append-only, opened lazily) */
 	struct rw_semaphore	staging_sem;	/* protects staging + journal writes */
 	atomic64_t		next_ino;	/* counter for inode store IDs */
-	atomic64_t		gen;		/* bumped on each checkpoint; triggers re-COW */
+	atomic_t		gen;		/* bumped on each checkpoint; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
 	bool			dirty;		/* data records written since last CKP/RST */
 	struct list_head	pinned_dirs;	/* igrab()'d directory inodes with dirents */
@@ -378,6 +377,7 @@ struct agfs_inode_info {
 struct agfs_dentry_info {
 	spinlock_t		lock;
 	struct path		lower_path;	/* resolved lower path (inode entry or base) */
+	struct agfs_dirent	*dirent;	/* entry in parent's dirent table */
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
 	struct list_head	rule_pin;	/* node in sbi->pinned_rules */
 	struct dentry		*rule_dentry;	/* back-pointer for dput on release */
@@ -527,10 +527,10 @@ int agfs_inode_path(struct agfs_sb_info *sbi, u64 ino,
 struct agfs_dirent *agfs_find_dirent(struct inode *dir,
 					 const char *name,
 					 unsigned int namelen);
-int agfs_add_dirent(struct inode *dir, const char *name,
-		      unsigned int namelen, agfs_pde_t packed);
-int agfs_del_dirent(struct inode *dir, const char *name,
-		      unsigned int namelen);
+struct agfs_dirent *agfs_add_dirent(struct inode *dir, const char *name,
+				    unsigned int namelen, agfs_pde_t packed);
+struct agfs_dirent *agfs_del_dirent(struct inode *dir, const char *name,
+				    unsigned int namelen);
 int agfs_inode_alloc(struct agfs_sb_info *sbi, u64 *out_ino,
 		     struct path *inode_path, umode_t mode,
 		     const char *symname);
@@ -550,8 +550,8 @@ int agfs_journal_rename(struct agfs_sb_info *sbi, struct dentry *old_dentry,
 			  struct dentry *new_dentry, unsigned char d_type);
 int agfs_journal_replace(struct agfs_sb_info *sbi, struct dentry *old_dentry,
 			   struct dentry *new_dentry, unsigned char d_type);
-int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name);
-int agfs_journal_restore(struct agfs_sb_info *sbi, u64 gen, u64 target_gen);
+int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u16 id, const char *name);
+int agfs_journal_restore(struct agfs_sb_info *sbi, u16 gen, u16 target_gen);
 
 /* perm.c */
 static inline void agfs_perm_request_release(struct kref *kref)

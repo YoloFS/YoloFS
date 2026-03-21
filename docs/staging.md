@@ -118,7 +118,7 @@ time is valid for the lifetime of the fd.
 
 | Field | Purpose |
 |-------|---------|
-| `packed` | Single `u64` encoding the dirent state. Three mutually exclusive variants discriminated by bit 0 and zero: **tombstone** (`packed == 0`, always `in_base=true`), **link** (`packed & 1`, pointer with tag bit — zero-copy rename), **inode** (even, non-zero — staged in `inodes/<ino>`). Bits [63:62] encode `d_type` (2-bit private encoding), bit [61] encodes `in_base`. Inode variant packs `ino` (45 bits) and `gen` (15 bits). See [Packed Encoding](#packed-encoding). |
+| `packed` | Single `u64` encoding the dirent state. Three mutually exclusive variants discriminated by bit 63 and zero: **tombstone** (`packed == 0`, always `in_base=true`), **link** (bit 63 set — kernel pointer with tag), **inode** (bit 63 clear, non-zero — staged in `inodes/<ino>`). Bits [62:61] encode `d_type` (2-bit private encoding), bit [60] encodes `in_base`. Inode variant packs `ino` (44 bits) and `gen` (16 bits). See [Packed Encoding](#packed-encoding). |
 
 ## Path Resolution
 
@@ -137,47 +137,48 @@ struct agfs_dirent {
 
 ### Packed Encoding
 
-Three mutually exclusive states discriminated by **bit 0** and zero:
+Three mutually exclusive states discriminated by **bit 63** and zero:
 
 - `packed == 0` → **tombstone** (deleted). Always `in_base=true`.
   A delete of an `in_base=false` entry removes the entry entirely
   (cancelled-entry removal) rather than creating a tombstone.
-- `packed & 1 == 1` → **link** (odd — pointer with bit 0 set).
+- `(s64)packed < 0` → **link** (bit 63 set — kernel pointer with tag).
   Zero-copy rename redirect to a base path.
-- `packed != 0 && !(packed & 1)` → **inode** (even, non-zero).
+- `packed != 0 && (s64)packed >= 0` → **inode** (bit 63 clear, non-zero).
   Staged content in `inodes/<ino>`.
 - no entry at all → fall through to base filesystem
 
-`d_type` (bits [63:62]) and `in_base` (bit [61]) occupy the same
+`d_type` (bits [62:61]) and `in_base` (bit [60]) occupy the same
 position in both inode and link variants, making common accessors
 branchless.
 
-**Inode layout** (even, non-zero):
+**Inode layout** (bit 63 clear, non-zero):
 
 ```
-[63:62]  d_type    2 bits  (private 2-bit encoding)
-[61]     in_base   1 bit
-[60:16]  ino      45 bits  (max ~35.2 trillion; always > 0)
-[15:1]   gen      15 bits  (max 32767)
-[0]      0                 (tag: even = inode)
+[63]     0                 (tag: inode)
+[62:61]  d_type    2 bits  (private 2-bit encoding)
+[60]     in_base   1 bit
+[59:16]  ino      44 bits  (max ~17.6 trillion; always > 0)
+[15:0]   gen      16 bits  (max 65535)
 ```
 
-**Link layout** (odd):
+**Link layout** (bit 63 set):
 
-The `kstrdup` pointer (≥ 8-byte aligned, so bit 0 = 0) is stored with
-bit 0 flipped to 1 as the tag. `d_type` and `in_base` borrow bits
-[63:61] from kernel sign-extension (safe on x86_64 — at least bits
-[63:57] are sign extension for kernel addresses).
+The `kstrdup` pointer (≥ 8-byte aligned) is stored with bit 63 set as
+the tag. This coincides with the kernel sign-extension bit (always 1
+for kernel addresses). `d_type` and `in_base` borrow bits [62:60]
+from sign-extension (safe on x86_64 — at least bits [63:60] are 1 for
+kernel addresses).
 
 ```
-[63:62]  d_type    2 bits  (borrowed from sign extension)
-[61]     in_base   1 bit   (borrowed from sign extension)
-[60:1]   pointer bits [60:1]  (real address bits)
-[0]      1                    (tag — pointer bit 0 was 0)
+[63]     1                    (tag — matches kernel sign extension)
+[62:61]  d_type    2 bits     (borrowed from sign extension)
+[60]     in_base   1 bit      (borrowed from sign extension)
+[59:0]   pointer bits [59:0]  (real address bits)
 ```
 
-Pointer recovery: `(packed & 0x1FFFFFFFFFFFFFFE) | 0xE000000000000000`
-(restore sign-extension bits [63:61] = 111, clear tag bit 0).
+Pointer recovery: `packed | 0x7000000000000000`
+(restore sign-extension bits [62:60] = 111; bit 63 is already 1).
 
 **d_type 2-bit encoding**: The libc `DT_*` constants need 4 bits.
 We compress to 2 bits with a private encoding, converting at
@@ -203,14 +204,13 @@ lookups/readdir, and the tombstone becomes a single zero constant (no
 
 ```c
 is_tombstone = !packed
-is_link      = packed & 1
-is_inode     = packed && !(packed & 1)
-d_type       = agfs_dtype_unpack((packed >> 62) & 3)  // inode + link
-in_base      = (packed >> 61) & 1                      // inode + link
-ino          = (packed >> 16) & 0x1FFFFFFFFFFF         // inode only
-gen          = (packed >> 1) & 0x7FFF                  // inode only
-base         = (packed & 0x1FFFFFFFFFFFFFFE)
-             | 0xE000000000000000                      // link only
+is_link      = (s64)packed < 0
+is_inode     = (s64)packed > 0
+d_type       = agfs_dtype_unpack((packed >> 61) & 3)   // inode + link
+in_base      = (packed >> 60) & 1                       // inode + link
+ino          = (packed >> 16) & 0xFFFFFFFFFFF           // inode only
+gen          = (u16)packed                              // inode only
+base         = packed | 0x7000000000000000              // link only
 ```
 
 `in_base` is orthogonal to the variant — it tracks whether the
@@ -601,7 +601,7 @@ destination path existed in the base layer (`in_base`):
 | `T` | `<gen>`, `<target_gen>` | — | Restore marker |
 
 **Gen_id invariant.** The kernel increments `sbi->gen` via
-`atomic64_inc_return()` on every K and T record. Gen_id values are
+`atomic_inc_return()` on every K and T record. Gen_id values are
 strictly sequential: marker\[i\] has gen_id = i + 1. The `Markers` type
 relies on this for O(1) checkpoint lookup by gen_id.
 
@@ -800,8 +800,8 @@ checkpoints from read-only or no-op commands.
 ### Re-COW on First Open-for-Write After Checkpoint
 
 The COW check is per-dirent: `agfs_pde_gen(de->packed)` records the
-`sbi->gen` at which the current inode was created (truncated to 15
-bits). `sbi->gen` starts at 1. Newly created files set
+`sbi->gen` at which the current inode was created. `sbi->gen` starts
+at 1. Newly created files set
 `gen = sbi->gen` at creation time, so they are already
 up-to-date and skip the COW check. Base files that have no dirent
 (or are tombstoned) naturally trigger COW on the first

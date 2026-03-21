@@ -93,7 +93,7 @@ static struct file *agfs_open_staged_ino(struct agfs_sb_info *sbi,
 	return f;
 }
 
-/* Read packed dirent from the parent's dirent table. */
+/* Read packed dirent from the dentry's cached dirent pointer. */
 static agfs_pde_t agfs_read_dirent(struct dentry *dentry)
 {
 	struct inode *dir = d_inode(dentry->d_parent);
@@ -102,8 +102,7 @@ static agfs_pde_t agfs_read_dirent(struct dentry *dentry)
 
 	/* open() does not hold parent's i_rwsem — take it explicitly */
 	inode_lock_shared(dir);
-	de = agfs_find_dirent(dir, dentry->d_name.name,
-				 dentry->d_name.len);
+	de = AGFS_D(dentry)->dirent;
 	packed = de ? de->packed : (agfs_pde_t){0};
 	inode_unlock_shared(dir);
 	return packed;
@@ -128,7 +127,7 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 	 * staging_sem excludes checkpoint, so gen is stable under the lock. */
 	down_read(&sbi->staging_sem);
 	packed = agfs_read_dirent(dentry);
-	if (agfs_pde_is_current(packed, atomic64_read(&sbi->gen))) {
+	if (agfs_pde_is_current(packed, (u16)atomic_read(&sbi->gen))) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_read(&sbi->staging_sem);
 		return agfs_open_staged_ino(sbi, agfs_pde_ino(packed),
@@ -143,7 +142,7 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 
 	/* Re-check — a concurrent open may have COW'd */
 	packed = agfs_read_dirent(dentry);
-	if (agfs_pde_is_current(packed, atomic64_read(&sbi->gen))) {
+	if (agfs_pde_is_current(packed, (u16)atomic_read(&sbi->gen))) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_write(&sbi->staging_sem);
 		return agfs_open_staged_ino(sbi, agfs_pde_ino(packed),

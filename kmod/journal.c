@@ -179,11 +179,11 @@ int agfs_journal_replace(struct agfs_sb_info *sbi, struct dentry *old_dentry,
 	return journal_emit_paths(sbi, old_dentry, new_dentry, d_type, 'P');
 }
 
-int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name)
+int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u16 id, const char *name)
 {
-	char id_str[21];
+	char id_str[6];
 
-	snprintf(id_str, sizeof(id_str), "%llu", (unsigned long long)id);
+	snprintf(id_str, sizeof(id_str), "%u", (unsigned)id);
 	return journal_write(sbi, 'K',
 			     (const char *[]){ id_str, name, NULL });
 }
@@ -196,14 +196,14 @@ int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name)
  *
  * Format: T\0<gen>\0<target_gen>\n
  */
-int agfs_journal_restore(struct agfs_sb_info *sbi, u64 gen, u64 target_gen)
+int agfs_journal_restore(struct agfs_sb_info *sbi, u16 gen, u16 target_gen)
 {
-	char gen_str[21];
-	char target_str[21];
+	char gen_str[6];
+	char target_str[6];
 
-	snprintf(gen_str, sizeof(gen_str), "%llu", (unsigned long long)gen);
-	snprintf(target_str, sizeof(target_str), "%llu",
-		 (unsigned long long)target_gen);
+	snprintf(gen_str, sizeof(gen_str), "%u", (unsigned)gen);
+	snprintf(target_str, sizeof(target_str), "%u",
+		 (unsigned)target_gen);
 	return journal_write(sbi, 'T',
 			     (const char *[]){ gen_str, target_str, NULL });
 }

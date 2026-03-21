@@ -15,7 +15,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 			      umode_t mode, const char *symname)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
-	struct agfs_dirent *old_de;
+	struct agfs_dirent *old_de, *de;
 	struct path inode_path;
 	unsigned char dt;
 	bool in_base;
@@ -40,13 +40,14 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 				  dentry->d_name.len);
 	in_base = old_de && agfs_pde_in_base(old_de->packed);
 
-	err = agfs_add_dirent(dir, dentry->d_name.name,
-			      dentry->d_name.len,
-			      agfs_pde_inode(ino,
-					    (u64)atomic64_read(&sbi->gen),
-					    dt, in_base));
-	if (err)
-		return err;
+	de = agfs_add_dirent(dir, dentry->d_name.name,
+			     dentry->d_name.len,
+			     agfs_pde_inode(ino,
+					   (u16)atomic_read(&sbi->gen),
+					   dt, in_base));
+	if (IS_ERR(de))
+		return PTR_ERR(de);
+	AGFS_D(dentry)->dirent = de;
 
 	if (in_base)
 		agfs_journal_modify(sbi, dentry, ino, dt);
@@ -73,17 +74,20 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
+	struct agfs_dirent *de;
 	unsigned char d_type;
 	int err;
 
 	d_type = d_inode(dentry) ?
 		 fs_umode_to_dtype(d_inode(dentry)->i_mode) : DT_UNKNOWN;
 
-	err = agfs_del_dirent(dir,
+	de = agfs_del_dirent(dir,
 				dentry->d_name.name,
 				dentry->d_name.len);
-	if (err)
-		return err;
+	if (IS_ERR(de))
+		return PTR_ERR(de);
+
+	AGFS_D(dentry)->dirent = de;
 
 	err = agfs_journal_delete(sbi, dentry, d_type);
 	if (!err)
@@ -165,17 +169,31 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	} else {
 		packed = agfs_pde_link(old_buf, d_type, dst_in_base);
 	}
-	err = agfs_add_dirent(new_dir, new_dentry->d_name.name,
-			      new_dentry->d_name.len, packed);
-	if (err)
-		goto out;
+	{
+		struct agfs_dirent *de;
+
+		de = agfs_add_dirent(new_dir, new_dentry->d_name.name,
+				     new_dentry->d_name.len, packed);
+		if (IS_ERR(de)) {
+			err = PTR_ERR(de);
+			goto out;
+		}
+		AGFS_D(new_dentry)->dirent = de;
+	}
 
 	/* Delete old name */
-	err = agfs_del_dirent(old_dir,
-			      old_dentry->d_name.name,
-			      old_dentry->d_name.len);
-	if (err)
-		goto out;
+	{
+		struct agfs_dirent *de;
+
+		de = agfs_del_dirent(old_dir,
+				     old_dentry->d_name.name,
+				     old_dentry->d_name.len);
+		if (IS_ERR(de)) {
+			err = PTR_ERR(de);
+			goto out;
+		}
+		AGFS_D(old_dentry)->dirent = de;
+	}
 
 	/* All renames emit a single R or P record.
 	 * R if destination is new, P if destination existed in base. */

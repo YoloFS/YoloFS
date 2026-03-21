@@ -1,5 +1,6 @@
 mod helpers;
 
+mod test_cancel;
 mod test_checkpoint;
 mod test_commit_abort;
 mod test_create;

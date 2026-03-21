@@ -157,14 +157,14 @@ static int agfs_pin_dir(struct agfs_inode_info *dii, struct agfs_sb_info *sbi)
  * existing entry has in_base=false, the entry is removed entirely.
  * Caller must hold inode_lock(dir) (exclusive).
  */
-int agfs_del_dirent(struct inode *dir, const char *name,
-		      unsigned int namelen)
+struct agfs_dirent *agfs_del_dirent(struct inode *dir, const char *name,
+				   unsigned int namelen)
 {
 	return agfs_add_dirent(dir, name, namelen, (agfs_pde_t){0});
 }
 
-int agfs_add_dirent(struct inode *dir, const char *name,
-		      unsigned int namelen, agfs_pde_t packed)
+struct agfs_dirent *agfs_add_dirent(struct inode *dir, const char *name,
+				    unsigned int namelen, agfs_pde_t packed)
 {
 	struct agfs_inode_info *dii = AGFS_I(dir);
 	struct agfs_dirent *old_de, *new_de;
@@ -179,14 +179,14 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 
 		base_copy = kstrdup(agfs_pde_base(packed), GFP_KERNEL);
 		if (!base_copy)
-			return -ENOMEM;
+			return ERR_PTR(-ENOMEM);
 		packed = agfs_pde_link(base_copy, dt, ib);
 	}
 
 	err = agfs_ensure_de_buckets(dii, &first_de);
 	if (err) {
 		kfree(base_copy);
-		return err;
+		return ERR_PTR(err);
 	}
 
 	/* Update existing entry in place */
@@ -200,15 +200,18 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 			if (was_in_base) {
 				/* Entry was in base: keep as tombstone */
 				old_de->packed = (agfs_pde_t){0};
+				new_de = old_de;
 			} else {
 				/* Cancelled entry: in_base=false tombstone
 				 * is useless — remove entirely. */
 				hlist_del(&old_de->node);
 				kfree(old_de);
+				new_de = NULL;
 			}
 		} else {
 			agfs_pde_free(old_de->packed);
 			old_de->packed = packed;
+			new_de = old_de;
 		}
 		goto out;
 	}
@@ -218,7 +221,7 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 			 GFP_KERNEL);
 	if (!new_de) {
 		kfree(base_copy);
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 	}
 	memcpy(new_de->name, name, namelen);
 	new_de->name[namelen] = '\0';
@@ -233,9 +236,12 @@ int agfs_add_dirent(struct inode *dir, const char *name,
 		       &dii->de_buckets[agfs_de_hash(name, namelen)]);
 
 out:
-	if (first_de)
-		return agfs_pin_dir(dii, AGFS_SB(dir->i_sb));
-	return 0;
+	if (first_de) {
+		err = agfs_pin_dir(dii, AGFS_SB(dir->i_sb));
+		if (err)
+			return ERR_PTR(err);
+	}
+	return new_de;
 }
 
 /* ── Inode Store Allocation ────────────────────────────────────────── */
@@ -338,6 +344,7 @@ static int agfs_copy_to_inode(struct dentry *dentry,
 int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 		struct file **new_file, int flags, bool truncate)
 {
+	struct agfs_dirent *de;
 	struct path inode_path;
 	u64 ino;
 	int err;
@@ -366,16 +373,17 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	 * `agfs abort` because the entire inode store is removed.
 	 */
 	inode_lock(d_inode(dentry->d_parent));
-	err = agfs_add_dirent(d_inode(dentry->d_parent),
+	de = agfs_add_dirent(d_inode(dentry->d_parent),
 			      dentry->d_name.name,
 			      dentry->d_name.len,
-			      agfs_pde_inode(ino, (u64)atomic64_read(&sbi->gen),
+			      agfs_pde_inode(ino, (u16)atomic_read(&sbi->gen),
 					    DT_REG, true));
 	inode_unlock(d_inode(dentry->d_parent));
-	if (err) {
+	if (IS_ERR(de)) {
 		path_put(&inode_path);
-		return err;
+		return PTR_ERR(de);
 	}
+	AGFS_D(dentry)->dirent = de;
 
 	path_get(&inode_path); /* extra ref for reopen below */
 

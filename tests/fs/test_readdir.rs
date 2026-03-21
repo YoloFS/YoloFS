@@ -279,3 +279,88 @@ fn readdir_renamed_file_has_nonzero_ino() {
     }
     panic!("renamed.txt not found in readdir");
 }
+
+// ── d_type after rename (link dirent encoding) ──
+
+/// A renamed (not yet COW'd) file should still report as a regular file.
+/// This exercises the link variant's d_type encoding.
+#[test]
+fn readdir_dtype_renamed_file() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("link_file.txt")).expect("rename");
+
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "link_file.txt" {
+            let ft = entry.file_type().expect("file_type");
+            assert!(
+                ft.is_file(),
+                "renamed (link) file should have d_type = file, got: {ft:?}"
+            );
+            return;
+        }
+    }
+    panic!("link_file.txt not found in readdir");
+}
+
+/// A renamed directory should still report as a directory.
+/// This exercises the link variant's d_type encoding for directories.
+#[test]
+fn readdir_dtype_renamed_dir() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("subdir"), s.mnt_path("link_dir")).expect("rename dir");
+
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "link_dir" {
+            let ft = entry.file_type().expect("file_type");
+            assert!(
+                ft.is_dir(),
+                "renamed (link) directory should have d_type = dir, got: {ft:?}"
+            );
+            return;
+        }
+    }
+    panic!("link_dir not found in readdir");
+}
+
+/// All three d_types in one directory: regular, directory, symlink.
+/// Verifies the 2-bit d_type encoding handles all variants correctly.
+#[test]
+fn readdir_dtype_all_three_types() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::create_dir(s.mnt_path("typedir")).expect("mkdir container");
+    fs::write(s.mnt_path("typedir/reg.txt"), "regular\n").expect("create regular");
+    fs::create_dir(s.mnt_path("typedir/sub")).expect("mkdir sub");
+    std::os::unix::fs::symlink("reg.txt", s.mnt_path("typedir/lnk")).expect("symlink");
+
+    let mut found = [false; 3]; // [regular, directory, symlink]
+
+    for entry in fs::read_dir(s.mnt_path("typedir")).expect("readdir") {
+        let entry = entry.expect("entry");
+        let ft = entry.file_type().expect("file_type");
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        match name.as_str() {
+            "reg.txt" => {
+                assert!(ft.is_file(), "reg.txt should be file, got: {ft:?}");
+                found[0] = true;
+            }
+            "sub" => {
+                assert!(ft.is_dir(), "sub should be dir, got: {ft:?}");
+                found[1] = true;
+            }
+            "lnk" => {
+                assert!(ft.is_symlink(), "lnk should be symlink, got: {ft:?}");
+                found[2] = true;
+            }
+            _ => panic!("unexpected entry: {name}"),
+        }
+    }
+    assert!(found[0], "reg.txt not found in readdir");
+    assert!(found[1], "sub not found in readdir");
+    assert!(found[2], "lnk not found in readdir");
+}

@@ -105,6 +105,8 @@ static int agfs_lookup_staged(struct agfs_sb_info *sbi, struct dentry *dentry)
 	if (!de)
 		return 0;
 
+	AGFS_D(dentry)->dirent = de;
+
 	if (agfs_pde_is_inode(de->packed)) {
 		/* Staged inode */
 		struct inode *inode;
