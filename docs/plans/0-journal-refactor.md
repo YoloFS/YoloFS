@@ -97,7 +97,11 @@ Update downstream:
 - `DirTree::apply(&mut self, action: &Action)` — no K/T match needed.
 - `parse::parse()` returns `Vec<Record>` as before, but each variant wraps
   the inner type.
-- `audit.rs`, `commit.rs`, `timeline.rs` — update match arms.
+- All cmd/ files that pattern-match on Record variants: diff, timeline,
+  audit, restore, mount, commit, abort.
+- `audit.rs` specifically: `record_matches_path()` takes `&Action` (not
+  `&Record`), `format_record()` splits into `format_action()` +
+  `format_marker()` (or two match arms on separate types).
 
 ### 2. Replace `SegmentedJournal` with `Journal`
 
