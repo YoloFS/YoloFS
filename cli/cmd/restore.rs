@@ -44,8 +44,8 @@ fn dirents_to_entries(dirents: &[(String, Dirent)]) -> Result<Vec<ioctl::AgfsIoc
                         blen,
                     )
                 }
-                Dirent::Tombstone { dtype } => {
-                    (0, dtype.to_libc(), 1u8, path.as_ptr() as u64, 0u16)
+                Dirent::Tombstone => {
+                    (0, 0u8, 1u8, path.as_ptr() as u64, 0u16)
                 }
             };
 
@@ -151,7 +151,7 @@ mod tests {
         ]);
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].0, "/old.txt");
-        assert!(matches!(cs[0].1, Dirent::Tombstone { .. }));
+        assert!(matches!(cs[0].1, Dirent::Tombstone));
     }
 
     #[test]
@@ -163,7 +163,7 @@ mod tests {
         }]);
 
         let (_, del) = find(&cs, "/a.txt");
-        assert!(matches!(del, Dirent::Tombstone { .. }));
+        assert!(matches!(del, Dirent::Tombstone));
 
         let (_, redirect) = find(&cs, "/b.txt");
         assert!(matches!(redirect, Dirent::Link { base_path, .. } if base_path == "/a.txt"));
@@ -188,7 +188,7 @@ mod tests {
         assert!(matches!(new, Dirent::Inode { ino: 5, .. }));
 
         let (_, old) = find(&cs, "/old.rs");
-        assert!(matches!(old, Dirent::Tombstone { .. }));
+        assert!(matches!(old, Dirent::Tombstone));
     }
 
     #[test]
@@ -233,7 +233,7 @@ mod tests {
     fn dirents_to_entries_rejects_oversized_path() {
         let cs = vec![(
             "a".repeat(u16::MAX as usize + 1),
-            Dirent::Tombstone { dtype: DType::File },
+            Dirent::Tombstone,
         )];
         assert!(dirents_to_entries(&cs).is_err());
     }

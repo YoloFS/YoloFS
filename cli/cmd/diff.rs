@@ -94,7 +94,7 @@ fn print_change(agfs: &Path, path: &str, dirent: &Dirent, verbose: bool) {
                 println!("{} {}", path.bold(), "(modified)".yellow());
             }
         }
-        Dirent::Tombstone { .. } => {
+        Dirent::Tombstone => {
             println!("{} {}", path.bold(), "(deleted)".red());
             if verbose {
                 print_unified_diff(&read_base(path), "");
@@ -251,7 +251,7 @@ mod tests {
                 Dirent::Inode { ino, .. } => {
                     map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
                 }
-                Dirent::Tombstone { .. } => {
+                Dirent::Tombstone => {
                     map.insert(path.as_str(), None);
                 }
                 Dirent::Link { base_path, .. } => {
@@ -319,9 +319,7 @@ mod tests {
         let tmp = make_agfs(&[]);
         let dirents = vec![(
             "/old/file.txt".into(),
-            Dirent::Tombstone {
-                dtype: crate::journal::DType::File,
-            },
+            Dirent::Tombstone,
         )];
         let map = state_map(tmp.path(), &dirents);
         assert_eq!(map.len(), 1);
@@ -397,9 +395,7 @@ mod tests {
             ),
             (
                 "/c.txt".into(),
-                Dirent::Tombstone {
-                    dtype: crate::journal::DType::File,
-                },
+                Dirent::Tombstone,
             ),
         ];
         let map = state_map(tmp.path(), &dirents);
