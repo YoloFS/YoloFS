@@ -589,9 +589,9 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 				err = -EINVAL;
 				goto out_unwind;
 			}
-			child = lookup_one_len((const char *)name_ptr,
-					       stack[depth].dentry,
-					       name_len);
+			child = lookup_one_len_unlocked(
+					(const char *)name_ptr,
+					stack[depth].dentry, name_len);
 			if (IS_ERR(child)) {
 				err = PTR_ERR(child);
 				goto out_unwind;
