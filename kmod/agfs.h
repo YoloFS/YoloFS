@@ -273,8 +273,8 @@ static inline struct agfs_dstate agfs_dstate_inode(u32 ino, u16 gen,
 }
 
 static inline struct agfs_dstate agfs_dstate_link(const char *base,
-						  unsigned char d_type,
-						  bool in_base)
+						   unsigned char d_type,
+						   bool in_base)
 {
 	u64 ptr = (u64)base;
 

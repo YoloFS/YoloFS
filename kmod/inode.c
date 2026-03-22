@@ -200,7 +200,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (src_staged && agfs_dstate_is_inode(src_packed)) {
 		dst_packed = agfs_dstate_inode(agfs_dstate_ino(src_packed),
 					      agfs_dstate_gen(src_packed),
-					   d_type, dst_in_base);
+					      d_type, dst_in_base);
 	} else if (src_staged && agfs_dstate_is_link(src_packed)) {
 		base_copy = kstrdup(agfs_dstate_base(src_packed), GFP_KERNEL);
 		if (!base_copy) {
