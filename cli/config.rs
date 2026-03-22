@@ -130,7 +130,7 @@ fn config_path() -> Result<std::path::PathBuf> {
 }
 
 fn is_mounted() -> bool {
-    crate::utils::session_dir().is_ok_and(|d| d.join("mnt").exists())
+    crate::utils::session_dir().is_ok_and(|d| d.join("pid").exists())
 }
 
 /// Expand `$HOME`/`~`, then canonicalize (resolves relative paths, symlinks, `..`).
