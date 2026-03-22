@@ -93,10 +93,7 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         match auto_checkpoint(&chk_name) {
             Ok(true) => {} // checkpoint created (message printed by checkpoint::create path)
             Ok(false) => {
-                eprintln!(
-                    "{}",
-                    "agfs: no changes, skipping checkpoint".dimmed()
-                );
+                eprintln!("{}", "agfs: no changes, skipping checkpoint".dimmed());
             }
             Err(e) => {
                 eprintln!("{} {:#}", "agfs: checkpoint failed:".yellow(), e);

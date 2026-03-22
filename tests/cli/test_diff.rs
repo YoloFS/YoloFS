@@ -161,4 +161,3 @@ fn diff_between_checkpoints_spanning_restore() {
         "dead-zone file should NOT appear: {output}"
     );
 }
-

@@ -268,14 +268,8 @@ fn commit_rename_dir_onto_dir() {
 
     s.cli(&["commit"]).expect("commit rename");
 
-    assert!(
-        !s.base_path("subdir").exists(),
-        "source dir should be gone"
-    );
-    assert!(
-        s.base_path("otherdir").is_dir(),
-        "dest dir should exist"
-    );
+    assert!(!s.base_path("subdir").exists(), "source dir should be gone");
+    assert!(s.base_path("otherdir").is_dir(), "dest dir should exist");
     assert!(
         s.base_path("otherdir/deep.txt").exists(),
         "child from source dir should be present"
@@ -294,7 +288,11 @@ fn commit_symlink() {
 
     let base_link = s.base_path("link.txt");
     assert!(
-        base_link.symlink_metadata().unwrap().file_type().is_symlink(),
+        base_link
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
         "base should have a symlink"
     );
     assert_eq!(
@@ -321,7 +319,11 @@ fn commit_modified_symlink() {
 
     let base_link = s.base_path("link.txt");
     assert!(
-        base_link.symlink_metadata().unwrap().file_type().is_symlink(),
+        base_link
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
         "should still be a symlink"
     );
     assert_eq!(

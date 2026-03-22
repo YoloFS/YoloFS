@@ -226,7 +226,8 @@ fn truncate_open_base_file_produces_modify_record() {
         "O_TRUNC on a base file should produce a Modified record, got: {acts:?}"
     );
     assert!(
-        !acts.iter()
+        !acts
+            .iter()
             .any(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/hello.txt"))),
         "O_TRUNC on a base file should NOT produce an Added record, got: {acts:?}"
     );

@@ -42,8 +42,10 @@ fn recow_after_checkpoint_produces_new_add() {
     );
 
     // The two adds should have different ino values (re-COW allocates a new inode)
-    if let (Record::Action(Action::Modify { ino: ino1, .. }), Record::Action(Action::Modify { ino: ino2, .. })) =
-        (adds[0], adds[1])
+    if let (
+        Record::Action(Action::Modify { ino: ino1, .. }),
+        Record::Action(Action::Modify { ino: ino2, .. }),
+    ) = (adds[0], adds[1])
     {
         assert_ne!(ino1, ino2, "re-COW ino values should differ: {recs:?}");
     }

@@ -33,8 +33,7 @@ fn restore_to_checkpoint_appends_s_record() {
     );
     // The s1 checkpoint itself should still be present
     assert!(
-        recs
-            .iter()
+        recs.iter()
             .any(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1")),
         "s1 checkpoint should be preserved: {recs:?}"
     );

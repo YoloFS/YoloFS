@@ -3,27 +3,30 @@
 // `agfs restore <name|id>` — restore to a previous checkpoint.
 
 use crate::ioctl;
-use crate::journal::{Dirent, Journal, INO_REDIRECT};
+use crate::journal::{Dirent, INO_REDIRECT, Journal};
 use anyhow::{Context, Result};
 use colored::Colorize;
 
 /// Convert (path, Dirent) pairs into ioctl entries with pointers into the source data.
 /// The returned entries are valid as long as `dirents` is alive.
-fn dirents_to_entries(
-    dirents: &[(String, Dirent)],
-) -> Result<Vec<ioctl::AgfsIocRestoreEntry>> {
+fn dirents_to_entries(dirents: &[(String, Dirent)]) -> Result<Vec<ioctl::AgfsIocRestoreEntry>> {
     dirents
         .iter()
         .map(|(path, dirent)| {
-            let path_len: u16 = path
-                .len()
-                .try_into()
-                .context("restore path too long")?;
+            let path_len: u16 = path.len().try_into().context("restore path too long")?;
 
             let (ino, d_type, in_base, base_ptr, base_len) = match dirent {
                 Dirent::Inode {
-                    ino, dtype, in_base,
-                } => (*ino, dtype.to_libc(), *in_base as u8, path.as_ptr() as u64, 0u16),
+                    ino,
+                    dtype,
+                    in_base,
+                } => (
+                    *ino,
+                    dtype.to_libc(),
+                    *in_base as u8,
+                    path.as_ptr() as u64,
+                    0u16,
+                ),
                 Dirent::Link {
                     base_path,
                     dtype,
@@ -33,7 +36,13 @@ fn dirents_to_entries(
                         .len()
                         .try_into()
                         .context("restore base too long")?;
-                    (INO_REDIRECT, dtype.to_libc(), *in_base as u8, base_path.as_ptr() as u64, blen)
+                    (
+                        INO_REDIRECT,
+                        dtype.to_libc(),
+                        *in_base as u8,
+                        base_path.as_ptr() as u64,
+                        blen,
+                    )
                 }
                 Dirent::Tombstone { dtype } => {
                     (0, dtype.to_libc(), 1u8, path.as_ptr() as u64, 0u16)
@@ -95,7 +104,11 @@ mod tests {
 
     /// Helper: build a tree from actions and get dirents.
     fn build_dirents(actions: &[Action]) -> Vec<(String, Dirent)> {
-        DirTree::build(std::iter::once(Segment { from: 0, records: actions.to_vec() })).into_dirents()
+        DirTree::build(std::iter::once(Segment {
+            from: 0,
+            records: actions.to_vec(),
+        }))
+        .into_dirents()
     }
 
     /// Helper: find a dirent by path suffix.
@@ -113,7 +126,14 @@ mod tests {
         assert_eq!(cs.len(), 1);
         let (path, dirent) = &cs[0];
         assert_eq!(path, "/src/main.rs");
-        assert!(matches!(dirent, Dirent::Inode { ino: 1, in_base: false, .. }));
+        assert!(matches!(
+            dirent,
+            Dirent::Inode {
+                ino: 1,
+                in_base: false,
+                ..
+            }
+        ));
     }
 
     #[test]

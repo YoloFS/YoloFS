@@ -128,11 +128,28 @@ mod tests {
     #[test]
     fn segmentation_basic() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
         ];
         let j = Journal::new(records);
         assert_eq!(j.segments.len(), 4);
@@ -149,14 +166,41 @@ mod tests {
     #[test]
     fn segmentation_splits_at_s_boundary() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Marker(Marker::Restore { gen_id: 4, target_gen: 2 }),
-            Record::Action(Action::Add { path: "/d".into(), dtype: Some(DType::File), ino: 3 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 5, name: "c5".into() }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 4,
+                target_gen: 2,
+            }),
+            Record::Action(Action::Add {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
         ];
         let j = Journal::new(records);
         assert_eq!(j.segments.len(), 6);
@@ -168,10 +212,24 @@ mod tests {
     #[test]
     fn records_before_first_checkpoint_in_segment_zero() {
         let records = vec![
-            Record::Action(Action::Add { path: "/orphan".into(), dtype: Some(DType::File), ino: 999 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
+            Record::Action(Action::Add {
+                path: "/orphan".into(),
+                dtype: Some(DType::File),
+                ino: 999,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
         ];
         let j = Journal::new(records);
         assert_eq!(j.segments.len(), 3);
@@ -193,7 +251,10 @@ mod tests {
 
     #[test]
     fn segmentation_only_s_records() {
-        let records = vec![Record::Marker(Marker::Restore { gen_id: 1, target_gen: 99 })];
+        let records = vec![Record::Marker(Marker::Restore {
+            gen_id: 1,
+            target_gen: 99,
+        })];
         let j = Journal::new(records);
         assert_eq!(j.segments.len(), 2);
         assert_eq!(j.segments[0].from, 0);
@@ -206,14 +267,41 @@ mod tests {
     #[test]
     fn live_segments_basic() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Marker(Marker::Restore { gen_id: 4, target_gen: 2 }),
-            Record::Action(Action::Add { path: "/d".into(), dtype: Some(DType::File), ino: 3 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 5, name: "c5".into() }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 4,
+                target_gen: 2,
+            }),
+            Record::Action(Action::Add {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
         ];
         let j = Journal::new(records);
         let live: Vec<_> = j.into_live_segments_range(0, usize::MAX).collect();
@@ -224,14 +312,41 @@ mod tests {
     #[test]
     fn live_segments_at_basic() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Marker(Marker::Restore { gen_id: 4, target_gen: 1 }),
-            Record::Action(Action::Add { path: "/d".into(), dtype: Some(DType::File), ino: 3 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 5, name: "c5".into() }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 4,
+                target_gen: 1,
+            }),
+            Record::Action(Action::Add {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
         ];
         let j = Journal::new(records);
         // Live prefix up to K2: seg0 (empty) + seg1 ([A])
@@ -260,9 +375,19 @@ mod tests {
     #[test]
     fn reachable_no_restores() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
         ];
         // 3 segments (seg0 empty, seg1 [/a], seg2 empty), all alive, 1 action
         let j = Journal::new(records);
@@ -273,35 +398,105 @@ mod tests {
     fn reachable_multiple_restores_last_wins() {
         // K1 [A] K2 [B] K3 S4(K2) [D] K5 S6(K1)
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Marker(Marker::Restore { gen_id: 4, target_gen: 2 }),
-            Record::Action(Action::Add { path: "/d".into(), dtype: Some(DType::File), ino: 3 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 5, name: "c5".into() }),
-            Record::Marker(Marker::Restore { gen_id: 6, target_gen: 1 }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 4,
+                target_gen: 2,
+            }),
+            Record::Action(Action::Add {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 6,
+                target_gen: 1,
+            }),
         ];
         let actions = live_actions(records);
-        assert!(actions.is_empty(), "last restore to K1 kills everything after K1");
+        assert!(
+            actions.is_empty(),
+            "last restore to K1 kills everything after K1"
+        );
     }
 
     #[test]
     fn reachable_nested_s_in_dead_zone() {
         // K1 [A] K2 [B] K3 S4(K1) [D] K5 [E] K6 S7(K5)
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Marker(Marker::Restore { gen_id: 4, target_gen: 1 }),
-            Record::Action(Action::Add { path: "/d".into(), dtype: Some(DType::File), ino: 3 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 5, name: "c5".into() }),
-            Record::Action(Action::Add { path: "/e".into(), dtype: Some(DType::File), ino: 4 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 6, name: "c6".into() }),
-            Record::Marker(Marker::Restore { gen_id: 7, target_gen: 5 }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 4,
+                target_gen: 1,
+            }),
+            Record::Action(Action::Add {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/e".into(),
+                dtype: Some(DType::File),
+                ino: 4,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 6,
+                name: "c6".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 7,
+                target_gen: 5,
+            }),
         ];
         let actions = live_actions(records);
         assert_eq!(actions, vec!["/d"]);
@@ -311,15 +506,45 @@ mod tests {
     fn reachable_undo_restore() {
         // K1 [A] K2 [B] K3 S4(K1) [D] K5 S6(K3)
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Marker(Marker::Restore { gen_id: 4, target_gen: 1 }),
-            Record::Action(Action::Add { path: "/d".into(), dtype: Some(DType::File), ino: 3 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 5, name: "c5".into() }),
-            Record::Marker(Marker::Restore { gen_id: 6, target_gen: 3 }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 4,
+                target_gen: 1,
+            }),
+            Record::Action(Action::Add {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 6,
+                target_gen: 3,
+            }),
         ];
         let actions = live_actions(records);
         assert_eq!(actions, vec!["/a", "/b"]);
@@ -328,43 +553,112 @@ mod tests {
     #[test]
     fn reachable_restore_to_first_checkpoint() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "c1".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Marker(Marker::Restore { gen_id: 3, target_gen: 1 }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "c1".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 3,
+                target_gen: 1,
+            }),
         ];
         let actions = live_actions(records);
-        assert!(actions.is_empty(), "restore to first checkpoint discards all actions");
+        assert!(
+            actions.is_empty(),
+            "restore to first checkpoint discards all actions"
+        );
     }
 
     #[test]
     fn reachable_consecutive_s_records() {
         // K1 [A] K2 [B] K3 S4(K2) S5(K1)
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Marker(Marker::Restore { gen_id: 4, target_gen: 2 }),
-            Record::Marker(Marker::Restore { gen_id: 5, target_gen: 1 }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 4,
+                target_gen: 2,
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 5,
+                target_gen: 1,
+            }),
         ];
         let actions = live_actions(records);
-        assert!(actions.is_empty(), "consecutive restores: last one (K1) wins");
+        assert!(
+            actions.is_empty(),
+            "consecutive restores: last one (K1) wins"
+        );
     }
 
     #[test]
     fn reachable_single_restore() {
         // K1 [A] K2 [B] K3 S4(K2) [D] K5
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Marker(Marker::Restore { gen_id: 4, target_gen: 2 }),
-            Record::Action(Action::Add { path: "/d".into(), dtype: Some(DType::File), ino: 3 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 5, name: "c5".into() }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 4,
+                target_gen: 2,
+            }),
+            Record::Action(Action::Add {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
         ];
         let actions = live_actions(records);
         assert_eq!(actions, vec!["/a", "/d"]);
@@ -381,10 +675,24 @@ mod tests {
         // K1 [A] S2(K99) [B]
         // S targets nonexistent K99 — skipped, all segments alive.
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Restore { gen_id: 2, target_gen: 99 }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 2,
+                target_gen: 99,
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
         ];
         let actions = live_actions(records);
         assert_eq!(actions, vec!["/a", "/b"]);
@@ -395,17 +703,44 @@ mod tests {
     #[test]
     fn live_segments_slice_from_to() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Action(Action::Add { path: "/c".into(), dtype: Some(DType::File), ino: 3 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 4, name: "c4".into() }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/c".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 4,
+                name: "c4".into(),
+            }),
         ];
         let j = Journal::new(records);
         let num = j.segments.len();
-        let (start, end) = j.markers.segment_range(None, Some("c2"), Some("c3"), num).unwrap();
+        let (start, end) = j
+            .markers
+            .segment_range(None, Some("c2"), Some("c3"), num)
+            .unwrap();
         let live: Vec<_> = j.segments[start..end]
             .iter()
             .enumerate()
@@ -419,9 +754,16 @@ mod tests {
 
     #[test]
     fn live_segments_slice_not_found() {
-        let records = vec![Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() })];
+        let records = vec![Record::Marker(Marker::Checkpoint {
+            gen_id: 1,
+            name: "init".into(),
+        })];
         let j = Journal::new(records);
-        assert!(j.markers.segment_range(Some("nonexistent"), None, None, j.segments.len()).is_err());
+        assert!(
+            j.markers
+                .segment_range(Some("nonexistent"), None, None, j.segments.len())
+                .is_err()
+        );
     }
 
     #[test]
@@ -430,16 +772,50 @@ mod tests {
         // live_segments_at(K5): prefix markers K1,K2,K3,S4.
         // S4(K1) kills seg1,seg2,seg3 → live: seg0 (empty) + seg4 ([C])
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Marker(Marker::Restore { gen_id: 4, target_gen: 1 }),
-            Record::Action(Action::Add { path: "/c".into(), dtype: Some(DType::File), ino: 3 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 5, name: "c5".into() }),
-            Record::Action(Action::Add { path: "/d".into(), dtype: Some(DType::File), ino: 4 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 6, name: "c6".into() }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 4,
+                target_gen: 1,
+            }),
+            Record::Action(Action::Add {
+                path: "/c".into(),
+                dtype: Some(DType::File),
+                ino: 3,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 5,
+                name: "c5".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/d".into(),
+                dtype: Some(DType::File),
+                ino: 4,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 6,
+                name: "c6".into(),
+            }),
         ];
         let j = Journal::new(records);
         let (gen_id, _) = j.markers.find_checkpoint("c5").unwrap();
@@ -452,9 +828,19 @@ mod tests {
     #[test]
     fn live_segments_at_clamps_invalid_gen_id() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
         ];
         let j = Journal::new(records.clone());
         let all_live = j.into_live_segments_range(0, usize::MAX).count();
@@ -470,12 +856,32 @@ mod tests {
     #[test]
     fn is_alive_basic() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint { gen_id: 1, name: "init".into() }),
-            Record::Action(Action::Add { path: "/a".into(), dtype: Some(DType::File), ino: 1 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 2, name: "c2".into() }),
-            Record::Action(Action::Add { path: "/b".into(), dtype: Some(DType::File), ino: 2 }),
-            Record::Marker(Marker::Checkpoint { gen_id: 3, name: "c3".into() }),
-            Record::Marker(Marker::Restore { gen_id: 4, target_gen: 2 }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "init".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 3,
+                name: "c3".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 4,
+                target_gen: 2,
+            }),
         ];
         let j = Journal::new(records);
         assert!(j.is_alive(0));

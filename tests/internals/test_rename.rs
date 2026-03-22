@@ -15,9 +15,10 @@ fn rename_produces_rename_record() {
     let j = journal(&s);
     let acts = actions(&j);
     assert!(
-        acts.iter()
-            .any(|a| matches!(a, Action::Rename { src, dst, dtype: Some(agfs::journal::DType::File), .. }
-            if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))),
+        acts.iter().any(
+            |a| matches!(a, Action::Rename { src, dst, dtype: Some(agfs::journal::DType::File), .. }
+            if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))
+        ),
         "journal should have a Redirect(dtype=File) record for hello.txt → moved.txt: {acts:?}"
     );
 }
@@ -158,10 +159,10 @@ fn rename_staged_file_to_base_path() {
 
     // All renames now emit a single R or P record.
     // Destination exists in base → P (Replace).
-    let has_replace = acts
-        .iter()
-        .any(|a| matches!(a, Action::Replace { dst, src, .. }
-            if dst.ends_with("/multi.txt") && src.ends_with("/brand_new.txt")));
+    let has_replace = acts.iter().any(|a| {
+        matches!(a, Action::Replace { dst, src, .. }
+            if dst.ends_with("/multi.txt") && src.ends_with("/brand_new.txt"))
+    });
     assert!(
         has_replace,
         "should have Replace for brand_new.txt → multi.txt: {acts:?}"

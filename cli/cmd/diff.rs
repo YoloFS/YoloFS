@@ -70,13 +70,19 @@ fn print_segment_footer(closing: &Option<(u64, String)>) {
 
 fn print_change(agfs: &Path, path: &str, dirent: &Dirent, verbose: bool) {
     match dirent {
-        Dirent::Inode { ino, in_base: false, .. } => {
+        Dirent::Inode {
+            ino,
+            in_base: false,
+            ..
+        } => {
             println!("{} {}", path.bold(), "(added)".green());
             if verbose {
                 print_unified_diff("", &read_inode(agfs, *ino));
             }
         }
-        Dirent::Inode { ino, in_base: true, .. } => {
+        Dirent::Inode {
+            ino, in_base: true, ..
+        } => {
             if verbose {
                 let old_text = read_base(path);
                 let new_text = read_inode(agfs, *ino);
@@ -95,7 +101,12 @@ fn print_change(agfs: &Path, path: &str, dirent: &Dirent, verbose: bool) {
             }
         }
         Dirent::Link { base_path, .. } => {
-            println!("{} → {} {}", base_path.bold(), path.bold(), "(renamed)".cyan());
+            println!(
+                "{} → {} {}",
+                base_path.bold(),
+                path.bold(),
+                "(renamed)".cyan()
+            );
         }
     }
 }
@@ -136,7 +147,12 @@ fn run(
     // Precompute checkpoint labels for live segments before consuming the journal.
     let labels: Vec<Option<(u64, String)>> = (start..end)
         .filter(|i| journal.is_alive(*i))
-        .map(|i| journal.markers.checkpoint_at(i).map(|(g, n)| (g, n.to_owned())))
+        .map(|i| {
+            journal
+                .markers
+                .checkpoint_at(i)
+                .map(|(g, n)| (g, n.to_owned()))
+        })
         .collect();
     let has_checkpoints = labels.iter().any(|c| c.is_some());
 
@@ -149,7 +165,11 @@ fn run(
         let count = match path {
             Some(target) => {
                 let mut n = 0usize;
-                tree.for_each(|p, d| if d.matches_path(p, target) { n += 1; });
+                tree.for_each(|p, d| {
+                    if d.matches_path(p, target) {
+                        n += 1;
+                    }
+                });
                 n
             }
             None => tree.len(),

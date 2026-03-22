@@ -118,8 +118,7 @@ mod tests {
 
     #[test]
     fn parse_multiple() {
-        let records =
-            parse(b"A\0/a\0f\01\nD\0/b\0f\nR\0/d\0/c\0f\n").unwrap();
+        let records = parse(b"A\0/a\0f\01\nD\0/b\0f\nR\0/d\0/c\0f\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
             matches!(&records[0], Record::Action(Action::Add { path, ino: 1, dtype: Some(DType::File) }) if path == "/a")
@@ -147,7 +146,9 @@ mod tests {
     fn parse_checkpoint_record() {
         let records = parse(b"A\0/a\0f\01\nK\01\0build\nA\0/a\0f\02\n").unwrap();
         assert_eq!(records.len(), 3);
-        assert!(matches!(&records[1], Record::Marker(Marker::Checkpoint { gen_id, name }) if *gen_id == 1 && name == "build"));
+        assert!(
+            matches!(&records[1], Record::Marker(Marker::Checkpoint { gen_id, name }) if *gen_id == 1 && name == "build")
+        );
     }
 
     #[test]

@@ -72,9 +72,7 @@ fn audit_path_filter() {
     fs::write(s.mnt_path("b.txt"), "bbb\n").expect("write b");
 
     // CLI runs from session root; normalize_path resolves relative to cwd
-    let output = s
-        .cli(&["audit", "--path", "a.txt"])
-        .expect("audit --path");
+    let output = s.cli(&["audit", "--path", "a.txt"]).expect("audit --path");
     assert!(output.contains("a.txt"), "should include a.txt: {output}");
     // b.txt data records should be filtered out (only structural records pass through)
     let data_lines: Vec<&str> = output.lines().filter(|l| l.contains("b.txt")).collect();

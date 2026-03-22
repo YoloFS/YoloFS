@@ -68,7 +68,8 @@ fn rename_dir_produces_rename_record() {
     let j = journal(&s);
     let acts = actions(&j);
     assert!(
-        acts.iter().any(|a| matches!(a, Action::Rename { dst, src, .. }
+        acts.iter()
+            .any(|a| matches!(a, Action::Rename { dst, src, .. }
             if dst.ends_with("/newdir") && src.ends_with("/olddir"))),
         "journal should have a Redirect record for olddir → newdir: {acts:?}"
     );
@@ -121,7 +122,12 @@ fn mkdir_with_file_creates_separate_inodes() {
         .iter()
         .filter_map(|(path, c)| {
             if path.ends_with("/parent") || path.ends_with("/child") {
-                if let agfs::journal::Dirent::Inode { ino, in_base: false, .. } = c {
+                if let agfs::journal::Dirent::Inode {
+                    ino,
+                    in_base: false,
+                    ..
+                } = c
+                {
                     return Some(*ino);
                 }
             }

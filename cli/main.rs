@@ -1,6 +1,8 @@
 // agfs CLI — main.rs
 
-use agfs::cmd::{abort, audit, checkpoint, commit, diff, exec, load, mount, restore, timeline, watch};
+use agfs::cmd::{
+    abort, audit, checkpoint, commit, diff, exec, load, mount, restore, timeline, watch,
+};
 use agfs::config;
 use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;

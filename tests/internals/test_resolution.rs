@@ -24,19 +24,23 @@ fn operations_produce_ordered_records() {
 
     // Verify each type is present
     assert!(
-        recs.iter().any(|r| matches!(r, Record::Action(Action::Modify { .. }))),
+        recs.iter()
+            .any(|r| matches!(r, Record::Action(Action::Modify { .. }))),
         "missing MOD: {recs:?}"
     );
     assert!(
-        recs.iter().any(|r| matches!(r, Record::Marker(Marker::Checkpoint { .. }))),
+        recs.iter()
+            .any(|r| matches!(r, Record::Marker(Marker::Checkpoint { .. }))),
         "missing CKP: {recs:?}"
     );
     assert!(
-        recs.iter().any(|r| matches!(r, Record::Action(Action::Delete { .. }))),
+        recs.iter()
+            .any(|r| matches!(r, Record::Action(Action::Delete { .. }))),
         "missing DEL: {recs:?}"
     );
     assert!(
-        recs.iter().any(|r| matches!(r, Record::Action(Action::Rename { .. }))),
+        recs.iter()
+            .any(|r| matches!(r, Record::Action(Action::Rename { .. }))),
         "missing RDR: {recs:?}"
     );
 
@@ -67,10 +71,10 @@ fn write_after_rename() {
 
     let recs = records(&journal(&s));
     assert!(
-        recs
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Rename { src, dst, .. })
-            if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))),
+        recs.iter().any(
+            |r| matches!(r, Record::Action(Action::Rename { src, dst, .. })
+            if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))
+        ),
         "should have RDR record: {recs:?}"
     );
     assert!(
@@ -171,10 +175,10 @@ fn rename_then_delete() {
 
     let recs = records(&journal(&s));
     assert!(
-        recs
-            .iter()
-            .any(|r| matches!(r, Record::Action(Action::Rename { src, dst, .. })
-            if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))),
+        recs.iter().any(
+            |r| matches!(r, Record::Action(Action::Rename { src, dst, .. })
+            if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))
+        ),
         "should have RDR record: {recs:?}"
     );
     assert!(
@@ -223,9 +227,9 @@ fn rename_emits_fused_redirect_record() {
     );
 
     // Should NOT have a separate Delete record for the old path.
-    let has_delete_old = acts.iter().any(|a| {
-        matches!(a, Action::Delete { path, .. } if path.ends_with("/hello.txt"))
-    });
+    let has_delete_old = acts
+        .iter()
+        .any(|a| matches!(a, Action::Delete { path, .. } if path.ends_with("/hello.txt")));
     assert!(
         !has_delete_old,
         "fused rename should NOT emit separate DEL record for old path: {acts:?}"

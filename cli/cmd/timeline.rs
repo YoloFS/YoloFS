@@ -25,9 +25,7 @@ pub fn run() -> anyhow::Result<()> {
                     name.dimmed(),
                 )
             }
-            journal::Marker::Restore {
-                gen_id, target_gen,
-            } => {
+            journal::Marker::Restore { gen_id, target_gen } => {
                 format!(
                     "{} {}",
                     format!("restore    [{gen_id}]").yellow().bold(),

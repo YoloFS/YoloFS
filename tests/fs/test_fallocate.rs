@@ -1,5 +1,5 @@
 use crate::helpers::AgfsSession;
-use nix::fcntl::{fallocate, FallocateFlags};
+use nix::fcntl::{FallocateFlags, fallocate};
 use std::fs::{self, OpenOptions};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;

@@ -58,9 +58,7 @@ fn delete_recreate_base_file_emits_modify() {
         .iter()
         .rev()
         .find(|a| match a {
-            Action::Add { path, .. } | Action::Modify { path, .. } => {
-                path.ends_with("/hello.txt")
-            }
+            Action::Add { path, .. } | Action::Modify { path, .. } => path.ends_with("/hello.txt"),
             _ => false,
         })
         .expect("should have a staged record for hello.txt");
@@ -118,9 +116,7 @@ fn cow_delete_recreate_emits_modify() {
         .iter()
         .rev()
         .find(|a| match a {
-            Action::Add { path, .. } | Action::Modify { path, .. } => {
-                path.ends_with("/hello.txt")
-            }
+            Action::Add { path, .. } | Action::Modify { path, .. } => path.ends_with("/hello.txt"),
             _ => false,
         })
         .expect("should have a staged record for hello.txt");
@@ -145,9 +141,7 @@ fn rename_away_then_create_at_old_path_emits_modify() {
         .iter()
         .rev()
         .find(|a| match a {
-            Action::Add { path, .. } | Action::Modify { path, .. } => {
-                path.ends_with("/hello.txt")
-            }
+            Action::Add { path, .. } | Action::Modify { path, .. } => path.ends_with("/hello.txt"),
             _ => false,
         })
         .expect("should have a staged record for hello.txt");
@@ -173,9 +167,7 @@ fn rename_away_staged_then_create_emits_add() {
         .iter()
         .rev()
         .find(|a| match a {
-            Action::Add { path, .. } | Action::Modify { path, .. } => {
-                path.ends_with("/temp.txt")
-            }
+            Action::Add { path, .. } | Action::Modify { path, .. } => path.ends_with("/temp.txt"),
             _ => false,
         })
         .expect("should have a staged record for temp.txt");
@@ -207,9 +199,8 @@ fn recow_of_staged_file_after_checkpoint_emits_modify() {
     let post_chk: Vec<_> = recs[chk_pos + 1..]
         .iter()
         .filter(|r| match r {
-            Record::Action(Action::Add { path, .. }) | Record::Action(Action::Modify { path, .. }) => {
-                path.ends_with("/created.txt")
-            }
+            Record::Action(Action::Add { path, .. })
+            | Record::Action(Action::Modify { path, .. }) => path.ends_with("/created.txt"),
             _ => false,
         })
         .collect();

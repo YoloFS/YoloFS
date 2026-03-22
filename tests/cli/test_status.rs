@@ -113,4 +113,3 @@ fn status_at_checkpoint_after_restore() {
         "chk2-only change should NOT appear: {output}"
     );
 }
-

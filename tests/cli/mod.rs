@@ -1,8 +1,8 @@
 mod test_abort;
+mod test_audit;
 mod test_checkpoint;
 mod test_commit;
 mod test_diff;
-mod test_audit;
 mod test_lifecycle;
 mod test_mount;
 mod test_restore;
