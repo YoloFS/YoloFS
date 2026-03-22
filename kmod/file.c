@@ -102,7 +102,7 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 {
 	struct file *new_file = NULL;
 	bool truncate;
-	agfs_pde_t packed;
+	struct agfs_dstate packed;
 	int err;
 
 	if (!(file->f_flags & (O_WRONLY | O_RDWR)))
@@ -112,10 +112,10 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 	 * staging_sem excludes checkpoint, so gen is stable under the lock. */
 	down_read(&sbi->staging_sem);
 	packed = AGFS_D(dentry)->packed;
-	if (agfs_pde_is_current(packed, (u16)atomic_read(&sbi->gen))) {
+	if (agfs_dstate_is_current(packed, (u16)atomic_read(&sbi->gen))) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_read(&sbi->staging_sem);
-		return agfs_open_staged_ino(sbi, agfs_pde_ino(packed),
+		return agfs_open_staged_ino(sbi, agfs_dstate_ino(packed),
 					    file->f_flags);
 	}
 	up_read(&sbi->staging_sem);
@@ -127,10 +127,10 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 
 	/* Re-check — a concurrent open may have COW'd */
 	packed = AGFS_D(dentry)->packed;
-	if (agfs_pde_is_current(packed, (u16)atomic_read(&sbi->gen))) {
+	if (agfs_dstate_is_current(packed, (u16)atomic_read(&sbi->gen))) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_write(&sbi->staging_sem);
-		return agfs_open_staged_ino(sbi, agfs_pde_ino(packed),
+		return agfs_open_staged_ino(sbi, agfs_dstate_ino(packed),
 					    file->f_flags);
 	}
 
@@ -392,9 +392,9 @@ static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
 
 	list_for_each_entry(di, &dii->de_list, de_node) {
 		struct dentry *child = di->dentry;
-		agfs_pde_t packed = di->packed;
+		struct agfs_dstate packed = di->packed;
 
-		if (agfs_pde_is_tombstone(packed))
+		if (agfs_dstate_is_tombstone(packed))
 			continue;
 		if (*off < ctx->pos) {
 			(*off)++;
@@ -402,8 +402,8 @@ static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
 		}
 
 		if (!dir_emit(ctx, child->d_name.name, child->d_name.len,
-			      agfs_pde_emit_ino(packed),
-			      agfs_pde_d_type(packed)))
+			      agfs_dstate_emit_ino(packed),
+			      agfs_dstate_d_type(packed)))
 			return true;
 		(*off)++;
 		ctx->pos++;

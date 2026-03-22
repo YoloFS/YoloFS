@@ -502,7 +502,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 		}
 
 		if (has_dirent) {
-			agfs_pde_t pde = {0};
+			struct agfs_dstate pde = {0};
 			struct qstr qname;
 			struct dentry *child;
 			struct agfs_inode_info *dii = AGFS_I(dir);
@@ -562,7 +562,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 					err = -ENOMEM;
 					goto out_unwind;
 				}
-				pde = agfs_pde_link(base_copy, d_type, ib);
+				pde = agfs_dstate_link(base_copy, d_type, ib);
 			}
 
 			/* Create VFS dentry and pin it */
@@ -573,16 +573,16 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 						    name_len);
 			child = d_alloc(stack[depth].dentry, &qname);
 			if (!child) {
-				agfs_pde_free(pde);
+				agfs_dstate_free(pde);
 				err = -ENOMEM;
 				goto out_unwind;
 			}
 
-			if (agfs_pde_is_inode(pde)) {
+			if (agfs_dstate_is_inode(pde)) {
 				struct path ino_path;
 				struct inode *inode;
 
-				err = agfs_inode_path(sbi, agfs_pde_ino(pde),
+				err = agfs_inode_path(sbi, agfs_dstate_ino(pde),
 						     &ino_path);
 				if (err) {
 					dput(child);
@@ -598,14 +598,14 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 					goto out_unwind;
 				}
 				d_add(child, inode);
-			} else if (agfs_pde_is_link(pde)) {
+			} else if (agfs_dstate_is_link(pde)) {
 				struct path base;
 				struct inode *inode;
 
-				err = kern_path(agfs_pde_base(pde),
+				err = kern_path(agfs_dstate_base(pde),
 						LOOKUP_FOLLOW, &base);
 				if (err) {
-					agfs_pde_free(pde);
+					agfs_dstate_free(pde);
 					dput(child);
 					goto out_unwind;
 				}

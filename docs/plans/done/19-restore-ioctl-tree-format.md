@@ -55,7 +55,7 @@ Mapping from `DirNode`:
 
 #### PackedDirent encoding
 
-The wire `packed` u64 mirrors the kernel's `agfs_pde_t` bit layout, with gen /
+The wire `packed` u64 mirrors the kernel's `struct agfs_dstate` bit layout, with gen /
 pointer bits zeroed:
 
 | State     | packed (le64)                                                     | Trailing data                     |
@@ -64,13 +64,13 @@ pointer bits zeroed:
 | Inode     | `[63]=0  [62:61]=dtype  [60]=in_base  [59:16]=ino  [15:0]=0`     | —                                 |
 | Link      | `[63]=1  [62:61]=dtype  [60]=in_base  [59:0]=0`                  | `base_len:le16  base_path:bytes  NUL` |
 
-The kernel distinguishes the three states with the same checks as `agfs_pde_t`:
+The kernel distinguishes the three states with the same checks as `struct agfs_dstate`:
 
 * `packed == 0` → tombstone.
 * `(s64)packed > 0` → inode — stamp gen: `packed = (wire & ~0xFFFF) | new_gen`.
 * `(s64)packed < 0` → link — read trailing `base_len` + `base_path` + NUL,
-  call `agfs_pde_link(buf, dt, ib)`.  The NUL terminator is required because
-  `agfs_add_dirent` → `kstrdup(agfs_pde_base(packed))` needs a C string.
+  call `agfs_dstate_link(buf, dt, ib)`.  The NUL terminator is required because
+  `agfs_add_dirent` → `kstrdup(agfs_dstate_base(packed))` needs a C string.
 
 Gen bits `[15:0]` are zeroed on the wire because the kernel assigns `new_gen`.
 Pointer bits `[59:0]` are zeroed for links because the base path travels inline
@@ -78,7 +78,7 @@ instead of as a kernel pointer.
 
 This eliminates `AGFS_INO_REDIRECT` and `AGFS_INO_DELETED` from the wire
 protocol entirely.  `AGFS_INO_REDIRECT` stays in the kernel only for
-`agfs_pde_emit_ino()` (readdir).  `AGFS_INO_DELETED` and CLI `INO_REDIRECT`
+`agfs_dstate_emit_ino()` (readdir).  `AGFS_INO_DELETED` and CLI `INO_REDIRECT`
 become dead code and are removed.
 
 Children within each `DirTree` level are sorted by name for deterministic
@@ -201,7 +201,7 @@ Abort path (`target_gen=0`) passes an empty buffer (`tree_len=0, tree_ptr=0`).
    `cli/journal/tree.rs`.  Internally use a `serialize_into(&self, buf)` helper
    so the recursive DirTree levels share the same buffer.  Each node writes
    `name_len + name + has_dirent + [PackedDirent] + child_count + children`.
-   Serialize each `Dirent` as a packed u64 mirroring `agfs_pde_t` (gen/pointer
+   Serialize each `Dirent` as a packed u64 mirroring `struct agfs_dstate` (gen/pointer
    bits zeroed), with trailing `base_len + base_path + NUL` for links.  Add
    `DType::to_packed()` in `types.rs` returning the 2-bit encoding (File→0,
    Dir→1, Link→2) matching the kernel's `agfs_dtype_pack`.  Validate
@@ -235,7 +235,7 @@ Abort path (`target_gen=0`) passes an empty buffer (`tree_len=0, tree_ptr=0`).
    explicit `dir_stack[AGFS_RESTORE_MAX_DEPTH]`.  Add cursor helpers
    (`read_u8`, `read_u16`, `read_u64`, `read_bytes`).  For each node: read
    `has_dirent` — if set, parse PackedDirent (`== 0` → tombstone, `(s64)>0` →
-   stamp gen, `(s64)<0` → read base_path + `agfs_pde_link`); read
+   stamp gen, `(s64)<0` → read base_path + `agfs_dstate_link`); read
    `child_count` — if >0, `lookup_one_len` + push.  Remove
    `split_parent_child` (restore-only).
 

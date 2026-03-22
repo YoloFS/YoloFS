@@ -171,12 +171,12 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	inode_lock(parent);
 	if (list_empty(&di->de_node)) {
 		agfs_stage_dentry(dentry, parent,
-				  agfs_pde_inode(ino,
+				  agfs_dstate_inode(ino,
 						(u16)atomic_read(&sbi->gen),
 						DT_REG, true));
 	} else {
-		agfs_pde_free(di->packed);
-		di->packed = agfs_pde_inode(ino,
+		agfs_dstate_free(di->packed);
+		di->packed = agfs_dstate_inode(ino,
 					   (u16)atomic_read(&sbi->gen),
 					   DT_REG, true);
 	}

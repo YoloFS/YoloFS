@@ -29,7 +29,7 @@ static int agfs_d_init(struct dentry *dentry)
 		return -ENOMEM;
 
 	spin_lock_init(&info->lock);
-	info->packed = (agfs_pde_t){0};
+	info->packed = (struct agfs_dstate){0};
 	INIT_LIST_HEAD(&info->de_node);
 	info->dentry = dentry;
 	info->perm = AGFS_PERM_NONE;
@@ -101,7 +101,7 @@ static void agfs_d_release(struct dentry *dentry)
 		return;
 
 	WARN_ON_ONCE(!list_empty(&info->de_node));
-	agfs_pde_free(info->packed);
+	agfs_dstate_free(info->packed);
 	agfs_put_reset_lower_path(dentry);
 	agfs_free_dentry_private_data(dentry);
 }
@@ -129,7 +129,7 @@ void agfs_pin_dir_if_first(struct agfs_inode_info *dii,
  * Takes a dget() pin.  Caller must hold i_rwsem exclusive on dir.
  */
 void agfs_stage_dentry(struct dentry *dentry, struct inode *dir,
-		       agfs_pde_t packed)
+		       struct agfs_dstate packed)
 {
 	struct agfs_dentry_info *di = AGFS_D(dentry);
 	struct agfs_inode_info *dii = AGFS_I(dir);
@@ -149,8 +149,8 @@ void agfs_stage_dentry(struct dentry *dentry, struct inode *dir,
 void agfs_unstage_dentry(struct agfs_dentry_info *di)
 {
 	list_del_init(&di->de_node);
-	agfs_pde_free(di->packed);
-	di->packed = (agfs_pde_t){0};
+	agfs_dstate_free(di->packed);
+	di->packed = (struct agfs_dstate){0};
 	dput(di->dentry);
 }
 

@@ -20,7 +20,7 @@ the kernel, not merely assumed.
 2. **Staged child dentries are pinned.** When the first
    staged entry is added to a directory, the child dentry is pinned with
    `dget()`, keeping it in the dcache. The packed overlay state
-   (`agfs_pde_t`) lives on the VFS dentry (via `d_fsdata` in
+   (`struct agfs_dstate`) lives on the VFS dentry (via `d_fsdata` in
    `agfs_dentry_info`), so it survives dentry cache pressure naturally.
    Pinned child dentries hold a ref on `dentry->d_parent`, which
    transitively keeps the parent inode (and its `de_list`) alive through
@@ -106,7 +106,7 @@ the inode.
 | Field | Purpose |
 |-------|---------|
 | `lower_path` | Resolved path to the backing file — either `inodes/<ino>` or the base file. Updated in-place by COW. |
-| `packed` | Single `u64` (`agfs_pde_t`) encoding the overlay state. Three mutually exclusive variants discriminated by bit 63 and zero: **tombstone** (`packed == 0`), **link** (bit 63 set — kernel pointer with tag), **inode** (bit 63 clear, non-zero — staged in `inodes/<ino>`). See [Packed Encoding](#packed-encoding). |
+| `packed` | Single `u64` (`struct agfs_dstate`) encoding the overlay state. Three mutually exclusive variants discriminated by bit 63 and zero: **tombstone** (`packed == 0`), **link** (bit 63 set — kernel pointer with tag), **inode** (bit 63 clear, non-zero — staged in `inodes/<ino>`). See [Packed Encoding](#packed-encoding). |
 | `de_node` | `list_head` — node in parent directory's `de_list`. Initialized to empty by `d_init`. A dentry is staged iff `!list_empty(&de_node)`. |
 | `dentry` | Back-pointer to the owning VFS dentry. |
 
@@ -219,7 +219,7 @@ agfs_read_dirent(dentry):
     return READ_ONCE(AGFS_D(dentry)->packed)
 ```
 
-Since `agfs_pde_t` is a `u64` (naturally atomic on x86-64),
+Since `struct agfs_dstate` is a `u64` (naturally atomic on x86-64),
 `READ_ONCE()` / `WRITE_ONCE()` suffice — the dentry_info spinlock
 is only needed for `lower_path` (two-pointer swap). This eliminates
 lock contention on the COW fast path.
@@ -242,10 +242,10 @@ agfs_lookup(dir, dentry):
 agfs_readdir(dir):
     for child_dentry in dir.de_list (via de_node):
         packed = AGFS_D(child_dentry)->packed
-        if not agfs_pde_is_tombstone(packed):
+        if not agfs_dstate_is_tombstone(packed):
             dir_emit(child_dentry->d_name,
-                     agfs_pde_emit_ino(packed),
-                     agfs_pde_d_type(packed))
+                     agfs_dstate_emit_ino(packed),
+                     agfs_dstate_d_type(packed))
     for entry in base_readdir(dir):
         result = d_lookup(dir_dentry, entry.name)
         if result and !list_empty(&AGFS_D(result)->de_node):
@@ -285,12 +285,12 @@ agfs_open(inode, file):
     packed = agfs_read_dirent(dentry)   # lockless READ_ONCE (0 if not staged)
 
     if file->f_flags & (O_WRONLY | O_RDWR):
-        if agfs_pde_is_current(packed, sbi->gen):
+        if agfs_dstate_is_current(packed, sbi->gen):
             // Inode is current — open it directly (O_TRUNC truncates in place).
             down_read(staging_sem)
             atomic_inc(staging_fd_count)
             up_read(staging_sem)
-            file_info->lower_file = open(inodes/<agfs_pde_ino(packed)>, file->f_flags)
+            file_info->lower_file = open(inodes/<agfs_dstate_ino(packed)>, file->f_flags)
 
         else:
             // Needs COW (base file, link, or stale inode).
@@ -354,9 +354,9 @@ agfs_create(dir, dentry, mode):
     ino = next_ino++
     create file inodes/<ino>
     staged = !list_empty(&AGFS_D(dentry)->de_node)
-    in_base = staged ? agfs_pde_in_base(AGFS_D(dentry)->packed) : false
+    in_base = staged ? agfs_dstate_in_base(AGFS_D(dentry)->packed) : false
     WRITE_ONCE(AGFS_D(dentry)->packed,
-               agfs_pde_inode(ino, sbi->gen, dt, in_base))
+               agfs_dstate_inode(ino, sbi->gen, dt, in_base))
     if not staged:
         dget(dentry)                     # pin in dcache
         list_add(&AGFS_D(dentry)->de_node, &dir.de_list)
@@ -369,9 +369,9 @@ agfs_mkdir(dir, dentry, mode):
     ino = next_ino++
     create dir inodes/<ino>/
     staged = !list_empty(&AGFS_D(dentry)->de_node)
-    in_base = staged ? agfs_pde_in_base(AGFS_D(dentry)->packed) : false
+    in_base = staged ? agfs_dstate_in_base(AGFS_D(dentry)->packed) : false
     WRITE_ONCE(AGFS_D(dentry)->packed,
-               agfs_pde_inode(ino, sbi->gen, dt, in_base))
+               agfs_dstate_inode(ino, sbi->gen, dt, in_base))
     if not staged:
         dget(dentry)
         list_add(&AGFS_D(dentry)->de_node, &dir.de_list)
@@ -384,9 +384,9 @@ agfs_symlink(dir, dentry, target):
     ino = next_ino++
     create symlink inodes/<ino> -> target
     staged = !list_empty(&AGFS_D(dentry)->de_node)
-    in_base = staged ? agfs_pde_in_base(AGFS_D(dentry)->packed) : false
+    in_base = staged ? agfs_dstate_in_base(AGFS_D(dentry)->packed) : false
     WRITE_ONCE(AGFS_D(dentry)->packed,
-               agfs_pde_inode(ino, sbi->gen, dt, in_base))
+               agfs_dstate_inode(ino, sbi->gen, dt, in_base))
     if not staged:
         dget(dentry)
         list_add(&AGFS_D(dentry)->de_node, &dir.de_list)
@@ -408,7 +408,7 @@ Three cases based on current dentry state:
 ```
 agfs_unlink(dir, dentry):
     staged = !list_empty(&AGFS_D(dentry)->de_node)
-    need_tombstone = staged ? agfs_pde_in_base(AGFS_D(dentry)->packed) : true
+    need_tombstone = staged ? agfs_dstate_in_base(AGFS_D(dentry)->packed) : true
 
     # Pre-allocate tombstone before journal so we can fail cleanly.
     if need_tombstone:
@@ -443,27 +443,27 @@ agfs_rename(old_parent, old_dentry, new_parent, new_dentry):
     old_packed = agfs_read_dirent(old_dentry)
     new_packed = agfs_read_dirent(new_dentry)
     new_staged = !list_empty(&AGFS_D(new_dentry)->de_node)
-    dst_in_base = new_staged ? agfs_pde_in_base(new_packed) : file_exists_in_base(new_name)
+    dst_in_base = new_staged ? agfs_dstate_in_base(new_packed) : file_exists_in_base(new_name)
     dst = join(new_parent, new_name)
     src = join(old_parent, old_name)
 
     # Determine if old name needs a tombstone, pre-allocate before
     # any irreversible changes.
-    old_was_in_base = src_staged ? agfs_pde_in_base(old_packed) : true
+    old_was_in_base = src_staged ? agfs_dstate_in_base(old_packed) : true
     if old_was_in_base:
         tomb = agfs_add_tombstone(old_parent, old_name)  # d_alloc ref is pin
         if !tomb: return -ENOMEM
 
     # Build destination packed value.
-    if agfs_pde_is_inode(old_packed):
-        dst_packed = agfs_pde_inode(agfs_pde_ino(old_packed),
-                                    agfs_pde_gen(old_packed),
+    if agfs_dstate_is_inode(old_packed):
+        dst_packed = agfs_dstate_inode(agfs_dstate_ino(old_packed),
+                                    agfs_dstate_gen(old_packed),
                                     d_type, dst_in_base)
-    elif agfs_pde_is_link(old_packed):
-        dst_packed = agfs_pde_link(kstrdup(agfs_pde_base(old_packed)),
+    elif agfs_dstate_is_link(old_packed):
+        dst_packed = agfs_dstate_link(kstrdup(agfs_dstate_base(old_packed)),
                                    d_type, dst_in_base)
     else:
-        dst_packed = agfs_pde_link(kstrdup(src), d_type, dst_in_base)
+        dst_packed = agfs_dstate_link(kstrdup(src), d_type, dst_in_base)
 
     # Journal BEFORE d_move (uses dentry paths).
     # All renames emit a single R or P record.
@@ -478,7 +478,7 @@ agfs_rename(old_parent, old_dentry, new_parent, new_dentry):
 
     # Remove old_dentry from old parent's de_list.
     if src_staged:
-        agfs_pde_free(old_packed)
+        agfs_dstate_free(old_packed)
         list_del_init(&old_di->de_node)
         dput(old_dentry)
 
@@ -555,10 +555,10 @@ agfs_readdir(dir, ctx):
     # Phase 1: Emit non-tombstone staged entries.
     for child_dentry in dir.de_list (via de_node):
         packed = AGFS_D(child_dentry)->packed
-        if not agfs_pde_is_tombstone(packed):
+        if not agfs_dstate_is_tombstone(packed):
             dir_emit(ctx, child_dentry->d_name,
-                     agfs_pde_emit_ino(packed),
-                     agfs_pde_d_type(packed))
+                     agfs_dstate_emit_ino(packed),
+                     agfs_dstate_d_type(packed))
 
     # Phase 2: Emit base entries not overridden by staged entries.
     lower_file.f_pos = file_info.base_pos   # resume, not restart
@@ -606,7 +606,7 @@ triggered by setattr itself.
 **`getattr`** (e.g., `stat`): Stats from the resolved path — the staged
 inode if the file has been modified, otherwise the base file.
 
-**`fsync`**: If the file is staged (`agfs_pde_is_inode(packed)`),
+**`fsync`**: If the file is staged (`agfs_dstate_is_inode(packed)`),
 returns 0 immediately — staged inodes are ephemeral and will be committed or
 discarded as a batch. For base files opened read-only, fsync is delegated to
 the lower filesystem as usual.
@@ -664,7 +664,7 @@ self-describing.
 
 The kernel determines the journal tag at write time using `in_base`
 decoded from the packed field on the dentry
-(`agfs_pde_in_base(AGFS_D(dentry)->packed)`). This flag means "the path
+(`agfs_dstate_in_base(AGFS_D(dentry)->packed)`). This flag means "the path
 had existing content at operation time" — it applies to both base and
 staged content. The field is set at staging time and inherited through
 deletes:
@@ -843,7 +843,7 @@ checkpoints from read-only or no-op commands.
 
 ### Re-COW on First Open-for-Write After Checkpoint
 
-The COW check is per-dentry: `agfs_pde_gen(AGFS_D(dentry)->packed)`
+The COW check is per-dentry: `agfs_dstate_gen(AGFS_D(dentry)->packed)`
 records the `sbi->gen` at which the current inode was created.
 `sbi->gen` starts at 1. Newly created files set
 `gen = sbi->gen` at creation time, so they are already

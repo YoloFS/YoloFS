@@ -19,7 +19,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	struct path inode_path;
 	unsigned char dt;
 	bool already_staged, in_base;
-	agfs_pde_t packed;
+	struct agfs_dstate packed;
 	u32 ino;
 	int err;
 
@@ -39,7 +39,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	/* If dentry is already on de_list, it's a tombstone — inherit in_base */
 	already_staged = !list_empty(&di->de_node);
 	in_base = already_staged;
-	packed = agfs_pde_inode(ino, (u16)atomic_read(&sbi->gen),
+	packed = agfs_dstate_inode(ino, (u16)atomic_read(&sbi->gen),
 				dt, in_base);
 
 	if (!already_staged)
@@ -83,7 +83,7 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 
 	/* Determine whether we need a tombstone */
 	if (!list_empty(&di->de_node)) {
-		in_base = agfs_pde_in_base(di->packed);
+		in_base = agfs_dstate_in_base(di->packed);
 		need_tombstone = in_base;
 	} else {
 		in_base = false;
@@ -148,7 +148,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	struct dentry *saved_parent;
 	struct dentry *tomb = NULL;
 	unsigned char d_type = DT_UNKNOWN;
-	agfs_pde_t src_packed, dst_packed;
+	struct agfs_dstate src_packed, dst_packed;
 	char *base_copy = NULL;
 	bool src_staged, dst_in_base, old_was_in_base;
 	int err;
@@ -169,22 +169,22 @@ static int agfs_rename(struct mnt_idmap *idmap,
 
 	/* Read source state */
 	src_staged = !list_empty(&old_di->de_node);
-	src_packed = src_staged ? old_di->packed : (agfs_pde_t){0};
+	src_packed = src_staged ? old_di->packed : (struct agfs_dstate){0};
 
-	if (src_staged && !agfs_pde_is_tombstone(src_packed))
-		d_type = agfs_pde_d_type(src_packed);
+	if (src_staged && !agfs_dstate_is_tombstone(src_packed))
+		d_type = agfs_dstate_d_type(src_packed);
 	else if (d_inode(old_dentry))
 		d_type = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
 
 	/* Check if destination has existing base content (for R vs P tag) */
 	if (!list_empty(&new_di->de_node))
-		dst_in_base = agfs_pde_in_base(new_di->packed);
+		dst_in_base = agfs_dstate_in_base(new_di->packed);
 	else
 		dst_in_base = d_inode(new_dentry) != NULL;
 
 	/* Determine if old name needs a tombstone */
 	if (src_staged)
-		old_was_in_base = agfs_pde_in_base(src_packed);
+		old_was_in_base = agfs_dstate_in_base(src_packed);
 	else
 		old_was_in_base = true; /* was only in base */
 
@@ -197,17 +197,17 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	}
 
 	/* Build destination packed value */
-	if (src_staged && agfs_pde_is_inode(src_packed)) {
-		dst_packed = agfs_pde_inode(agfs_pde_ino(src_packed),
-					   agfs_pde_gen(src_packed),
+	if (src_staged && agfs_dstate_is_inode(src_packed)) {
+		dst_packed = agfs_dstate_inode(agfs_dstate_ino(src_packed),
+					      agfs_dstate_gen(src_packed),
 					   d_type, dst_in_base);
-	} else if (src_staged && agfs_pde_is_link(src_packed)) {
-		base_copy = kstrdup(agfs_pde_base(src_packed), GFP_KERNEL);
+	} else if (src_staged && agfs_dstate_is_link(src_packed)) {
+		base_copy = kstrdup(agfs_dstate_base(src_packed), GFP_KERNEL);
 		if (!base_copy) {
 			err = -ENOMEM;
 			goto out_tomb;
 		}
-		dst_packed = agfs_pde_link(base_copy, d_type, dst_in_base);
+		dst_packed = agfs_dstate_link(base_copy, d_type, dst_in_base);
 	} else {
 		/* Base-only source — redirect via relpath */
 		base_copy = kstrdup(old_buf, GFP_KERNEL);
@@ -215,7 +215,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 			err = -ENOMEM;
 			goto out_tomb;
 		}
-		dst_packed = agfs_pde_link(base_copy, d_type, dst_in_base);
+		dst_packed = agfs_dstate_link(base_copy, d_type, dst_in_base);
 	}
 
 	/* Journal BEFORE d_move (uses dentry paths) */
@@ -232,7 +232,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 
 	/* Remove old_dentry from old parent's de_list */
 	if (src_staged) {
-		agfs_pde_free(src_packed);
+		agfs_dstate_free(src_packed);
 		list_del_init(&old_di->de_node);
 		dput(old_dentry);
 	}
