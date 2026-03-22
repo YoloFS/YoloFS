@@ -110,7 +110,7 @@ enum Cmd {
     /// Install preferred paper artifacts (tables + figures) into the paper repo
     InstallPaper {
         /// Path to the paper repository root (default: ../AgFS-paper)
-        #[arg(long, default_value = "../AgFS-paper")]
+        #[arg(long, default_value = "paper")]
         paper_dir: PathBuf,
     },
     /// Run a workload at a given path (used internally by all backends)

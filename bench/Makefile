@@ -1,7 +1,7 @@
 # ── Paper artifact installation ───────────────────────────────────────
 
 REPO_ROOT := $(shell git -C $(dir $(lastword $(MAKEFILE_LIST))) rev-parse --show-toplevel)
-PAPER_DIR ?= $(REPO_ROOT)/../AgFS-paper
+PAPER_DIR ?= $(REPO_ROOT)/paper
 
 .PHONY: install-paper
 
