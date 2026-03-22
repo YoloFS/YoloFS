@@ -107,6 +107,20 @@ enum Cmd {
         #[arg(long)]
         bpftrace: bool,
     },
+    /// Visual diff of a PDF between two git commits
+    DiffPdf {
+        /// Path to the PDF file (relative to repo root)
+        path: PathBuf,
+        /// Old commit (default: HEAD~1)
+        #[arg(long, default_value = "HEAD~1")]
+        old: String,
+        /// New commit (default: HEAD)
+        #[arg(long, default_value = "HEAD")]
+        new: String,
+        /// Output PNG path (default: diff-<stem>.png in current dir)
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Install preferred paper artifacts (tables + figures) into the paper repo
     InstallPaper {
         /// Path to the paper repository root (default: ../AgFS-paper)
@@ -1261,6 +1275,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(Cmd::DiffPdf { path, old, new, output }) = cli.cmd {
+        diff_pdf(&path, &old, &new, output.as_deref())?;
+        return Ok(());
+    }
+
     if let Some(Cmd::InstallPaper { paper_dir }) = cli.cmd {
         let out_dir = results_dir(&env, false);
         let results_path = out_dir.join("results.json");
@@ -1442,4 +1461,195 @@ fn ensure_release_build() -> Result<()> {
         bail!("agfs-bench must be built with --release; debug builds are refused");
     }
     Ok(())
+}
+
+// ── diff-pdf ────────────────────────────────────────────────────────────────
+
+fn diff_pdf(path: &Path, old_ref: &str, new_ref: &str, output: Option<&Path>) -> Result<()> {
+    let tmp = tempfile::tempdir().context("creating temp dir")?;
+    let stem = path.file_stem().unwrap().to_string_lossy();
+
+    // Detect if the path is inside a submodule and resolve git commands there.
+    let (git_dir, git_path) = resolve_git_context(path)?;
+
+    // Extract PDF at each commit.
+    let old_pdf = tmp.path().join(format!("{stem}-old.pdf"));
+    let new_pdf = tmp.path().join(format!("{stem}-new.pdf"));
+    git_show_to_file(old_ref, &git_path, &old_pdf, &git_dir)?;
+    git_show_to_file(new_ref, &git_path, &new_pdf, &git_dir)?;
+
+    // Convert to PNG with pdftoppm.
+    let old_png = tmp.path().join(format!("{stem}-old"));
+    let new_png = tmp.path().join(format!("{stem}-new"));
+    pdftoppm(&old_pdf, &old_png)?;
+    pdftoppm(&new_pdf, &new_png)?;
+
+    // pdftoppm appends -1.png for single-page PDFs.
+    let old_img_path = find_pdftoppm_output(&old_png)?;
+    let new_img_path = find_pdftoppm_output(&new_png)?;
+
+    // Generate visual diff in pure Rust.
+    let out_path = if let Some(p) = output {
+        p.to_path_buf()
+    } else {
+        let diff_dir = path.parent().unwrap_or(Path::new(".")).join("diff");
+        std::fs::create_dir_all(&diff_dir)?;
+        let short = |r: &str| {
+            Command::new("git")
+                .arg("-C").arg(&git_dir)
+                .args(["rev-parse", "--short", r])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|| r.replace('/', "_").replace('~', "_"))
+        };
+        diff_dir.join(format!("{stem}_{}_{}.png", short(old_ref), short(new_ref)))
+    };
+
+    // Load images and compute visual diff.
+    let old_img = image::open(&old_img_path)
+        .with_context(|| format!("opening {}", old_img_path.display()))?
+        .to_rgb8();
+    let new_img = image::open(&new_img_path)
+        .with_context(|| format!("opening {}", new_img_path.display()))?
+        .to_rgb8();
+
+    // Pad to same size (white fill).
+    let w = old_img.width().max(new_img.width());
+    let h = old_img.height().max(new_img.height());
+    let pad = |img: &image::RgbImage| -> image::RgbImage {
+        let mut out = image::RgbImage::from_pixel(w, h, image::Rgb([255, 255, 255]));
+        for (x, y, px) in img.enumerate_pixels() {
+            out.put_pixel(x, y, *px);
+        }
+        out
+    };
+    let old_padded = pad(&old_img);
+    let new_padded = pad(&new_img);
+
+    // Build diff image.
+    let mut out_img = image::RgbImage::new(w, h);
+    let mut n_changed: u64 = 0;
+    const THRESHOLD: u8 = 8;
+
+    for y in 0..h {
+        for x in 0..w {
+            let op = old_padded.get_pixel(x, y).0;
+            let np = new_padded.get_pixel(x, y).0;
+
+            let max_diff = (0..3)
+                .map(|c| (op[c] as i16 - np[c] as i16).unsigned_abs() as u8)
+                .max()
+                .unwrap();
+
+            if max_diff > THRESHOLD {
+                n_changed += 1;
+                // Deleted (was dark, now white): blue tint.
+                let old_bright = op.iter().copied().max().unwrap();
+                let new_bright = np.iter().copied().max().unwrap();
+                if old_bright < 250 && new_bright > 250 {
+                    out_img.put_pixel(x, y, image::Rgb([80, 80, 220]));
+                } else {
+                    // Changed: red-tinted version of new pixel.
+                    let r = ((np[0] as f32) * 0.5 + 128.0).min(255.0) as u8;
+                    let g = ((np[1] as f32) * 0.3) as u8;
+                    let b = ((np[2] as f32) * 0.3) as u8;
+                    out_img.put_pixel(x, y, image::Rgb([r, g, b]));
+                }
+            } else {
+                // Unchanged: dim.
+                let r = ((np[0] as f32) * 0.3 + 180.0).min(255.0) as u8;
+                let g = ((np[1] as f32) * 0.3 + 180.0).min(255.0) as u8;
+                let b = ((np[2] as f32) * 0.3 + 180.0).min(255.0) as u8;
+                out_img.put_pixel(x, y, image::Rgb([r, g, b]));
+            }
+        }
+    }
+
+    out_img.save(&out_path)
+        .with_context(|| format!("writing {}", out_path.display()))?;
+
+    let pct = n_changed as f64 / (w as f64 * h as f64) * 100.0;
+    eprintln!("{n_changed} pixels changed ({pct:.1}% of {w}x{h})");
+    eprintln!(
+        "Diff: {old_ref}..{new_ref} {}\n  → {}",
+        path.display(),
+        out_path.display()
+    );
+
+    Ok(())
+}
+
+fn git_show_to_file(rev: &str, path: &Path, dest: &Path, git_dir: &Path) -> Result<()> {
+    let spec = format!("{rev}:{}", path.display());
+    let out = Command::new("git")
+        .arg("-C").arg(git_dir)
+        .args(["show", &spec])
+        .output()
+        .with_context(|| format!("git -C {} show {spec}", git_dir.display()))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("git show {spec} failed: {stderr}");
+    }
+    std::fs::write(dest, &out.stdout)
+        .with_context(|| format!("writing {}", dest.display()))?;
+    Ok(())
+}
+
+/// Given a file path, figure out the git repo root and the path relative to it.
+/// Handles submodules: if the path is inside a submodule, returns the submodule
+/// root and the path relative to it.
+fn resolve_git_context(path: &Path) -> Result<(PathBuf, PathBuf)> {
+    // Walk up from the file's directory to find the nearest .git (file or dir).
+    let abs = std::fs::canonicalize(path)
+        .or_else(|_| {
+            // File might not exist on disk (only in git). Use the parent dir.
+            let parent = path.parent().unwrap_or(Path::new("."));
+            let canon_parent = std::fs::canonicalize(parent)?;
+            Ok::<_, std::io::Error>(canon_parent.join(path.file_name().unwrap()))
+        })
+        .with_context(|| format!("resolving {}", path.display()))?;
+
+    let dir = abs.parent().unwrap_or(Path::new("."));
+    let out = Command::new("git")
+        .arg("-C").arg(dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .context("git rev-parse --show-toplevel")?;
+    if !out.status.success() {
+        bail!("{} is not in a git repository", path.display());
+    }
+    let repo_root = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let rel = abs.strip_prefix(&repo_root)
+        .with_context(|| format!("{} not under {}", abs.display(), repo_root.display()))?;
+    Ok((repo_root, rel.to_path_buf()))
+}
+
+fn pdftoppm(pdf: &Path, out_prefix: &Path) -> Result<()> {
+    let out = Command::new("pdftoppm")
+        .args(["-png", "-r", "300"])
+        .arg(pdf)
+        .arg(out_prefix)
+        .output()
+        .context("running pdftoppm")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("pdftoppm failed: {stderr}");
+    }
+    Ok(())
+}
+
+fn find_pdftoppm_output(prefix: &Path) -> Result<PathBuf> {
+    // pdftoppm outputs <prefix>-1.png, <prefix>-01.png, or <prefix>.png
+    let dir = prefix.parent().unwrap();
+    let stem = prefix.file_name().unwrap().to_string_lossy();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(stem.as_ref()) && name.ends_with(".png") {
+            return Ok(entry.path());
+        }
+    }
+    bail!("pdftoppm output not found for {}", prefix.display())
 }
