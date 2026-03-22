@@ -158,6 +158,21 @@ impl DirTree {
         tree
     }
 
+    /// Number of dirents (files, dirs with metadata, tombstones) in the tree.
+    pub fn len(&self) -> usize {
+        self.nodes.values().map(|n| match n {
+            DirNode::File(_) => 1,
+            DirNode::Dir(d, sub) => d.is_some() as usize + sub.len(),
+        }).sum()
+    }
+
+    pub fn is_empty(&self) -> bool { self.len() == 0 }
+
+    /// Visit each (full-path, dirent) pair by reference.
+    pub fn for_each<F: FnMut(&str, &Dirent)>(&self, mut f: F) {
+        self.visit_dirents(&mut f, &mut String::new());
+    }
+
     /// Walk the tree and produce a flat list of (path, Dirent) pairs.
     /// Consumes the tree to avoid cloning.
     pub fn into_dirents(self) -> Vec<(String, Dirent)> {
@@ -349,6 +364,27 @@ impl DirTree {
     fn detach(&mut self, path: &str) -> Option<DirNode> {
         let (parent, name) = self.walk_to_parent(path)?;
         parent.nodes.remove(name)
+    }
+
+    /// Walk the tree by reference, calling `f` for each (path, dirent).
+    fn visit_dirents<F: FnMut(&str, &Dirent)>(&self, f: &mut F, prefix: &mut String) {
+        for (name, node) in &self.nodes {
+            let path_len = prefix.len();
+            prefix.push('/');
+            prefix.push_str(name);
+
+            match node {
+                DirNode::File(dirent) => f(prefix, dirent),
+                DirNode::Dir(dirent, subtree) => {
+                    if let Some(dirent) = dirent {
+                        f(prefix, dirent);
+                    }
+                    subtree.visit_dirents(f, prefix);
+                }
+            }
+
+            prefix.truncate(path_len);
+        }
     }
 
     /// Walk the tree to collect (path, Dirent) pairs. Consumes the tree.

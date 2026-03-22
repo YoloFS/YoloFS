@@ -223,8 +223,8 @@ pub fn remount(force: bool) -> Result<()> {
 /// If there are staged changes, ask the user to commit or abort before proceeding.
 fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
     let journal = Journal::read(agfs_dir).unwrap_or_else(|_| Journal::new(vec![]));
-    let dirents = journal.into_tree().into_dirents();
-    if dirents.is_empty() {
+    let tree = journal.into_tree();
+    if tree.is_empty() {
         return Ok(());
     }
 
@@ -232,8 +232,8 @@ fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
         "{}",
         format!(
             "Warning: {} staged change{} will be lost.",
-            dirents.len(),
-            crate::utils::plural(dirents.len())
+            tree.len(),
+            crate::utils::plural(tree.len())
         )
         .yellow()
         .bold()

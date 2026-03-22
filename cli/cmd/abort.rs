@@ -42,8 +42,8 @@ pub fn run(force: bool) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let journal = Journal::read(&agfs)?;
-    let dirents = journal.into_tree().into_dirents();
-    if dirents.is_empty() {
+    let tree = journal.into_tree();
+    if tree.is_empty() {
         println!("{}", "Nothing to discard.".yellow());
         return Ok(());
     }
@@ -53,8 +53,8 @@ pub fn run(force: bool) -> Result<()> {
             "{} ",
             format!(
                 "Discard {} staged change{}? [y/N]:",
-                dirents.len(),
-                crate::utils::plural(dirents.len())
+                tree.len(),
+                crate::utils::plural(tree.len())
             )
             .bold()
         );
