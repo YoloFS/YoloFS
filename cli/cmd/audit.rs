@@ -14,7 +14,7 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
 
     let journal = Journal::read(&agfs)?;
 
-    if journal.segments.iter().all(|s| s.records.is_empty()) && journal.markers.is_empty() {
+    if journal.segments.iter().all(|s| s.records.is_empty()) && journal.markers.len() <= 1 {
         println!("{}", "No journal records.".yellow());
         return Ok(());
     }
@@ -38,7 +38,7 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
         }
 
         // Print the marker after this segment (if any).
-        if let Some(marker) = journal.markers.get(seg_idx) {
+        if let Some(marker) = journal.markers.get(seg_idx + 1) {
             let line = format_marker(marker);
             if reachable {
                 println!("  {line}");

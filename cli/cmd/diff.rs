@@ -158,7 +158,7 @@ fn run(
 
     let mut total = 0usize;
 
-    for (seg, closing) in journal.into_live_segments_range(start, end).zip(labels) {
+    for (seg, label) in journal.into_live_segments_range(start, end).zip(labels) {
         let tree = DirTree::build(std::iter::once(seg));
 
         // Count entries (filtered if a path is given).
@@ -179,11 +179,8 @@ fn run(
             if count == 0 && path.is_some() {
                 continue;
             }
-            if closing.is_none() {
-                println!("{}", "── (unsaved changes) ──".dimmed());
-            }
             if count == 0 {
-                print_segment_footer(&closing);
+                print_segment_footer(&label);
                 continue;
             }
         }
@@ -196,7 +193,7 @@ fn run(
         total += count;
 
         if has_checkpoints {
-            print_segment_footer(&closing);
+            print_segment_footer(&label);
         }
     }
 

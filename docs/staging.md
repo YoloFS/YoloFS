@@ -632,8 +632,9 @@ destination path existed in the base layer (`in_base`):
 
 **Gen_id invariant.** The kernel increments `sbi->gen` via
 `atomic_inc_return()` on every K and T record. Gen_id values are
-strictly sequential: marker\[i\] has gen_id = i + 1. The `Markers` type
-relies on this for O(1) checkpoint lookup by gen_id.
+strictly sequential: marker\[i\] has gen_id = i (marker\[0\] is a phantom
+`Checkpoint { gen_id: 0, name: "(initial)" }` inserted by the CLI). The
+`Markers` type relies on this for O(1) checkpoint lookup by gen_id.
 
 `<path>` is the full overlay path (e.g. `/dir/file`).
 `<src>` is the overlay path before the rename (R/P only).

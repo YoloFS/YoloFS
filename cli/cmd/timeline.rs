@@ -10,13 +10,16 @@ pub fn run() -> anyhow::Result<()> {
     let agfs = crate::utils::session_dir()?;
     let journal = Journal::read(&agfs)?;
 
-    if journal.markers.is_empty() {
+    if journal.markers.len() <= 1 {
         println!("{}", "No checkpoints.".yellow());
         return Ok(());
     }
 
     for (m_idx, marker) in journal.markers.iter().enumerate() {
-        let reachable = journal.is_alive(m_idx);
+        if m_idx == 0 {
+            continue;
+        }
+        let reachable = journal.is_alive(m_idx - 1);
         let line = match marker {
             journal::Marker::Checkpoint { gen_id, name } => {
                 format!(

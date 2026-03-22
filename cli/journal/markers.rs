@@ -34,11 +34,13 @@ impl Markers {
     ///
     /// This relies on the gen_id invariant: the kernel increments `sbi->gen`
     /// via `atomic64_inc_return()` on every K and T record, so gen_id values
-    /// are strictly sequential — marker\[i\] has gen_id = i + 1.
+    /// are strictly sequential — marker\[i\] has gen_id = i.
     fn find_checkpoint_by_gen_id(&self, gen_id: u64) -> Result<(u64, &str)> {
-        let idx = gen_id.checked_sub(1).and_then(|i| usize::try_from(i).ok());
-        if let Some(idx) = idx
-            && let Some(Marker::Checkpoint { gen_id: g, name }) = self.0.get(idx)
+        if gen_id == 0 {
+            anyhow::bail!("checkpoint not found: {gen_id}");
+        }
+        let idx = gen_id as usize;
+        if let Some(Marker::Checkpoint { gen_id: g, name }) = self.0.get(idx)
                 && *g == gen_id {
                     return Ok((*g, name));
                 }
@@ -66,10 +68,11 @@ impl Markers {
         self.find_checkpoint_by_name(name_or_id)
     }
 
-    /// Get the checkpoint at this marker index (returns `None` for restore markers).
+    /// Get the checkpoint at this marker index (returns `None` for restore
+    /// markers and for the phantom marker at index 0).
     pub fn checkpoint_at(&self, marker_idx: usize) -> Option<(u64, &str)> {
         match self.0.get(marker_idx)? {
-            Marker::Checkpoint { gen_id, name } => Some((*gen_id, name)),
+            Marker::Checkpoint { gen_id, name } if *gen_id > 0 => Some((*gen_id, name)),
             _ => None,
         }
     }
@@ -85,13 +88,13 @@ impl Markers {
     ) -> Result<(usize, usize)> {
         if let Some(name) = at {
             let (gen_id, _) = self.find_checkpoint(name)?;
-            let m_idx = (gen_id - 1) as usize;
-            // Find the previous checkpoint marker to bound the "at" range.
-            let prev_k = (0..m_idx)
+            let m_idx = gen_id as usize;
+            // Find the previous checkpoint marker (skip phantom at index 0).
+            let prev_k = (1..m_idx)
                 .rev()
                 .find(|&i| matches!(&self.0[i], Marker::Checkpoint { .. }));
-            let start = prev_k.map(|k| k + 1).unwrap_or(0);
-            return Ok((start, m_idx + 1));
+            let start = prev_k.unwrap_or(0);
+            return Ok((start, m_idx));
         }
 
         let start = if let Some(from_name) = from {
@@ -151,16 +154,16 @@ impl Markers {
             let Marker::Restore { target_gen, .. } = &self.0[m] else {
                 continue;
             };
-            if m + 1 >= alive_end {
+            if m >= alive_end {
                 continue;
             }
             let Some(&k_idx) = gen_to_idx.get(target_gen) else {
                 continue;
             };
-            for flag in &mut alive[(k_idx + 1)..=m] {
+            for flag in &mut alive[k_idx..m] {
                 *flag = false;
             }
-            alive_end = k_idx + 1;
+            alive_end = k_idx;
         }
 
         alive
@@ -281,11 +284,87 @@ mod tests {
             }),
         ];
         let j = Journal::new(records);
-        assert!(j.markers.checkpoint_at(0).is_some());
-        assert!(j.markers.checkpoint_at(1).is_some());
         assert!(
-            j.markers.checkpoint_at(2).is_none(),
+            j.markers.checkpoint_at(0).is_none(),
+            "Phantom marker should return None"
+        );
+        assert!(j.markers.checkpoint_at(1).is_some());
+        assert!(j.markers.checkpoint_at(2).is_some());
+        assert!(
+            j.markers.checkpoint_at(3).is_none(),
             "Restore marker should return None"
+        );
+    }
+
+    #[test]
+    fn find_checkpoint_by_gen_id_rejects_phantom() {
+        let records = vec![
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "c1".into(),
+            }),
+        ];
+        let j = Journal::new(records);
+        assert!(
+            j.markers.find_checkpoint_by_gen_id(0).is_err(),
+            "phantom gen_id=0 should not be a valid checkpoint"
+        );
+        assert!(j.markers.find_checkpoint_by_gen_id(1).is_ok());
+    }
+
+    #[test]
+    fn restore_targeting_phantom() {
+        // Restore to gen_id=0 (initial state) should kill all segments
+        // between the phantom and the restore marker.
+        let records = vec![
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "c1".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(DType::File),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 3,
+                target_gen: 0,
+            }),
+        ];
+        let j = Journal::new(records);
+        // markers: [phantom(0), K(1), K(2), R(3→0)]
+        // segments: [seg0, seg1, seg2, seg3]
+        // Restore to 0 kills segments 0..3 → seg0, seg1, seg2 dead.
+        let alive = j.markers.alive_segments(j.segments.len());
+        assert!(!alive[0], "seg0 killed by restore to initial");
+        assert!(!alive[1], "seg1 killed by restore to initial");
+        assert!(!alive[2], "seg2 killed by restore to initial");
+        assert!(alive[3], "seg3 (trailing after restore) alive");
+    }
+
+    #[test]
+    fn segment_range_at_rejects_phantom_id() {
+        let records = vec![
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "c1".into(),
+            }),
+        ];
+        let j = Journal::new(records);
+        assert!(
+            j.markers
+                .segment_range(Some("0"), None, None, j.segments.len())
+                .is_err(),
+            "--at 0 should be rejected (phantom)"
         );
     }
 

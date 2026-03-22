@@ -28,6 +28,7 @@ pub enum Dirent {
         in_base: bool,
     },
     Link {
+        /// The source path in the base filesystem (where the content lives).
         base_path: String,
         dtype: DType,
         in_base: bool,
