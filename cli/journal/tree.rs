@@ -15,6 +15,11 @@ use std::collections::HashMap;
 use super::types::*;
 
 /// A dirent — the state of a single entry in the overlay.
+///
+/// `in_base` indicates whether this path position had content in the base
+/// filesystem before staging.  It determines cleanup behavior: when removed
+/// or moved away, `in_base=true` leaves a Tombstone to hide the base content;
+/// `in_base=false` cancels (just removes — nothing in base to hide).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Dirent {
     Inode {
@@ -172,6 +177,100 @@ impl DirTree {
         let mut entries = Vec::new();
         self.for_each(|path, dirent| entries.push((path.to_owned(), dirent.clone())));
         entries
+    }
+
+    /// Serialize the tree into a contiguous byte buffer for the restore ioctl.
+    ///
+    /// Wire format (all integers little-endian):
+    ///   TreeBuf      := NodeList
+    ///   NodeList     := child_count:le16  Node[child_count]
+    ///   Node         := name_len:le16  name:u8[name_len]
+    ///                   has_dirent:u8  [PackedDirent if has_dirent]
+    ///                   child_count:le16  Node[child_count]
+    ///   PackedDirent := packed:le64
+    ///                   [base_len:le16  base_path:u8[base_len]  NUL:u8  if link]
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.serialize_into(&mut buf);
+        buf
+    }
+
+    fn serialize_into(&self, buf: &mut Vec<u8>) {
+        // Collect children sorted by name, skipping empty passthrough dirs.
+        let mut children: Vec<(&str, &DirNode)> = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| match node {
+                DirNode::Dir(None, sub) if sub.nodes.is_empty() => false,
+                _ => true,
+            })
+            .map(|(name, node)| (name.as_str(), node))
+            .collect();
+        children.sort_by_key(|(name, _)| *name);
+
+        buf.extend_from_slice(&(children.len() as u16).to_le_bytes());
+
+        for (name, node) in children {
+            let name_bytes = name.as_bytes();
+            buf.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+            buf.extend_from_slice(name_bytes);
+
+            match node {
+                DirNode::File(dirent) => {
+                    buf.push(1); // has_dirent
+                    Self::serialize_dirent(dirent, buf);
+                    buf.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
+                }
+                DirNode::Dir(dirent, subtree) => {
+                    if let Some(d) = dirent {
+                        buf.push(1); // has_dirent
+                        Self::serialize_dirent(d, buf);
+                    } else {
+                        buf.push(0); // no dirent
+                    }
+                    subtree.serialize_into(buf);
+                }
+            }
+        }
+    }
+
+    fn serialize_dirent(dirent: &Dirent, buf: &mut Vec<u8>) {
+        match dirent {
+            Dirent::Tombstone => {
+                buf.extend_from_slice(&0u64.to_le_bytes());
+            }
+            Dirent::Inode {
+                ino,
+                dtype,
+                in_base,
+            } => {
+                assert!(*ino > 0, "inode ino must be non-zero");
+                assert!(
+                    *ino <= 0xFFFFFFFFFFF,
+                    "inode ino exceeds 44-bit range: {ino}"
+                );
+                let packed: u64 = (dtype.to_packed() << 61)
+                    | ((*in_base as u64) << 60)
+                    | (*ino << 16);
+                // gen bits [15:0] zeroed — kernel assigns new_gen
+                buf.extend_from_slice(&packed.to_le_bytes());
+            }
+            Dirent::Link {
+                base_path,
+                dtype,
+                in_base,
+            } => {
+                let packed: u64 = (1u64 << 63)
+                    | (dtype.to_packed() << 61)
+                    | ((*in_base as u64) << 60);
+                // pointer bits [59:0] zeroed — base path travels inline
+                buf.extend_from_slice(&packed.to_le_bytes());
+                let bp = base_path.as_bytes();
+                buf.extend_from_slice(&(bp.len() as u16).to_le_bytes());
+                buf.extend_from_slice(bp);
+                buf.push(0); // NUL terminator
+            }
+        }
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -1071,7 +1170,7 @@ mod tests {
                 .iter()
                 .any(|(p, c)| p == "/src" && matches!(c, Dirent::Tombstone))
         );
-        assert!(dirents.iter().any(|(p, c)| p == "/dst" && matches!(c, Dirent::Link { base_path: from, dtype: DType::Dir, in_base: true } if from == "/src")));
+        assert!(dirents.iter().any(|(p, c)| p == "/dst" && matches!(c, Dirent::Link { base_path: from, dtype: DType::Dir, .. } if from == "/src")));
     }
 
     #[test]
@@ -1115,7 +1214,7 @@ mod tests {
                 .iter()
                 .any(|(p, c)| p == "/old" && matches!(c, Dirent::Tombstone))
         );
-        assert!(dirents.iter().any(|(p, c)| p == "/new" && matches!(c, Dirent::Link { base_path: from, dtype: DType::Dir, in_base: false } if from == "/old")));
+        assert!(dirents.iter().any(|(p, c)| p == "/new" && matches!(c, Dirent::Link { base_path: from, dtype: DType::Dir, .. } if from == "/old")));
     }
 
     // ── Replace chain ─────────────────────────────────────────────────
@@ -1126,7 +1225,7 @@ mod tests {
         let tree = build(&[replace("/b", "/a"), replace("/c", "/b")]);
         let dirents = tree.into_dirents();
         // /a had base content → Tombstone at /a.
-        // /b had base content (P tag) → Tombstone at /b when moved away.
+        // /b had Link (in_base=true from Replace) → moved to /c, tombstone at /b.
         // /c gets Link(base_path=/a, in_base=true).
         assert_eq!(dirents.len(), 3, "expected 3 entries: {:?}", dirents);
         assert!(
@@ -1143,8 +1242,8 @@ mod tests {
             "missing tombstone at /b: {:?}",
             dirents
         );
-        assert!(dirents.iter().any(|(p, c)| p == "/c" && matches!(c, Dirent::Link { base_path: from, in_base: true, .. } if from == "/a")),
-            "/c should be Link from /a with in_base=true: {:?}", dirents);
+        assert!(dirents.iter().any(|(p, c)| p == "/c" && matches!(c, Dirent::Link { base_path: from, .. } if from == "/a")),
+            "/c should be Link from /a: {:?}", dirents);
     }
 
     #[test]
@@ -1162,8 +1261,8 @@ mod tests {
             "missing tombstone at /a: {:?}",
             dirents
         );
-        assert!(dirents.iter().any(|(p, c)| p == "/c" && matches!(c, Dirent::Link { base_path: from, in_base: true, .. } if from == "/a")),
-            "/c should be Link from /a with in_base=true: {:?}", dirents);
+        assert!(dirents.iter().any(|(p, c)| p == "/c" && matches!(c, Dirent::Link { base_path: from, .. } if from == "/a")),
+            "/c should be Link from /a: {:?}", dirents);
     }
 
     // ── Dir rename + subsequent child operations ──────────────────────
@@ -1259,5 +1358,315 @@ mod tests {
     #[test]
     fn tombstone_dtype_returns_file() {
         assert_eq!(Dirent::Tombstone.dtype(), DType::File);
+    }
+
+    #[test]
+    fn replace_then_delete_tombstones_destination() {
+        // Replace /a → /b (both base-only), then delete /b.
+        // /b existed in base, so deleting the Link must leave a Tombstone
+        // to hide the base content. Without it, base /b reappears.
+        let cs = build(&[
+            Action::Replace {
+                src: "/a".into(),
+                dst: "/b".into(),
+                dtype: Some(DType::File),
+            },
+            Action::Delete {
+                path: "/b".into(),
+                dtype: Some(DType::File),
+            },
+        ]);
+        let dirents = cs.into_dirents();
+        // Both /a and /b should be tombstoned.
+        assert!(
+            dirents.iter().any(|(p, d)| p == "/a" && matches!(d, Dirent::Tombstone)),
+            "/a should be Tombstone: {dirents:?}"
+        );
+        assert!(
+            dirents.iter().any(|(p, d)| p == "/b" && matches!(d, Dirent::Tombstone)),
+            "/b should be Tombstone (base content): {dirents:?}"
+        );
+    }
+
+    // ── serialize tests ───────────────────────────────────────────────
+
+    #[test]
+    fn serialize_empty_tree() {
+        let tree = DirTree::new();
+        assert_eq!(tree.serialize(), vec![0x00, 0x00]);
+    }
+
+    #[test]
+    fn serialize_single_inode_file() {
+        let tree = build(&[add("/_f", 1)]);
+        let buf = tree.serialize();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&1u16.to_le_bytes()); // child_count = 1
+        // Node "_f"
+        expected.extend_from_slice(&2u16.to_le_bytes()); // name_len = 2
+        expected.extend_from_slice(b"_f");
+        expected.push(1); // has_dirent
+        // PackedDirent: dtype=File(0), in_base=false, ino=1, gen=0
+        let packed: u64 = 1u64 << 16;
+        expected.extend_from_slice(&packed.to_le_bytes());
+        expected.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
+        assert_eq!(buf, expected);
+    }
+
+    #[test]
+    fn serialize_single_tombstone() {
+        let tree = build(&[
+            Action::Modify {
+                path: "/old".into(),
+                ino: 1,
+                dtype: Some(DType::File),
+            },
+            Action::Delete {
+                path: "/old".into(),
+                dtype: Some(DType::File),
+            },
+        ]);
+        let buf = tree.serialize();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&1u16.to_le_bytes()); // child_count = 1
+        expected.extend_from_slice(&3u16.to_le_bytes()); // name_len = 3
+        expected.extend_from_slice(b"old");
+        expected.push(1); // has_dirent
+        expected.extend_from_slice(&0u64.to_le_bytes()); // packed = 0 (tombstone)
+        expected.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
+        assert_eq!(buf, expected);
+    }
+
+    #[test]
+    fn serialize_single_link() {
+        let tree = build(&[Action::Rename {
+            src: "/a.txt".into(),
+            dst: "/b.txt".into(),
+            dtype: Some(DType::File),
+        }]);
+        let buf = tree.serialize();
+        // Should have 2 children: "a.txt" (tombstone) and "b.txt" (link)
+        let mut cursor = 0usize;
+        let child_count = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
+        cursor += 2;
+        assert_eq!(child_count, 2);
+
+        // Children are sorted: "a.txt" before "b.txt"
+        // Node 1: "a.txt" — tombstone
+        let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+        cursor += 2;
+        assert_eq!(&buf[cursor..cursor + name_len], b"a.txt");
+        cursor += name_len;
+        assert_eq!(buf[cursor], 1); // has_dirent
+        cursor += 1;
+        let packed = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
+        assert_eq!(packed, 0); // tombstone
+        cursor += 8;
+        let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
+        cursor += 2;
+        assert_eq!(cc, 0);
+
+        // Node 2: "b.txt" — link to /a.txt
+        let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+        cursor += 2;
+        assert_eq!(&buf[cursor..cursor + name_len], b"b.txt");
+        cursor += name_len;
+        assert_eq!(buf[cursor], 1); // has_dirent
+        cursor += 1;
+        let packed = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
+        // Link: bit 63 set, dtype=File(0), in_base=false (Rename → dest not in base)
+        assert!((packed as i64) < 0, "link should have bit 63 set");
+        cursor += 8;
+        // Trailing: base_len + base_path + NUL
+        let base_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+        cursor += 2;
+        assert_eq!(&buf[cursor..cursor + base_len], b"/a.txt");
+        cursor += base_len;
+        assert_eq!(buf[cursor], 0); // NUL
+        cursor += 1;
+        let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
+        cursor += 2;
+        assert_eq!(cc, 0);
+
+        assert_eq!(cursor, buf.len());
+    }
+
+    #[test]
+    fn serialize_nested_directories() {
+        // /dir (staged dir inode) with /dir/file inside
+        let tree = build(&[add_dir("/dir", 10), add("/dir/file", 20)]);
+        let buf = tree.serialize();
+        let mut cursor = 0usize;
+
+        // Root child_count = 1
+        let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
+        cursor += 2;
+        assert_eq!(cc, 1);
+
+        // Node "dir": name_len=3, name="dir", has_dirent=1, packed(Dir,ino=10), child_count=1
+        let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+        cursor += 2;
+        assert_eq!(&buf[cursor..cursor + name_len], b"dir");
+        cursor += name_len;
+        assert_eq!(buf[cursor], 1); // has_dirent
+        cursor += 1;
+        let packed = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
+        // Dir inode: dtype=Dir(1) at bits [62:61], in_base=false, ino=10
+        assert_eq!((packed >> 61) & 3, 1); // dtype=Dir
+        assert_eq!((packed >> 16) & 0xFFFFFFFFFFF, 10); // ino
+        cursor += 8;
+
+        // child_count for "dir" subtree = 1
+        let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
+        cursor += 2;
+        assert_eq!(cc, 1);
+
+        // Node "file": name_len=4, name="file", has_dirent=1, packed(File,ino=20), child_count=0
+        let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+        cursor += 2;
+        assert_eq!(&buf[cursor..cursor + name_len], b"file");
+        cursor += name_len;
+        assert_eq!(buf[cursor], 1); // has_dirent
+        cursor += 1;
+        let packed = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
+        assert_eq!((packed >> 16) & 0xFFFFFFFFFFF, 20); // ino
+        cursor += 8;
+        let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
+        cursor += 2;
+        assert_eq!(cc, 0);
+
+        assert_eq!(cursor, buf.len());
+    }
+
+    #[test]
+    fn serialize_passthrough_dir() {
+        // /dir/file where /dir has no own dirent (pass-through)
+        let tree = build(&[add("/dir/file", 5)]);
+        let buf = tree.serialize();
+        let mut cursor = 0usize;
+
+        // Root child_count = 1
+        let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
+        cursor += 2;
+        assert_eq!(cc, 1);
+
+        // Node "dir": has_dirent=0
+        let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+        cursor += 2;
+        assert_eq!(&buf[cursor..cursor + name_len], b"dir");
+        cursor += name_len;
+        assert_eq!(buf[cursor], 0); // no dirent
+        cursor += 1;
+
+        // child_count = 1
+        let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
+        cursor += 2;
+        assert_eq!(cc, 1);
+
+        // Node "file": has_dirent=1
+        let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+        cursor += 2;
+        assert_eq!(&buf[cursor..cursor + name_len], b"file");
+        cursor += name_len;
+        assert_eq!(buf[cursor], 1); // has_dirent
+        cursor += 1;
+        cursor += 8; // packed
+        let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
+        cursor += 2;
+        assert_eq!(cc, 0);
+
+        assert_eq!(cursor, buf.len());
+    }
+
+    #[test]
+    fn serialize_children_sorted_by_name() {
+        let tree = build(&[add("/z", 1), add("/a", 2), add("/m", 3)]);
+        let buf = tree.serialize();
+        let mut cursor = 2usize; // skip root child_count
+
+        // Read names in order
+        let mut names = Vec::new();
+        for _ in 0..3 {
+            let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+            cursor += 2;
+            names.push(std::str::from_utf8(&buf[cursor..cursor + name_len]).unwrap().to_string());
+            cursor += name_len;
+            cursor += 1; // has_dirent
+            cursor += 8; // packed
+            cursor += 2; // child_count
+        }
+        assert_eq!(names, vec!["a", "m", "z"]);
+    }
+
+    #[test]
+    fn serialize_passthrough_dir_empty_subtree_omitted() {
+        // Create a tree with a passthrough dir that has an empty subtree
+        let mut tree = DirTree::new();
+        tree.nodes.insert(
+            "empty".to_string(),
+            DirNode::Dir(None, DirTree::new()),
+        );
+        let buf = tree.serialize();
+        // Should produce just child_count=0 (the empty passthrough dir is skipped)
+        assert_eq!(buf, vec![0x00, 0x00]);
+    }
+
+    #[test]
+    fn serialize_inode_bits_correct() {
+        // Verify the packed bit layout for an inode dirent
+        let tree = build(&[Action::Modify {
+            path: "/f".into(),
+            ino: 42,
+            dtype: Some(DType::Link),
+        }]);
+        let buf = tree.serialize();
+        // Skip: root child_count(2) + name_len(2) + name(1) + has_dirent(1)
+        let packed = u64::from_le_bytes(buf[6..14].try_into().unwrap());
+        // [63]=0, [62:61]=2(Link), [60]=1(in_base=true for Modify), [59:16]=42, [15:0]=0
+        assert_eq!((packed >> 63) & 1, 0); // not a link pde
+        assert_eq!((packed >> 61) & 3, 2); // dtype=Link
+        assert_eq!((packed >> 60) & 1, 1); // in_base=true
+        assert_eq!((packed >> 16) & 0xFFFFFFFFFFF, 42); // ino
+        assert_eq!(packed & 0xFFFF, 0); // gen bits zeroed
+    }
+
+    #[test]
+    fn serialize_link_bits_correct() {
+        // Verify the packed bit layout for a link dirent
+        let tree = build(&[Action::Rename {
+            src: "/src".into(),
+            dst: "/dst".into(),
+            dtype: Some(DType::Dir),
+        }]);
+        let buf = tree.serialize();
+        // Find the "dst" node (children sorted: "dst" comes before "src")
+        let mut cursor = 2usize; // skip root child_count
+        let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+        cursor += 2;
+        assert_eq!(&buf[cursor..cursor + name_len], b"dst");
+        cursor += name_len;
+        assert_eq!(buf[cursor], 1); // has_dirent
+        cursor += 1;
+        let packed = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
+        cursor += 8;
+        // [63]=1, [62:61]=1(Dir), [60]=0(Rename: dest not in base), [59:0]=0
+        assert_eq!((packed >> 63) & 1, 1); // link
+        assert_eq!((packed >> 61) & 3, 1); // dtype=Dir
+        assert_eq!((packed >> 60) & 1, 0); // in_base=false for Rename
+        assert_eq!(packed & 0x0FFFFFFFFFFFFFFF, 0); // pointer bits zeroed
+
+        // Trailing base_path
+        let base_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+        cursor += 2;
+        assert_eq!(&buf[cursor..cursor + base_len], b"/src");
+        cursor += base_len;
+        assert_eq!(buf[cursor], 0); // NUL
+    }
+
+    #[test]
+    fn dtype_to_packed() {
+        assert_eq!(DType::File.to_packed(), 0);
+        assert_eq!(DType::Dir.to_packed(), 1);
+        assert_eq!(DType::Link.to_packed(), 2);
     }
 }

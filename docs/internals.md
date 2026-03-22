@@ -99,10 +99,11 @@ descriptor (typically `.agfs/mnt`). Ioctl command macros are defined in
 | `AGFS_IOC_CHECKPOINT`     | Bump `gen`, append K record to journal, return checkpoint ID. Rejects with `-EBUSY` if staging fds are open. Triggers re-COW on next open-for-write to any staged file (see [staging.md — Checkpoints](staging.md#checkpoint-mechanism)). |
 
 `AGFS_IOC_RESTORE` is called by userspace after commit/abort (with
-`entry_count=0`, `target_gen=0` to reset) and for restore (with entries
-to rebuild the staging view at a given checkpoint, `target_gen>0`).
-The ioctl struct has fields `target_gen`, `new_gen`, `entry_count`, and
-`entries_ptr`.
+`tree_len=0`, `tree_ptr=0`, `target_gen=0` to reset) and for restore (with a
+serialized DirTree buffer to rebuild the staging view at a given checkpoint,
+`target_gen>0`).
+The ioctl struct has fields `target_gen`, `new_gen`, `tree_len`, and
+`tree_ptr`.
 It:
 1. Takes `staging_sem` write lock; rejects with `-EBUSY` if
    `staging_fd_count > 0`.
@@ -115,10 +116,12 @@ It:
    Steps 6–9 are skipped.
 6. **Restore mode** (`target_gen>0`): Increments `sbi->gen` to allocate
    `new_gen`.
-7. **Restore mode**: For each entry in the userspace array: resolves
-   the parent path via `vfs_path_lookup` on the mount root, takes
-   `inode_lock(parent)`, calls `agfs_add_dirent()` to install the
-   dirent with `gen = new_gen`, then releases.
+7. **Restore mode**: `vmalloc`s + `copy_from_user`s the serialized tree
+   buffer, then walks it iteratively with an explicit directory stack.
+   For each node: reads the name, optional packed dirent, and child
+   count. If a dirent is present, calls `agfs_add_dirent()` to install
+   it with `gen = new_gen`. If children are present, `lookup_one_len`
+   finds the child directory dentry and pushes onto the stack.
 8. **Restore mode**: Appends T record (`T\0<new_gen>\0<target_gen>\n`) to journal.
 9. **Restore mode**: Writes back `new_gen` to userspace struct.
 

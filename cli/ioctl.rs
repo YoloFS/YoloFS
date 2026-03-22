@@ -79,27 +79,13 @@ pub struct AgfsIocCheckpoint {
     pub _pad: [u8; 5],
 }
 
-/// Matches `struct agfs_ioc_restore_entry` in the kernel.
-#[repr(C)]
-pub struct AgfsIocRestoreEntry {
-    pub path_ptr: u64,
-    pub path_len: u16,
-    pub d_type: u8,
-    pub in_base: u8,
-    pub _pad1: [u8; 4],
-    pub ino: u64,
-    pub base_ptr: u64,
-    pub base_len: u16,
-    pub _pad2: [u8; 6],
-}
-
 /// Matches `struct agfs_ioc_restore` in the kernel.
 #[repr(C)]
 pub struct AgfsIocRestore {
     pub target_gen: u64,
     pub new_gen: u64,
-    pub entry_count: u64,
-    pub entries_ptr: u64,
+    pub tree_len: u64,
+    pub tree_ptr: u64,
 }
 
 /// A dequeued permission request with owned path data.
@@ -206,17 +192,17 @@ pub fn remove_rule(fd: &File, path: &str) -> Result<()> {
 }
 
 /// Send AGFS_IOC_RESTORE ioctl. Resets staging state and optionally injects
-/// dirent entries. For commit/abort, pass empty entries with target_gen=0.
+/// a serialized DirTree. For commit/abort, pass an empty buffer with target_gen=0.
 /// For restore, pass target_gen > 0; returns the new generation assigned.
-pub fn restore(fd: &File, target_gen: u64, entries: &[AgfsIocRestoreEntry]) -> Result<u64> {
+pub fn restore(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
     let mut hdr = AgfsIocRestore {
         target_gen,
         new_gen: 0,
-        entry_count: entries.len() as u64,
-        entries_ptr: if entries.is_empty() {
+        tree_len: tree_buf.len() as u64,
+        tree_ptr: if tree_buf.is_empty() {
             0
         } else {
-            entries.as_ptr() as u64
+            tree_buf.as_ptr() as u64
         },
     };
     unsafe { ioctl_restore(fd.as_raw_fd(), &mut hdr) }.context("ioctl RESTORE")?;
@@ -253,7 +239,6 @@ mod tests {
         assert_eq!(size_of::<AgfsCtlResponse>(), 16);
         assert_eq!(size_of::<AgfsIocRule>(), 16);
         assert_eq!(size_of::<AgfsIocCheckpoint>(), 24);
-        assert_eq!(size_of::<AgfsIocRestoreEntry>(), 40);
         assert_eq!(size_of::<AgfsIocRestore>(), 32);
     }
 

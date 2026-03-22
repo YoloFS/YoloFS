@@ -31,8 +31,11 @@
 #define AGFS_PATH_MAX		256
 
 /* Dirent ino discrimination */
-#define AGFS_INO_DELETED	0ULL
 #define AGFS_INO_REDIRECT	((u64)-1)
+
+/* Restore tree buffer limits */
+#define AGFS_RESTORE_MAX_DEPTH		64
+#define AGFS_RESTORE_MAX_TREE_LEN	(16 * 1024 * 1024)
 
 /* Operations passed in ask requests */
 enum agfs_op {
@@ -80,25 +83,12 @@ struct agfs_ioc_checkpoint {
 	__u8	_pad[5];
 };
 
-/* userspace → kernel: one entry in AGFS_IOC_RESTORE */
-struct agfs_ioc_restore_entry {
-	__u64	path_ptr;		/* userspace pointer to path string */
-	__u16	path_len;		/* length excluding NUL */
-	__u8	d_type;			/* DT_REG / DT_DIR / DT_LNK */
-	__u8	in_base;		/* 1 if this path had existing content */
-	__u8	_pad1[4];
-	__u64	ino;			/* inode store ID; 0 = deleted */
-	__u64	base_ptr;		/* userspace pointer to base path string */
-	__u16	base_len;		/* length excluding NUL; 0 = none */
-	__u8	_pad2[6];
-};
-
 /* userspace ↔ kernel: AGFS_IOC_RESTORE */
 struct agfs_ioc_restore {
 	__u64	target_gen;		/* in: checkpoint gen to restore to (0 = reset) */
 	__u64	new_gen;		/* out: new generation assigned (restore mode only) */
-	__u64	entry_count;
-	__u64	entries_ptr;
+	__u64	tree_len;		/* in: byte length of serialized tree */
+	__u64	tree_ptr;		/* in: userspace pointer to tree buffer */
 };
 
 #define AGFS_IOC_RULE_ADD	_IOW('A', 10, struct agfs_ioc_rule)
@@ -288,7 +278,7 @@ static inline agfs_pde_t agfs_pde_inode(u64 ino, u16 gen,
 }
 
 static inline agfs_pde_t agfs_pde_link(const char *base, unsigned char d_type,
-					bool in_base)
+				       bool in_base)
 {
 	u64 ptr = (u64)base;
 
