@@ -278,4 +278,13 @@ mod tests {
         let (_, dirent) = find(&cs, "/newlink");
         assert_eq!(dirent.dtype(), DType::Link);
     }
+
+    #[test]
+    fn dirents_to_entries_tombstone_dtype_zero() {
+        let cs = vec![("/dir".to_string(), Dirent::Tombstone)];
+        let entries = dirents_to_entries(&cs).unwrap();
+        assert_eq!(entries[0].d_type, 0u8);
+        assert_eq!(entries[0].ino, 0);
+        assert_eq!(entries[0].in_base, 1u8);
+    }
 }

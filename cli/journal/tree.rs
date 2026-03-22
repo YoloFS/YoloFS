@@ -242,22 +242,33 @@ impl DirTree {
         };
 
         if needs_tombstone {
-            // Place or overwrite with tombstone (preserves Dir subtree).
-            match parent.nodes.get_mut(name.as_str()) {
-                Some(DirNode::File(d)) => *d = Dirent::Tombstone,
-                Some(DirNode::Dir(d, _)) => *d = Some(Dirent::Tombstone),
-                None => {
-                    let node = if dtype.unwrap_or(DType::File) == DType::Dir {
-                        DirNode::Dir(Some(Dirent::Tombstone), DirTree::new())
-                    } else {
-                        DirNode::File(Dirent::Tombstone)
-                    };
-                    parent.nodes.insert(name, node);
-                }
-            }
+            Self::place_tombstone_at(parent, name, dtype.unwrap_or(DType::File));
         } else {
             // in_base=false → cancel (remove)
             parent.nodes.remove(name.as_str());
+        }
+    }
+
+    /// Place a Tombstone at a path, preserving any existing Dir subtree.
+    fn place_tombstone(&mut self, path: String, dtype: DType) {
+        if let Some((parent, name)) = self.walk_or_create_parent(path) {
+            Self::place_tombstone_at(parent, name, dtype);
+        }
+    }
+
+    /// Place a Tombstone in a parent's node map, preserving any existing Dir subtree.
+    fn place_tombstone_at(parent: &mut DirTree, name: String, dtype: DType) {
+        match parent.nodes.get_mut(name.as_str()) {
+            Some(DirNode::File(d)) => *d = Dirent::Tombstone,
+            Some(DirNode::Dir(d, _)) => *d = Some(Dirent::Tombstone),
+            None => {
+                let node = if dtype == DType::Dir {
+                    DirNode::Dir(Some(Dirent::Tombstone), DirTree::new())
+                } else {
+                    DirNode::File(Dirent::Tombstone)
+                };
+                parent.nodes.insert(name, node);
+            }
         }
     }
 
@@ -314,18 +325,7 @@ impl DirTree {
 
         // Place tombstone at source if it had base content
         if source_had_base {
-            let node = if dtype == DType::Dir {
-                DirNode::Dir(Some(Dirent::Tombstone), DirTree::new())
-            } else {
-                DirNode::File(Dirent::Tombstone)
-            };
-            if let Some((parent, name)) = self.walk_or_create_parent(src_path) {
-                match parent.nodes.get_mut(name.as_str()) {
-                    Some(DirNode::File(d)) => *d = Dirent::Tombstone,
-                    Some(DirNode::Dir(d, _)) => *d = Some(Dirent::Tombstone),
-                    None => { parent.nodes.insert(name, node); }
-                }
-            }
+            self.place_tombstone(src_path, dtype);
         }
 
         // Roundtrip collapse: if dest ends up as a Link pointing to itself,
@@ -1254,5 +1254,10 @@ mod tests {
             "/other should be Link from /a/b: {:?}",
             dirents
         );
+    }
+
+    #[test]
+    fn tombstone_dtype_returns_file() {
+        assert_eq!(Dirent::Tombstone.dtype(), DType::File);
     }
 }

@@ -132,7 +132,7 @@ enum DirNode {
 enum Dirent {
     Inode { ino: u64, dtype: DType, in_base: bool },
     Link { base_path: String, dtype: DType, in_base: bool },
-    Tombstone { dtype: DType },  // implicitly in_base=true
+    Tombstone,  // implicitly in_base=true
 }
 ```
 
@@ -166,7 +166,7 @@ Processing records in journal order. Three rules govern `in_base` and Tombstones
 |--------|---------------|
 | A(path, dtype, ino) | Walk/create path. Set dirent to `Inode { ino, dtype, in_base: false }`. |
 | M(path, dtype, ino) | Walk/create path. Set dirent to `Inode { ino, dtype, in_base: true }`. |
-| D(path, dtype) | Find node. If `in_base=false`, remove node (cancel). Otherwise, set dirent to `Tombstone { dtype }`. |
+| D(path, dtype) | Find node. If `in_base=false`, remove node (cancel). Otherwise, set dirent to `Tombstone`. |
 | R(dst, src, dtype) | If node exists at `src`: detach, reattach at `dst`. If source `in_base=true`, Tombstone at `src`. Set `in_base=false`. For directories, entire subtree moves. Inode stays Inode. If no node at `src` (base-only): create `Link { base_path: src, dtype, in_base: false }` at `dst`, Tombstone at `src`. |
 | P(dst, src, dtype) | Same as R, but set `in_base=true`. |
 
