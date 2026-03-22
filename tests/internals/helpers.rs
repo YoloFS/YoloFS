@@ -36,7 +36,7 @@ pub fn records(j: &journal::Journal) -> Vec<Record> {
 /// Uses `Journal` to filter out dead records (e.g. after restore).
 pub fn dirents(s: &AgfsSession) -> Vec<(String, Dstate)> {
     let j = journal(s);
-    j.into_tree().into_dirents()
+    j.into_tree().to_dirents()
 }
 
 /// List numeric inode entries in the inode store.

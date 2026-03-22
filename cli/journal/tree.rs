@@ -45,7 +45,7 @@ impl Dstate {
             Dstate::StagedInode { dtype, .. }
             | Dstate::BasePath { dtype, .. }
             | Dstate::Tombstone { dtype } => *dtype,
-            Dstate::Passthrough => libc::DT_REG,
+            Dstate::Passthrough => unreachable!("Passthrough has no dtype"),
         }
     }
 
@@ -183,7 +183,7 @@ impl DirTree {
     }
 
     /// Walk the tree and produce a flat list of (path, Dstate) pairs.
-    pub fn into_dirents(&self) -> Vec<(String, Dstate)> {
+    pub fn to_dirents(&self) -> Vec<(String, Dstate)> {
         let mut entries = Vec::new();
         self.for_each(|path, dirent| entries.push((path.to_owned(), dirent.clone())));
         entries
@@ -283,9 +283,7 @@ impl DirTree {
                 buf.extend_from_slice(bp);
                 buf.push(0); // NUL terminator
             }
-            Dstate::Passthrough => {
-                buf.extend_from_slice(&0u64.to_le_bytes());
-            }
+            Dstate::Passthrough => unreachable!("Passthrough filtered before serialize_dirent"),
         }
     }
 
@@ -464,14 +462,6 @@ impl DirTree {
                 }
             }
         } else {
-            // If dest is a Dir and we're moving a Dir, merge children
-            if let DirNode::Dir(_, src_subtree) = &mut dst_node
-                && let Some(DirNode::Dir(_, existing_subtree)) = parent.nodes.remove(name.as_str())
-                {
-                    for (k, v) in existing_subtree.nodes {
-                        src_subtree.nodes.entry(k).or_insert(v);
-                    }
-                }
             parent.nodes.insert(name, dst_node);
         }
     }
@@ -607,7 +597,7 @@ mod tests {
     #[test]
     fn add_single_file() {
         let tree = build(&[add("/a", 1)]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
             matches!(&dirents[0], (p, Dstate::StagedInode { ino: 1, in_base: false, .. }) if p == "/a")
@@ -617,7 +607,7 @@ mod tests {
     #[test]
     fn modify_single_file() {
         let tree = build(&[modify("/a", 1)]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
             matches!(&dirents[0], (p, Dstate::StagedInode { ino: 1, in_base: true, .. }) if p == "/a")
@@ -627,7 +617,7 @@ mod tests {
     #[test]
     fn add_nested_file() {
         let tree = build(&[add("/dir/sub/file", 1)]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
             matches!(&dirents[0], (p, Dstate::StagedInode { ino: 1, in_base: false, .. }) if p == "/dir/sub/file")
@@ -639,14 +629,14 @@ mod tests {
     #[test]
     fn add_then_delete_cancels() {
         let tree = build(&[add("/a", 1), delete("/a")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert!(dirents.is_empty(), "A + D should cancel: {:?}", dirents);
     }
 
     #[test]
     fn modify_then_delete_tombstone() {
         let tree = build(&[modify("/a", 1), delete("/a")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(matches!(&dirents[0], (p, Dstate::Tombstone { .. }) if p == "/a"));
     }
@@ -654,7 +644,7 @@ mod tests {
     #[test]
     fn delete_base_only_tombstone() {
         let tree = build(&[delete("/a")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(matches!(&dirents[0], (p, Dstate::Tombstone { .. }) if p == "/a"));
     }
@@ -664,7 +654,7 @@ mod tests {
     #[test]
     fn rename_added_file() {
         let tree = build(&[add("/a", 1), rename("/b", "/a")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         // A + R: source was in_base=false → no tombstone at /a.
         // Destination gets the Inode with in_base=false (from R tag).
         assert_eq!(dirents.len(), 1);
@@ -676,7 +666,7 @@ mod tests {
     #[test]
     fn rename_base_only_file() {
         let tree = build(&[rename("/b", "/a")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         // Base-only: Link at /b, Tombstone at /a
         assert_eq!(dirents.len(), 2);
         let mut paths: Vec<_> = dirents.iter().map(|(p, _)| p.as_str()).collect();
@@ -698,7 +688,7 @@ mod tests {
     #[test]
     fn replace_base_only() {
         let tree = build(&[replace("/b", "/a")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         // P: dest in_base=true, source had base content → Tombstone at /a, Link at /b
         assert_eq!(dirents.len(), 2);
         assert!(
@@ -717,7 +707,7 @@ mod tests {
     #[test]
     fn rename_chain() {
         let tree = build(&[rename("/b", "/a"), rename("/c", "/b")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         // a→b→c: Tombstone at /a, nothing at /b (not in base), Link at /c
         assert_eq!(dirents.len(), 2);
         assert!(
@@ -736,7 +726,7 @@ mod tests {
     #[test]
     fn rename_then_delete_base_file() {
         let tree = build(&[rename("/b", "/a"), delete("/b")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         // R(/b, /a): Link at /b (in_base=false), Tombstone at /a
         // D(/b): in_base=false → cancel
         // Result: just Tombstone at /a
@@ -754,7 +744,7 @@ mod tests {
             add("/dir/f2", 3),
             rename_dir("/newdir", "/dir"),
         ]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         let paths: Vec<_> = dirents.iter().map(|(p, _)| p.as_str()).collect();
         assert!(paths.contains(&"/newdir"), "missing /newdir: {:?}", paths);
         assert!(
@@ -776,7 +766,7 @@ mod tests {
     #[test]
     fn multiple_modifies_last_wins() {
         let tree = build(&[modify("/a", 1), modify("/a", 2), modify("/a", 3)]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
             matches!(&dirents[0], (p, Dstate::StagedInode { ino: 3, in_base: true, .. }) if p == "/a")
@@ -790,7 +780,7 @@ mod tests {
         // R(/b, /a) then M(/b, ino=5): base file renamed, then modified at dest.
         // Tree: Link at /b replaced by Inode(ino=5, in_base=true), Tombstone at /a.
         let tree = build(&[rename("/b", "/a"), modify("/b", 5)]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 2);
         assert!(
             dirents
@@ -812,7 +802,7 @@ mod tests {
     fn replace_then_modify_at_dest() {
         // P(/b, /a) then M(/b, ino=5): overwrites base /b with renamed /a, then modified.
         let tree = build(&[replace("/b", "/a"), modify("/b", 5)]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 2);
         assert!(
             dirents
@@ -837,7 +827,7 @@ mod tests {
         // Delete /b (creates tombstone), then rename /a → /b.
         // The rename replaces the tombstone with a Link.
         let tree = build(&[delete("/b"), rename("/b", "/a")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 2);
         assert!(
             dirents
@@ -856,7 +846,7 @@ mod tests {
     fn add_then_rename_preserves_inode() {
         // A(/a, ino=1) then R(/b, /a): staged file moved, inode preserved.
         let tree = build(&[add("/a", 1), rename("/b", "/a")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         // Source was in_base=false → no tombstone at /a.
         // Inode moved to /b with in_base=false.
         assert_eq!(dirents.len(), 1);
@@ -871,7 +861,7 @@ mod tests {
     fn add_delete_add_same_path() {
         // A + D cancels, then A creates fresh.
         let tree = build(&[add("/a", 1), delete("/a"), add("/a", 2)]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
             matches!(&dirents[0], (p, Dstate::StagedInode { ino: 2, in_base: false, .. }) if p == "/a")
@@ -882,7 +872,7 @@ mod tests {
     fn modify_delete_recreate() {
         // M + D → tombstone, then A replaces tombstone with new inode.
         let tree = build(&[modify("/a", 1), delete("/a"), add("/a", 2)]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 1);
         // A over Tombstone: the new inode replaces the tombstone.
         assert!(
@@ -895,7 +885,7 @@ mod tests {
     #[test]
     fn delete_dir_base_only_tombstone() {
         let tree = build(&[delete_dir("/d")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(matches!(&dirents[0], (p, Dstate::Tombstone { .. }) if p == "/d"));
     }
@@ -903,7 +893,7 @@ mod tests {
     #[test]
     fn add_dir_then_delete_dir_cancels() {
         let tree = build(&[add_dir("/d", 1), delete_dir("/d")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert!(dirents.is_empty(), "A + D should cancel: {:?}", dirents);
     }
 
@@ -916,7 +906,7 @@ mod tests {
             add("/d/f2", 3),
             delete_dir("/d"),
         ]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert!(
             dirents.is_empty(),
             "staged dir + children should cancel: {:?}",
@@ -929,7 +919,7 @@ mod tests {
         // Delete a base directory, then add a file under it.
         // The tombstone should be a Dir node so walk_to_parent succeeds.
         let tree = build(&[delete_dir("/d"), add("/d/f1", 1)]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert!(
             dirents
                 .iter()
@@ -946,60 +936,6 @@ mod tests {
             )));
     }
 
-    // ── Directory merge during rename ─────────────────────────────────
-
-    #[test]
-    fn dir_rename_merges_with_existing_children() {
-        // /dest has an intermediate child from a prior add.
-        // /src is renamed to /dest — src's subtree merges, existing children preserved.
-        let tree = build(&[
-            add("/dest/existing", 1),
-            add_dir("/src", 2),
-            add("/src/new", 3),
-            rename_dir("/dest", "/src"),
-        ]);
-        let dirents = tree.into_dirents();
-        let paths: Vec<_> = dirents.iter().map(|(p, _)| p.as_str()).collect();
-        assert!(paths.contains(&"/dest"), "missing /dest: {:?}", paths);
-        assert!(
-            paths.contains(&"/dest/existing"),
-            "lost existing child: {:?}",
-            paths
-        );
-        assert!(
-            paths.contains(&"/dest/new"),
-            "lost moved child: {:?}",
-            paths
-        );
-        assert!(!paths.contains(&"/src"), "stale /src: {:?}", paths);
-    }
-
-    #[test]
-    fn dir_rename_merge_src_wins_on_conflict() {
-        // Both /src and /dest have a child "f". Source child should win.
-        let tree = build(&[
-            add("/dest/f", 1),
-            add_dir("/src", 2),
-            add("/src/f", 3),
-            rename_dir("/dest", "/src"),
-        ]);
-        let dirents = tree.into_dirents();
-        // /dest/f should be from src (ino=3), not the old dest (ino=1)
-        assert!(
-            dirents.iter().any(|(p, c)| p == "/dest/f"
-                && matches!(
-                    c,
-                    Dstate::StagedInode {
-                        ino: 3,
-                        in_base: false,
-                        ..
-                    }
-                )),
-            "src child should win on conflict: {:?}",
-            dirents
-        );
-    }
-
     // ── Delete intermediate directory ─────────────────────────────────
 
     #[test]
@@ -1007,7 +943,7 @@ mod tests {
         // Add /a/b/c/file — creates intermediate /a, /a/b, /a/b/c.
         // Delete /a/b → should create Tombstone for the intermediate dir.
         let tree = build(&[add("/a/b/c/file", 1), delete_dir("/a/b")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         // /a/b was intermediate (Dir(None,..)) → treated as base → Tombstone.
         assert!(
             dirents
@@ -1030,7 +966,7 @@ mod tests {
                 ino: 2,
             },
         ]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
             matches!(&dirents[0], (p, Dstate::StagedInode { ino: 2, in_base: true, .. }) if p == "/x")
@@ -1040,7 +976,7 @@ mod tests {
     #[test]
     fn restore_records_ignored_in_stream() {
         let tree = build(&[add("/a", 1), add("/b", 2)]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 2);
         assert!(dirents.iter().any(|(p, c)| p == "/a"
             && matches!(
@@ -1067,7 +1003,7 @@ mod tests {
     #[test]
     fn self_rename_is_noop() {
         let tree = build(&[rename("/a", "/a")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert!(
             dirents.is_empty(),
             "R(a,a) should be a no-op: {:?}",
@@ -1078,7 +1014,7 @@ mod tests {
     #[test]
     fn self_replace_is_noop() {
         let tree = build(&[replace("/a", "/a")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert!(
             dirents.is_empty(),
             "P(a,a) should be a no-op: {:?}",
@@ -1091,13 +1027,25 @@ mod tests {
         // a→tmp→a should produce Passthrough at /a (no net staged change).
         let tree = build(&[rename("/tmp", "/a"), rename("/a", "/tmp")]);
         assert_eq!(tree.len(), 0, "no staged changes");
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 1, "one Passthrough entry: {:?}", dirents);
         assert!(
             matches!(&dirents[0], (p, Dstate::Passthrough) if p == "/a"),
             "expected Passthrough at /a: {:?}",
             dirents
         );
+    }
+
+    #[test]
+    fn roundtrip_rename_dir_produces_passthrough() {
+        // Dir roundtrip (a→tmp→a) should produce Dir(Passthrough, _).
+        let tree = build(&[rename_dir("/tmp", "/a"), rename_dir("/a", "/tmp")]);
+        assert_eq!(tree.len(), 0, "no staged changes");
+        // to_dirents skips Passthrough dirs, so inspect the tree directly.
+        match tree.nodes.get("a").unwrap() {
+            DirNode::Dir(Dstate::Passthrough, _) => {}
+            other => panic!("expected Dir(Passthrough, _), got {:?}", other),
+        }
     }
 
     #[test]
@@ -1108,7 +1056,7 @@ mod tests {
             rename("/a", "/b"),
             rename("/b", "/tmp"),
         ]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert!(
             !dirents.is_empty(),
             "swap should produce dirents: {:?}",
@@ -1134,7 +1082,7 @@ mod tests {
     #[test]
     fn empty_tree_dirents() {
         let tree = build(&[]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert!(dirents.is_empty());
     }
 
@@ -1143,7 +1091,7 @@ mod tests {
     #[test]
     fn add_symlink_dtype() {
         let tree = build(&[add_symlink("/link", 1)]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
             matches!(&dirents[0], (p, Dstate::StagedInode { ino: 1, dtype: libc::DT_LNK, in_base: false }) if p == "/link")
@@ -1153,7 +1101,7 @@ mod tests {
     #[test]
     fn rename_symlink_dtype() {
         let tree = build(&[rename_symlink("/new", "/old")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 2);
         assert!(
             dirents
@@ -1179,7 +1127,7 @@ mod tests {
                 dtype: Some(libc::DT_LNK),
             },
         ]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert!(
             dirents.is_empty(),
             "A + D should cancel for symlinks: {:?}",
@@ -1192,7 +1140,7 @@ mod tests {
     #[test]
     fn replace_dir_base_only() {
         let tree = build(&[replace_dir("/dst", "/src")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 2);
         assert!(
             dirents
@@ -1209,7 +1157,7 @@ mod tests {
             add("/src/child", 2),
             replace_dir("/dst", "/src"),
         ]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         let paths: Vec<_> = dirents.iter().map(|(p, _)| p.as_str()).collect();
         assert!(paths.contains(&"/dst"), "missing /dst: {:?}", paths);
         assert!(
@@ -1236,7 +1184,7 @@ mod tests {
     #[test]
     fn rename_base_only_dir() {
         let tree = build(&[rename_dir("/new", "/old")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert_eq!(dirents.len(), 2);
         assert!(
             dirents
@@ -1252,7 +1200,7 @@ mod tests {
     fn replace_chain() {
         // P(/b, /a) then P(/c, /b): both a and b are base files.
         let tree = build(&[replace("/b", "/a"), replace("/c", "/b")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         // /a had base content → Tombstone at /a.
         // /b had Link (in_base=true from Replace) → moved to /c, tombstone at /b.
         // /c gets Link(src=/a, in_base=true).
@@ -1279,7 +1227,7 @@ mod tests {
     fn mixed_rename_replace_chain() {
         // R(/b, /a) then P(/c, /b): a is base, b is base (destination of P).
         let tree = build(&[rename("/b", "/a"), replace("/c", "/b")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         // R(/b, /a): Link at /b (in_base=false), Tombstone at /a.
         // P(/c, /b): move /b to /c, in_base=true. /b was in_base=false → no tombstone at /b.
         assert_eq!(dirents.len(), 2, "expected 2 entries: {:?}", dirents);
@@ -1303,7 +1251,7 @@ mod tests {
             rename_dir("/new", "/old"),
             add("/new/child.txt", 2),
         ]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         let paths: Vec<_> = dirents.iter().map(|(p, _)| p.as_str()).collect();
         assert!(paths.contains(&"/new"), "missing /new: {:?}", paths);
         assert!(
@@ -1334,7 +1282,7 @@ mod tests {
             rename_dir("/new", "/old"),
             delete("/new/f1"),
         ]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         // /old/f1 was in_base=false → delete cancels. /new has the dir, no /new/f1.
         let paths: Vec<_> = dirents.iter().map(|(p, _)| p.as_str()).collect();
         assert!(paths.contains(&"/new"), "missing /new: {:?}", paths);
@@ -1352,7 +1300,7 @@ mod tests {
         // A(/a/b/c/file) creates intermediates /a, /a/b, /a/b/c.
         // R(/other, /a/b) renames intermediate /a/b (which is a Dir(Passthrough, ...) node).
         let tree = build(&[add("/a/b/c/file", 1), rename_dir("/other", "/a/b")]);
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         let paths: Vec<_> = dirents.iter().map(|(p, _)| p.as_str()).collect();
         // /a/b was an intermediate dir → source_had_base=true → Tombstone at /a/b.
         assert!(
@@ -1407,7 +1355,7 @@ mod tests {
                 dtype: Some(libc::DT_REG),
             },
         ]);
-        let dirents = cs.into_dirents();
+        let dirents = cs.to_dirents();
         // Both /a and /b should be tombstoned.
         assert!(
             dirents.iter().any(|(p, d)| p == "/a" && matches!(d, Dstate::Tombstone { .. })),
@@ -1545,8 +1493,8 @@ mod tests {
         assert_eq!(buf[cursor], 1); // has_dirent
         cursor += 1;
         let packed = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
-        // Dir inode: dtype=Dir(1) at bits [62:61], in_base=false, ino=10
-        assert_eq!((packed >> 61) & 3, 1); // dtype=Dir
+        // Dir inode: dtype=Dir at bits [62:60], in_base=false, ino=10
+        assert_eq!((packed >> 60) & 7, dtype_pack(libc::DT_DIR)); // dtype=Dir
         assert_eq!((packed >> 16) & 0xFFFFFFFF, 10); // ino
         cursor += 8;
 
@@ -1813,16 +1761,27 @@ mod tests {
     }
 
     #[test]
+    fn serialize_after_roundtrip_rename_omits_passthrough() {
+        // Roundtrip rename (a→tmp→a) should produce Passthrough file, which
+        // serialize() must omit entirely.
+        let tree = build(&[rename("/tmp", "/a"), rename("/a", "/tmp")]);
+        assert_eq!(tree.len(), 0);
+        let buf = tree.serialize();
+        // Root child_count = 0 — the Passthrough file is filtered out.
+        assert_eq!(buf, vec![0x00, 0x00]);
+    }
+
+    #[test]
     fn roundtrip_rename_dir_preserves_subtree() {
         // Rename dir with children back to original — children should survive.
-        // Passthrough dir nodes are skipped by into_dirents, so /a won't appear.
+        // Passthrough dir nodes are skipped by to_dirents, so /a won't appear.
         let tree = build(&[
             add("/a/child", 1),
             rename_dir("/tmp", "/a"),
             rename_dir("/a", "/tmp"),
         ]);
         assert_eq!(tree.len(), 1, "only the child is a staged change");
-        let dirents = tree.into_dirents();
+        let dirents = tree.to_dirents();
         assert!(
             dirents.iter().any(|(p, c)| p == "/a/child"
                 && matches!(c, Dstate::StagedInode { ino: 1, .. })),

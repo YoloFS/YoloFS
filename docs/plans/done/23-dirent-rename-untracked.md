@@ -30,7 +30,7 @@ Intermediate directories (previously `Dir(None, ...)`) become
 
 ### 4. Visibility rules
 
-- `for_each()` / `into_dirents()`: emit `Passthrough` for `File` nodes, skip for
+- `for_each()` / `to_dirents()`: emit `Passthrough` for `File` nodes, skip for
   `Dir` nodes (intermediate dirs stay invisible, matching current behavior).
 - `len()`: exclude `Passthrough` entries.
 - `diff.rs` (`print_change`): skip `Passthrough` — it represents no user-visible
@@ -40,8 +40,8 @@ Intermediate directories (previously `Dir(None, ...)`) become
 
 Updated to match the kernel's new packed format:
 
-- `Tombstone { dtype }`: serialize as `(dtype << 61) | (1 << 60)` — dtype in
-  bits [62:61], in_base=1 at bit 60, ino=0.
+- `Tombstone { dtype }`: serialize as `(dtype_pack(dtype) << 60) | (1 << 59)` —
+  dtype in bits [62:60], in_base=1 at bit 59, ino=0.
 - `Passthrough`: serialize as `packed = 0` (all zeros).
 - `Passthrough` in `Dir` node: serialize the node with `has_dirent=0` but still
   serialize its subtree (pass-through to children).
@@ -52,7 +52,7 @@ Updated to match the kernel's new packed format:
 
 - Roundtrip rename collapse (a→tmp→a): instead of removing the node, insert
   `File(Dstate::Passthrough)` (or `Dir(Dstate::Passthrough, ...)` for dirs).
-  This makes the "no net change" state explicit and visible in `into_dirents()`.
+  This makes the "no net change" state explicit and visible in `to_dirents()`.
 - `Tombstone.dtype()` now returns the real dtype instead of always `DType::File`.
 
 ## Files to modify

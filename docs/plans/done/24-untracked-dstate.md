@@ -28,7 +28,7 @@ Tombstone layout:
 Key properties:
 - Zero-initialized dentries are now "passthrough" (correct default semantics).
 - Tombstones carry d_type and always have in_base=true by construction.
-- `agfs_dstate_in_base()` simplifies to `(val >> 60) & 1` for all states
+- `agfs_dstate_in_base()` simplifies to `(val >> 59) & 1` for all states
   (passthrough gives 0, tombstone gives 1, inode/link read the bit).
 
 ## Changes
@@ -38,7 +38,7 @@ Key properties:
 2. Add `agfs_dstate_is_passthrough()` predicate.
 3. Change `agfs_dstate_is_tombstone()`: `(s64)val > 0 && ino-bits == 0`.
 4. Change `agfs_dstate_is_staged_inode()`: `(s64)val > 0 && ino-bits != 0`.
-5. Simplify `agfs_dstate_in_base()`: just `(val >> 60) & 1`.
+5. Simplify `agfs_dstate_in_base()`: just `(val >> 59) & 1`.
 6. Add `agfs_dstate_tombstone(unsigned char d_type)` encoder.
 7. Update `agfs_add_tombstone` declaration to take `d_type`.
 

@@ -106,7 +106,7 @@ the inode.
 | Field | Purpose |
 |-------|---------|
 | `lower_path` | Resolved path to the backing file — either `inodes/<ino>` or the base file. Updated in-place by COW. |
-| `packed` | Single `u64` (`struct agfs_dstate`) encoding the overlay state. Four mutually exclusive variants: **passthrough** (`packed == 0`), **tombstone** (positive, `ino == 0` — deleted, carries `d_type`, always `in_base`), **link** (bit 63 set — kernel pointer with tag), **inode** (positive, `ino != 0` — staged in `inodes/<ino>`). See [Packed Encoding](#packed-encoding). |
+| `dstate` | Single `u64` (`struct agfs_dstate`) encoding the overlay state. Four mutually exclusive variants: **passthrough** (`val == 0`), **tombstone** (positive, `ino == 0` — deleted, carries `d_type`, always `in_base`), **link** (bit 63 set — kernel pointer with tag), **inode** (positive, `ino != 0` — staged in `inodes/<ino>`). See [Packed Encoding](#packed-encoding). |
 | `de_node` | `list_head` — node in parent directory's `de_list`. Initialized to empty by `d_init`. A dentry is staged iff `!list_empty(&de_node)`. |
 | `dentry` | Back-pointer to the owning VFS dentry. |
 
@@ -129,7 +129,7 @@ Four mutually exclusive states:
 - `packed == 0` → **passthrough** (default). Dentry follows the base filesystem.
   Zero-initialized by `d_init`; also set by `agfs_unstage_dentry`.
 - `(s64)packed > 0 && ino == 0` → **tombstone** (deleted). Has `d_type`
-  (bits [62:61]) and `in_base` always set (bit 60 = 1).
+  (bits [62:60]) and `in_base` always set (bit 59 = 1).
   A delete of an `in_base=false` entry removes the dentry from `de_list`
   and calls `dput()` (cancelled-entry removal) rather than creating a
   tombstone.
@@ -221,7 +221,7 @@ before resolving, because writers are free to replace the entry.
 
 ```c
 agfs_read_dirent(dentry):
-    return READ_ONCE(AGFS_D(dentry)->packed)
+    return READ_ONCE(AGFS_D(dentry)->dstate)
 ```
 
 Since `struct agfs_dstate` is a `u64` (naturally atomic on x86-64),
@@ -692,7 +692,7 @@ for that name (re-create after delete, dentry is on `de_list`), the
 tombstone's `in_base` determines the journal tag: M if true, A if false.
 (Tombstones always have `in_base=true` after cancelled-entry removal,
 so re-creates after a base file delete always emit M.  Tombstones also
-carry `d_type`, encoded in bits [62:61].)
+carry `d_type`, encoded in bits [62:60].)
 
 **Edge cases:**
 

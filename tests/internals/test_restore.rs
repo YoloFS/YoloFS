@@ -48,7 +48,7 @@ fn restore_journal_has_no_post_checkpoint_records() {
     );
 
     // reachable + resolve should match the checkpoint state (only a.txt).
-    let ch = j.into_tree().into_dirents();
+    let ch = j.into_tree().to_dirents();
     let debug = format!("{ch:?}");
     assert!(
         debug.contains("a.txt"),

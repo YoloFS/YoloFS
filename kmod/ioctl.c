@@ -517,12 +517,6 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 				goto out_unwind;
 			} else if ((s64)packed > 0) {
 				u32 ino = (packed >> 16) & 0xFFFFFFFFULL;
-				u64 dt = (packed >> 60) & 7;
-
-				if (dt > 7) {
-					err = -EINVAL;
-					goto out_unwind;
-				}
 				if (ino == 0) {
 					/* Tombstone — use as-is */
 					pde.val = packed;
@@ -533,15 +527,10 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 				}
 			} else {
 				/* Base_path — read trailing src path */
-				u64 dt = (packed >> 60) & 7;
 				u8 d_type, ib;
 				char *base_copy;
 
-				if (dt > 7) {
-					err = -EINVAL;
-					goto out_unwind;
-				}
-				d_type = agfs_dtype_unpack(dt);
+				d_type = agfs_dtype_unpack((packed >> 60) & 7);
 				ib = (packed >> 59) & 1;
 
 				err = read_le16(&cur, &base_len);

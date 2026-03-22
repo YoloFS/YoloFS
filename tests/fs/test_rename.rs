@@ -567,7 +567,7 @@ fn complex_multi_operation_commit() {
 
     let agfs_dir = s.root.join(".agfs");
     let journal_obj = journal::Journal::read(&agfs_dir).expect("read journal");
-    let dirents = journal_obj.into_tree().into_dirents();
+    let dirents = journal_obj.into_tree().to_dirents();
 
     let has_modified_hello = dirents.iter().any(|(path, c): &(String, Dstate)| {
         matches!(c, Dstate::StagedInode { in_base: true, .. }) && path.ends_with("/hello.txt")

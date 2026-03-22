@@ -14,7 +14,7 @@ This is wasteful:
 * Full paths are sent for every entry — shared directory prefixes are duplicated.
 * The kernel re-resolves every path from scratch, doing repeated VFS lookups
   through the same directory chain.
-* The CLI performs two unnecessary intermediate allocations (`into_dirents` +
+* The CLI performs two unnecessary intermediate allocations (`to_dirents` +
   `dirents_to_entries`) between the natural tree representation and the wire
   format.
 * `split_parent_child` + `vfs_path_lookup` in the kernel is glue code that only
@@ -50,8 +50,8 @@ Mapping from `DirNode`:
 | Rust type                            | has_dirent | child_count |
 |--------------------------------------|------------|-------------|
 | `DirNode::File(dirent)`              | 1          | 0           |
-| `DirNode::Dir(None, subtree)`        | 0          | N           |
-| `DirNode::Dir(Some(dirent), subtree)`| 1          | N           |
+| `DirNode::Dir(Passthrough, subtree)` | 0          | N           |
+| `DirNode::Dir(dirent, subtree)`      | 1          | N           |
 
 #### PackedDirent encoding
 
@@ -60,20 +60,21 @@ pointer bits zeroed:
 
 | State     | packed (le64)                                                     | Trailing data                     |
 |-----------|-------------------------------------------------------------------|-----------------------------------|
-| Tombstone | `0x0000000000000000`                                              | —                                 |
-| Inode     | `[63]=0  [62:61]=dtype  [60]=in_base  [59:16]=ino  [15:0]=0`     | —                                 |
-| Link      | `[63]=1  [62:61]=dtype  [60]=in_base  [59:0]=0`                  | `base_len:le16  base_path:bytes  NUL` |
+| Tombstone | `(s64)val > 0, ino == 0`: `[62:60]=dtype [59]=1 [58:0]=0`        | —                                 |
+| Inode     | `[63]=0  [62:60]=dtype  [59]=in_base  [58:16]=0  [47:16]=ino  [15:0]=0` | —                                 |
+| Link      | `[63]=1  [62:60]=dtype  [59]=in_base  [58:0]=0`                  | `base_len:le16  base_path:bytes  NUL` |
 
 The kernel distinguishes the three states with the same checks as `struct agfs_dstate`:
 
-* `packed == 0` → tombstone.
-* `(s64)packed > 0` → inode — stamp gen: `packed = (wire & ~0xFFFF) | new_gen`.
+* `packed == 0` → passthrough (should not appear in restore stream).
+* `(s64)packed > 0 && ino == 0` → tombstone — use as-is.
+* `(s64)packed > 0 && ino != 0` → inode — stamp gen: `packed = (wire & ~0xFFFF) | new_gen`.
 * `(s64)packed < 0` → link — read trailing `base_len` + `base_path` + NUL,
   call `agfs_dstate_base_path(buf, dt, ib)`.  The NUL terminator is required because
   `agfs_add_dirent` → `kstrdup(agfs_dstate_src(packed))` needs a C string.
 
 Gen bits `[15:0]` are zeroed on the wire because the kernel assigns `new_gen`.
-Pointer bits `[59:0]` are zeroed for links because the base path travels inline
+Pointer bits `[58:0]` are zeroed for links because the base path travels inline
 instead of as a kernel pointer.
 
 This eliminates `AGFS_INO_REDIRECT` and `AGFS_INO_DELETED` from the wire
@@ -155,9 +156,9 @@ Max depth capped at `AGFS_RESTORE_MAX_DEPTH` (64).
 * Cursor doesn't advance past `buf + tree_len` (return `-EINVAL`).
 * `name_len > 0` and `name_len <= NAME_MAX` (255).
 * `has_dirent` is 0 or 1.
-* `packed` inode: `ino != 0`, `ino <= 0xFFFFFFFFFFF` (44-bit range), and
-  dtype bits `[62:61] <= 2` (reject 0b11).
-* `packed` link: dtype bits `[62:61] <= 2`, `base_len > 0`,
+* `packed` inode: `ino != 0`, and
+  dtype bits `[62:60]` are a valid 3-bit packed d_type.
+* `packed` link: dtype bits `[62:60]` are valid, `base_len > 0`,
   `base_len < AGFS_PATH_MAX`, and trailing byte is `'\0'`.
 * Node must have `has_dirent || child_count > 0` (reject empty nodes).
 * `depth < AGFS_RESTORE_MAX_DEPTH` before pushing.
@@ -247,25 +248,24 @@ Abort path (`target_gen=0`) passes an empty buffer (`tree_len=0, tree_ptr=0`).
 
 ## Notes
 
-* `into_dirents()` stays — it's used by ~40 tree.rs unit tests and 3
+* `to_dirents()` stays — it's used by ~40 tree.rs unit tests and 3
   integration tests (`tests/internals/helpers.rs`, `tests/fs/test_rename.rs`,
   `tests/internals/test_restore.rs`).  Removing it would be a large scope
   addition for no functional benefit.  After this change, `restore.rs` no
-  longer calls `into_dirents` — its only remaining callers are tree.rs tests
+  longer calls `to_dirents` — its only remaining callers are tree.rs tests
   and the three integration tests above.
 * `agfs_add_dirent` already `kstrdup`s link base paths from the packed value,
   so passing pointers into the `vmalloc`'d tree buffer is safe — the buffer can
   be `vfree`'d after injection.
-* `DirNode::Dir(None, subtree)` (pass-through directory, exists only because
-  children were modified) serializes with `has_dirent=0` — the kernel looks up
-  the existing base directory without injecting a dirent.
-* `DirNode::Dir(None, empty_subtree)` is skipped by the serializer entirely —
-  it carries no information (no own dirent, no children).
-* `DirNode::Dir(Some(_), empty_subtree)` (created directory with no children)
+* `DirNode::Dir(Passthrough, subtree)` (pass-through directory, exists only
+  because children were modified) serializes with `has_dirent=0` — the kernel
+  looks up the existing base directory without injecting a dirent.
+* `DirNode::Dir(Passthrough, empty_subtree)` is skipped by the serializer
+  entirely — it carries no information (no own dirent, no children).
+* `DirNode::Dir(dirent, empty_subtree)` (created directory with no children)
   serializes with `has_dirent=1, child_count=0` — the dirent is injected but
   no stack push is needed.
-* `Dirent::Tombstone` serializes as `packed = 0`.  This matches the kernel's
-  existing behavior — `agfs_add_dirent` treats a zero packed value as a
-  tombstone.
+* `Dstate::Tombstone` serializes with `d_type` and `in_base=1` encoded in the
+  packed value.  `packed == 0` is now passthrough (rejected by the kernel).
 * Reset mode (`target_gen=0`) skips injection entirely, so `tree_len=0,
   tree_ptr=0` works.

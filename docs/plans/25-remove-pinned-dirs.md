@@ -253,17 +253,17 @@ entries with no ambiguity.
   The child is already pinned with `dget()` (or equivalent) by the
   restore code and is in `d_children` after `d_add()`.
 - Remove `agfs_pin_dir_if_first(dii, sbi)` call (line 639).
-- Update `agfs_release_pinned_dirs()` call (line 730) to pass `sb`
+- Update `agfs_release_pinned_dirs()` call (line 713) to pass `sb`
   instead of `sbi`.
 
 ### 8. super.c — unmount
 
-- Update `agfs_put_super()` call to `agfs_release_pinned_dirs()` (line 97)
+- Update `agfs_kill_super()` call to `agfs_release_pinned_dirs()` (line 349)
   to pass `sb` instead of `sbi`.
 
 ### 9. Docs and tests
 
-- Update `docs/internals.md` if it mentions `pinned_dirs`, `de_list`, or
+- Update `docs/staging.md` if it mentions `pinned_dirs`, `de_list`, or
   `de_node`.
 - Run `make vm-test` to verify correctness.
 

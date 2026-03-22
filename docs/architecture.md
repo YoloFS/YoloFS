@@ -229,7 +229,7 @@ agfs/
 │   │   ├── timeline.rs        # `agfs timeline` command (checkpoint/restore DAG)
 │   │   └── watch.rs           # permission prompt daemon (handles TTY ownership)
 │   ├── journal/               # journal parsing, timeline, and resolution
-│   │   ├── types.rs           # Action, Marker, Record, DType, Segment, INO_REDIRECT
+│   │   ├── types.rs           # Action, Marker, Record, Segment, dtype_valid, dtype_pack
 │   │   ├── parse.rs           # parse()  (pub(super))
 │   │   ├── markers.rs         # Markers (lookup + range + alive_segments + checkpoint_at)
 │   │   ├── journal.rs         # Journal (struct + new + read + live_segments_*)

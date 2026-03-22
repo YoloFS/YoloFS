@@ -50,7 +50,7 @@ mod tests {
             from: 0,
             records: actions.to_vec(),
         }))
-        .into_dirents()
+        .to_dirents()
     }
 
     /// Helper: find a dirent by path suffix.
