@@ -1,6 +1,6 @@
 use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::Action;
+use agfs::journal::{Action, Dstate};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ fn rename_produces_rename_record() {
     let acts = actions(&j);
     assert!(
         acts.iter().any(
-            |a| matches!(a, Action::Rename { src, dst, dtype: Some(agfs::journal::DType::File), .. }
+            |a| matches!(a, Action::Rename { src, dst, dtype: Some(libc::DT_REG), .. }
             if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))
         ),
         "journal should have a Redirect(dtype=File) record for hello.txt → moved.txt: {acts:?}"
@@ -137,9 +137,10 @@ fn rename_back_and_forth_no_changes() {
     fs::rename(s.mnt_path("temp.txt"), s.mnt_path("hello.txt")).expect("b→a");
 
     let ch = dirents(&s);
+    let staged: Vec<_> = ch.iter().filter(|(_, d)| !matches!(d, Dstate::Untracked)).collect();
     assert!(
-        ch.is_empty(),
-        "rename back and forth should produce no dirents, got: {ch:?}"
+        staged.is_empty(),
+        "rename back and forth should produce no staged changes, got: {staged:?}"
     );
 }
 

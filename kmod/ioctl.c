@@ -512,30 +512,37 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 				goto out_unwind;
 
 			if (packed == 0) {
-				/* Tombstone — pde stays {0} */
+				/* Untracked — should not appear in restore stream */
+				err = -EINVAL;
+				goto out_unwind;
 			} else if ((s64)packed > 0) {
-				/* Inode — validate and stamp gen */
 				u32 ino = (packed >> 16) & 0xFFFFFFFFULL;
-				u64 dt = (packed >> 61) & 3;
+				u64 dt = (packed >> 60) & 7;
 
-				if (ino == 0 || dt == 3) {
+				if (dt > 7) {
 					err = -EINVAL;
 					goto out_unwind;
 				}
-				packed = (packed & ~0xFFFFULL) | gen;
-				pde.val = packed;
+				if (ino == 0) {
+					/* Tombstone — use as-is */
+					pde.val = packed;
+				} else {
+					/* Staged inode — validate and stamp gen */
+					packed = (packed & ~0xFFFFULL) | gen;
+					pde.val = packed;
+				}
 			} else {
-				/* Link — read trailing base_path */
-				u64 dt = (packed >> 61) & 3;
+				/* Base_path — read trailing src path */
+				u64 dt = (packed >> 60) & 7;
 				u8 d_type, ib;
 				char *base_copy;
 
-				if (dt == 3) {
+				if (dt > 7) {
 					err = -EINVAL;
 					goto out_unwind;
 				}
 				d_type = agfs_dtype_unpack(dt);
-				ib = (packed >> 60) & 1;
+				ib = (packed >> 59) & 1;
 
 				err = read_le16(&cur, &base_len);
 				if (err)
@@ -562,7 +569,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 					err = -ENOMEM;
 					goto out_unwind;
 				}
-				pde = agfs_dstate_link(base_copy, d_type, ib);
+				pde = agfs_dstate_base_path(base_copy, d_type, ib);
 			}
 
 			/* Create VFS dentry and pin it */
@@ -578,7 +585,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 				goto out_unwind;
 			}
 
-			if (agfs_dstate_is_inode(pde)) {
+			if (agfs_dstate_is_staged_inode(pde)) {
 				struct path ino_path;
 				struct inode *inode;
 
@@ -589,20 +596,20 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 					goto out_unwind;
 				}
 				agfs_set_lower_path(child, &ino_path);
-				AGFS_D(child)->packed = pde;
+				AGFS_D(child)->dstate = pde;
 				inode = agfs_iget(sb, d_inode(ino_path.dentry));
 				if (IS_ERR(inode)) {
-					/* dput(child) → d_release releases lower_path + packed */
+					/* dput(child) → d_release releases lower_path + dstate */
 					dput(child);
 					err = PTR_ERR(inode);
 					goto out_unwind;
 				}
 				d_add(child, inode);
-			} else if (agfs_dstate_is_link(pde)) {
+			} else if (agfs_dstate_is_base_path(pde)) {
 				struct path base;
 				struct inode *inode;
 
-				err = kern_path(agfs_dstate_base(pde),
+				err = kern_path(agfs_dstate_src(pde),
 						LOOKUP_FOLLOW, &base);
 				if (err) {
 					agfs_dstate_free(pde);
@@ -612,16 +619,17 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 				agfs_set_lower_path(child, &base);
 				inode = agfs_iget(sb, d_inode(base.dentry));
 				if (IS_ERR(inode)) {
-					/* dput(child) → d_release releases lower_path + packed */
-					AGFS_D(child)->packed = pde;
+					/* dput(child) → d_release releases lower_path + dstate */
+					AGFS_D(child)->dstate = pde;
 					dput(child);
 					err = PTR_ERR(inode);
 					goto out_unwind;
 				}
-				AGFS_D(child)->packed = pde;
+				AGFS_D(child)->dstate = pde;
 				d_add(child, inode);
 			} else {
-				/* Tombstone — d_init already set packed=0 */
+				/* Tombstone — set dstate from wire value */
+				AGFS_D(child)->dstate = pde;
 				d_add(child, NULL);
 			}
 

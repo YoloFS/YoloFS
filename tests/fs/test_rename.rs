@@ -563,41 +563,41 @@ fn complex_multi_operation_commit() {
 
     // ── Verify resolved dirents ──
     use agfs::journal;
-    use agfs::journal::Dirent;
+    use agfs::journal::Dstate;
 
     let agfs_dir = s.root.join(".agfs");
     let journal_obj = journal::Journal::read(&agfs_dir).expect("read journal");
     let dirents = journal_obj.into_tree().into_dirents();
 
-    let has_modified_hello = dirents.iter().any(|(path, c): &(String, Dirent)| {
-        matches!(c, Dirent::Inode { in_base: true, .. }) && path.ends_with("/hello.txt")
+    let has_modified_hello = dirents.iter().any(|(path, c): &(String, Dstate)| {
+        matches!(c, Dstate::StagedInode { in_base: true, .. }) && path.ends_with("/hello.txt")
     });
-    let has_modified_multi = dirents.iter().any(|(path, c): &(String, Dirent)| {
-        matches!(c, Dirent::Inode { in_base: true, .. }) && path.ends_with("/multi.txt")
+    let has_modified_multi = dirents.iter().any(|(path, c): &(String, Dstate)| {
+        matches!(c, Dstate::StagedInode { in_base: true, .. }) && path.ends_with("/multi.txt")
     });
     // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
     // Tree builder preserves original base path through rename chains.
-    let has_renamed_deep_to_top = dirents.iter().any(|(to, c): &(String, Dirent)| {
-        matches!(c, Dirent::Link { base_path, .. }
-            if base_path.ends_with("/subdir/deep.txt") && to.ends_with("/top.txt"))
+    let has_renamed_deep_to_top = dirents.iter().any(|(to, c): &(String, Dstate)| {
+        matches!(c, Dstate::BasePath { src, .. }
+            if src.ends_with("/subdir/deep.txt") && to.ends_with("/top.txt"))
     });
-    let has_deleted_deep = dirents.iter().any(|(path, c): &(String, Dirent)| {
-        matches!(c, Dirent::Tombstone { .. }) && path.ends_with("/deep.txt")
+    let has_deleted_deep = dirents.iter().any(|(path, c): &(String, Dstate)| {
+        matches!(c, Dstate::Tombstone { .. }) && path.ends_with("/deep.txt")
     });
-    let has_added_link = dirents.iter().any(|(path, c): &(String, Dirent)| {
-        matches!(c, Dirent::Inode { in_base: false, .. }) && path.ends_with("/link.txt")
+    let has_added_link = dirents.iter().any(|(path, c): &(String, Dstate)| {
+        matches!(c, Dstate::StagedInode { in_base: false, .. }) && path.ends_with("/link.txt")
     });
-    let has_temp = dirents.iter().any(|(path, c): &(String, Dirent)| {
+    let has_temp = dirents.iter().any(|(path, c): &(String, Dstate)| {
         if path.ends_with("/temp.txt") {
             return true;
         }
-        matches!(c, Dirent::Link { base_path, .. } if base_path.ends_with("/temp.txt"))
+        matches!(c, Dstate::BasePath { src, .. } if src.ends_with("/temp.txt"))
     });
-    let has_brand_new = dirents.iter().any(|(path, c): &(String, Dirent)| {
+    let has_brand_new = dirents.iter().any(|(path, c): &(String, Dstate)| {
         if path.ends_with("/brand_new.txt") {
             return true;
         }
-        matches!(c, Dirent::Link { base_path, .. } if base_path.ends_with("/brand_new.txt"))
+        matches!(c, Dstate::BasePath { src, .. } if src.ends_with("/brand_new.txt"))
     });
 
     assert!(

@@ -8,3 +8,6 @@ compile_commands.json
 
 # Python
 __pycache__/
+
+# Reference kernel source
+linux-*/

@@ -16,7 +16,7 @@ fn mkdir_produces_add_record() {
     let acts = actions(&j);
     assert!(
         acts.iter()
-            .any(|a| matches!(a, Action::Add { path, dtype: Some(agfs::journal::DType::Dir), .. } if path.ends_with("/newdir"))),
+            .any(|a| matches!(a, Action::Add { path, dtype: Some(libc::DT_DIR), .. } if path.ends_with("/newdir"))),
         "journal should have an Added(dtype=Dir) record for newdir: {acts:?}"
     );
 }
@@ -122,7 +122,7 @@ fn mkdir_with_file_creates_separate_inodes() {
         .iter()
         .filter_map(|(path, c)| {
             if path.ends_with("/parent") || path.ends_with("/child") {
-                if let agfs::journal::Dirent::Inode {
+                if let agfs::journal::Dstate::StagedInode {
                     ino,
                     in_base: false,
                     ..

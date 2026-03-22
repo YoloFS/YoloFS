@@ -106,7 +106,7 @@ inode:
 1. Check if dentry is staged: `!list_empty(&AGFS_D(dentry)->de_node)`.
    If so, it's a tombstone — inherit `in_base = true`.  Otherwise
    `in_base = false`.
-2. Set `AGFS_D(dentry)->packed = agfs_dstate_inode(ino, gen, d_type, in_base)`.
+2. Set `AGFS_D(dentry)->packed = agfs_dstate_staged_inode(ino, gen, d_type, in_base)`.
    Use `WRITE_ONCE()` for the store.
 3. If not already on `de_list`: `dget(dentry)` to pin, add to parent's
    `de_list`.  (Tombstone reuse: already pinned and on `de_list`, skip.)

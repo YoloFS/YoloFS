@@ -16,12 +16,10 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
-fn parse_dtype(field: &[u8]) -> Option<DType> {
-    if field.len() == 1 {
-        DType::from_char(field[0])
-    } else {
-        None
-    }
+fn parse_dtype(field: &[u8]) -> Option<u8> {
+    let s = std::str::from_utf8(field).ok()?;
+    let val = s.parse::<u8>().ok()?;
+    dtype_valid(val).then_some(val)
 }
 
 fn field_str(field: &[u8]) -> String {
@@ -118,23 +116,23 @@ mod tests {
 
     #[test]
     fn parse_multiple() {
-        let records = parse(b"A\0/a\0f\01\nD\0/b\0f\nR\0/d\0/c\0f\n").unwrap();
+        let records = parse(b"A\0/a\08\01\nD\0/b\08\nR\0/d\0/c\08\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
-            matches!(&records[0], Record::Action(Action::Add { path, ino: 1, dtype: Some(DType::File) }) if path == "/a")
+            matches!(&records[0], Record::Action(Action::Add { path, ino: 1, dtype: Some(libc::DT_REG) }) if path == "/a")
         );
         assert!(matches!(&records[1], Record::Action(Action::Delete { path, .. }) if path == "/b"));
         assert!(
-            matches!(&records[2], Record::Action(Action::Rename { dst, src, dtype: Some(DType::File) }) if dst == "/d" && src == "/c")
+            matches!(&records[2], Record::Action(Action::Rename { dst, src, dtype: Some(libc::DT_REG) }) if dst == "/d" && src == "/c")
         );
     }
 
     #[test]
     fn parse_modified_record() {
-        let records = parse(b"M\0/src/main.rs\0f\03\n").unwrap();
+        let records = parse(b"M\0/src/main.rs\08\03\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
-            matches!(&records[0], Record::Action(Action::Modify { path, ino: 3, dtype: Some(DType::File) }) if path == "/src/main.rs"),
+            matches!(&records[0], Record::Action(Action::Modify { path, ino: 3, dtype: Some(libc::DT_REG) }) if path == "/src/main.rs"),
             "M record should parse as Modify, got: {:?}",
             records[0]
         );
@@ -144,7 +142,7 @@ mod tests {
 
     #[test]
     fn parse_checkpoint_record() {
-        let records = parse(b"A\0/a\0f\01\nK\01\0build\nA\0/a\0f\02\n").unwrap();
+        let records = parse(b"A\0/a\08\01\nK\01\0build\nA\0/a\08\02\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
             matches!(&records[1], Record::Marker(Marker::Checkpoint { gen_id, name }) if *gen_id == 1 && name == "build")
@@ -168,40 +166,33 @@ mod tests {
 
     #[test]
     fn parse_entry_full_path() {
-        let records = parse(b"A\0/src/main.rs\0f\01\n").unwrap();
+        let records = parse(b"A\0/src/main.rs\08\01\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
-            matches!(&records[0], Record::Action(Action::Add { path, ino: 1, dtype: Some(DType::File) }) if path == "/src/main.rs")
+            matches!(&records[0], Record::Action(Action::Add { path, ino: 1, dtype: Some(libc::DT_REG) }) if path == "/src/main.rs")
         );
     }
 
-    // ── DType tests ────────────────────────────────────────────────────
+    // ── d_type tests ──────────────────────────────────────────────────
 
     #[test]
     fn parse_directory_and_symlink_dtypes() {
-        let records = parse(b"A\0/mydir\0d\01\nA\0/mylink\0l\02\n").unwrap();
+        let records = parse(b"A\0/mydir\04\01\nA\0/mylink\010\02\n").unwrap();
         assert_eq!(records.len(), 2);
         assert!(matches!(
             &records[0],
             Record::Action(Action::Add {
-                dtype: Some(DType::Dir),
+                dtype: Some(libc::DT_DIR),
                 ..
             })
         ));
         assert!(matches!(
             &records[1],
             Record::Action(Action::Add {
-                dtype: Some(DType::Link),
+                dtype: Some(libc::DT_LNK),
                 ..
             })
         ));
-    }
-
-    #[test]
-    fn dtype_to_libc() {
-        assert_eq!(DType::File.to_libc(), libc::DT_REG);
-        assert_eq!(DType::Dir.to_libc(), libc::DT_DIR);
-        assert_eq!(DType::Link.to_libc(), libc::DT_LNK);
     }
 
     #[test]
@@ -231,7 +222,7 @@ mod tests {
     #[test]
     fn malformed_a_record_too_few_fields_skipped() {
         // A record with only 3 fields (needs 4) — should be skipped
-        let records = parse(b"A\0/file\01\nA\0/good\0f\02\n").unwrap();
+        let records = parse(b"A\0/file\01\nA\0/good\08\02\n").unwrap();
         assert_eq!(
             records.len(),
             1,
@@ -247,7 +238,7 @@ mod tests {
     #[test]
     fn malformed_d_record_too_few_fields_skipped() {
         // D record with only 1 field (needs 3) — should be skipped
-        let records = parse(b"D\0\nA\0/good\0f\01\n").unwrap();
+        let records = parse(b"D\0\nA\0/good\08\01\n").unwrap();
         assert_eq!(
             records.len(),
             1,
@@ -263,7 +254,7 @@ mod tests {
     #[test]
     fn malformed_r_record_too_few_fields_skipped() {
         // R record with only 3 fields (needs 4) — should be skipped
-        let records = parse(b"R\0/file\0f\nA\0/good\0f\01\n").unwrap();
+        let records = parse(b"R\0/file\08\nA\0/good\08\01\n").unwrap();
         assert_eq!(
             records.len(),
             1,
@@ -278,12 +269,12 @@ mod tests {
 
     #[test]
     fn parse_replace_record() {
-        let records = parse(b"P\0/dir/newfile\0/dir/oldfile\0f\n").unwrap();
+        let records = parse(b"P\0/dir/newfile\0/dir/oldfile\08\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
             matches!(
                 &records[0],
-                Record::Action(Action::Replace { dst, src, dtype: Some(DType::File) })
+                Record::Action(Action::Replace { dst, src, dtype: Some(libc::DT_REG) })
                     if dst == "/dir/newfile" && src == "/dir/oldfile"
             ),
             "P record should parse as Replace, got: {:?}",
@@ -293,10 +284,10 @@ mod tests {
 
     #[test]
     fn parse_deleted_with_dtype() {
-        let records = parse(b"D\0/foo\0f\n").unwrap();
+        let records = parse(b"D\0/foo\08\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
-            matches!(&records[0], Record::Action(Action::Delete { path, dtype: Some(DType::File) }) if path == "/foo")
+            matches!(&records[0], Record::Action(Action::Delete { path, dtype: Some(libc::DT_REG) }) if path == "/foo")
         );
     }
 }

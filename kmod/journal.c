@@ -79,16 +79,6 @@ static int journal_write(struct agfs_sb_info *sbi, char tag,
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
-static char dtype_to_char(unsigned char d_type)
-{
-	switch (d_type) {
-	case DT_DIR: return 'd';
-	case DT_LNK: return 'l';
-	case DT_REG: return 'f';
-	default:     return '\0';
-	}
-}
-
 /* ── Public: typed journal record writers ──────────────────────────── */
 
 static int journal_emit_ino(struct agfs_sb_info *sbi,
@@ -97,13 +87,13 @@ static int journal_emit_ino(struct agfs_sb_info *sbi,
 {
 	char path_buf[AGFS_PATH_MAX];
 	char ino_str[11];
-	char dtype_str[2] = { '\0', '\0' };
+	char dtype_str[4];
 	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
 	if (IS_ERR(path))
 		return PTR_ERR(path);
 
 	snprintf(ino_str, sizeof(ino_str), "%u", ino);
-	dtype_str[0] = dtype_to_char(d_type);
+	snprintf(dtype_str, sizeof(dtype_str), "%u", (unsigned)d_type);
 
 	return journal_write(sbi, tag,
 			     (const char *[]){ path,
@@ -127,12 +117,12 @@ int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry,
 		       unsigned char d_type)
 {
 	char path_buf[AGFS_PATH_MAX];
-	char dtype_str[2] = { '\0', '\0' };
+	char dtype_str[4];
 	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
 	if (IS_ERR(path))
 		return PTR_ERR(path);
 
-	dtype_str[0] = dtype_to_char(d_type);
+	snprintf(dtype_str, sizeof(dtype_str), "%u", (unsigned)d_type);
 
 	return journal_write(sbi, 'D',
 			     (const char *[]){ path,
@@ -147,7 +137,7 @@ static int journal_emit_paths(struct agfs_sb_info *sbi,
 {
 	char dst_buf[AGFS_PATH_MAX];
 	char src_buf[AGFS_PATH_MAX];
-	char dtype_str[2] = { '\0', '\0' };
+	char dtype_str[4];
 	char *dst_path, *src_path;
 
 	dst_path = dentry_path_raw(new_dentry, dst_buf, sizeof(dst_buf));
@@ -158,7 +148,7 @@ static int journal_emit_paths(struct agfs_sb_info *sbi,
 	if (IS_ERR(src_path))
 		return PTR_ERR(src_path);
 
-	dtype_str[0] = dtype_to_char(d_type);
+	snprintf(dtype_str, sizeof(dtype_str), "%u", (unsigned)d_type);
 
 	return journal_write(sbi, tag,
 			     (const char *[]){ dst_path,

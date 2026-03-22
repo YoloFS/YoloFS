@@ -42,10 +42,10 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::journal::{Action, DType, DirTree, Dirent, Segment};
+    use crate::journal::{Action, DirTree, Dstate, Segment};
 
     /// Helper: build a tree from actions and get dirents.
-    fn build_dirents(actions: &[Action]) -> Vec<(String, Dirent)> {
+    fn build_dirents(actions: &[Action]) -> Vec<(String, Dstate)> {
         DirTree::build(std::iter::once(Segment {
             from: 0,
             records: actions.to_vec(),
@@ -54,7 +54,7 @@ mod tests {
     }
 
     /// Helper: find a dirent by path suffix.
-    fn find<'a>(cs: &'a [(String, Dirent)], suffix: &str) -> &'a (String, Dirent) {
+    fn find<'a>(cs: &'a [(String, Dstate)], suffix: &str) -> &'a (String, Dstate) {
         cs.iter().find(|(p, _)| p.ends_with(suffix)).unwrap()
     }
 
@@ -63,14 +63,14 @@ mod tests {
         let cs = build_dirents(&[Action::Add {
             path: "/src/main.rs".into(),
             ino: 1,
-            dtype: Some(DType::File),
+            dtype: Some(libc::DT_REG),
         }]);
         assert_eq!(cs.len(), 1);
         let (path, dirent) = &cs[0];
         assert_eq!(path, "/src/main.rs");
         assert!(matches!(
             dirent,
-            Dirent::Inode {
+            Dstate::StagedInode {
                 ino: 1,
                 in_base: false,
                 ..
@@ -84,16 +84,16 @@ mod tests {
             Action::Modify {
                 path: "/old.txt".into(),
                 ino: 1,
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
             },
             Action::Delete {
                 path: "/old.txt".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
             },
         ]);
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].0, "/old.txt");
-        assert!(matches!(cs[0].1, Dirent::Tombstone));
+        assert!(matches!(cs[0].1, Dstate::Tombstone { .. }));
     }
 
     #[test]
@@ -101,14 +101,14 @@ mod tests {
         let cs = build_dirents(&[Action::Rename {
             src: "/a.txt".into(),
             dst: "/b.txt".into(),
-            dtype: Some(DType::File),
+            dtype: Some(libc::DT_REG),
         }]);
 
         let (_, del) = find(&cs, "/a.txt");
-        assert!(matches!(del, Dirent::Tombstone));
+        assert!(matches!(del, Dstate::Tombstone { .. }));
 
         let (_, redirect) = find(&cs, "/b.txt");
-        assert!(matches!(redirect, Dirent::Link { base_path, .. } if base_path == "/a.txt"));
+        assert!(matches!(redirect, Dstate::BasePath { src, .. } if src == "/a.txt"));
     }
 
     #[test]
@@ -117,20 +117,20 @@ mod tests {
             Action::Rename {
                 src: "/old.rs".into(),
                 dst: "/new.rs".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
             },
             Action::Modify {
                 path: "/new.rs".into(),
                 ino: 5,
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
             },
         ]);
 
         let (_, new) = find(&cs, "/new.rs");
-        assert!(matches!(new, Dirent::Inode { ino: 5, .. }));
+        assert!(matches!(new, Dstate::StagedInode { ino: 5, .. }));
 
         let (_, old) = find(&cs, "/old.rs");
-        assert!(matches!(old, Dirent::Tombstone));
+        assert!(matches!(old, Dstate::Tombstone { .. }));
     }
 
     #[test]
@@ -138,9 +138,9 @@ mod tests {
         let cs = build_dirents(&[Action::Add {
             path: "/newdir".into(),
             ino: 1,
-            dtype: Some(DType::Dir),
+            dtype: Some(libc::DT_DIR),
         }]);
-        assert_eq!(cs[0].1.dtype(), DType::Dir);
+        assert_eq!(cs[0].1.dtype(), libc::DT_DIR);
     }
 
     #[test]
@@ -148,9 +148,9 @@ mod tests {
         let cs = build_dirents(&[Action::Add {
             path: "/link".into(),
             ino: 1,
-            dtype: Some(DType::Link),
+            dtype: Some(libc::DT_LNK),
         }]);
-        assert_eq!(cs[0].1.dtype(), DType::Link);
+        assert_eq!(cs[0].1.dtype(), libc::DT_LNK);
     }
 
     #[test]
@@ -164,10 +164,10 @@ mod tests {
         let cs = build_dirents(&[Action::Rename {
             src: "/mydir".into(),
             dst: "/newdir".into(),
-            dtype: Some(DType::Dir),
+            dtype: Some(libc::DT_DIR),
         }]);
         let (_, dirent) = find(&cs, "/newdir");
-        assert_eq!(dirent.dtype(), DType::Dir);
+        assert_eq!(dirent.dtype(), libc::DT_DIR);
     }
 
     #[test]
@@ -175,9 +175,9 @@ mod tests {
         let cs = build_dirents(&[Action::Rename {
             src: "/mylink".into(),
             dst: "/newlink".into(),
-            dtype: Some(DType::Link),
+            dtype: Some(libc::DT_LNK),
         }]);
         let (_, dirent) = find(&cs, "/newlink");
-        assert_eq!(dirent.dtype(), DType::Link);
+        assert_eq!(dirent.dtype(), libc::DT_LNK);
     }
 }

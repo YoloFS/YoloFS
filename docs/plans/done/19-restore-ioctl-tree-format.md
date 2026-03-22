@@ -69,8 +69,8 @@ The kernel distinguishes the three states with the same checks as `struct agfs_d
 * `packed == 0` → tombstone.
 * `(s64)packed > 0` → inode — stamp gen: `packed = (wire & ~0xFFFF) | new_gen`.
 * `(s64)packed < 0` → link — read trailing `base_len` + `base_path` + NUL,
-  call `agfs_dstate_link(buf, dt, ib)`.  The NUL terminator is required because
-  `agfs_add_dirent` → `kstrdup(agfs_dstate_base(packed))` needs a C string.
+  call `agfs_dstate_base_path(buf, dt, ib)`.  The NUL terminator is required because
+  `agfs_add_dirent` → `kstrdup(agfs_dstate_src(packed))` needs a C string.
 
 Gen bits `[15:0]` are zeroed on the wire because the kernel assigns `new_gen`.
 Pointer bits `[59:0]` are zeroed for links because the base path travels inline

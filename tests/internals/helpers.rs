@@ -1,5 +1,5 @@
 use crate::helpers::AgfsSession;
-use agfs::journal::{self, Action, Dirent, Marker, Record};
+use agfs::journal::{self, Action, Dstate, Marker, Record};
 use std::fs;
 use std::path::PathBuf;
 
@@ -32,9 +32,9 @@ pub fn records(j: &journal::Journal) -> Vec<Record> {
     out
 }
 
-/// Resolve the journal to get the final Dirent list.
+/// Resolve the journal to get the final Dstate list.
 /// Uses `Journal` to filter out dead records (e.g. after restore).
-pub fn dirents(s: &AgfsSession) -> Vec<(String, Dirent)> {
+pub fn dirents(s: &AgfsSession) -> Vec<(String, Dstate)> {
     let j = journal(s);
     j.into_tree().into_dirents()
 }
@@ -56,7 +56,7 @@ pub fn inode_path(s: &AgfsSession, ino: u32) -> PathBuf {
 }
 
 /// Find the ino for a change matching a path suffix.
-pub fn ino_for(dirents: &[(String, Dirent)], suffix: &str) -> u32 {
+pub fn ino_for(dirents: &[(String, Dstate)], suffix: &str) -> u32 {
     dirents
         .iter()
         .find_map(|(path, c)| {

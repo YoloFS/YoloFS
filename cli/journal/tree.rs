@@ -21,41 +21,45 @@ use super::types::*;
 /// or moved away, `in_base=true` leaves a Tombstone to hide the base content;
 /// `in_base=false` cancels (just removes — nothing in base to hide).
 #[derive(Debug, Clone, PartialEq)]
-pub enum Dirent {
-    Inode {
+pub enum Dstate {
+    StagedInode {
         ino: u32,
-        dtype: DType,
+        dtype: u8,
         in_base: bool,
     },
-    Link {
+    BasePath {
         /// The source path in the base filesystem (where the content lives).
-        base_path: String,
-        dtype: DType,
+        src: String,
+        dtype: u8,
         in_base: bool,
     },
-    Tombstone,
+    Tombstone {
+        dtype: u8,
+    },
+    Untracked,
 }
 
-impl Dirent {
-    pub fn dtype(&self) -> DType {
+impl Dstate {
+    pub fn dtype(&self) -> u8 {
         match self {
-            Dirent::Inode { dtype, .. }
-            | Dirent::Link { dtype, .. } => *dtype,
-            Dirent::Tombstone => DType::File,
+            Dstate::StagedInode { dtype, .. }
+            | Dstate::BasePath { dtype, .. }
+            | Dstate::Tombstone { dtype } => *dtype,
+            Dstate::Untracked => libc::DT_REG,
         }
     }
 
     pub fn in_base(&self) -> bool {
         match self {
-            Dirent::Inode { in_base, .. } | Dirent::Link { in_base, .. } => *in_base,
-            Dirent::Tombstone => true,
+            Dstate::StagedInode { in_base, .. } | Dstate::BasePath { in_base, .. } => *in_base,
+            Dstate::Tombstone { .. } | Dstate::Untracked => true,
         }
     }
 
     /// Return the staged inode ID if this dirent carries one.
     pub fn ino(&self) -> Option<u32> {
         match self {
-            Dirent::Inode { ino, .. } => Some(*ino),
+            Dstate::StagedInode { ino, .. } => Some(*ino),
             _ => None,
         }
     }
@@ -63,15 +67,17 @@ impl Dirent {
     /// True if this dirent involves the given path (as source or destination).
     pub fn matches_path(&self, dirent_path: &str, query: &str) -> bool {
         match self {
-            Dirent::Inode { .. } | Dirent::Tombstone => dirent_path == query,
-            Dirent::Link { base_path, .. } => dirent_path == query || base_path == query,
+            Dstate::StagedInode { .. } | Dstate::Tombstone { .. } | Dstate::Untracked => {
+                dirent_path == query
+            }
+            Dstate::BasePath { src, .. } => dirent_path == query || src == query,
         }
     }
 
     fn set_in_base(&mut self, val: bool) {
         match self {
-            Dirent::Inode { in_base, .. } | Dirent::Link { in_base, .. } => *in_base = val,
-            Dirent::Tombstone => {}
+            Dstate::StagedInode { in_base, .. } | Dstate::BasePath { in_base, .. } => *in_base = val,
+            Dstate::Tombstone { .. } | Dstate::Untracked => {}
         }
     }
 }
@@ -79,15 +85,15 @@ impl Dirent {
 /// A node in the dir tree.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DirNode {
-    File(Dirent),
-    Dir(Option<Dirent>, DirTree),
+    File(Dstate),
+    Dir(Dstate, DirTree),
 }
 
 impl DirNode {
     /// Wrap a dirent in the appropriate node type (File or Dir).
-    fn leaf(dirent: Dirent) -> Self {
-        if dirent.dtype() == DType::Dir {
-            DirNode::Dir(Some(dirent), DirTree::new())
+    fn leaf(dirent: Dstate) -> Self {
+        if dirent.dtype() == libc::DT_DIR {
+            DirNode::Dir(dirent, DirTree::new())
         } else {
             DirNode::File(dirent)
         }
@@ -111,8 +117,8 @@ impl DirTree {
     fn apply(&mut self, action: Action) {
         match action {
             Action::Add { path, dtype, ino } => {
-                let dtype = dtype.unwrap_or(DType::File);
-                let dirent = Dirent::Inode {
+                let dtype = dtype.unwrap_or(libc::DT_REG);
+                let dirent = Dstate::StagedInode {
                     ino,
                     dtype,
                     in_base: false,
@@ -120,8 +126,8 @@ impl DirTree {
                 self.set_dirent(path, dirent);
             }
             Action::Modify { path, dtype, ino } => {
-                let dtype = dtype.unwrap_or(DType::File);
-                let dirent = Dirent::Inode {
+                let dtype = dtype.unwrap_or(libc::DT_REG);
+                let dirent = Dstate::StagedInode {
                     ino,
                     dtype,
                     in_base: true,
@@ -132,11 +138,11 @@ impl DirTree {
                 self.apply_delete(path, dtype);
             }
             Action::Rename { dst, src, dtype } => {
-                let dtype = dtype.unwrap_or(DType::File);
+                let dtype = dtype.unwrap_or(libc::DT_REG);
                 self.apply_rename(dst, src, dtype, false);
             }
             Action::Replace { dst, src, dtype } => {
-                let dtype = dtype.unwrap_or(DType::File);
+                let dtype = dtype.unwrap_or(libc::DT_REG);
                 self.apply_rename(dst, src, dtype, true);
             }
         }
@@ -154,12 +160,15 @@ impl DirTree {
     }
 
     /// Number of dirents (files, dirs with metadata, tombstones) in the tree.
+    /// Untracked entries are excluded — they represent no staged change.
     pub fn len(&self) -> usize {
         self.nodes
             .values()
             .map(|n| match n {
+                DirNode::File(Dstate::Untracked) => 0,
                 DirNode::File(_) => 1,
-                DirNode::Dir(d, sub) => d.is_some() as usize + sub.len(),
+                DirNode::Dir(Dstate::Untracked, sub) => sub.len(),
+                DirNode::Dir(_, sub) => 1 + sub.len(),
             })
             .sum()
     }
@@ -169,12 +178,12 @@ impl DirTree {
     }
 
     /// Visit each (full-path, dirent) pair by reference.
-    pub fn for_each<F: FnMut(&str, &Dirent)>(&self, mut f: F) {
+    pub fn for_each<F: FnMut(&str, &Dstate)>(&self, mut f: F) {
         self.visit_dirents(&mut f, &mut String::new());
     }
 
-    /// Walk the tree and produce a flat list of (path, Dirent) pairs.
-    pub fn into_dirents(&self) -> Vec<(String, Dirent)> {
+    /// Walk the tree and produce a flat list of (path, Dstate) pairs.
+    pub fn into_dirents(&self) -> Vec<(String, Dstate)> {
         let mut entries = Vec::new();
         self.for_each(|path, dirent| entries.push((path.to_owned(), dirent.clone())));
         entries
@@ -186,9 +195,9 @@ impl DirTree {
     ///   TreeBuf      := NodeList
     ///   NodeList     := child_count:le16  Node[child_count]
     ///   Node         := name_len:le16  name:u8[name_len]
-    ///                   has_dirent:u8  [PackedDirent if has_dirent]
+    ///                   has_dirent:u8  [PackedDstate if has_dirent]
     ///                   child_count:le16  Node[child_count]
-    ///   PackedDirent := packed:le64
+    ///   PackedDstate := packed:le64
     ///                   [base_len:le16  base_path:u8[base_len]  NUL:u8  if link]
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -197,12 +206,14 @@ impl DirTree {
     }
 
     fn serialize_into(&self, buf: &mut Vec<u8>) {
-        // Collect children sorted by name, skipping empty passthrough dirs.
+        // Collect children sorted by name, skipping empty untracked dirs
+        // and untracked file nodes.
         let mut children: Vec<(&str, &DirNode)> = self
             .nodes
             .iter()
             .filter(|(_, node)| match node {
-                DirNode::Dir(None, sub) if sub.nodes.is_empty() => false,
+                DirNode::Dir(Dstate::Untracked, sub) if sub.nodes.is_empty() => false,
+                DirNode::File(Dstate::Untracked) => false,
                 _ => true,
             })
             .map(|(name, node)| (name.as_str(), node))
@@ -225,11 +236,11 @@ impl DirTree {
                     buf.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
                 }
                 DirNode::Dir(dirent, subtree) => {
-                    if let Some(d) = dirent {
-                        buf.push(1); // has_dirent
-                        Self::serialize_dirent(d, buf);
-                    } else {
+                    if matches!(dirent, Dstate::Untracked) {
                         buf.push(0); // no dirent
+                    } else {
+                        buf.push(1); // has_dirent
+                        Self::serialize_dirent(dirent, buf);
                     }
                     subtree.serialize_into(buf);
                 }
@@ -237,45 +248,50 @@ impl DirTree {
         }
     }
 
-    fn serialize_dirent(dirent: &Dirent, buf: &mut Vec<u8>) {
+    fn serialize_dirent(dirent: &Dstate, buf: &mut Vec<u8>) {
         match dirent {
-            Dirent::Tombstone => {
-                buf.extend_from_slice(&0u64.to_le_bytes());
+            Dstate::Tombstone { dtype } => {
+                // Tombstone: (s64)val > 0, ino=0, in_base=1
+                let packed: u64 = (dtype_pack(*dtype) << 60) | (1u64 << 59);
+                buf.extend_from_slice(&packed.to_le_bytes());
             }
-            Dirent::Inode {
+            Dstate::StagedInode {
                 ino,
                 dtype,
                 in_base,
             } => {
                 assert!(*ino > 0, "inode ino must be non-zero");
-                let packed: u64 = (dtype.to_packed() << 61)
-                    | ((*in_base as u64) << 60)
+                let packed: u64 = (dtype_pack(*dtype) << 60)
+                    | ((*in_base as u64) << 59)
                     | ((*ino as u64) << 16);
                 // gen bits [15:0] zeroed — kernel assigns new_gen
                 buf.extend_from_slice(&packed.to_le_bytes());
             }
-            Dirent::Link {
-                base_path,
+            Dstate::BasePath {
+                src,
                 dtype,
                 in_base,
             } => {
                 let packed: u64 = (1u64 << 63)
-                    | (dtype.to_packed() << 61)
-                    | ((*in_base as u64) << 60);
+                    | (dtype_pack(*dtype) << 60)
+                    | ((*in_base as u64) << 59);
                 // pointer bits [59:0] zeroed — base path travels inline
                 buf.extend_from_slice(&packed.to_le_bytes());
-                let bp = base_path.as_bytes();
+                let bp = src.as_bytes();
                 let bp_len: u16 = bp.len().try_into().expect("base_path too long");
                 buf.extend_from_slice(&bp_len.to_le_bytes());
                 buf.extend_from_slice(bp);
                 buf.push(0); // NUL terminator
+            }
+            Dstate::Untracked => {
+                buf.extend_from_slice(&0u64.to_le_bytes());
             }
         }
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
 
-    /// Walk to a path (owned), creating intermediate Dir(None, ..) nodes as
+    /// Walk to a path (owned), creating intermediate Dir(Untracked, ...) nodes as
     /// needed.  Extracts the leaf name from the path in-place via `drain`,
     /// avoiding allocation for the leaf component.
     fn walk_or_create_parent(&mut self, mut path: String) -> Option<(&mut DirTree, String)> {
@@ -288,7 +304,7 @@ impl DirTree {
             let node = current
                 .nodes
                 .entry(part.to_string())
-                .or_insert_with(|| DirNode::Dir(None, DirTree::new()));
+                .or_insert_with(|| DirNode::Dir(Dstate::Untracked, DirTree::new()));
             match node {
                 DirNode::Dir(_, subtree) => current = subtree,
                 DirNode::File(_) => return None,
@@ -316,32 +332,32 @@ impl DirTree {
     }
 
     /// Set a dirent at the given path (owned).
-    fn set_dirent(&mut self, path: String, dirent: Dirent) {
+    fn set_dirent(&mut self, path: String, dirent: Dstate) {
         let Some((parent, name)) = self.walk_or_create_parent(path) else {
             return;
         };
-        if dirent.dtype() == DType::Dir
+        if dirent.dtype() == libc::DT_DIR
             && let Some(DirNode::Dir(existing_dirent, _)) = parent.nodes.get_mut(name.as_str()) {
-                *existing_dirent = Some(dirent);
+                *existing_dirent = dirent;
                 return;
             }
         parent.nodes.insert(name, DirNode::leaf(dirent));
     }
 
     /// Apply a D record (owned path).
-    fn apply_delete(&mut self, path: String, dtype: Option<DType>) {
+    fn apply_delete(&mut self, path: String, dtype: Option<u8>) {
         let Some((parent, name)) = self.walk_or_create_parent(path) else {
             return;
         };
 
         // Check what to do based on current state.
         let needs_tombstone = match parent.nodes.get(name.as_str()) {
-            None | Some(DirNode::Dir(None, _)) => true,
-            Some(DirNode::File(d)) | Some(DirNode::Dir(Some(d), _)) => d.in_base(),
+            None | Some(DirNode::Dir(Dstate::Untracked, _)) => true,
+            Some(DirNode::File(d)) | Some(DirNode::Dir(d, _)) => d.in_base(),
         };
 
         if needs_tombstone {
-            Self::place_tombstone_at(parent, name, dtype.unwrap_or(DType::File));
+            Self::place_tombstone_at(parent, name, dtype.unwrap_or(libc::DT_REG));
         } else {
             // in_base=false → cancel (remove)
             parent.nodes.remove(name.as_str());
@@ -349,22 +365,22 @@ impl DirTree {
     }
 
     /// Place a Tombstone at a path, preserving any existing Dir subtree.
-    fn place_tombstone(&mut self, path: String, dtype: DType) {
+    fn place_tombstone(&mut self, path: String, dtype: u8) {
         if let Some((parent, name)) = self.walk_or_create_parent(path) {
             Self::place_tombstone_at(parent, name, dtype);
         }
     }
 
     /// Place a Tombstone in a parent's node map, preserving any existing Dir subtree.
-    fn place_tombstone_at(parent: &mut DirTree, name: String, dtype: DType) {
+    fn place_tombstone_at(parent: &mut DirTree, name: String, dtype: u8) {
         match parent.nodes.get_mut(name.as_str()) {
-            Some(DirNode::File(d)) => *d = Dirent::Tombstone,
-            Some(DirNode::Dir(d, _)) => *d = Some(Dirent::Tombstone),
+            Some(DirNode::File(d)) => *d = Dstate::Tombstone { dtype },
+            Some(DirNode::Dir(d, _)) => *d = Dstate::Tombstone { dtype },
             None => {
-                let node = if dtype == DType::Dir {
-                    DirNode::Dir(Some(Dirent::Tombstone), DirTree::new())
+                let node = if dtype == libc::DT_DIR {
+                    DirNode::Dir(Dstate::Tombstone { dtype }, DirTree::new())
                 } else {
-                    DirNode::File(Dirent::Tombstone)
+                    DirNode::File(Dstate::Tombstone { dtype })
                 };
                 parent.nodes.insert(name, node);
             }
@@ -376,7 +392,7 @@ impl DirTree {
         &mut self,
         dst_path: String,
         src_path: String,
-        dtype: DType,
+        dtype: u8,
         dst_in_base: bool,
     ) {
         if dst_path == src_path {
@@ -388,10 +404,8 @@ impl DirTree {
 
         // Determine if source position had base content (for tombstone)
         let source_had_base = match &src_node {
-            Some(DirNode::File(d)) => d.in_base(),
-            Some(DirNode::Dir(Some(d), _)) => d.in_base(),
-            Some(DirNode::Dir(None, _)) => true, // intermediate = base-only
-            None => true,                        // no node = base-only
+            Some(DirNode::File(d)) | Some(DirNode::Dir(d, _)) => d.in_base(),
+            None => true, // no node = base-only
         };
 
         // Build the node to place at destination
@@ -400,22 +414,22 @@ impl DirTree {
                 // Source existed — move it, update in_base
                 match &mut node {
                     DirNode::File(d) => d.set_in_base(dst_in_base),
-                    DirNode::Dir(Some(d), _) => d.set_in_base(dst_in_base),
-                    DirNode::Dir(d @ None, _) => {
-                        // Intermediate dir being explicitly renamed — create Link
-                        *d = Some(Dirent::Link {
-                            base_path: src_path.clone(),
+                    DirNode::Dir(d, _) if matches!(d, Dstate::Untracked) => {
+                        // Intermediate dir being explicitly renamed — create BasePath
+                        *d = Dstate::BasePath {
+                            src: src_path.clone(),
                             dtype,
                             in_base: dst_in_base,
-                        });
+                        };
                     }
+                    DirNode::Dir(d, _) => d.set_in_base(dst_in_base),
                 }
                 node
             }
             None => {
-                // No source node — base-only file. Create Link.
-                DirNode::leaf(Dirent::Link {
-                    base_path: src_path.clone(),
+                // No source node — base-only file. Create BasePath.
+                DirNode::leaf(Dstate::BasePath {
+                    src: src_path.clone(),
                     dtype,
                     in_base: dst_in_base,
                 })
@@ -427,11 +441,11 @@ impl DirTree {
             self.place_tombstone(src_path, dtype);
         }
 
-        // Roundtrip collapse: if dest ends up as a Link pointing to itself,
-        // the rename chain was a no-op (e.g. a→b→a). Remove instead of inserting.
+        // Roundtrip collapse: if dest ends up as a BasePath pointing to itself,
+        // the rename chain was a no-op (e.g. a→b→a). Replace with Untracked.
         let is_roundtrip = match &dst_node {
-            DirNode::File(Dirent::Link { base_path, .. })
-            | DirNode::Dir(Some(Dirent::Link { base_path, .. }), _) => base_path == &dst_path,
+            DirNode::File(Dstate::BasePath { src, .. })
+            | DirNode::Dir(Dstate::BasePath { src, .. }, _) => src == &dst_path,
             _ => false,
         };
 
@@ -440,7 +454,15 @@ impl DirTree {
             return;
         };
         if is_roundtrip {
-            parent.nodes.remove(name.as_str());
+            // Replace with Untracked — the rename chain was a no-op.
+            match dst_node {
+                DirNode::Dir(_, subtree) => {
+                    parent.nodes.insert(name, DirNode::Dir(Dstate::Untracked, subtree));
+                }
+                DirNode::File(_) => {
+                    parent.nodes.insert(name, DirNode::File(Dstate::Untracked));
+                }
+            }
         } else {
             // If dest is a Dir and we're moving a Dir, merge children
             if let DirNode::Dir(_, src_subtree) = &mut dst_node
@@ -461,7 +483,7 @@ impl DirTree {
     }
 
     /// Walk the tree by reference, calling `f` for each (path, dirent).
-    fn visit_dirents<F: FnMut(&str, &Dirent)>(&self, f: &mut F, prefix: &mut String) {
+    fn visit_dirents<F: FnMut(&str, &Dstate)>(&self, f: &mut F, prefix: &mut String) {
         for (name, node) in &self.nodes {
             let path_len = prefix.len();
             prefix.push('/');
@@ -470,7 +492,8 @@ impl DirTree {
             match node {
                 DirNode::File(dirent) => f(prefix, dirent),
                 DirNode::Dir(dirent, subtree) => {
-                    if let Some(dirent) = dirent {
+                    // Skip Untracked dir entries (intermediate dirs).
+                    if !matches!(dirent, Dstate::Untracked) {
                         f(prefix, dirent);
                     }
                     subtree.visit_dirents(f, prefix);
@@ -496,7 +519,7 @@ mod tests {
     fn add(path: &str, ino: u32) -> Action {
         Action::Add {
             path: path.into(),
-            dtype: Some(DType::File),
+            dtype: Some(libc::DT_REG),
             ino,
         }
     }
@@ -504,7 +527,7 @@ mod tests {
     fn add_dir(path: &str, ino: u32) -> Action {
         Action::Add {
             path: path.into(),
-            dtype: Some(DType::Dir),
+            dtype: Some(libc::DT_DIR),
             ino,
         }
     }
@@ -512,7 +535,7 @@ mod tests {
     fn modify(path: &str, ino: u32) -> Action {
         Action::Modify {
             path: path.into(),
-            dtype: Some(DType::File),
+            dtype: Some(libc::DT_REG),
             ino,
         }
     }
@@ -520,14 +543,14 @@ mod tests {
     fn delete(path: &str) -> Action {
         Action::Delete {
             path: path.into(),
-            dtype: Some(DType::File),
+            dtype: Some(libc::DT_REG),
         }
     }
 
     fn delete_dir(path: &str) -> Action {
         Action::Delete {
             path: path.into(),
-            dtype: Some(DType::Dir),
+            dtype: Some(libc::DT_DIR),
         }
     }
 
@@ -535,7 +558,7 @@ mod tests {
         Action::Rename {
             dst: dest.into(),
             src: src.into(),
-            dtype: Some(DType::File),
+            dtype: Some(libc::DT_REG),
         }
     }
 
@@ -543,7 +566,7 @@ mod tests {
         Action::Rename {
             dst: dest.into(),
             src: src.into(),
-            dtype: Some(DType::Dir),
+            dtype: Some(libc::DT_DIR),
         }
     }
 
@@ -551,7 +574,7 @@ mod tests {
         Action::Replace {
             dst: dest.into(),
             src: src.into(),
-            dtype: Some(DType::File),
+            dtype: Some(libc::DT_REG),
         }
     }
 
@@ -559,14 +582,14 @@ mod tests {
         Action::Replace {
             dst: dest.into(),
             src: src.into(),
-            dtype: Some(DType::Dir),
+            dtype: Some(libc::DT_DIR),
         }
     }
 
     fn add_symlink(path: &str, ino: u32) -> Action {
         Action::Add {
             path: path.into(),
-            dtype: Some(DType::Link),
+            dtype: Some(libc::DT_LNK),
             ino,
         }
     }
@@ -575,7 +598,7 @@ mod tests {
         Action::Rename {
             dst: dest.into(),
             src: src.into(),
-            dtype: Some(DType::Link),
+            dtype: Some(libc::DT_LNK),
         }
     }
 
@@ -587,7 +610,7 @@ mod tests {
         let dirents = tree.into_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
-            matches!(&dirents[0], (p, Dirent::Inode { ino: 1, in_base: false, .. }) if p == "/a")
+            matches!(&dirents[0], (p, Dstate::StagedInode { ino: 1, in_base: false, .. }) if p == "/a")
         );
     }
 
@@ -597,7 +620,7 @@ mod tests {
         let dirents = tree.into_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
-            matches!(&dirents[0], (p, Dirent::Inode { ino: 1, in_base: true, .. }) if p == "/a")
+            matches!(&dirents[0], (p, Dstate::StagedInode { ino: 1, in_base: true, .. }) if p == "/a")
         );
     }
 
@@ -607,7 +630,7 @@ mod tests {
         let dirents = tree.into_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
-            matches!(&dirents[0], (p, Dirent::Inode { ino: 1, in_base: false, .. }) if p == "/dir/sub/file")
+            matches!(&dirents[0], (p, Dstate::StagedInode { ino: 1, in_base: false, .. }) if p == "/dir/sub/file")
         );
     }
 
@@ -625,7 +648,7 @@ mod tests {
         let tree = build(&[modify("/a", 1), delete("/a")]);
         let dirents = tree.into_dirents();
         assert_eq!(dirents.len(), 1);
-        assert!(matches!(&dirents[0], (p, Dirent::Tombstone) if p == "/a"));
+        assert!(matches!(&dirents[0], (p, Dstate::Tombstone { .. }) if p == "/a"));
     }
 
     #[test]
@@ -633,7 +656,7 @@ mod tests {
         let tree = build(&[delete("/a")]);
         let dirents = tree.into_dirents();
         assert_eq!(dirents.len(), 1);
-        assert!(matches!(&dirents[0], (p, Dirent::Tombstone) if p == "/a"));
+        assert!(matches!(&dirents[0], (p, Dstate::Tombstone { .. }) if p == "/a"));
     }
 
     // ── Rename (R) ────────────────────────────────────────────────────
@@ -646,7 +669,7 @@ mod tests {
         // Destination gets the Inode with in_base=false (from R tag).
         assert_eq!(dirents.len(), 1);
         assert!(
-            matches!(&dirents[0], (p, Dirent::Inode { ino: 1, in_base: false, .. }) if p == "/b")
+            matches!(&dirents[0], (p, Dstate::StagedInode { ino: 1, in_base: false, .. }) if p == "/b")
         );
     }
 
@@ -662,11 +685,11 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/a" && matches!(c, Dirent::Tombstone))
+                .any(|(p, c)| p == "/a" && matches!(c, Dstate::Tombstone { .. }))
         );
         assert!(
             dirents.iter().any(|(p, c)| p == "/b"
-                && matches!(c, Dirent::Link { base_path: from, .. } if from == "/a"))
+                && matches!(c, Dstate::BasePath { src: from, .. } if from == "/a"))
         );
     }
 
@@ -681,11 +704,11 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/a" && matches!(c, Dirent::Tombstone))
+                .any(|(p, c)| p == "/a" && matches!(c, Dstate::Tombstone { .. }))
         );
         assert!(
             dirents.iter().any(|(p, c)| p == "/b"
-                && matches!(c, Dirent::Link { base_path: from, .. } if from == "/a"))
+                && matches!(c, Dstate::BasePath { src: from, .. } if from == "/a"))
         );
     }
 
@@ -700,11 +723,11 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/a" && matches!(c, Dirent::Tombstone))
+                .any(|(p, c)| p == "/a" && matches!(c, Dstate::Tombstone { .. }))
         );
         assert!(
             dirents.iter().any(|(p, c)| p == "/c"
-                && matches!(c, Dirent::Link { base_path: from, .. } if from == "/a"))
+                && matches!(c, Dstate::BasePath { src: from, .. } if from == "/a"))
         );
     }
 
@@ -718,7 +741,7 @@ mod tests {
         // D(/b): in_base=false → cancel
         // Result: just Tombstone at /a
         assert_eq!(dirents.len(), 1);
-        assert!(matches!(&dirents[0], (p, Dirent::Tombstone) if p == "/a"));
+        assert!(matches!(&dirents[0], (p, Dstate::Tombstone { .. }) if p == "/a"));
     }
 
     // ── Directory rename ──────────────────────────────────────────────
@@ -756,7 +779,7 @@ mod tests {
         let dirents = tree.into_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
-            matches!(&dirents[0], (p, Dirent::Inode { ino: 3, in_base: true, .. }) if p == "/a")
+            matches!(&dirents[0], (p, Dstate::StagedInode { ino: 3, in_base: true, .. }) if p == "/a")
         );
     }
 
@@ -772,12 +795,12 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/a" && matches!(c, Dirent::Tombstone))
+                .any(|(p, c)| p == "/a" && matches!(c, Dstate::Tombstone { .. }))
         );
         assert!(dirents.iter().any(|(p, c)| p == "/b"
             && matches!(
                 c,
-                Dirent::Inode {
+                Dstate::StagedInode {
                     ino: 5,
                     in_base: true,
                     ..
@@ -794,12 +817,12 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/a" && matches!(c, Dirent::Tombstone))
+                .any(|(p, c)| p == "/a" && matches!(c, Dstate::Tombstone { .. }))
         );
         assert!(dirents.iter().any(|(p, c)| p == "/b"
             && matches!(
                 c,
-                Dirent::Inode {
+                Dstate::StagedInode {
                     ino: 5,
                     in_base: true,
                     ..
@@ -819,11 +842,11 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/a" && matches!(c, Dirent::Tombstone))
+                .any(|(p, c)| p == "/a" && matches!(c, Dstate::Tombstone { .. }))
         );
         assert!(
             dirents.iter().any(|(p, c)| p == "/b"
-                && matches!(c, Dirent::Link { base_path: from, .. } if from == "/a"))
+                && matches!(c, Dstate::BasePath { src: from, .. } if from == "/a"))
         );
     }
 
@@ -838,7 +861,7 @@ mod tests {
         // Inode moved to /b with in_base=false.
         assert_eq!(dirents.len(), 1);
         assert!(
-            matches!(&dirents[0], (p, Dirent::Inode { ino: 1, in_base: false, .. }) if p == "/b")
+            matches!(&dirents[0], (p, Dstate::StagedInode { ino: 1, in_base: false, .. }) if p == "/b")
         );
     }
 
@@ -851,7 +874,7 @@ mod tests {
         let dirents = tree.into_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
-            matches!(&dirents[0], (p, Dirent::Inode { ino: 2, in_base: false, .. }) if p == "/a")
+            matches!(&dirents[0], (p, Dstate::StagedInode { ino: 2, in_base: false, .. }) if p == "/a")
         );
     }
 
@@ -863,7 +886,7 @@ mod tests {
         assert_eq!(dirents.len(), 1);
         // A over Tombstone: the new inode replaces the tombstone.
         assert!(
-            matches!(&dirents[0], (p, Dirent::Inode { ino: 2, in_base: false, .. }) if p == "/a")
+            matches!(&dirents[0], (p, Dstate::StagedInode { ino: 2, in_base: false, .. }) if p == "/a")
         );
     }
 
@@ -874,7 +897,7 @@ mod tests {
         let tree = build(&[delete_dir("/d")]);
         let dirents = tree.into_dirents();
         assert_eq!(dirents.len(), 1);
-        assert!(matches!(&dirents[0], (p, Dirent::Tombstone) if p == "/d"));
+        assert!(matches!(&dirents[0], (p, Dstate::Tombstone { .. }) if p == "/d"));
     }
 
     #[test]
@@ -910,12 +933,12 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/d" && matches!(c, Dirent::Tombstone))
+                .any(|(p, c)| p == "/d" && matches!(c, Dstate::Tombstone { .. }))
         );
         assert!(dirents.iter().any(|(p, c)| p == "/d/f1"
             && matches!(
                 c,
-                Dirent::Inode {
+                Dstate::StagedInode {
                     ino: 1,
                     in_base: false,
                     ..
@@ -966,7 +989,7 @@ mod tests {
             dirents.iter().any(|(p, c)| p == "/dest/f"
                 && matches!(
                     c,
-                    Dirent::Inode {
+                    Dstate::StagedInode {
                         ino: 3,
                         in_base: false,
                         ..
@@ -989,7 +1012,7 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/a/b" && matches!(c, Dirent::Tombstone)),
+                .any(|(p, c)| p == "/a/b" && matches!(c, Dstate::Tombstone { .. })),
             "intermediate dir should get Tombstone: {:?}",
             dirents
         );
@@ -1003,14 +1026,14 @@ mod tests {
             modify("/x", 1),
             Action::Modify {
                 path: "/x".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 2,
             },
         ]);
         let dirents = tree.into_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
-            matches!(&dirents[0], (p, Dirent::Inode { ino: 2, in_base: true, .. }) if p == "/x")
+            matches!(&dirents[0], (p, Dstate::StagedInode { ino: 2, in_base: true, .. }) if p == "/x")
         );
     }
 
@@ -1022,7 +1045,7 @@ mod tests {
         assert!(dirents.iter().any(|(p, c)| p == "/a"
             && matches!(
                 c,
-                Dirent::Inode {
+                Dstate::StagedInode {
                     ino: 1,
                     in_base: false,
                     ..
@@ -1031,7 +1054,7 @@ mod tests {
         assert!(dirents.iter().any(|(p, c)| p == "/b"
             && matches!(
                 c,
-                Dirent::Inode {
+                Dstate::StagedInode {
                     ino: 2,
                     in_base: false,
                     ..
@@ -1064,11 +1087,17 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_rename_cancels() {
-        // a→tmp→a should produce no net changes.
+    fn roundtrip_rename_produces_untracked() {
+        // a→tmp→a should produce Untracked at /a (no net staged change).
         let tree = build(&[rename("/tmp", "/a"), rename("/a", "/tmp")]);
+        assert_eq!(tree.len(), 0, "no staged changes");
         let dirents = tree.into_dirents();
-        assert!(dirents.is_empty(), "a→tmp→a should cancel: {:?}", dirents);
+        assert_eq!(dirents.len(), 1, "one Untracked entry: {:?}", dirents);
+        assert!(
+            matches!(&dirents[0], (p, Dstate::Untracked) if p == "/a"),
+            "expected Untracked at /a: {:?}",
+            dirents
+        );
     }
 
     #[test]
@@ -1088,13 +1117,13 @@ mod tests {
         // /a should be a Renamed from /b, /b should be a Renamed from /a
         assert!(
             dirents.iter().any(|(p, c)| p == "/a"
-                && matches!(c, Dirent::Link { base_path: from, .. } if from == "/b")),
+                && matches!(c, Dstate::BasePath { src: from, .. } if from == "/b")),
             "a should come from b: {:?}",
             dirents
         );
         assert!(
             dirents.iter().any(|(p, c)| p == "/b"
-                && matches!(c, Dirent::Link { base_path: from, .. } if from == "/a")),
+                && matches!(c, Dstate::BasePath { src: from, .. } if from == "/a")),
             "b should come from a: {:?}",
             dirents
         );
@@ -1117,7 +1146,7 @@ mod tests {
         let dirents = tree.into_dirents();
         assert_eq!(dirents.len(), 1);
         assert!(
-            matches!(&dirents[0], (p, Dirent::Inode { ino: 1, dtype: DType::Link, in_base: false }) if p == "/link")
+            matches!(&dirents[0], (p, Dstate::StagedInode { ino: 1, dtype: libc::DT_LNK, in_base: false }) if p == "/link")
         );
     }
 
@@ -1129,13 +1158,13 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/old" && matches!(c, Dirent::Tombstone))
+                .any(|(p, c)| p == "/old" && matches!(c, Dstate::Tombstone { .. }))
         );
         assert!(dirents.iter().any(|(p, c)| p == "/new"
             && matches!(
                 c,
-                Dirent::Link {
-                    dtype: DType::Link,
+                Dstate::BasePath {
+                    dtype: libc::DT_LNK,
                     ..
                 }
             )));
@@ -1147,7 +1176,7 @@ mod tests {
             add_symlink("/link", 1),
             Action::Delete {
                 path: "/link".into(),
-                dtype: Some(DType::Link),
+                dtype: Some(libc::DT_LNK),
             },
         ]);
         let dirents = tree.into_dirents();
@@ -1168,9 +1197,9 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/src" && matches!(c, Dirent::Tombstone))
+                .any(|(p, c)| p == "/src" && matches!(c, Dstate::Tombstone { .. }))
         );
-        assert!(dirents.iter().any(|(p, c)| p == "/dst" && matches!(c, Dirent::Link { base_path: from, dtype: DType::Dir, .. } if from == "/src")));
+        assert!(dirents.iter().any(|(p, c)| p == "/dst" && matches!(c, Dstate::BasePath { src: from, dtype: libc::DT_DIR, .. } if from == "/src")));
     }
 
     #[test]
@@ -1198,7 +1227,7 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/dst" && matches!(c, Dirent::Inode { in_base: true, .. }))
+                .any(|(p, c)| p == "/dst" && matches!(c, Dstate::StagedInode { in_base: true, .. }))
         );
     }
 
@@ -1212,9 +1241,9 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/old" && matches!(c, Dirent::Tombstone))
+                .any(|(p, c)| p == "/old" && matches!(c, Dstate::Tombstone { .. }))
         );
-        assert!(dirents.iter().any(|(p, c)| p == "/new" && matches!(c, Dirent::Link { base_path: from, dtype: DType::Dir, .. } if from == "/old")));
+        assert!(dirents.iter().any(|(p, c)| p == "/new" && matches!(c, Dstate::BasePath { src: from, dtype: libc::DT_DIR, .. } if from == "/old")));
     }
 
     // ── Replace chain ─────────────────────────────────────────────────
@@ -1226,23 +1255,23 @@ mod tests {
         let dirents = tree.into_dirents();
         // /a had base content → Tombstone at /a.
         // /b had Link (in_base=true from Replace) → moved to /c, tombstone at /b.
-        // /c gets Link(base_path=/a, in_base=true).
+        // /c gets Link(src=/a, in_base=true).
         assert_eq!(dirents.len(), 3, "expected 3 entries: {:?}", dirents);
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/a" && matches!(c, Dirent::Tombstone)),
+                .any(|(p, c)| p == "/a" && matches!(c, Dstate::Tombstone { .. })),
             "missing tombstone at /a: {:?}",
             dirents
         );
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/b" && matches!(c, Dirent::Tombstone)),
+                .any(|(p, c)| p == "/b" && matches!(c, Dstate::Tombstone { .. })),
             "missing tombstone at /b: {:?}",
             dirents
         );
-        assert!(dirents.iter().any(|(p, c)| p == "/c" && matches!(c, Dirent::Link { base_path: from, .. } if from == "/a")),
+        assert!(dirents.iter().any(|(p, c)| p == "/c" && matches!(c, Dstate::BasePath { src: from, .. } if from == "/a")),
             "/c should be Link from /a: {:?}", dirents);
     }
 
@@ -1257,11 +1286,11 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/a" && matches!(c, Dirent::Tombstone)),
+                .any(|(p, c)| p == "/a" && matches!(c, Dstate::Tombstone { .. })),
             "missing tombstone at /a: {:?}",
             dirents
         );
-        assert!(dirents.iter().any(|(p, c)| p == "/c" && matches!(c, Dirent::Link { base_path: from, .. } if from == "/a")),
+        assert!(dirents.iter().any(|(p, c)| p == "/c" && matches!(c, Dstate::BasePath { src: from, .. } if from == "/a")),
             "/c should be Link from /a: {:?}", dirents);
     }
 
@@ -1286,7 +1315,7 @@ mod tests {
             dirents.iter().any(|(p, c)| p == "/new/child.txt"
                 && matches!(
                     c,
-                    Dirent::Inode {
+                    Dstate::StagedInode {
                         ino: 2,
                         in_base: false,
                         ..
@@ -1321,7 +1350,7 @@ mod tests {
     #[test]
     fn rename_into_intermediate_dir_position() {
         // A(/a/b/c/file) creates intermediates /a, /a/b, /a/b/c.
-        // R(/other, /a/b) renames intermediate /a/b (which is a Dir(None, ..) node).
+        // R(/other, /a/b) renames intermediate /a/b (which is a Dir(Untracked, ...) node).
         let tree = build(&[add("/a/b/c/file", 1), rename_dir("/other", "/a/b")]);
         let dirents = tree.into_dirents();
         let paths: Vec<_> = dirents.iter().map(|(p, _)| p.as_str()).collect();
@@ -1329,7 +1358,7 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/a/b" && matches!(c, Dirent::Tombstone)),
+                .any(|(p, c)| p == "/a/b" && matches!(c, Dstate::Tombstone { .. })),
             "/a/b should be Tombstone: {:?}",
             dirents
         );
@@ -1342,22 +1371,24 @@ mod tests {
         assert!(
             dirents
                 .iter()
-                .any(|(p, c)| p == "/other/c/file" && matches!(c, Dirent::Inode { ino: 1, .. })),
+                .any(|(p, c)| p == "/other/c/file" && matches!(c, Dstate::StagedInode { ino: 1, .. })),
             "/other/c/file should be Inode(ino=1): {:?}",
             dirents
         );
         // /other should have a Link dirent (from intermediate dir rename)
         assert!(
             dirents.iter().any(|(p, c)| p == "/other"
-                && matches!(c, Dirent::Link { base_path: from, .. } if from == "/a/b")),
+                && matches!(c, Dstate::BasePath { src: from, .. } if from == "/a/b")),
             "/other should be Link from /a/b: {:?}",
             dirents
         );
     }
 
     #[test]
-    fn tombstone_dtype_returns_file() {
-        assert_eq!(Dirent::Tombstone.dtype(), DType::File);
+    fn tombstone_dtype_returns_stored_value() {
+        assert_eq!(Dstate::Tombstone { dtype: libc::DT_REG }.dtype(), libc::DT_REG);
+        assert_eq!(Dstate::Tombstone { dtype: libc::DT_DIR }.dtype(), libc::DT_DIR);
+        assert_eq!(Dstate::Tombstone { dtype: libc::DT_LNK }.dtype(), libc::DT_LNK);
     }
 
     #[test]
@@ -1369,21 +1400,21 @@ mod tests {
             Action::Replace {
                 src: "/a".into(),
                 dst: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
             },
             Action::Delete {
                 path: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
             },
         ]);
         let dirents = cs.into_dirents();
         // Both /a and /b should be tombstoned.
         assert!(
-            dirents.iter().any(|(p, d)| p == "/a" && matches!(d, Dirent::Tombstone)),
+            dirents.iter().any(|(p, d)| p == "/a" && matches!(d, Dstate::Tombstone { .. })),
             "/a should be Tombstone: {dirents:?}"
         );
         assert!(
-            dirents.iter().any(|(p, d)| p == "/b" && matches!(d, Dirent::Tombstone)),
+            dirents.iter().any(|(p, d)| p == "/b" && matches!(d, Dstate::Tombstone { .. })),
             "/b should be Tombstone (base content): {dirents:?}"
         );
     }
@@ -1406,8 +1437,8 @@ mod tests {
         expected.extend_from_slice(&2u16.to_le_bytes()); // name_len = 2
         expected.extend_from_slice(b"_f");
         expected.push(1); // has_dirent
-        // PackedDirent: dtype=File(0), in_base=false, ino=1, gen=0
-        let packed: u64 = 1u64 << 16;
+        // PackedDstate: dtype=File(4) at [62:60], in_base=false, ino=1, gen=0
+        let packed: u64 = (dtype_pack(libc::DT_REG) << 60) | (1u64 << 16);
         expected.extend_from_slice(&packed.to_le_bytes());
         expected.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
         assert_eq!(buf, expected);
@@ -1419,11 +1450,11 @@ mod tests {
             Action::Modify {
                 path: "/old".into(),
                 ino: 1,
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
             },
             Action::Delete {
                 path: "/old".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
             },
         ]);
         let buf = tree.serialize();
@@ -1432,7 +1463,9 @@ mod tests {
         expected.extend_from_slice(&3u16.to_le_bytes()); // name_len = 3
         expected.extend_from_slice(b"old");
         expected.push(1); // has_dirent
-        expected.extend_from_slice(&0u64.to_le_bytes()); // packed = 0 (tombstone)
+        // Tombstone: dtype=File(4) at [62:60], in_base=1 at [59], ino=0
+        let packed: u64 = (dtype_pack(libc::DT_REG) << 60) | (1u64 << 59);
+        expected.extend_from_slice(&packed.to_le_bytes());
         expected.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
         assert_eq!(buf, expected);
     }
@@ -1442,7 +1475,7 @@ mod tests {
         let tree = build(&[Action::Rename {
             src: "/a.txt".into(),
             dst: "/b.txt".into(),
-            dtype: Some(DType::File),
+            dtype: Some(libc::DT_REG),
         }]);
         let buf = tree.serialize();
         // Should have 2 children: "a.txt" (tombstone) and "b.txt" (link)
@@ -1460,7 +1493,8 @@ mod tests {
         assert_eq!(buf[cursor], 1); // has_dirent
         cursor += 1;
         let packed = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
-        assert_eq!(packed, 0); // tombstone
+        // Tombstone: dtype=File(4) at [62:60], in_base=1 at [59]
+        assert_eq!(packed, (dtype_pack(libc::DT_REG) << 60) | (1u64 << 59));
         cursor += 8;
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
@@ -1474,7 +1508,7 @@ mod tests {
         assert_eq!(buf[cursor], 1); // has_dirent
         cursor += 1;
         let packed = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
-        // Link: bit 63 set, dtype=File(0), in_base=false (Rename → dest not in base)
+        // Link: bit 63 set, dtype=File(4) at [62:60], in_base=false (Rename → dest not in base)
         assert!((packed as i64) < 0, "link should have bit 63 set");
         cursor += 8;
         // Trailing: base_len + base_path + NUL
@@ -1600,11 +1634,11 @@ mod tests {
 
     #[test]
     fn serialize_passthrough_dir_empty_subtree_omitted() {
-        // Create a tree with a passthrough dir that has an empty subtree
+        // Create a tree with an untracked dir that has an empty subtree
         let mut tree = DirTree::new();
         tree.nodes.insert(
             "empty".to_string(),
-            DirNode::Dir(None, DirTree::new()),
+            DirNode::Dir(Dstate::Untracked, DirTree::new()),
         );
         let buf = tree.serialize();
         // Should produce just child_count=0 (the empty passthrough dir is skipped)
@@ -1614,7 +1648,7 @@ mod tests {
     #[test]
     fn serialize_stale_intermediates_after_cancel() {
         // Add a deeply nested file then delete it.  The cancel removes the
-        // leaf File node but leaves Dir(None) intermediates.  The leaf-level
+        // leaf File node but leaves Dir(Untracked) intermediates.  The leaf-level
         // empty dir is filtered, but upper intermediates remain in the
         // serialized output.  The kernel tolerates these (skips nodes with
         // has_dirent=0 and child_count=0).
@@ -1651,7 +1685,7 @@ mod tests {
         let tree = build(&[Action::Modify {
             path: "/f".into(),
             ino: 42,
-            dtype: Some(DType::Link),
+            dtype: Some(libc::DT_LNK),
         }]);
         let buf = tree.serialize();
         // Skip: root child_count(2) + name_len(2) + name(1) + has_dirent(1)
@@ -1670,7 +1704,7 @@ mod tests {
         let tree = build(&[Action::Rename {
             src: "/src".into(),
             dst: "/dst".into(),
-            dtype: Some(DType::Dir),
+            dtype: Some(libc::DT_DIR),
         }]);
         let buf = tree.serialize();
         // Find the "dst" node (children sorted: "dst" comes before "src")
@@ -1699,20 +1733,20 @@ mod tests {
 
     #[test]
     fn dtype_to_packed() {
-        assert_eq!(DType::File.to_packed(), 0);
-        assert_eq!(DType::Dir.to_packed(), 1);
-        assert_eq!(DType::Link.to_packed(), 2);
+        assert_eq!(dtype_pack(libc::DT_REG), 4);
+        assert_eq!(dtype_pack(libc::DT_DIR), 2);
+        assert_eq!(dtype_pack(libc::DT_LNK), 5);
     }
 
     #[test]
     #[should_panic(expected = "base_path too long")]
-    fn serialize_rejects_oversized_base_path() {
+    fn serialize_rejects_oversized_src() {
         let mut tree = DirTree::new();
         tree.nodes.insert(
             "link".to_string(),
-            DirNode::File(Dirent::Link {
-                base_path: "a".repeat(u16::MAX as usize + 1),
-                dtype: DType::File,
+            DirNode::File(Dstate::BasePath {
+                src: "a".repeat(u16::MAX as usize + 1),
+                dtype: libc::DT_REG,
                 in_base: false,
             }),
         );

@@ -16,7 +16,7 @@ fn symlink_produces_add_record() {
     let acts = actions(&j);
     assert!(
         acts.iter()
-            .any(|a| matches!(a, Action::Add { path, dtype: Some(agfs::journal::DType::Link), .. } if path.ends_with("/link.txt"))),
+            .any(|a| matches!(a, Action::Add { path, dtype: Some(libc::DT_LNK), .. } if path.ends_with("/link.txt"))),
         "journal should have an Added(dtype=Link) record for link.txt: {acts:?}"
     );
 }

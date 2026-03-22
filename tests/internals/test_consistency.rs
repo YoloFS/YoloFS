@@ -11,7 +11,7 @@
 
 use super::helpers::{dirents, ino_for, inode_path};
 use crate::helpers::AgfsSession;
-use agfs::journal::{DType, Dirent};
+use agfs::journal::Dstate;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
@@ -53,13 +53,13 @@ fn assert_overlay_visible(s: &AgfsSession) {
         let rel = rel.strip_prefix('/').unwrap_or(rel);
         let mnt = s.mnt_path(rel);
         match dirent {
-            Dirent::Inode { ino, dtype, .. } => {
+            Dstate::StagedInode { ino, dtype, .. } => {
                 let meta = mnt.symlink_metadata().unwrap_or_else(|e| {
                     panic!("overlay inode at '/{rel}' should be visible: {e}")
                 });
-                let expected_dir = *dtype == DType::Dir;
-                let expected_link = *dtype == DType::Link;
-                let expected_file = *dtype == DType::File;
+                let expected_dir = *dtype == libc::DT_DIR;
+                let expected_link = *dtype == libc::DT_LNK;
+                let expected_file = *dtype == libc::DT_REG;
                 assert!(
                     (expected_dir && meta.is_dir())
                         || (expected_link && meta.is_symlink())
@@ -71,7 +71,7 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     meta.is_symlink(),
                 );
                 // For regular files, verify inode content matches mount content
-                if *dtype == DType::File {
+                if *dtype == libc::DT_REG {
                     let ipath = inode_path(s, *ino);
                     let ino_content = fs::read(&ipath).unwrap_or_else(|e| {
                         panic!("inode {ino} at '/{rel}' should be readable: {e}")
@@ -83,13 +83,13 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     );
                 }
             }
-            Dirent::Link { dtype, .. } => {
+            Dstate::BasePath { dtype, .. } => {
                 let meta = mnt.symlink_metadata().unwrap_or_else(|e| {
                     panic!("overlay link at '/{rel}' should be visible: {e}")
                 });
-                let expected_dir = *dtype == DType::Dir;
-                let expected_link = *dtype == DType::Link;
-                let expected_file = *dtype == DType::File;
+                let expected_dir = *dtype == libc::DT_DIR;
+                let expected_link = *dtype == libc::DT_LNK;
+                let expected_file = *dtype == libc::DT_REG;
                 assert!(
                     (expected_dir && meta.is_dir())
                         || (expected_link && meta.is_symlink())
@@ -101,19 +101,20 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     meta.is_symlink(),
                 );
             }
-            Dirent::Tombstone => {
+            Dstate::Tombstone { .. } => {
                 assert!(
                     !path_visible(&mnt),
                     "tombstone at '/{rel}' should not be visible"
                 );
             }
+            Dstate::Untracked => {}
         }
     }
 }
 
 /// Resolve the base filesystem directory for a given relative path,
 /// following any Links in the CLI DirTree (handles renamed base dirs).
-fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &[(String, Dirent)]) -> PathBuf {
+fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &[(String, Dstate)]) -> PathBuf {
     if rel_dir.is_empty() {
         return s.root.clone();
     }
@@ -125,13 +126,13 @@ fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &[(String, Dirent)]) ->
         tree_path = format!("{tree_path}/{component}");
         let link_target = cli.iter().find_map(|(p, d)| {
             if p == &tree_path {
-                if let Dirent::Link {
-                    base_path,
-                    dtype: DType::Dir,
+                if let Dstate::BasePath {
+                    src,
+                    dtype: libc::DT_DIR,
                     ..
                 } = d
                 {
-                    Some(base_path.clone())
+                    Some(src.clone())
                 } else {
                     None
                 }
@@ -173,7 +174,7 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
     let base_names = entry_names(&effective_base, skip);
 
     // Overlay entries that are direct children of this directory
-    let mut staged: BTreeMap<String, &Dirent> = BTreeMap::new();
+    let mut staged: BTreeMap<String, &Dstate> = BTreeMap::new();
     for (path, dirent) in &cli {
         if let Some(rest) = path.strip_prefix(&dir_prefix) {
             let rest = rest.strip_prefix('/').unwrap_or(rest);
@@ -191,7 +192,7 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
         }
     }
     for (name, dirent) in &staged {
-        if !matches!(dirent, Dirent::Tombstone) {
+        if !matches!(dirent, Dstate::Tombstone { .. }) {
             expected.insert(name.clone());
         }
     }
@@ -283,7 +284,7 @@ fn delete_base_file_tombstones() {
     let d = dirents(&s);
     assert!(
         d.iter()
-            .any(|(p, e)| p.ends_with("/hello.txt") && matches!(e, Dirent::Tombstone)),
+            .any(|(p, e)| p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. })),
         "D on base file should produce tombstone: {d:?}"
     );
 }
@@ -487,7 +488,7 @@ fn modify_then_delete_base() {
     let d = dirents(&s);
     assert!(
         d.iter()
-            .any(|(p, e)| p.ends_with("/hello.txt") && matches!(e, Dirent::Tombstone)),
+            .any(|(p, e)| p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. })),
         "M+D on base should produce tombstone: {d:?}"
     );
 }
@@ -607,7 +608,7 @@ fn create_over_tombstone() {
     let d = dirents(&s);
     assert!(
         d.iter().any(|(p, e)| p.ends_with("/hello.txt")
-            && matches!(e, Dirent::Inode { in_base: true, .. })),
+            && matches!(e, Dstate::StagedInode { in_base: true, .. })),
         "recreated file over tombstone should have in_base=true: {d:?}"
     );
     assert_eq!(
@@ -657,24 +658,25 @@ fn readdir_dtype_matches_cli() {
         let ft = entry.file_type().expect("file_type");
         let cli_dtype = dirent.dtype();
         match cli_dtype {
-            DType::File => assert!(
+            libc::DT_REG => assert!(
                 ft.is_file(),
                 "readdir d_type for '{name}': CLI=File but kernel reports dir={} sym={}",
                 ft.is_dir(),
                 ft.is_symlink()
             ),
-            DType::Dir => assert!(
+            libc::DT_DIR => assert!(
                 ft.is_dir(),
                 "readdir d_type for '{name}': CLI=Dir but kernel reports file={} sym={}",
                 ft.is_file(),
                 ft.is_symlink()
             ),
-            DType::Link => assert!(
+            libc::DT_LNK => assert!(
                 ft.is_symlink(),
                 "readdir d_type for '{name}': CLI=Link but kernel reports file={} dir={}",
                 ft.is_file(),
                 ft.is_dir()
             ),
+            _ => panic!("unexpected d_type {cli_dtype} for '{name}'"),
         }
     }
 }

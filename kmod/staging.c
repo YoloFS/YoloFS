@@ -164,19 +164,19 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	}
 
 	/*
-	 * Set packed on dentry and pin if needed.
+	 * Set dstate on dentry and pin if needed.
 	 * Take inode_lock(parent) to serialize against VFS-driven
 	 * create/unlink/rename on the same directory.
 	 */
 	inode_lock(parent);
 	if (list_empty(&di->de_node)) {
 		agfs_stage_dentry(dentry, parent,
-				  agfs_dstate_inode(ino,
+				  agfs_dstate_staged_inode(ino,
 						(u16)atomic_read(&sbi->gen),
 						DT_REG, true));
 	} else {
-		agfs_dstate_free(di->packed);
-		di->packed = agfs_dstate_inode(ino,
+		agfs_dstate_free(di->dstate);
+		di->dstate = agfs_dstate_staged_inode(ino,
 					   (u16)atomic_read(&sbi->gen),
 					   DT_REG, true);
 	}
@@ -187,7 +187,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	/* Update dentry lower_path to point at the inode (consumes original ref) */
 	agfs_replace_lower_path(dentry, &inode_path);
 
-	/* Append journal record (best-effort — packed is already set) */
+	/* Append journal record (best-effort — dstate is already set) */
 	agfs_journal_modify(sbi, dentry, ino, DT_REG);
 
 	/* Reopen with requested flags */

@@ -7,7 +7,7 @@
 // `--to <name>` — diff changes up to a checkpoint.
 // `--from <name> --to <name>` — diff changes between two checkpoints.
 
-use crate::journal::{DirTree, Dirent, Journal};
+use crate::journal::{DirTree, Dstate, Journal};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -68,9 +68,9 @@ fn print_segment_footer(closing: &Option<(u64, String)>) {
 
 // ── Per-change printing (summary vs verbose) ─────────────────────────
 
-fn print_change(agfs: &Path, path: &str, dirent: &Dirent, verbose: bool) {
+fn print_change(agfs: &Path, path: &str, dirent: &Dstate, verbose: bool) {
     match dirent {
-        Dirent::Inode {
+        Dstate::StagedInode {
             ino,
             in_base: false,
             ..
@@ -80,7 +80,7 @@ fn print_change(agfs: &Path, path: &str, dirent: &Dirent, verbose: bool) {
                 print_unified_diff("", &read_inode(agfs, *ino));
             }
         }
-        Dirent::Inode {
+        Dstate::StagedInode {
             ino, in_base: true, ..
         } => {
             if verbose {
@@ -94,20 +94,21 @@ fn print_change(agfs: &Path, path: &str, dirent: &Dirent, verbose: bool) {
                 println!("{} {}", path.bold(), "(modified)".yellow());
             }
         }
-        Dirent::Tombstone => {
+        Dstate::Tombstone { .. } => {
             println!("{} {}", path.bold(), "(deleted)".red());
             if verbose {
                 print_unified_diff(&read_base(path), "");
             }
         }
-        Dirent::Link { base_path, .. } => {
+        Dstate::BasePath { src, .. } => {
             println!(
                 "{} → {} {}",
-                base_path.bold(),
+                src.bold(),
                 path.bold(),
                 "(renamed)".cyan()
             );
         }
+        Dstate::Untracked => {}
     }
 }
 
@@ -233,28 +234,29 @@ fn range_label(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::Dirent;
+    use crate::journal::Dstate;
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::TempDir;
 
     fn state_map<'a>(
         agfs: &Path,
-        dirents: &'a [(String, Dirent)],
+        dirents: &'a [(String, Dstate)],
     ) -> BTreeMap<&'a str, Option<String>> {
         let mut map = BTreeMap::new();
         for (path, dirent) in dirents {
             match dirent {
-                Dirent::Inode { ino, .. } => {
+                Dstate::StagedInode { ino, .. } => {
                     map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
                 }
-                Dirent::Tombstone => {
+                Dstate::Tombstone { .. } => {
                     map.insert(path.as_str(), None);
                 }
-                Dirent::Link { base_path, .. } => {
-                    map.insert(base_path.as_str(), None);
-                    map.insert(path.as_str(), Some(read_base(base_path)));
+                Dstate::BasePath { src, .. } => {
+                    map.insert(src.as_str(), None);
+                    map.insert(path.as_str(), Some(read_base(src)));
                 }
+                Dstate::Untracked => {}
             }
         }
         map
@@ -284,9 +286,9 @@ mod tests {
         let tmp = make_agfs(&[(1, "hello\n")]);
         let dirents = vec![(
             "/src/main.rs".into(),
-            Dirent::Inode {
+            Dstate::StagedInode {
                 ino: 1,
-                dtype: crate::journal::DType::File,
+                dtype: libc::DT_REG,
                 in_base: false,
             },
         )];
@@ -300,9 +302,9 @@ mod tests {
         let tmp = make_agfs(&[(5, "new content")]);
         let dirents = vec![(
             "/etc/config".into(),
-            Dirent::Inode {
+            Dstate::StagedInode {
                 ino: 5,
-                dtype: crate::journal::DType::File,
+                dtype: libc::DT_REG,
                 in_base: true,
             },
         )];
@@ -316,7 +318,7 @@ mod tests {
         let tmp = make_agfs(&[]);
         let dirents = vec![(
             "/old/file.txt".into(),
-            Dirent::Tombstone,
+            Dstate::Tombstone { dtype: libc::DT_REG },
         )];
         let map = state_map(tmp.path(), &dirents);
         assert_eq!(map.len(), 1);
@@ -330,9 +332,9 @@ mod tests {
         let tmp = make_agfs(&[]);
         let dirents = vec![(
             "/nonexistent/new.rs".into(),
-            Dirent::Link {
-                base_path: "/nonexistent/old.rs".into(),
-                dtype: crate::journal::DType::File,
+            Dstate::BasePath {
+                src: "/nonexistent/old.rs".into(),
+                dtype: libc::DT_REG,
                 in_base: false,
             },
         )];
@@ -349,17 +351,17 @@ mod tests {
         let dirents = vec![
             (
                 "/nonexistent/new.rs".into(),
-                Dirent::Link {
-                    base_path: "/nonexistent/old.rs".into(),
-                    dtype: crate::journal::DType::File,
+                Dstate::BasePath {
+                    src: "/nonexistent/old.rs".into(),
+                    dtype: libc::DT_REG,
                     in_base: false,
                 },
             ),
             (
                 "/nonexistent/new.rs".into(),
-                Dirent::Inode {
+                Dstate::StagedInode {
                     ino: 7,
-                    dtype: crate::journal::DType::File,
+                    dtype: libc::DT_REG,
                     in_base: true,
                 },
             ),
@@ -376,23 +378,23 @@ mod tests {
         let dirents = vec![
             (
                 "/a.txt".into(),
-                Dirent::Inode {
+                Dstate::StagedInode {
                     ino: 1,
-                    dtype: crate::journal::DType::File,
+                    dtype: libc::DT_REG,
                     in_base: false,
                 },
             ),
             (
                 "/b.txt".into(),
-                Dirent::Inode {
+                Dstate::StagedInode {
                     ino: 2,
-                    dtype: crate::journal::DType::File,
+                    dtype: libc::DT_REG,
                     in_base: true,
                 },
             ),
             (
                 "/c.txt".into(),
-                Dirent::Tombstone,
+                Dstate::Tombstone { dtype: libc::DT_REG },
             ),
         ];
         let map = state_map(tmp.path(), &dirents);

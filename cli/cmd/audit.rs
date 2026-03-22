@@ -102,7 +102,7 @@ fn format_action(action: &journal::Action) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{Action, DType, Marker};
+    use crate::journal::{Action, Marker};
 
     /// Strip ANSI escape codes for assertion matching.
     fn strip_ansi(s: &str) -> String {
@@ -151,7 +151,7 @@ mod tests {
     fn format_added() {
         let action = Action::Add {
             path: "/src/main.rs".into(),
-            dtype: Some(DType::File),
+            dtype: Some(libc::DT_REG),
             ino: 42,
         };
         let s = strip_ansi(&format_action(&action));
@@ -165,7 +165,7 @@ mod tests {
         let action = Action::Replace {
             src: "/a".into(),
             dst: "/b".into(),
-            dtype: Some(DType::File),
+            dtype: Some(libc::DT_REG),
         };
         let s = strip_ansi(&format_action(&action));
         assert!(s.contains("replaced"), "should say replaced: {s}");

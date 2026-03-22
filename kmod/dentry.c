@@ -29,7 +29,7 @@ static int agfs_d_init(struct dentry *dentry)
 		return -ENOMEM;
 
 	spin_lock_init(&info->lock);
-	info->packed = (struct agfs_dstate){0};
+	info->dstate = (struct agfs_dstate){0}; /* untracked */
 	INIT_LIST_HEAD(&info->de_node);
 	info->dentry = dentry;
 	info->perm = AGFS_PERM_NONE;
@@ -101,7 +101,7 @@ static void agfs_d_release(struct dentry *dentry)
 		return;
 
 	WARN_ON_ONCE(!list_empty(&info->de_node));
-	agfs_dstate_free(info->packed);
+	agfs_dstate_free(info->dstate);
 	agfs_put_reset_lower_path(dentry);
 	agfs_free_dentry_private_data(dentry);
 }
@@ -129,19 +129,19 @@ void agfs_pin_dir_if_first(struct agfs_inode_info *dii,
  * Takes a dget() pin.  Caller must hold i_rwsem exclusive on dir.
  */
 void agfs_stage_dentry(struct dentry *dentry, struct inode *dir,
-		       struct agfs_dstate packed)
+		       struct agfs_dstate dstate)
 {
 	struct agfs_dentry_info *di = AGFS_D(dentry);
 	struct agfs_inode_info *dii = AGFS_I(dir);
 
-	di->packed = packed;
+	di->dstate = dstate;
 	dget(dentry);
 	list_add(&di->de_node, &dii->de_list);
 	agfs_pin_dir_if_first(dii, AGFS_SB(dir->i_sb));
 }
 
 /*
- * Remove a dentry from its parent's de_list, free packed, release pin.
+ * Remove a dentry from its parent's de_list, free dstate, release pin.
  * The agfs_dentry_info (and its dentry) may be freed after this call
  * if the dput drops the last reference.
  * Caller must hold i_rwsem exclusive on the parent directory.
@@ -149,8 +149,8 @@ void agfs_stage_dentry(struct dentry *dentry, struct inode *dir,
 void agfs_unstage_dentry(struct agfs_dentry_info *di)
 {
 	list_del_init(&di->de_node);
-	agfs_dstate_free(di->packed);
-	di->packed = (struct agfs_dstate){0};
+	agfs_dstate_free(di->dstate);
+	di->dstate = (struct agfs_dstate){0}; /* untracked */
 	dput(di->dentry);
 }
 
@@ -164,7 +164,7 @@ void agfs_unstage_dentry(struct agfs_dentry_info *di)
  */
 struct dentry *agfs_add_tombstone(struct dentry *parent,
 				  const char *name, unsigned int len,
-				  struct inode *dir)
+				  struct inode *dir, unsigned char d_type)
 {
 	struct agfs_inode_info *dii = AGFS_I(dir);
 	struct qstr qname = QSTR_INIT(name, len);
@@ -175,7 +175,7 @@ struct dentry *agfs_add_tombstone(struct dentry *parent,
 	if (!tomb)
 		return NULL;
 
-	/* d_init set packed=0 (tombstone).  d_alloc ref is our pin. */
+	AGFS_D(tomb)->dstate = agfs_dstate_tombstone(d_type);
 	d_add(tomb, NULL);
 	list_add(&AGFS_D(tomb)->de_node, &dii->de_list);
 	agfs_pin_dir_if_first(dii, AGFS_SB(dir->i_sb));
