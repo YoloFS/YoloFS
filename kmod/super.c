@@ -340,11 +340,6 @@ static void agfs_kill_super(struct super_block *sb)
 		agfs_unstage_all(sb);
 	}
 
-	/* Pre-prune cached dentries (especially those created by chroot
-	 * lookups through the overlay of "/") so that the aggressive
-	 * shrink_dcache_for_umount() inside kill_anon_super() does not
-	 * find busy dentries and emit BUG warnings. */
-	shrink_dcache_sb(sb);
 	kill_anon_super(sb);
 }
 

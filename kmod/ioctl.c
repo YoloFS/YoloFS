@@ -695,7 +695,6 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	/* Wipe perm caches, staged dentries, dentry cache */
 	atomic64_inc(&sbi->perm_gen);
 	agfs_unstage_all(sb);
-	shrink_dcache_sb(sb);
 
 	if (hdr.target_gen == 0) {
 		/* Reset mode (commit/abort): no entries, no journal write */

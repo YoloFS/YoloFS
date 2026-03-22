@@ -123,13 +123,19 @@ void agfs_remove_tombstone(struct dentry *tomb)
 
 /*
  * Iteratively unstage all staged child dentries via depth-first walk.
- * No d_lock needed: called only from restore (staging_sem write-locked,
- * staging_fd_count == 0) and unmount (no active references), so no
- * concurrent VFS operations can modify d_children.
  *
- * Uses an hlist_node position stack to track iteration across depth
- * levels, avoiding both unbounded recursion and the need to restart
- * iteration when returning from a deeper level.
+ * The hlist traversal is lockless — holding d_lock across the loop is
+ * not possible because agfs_unstage_dentry() calls dput(), which may
+ * re-acquire d_lock and deadlock.  To make the lockless walk safe we
+ * call shrink_dcache_sb() first: this evicts every unreferenced
+ * (passthrough) dentry, so every entry still in d_children has a
+ * positive refcount and cannot be freed mid-iteration.  Concurrent
+ * lookups only hlist_add_head (at the front) which does not disturb
+ * our forward ->next traversal.
+ *
+ * A second shrink_dcache_sb() after the walk evicts the dentries that
+ * were just unstaged (dput drops their refcount but leaves them cached
+ * on the LRU), so subsequent VFS lookups go through the module again.
  */
 void agfs_unstage_all(struct super_block *sb)
 {
@@ -137,7 +143,12 @@ void agfs_unstage_all(struct super_block *sb)
 	struct dentry *cur;
 	int depth = 0;
 
-	if (!sb->s_root || hlist_empty(&sb->s_root->d_children))
+	if (!sb->s_root)
+		return;
+
+	shrink_dcache_sb(sb);
+
+	if (hlist_empty(&sb->s_root->d_children))
 		return;
 
 	pos[0] = sb->s_root->d_children.first;
@@ -160,6 +171,8 @@ void agfs_unstage_all(struct super_block *sb)
 		    !agfs_dstate_is_passthrough(AGFS_D(cur)->dstate))
 			agfs_unstage_dentry(AGFS_D(cur));
 	}
+
+	shrink_dcache_sb(sb);
 }
 
 const struct dentry_operations agfs_dops = {
