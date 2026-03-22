@@ -20,7 +20,7 @@ fn read_file_lossy(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
-fn read_inode(agfs: &Path, ino: u64) -> String {
+fn read_inode(agfs: &Path, ino: u32) -> String {
     read_file_lossy(&crate::utils::inode_path(agfs, ino))
 }
 
@@ -265,7 +265,7 @@ mod tests {
 
     /// Create a temp dir that looks like an agfs session with staged inodes.
     /// Returns the TempDir (must be kept alive) and its path.
-    fn make_agfs(inodes: &[(u64, &str)]) -> TempDir {
+    fn make_agfs(inodes: &[(u32, &str)]) -> TempDir {
         let tmp = TempDir::new().unwrap();
         let inodes_dir = tmp.path().join("inodes");
         fs::create_dir_all(&inodes_dir).unwrap();

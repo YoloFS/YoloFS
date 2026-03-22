@@ -99,12 +99,13 @@ tombstoned file.
 ```
 [63:62]  d_type    2 bits  (private encoding, see above)
 [61]     in_base   1 bit
-[60:16]  ino      45 bits  (max ~35.2 trillion; always > 0)
+[60:48]  reserved 13 bits  (must be 0)
+[47:16]  ino      32 bits  (max ~4.3 billion; always > 0)
 [15:1]   gen      15 bits  (max 32767)
 [0]      0
 ```
 
-`agfs_de_inode` must `WARN_ON_ONCE` if `ino` exceeds 45 bits, `ino == 0`,
+`agfs_de_inode` must `WARN_ON_ONCE` if `ino` exceeds 32 bits, `ino == 0`,
 or `gen` exceeds 15 bits — these indicate bugs in the caller.  The gen
 comparison in `agfs_open_staged` must mask `sbi->gen` to 15 bits so it
 matches the truncated stored value.
@@ -142,7 +143,7 @@ is_link      = packed & 1
 is_inode     = packed && !(packed & 1)
 d_type       = agfs_dtype_unpack((packed >> 62) & 3)  // inode + link
 in_base      = (packed >> 61) & 1                      // inode + link
-ino          = (packed >> 16) & 0x1FFFFFFFFFFF         // inode only (45 bits)
+ino          = (packed >> 16) & 0xFFFFFFFF              // inode only (32 bits)
 gen          = (packed >> 1) & 0x7FFF                  // inode only
 base         = (packed & 0x1FFFFFFFFFFFFFFE)
              | 0xE000000000000000                      // link only

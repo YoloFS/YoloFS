@@ -155,7 +155,7 @@ fn restore_new_files_get_fresh_inodes() {
 
     // Identify inodes allocated after restore.
     let inos_after = inos(&s);
-    let fresh: Vec<u64> = inos_after
+    let fresh: Vec<u32> = inos_after
         .iter()
         .copied()
         .filter(|ino| !inos_before.contains(ino))

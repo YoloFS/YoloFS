@@ -163,7 +163,8 @@ struct agfs_dirent {
  *   [63]    0        (tag)
  *   [62:61] d_type   2 bits (private encoding)
  *   [60]    in_base  1 bit
- *   [59:16] ino      44 bits (always > 0)
+ *   [59:48] reserved 12 bits (must be 0)
+ *   [47:16] ino      32 bits (always > 0)
  *   [15:0]  gen      16 bits
  *
  * Link layout:
@@ -233,9 +234,9 @@ static inline bool agfs_pde_in_base(agfs_pde_t p)
 }
 
 /* inode only */
-static inline u64 agfs_pde_ino(agfs_pde_t p)
+static inline u32 agfs_pde_ino(agfs_pde_t p)
 {
-	return (p.val >> 16) & 0xFFFFFFFFFFF;
+	return (p.val >> 16) & 0xFFFFFFFF;
 }
 
 /* inode only */
@@ -266,15 +267,14 @@ static inline u64 agfs_pde_emit_ino(agfs_pde_t p)
 
 /* ── Encoders ──────────────────────────────────────────────────── */
 
-static inline agfs_pde_t agfs_pde_inode(u64 ino, u16 gen,
+static inline agfs_pde_t agfs_pde_inode(u32 ino, u16 gen,
 					unsigned char d_type, bool in_base)
 {
 	WARN_ON_ONCE(ino == 0);
-	WARN_ON_ONCE(ino > 0xFFFFFFFFFFF);
 	return (agfs_pde_t){ .val =
 		(agfs_dtype_pack(d_type) << 61) |
 		((u64)in_base << 60) |
-		(ino << 16) |
+		((u64)ino << 16) |
 		gen };
 }
 
@@ -327,7 +327,7 @@ struct agfs_sb_info {
 	struct path		inodes_dir;	/* ./agfs/inodes/ (flat inode store) */
 	struct file		*journal_file;	/* ./agfs/journal (append-only, opened lazily) */
 	struct rw_semaphore	staging_sem;	/* protects staging + journal writes */
-	atomic64_t		next_ino;	/* counter for inode store IDs */
+	atomic_t		next_ino;	/* counter for inode store IDs */
 	atomic_t		gen;		/* bumped on each checkpoint; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
 	bool			dirty;		/* data records written since last CKP/RST */
@@ -524,7 +524,7 @@ int agfs_interpose(struct dentry *dentry, struct super_block *sb,
 
 /* staging.c */
 int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen);
-int agfs_inode_path(struct agfs_sb_info *sbi, u64 ino,
+int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,
 		    struct path *result);
 struct agfs_dirent *agfs_find_dirent(struct inode *dir,
 					 const char *name,
@@ -533,7 +533,7 @@ struct agfs_dirent *agfs_add_dirent(struct inode *dir, const char *name,
 				    unsigned int namelen, agfs_pde_t packed);
 struct agfs_dirent *agfs_del_dirent(struct inode *dir, const char *name,
 				    unsigned int namelen);
-int agfs_inode_alloc(struct agfs_sb_info *sbi, u64 *out_ino,
+int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,
 		     struct path *inode_path, umode_t mode,
 		     const char *symname);
 int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
@@ -543,9 +543,9 @@ void agfs_release_pinned_dirs(struct agfs_sb_info *sbi);
 /* journal.c */
 int agfs_journal_open(struct agfs_sb_info *sbi);
 int agfs_journal_add(struct agfs_sb_info *sbi, struct dentry *dentry,
-		       u64 ino, unsigned char d_type);
+		       u32 ino, unsigned char d_type);
 int agfs_journal_modify(struct agfs_sb_info *sbi, struct dentry *dentry,
-			  u64 ino, unsigned char d_type);
+			  u32 ino, unsigned char d_type);
 int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry,
 			 unsigned char d_type);
 int agfs_journal_rename(struct agfs_sb_info *sbi, struct dentry *old_dentry,

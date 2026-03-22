@@ -695,7 +695,7 @@ fn readdir_ino_matches_cli() {
         if entry.file_name() == "check_ino.txt" {
             let kernel_ino = entry.ino();
             assert_eq!(
-                kernel_ino, cli_ino,
+                kernel_ino, cli_ino as u64,
                 "readdir ino mismatch: kernel={kernel_ino} CLI={cli_ino}"
             );
             return;

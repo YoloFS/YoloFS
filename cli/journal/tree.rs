@@ -23,7 +23,7 @@ use super::types::*;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Dirent {
     Inode {
-        ino: u64,
+        ino: u32,
         dtype: DType,
         in_base: bool,
     },
@@ -52,7 +52,7 @@ impl Dirent {
     }
 
     /// Return the staged inode ID if this dirent carries one.
-    pub fn ino(&self) -> Option<u64> {
+    pub fn ino(&self) -> Option<u32> {
         match self {
             Dirent::Inode { ino, .. } => Some(*ino),
             _ => None,
@@ -247,13 +247,9 @@ impl DirTree {
                 in_base,
             } => {
                 assert!(*ino > 0, "inode ino must be non-zero");
-                assert!(
-                    *ino <= 0xFFFFFFFFFFF,
-                    "inode ino exceeds 44-bit range: {ino}"
-                );
                 let packed: u64 = (dtype.to_packed() << 61)
                     | ((*in_base as u64) << 60)
-                    | (*ino << 16);
+                    | ((*ino as u64) << 16);
                 // gen bits [15:0] zeroed — kernel assigns new_gen
                 buf.extend_from_slice(&packed.to_le_bytes());
             }
@@ -496,7 +492,7 @@ mod tests {
         }))
     }
 
-    fn add(path: &str, ino: u64) -> Action {
+    fn add(path: &str, ino: u32) -> Action {
         Action::Add {
             path: path.into(),
             dtype: Some(DType::File),
@@ -504,7 +500,7 @@ mod tests {
         }
     }
 
-    fn add_dir(path: &str, ino: u64) -> Action {
+    fn add_dir(path: &str, ino: u32) -> Action {
         Action::Add {
             path: path.into(),
             dtype: Some(DType::Dir),
@@ -512,7 +508,7 @@ mod tests {
         }
     }
 
-    fn modify(path: &str, ino: u64) -> Action {
+    fn modify(path: &str, ino: u32) -> Action {
         Action::Modify {
             path: path.into(),
             dtype: Some(DType::File),
@@ -566,7 +562,7 @@ mod tests {
         }
     }
 
-    fn add_symlink(path: &str, ino: u64) -> Action {
+    fn add_symlink(path: &str, ino: u32) -> Action {
         Action::Add {
             path: path.into(),
             dtype: Some(DType::Link),
@@ -1516,7 +1512,7 @@ mod tests {
         let packed = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
         // Dir inode: dtype=Dir(1) at bits [62:61], in_base=false, ino=10
         assert_eq!((packed >> 61) & 3, 1); // dtype=Dir
-        assert_eq!((packed >> 16) & 0xFFFFFFFFFFF, 10); // ino
+        assert_eq!((packed >> 16) & 0xFFFFFFFF, 10); // ino
         cursor += 8;
 
         // child_count for "dir" subtree = 1
@@ -1532,7 +1528,7 @@ mod tests {
         assert_eq!(buf[cursor], 1); // has_dirent
         cursor += 1;
         let packed = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
-        assert_eq!((packed >> 16) & 0xFFFFFFFFFFF, 20); // ino
+        assert_eq!((packed >> 16) & 0xFFFFFFFF, 20); // ino
         cursor += 8;
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
@@ -1663,7 +1659,7 @@ mod tests {
         assert_eq!((packed >> 63) & 1, 0); // not a link pde
         assert_eq!((packed >> 61) & 3, 2); // dtype=Link
         assert_eq!((packed >> 60) & 1, 1); // in_base=true
-        assert_eq!((packed >> 16) & 0xFFFFFFFFFFF, 42); // ino
+        assert_eq!((packed >> 16) & 0xFFFFFFFF, 42); // ino
         assert_eq!(packed & 0xFFFF, 0); // gen bits zeroed
     }
 

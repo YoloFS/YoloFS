@@ -19,7 +19,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	struct path inode_path;
 	unsigned char dt;
 	bool in_base;
-	u64 ino;
+	u32 ino;
 	int err;
 
 	err = agfs_inode_alloc(sbi, &ino, &inode_path, mode, symname);

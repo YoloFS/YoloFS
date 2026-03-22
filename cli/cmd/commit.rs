@@ -35,7 +35,7 @@ fn remove_existing(path: &Path, meta: &fs::Metadata) -> Result<()> {
 /// Apply a staged inode to base. Stats the inode to determine type.
 fn apply_inode(
     agfs_dir: &Path,
-    ino: u64,
+    ino: u32,
     base_path: &Path,
     ensured: &mut HashSet<PathBuf>,
 ) -> Result<()> {

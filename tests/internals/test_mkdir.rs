@@ -118,7 +118,7 @@ fn mkdir_with_file_creates_separate_inodes() {
     );
 
     // Parent directories should also have inode entries
-    let dir_ids: Vec<u64> = ch
+    let dir_ids: Vec<u32> = ch
         .iter()
         .filter_map(|(path, c)| {
             if path.ends_with("/parent") || path.ends_with("/child") {

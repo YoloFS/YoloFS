@@ -28,15 +28,15 @@ int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen)
 
 /* ── Public Helpers ────────────────────────────────────────────────── */
 
-int agfs_inode_path(struct agfs_sb_info *sbi, u64 ino,
+int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,
 		    struct path *result)
 {
-	char name[21];
+	char name[11];
 
 	if (!sbi->inodes_dir.dentry)
 		return -ENOENT;
 
-	snprintf(name, sizeof(name), "%llu", (unsigned long long)ino);
+	snprintf(name, sizeof(name), "%u", ino);
 	/* No LOOKUP_FOLLOW — symlink inodes must not be dereferenced */
 	return vfs_path_lookup(sbi->inodes_dir.dentry, sbi->inodes_dir.mnt,
 			       name, 0, result);
@@ -257,21 +257,21 @@ out:
  * Allocate a new inode ID, create the inode in the store.
  * Regular files get vfs_create; dirs get vfs_mkdir; symlinks get vfs_symlink.
  */
-int agfs_inode_alloc(struct agfs_sb_info *sbi, u64 *out_ino,
+int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,
 		     struct path *inode_path, umode_t mode,
 		     const char *symname)
 {
-	char name[21];
+	char name[11];
 	struct dentry *ino_dentry;
 	struct inode *dir;
-	u64 ino;
+	u32 ino;
 	int err;
 
 	if (!sbi->inodes_dir.dentry)
 		return -ENOENT;
 
-	ino = atomic64_inc_return(&sbi->next_ino);
-	snprintf(name, sizeof(name), "%llu", (unsigned long long)ino);
+	ino = atomic_inc_return(&sbi->next_ino);
+	snprintf(name, sizeof(name), "%u", ino);
 
 	dir = d_inode(sbi->inodes_dir.dentry);
 	inode_lock(dir);
@@ -353,7 +353,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 {
 	struct agfs_dirent *de;
 	struct path inode_path;
-	u64 ino;
+	u32 ino;
 	int err;
 
 	err = agfs_inode_alloc(sbi, &ino, &inode_path,

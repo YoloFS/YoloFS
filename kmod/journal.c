@@ -92,7 +92,7 @@ static char dtype_to_char(unsigned char d_type)
 /* ── Public: typed journal record writers ──────────────────────────── */
 
 static int journal_emit_ino(struct agfs_sb_info *sbi,
-			    struct dentry *dentry, u64 ino,
+			    struct dentry *dentry, u32 ino,
 			    unsigned char d_type, char tag)
 {
 	char path_buf[AGFS_PATH_MAX];
@@ -102,7 +102,7 @@ static int journal_emit_ino(struct agfs_sb_info *sbi,
 	if (IS_ERR(path))
 		return PTR_ERR(path);
 
-	snprintf(ino_str, sizeof(ino_str), "%llu", (unsigned long long)ino);
+	snprintf(ino_str, sizeof(ino_str), "%u", ino);
 	dtype_str[0] = dtype_to_char(d_type);
 
 	return journal_write(sbi, tag,
@@ -112,13 +112,13 @@ static int journal_emit_ino(struct agfs_sb_info *sbi,
 }
 
 int agfs_journal_add(struct agfs_sb_info *sbi, struct dentry *dentry,
-		     u64 ino, unsigned char d_type)
+		     u32 ino, unsigned char d_type)
 {
 	return journal_emit_ino(sbi, dentry, ino, d_type, 'A');
 }
 
 int agfs_journal_modify(struct agfs_sb_info *sbi, struct dentry *dentry,
-			u64 ino, unsigned char d_type)
+			u32 ino, unsigned char d_type)
 {
 	return journal_emit_ino(sbi, dentry, ino, d_type, 'M');
 }

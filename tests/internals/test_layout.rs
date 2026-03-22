@@ -38,7 +38,7 @@ fn inos_are_unique() {
     fs::write(s.mnt_path("brandnew.txt"), "c\n").expect("write 3");
 
     let ids = inos(&s);
-    let unique: std::collections::HashSet<u64> = ids.iter().copied().collect();
+    let unique: std::collections::HashSet<u32> = ids.iter().copied().collect();
     assert_eq!(
         ids.len(),
         unique.len(),

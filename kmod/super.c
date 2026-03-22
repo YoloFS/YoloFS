@@ -157,7 +157,7 @@ static void agfs_init_sbi(struct agfs_sb_info *sbi,
 
 	/* Staging state */
 	init_rwsem(&sbi->staging_sem);
-	atomic64_set(&sbi->next_ino, 0);
+	atomic_set(&sbi->next_ino, 0);
 	atomic_set(&sbi->gen, 0);
 	atomic_set(&sbi->staging_fd_count, 0);
 	INIT_LIST_HEAD(&sbi->pinned_dirs);

@@ -118,7 +118,7 @@ time is valid for the lifetime of the fd.
 
 | Field | Purpose |
 |-------|---------|
-| `packed` | Single `u64` encoding the dirent state. Three mutually exclusive variants discriminated by bit 63 and zero: **tombstone** (`packed == 0`, always `in_base=true`), **link** (bit 63 set — kernel pointer with tag), **inode** (bit 63 clear, non-zero — staged in `inodes/<ino>`). Bits [62:61] encode `d_type` (2-bit private encoding). Inode variant packs `in_base` (bit [60]), `ino` (44 bits), and `gen` (16 bits). See [Packed Encoding](#packed-encoding). |
+| `packed` | Single `u64` encoding the dirent state. Three mutually exclusive variants discriminated by bit 63 and zero: **tombstone** (`packed == 0`, always `in_base=true`), **link** (bit 63 set — kernel pointer with tag), **inode** (bit 63 clear, non-zero — staged in `inodes/<ino>`). Bits [62:61] encode `d_type` (2-bit private encoding). Inode variant packs `in_base` (bit [60]), `ino` (32 bits), and `gen` (16 bits). See [Packed Encoding](#packed-encoding). |
 
 ## Path Resolution
 
@@ -157,7 +157,8 @@ link variants, making the accessor branchless.
 [63]     0                 (tag: inode)
 [62:61]  d_type    2 bits  (private 2-bit encoding)
 [60]     in_base   1 bit
-[59:16]  ino      44 bits  (max ~17.6 trillion; always > 0)
+[59:48]  reserved 12 bits  (must be 0)
+[47:16]  ino      32 bits  (max ~4.3 billion; always > 0)
 [15:0]   gen      16 bits  (max 65535)
 ```
 
@@ -208,7 +209,7 @@ is_link      = (s64)packed < 0
 is_inode     = (s64)packed > 0
 d_type       = agfs_dtype_unpack((packed >> 61) & 3)   // inode + link
 in_base      = (packed >> 60) & 1                       // inode + link
-ino          = (packed >> 16) & 0xFFFFFFFFFFF           // inode only
+ino          = (packed >> 16) & 0xFFFFFFFF              // inode only
 gen          = (u16)packed                              // inode only
 base         = packed | 0x7000000000000000              // link only
 ```

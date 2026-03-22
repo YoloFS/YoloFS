@@ -513,7 +513,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 				/* Tombstone */
 			} else if ((s64)packed > 0) {
 				/* Inode — validate and stamp gen */
-				u64 ino = (packed >> 16) & 0xFFFFFFFFFFFULL;
+				u32 ino = (packed >> 16) & 0xFFFFFFFFULL;
 				u64 dt = (packed >> 61) & 3;
 
 				if (ino == 0 || dt == 3) {
