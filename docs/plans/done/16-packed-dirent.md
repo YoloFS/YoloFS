@@ -97,18 +97,16 @@ tombstoned file.
 ### Inode (even, non-zero)
 
 ```
-[63:62]  d_type    2 bits  (private encoding, see above)
-[61]     in_base   1 bit
-[60:48]  reserved 13 bits  (must be 0)
+[63]     0                 (tag: inode)
+[62:61]  d_type    2 bits  (private encoding, see above)
+[60]     in_base   1 bit
+[59:48]  reserved 12 bits  (must be 0)
 [47:16]  ino      32 bits  (max ~4.3 billion; always > 0)
-[15:1]   gen      15 bits  (max 32767)
-[0]      0
+[15:0]   gen      16 bits  (max 65535)
 ```
 
-`agfs_de_inode` must `WARN_ON_ONCE` if `ino` exceeds 32 bits, `ino == 0`,
-or `gen` exceeds 15 bits — these indicate bugs in the caller.  The gen
-comparison in `agfs_open_staged` must mask `sbi->gen` to 15 bits so it
-matches the truncated stored value.
+`agfs_de_inode` must `WARN_ON_ONCE` if `ino == 0` or `gen` exceeds 16
+bits — these indicate bugs in the caller.
 
 ### Link (odd)
 
@@ -126,27 +124,26 @@ all 1s (validating the sign-extension assumption at runtime, not just the
 alignment `BUILD_BUG_ON`).
 
 ```
-[63:62]  d_type    2 bits  (borrowed from sign extension)
-[61]     in_base   1 bit   (borrowed from sign extension)
-[60:1]   pointer bits [60:1]  (real address bits)
-[0]      1                    (tag — pointer bit 0 was 0)
+[63]     1        (tag — matches kernel sign extension)
+[62:61]  d_type   2 bits  (borrowed from sign extension)
+[60]     in_base  1 bit   (borrowed from sign extension)
+[59:0]   pointer bits [59:0]  (real address bits)
 ```
 
-Pointer recovery: `(packed & 0x1FFFFFFFFFFFFFFE) | 0xE000000000000000`
-(restore sign-extension bits [63:61] = 111, clear tag bit [0]).
+Pointer recovery: `packed | 0x7000000000000000`
+(restore sign-extension bits [62:60] = 111).
 
 ### Branchless accessors
 
 ```c
 is_tombstone = !packed
-is_link      = packed & 1
-is_inode     = packed && !(packed & 1)
-d_type       = agfs_dtype_unpack((packed >> 62) & 3)  // inode + link
-in_base      = (packed >> 61) & 1                      // inode + link
+is_link      = (s64)packed < 0
+is_inode     = (s64)packed > 0
+d_type       = agfs_dtype_unpack((packed >> 61) & 3)   // inode + link
+in_base      = (packed >> 60) & 1                       // inode + link
 ino          = (packed >> 16) & 0xFFFFFFFF              // inode only (32 bits)
-gen          = (packed >> 1) & 0x7FFF                  // inode only
-base         = (packed & 0x1FFFFFFFFFFFFFFE)
-             | 0xE000000000000000                      // link only
+gen          = (u16)packed                              // inode only
+base         = packed | 0x7000000000000000              // link only
 ```
 
 ### `dir_emit` inode number

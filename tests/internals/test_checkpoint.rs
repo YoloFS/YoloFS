@@ -94,12 +94,13 @@ fn multiple_checkpoints_have_distinct_ids() {
         .collect();
     assert_eq!(
         snaps.len(),
-        2,
-        "should have 2 user checkpoint records: {mkrs:?}"
+        3,
+        "should have phantom + 2 user checkpoint records: {mkrs:?}"
     );
-    assert_ne!(snaps[0].0, snaps[1].0, "checkpoint ids should differ");
-    assert_eq!(snaps[0].1, "s1");
-    assert_eq!(snaps[1].1, "s2");
+    assert_eq!(snaps[0].1, "(initial)");
+    assert_eq!(snaps[1].1, "s1");
+    assert_eq!(snaps[2].1, "s2");
+    assert_ne!(snaps[1].0, snaps[2].0, "user checkpoint ids should differ");
 }
 
 /// Rename after checkpoint: the R record appears after the CKP record.
@@ -115,7 +116,7 @@ fn rename_after_checkpoint() {
     let recs = records(&journal(&s));
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { .. })))
+        .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1"))
         .unwrap();
     // After COW, hello.txt has a staged ino — rename emits single R record
     let rename_pos = recs
@@ -140,7 +141,7 @@ fn delete_after_checkpoint() {
     let recs = records(&journal(&s));
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { .. })))
+        .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1"))
         .unwrap();
     let del_pos = recs
         .iter()

@@ -13,21 +13,20 @@ pub fn actions(j: &journal::Journal) -> Vec<&Action> {
     j.segments.iter().flat_map(|s| &s.records).collect()
 }
 
-/// Collect all markers from the journal in order.
+/// Collect all markers from the journal in order (including the phantom marker).
 pub fn markers(j: &journal::Journal) -> Vec<&Marker> {
     j.markers.iter().collect()
 }
 
 /// Reconstruct the flat interleaved record stream (for positional assertions).
+/// Each marker precedes its corresponding segment's records, reflecting the
+/// phantom-marker model where marker[i] opens segment[i].
 pub fn records(j: &journal::Journal) -> Vec<Record> {
     let mut out = Vec::new();
-    let mut marker_iter = j.markers.iter();
-    for seg in &j.segments {
+    for (seg, marker) in j.segments.iter().zip(j.markers.iter()) {
+        out.push(Record::Marker(marker.clone()));
         for action in &seg.records {
             out.push(Record::Action(action.clone()));
-        }
-        if let Some(marker) = marker_iter.next() {
-            out.push(Record::Marker(marker.clone()));
         }
     }
     out

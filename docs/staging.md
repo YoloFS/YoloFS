@@ -632,8 +632,9 @@ destination path existed in the base layer (`in_base`):
 
 **Gen_id invariant.** The kernel increments `sbi->gen` via
 `atomic_inc_return()` on every K and T record. Gen_id values are
-strictly sequential: marker\[i\] has gen_id = i + 1. The `Markers` type
-relies on this for O(1) checkpoint lookup by gen_id.
+strictly sequential: marker\[i\] has gen_id = i (marker\[0\] is a phantom
+`Checkpoint { gen_id: 0, name: "(initial)" }` inserted by the CLI). The
+`Markers` type relies on this for O(1) checkpoint lookup by gen_id.
 
 `<path>` is the full overlay path (e.g. `/dir/file`).
 `<src>` is the overlay path before the rename (R/P only).
@@ -720,18 +721,20 @@ a base file delete always emit M.)
 
 The CLI resolves per-checkpoint deltas by iterating over segments from the
 `Journal` pipeline. Each segment is resolved independently by
-building a dir tree from its records — records between
-consecutive K/T markers form one segment. This is O(N) total.
+building a dir tree from its records. Marker\[i\] opens segment\[i\]:
+segment\[i\] contains the records from marker\[i\] up to (but not
+including) marker\[i+1\]. The phantom marker at index 0 opens segment 0
+(pre-first-checkpoint records). This is O(N) total.
 
 K records a checkpoint. The CLI can slice segments with
 `Journal::live_segments_slice(at, from, to)`, so that only the requested
 range of segments is resolved and displayed.
 
 Slicing semantics:
-- `--at <name>` — isolate the single segment at that checkpoint
-  (records between the previous checkpoint and the named one).
-- `--from <name>` — records after that checkpoint to end.
-- `--to <name>` — records from start up to and including that checkpoint.
+- `--at <name>` — isolate the single segment opened by that checkpoint
+  (records from that checkpoint marker up to the next marker).
+- `--from <name>` — records from that checkpoint to end.
+- `--to <name>` — records from start up to and including that checkpoint's segment.
 - `--from <A> --to <B>` — records between the two checkpoints.
 
 Written by the kernel (`kernel_write()` per mutation). Read by the CLI

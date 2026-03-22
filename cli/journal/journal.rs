@@ -21,7 +21,8 @@ impl Journal {
     /// Build from parsed journal records.
     pub fn new(records: Vec<Record>) -> Self {
         let mut segments = Vec::new();
-        let mut markers_vec: Vec<Marker> = Vec::new();
+        let mut markers_vec: Vec<Marker> =
+            vec![Marker::Checkpoint { gen_id: 0, name: "(initial)".into() }];
         let mut current_records: Vec<Action> = Vec::new();
         let mut current_from: u64 = 0;
 
@@ -70,9 +71,9 @@ impl Journal {
         Ok(Self::new(parse::read(agfs_dir)?))
     }
 
-    /// Whether segment at this index is alive (for audit/timeline display).
-    pub fn is_alive(&self, segment_index: usize) -> bool {
-        self.alive.get(segment_index).copied().unwrap_or(false)
+    /// Whether the segment with this gen_id is alive (for audit/timeline display).
+    pub fn is_alive(&self, gen_id: usize) -> bool {
+        self.alive.get(gen_id).copied().unwrap_or(false)
     }
 
     /// Consume the journal and build a DirTree from all live segments.
@@ -108,7 +109,7 @@ impl Journal {
     }
 
     fn into_live_segments_at(self, gen_id: u64) -> impl Iterator<Item = Segment> {
-        let num_prefix = (gen_id as usize).min(self.markers.len());
+        let num_prefix = (gen_id as usize).min(self.segments.len());
         let alive = self.markers.alive_segments_range(0..num_prefix, num_prefix);
         self.segments
             .into_iter()
@@ -246,7 +247,7 @@ mod tests {
         assert_eq!(j.segments.len(), 1);
         assert_eq!(j.segments[0].from, 0);
         assert!(j.segments[0].records.is_empty());
-        assert!(j.markers.is_empty());
+        assert_eq!(j.markers.len(), 1, "phantom marker only");
     }
 
     #[test]
@@ -259,7 +260,7 @@ mod tests {
         assert_eq!(j.segments.len(), 2);
         assert_eq!(j.segments[0].from, 0);
         assert_eq!(j.segments[1].from, 99);
-        assert_eq!(j.markers.len(), 1);
+        assert_eq!(j.markers.len(), 2);
     }
 
     // ── Live segments tests (migrated from liveness.rs) ──────────────
@@ -830,7 +831,7 @@ mod tests {
         let records = vec![
             Record::Marker(Marker::Checkpoint {
                 gen_id: 1,
-                name: "init".into(),
+                name: "c1".into(),
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
@@ -845,8 +846,7 @@ mod tests {
         let j = Journal::new(records.clone());
         let all_live = j.into_live_segments_range(0, usize::MAX).count();
         let j2 = Journal::new(records);
-        // gen_id 999 is way beyond markers.len()=2; should clamp, not panic.
-        // Clamped to markers.len() → returns prefix, not the full set.
+        // gen_id 999 is way beyond segments.len(); should clamp, not panic.
         let live: Vec<_> = j2.into_live_segments_at(999).collect();
         assert!(live.len() <= all_live);
     }

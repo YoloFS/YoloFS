@@ -53,9 +53,10 @@ fn commit_clears_journal() {
     s.cli(&["commit"]).expect("commit");
 
     let recs = records(&journal(&s));
-    assert!(
-        recs.is_empty(),
-        "journal should be empty after commit: {recs:?}"
+    assert_eq!(
+        recs.len(),
+        1,
+        "journal should contain only the phantom marker after commit: {recs:?}"
     );
 }
 
@@ -73,9 +74,10 @@ fn abort_clears_journal() {
     s.cli(&["abort", "--force"]).expect("abort");
 
     let recs = records(&journal(&s));
-    assert!(
-        recs.is_empty(),
-        "journal should be empty after abort: {recs:?}"
+    assert_eq!(
+        recs.len(),
+        1,
+        "journal should contain only the phantom marker after abort: {recs:?}"
     );
 }
 
