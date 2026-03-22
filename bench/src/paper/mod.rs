@@ -21,9 +21,8 @@ pub fn render(results: &crate::BenchResults, out_dir: &Path) -> Result<()> {
     let fio = fio_data_table::render(results, &paper_dir)?;
     artifacts.push(fio);
 
-    // ── metadata ops figure ──
-    let meta = meta_ops_figure::render(results, &paper_dir)?;
-    artifacts.push(meta);
+    // ── metadata ops figure (multiple variants) ──
+    artifacts.extend(meta_ops_figure::render(results, &paper_dir)?);
 
     // ── paper-report.html ──
     render_index(&artifacts, out_dir)?;
@@ -32,6 +31,11 @@ pub fn render(results: &crate::BenchResults, out_dir: &Path) -> Result<()> {
 }
 
 struct Artifact {
+    /// Group name for variants of the same figure (e.g. "Metadata operation latency").
+    /// Artifacts with the same group are shown under a shared heading.
+    /// `None` means standalone (gets its own heading from `title`).
+    group: Option<String>,
+    /// Variant-specific title (e.g. "broken axis", "capped + annotated").
     title: String,
     tex_path: String,
     pdf_path: Option<String>,
@@ -44,32 +48,74 @@ fn render_index(artifacts: &[Artifact], out_dir: &Path) -> Result<()> {
     html.push_str("<style>\n\
         body { font-family: system-ui, sans-serif; margin: 1.5em; background: #fafafa; }\n\
         h1 { font-size: 1.2em; }\n\
-        h2 { font-size: 1.05em; color: #555; margin-top: 1.5em; }\n\
+        h2 { font-size: 1.05em; color: #333; margin-top: 1.5em; }\n\
+        h3 { font-size: 0.95em; color: #666; margin-top: 1em; margin-left: 1em; }\n\
+        .variant { margin-left: 1em; }\n\
         ul { line-height: 1.6; }\n\
         iframe { border: 1px solid #ddd; background: #fff; }\n\
     </style>\n");
     html.push_str("</head><body>\n");
     html.push_str("<h1>Paper Artifacts</h1>\n");
 
-    for art in artifacts {
-        html.push_str(&format!("<h2>{}</h2>\n<ul>\n", crate::report::escape_html(&art.title)));
-        html.push_str(&format!(
-            "<li><a href=\"{}\">.tex source</a></li>\n",
-            crate::report::escape_html(&art.tex_path)
-        ));
-        if let Some(ref pdf) = art.pdf_path {
+    let esc = crate::report::escape_html;
+
+    let mut i = 0;
+    while i < artifacts.len() {
+        let art = &artifacts[i];
+
+        if let Some(ref group) = art.group {
+            // Emit group heading, then all consecutive artifacts with the same group.
+            html.push_str(&format!("<h2>{}</h2>\n", esc(group)));
+            let group_name = group.clone();
+            while i < artifacts.len()
+                && artifacts[i].group.as_deref() == Some(&group_name)
+            {
+                let a = &artifacts[i];
+                html.push_str(&format!(
+                    "<div class=\"variant\">\n<h3>{}</h3>\n<ul>\n",
+                    esc(&a.title)
+                ));
+                html.push_str(&format!(
+                    "<li><a href=\"{}\">.tex source</a></li>\n",
+                    esc(&a.tex_path)
+                ));
+                if let Some(ref pdf) = a.pdf_path {
+                    html.push_str(&format!(
+                        "<li><a href=\"{}\">.pdf</a></li>\n",
+                        esc(pdf)
+                    ));
+                }
+                html.push_str("</ul>\n");
+                if let Some(ref pdf) = a.pdf_path {
+                    html.push_str(&format!(
+                        "<iframe src=\"{}\" style=\"width:100%;height:320px\"></iframe>\n",
+                        esc(pdf)
+                    ));
+                }
+                html.push_str("</div>\n");
+                i += 1;
+            }
+        } else {
+            // Standalone artifact.
+            html.push_str(&format!("<h2>{}</h2>\n<ul>\n", esc(&art.title)));
             html.push_str(&format!(
-                "<li><a href=\"{}\">.pdf</a></li>\n",
-                crate::report::escape_html(pdf)
+                "<li><a href=\"{}\">.tex source</a></li>\n",
+                esc(&art.tex_path)
             ));
-        }
-        html.push_str("</ul>\n");
-        if let Some(ref pdf) = art.pdf_path {
-            // Embed with a reasonable default; the PDF is cropped to content.
-            html.push_str(&format!(
-                "<iframe src=\"{}\" style=\"width:100%;height:320px\"></iframe>\n",
-                crate::report::escape_html(pdf)
-            ));
+            if let Some(ref pdf) = art.pdf_path {
+                html.push_str(&format!(
+                    "<li><a href=\"{}\">.pdf</a></li>\n",
+                    esc(pdf)
+                ));
+            }
+            html.push_str("</ul>\n");
+            if let Some(ref pdf) = art.pdf_path {
+                html.push_str(&format!(
+                    "<iframe src=\"{}\" style=\"width:100%;height:320px\"></iframe>\n",
+                    esc(pdf)
+                ));
+            }
+            i += 1;
         }
     }
 

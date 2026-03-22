@@ -1,4 +1,5 @@
 use crate::helpers::AgfsSession;
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
 
@@ -363,4 +364,173 @@ fn readdir_dtype_all_three_types() {
     assert!(found[0], "reg.txt not found in readdir");
     assert!(found[1], "sub not found in readdir");
     assert!(found[2], "lnk not found in readdir");
+}
+
+// ── small-buffer getdents64 tests (exercises multi-call readdir) ──
+
+/// Read all directory entries using raw getdents64 with a small buffer,
+/// forcing multiple kernel re-entries. Returns names in emission order
+/// (may contain duplicates if the kernel is buggy) and the number of
+/// getdents64 calls made (excluding the final zero-return).
+fn readdir_small_buf(path: &std::path::Path) -> (Vec<String>, usize) {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY) };
+    assert!(fd >= 0, "open directory failed: {}", std::io::Error::last_os_error());
+
+    // 128 bytes fits ~1 entry, forcing many getdents64 calls.
+    let mut buf = [0u8; 128];
+    let mut names = Vec::new();
+    let mut calls = 0usize;
+
+    loop {
+        let n = unsafe {
+            libc::syscall(libc::SYS_getdents64, fd, buf.as_mut_ptr(), buf.len() as u32)
+        };
+        assert!(n >= 0, "getdents64 failed: {}", std::io::Error::last_os_error());
+        if n == 0 {
+            break;
+        }
+        calls += 1;
+        let mut offset = 0usize;
+        while offset < n as usize {
+            // struct linux_dirent64: d_ino(8), d_off(8), d_reclen(2), d_type(1), d_name(...)
+            let reclen = u16::from_ne_bytes([buf[offset + 16], buf[offset + 17]]) as usize;
+            let name_ptr = &buf[offset + 19..offset + reclen];
+            let name_end = name_ptr.iter().position(|&b| b == 0).unwrap_or(name_ptr.len());
+            let name = std::str::from_utf8(&name_ptr[..name_end]).unwrap().to_string();
+            if name != "." && name != ".." {
+                names.push(name);
+            }
+            offset += reclen;
+        }
+    }
+
+    unsafe { libc::close(fd) };
+    (names, calls)
+}
+
+/// Base-only directory: exercises the fast path (no dirents).
+/// With a small getdents64 buffer, this makes many kernel re-entries.
+#[test]
+fn readdir_small_buf_base_only() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let dir = s.mnt_path("basedir");
+    // Create files in the base layer by writing to the host path.
+    let host_dir = s.base_path("basedir");
+    fs::create_dir(&host_dir).expect("mkdir host");
+    let mut expected = BTreeSet::new();
+    for i in 0..30 {
+        let name = format!("f-{i:03}.txt");
+        fs::write(host_dir.join(&name), "x").expect("write");
+        expected.insert(name);
+    }
+
+    let (names, calls) = readdir_small_buf(&dir);
+    assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
+    assert_eq!(names.len(), expected.len(), "base-only: duplicate or missing entries (got {} names for {} expected)", names.len(), expected.len());
+    let got: BTreeSet<String> = names.into_iter().collect();
+    assert_eq!(got, expected, "base-only small-buf readdir mismatch");
+}
+
+/// Mixed directory: base files + staged creates + staged deletes.
+/// Exercises the merge path with multiple getdents64 calls.
+///
+/// BUG: currently fails — tombstones increment `off` without emitting,
+/// so `off` and `ctx->pos` desync across getdents64 calls. On re-entry
+/// the `off < ctx->pos` skip under-skips, producing duplicate base entries.
+#[test]
+fn readdir_small_buf_mixed() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // Base layer: 20 files
+    let host_dir = s.base_path("mixdir");
+    fs::create_dir(&host_dir).expect("mkdir host");
+    let mut expected = BTreeSet::new();
+    for i in 0..20 {
+        let name = format!("base-{i:03}.txt");
+        fs::write(host_dir.join(&name), "x").expect("write base");
+        expected.insert(name);
+    }
+
+    let dir = s.mnt_path("mixdir");
+
+    // Stage: create 10 new files
+    for i in 0..10 {
+        let name = format!("new-{i:03}.txt");
+        fs::write(dir.join(&name), "y").expect("write staged");
+        expected.insert(name);
+    }
+
+    // Stage: delete 5 base files
+    for i in 0..5 {
+        let name = format!("base-{i:03}.txt");
+        fs::remove_file(dir.join(&name)).expect("unlink");
+        expected.remove(&name);
+    }
+
+    let (names, calls) = readdir_small_buf(&dir);
+    assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
+    assert_eq!(names.len(), expected.len(), "mixed: duplicate or missing entries (got {} names for {} expected)", names.len(), expected.len());
+    let got: BTreeSet<String> = names.into_iter().collect();
+    assert_eq!(got, expected, "mixed small-buf readdir mismatch");
+}
+
+/// Staged-only directory: no base entries, all dirents.
+/// Exercises the merge path where phase 2 has nothing to emit.
+#[test]
+fn readdir_small_buf_staged_only() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let dir = s.mnt_path("stagedir");
+    fs::create_dir(&dir).expect("mkdir");
+
+    let mut expected = BTreeSet::new();
+    for i in 0..25 {
+        let name = format!("s-{i:03}.txt");
+        fs::write(dir.join(&name), "z").expect("write");
+        expected.insert(name);
+    }
+
+    let (names, calls) = readdir_small_buf(&dir);
+    assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
+    assert_eq!(names.len(), expected.len(), "staged-only: duplicate or missing entries (got {} names for {} expected)", names.len(), expected.len());
+    let got: BTreeSet<String> = names.into_iter().collect();
+    assert_eq!(got, expected, "staged-only small-buf readdir mismatch");
+}
+
+/// Few staged entries + many base entries: the phase 1→2 boundary
+/// lands in the middle of the getdents64 call sequence. This exercises
+/// resumption into phase 2 after phase 1 has been fully emitted.
+#[test]
+fn readdir_small_buf_few_staged_many_base() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // Base layer: 28 files
+    let host_dir = s.base_path("fewstage");
+    fs::create_dir(&host_dir).expect("mkdir host");
+    let mut expected = BTreeSet::new();
+    for i in 0..28 {
+        let name = format!("base-{i:03}.txt");
+        fs::write(host_dir.join(&name), "x").expect("write base");
+        expected.insert(name);
+    }
+
+    let dir = s.mnt_path("fewstage");
+
+    // Stage: create only 2 new files (phase 1 is tiny)
+    for i in 0..2 {
+        let name = format!("new-{i}.txt");
+        fs::write(dir.join(&name), "y").expect("write staged");
+        expected.insert(name);
+    }
+
+    let (names, calls) = readdir_small_buf(&dir);
+    assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
+    assert_eq!(names.len(), expected.len(), "few-staged: duplicate or missing entries (got {} names for {} expected)", names.len(), expected.len());
+    let got: BTreeSet<String> = names.into_iter().collect();
+    assert_eq!(got, expected, "few-staged small-buf readdir mismatch");
 }

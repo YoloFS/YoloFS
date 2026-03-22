@@ -21,6 +21,8 @@ BENCH_PKGS=(
     # btrfs backend
     btrfs-progs                # mkfs.btrfs, btrfs subvolume commands
     rsync                      # btrfs commit copies changes back to base
+    # paper artifact generation
+    python3-pip                # pip for installing Python packages below
 )
 
 info "Installing benchmark dependencies"
@@ -32,3 +34,8 @@ sudo apt-get install -y --no-install-recommends "${BENCH_PKGS[@]}"
 info "Configuring kernel settings for try (overlay + unprivileged userns)"
 sudo modprobe overlay
 sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+# ── Python packages for paper artifact generation ────────────────────
+
+info "Installing Python packages for paper figures"
+python3 -m pip install --break-system-packages brokenaxes

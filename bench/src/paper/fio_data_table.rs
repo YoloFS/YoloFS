@@ -29,6 +29,7 @@ pub fn render(results: &BenchResults, paper_dir: &Path) -> Result<Artifact> {
     };
 
     Ok(Artifact {
+        group: None,
         title: "Data-op throughput summary (fio)".to_string(),
         tex_path: format!("paper/{}", tex_path.file_name().unwrap().to_string_lossy()),
         pdf_path: pdf_path.map(|p| format!("paper/{}", p.file_name().unwrap().to_string_lossy())),
