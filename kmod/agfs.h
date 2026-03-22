@@ -377,6 +377,8 @@ struct agfs_dentry_info {
 
 struct agfs_file_info {
 	struct file		*lower_file;
+	loff_t			base_pos;	/* saved lower f_pos for readdir resume */
+	loff_t			dirent_off;	/* virtual offset at end of phase 1 */
 };
 
 /* ── Accessor Macros ───────────────────────────────────────────────── */

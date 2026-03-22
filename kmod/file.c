@@ -400,10 +400,8 @@ static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
 
 	for (bi = 0; bi < AGFS_DE_BUCKETS; bi++) {
 		hlist_for_each_entry(de, &dii->de_buckets[bi], node) {
-			if (agfs_pde_is_tombstone(de->packed)) {
-				(*off)++;
+			if (agfs_pde_is_tombstone(de->packed))
 				continue;
-			}
 			if (*off < ctx->pos) {
 				(*off)++;
 				continue;
@@ -434,17 +432,32 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	if (!lower_file)
 		return -EIO;
 
-	/* No staging → simple passthrough */
-	if (!sbi->staging || !sbi->inodes_dir.dentry) {
+	/* No staging or no dirents on this directory → passthrough */
+	if (!sbi->staging || !sbi->inodes_dir.dentry ||
+	    !AGFS_I(file_inode(file))->de_buckets) {
 		lower_file->f_pos = ctx->pos;
 		err = iterate_dir(lower_file, ctx);
 		file->f_pos = lower_file->f_pos;
 		return err;
 	}
 
-	/* Phase 1: emit non-deleted dirent entries */
-	if (agfs_emit_dirents(file_inode(file), ctx, &off))
-		return 0;
+	/*
+	 * Merge path: phase 1 (dirents) then phase 2 (base).
+	 *
+	 * If ctx->pos >= fi->dirent_off we have already emitted all
+	 * dirents in a previous getdents64 call — skip phase 1 and
+	 * resume phase 2 from the saved lower f_pos.  Set off = ctx->pos
+	 * so the skip logic in agfs_fill_base is a no-op (the lower file
+	 * already resumes at the right position).
+	 */
+	if (fi->dirent_off && ctx->pos >= fi->dirent_off) {
+		off = ctx->pos;
+	} else {
+		/* Phase 1: emit non-deleted dirent entries */
+		if (agfs_emit_dirents(file_inode(file), ctx, &off))
+			return 0;
+		fi->dirent_off = off;
+	}
 
 	/* Phase 2: read base directory, skip overridden names */
 	rdd.ctx.actor = agfs_fill_base;
@@ -453,8 +466,9 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	rdd.caller_ctx = ctx;
 	rdd.off = &off;
 
-	lower_file->f_pos = 0;
+	lower_file->f_pos = fi->base_pos;
 	err = iterate_dir(lower_file, &rdd.ctx);
+	fi->base_pos = lower_file->f_pos;
 
 	return err;
 }
