@@ -213,18 +213,61 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
 }
 
 /// Create a checkpoint only if there are staged changes (kernel-side check).
+/// Runs in a forked child to avoid polluting the parent's namespace state
+/// (join_daemon_namespace does setns which is irreversible).
 fn auto_checkpoint(name: &str) -> Result<bool> {
     let agfs = crate::utils::session_dir()?;
-    crate::utils::join_daemon_namespace(&agfs)?;
-    let ctl_file = ioctl::open(&agfs).context("opening ctl for checkpoint")?;
-    let gen_id = ioctl::create_checkpoint(&ctl_file, name, ioctl::AGFS_CHK_IF_CHANGED)?;
-    if gen_id == 0 {
-        return Ok(false);
+
+    // Use a pipe to communicate the result back from the child.
+    let mut pipe_fds = [0i32; 2];
+    if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } != 0 {
+        anyhow::bail!("pipe failed: {}", std::io::Error::last_os_error());
     }
-    eprintln!(
-        "{} {}",
-        format!("checkpoint [{gen_id}]").cyan().bold(),
-        name.dimmed()
-    );
-    Ok(true)
+
+    match unsafe { libc::fork() } {
+        -1 => anyhow::bail!("fork failed: {}", std::io::Error::last_os_error()),
+        0 => {
+            // Child: do the checkpoint in the namespace.
+            unsafe { libc::close(pipe_fds[0]) };
+            let result: u8 = (|| -> Result<u8> {
+                crate::utils::join_daemon_namespace(&agfs)?;
+                let ctl_file = ioctl::open(&agfs).context("opening ctl for checkpoint")?;
+                let gen_id =
+                    ioctl::create_checkpoint(&ctl_file, name, ioctl::AGFS_CHK_IF_CHANGED)?;
+                if gen_id == 0 {
+                    return Ok(0); // no changes
+                }
+                eprintln!(
+                    "{} {}",
+                    format!("checkpoint [{gen_id}]").cyan().bold(),
+                    name.dimmed()
+                );
+                Ok(1) // checkpoint created
+            })()
+            .unwrap_or_else(|e| {
+                eprintln!("{} {:#}", "agfs: checkpoint failed:".yellow(), e);
+                2 // error
+            });
+            unsafe {
+                libc::write(pipe_fds[1], &result as *const u8 as _, 1);
+                libc::close(pipe_fds[1]);
+                libc::_exit(0);
+            }
+        }
+        child_pid => {
+            // Parent: read result from child.
+            unsafe { libc::close(pipe_fds[1]) };
+            let mut result: u8 = 2;
+            unsafe {
+                libc::read(pipe_fds[0], &mut result as *mut u8 as _, 1);
+                libc::close(pipe_fds[0]);
+                libc::waitpid(child_pid, std::ptr::null_mut(), 0);
+            }
+            match result {
+                0 => Ok(false),
+                1 => Ok(true),
+                _ => anyhow::bail!("auto-checkpoint failed"),
+            }
+        }
+    }
 }
