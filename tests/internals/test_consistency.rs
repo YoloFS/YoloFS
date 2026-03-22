@@ -132,7 +132,7 @@ fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
                 ..
             } = d
             {
-                Some(src.clone())
+                Some(src.as_str())
             } else {
                 None
             }
@@ -265,14 +265,8 @@ fn delete_staged_file_cancels() {
 
     // CLI should have no entry (cancelled)
     let t = tree(&s);
-    let mut found = false;
-    t.for_each(|p, _| {
-        if p.ends_with("/temp.txt") {
-            found = true;
-        }
-    });
     assert!(
-        !found,
+        !t.any(|p, _| p.ends_with("/temp.txt")),
         "A+D on staged-only should cancel: {t:?}"
     );
 }
@@ -285,14 +279,8 @@ fn delete_base_file_tombstones() {
     assert_consistent(&s);
 
     let t = tree(&s);
-    let mut found = false;
-    t.for_each(|p, e| {
-        if p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. }) {
-            found = true;
-        }
-    });
     assert!(
-        found,
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. })),
         "D on base file should produce tombstone: {t:?}"
     );
 }
@@ -494,14 +482,8 @@ fn modify_then_delete_base() {
     assert_consistent(&s);
 
     let t = tree(&s);
-    let mut found = false;
-    t.for_each(|p, e| {
-        if p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. }) {
-            found = true;
-        }
-    });
     assert!(
-        found,
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. })),
         "M+D on base should produce tombstone: {t:?}"
     );
 }
@@ -619,16 +601,9 @@ fn create_over_tombstone() {
 
     // CLI should have in_base=true (inherited from tombstone)
     let t = tree(&s);
-    let mut found = false;
-    t.for_each(|p, e| {
-        if p.ends_with("/hello.txt")
-            && matches!(e, Dstate::StagedInode { in_base: true, .. })
-        {
-            found = true;
-        }
-    });
     assert!(
-        found,
+        t.any(|p, e| p.ends_with("/hello.txt")
+            && matches!(e, Dstate::StagedInode { in_base: true, .. })),
         "recreated file over tombstone should have in_base=true: {t:?}"
     );
     assert_eq!(

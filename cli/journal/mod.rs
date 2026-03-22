@@ -9,13 +9,15 @@
 //   journal   — Journal (segments + markers + precomputed liveness, borrowing filters)
 //   tree      — DirTree builder: apply actions → dir tree, walk for display/restore
 
+pub mod dstate;
 pub(crate) mod journal;
 pub mod markers;
 mod parse;
 pub mod tree;
 pub mod types;
 
+pub use dstate::Dstate;
 pub use journal::Journal;
 pub use markers::Markers;
-pub use tree::{DirTree, Dstate};
+pub use tree::DirTree;
 pub use types::*;

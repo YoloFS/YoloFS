@@ -12,75 +12,8 @@
 
 use std::collections::HashMap;
 
+use super::dstate::Dstate;
 use super::types::*;
-
-/// A dstate — the state of a single entry in the overlay.
-///
-/// `in_base` indicates whether this path position had content in the base
-/// filesystem before staging.  It determines cleanup behavior: when removed
-/// or moved away, `in_base=true` leaves a Tombstone to hide the base content;
-/// `in_base=false` cancels (just removes — nothing in base to hide).
-#[derive(Debug, Clone, PartialEq)]
-pub enum Dstate {
-    StagedInode {
-        ino: u32,
-        dtype: u8,
-        in_base: bool,
-    },
-    BasePath {
-        /// The source path in the base filesystem (where the content lives).
-        src: String,
-        dtype: u8,
-        in_base: bool,
-    },
-    Tombstone {
-        dtype: u8,
-    },
-    Passthrough,
-}
-
-impl Dstate {
-    pub fn dtype(&self) -> u8 {
-        match self {
-            Dstate::StagedInode { dtype, .. }
-            | Dstate::BasePath { dtype, .. }
-            | Dstate::Tombstone { dtype } => *dtype,
-            Dstate::Passthrough => unreachable!("Passthrough has no dtype"),
-        }
-    }
-
-    pub fn in_base(&self) -> bool {
-        match self {
-            Dstate::StagedInode { in_base, .. } | Dstate::BasePath { in_base, .. } => *in_base,
-            Dstate::Tombstone { .. } | Dstate::Passthrough => true,
-        }
-    }
-
-    /// Return the staged inode ID if this dstate carries one.
-    pub fn ino(&self) -> Option<u32> {
-        match self {
-            Dstate::StagedInode { ino, .. } => Some(*ino),
-            _ => None,
-        }
-    }
-
-    /// True if this dstate involves the given path (as source or destination).
-    pub fn matches_path(&self, dstate_path: &str, query: &str) -> bool {
-        match self {
-            Dstate::StagedInode { .. } | Dstate::Tombstone { .. } | Dstate::Passthrough => {
-                dstate_path == query
-            }
-            Dstate::BasePath { src, .. } => dstate_path == query || src == query,
-        }
-    }
-
-    fn set_in_base(&mut self, val: bool) {
-        match self {
-            Dstate::StagedInode { in_base, .. } | Dstate::BasePath { in_base, .. } => *in_base = val,
-            Dstate::Tombstone { .. } | Dstate::Passthrough => {}
-        }
-    }
-}
 
 /// A node in the dir tree.
 #[derive(Debug, Clone, PartialEq)]
@@ -180,6 +113,17 @@ impl DirTree {
     /// Visit each (full-path, dstate) pair by reference.
     pub fn for_each<F: FnMut(&str, &Dstate)>(&self, mut f: F) {
         self.visit_dstates(&mut f, &mut String::new());
+    }
+
+    /// Return true if any (path, dstate) pair matches the predicate.
+    pub fn any<F: FnMut(&str, &Dstate) -> bool>(&self, mut f: F) -> bool {
+        let mut found = false;
+        self.for_each(|p, d| {
+            if !found && f(p, d) {
+                found = true;
+            }
+        });
+        found
     }
 
     /// Look up a dstate by its full path (e.g. "/dir/file").
@@ -326,11 +270,13 @@ impl DirTree {
         }
         let mut current = self;
         for part in path[..last_slash].split('/').filter(|s| !s.is_empty()) {
-            let node = current
-                .nodes
-                .entry(part.to_string())
-                .or_insert_with(|| DirNode::Dir(Dstate::Passthrough, DirTree::new()));
-            match node {
+            if !current.nodes.contains_key(part) {
+                current.nodes.insert(
+                    part.to_string(),
+                    DirNode::Dir(Dstate::Passthrough, DirTree::new()),
+                );
+            }
+            match current.nodes.get_mut(part).unwrap() {
                 DirNode::Dir(_, subtree) => current = subtree,
                 DirNode::File(_) => return None,
             }
@@ -645,6 +591,15 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(
             matches!(tree.get("/dir/sub/file"), Some(Dstate::StagedInode { ino: 1, in_base: false, .. }))
+        );
+    }
+
+    #[test]
+    fn get_path_through_file_returns_none() {
+        let tree = build(&[add("/file.txt", 1)]);
+        assert!(
+            tree.get("/file.txt/invalid").is_none(),
+            "querying path through a file should return None"
         );
     }
 
@@ -1003,6 +958,21 @@ mod tests {
             "b should come from a: {:?}",
             tree
         );
+    }
+
+    #[test]
+    fn three_step_roundtrip_rename_produces_passthrough() {
+        // a→b→c→a should produce Passthrough at /a (no net staged change).
+        let tree = build(&[
+            rename("/b", "/a"),
+            rename("/c", "/b"),
+            rename("/a", "/c"),
+        ]);
+        assert_eq!(tree.len(), 0, "no staged changes after 3-step roundtrip");
+        match tree.nodes.get("a").unwrap() {
+            DirNode::File(Dstate::Passthrough) => {}
+            other => panic!("expected File(Passthrough), got {:?}", other),
+        }
     }
 
     // ── Empty tree ────────────────────────────────────────────────────

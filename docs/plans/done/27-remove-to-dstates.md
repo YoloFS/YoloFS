@@ -1,13 +1,13 @@
-# 27 — Remove to_dstates, use for_each everywhere
+# 27 — Remove to_dirents, use for_each everywhere
 
 ## Problem
 
-`to_dstates()` collects the entire tree into a `Vec<(String, Dstate)>` which is
+`to_dirents()` collects the entire tree into a `Vec<(String, Dstate)>` which is
 unnecessary now that `DirTree::get(path)` and `for_each()` exist.
 
 ## Approach
 
-### 1. `helpers::dstates()` → `helpers::tree()`
+### 1. `helpers::dirents()` → `helpers::tree()`
 
 Change return type from `Vec<(String, Dstate)>` to `DirTree`. Callers that used
 the Vec now use `for_each` or `get`.
@@ -24,20 +24,20 @@ Rewrite to take `&DirTree` and use `for_each` internally (suffix matching via
 
 ### 4. Update tree.rs unit tests
 
-Replace remaining `tree.to_dstates()` in debug format args with direct `tree`
+Replace remaining `tree.to_dirents()` in debug format args with direct `tree`
 debug output (DirTree derives Debug). Or just use `{tree:?}`.
 
-### 5. Remove `to_dstates()`
+### 5. Remove `to_dirents()`
 
 Delete the method from DirTree.
 
 ### 6. `tests/fs/test_rename.rs` and `tests/internals/test_restore.rs`
 
-These also call `to_dstates()` — convert them to use `for_each` or `get`.
+These also call `to_dirents()` — convert them to use `for_each` or `get`.
 
 ## Files affected
 
-- `cli/journal/tree.rs` — remove `to_dstates()`, update unit test debug msgs
+- `cli/journal/tree.rs` — remove `to_dirents()`, update unit test debug msgs
 - `tests/internals/helpers.rs` — `dstates()` → `tree()`, rewrite `ino_for`
 - `tests/internals/test_*.rs` — update imports and call sites
 - `tests/fs/test_rename.rs` — convert to `for_each`

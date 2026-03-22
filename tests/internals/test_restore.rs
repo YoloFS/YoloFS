@@ -106,14 +106,8 @@ fn restore_orphans_post_checkpoint_inodes() {
 
     // But not referenced by any resolved change
     let t = tree(&s);
-    let mut has_orphan = false;
-    t.for_each(|_, dstate| {
-        if dstate.ino() == Some(post_ino) {
-            has_orphan = true;
-        }
-    });
     assert!(
-        !has_orphan,
+        !t.any(|_, d| d.ino() == Some(post_ino)),
         "orphaned inode should not appear in resolved dstates"
     );
 }

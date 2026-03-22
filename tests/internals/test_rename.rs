@@ -141,6 +141,20 @@ fn rename_back_and_forth_no_changes() {
         "rename back and forth should produce no staged changes, got: {ch:?}");
 }
 
+/// Three-step roundtrip: a→b→c→a. The rename chain is a no-op.
+#[test]
+fn rename_three_step_roundtrip_no_changes() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp1.txt")).expect("a→b");
+    fs::rename(s.mnt_path("temp1.txt"), s.mnt_path("temp2.txt")).expect("b→c");
+    fs::rename(s.mnt_path("temp2.txt"), s.mnt_path("hello.txt")).expect("c→a");
+
+    let ch = tree(&s);
+    assert_eq!(ch.len(), 0,
+        "3-step roundtrip should produce no staged changes, got: {ch:?}");
+}
+
 /// Rename a staged (newly created) file to overwrite a base file.
 /// The destination exists in base, so the kernel emits P (Replace) record.
 #[test]

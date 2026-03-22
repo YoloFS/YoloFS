@@ -234,6 +234,24 @@ fn rename_back_and_forth_commit() {
     );
 }
 
+/// Three-step roundtrip: a→b→c→a. File ends up back at original path.
+#[test]
+fn rename_three_step_roundtrip() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp1.txt")).expect("a→b");
+    fs::rename(s.mnt_path("temp1.txt"), s.mnt_path("temp2.txt")).expect("b→c");
+    fs::rename(s.mnt_path("temp2.txt"), s.mnt_path("hello.txt")).expect("c→a");
+
+    // File should be back at original path with original content
+    let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
+    assert_eq!(content, "base content\n");
+
+    // Temp names should not exist
+    assert!(fs::read_to_string(s.mnt_path("temp1.txt")).is_err());
+    assert!(fs::read_to_string(s.mnt_path("temp2.txt")).is_err());
+}
+
 /// Rename onto an existing file (overwrite target).
 #[test]
 fn rename_overwrite_existing() {
