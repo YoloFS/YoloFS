@@ -349,12 +349,12 @@ pub fn mount() -> Result<()> {
             }
 
             let ready_path = agfs_dir.join("ready");
-            for _ in 0..50 {
+            for _ in 0..500 {
                 if ready_path.exists() {
                     let _ = fs::remove_file(&ready_path);
                     return Ok(());
                 }
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
             anyhow::bail!("daemon did not become ready in time");
         }
@@ -394,12 +394,18 @@ pub fn unmount(force: bool) -> Result<()> {
                 nix::unistd::Pid::from_raw(pid),
                 nix::sys::signal::Signal::SIGTERM,
             );
-            // Wait briefly for the daemon to clean up
-            for _ in 0..20 {
-                if !pid_path.exists() {
-                    break;
+            // Wait for daemon to exit. Use kill(pid, 0) to check if
+            // the process still exists — faster than polling the pid file.
+            for _ in 0..200 {
+                if nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid),
+                    None,
+                )
+                .is_err()
+                {
+                    break; // process gone
                 }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
     }
