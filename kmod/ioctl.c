@@ -525,7 +525,6 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 				/* Link — read trailing base_path */
 				u64 dt = (packed >> 61) & 3;
 				u8 d_type, ib;
-				char *bp;
 
 				if (dt == 3) {
 					err = -EINVAL;
@@ -552,15 +551,14 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 					goto out_unwind;
 				}
 
-				bp = kmalloc(base_len + 1, GFP_KERNEL);
-				if (!bp) {
-					err = -ENOMEM;
-					goto out_unwind;
-				}
-				memcpy(bp, base_ptr, base_len);
-				bp[base_len] = '\0';
-
-				pde = agfs_pde_link(bp, d_type, ib);
+				/*
+				 * Pass a temporary pointer into the vmalloc'd
+				 * buffer — agfs_add_dirent kstrdup's it, so no
+				 * separate allocation needed here.  The NUL
+				 * terminator is already verified above.
+				 */
+				pde = agfs_pde_link((const char *)base_ptr,
+						    d_type, ib);
 			}
 
 			inode_lock(dir);
@@ -568,8 +566,6 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 					     name_len, pde);
 			inode_unlock(dir);
 			if (IS_ERR(de)) {
-				if (agfs_pde_is_link(pde))
-					kfree(agfs_pde_base(pde));
 				err = PTR_ERR(de);
 				goto out_unwind;
 			}

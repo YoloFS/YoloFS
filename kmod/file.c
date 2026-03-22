@@ -422,9 +422,9 @@ static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
 
 static int agfs_readdir(struct file *file, struct dir_context *ctx)
 {
-	struct agfs_file_info *fi = AGFS_F(file);
+	struct agfs_dir_info *di = AGFS_DI(file);
 	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
-	struct file *lower_file = fi->lower_file;
+	struct file *lower_file = di->fi.lower_file;
 	struct agfs_readdir_data rdd;
 	loff_t off = 0;
 	int err = 0;
@@ -444,19 +444,19 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	/*
 	 * Merge path: phase 1 (dirents) then phase 2 (base).
 	 *
-	 * If ctx->pos >= fi->dirent_off we have already emitted all
+	 * If ctx->pos >= di->dirent_off we have already emitted all
 	 * dirents in a previous getdents64 call — skip phase 1 and
 	 * resume phase 2 from the saved lower f_pos.  Set off = ctx->pos
 	 * so the skip logic in agfs_fill_base is a no-op (the lower file
 	 * already resumes at the right position).
 	 */
-	if (fi->dirent_off && ctx->pos >= fi->dirent_off) {
+	if (di->dirent_off && ctx->pos >= di->dirent_off) {
 		off = ctx->pos;
 	} else {
 		/* Phase 1: emit non-deleted dirent entries */
 		if (agfs_emit_dirents(file_inode(file), ctx, &off))
 			return 0;
-		fi->dirent_off = off;
+		di->dirent_off = off;
 	}
 
 	/* Phase 2: read base directory, skip overridden names */
@@ -466,33 +466,33 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	rdd.caller_ctx = ctx;
 	rdd.off = &off;
 
-	lower_file->f_pos = fi->base_pos;
+	lower_file->f_pos = di->base_pos;
 	err = iterate_dir(lower_file, &rdd.ctx);
-	fi->base_pos = lower_file->f_pos;
+	di->base_pos = lower_file->f_pos;
 
 	return err;
 }
 
 static int agfs_dir_open(struct inode *inode, struct file *file)
 {
-	struct agfs_file_info *fi;
+	struct agfs_dir_info *di;
 	struct file *lower_file;
 	struct path lower_path;
 
-	fi = kzalloc(sizeof(*fi), GFP_KERNEL);
-	if (!fi)
+	di = kzalloc(sizeof(*di), GFP_KERNEL);
+	if (!di)
 		return -ENOMEM;
 
 	agfs_get_lower_path(file->f_path.dentry, &lower_path);
 	lower_file = dentry_open(&lower_path, file->f_flags, current_cred());
 	agfs_put_lower_path(file->f_path.dentry, &lower_path);
 	if (IS_ERR(lower_file)) {
-		kfree(fi);
+		kfree(di);
 		return PTR_ERR(lower_file);
 	}
 
-	fi->lower_file = lower_file;
-	file->private_data = fi;
+	di->fi.lower_file = lower_file;
+	file->private_data = di;
 	return 0;
 }
 

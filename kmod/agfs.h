@@ -34,7 +34,7 @@
 #define AGFS_INO_REDIRECT	((u64)-1)
 
 /* Restore tree buffer limits */
-#define AGFS_RESTORE_MAX_DEPTH		64
+#define AGFS_RESTORE_MAX_DEPTH		32
 #define AGFS_RESTORE_MAX_TREE_LEN	(16 * 1024 * 1024)
 
 /* Operations passed in ask requests */
@@ -377,6 +377,10 @@ struct agfs_dentry_info {
 
 struct agfs_file_info {
 	struct file		*lower_file;
+};
+
+struct agfs_dir_info {
+	struct agfs_file_info	fi;		/* must be first */
 	loff_t			base_pos;	/* saved lower f_pos for readdir resume */
 	loff_t			dirent_off;	/* virtual offset at end of phase 1 */
 };
@@ -399,6 +403,11 @@ static inline struct agfs_dentry_info *AGFS_D(const struct dentry *dentry)
 }
 
 static inline struct agfs_file_info *AGFS_F(const struct file *file)
+{
+	return file->private_data;
+}
+
+static inline struct agfs_dir_info *AGFS_DI(const struct file *file)
 {
 	return file->private_data;
 }
