@@ -512,7 +512,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 				goto out_unwind;
 
 			if (packed == 0) {
-				/* Untracked — should not appear in restore stream */
+				/* Passthrough — should not appear in restore stream */
 				err = -EINVAL;
 				goto out_unwind;
 			} else if ((s64)packed > 0) {

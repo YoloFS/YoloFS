@@ -108,7 +108,7 @@ fn print_change(agfs: &Path, path: &str, dirent: &Dstate, verbose: bool) {
                 "(renamed)".cyan()
             );
         }
-        Dstate::Untracked => {}
+        Dstate::Passthrough => {}
     }
 }
 
@@ -256,7 +256,7 @@ mod tests {
                     map.insert(src.as_str(), None);
                     map.insert(path.as_str(), Some(read_base(src)));
                 }
-                Dstate::Untracked => {}
+                Dstate::Passthrough => {}
             }
         }
         map

@@ -29,7 +29,7 @@ static int agfs_d_init(struct dentry *dentry)
 		return -ENOMEM;
 
 	spin_lock_init(&info->lock);
-	info->dstate = (struct agfs_dstate){0}; /* untracked */
+	info->dstate = (struct agfs_dstate){0}; /* passthrough */
 	INIT_LIST_HEAD(&info->de_node);
 	info->dentry = dentry;
 	info->perm = AGFS_PERM_NONE;
@@ -150,7 +150,7 @@ void agfs_unstage_dentry(struct agfs_dentry_info *di)
 {
 	list_del_init(&di->de_node);
 	agfs_dstate_free(di->dstate);
-	di->dstate = (struct agfs_dstate){0}; /* untracked */
+	di->dstate = (struct agfs_dstate){0}; /* passthrough */
 	dput(di->dentry);
 }
 

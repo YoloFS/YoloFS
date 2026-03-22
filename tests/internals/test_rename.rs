@@ -137,7 +137,7 @@ fn rename_back_and_forth_no_changes() {
     fs::rename(s.mnt_path("temp.txt"), s.mnt_path("hello.txt")).expect("b→a");
 
     let ch = dirents(&s);
-    let staged: Vec<_> = ch.iter().filter(|(_, d)| !matches!(d, Dstate::Untracked)).collect();
+    let staged: Vec<_> = ch.iter().filter(|(_, d)| !matches!(d, Dstate::Passthrough)).collect();
     assert!(
         staged.is_empty(),
         "rename back and forth should produce no staged changes, got: {staged:?}"

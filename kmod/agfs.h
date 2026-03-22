@@ -148,7 +148,7 @@ struct agfs_dstate { u64 val; };
 
 /*
  * Four mutually exclusive states in a single u64:
- *   val == 0              → untracked (default, follows base)
+ *   val == 0              → passthrough (default, follows base)
  *   (s64)val > 0, ino==0  → tombstone (deleted, carries d_type, in_base=1)
  *   (s64)val > 0, ino!=0  → staged inode
  *   (s64)val < 0          → base_path (kernel pointer with bit 63 as tag)
@@ -192,7 +192,7 @@ static inline unsigned char agfs_dtype_unpack(u64 packed_dt)
 
 /* ── Predicates ────────────────────────────────────────────────── */
 
-static inline bool agfs_dstate_is_untracked(struct agfs_dstate p)
+static inline bool agfs_dstate_is_passthrough(struct agfs_dstate p)
 {
 	return p.val == 0;
 }
@@ -221,7 +221,7 @@ static inline unsigned char agfs_dstate_d_type(struct agfs_dstate p)
 
 static inline bool agfs_dstate_in_base(struct agfs_dstate p)
 {
-	WARN_ON_ONCE(agfs_dstate_is_untracked(p));
+	WARN_ON_ONCE(agfs_dstate_is_passthrough(p));
 	return (p.val >> 59) & 1;
 }
 

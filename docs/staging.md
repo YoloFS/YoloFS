@@ -106,7 +106,7 @@ the inode.
 | Field | Purpose |
 |-------|---------|
 | `lower_path` | Resolved path to the backing file — either `inodes/<ino>` or the base file. Updated in-place by COW. |
-| `packed` | Single `u64` (`struct agfs_dstate`) encoding the overlay state. Four mutually exclusive variants: **untracked** (`packed == 0`), **tombstone** (positive, `ino == 0` — deleted, carries `d_type`, always `in_base`), **link** (bit 63 set — kernel pointer with tag), **inode** (positive, `ino != 0` — staged in `inodes/<ino>`). See [Packed Encoding](#packed-encoding). |
+| `packed` | Single `u64` (`struct agfs_dstate`) encoding the overlay state. Four mutually exclusive variants: **passthrough** (`packed == 0`), **tombstone** (positive, `ino == 0` — deleted, carries `d_type`, always `in_base`), **link** (bit 63 set — kernel pointer with tag), **inode** (positive, `ino != 0` — staged in `inodes/<ino>`). See [Packed Encoding](#packed-encoding). |
 | `de_node` | `list_head` — node in parent directory's `de_list`. Initialized to empty by `d_init`. A dentry is staged iff `!list_empty(&de_node)`. |
 | `dentry` | Back-pointer to the owning VFS dentry. |
 
@@ -126,7 +126,7 @@ time is valid for the lifetime of the fd.
 
 Four mutually exclusive states:
 
-- `packed == 0` → **untracked** (default). Dentry follows the base filesystem.
+- `packed == 0` → **passthrough** (default). Dentry follows the base filesystem.
   Zero-initialized by `d_init`; also set by `agfs_unstage_dentry`.
 - `(s64)packed > 0 && ino == 0` → **tombstone** (deleted). Has `d_type`
   (bits [62:61]) and `in_base` always set (bit 60 = 1).
@@ -196,21 +196,21 @@ less memory and faster readdir.
 **Branchless accessors**:
 
 ```c
-is_untracked = !packed
+is_passthrough = !packed
 is_link      = (s64)packed < 0
 is_tombstone = (s64)packed > 0 && ((packed >> 16) & 0xFFFFFFFF) == 0
 is_inode     = (s64)packed > 0 && ((packed >> 16) & 0xFFFFFFFF) != 0
-d_type       = agfs_dtype_unpack((packed >> 61) & 3)   // tombstone + inode + link
-in_base      = (packed >> 60) & 1                       // tombstone + inode + link (undefined for untracked)
+d_type       = agfs_dtype_unpack((packed >> 60) & 7)   // tombstone + inode + link
+in_base      = (packed >> 59) & 1                       // tombstone + inode + link (undefined for passthrough)
 ino          = (packed >> 16) & 0xFFFFFFFF              // inode only
 gen          = (u16)packed                              // inode only
-base         = packed | 0x7000000000000000              // link only
+base         = packed | 0x7800000000000000              // link only
 ```
 
 `in_base` tracks whether the path position had content in the base
 filesystem before staging. It is inherited through deletes and used to
 select journal tags (A/M for staged, R/P for renames). It is stored in
-both inodes (bit [60]) and links (bit [60], safe because pointer
+both inodes (bit [59]) and links (bit [59], safe because pointer
 recovery restores the bit).
 
 Link base pointers are owned by the packed encoding. Readers that
