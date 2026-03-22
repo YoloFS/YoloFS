@@ -204,6 +204,7 @@ agfs/
 │   ├── super.c
 │   ├── inode.c
 │   ├── file.c
+│   ├── dir.c
 │   ├── dentry.c
 │   ├── lookup.c
 │   ├── staging.c

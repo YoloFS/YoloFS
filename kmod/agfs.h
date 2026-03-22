@@ -499,8 +499,10 @@ extern const struct inode_operations agfs_symlink_iops;
 
 /* file.c */
 extern const struct file_operations agfs_main_fops;
-extern const struct file_operations agfs_dir_fops;
 extern const struct address_space_operations agfs_aops;
+
+/* dir.c */
+extern const struct file_operations agfs_dir_fops;
 
 /* dentry.c */
 extern const struct dentry_operations agfs_dops;
