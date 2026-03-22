@@ -93,60 +93,113 @@ Configured via top-level keys in `agfs.toml`:
 
 ## Execution Environment
 
-Inside the launched shell or command, AgFS `chroot`s into `.agfs/mnt` so
-that the mounted view becomes `/`. The working directory remains the
-caller's original CWD. For example, launching from `/home/user/project`
-chroots into `.agfs/mnt` and sets the working directory to
-`/home/user/project` — same absolute path, but now resolved through the
-AgFS mount. That is why runtime examples use absolute paths like `/src` and
-`/etc` even when a rule was added as the relative path `src` from the
-session root. Files under that session root are typically ruled `allow-rw`;
-everything else defaults to `ask`.
+Inside the launched shell or command, AgFS enters a mount namespace and
+uses `pivot_root` to make `.agfs/mnt` the new root. The working directory
+remains the caller's original CWD. For example, launching from
+`/home/user/project` pivots into `.agfs/mnt` and sets the working
+directory to `/home/user/project` — same absolute path, but now resolved
+through the AgFS mount. That is why runtime examples use absolute paths
+like `/src` and `/etc` even when a rule was added as the relative path
+`src` from the session root. Files under that session root are typically
+ruled `allow-rw`; everything else defaults to `ask`.
+
+**Why `pivot_root` instead of `chroot`**: `chroot(2)` does not provide
+any security isolation — the man page explicitly states it "is not
+intended to be used for any kind of security purpose". A root process
+(or one with `CAP_SYS_CHROOT`) can trivially escape a chroot via
+`fchdir` to an open fd outside the root, or via `chroot("../..")`.
+`pivot_root` inside a mount namespace replaces the root mount entirely;
+after unmounting the old root there is no dentry path back to the host
+filesystem. This also eliminates unnecessary VFS path-walk overhead:
+with chroot the kernel still resolves the full host path to reach the
+mount point, while with pivot_root path resolution starts directly at
+the agfs mount root.
 
 ## Privilege Model
 
-The agfs binary is installed setuid root (`install -m 4755 -o root`).
-This is needed because `mount()`, `umount()`, bind-mounting `/proc` `/sys`
-`/dev`, and `chroot()` all require `CAP_SYS_ADMIN`.
+AgFS runs entirely unprivileged. No setuid binary, no root access
+required for normal operation. The agfs kernel module sets
+`FS_USERNS_MOUNT` so it can be mounted inside a user namespace.
+Unprivileged user namespaces (`CLONE_NEWUSER | CLONE_NEWNS`) are
+available on modern kernels and enabled by default on Ubuntu, Fedora,
+and Arch.
 
-### Privilege lifecycle
+The only operation requiring real root is loading/unloading the kernel
+module (`agfs load` / `agfs unload`), which delegates to `sudo insmod`
+/ `sudo rmmod` internally.
 
-The `pre_exec` hook in `exec.rs` performs three steps in the child process
-(after fork, before execvp):
+### `agfs mount` — namespace daemon
 
-1. `chroot()` into `.agfs/mnt` — needs euid=0.
-2. `chdir()` to the caller's original working directory.
-3. Permanently drop privileges: `setgid(real_gid)` then `setuid(real_uid)`.
+`agfs mount` creates the namespace and stays alive as a daemon to hold
+it. Other commands join the namespace via `setns(2)`.
 
-Order matters in step 3 — `setuid()` is irreversible and removes the
-ability to call `setgid()`, so gid must be set first.
+1. `unshare(CLONE_NEWUSER | CLONE_NEWNS)` — create a user namespace
+   (granting `CAP_SYS_ADMIN` inside it) and a private mount namespace.
+2. Write uid/gid maps (`/proc/self/uid_map`, `/proc/self/gid_map`) to
+   map the real uid/gid 1:1 inside the namespace.
+3. `mount("", "/", NULL, MS_PRIVATE|MS_REC, NULL)` — prevent mount
+   events from propagating back to the parent namespace.
+4. Mount the agfs filesystem on `.agfs/mnt`.
+5. Bind-mount `/proc`, `/sys`, `/dev` into `.agfs/mnt`.
+6. Write the daemon pid to `.agfs/pid`.
+7. Stay alive, holding the namespace. On `SIGTERM` (from `agfs
+   unmount`), unmount and exit.
 
-After the drop, the user's command runs with the invoking user's uid and
-gid. The kernel module enforces file access via its rule engine based on
-process credentials, not euid.
+The namespace and all mounts inside it persist as long as the daemon
+is alive. If the daemon dies unexpectedly the namespace is cleaned up
+by the kernel.
 
-| Phase | euid | Why |
+### `agfs exec` — join namespace and pivot
+
+`agfs exec` joins the daemon's namespace and isolates the process via
+`pivot_root`:
+
+1. Read the daemon pid from `.agfs/pid`.
+2. `setns(open("/proc/<pid>/ns/user"), CLONE_NEWUSER)` — enter the
+   daemon's user namespace. This is allowed because the namespace was
+   created by the same uid.
+3. `setns(open("/proc/<pid>/ns/mnt"), CLONE_NEWNS)` — enter the
+   daemon's mount namespace (visible mounts include agfs + bind-mounts).
+4. `unshare(CLONE_NEWNS)` — create a private child mount namespace so
+   that `pivot_root` does not affect the daemon or other `agfs exec`
+   sessions.
+5. `chdir(".agfs/mnt")` then `pivot_root(".", ".")` — the agfs mount
+   becomes the new root. The old root is stacked underneath.
+6. `umount2(".", MNT_DETACH)` — detach the old root. After this there
+   is no dentry path back to the host filesystem.
+7. `chdir()` to the caller's original working directory.
+8. Exec the user command.
+
+No privilege drop needed — the process never had elevated privileges.
+
+### `agfs unmount`
+
+Sends `SIGTERM` to the daemon (pid from `.agfs/pid`). The daemon
+unmounts the filesystem and exits, releasing the namespace.
+
+### Other commands (`commit`, `restore`, `status`, `diff`)
+
+These join the daemon's namespace via `setns` (steps 1-3 of exec)
+without `pivot_root`. They issue ioctls on the agfs mount and exit.
+
+| Phase | Privileges | Why |
 |---|---|---|
-| `mount()`, bind-mounts, `chroot()` | 0 | Require `CAP_SYS_ADMIN` |
-| `exec` user command | real uid | User code must not run as root |
-| `commit`, `restore`, `status`, `diff` | 0 | Need root for ioctl on the mount |
-| `load`/`unload` | delegates to `sudo` | Already handled correctly |
+| `load`/`unload` | `sudo` | `insmod`/`rmmod` require real root |
+| `mount` (daemon) | user namespace `CAP_SYS_ADMIN` | Unprivileged via `CLONE_NEWUSER` |
+| `exec` user command | unprivileged | `setns` into existing namespace |
+| `commit`, `restore`, etc. | unprivileged | `setns` + ioctl |
 
 ### `.agfs/` directory ownership
 
-`setup_agfs_dir` creates `.agfs/`, `inodes/`, `mnt/`, and `journal` as
-root (euid=0 from setuid), then `chown`s them all to the real user.
-This ensures the user can write staging blobs into `inodes/` and append
-to `journal` after the exec privilege drop. Without the chown, the
-caller's umask (e.g. 022) would leave `inodes/` as root-owned 0755,
-blocking non-root writes.
+`setup_agfs_dir` creates `.agfs/`, `inodes/`, `mnt/`, and `journal`
+as the invoking user (no root involved). All files and directories are
+owned by the real user from the start.
 
 ### Staging blob ownership
 
 The kernel module creates staging blobs via `vfs_create` / `vfs_mkdir`
-using `current_cred()`. Since user commands inside `agfs exec` run with
-the invoking user's credentials (after the privilege drop), staging blobs
-are owned by the real user.
+using `current_cred()`. Since the user namespace maps the real uid 1:1,
+staging blobs are owned by the real user.
 
 ## TTY / Terminal Ownership
 

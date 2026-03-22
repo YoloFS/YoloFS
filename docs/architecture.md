@@ -111,8 +111,9 @@ single R or P record carrying both source and destination paths.
 $ cd /home/user/project
 $ agfs
    -> creates .agfs/, mounts / -> .agfs/mnt, applies rules from agfs.toml,
-     starts background watch daemon for permission requests, chroots into
-     .agfs/mnt, spawns $SHELL with cwd preserved as the caller's original CWD
+     starts background watch daemon for permission requests, enters a mount
+     namespace with pivot_root into .agfs/mnt, spawns $SHELL with cwd preserved
+     as the caller's original CWD
    -> on shell exit: stops watch daemon, runs `agfs diff`, prompts user to
      commit, abort, or keep staged (user runs `agfs unmount` when done)
 
