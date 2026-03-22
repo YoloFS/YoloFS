@@ -174,10 +174,9 @@ impl DirTree {
     }
 
     /// Walk the tree and produce a flat list of (path, Dirent) pairs.
-    /// Consumes the tree to avoid cloning.
-    pub fn into_dirents(self) -> Vec<(String, Dirent)> {
+    pub fn into_dirents(&self) -> Vec<(String, Dirent)> {
         let mut entries = Vec::new();
-        self.walk_dirents(&mut entries, &mut String::new());
+        self.for_each(|path, dirent| entries.push((path.to_owned(), dirent.clone())));
         entries
     }
 
@@ -380,29 +379,6 @@ impl DirTree {
                         f(prefix, dirent);
                     }
                     subtree.visit_dirents(f, prefix);
-                }
-            }
-
-            prefix.truncate(path_len);
-        }
-    }
-
-    /// Walk the tree to collect (path, Dirent) pairs. Consumes the tree.
-    fn walk_dirents(self, out: &mut Vec<(String, Dirent)>, prefix: &mut String) {
-        for (name, node) in self.nodes {
-            let path_len = prefix.len();
-            prefix.push('/');
-            prefix.push_str(&name);
-
-            match node {
-                DirNode::File(dirent) => {
-                    out.push((prefix.clone(), dirent));
-                }
-                DirNode::Dir(dirent, subtree) => {
-                    if let Some(dirent) = dirent {
-                        out.push((prefix.clone(), dirent));
-                    }
-                    subtree.walk_dirents(out, prefix);
                 }
             }
 
