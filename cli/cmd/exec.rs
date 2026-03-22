@@ -115,6 +115,70 @@ unsafe fn namespace_pre_exec(
     Ok(())
 }
 
+/// Pre-exec hook for when we're already in the namespace: just pivot_root
+/// and mount /proc (no setns needed).
+unsafe fn pivot_only_pre_exec(
+    mnt: &Path,
+    cwd: &Path,
+) -> Result<(), std::io::Error> {
+    use std::ffi::CString;
+
+    let mnt_cstr = CString::new(mnt.as_os_str().as_encoded_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let cwd_cstr = CString::new(cwd.as_os_str().as_encoded_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let dot = CString::new(".").unwrap();
+
+    unsafe {
+        // Private mount namespace so pivot_root doesn't affect others
+        if libc::unshare(libc::CLONE_NEWNS) != 0 {
+            let e = std::io::Error::last_os_error();
+            eprintln!("pivot_only: unshare(NEWNS) failed: {e}");
+            return Err(e);
+        }
+
+        let old_root_fd = libc::open(b"/\0".as_ptr() as _, libc::O_RDONLY | libc::O_DIRECTORY);
+        if old_root_fd < 0 {
+            let e = std::io::Error::last_os_error();
+            eprintln!("pivot_only: open(/) failed: {e}");
+            return Err(e);
+        }
+        if libc::chdir(mnt_cstr.as_ptr()) != 0 {
+            let e = std::io::Error::last_os_error();
+            eprintln!("pivot_only: chdir(mnt) failed: {e}");
+            libc::close(old_root_fd);
+            return Err(e);
+        }
+        if libc::syscall(libc::SYS_pivot_root, dot.as_ptr(), dot.as_ptr()) != 0 {
+            let e = std::io::Error::last_os_error();
+            eprintln!("pivot_only: pivot_root failed: {e}");
+            libc::close(old_root_fd);
+            return Err(e);
+        }
+
+        libc::fchdir(old_root_fd);
+        libc::umount2(dot.as_ptr(), libc::MNT_DETACH);
+        libc::close(old_root_fd);
+
+        // Mount /proc
+        let proc_cstr = CString::new("/proc").unwrap();
+        libc::mount(
+            proc_cstr.as_ptr(),
+            proc_cstr.as_ptr(),
+            proc_cstr.as_ptr(),
+            0,
+            std::ptr::null(),
+        );
+
+        if libc::chdir(cwd_cstr.as_ptr()) != 0 {
+            let e = std::io::Error::last_os_error();
+            eprintln!("pivot_only: chdir(cwd) failed: {e}");
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
 /// Read the daemon pid from .agfs/pid.
 fn read_daemon_pid(agfs_dir: &Path) -> Result<u32> {
     let pid_path = agfs_dir.join("pid");
@@ -165,12 +229,16 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
     };
 
     let status = if already_in_ns {
-        // Already in namespace — just exec directly with the mount path.
-        process::Command::new(&cmd)
-            .args(&args)
-            .env("AGFS_SESSION", agfs_dir.to_string_lossy().as_ref())
-            .status()
-            .with_context(|| format!("spawning {cmd}"))?
+        // Already in namespace — skip setns but still pivot_root so
+        // paths resolve through the agfs mount.
+        unsafe {
+            process::Command::new(&cmd)
+                .args(&args)
+                .env("AGFS_SESSION", agfs_dir.to_string_lossy().as_ref())
+                .pre_exec(move || pivot_only_pre_exec(&mnt, &cwd))
+                .status()
+                .with_context(|| format!("spawning {cmd}"))?
+        }
     } else {
         let daemon_pid = read_daemon_pid(&agfs_dir)?;
         unsafe {

@@ -141,7 +141,7 @@ fn run_stderr_output() {
 }
 
 #[test]
-#[ignore = "run_in_sandbox from inside run_in_namespace needs rework"]
+#[ignore = "agfs exec from forked run_in_namespace child needs investigation"]
 fn run_reads_modified_file() {
     let session = AgfsSession::new().expect("session setup");
     session.run_in_namespace(|| {
