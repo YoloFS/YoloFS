@@ -9,16 +9,17 @@
 #include "agfs.h"
 #include <linux/xattr.h>
 
-/* ── create/mkdir/symlink — allocate inode + dirent ───────────────── */
+/* ── create/mkdir/symlink — allocate inode + set packed on dentry ──── */
 
 static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 			      umode_t mode, const char *symname)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
-	struct agfs_dirent *old_de, *de;
+	struct agfs_dentry_info *di = AGFS_D(dentry);
 	struct path inode_path;
 	unsigned char dt;
-	bool in_base;
+	bool already_staged, in_base;
+	agfs_pde_t packed;
 	u32 ino;
 	int err;
 
@@ -35,19 +36,16 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	agfs_replace_lower_path(dentry, &inode_path);
 	dt = S_ISDIR(mode) ? DT_DIR : S_ISLNK(mode) ? DT_LNK : DT_REG;
 
-	/* Check for tombstone dirent to inherit in_base. */
-	old_de = agfs_find_dirent(dir, dentry->d_name.name,
-				  dentry->d_name.len);
-	in_base = old_de && agfs_pde_in_base(old_de->packed);
+	/* If dentry is already on de_list, it's a tombstone — inherit in_base */
+	already_staged = !list_empty(&di->de_node);
+	in_base = already_staged;
+	packed = agfs_pde_inode(ino, (u16)atomic_read(&sbi->gen),
+				dt, in_base);
 
-	de = agfs_add_dirent(dir, dentry->d_name.name,
-			     dentry->d_name.len,
-			     agfs_pde_inode(ino,
-					   (u16)atomic_read(&sbi->gen),
-					   dt, in_base));
-	if (IS_ERR(de))
-		return PTR_ERR(de);
-	AGFS_D(dentry)->dirent = de;
+	if (!already_staged)
+		agfs_stage_dentry(dentry, dir, packed);
+	else
+		di->packed = packed;
 
 	if (in_base)
 		agfs_journal_modify(sbi, dentry, ino, dt);
@@ -69,30 +67,51 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	return agfs_create_staged(dir, dentry, S_IFDIR | mode, NULL);
 }
 
-/* ── unlink/rmdir — add DELETED dirent ───────────────────────────── */
+/* ── unlink/rmdir — tombstone or remove entry ────────────────────── */
 
 static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
-	struct agfs_dirent *de;
+	struct agfs_dentry_info *di = AGFS_D(dentry);
 	unsigned char d_type;
+	bool in_base, need_tombstone;
+	struct dentry *tomb = NULL;
 	int err;
 
 	d_type = d_inode(dentry) ?
 		 fs_umode_to_dtype(d_inode(dentry)->i_mode) : DT_UNKNOWN;
 
-	de = agfs_del_dirent(dir,
-				dentry->d_name.name,
-				dentry->d_name.len);
-	if (IS_ERR(de))
-		return PTR_ERR(de);
+	/* Determine whether we need a tombstone */
+	if (!list_empty(&di->de_node)) {
+		in_base = agfs_pde_in_base(di->packed);
+		need_tombstone = in_base;
+	} else {
+		in_base = false;
+		need_tombstone = true; /* base-only entry */
+	}
 
-	AGFS_D(dentry)->dirent = de;
+	/* Pre-allocate tombstone before journaling so we can fail cleanly */
+	if (need_tombstone) {
+		tomb = agfs_add_tombstone(dentry->d_parent,
+					  dentry->d_name.name,
+					  dentry->d_name.len, dir);
+		if (!tomb)
+			return -ENOMEM;
+	}
 
+	/* Journal (uses dentry path, must be before d_drop) */
 	err = agfs_journal_delete(sbi, dentry, d_type);
-	if (!err)
-		d_drop(dentry);
-	return err;
+	if (err) {
+		if (tomb)
+			agfs_remove_tombstone(tomb, dir);
+		return err;
+	}
+
+	if (!list_empty(&di->de_node))
+		agfs_unstage_dentry(di);
+
+	d_drop(dentry);
+	return 0;
 }
 
 static int agfs_unlink(struct inode *dir, struct dentry *dentry)
@@ -121,99 +140,124 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		       unsigned int flags)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
-	struct agfs_dirent *src_de, *dst_de;
+	struct agfs_dentry_info *old_di = AGFS_D(old_dentry);
+	struct agfs_dentry_info *new_di = AGFS_D(new_dentry);
 	char old_buf[AGFS_PATH_MAX];
+	char saved_name[NAME_MAX + 1];
+	unsigned int saved_name_len;
+	struct dentry *saved_parent;
+	struct dentry *tomb = NULL;
 	unsigned char d_type = DT_UNKNOWN;
-	agfs_pde_t packed;
-	bool dst_in_base;
+	agfs_pde_t src_packed, dst_packed;
+	char *base_copy = NULL;
+	bool src_staged, dst_in_base, old_was_in_base;
 	int err;
 
 	if (flags)
 		return -EINVAL;
 
-	/* old_buf is needed as the redirect base when source has no
-	 * overlay dirent (base-only file).  If source is already a link,
-	 * we follow its stored base_path instead. */
+	/* Save old name before d_move changes it */
+	saved_name_len = old_dentry->d_name.len;
+	memcpy(saved_name, old_dentry->d_name.name, saved_name_len);
+	saved_name[saved_name_len] = '\0';
+	saved_parent = old_dentry->d_parent;
+
+	/* Relpath needed for base-only source (link redirect) */
 	err = agfs_dentry_relpath(old_dentry, old_buf, sizeof(old_buf));
 	if (err)
 		return err;
 
-	/* VFS holds inode_lock(old_dir) + inode_lock(new_dir), which
-	 * serializes dirent access.  staging_sem is not needed here —
-	 * rename does not interact with gen or COW state. */
-
 	/* Read source state */
-	src_de = agfs_find_dirent(old_dir,
-				  old_dentry->d_name.name,
-				  old_dentry->d_name.len);
-	if (src_de) {
-		if (agfs_pde_is_tombstone(src_de->packed))
-			return -ENOENT;
-		d_type = agfs_pde_d_type(src_de->packed);
-	} else if (d_inode(old_dentry)) {
+	src_staged = !list_empty(&old_di->de_node);
+	src_packed = src_staged ? old_di->packed : (agfs_pde_t){0};
+
+	if (src_staged && !agfs_pde_is_tombstone(src_packed))
+		d_type = agfs_pde_d_type(src_packed);
+	else if (d_inode(old_dentry))
 		d_type = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
+
+	/* Check if destination has existing base content (for R vs P tag) */
+	if (!list_empty(&new_di->de_node))
+		dst_in_base = agfs_pde_in_base(new_di->packed);
+	else
+		dst_in_base = d_inode(new_dentry) != NULL;
+
+	/* Determine if old name needs a tombstone */
+	if (src_staged)
+		old_was_in_base = agfs_pde_in_base(src_packed);
+	else
+		old_was_in_base = true; /* was only in base */
+
+	/* Pre-allocate tombstone before any irreversible changes */
+	if (old_was_in_base) {
+		tomb = agfs_add_tombstone(saved_parent, saved_name,
+					  saved_name_len, old_dir);
+		if (!tomb)
+			return -ENOMEM;
 	}
 
-	/* Check if destination has existing base content (for R vs P tag).
-	 * Must be done before add_dirent replaces the dirent. */
-	dst_de = agfs_find_dirent(new_dir,
-				  new_dentry->d_name.name,
-				  new_dentry->d_name.len);
-	dst_in_base = dst_de ? agfs_pde_in_base(dst_de->packed) : false;
-	if (!dst_de && d_inode(new_dentry))
-		dst_in_base = true;
-
-	/* Add destination dirent */
-	if (src_de && agfs_pde_is_inode(src_de->packed)) {
-		packed = agfs_pde_inode(agfs_pde_ino(src_de->packed),
-				       agfs_pde_gen(src_de->packed),
-				       d_type, dst_in_base);
-	} else if (src_de && agfs_pde_is_link(src_de->packed)) {
-		/* Follow existing link's base_path (don't break chain) */
-		packed = agfs_pde_link(agfs_pde_base(src_de->packed), d_type,
-				       dst_in_base);
+	/* Build destination packed value */
+	if (src_staged && agfs_pde_is_inode(src_packed)) {
+		dst_packed = agfs_pde_inode(agfs_pde_ino(src_packed),
+					   agfs_pde_gen(src_packed),
+					   d_type, dst_in_base);
+	} else if (src_staged && agfs_pde_is_link(src_packed)) {
+		base_copy = kstrdup(agfs_pde_base(src_packed), GFP_KERNEL);
+		if (!base_copy) {
+			err = -ENOMEM;
+			goto out_tomb;
+		}
+		dst_packed = agfs_pde_link(base_copy, d_type, dst_in_base);
 	} else {
-		/* Base-only source — use current dentry path */
-		packed = agfs_pde_link(old_buf, d_type, dst_in_base);
-	}
-	{
-		struct agfs_dirent *de;
-
-		de = agfs_add_dirent(new_dir, new_dentry->d_name.name,
-				     new_dentry->d_name.len, packed);
-		if (IS_ERR(de)) {
-			err = PTR_ERR(de);
-			goto out;
+		/* Base-only source — redirect via relpath */
+		base_copy = kstrdup(old_buf, GFP_KERNEL);
+		if (!base_copy) {
+			err = -ENOMEM;
+			goto out_tomb;
 		}
-		AGFS_D(new_dentry)->dirent = de;
+		dst_packed = agfs_pde_link(base_copy, d_type, dst_in_base);
 	}
 
-	/* Delete old name */
-	{
-		struct agfs_dirent *de;
-
-		de = agfs_del_dirent(old_dir,
-				     old_dentry->d_name.name,
-				     old_dentry->d_name.len);
-		if (IS_ERR(de)) {
-			err = PTR_ERR(de);
-			goto out;
-		}
-		AGFS_D(old_dentry)->dirent = de;
-	}
-
-	/* All renames emit a single R or P record.
-	 * R if destination is new, P if destination existed in base. */
+	/* Journal BEFORE d_move (uses dentry paths) */
 	if (dst_in_base)
 		err = agfs_journal_replace(sbi, old_dentry, new_dentry, d_type);
 	else
 		err = agfs_journal_rename(sbi, old_dentry, new_dentry, d_type);
+	if (err)
+		goto out_free;
 
-	/* Invalidate dcache for both names so next lookup uses dirents */
+	/* Clean up new_dentry if it was staged */
+	if (!list_empty(&new_di->de_node))
+		agfs_unstage_dentry(new_di);
+
+	/* Remove old_dentry from old parent's de_list */
+	if (src_staged) {
+		agfs_pde_free(src_packed);
+		list_del_init(&old_di->de_node);
+		dput(old_dentry);
+	}
+
+	/* Set destination packed on old_dentry (will be at new position
+	 * after d_move) and pin it on new parent's de_list */
+	agfs_stage_dentry(old_dentry, new_dir, dst_packed);
+
+	/*
+	 * d_drop old_dentry so d_move does not conflict with the
+	 * tombstone dentry we may create at the old name.
+	 */
 	d_drop(old_dentry);
+
+	/* d_drop new_dentry — VFS will call d_move(old_dentry, new_dentry)
+	 * after we return, placing old_dentry at the new position. */
 	d_drop(new_dentry);
 
-out:
+	return 0;
+
+out_free:
+	kfree(base_copy);
+out_tomb:
+	if (tomb)
+		agfs_remove_tombstone(tomb, old_dir);
 	return err;
 }
 

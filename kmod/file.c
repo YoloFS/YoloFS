@@ -93,21 +93,6 @@ static struct file *agfs_open_staged_ino(struct agfs_sb_info *sbi,
 	return f;
 }
 
-/* Read packed dirent from the dentry's cached dirent pointer. */
-static agfs_pde_t agfs_read_dirent(struct dentry *dentry)
-{
-	struct inode *dir = d_inode(dentry->d_parent);
-	struct agfs_dirent *de;
-	agfs_pde_t packed;
-
-	/* open() does not hold parent's i_rwsem — take it explicitly */
-	inode_lock_shared(dir);
-	de = AGFS_D(dentry)->dirent;
-	packed = de ? de->packed : (agfs_pde_t){0};
-	inode_unlock_shared(dir);
-	return packed;
-}
-
 /* Open the right file for a staged regular file.
  * COW is resolved at open time — write_iter and mmap are pure pass-throughs.
  */
@@ -126,7 +111,7 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 	/* Fast path: inode is current — open directly.
 	 * staging_sem excludes checkpoint, so gen is stable under the lock. */
 	down_read(&sbi->staging_sem);
-	packed = agfs_read_dirent(dentry);
+	packed = AGFS_D(dentry)->packed;
 	if (agfs_pde_is_current(packed, (u16)atomic_read(&sbi->gen))) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_read(&sbi->staging_sem);
@@ -141,7 +126,7 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 	down_write(&sbi->staging_sem);
 
 	/* Re-check — a concurrent open may have COW'd */
-	packed = agfs_read_dirent(dentry);
+	packed = AGFS_D(dentry)->packed;
 	if (agfs_pde_is_current(packed, (u16)atomic_read(&sbi->gen))) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_write(&sbi->staging_sem);
@@ -368,9 +353,17 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 {
 	struct agfs_readdir_data *rdd =
 		container_of(ctx, struct agfs_readdir_data, ctx);
+	struct agfs_inode_info *dii = AGFS_I(rdd->dir);
+	struct agfs_dentry_info *di;
 
-	if (agfs_find_dirent(rdd->dir, name, namelen))
-		return true;
+	/* Check if this base entry is overridden by a staged entry */
+	list_for_each_entry(di, &dii->de_list, de_node) {
+		struct dentry *child = di->dentry;
+
+		if (child->d_name.len == (unsigned int)namelen &&
+		    !memcmp(child->d_name.name, name, namelen))
+			return true; /* skip — overridden */
+	}
 
 	if (*rdd->off < rdd->caller_ctx->pos) {
 		(*rdd->off)++;
@@ -384,7 +377,7 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 }
 
 /*
- * Emit non-deleted dirent entries.
+ * Emit non-deleted staged entries from parent's de_list.
  * Caller holds inode_lock_shared(dir) via VFS iterate_shared.
  * Returns true if the dir_emit buffer filled up.
  */
@@ -392,28 +385,28 @@ static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
 			      loff_t *off)
 {
 	struct agfs_inode_info *dii = AGFS_I(dir);
-	struct agfs_dirent *de;
-	unsigned int bi;
+	struct agfs_dentry_info *di;
 
-	if (!dii->de_buckets)
+	if (list_empty(&dii->de_list))
 		return false;
 
-	for (bi = 0; bi < AGFS_DE_BUCKETS; bi++) {
-		hlist_for_each_entry(de, &dii->de_buckets[bi], node) {
-			if (agfs_pde_is_tombstone(de->packed))
-				continue;
-			if (*off < ctx->pos) {
-				(*off)++;
-				continue;
-			}
+	list_for_each_entry(di, &dii->de_list, de_node) {
+		struct dentry *child = di->dentry;
+		agfs_pde_t packed = di->packed;
 
-			if (!dir_emit(ctx, de->name, de->name_len,
-				      agfs_pde_emit_ino(de->packed),
-				      agfs_pde_d_type(de->packed)))
-				return true;
+		if (agfs_pde_is_tombstone(packed))
+			continue;
+		if (*off < ctx->pos) {
 			(*off)++;
-			ctx->pos++;
+			continue;
 		}
+
+		if (!dir_emit(ctx, child->d_name.name, child->d_name.len,
+			      agfs_pde_emit_ino(packed),
+			      agfs_pde_d_type(packed)))
+			return true;
+		(*off)++;
+		ctx->pos++;
 	}
 	return false;
 }
@@ -432,9 +425,9 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	if (!lower_file)
 		return -EIO;
 
-	/* No staging or no dirents on this directory → passthrough */
+	/* No staging or no staged entries on this directory → passthrough */
 	if (!sbi->staging || !sbi->inodes_dir.dentry ||
-	    !AGFS_I(file_inode(file))->de_buckets) {
+	    list_empty(&AGFS_I(file_inode(file))->de_list)) {
 		lower_file->f_pos = ctx->pos;
 		err = iterate_dir(lower_file, ctx);
 		file->f_pos = lower_file->f_pos;

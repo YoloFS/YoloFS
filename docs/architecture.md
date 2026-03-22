@@ -55,7 +55,7 @@ The two layers execute in order for every VFS operation:
    If `allow-*`, falls through.
 2. **Staging Layer** — routes reads to the staged inode if the file has been
    modified, otherwise to the base. Ensures writes go to staged inodes.
-   Uses per-directory-inode dirent hash tables for deletions and renames.
+   Uses per-directory linked lists of pinned staged VFS dentries for deletions and renames.
 
 All I/O is ultimately delegated to the lower filesystem via `kiocb` swapping
 and `vfs_*()` calls.
@@ -75,8 +75,9 @@ AgFS uses a fundamentally different staging model from OverlayFS.
 **Staging vs live union**: OverlayFS is a live union filesystem — the upper
 layer *is* the persistent state. There is no commit or abort. A renamed
 file is copied up to upper with `RENAME_WHITEOUT` and stays there forever.
-AgFS treats staging as a flat inode store with in-memory dirent tables that
-are explicitly committed or discarded via the journal.
+AgFS treats staging as a flat inode store with in-memory staging state
+(packed values on pinned VFS dentries) that is explicitly committed or
+discarded via the journal.
 
 **Copy-up**: OverlayFS always does a full copy-up on first write, even for
 truncating writes (`echo "x" > file` copies the entire file, then
@@ -84,13 +85,13 @@ truncates). AgFS detects `O_TRUNC` and creates an empty staged inode
 directly — zero copy for the most common agent write pattern.
 
 **Rename**: OverlayFS does a real `vfs_rename()` in the upper directory,
-which requires copy-up. AgFS does zero-copy renames by adding dirents
-(tombstone on old parent, link on new parent). Rename chains
-resolve naturally through the dirent table.
+which requires copy-up. AgFS does zero-copy renames by setting packed state
+on VFS dentries (tombstone dentry on old parent, link dentry on new parent).
+Rename chains resolve naturally through the dcache.
 
 **Lookup**: OverlayFS does two lookups per component (upper + lower) and
-merges the results. AgFS checks the parent's dirent table first, then
-falls back to base — one lookup.
+merges the results. AgFS checks the VFS dcache first (staged entries are
+pinned), then falls back to base — one lookup.
 
 **Permission model**: OverlayFS uses standard Unix permissions only. AgFS
 adds the progressive gating layer (ask/allow/deny) with the ask protocol
@@ -173,14 +174,14 @@ $ echo x >> /etc/hosts
 $ agfs commit
    -> userspace: replay journal -- apply renames, deletes, move inodes to base
    -> userspace: ioctl(AGFS_IOC_RESTORE) with tree_len=0 on .agfs/mnt
-   -> kernel: release dirents, invalidate dentry + inode caches
+   -> kernel: release staged dentries, invalidate dentry + inode caches
    -> umount .agfs/mnt
 
 # 8. Restore to a previous checkpoint (appends T record, no truncation)
 $ agfs restore "after make build"
    -> CLI: Journal → find_checkpoint → live_segments_at_name → build tree → serialize tree
    -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, tree_buf })
-   -> kernel: wipe dirents, inject dirents from tree, increment gen to 4,
+   -> kernel: release staged dentries, inject VFS dentries from tree, increment gen to 4,
       append T record to journal
    -> journal is append-only — dead records remain but are filtered
       by Journal reachability on subsequent operations

@@ -7,27 +7,36 @@
 
 static struct kmem_cache *agfs_dentry_cachep;
 
-int agfs_new_dentry_private_data(struct dentry *dentry)
+static void agfs_free_dentry_private_data(struct dentry *dentry)
+{
+	struct agfs_dentry_info *info = AGFS_D(dentry);
+	kmem_cache_free(agfs_dentry_cachep, info);
+	dentry->d_fsdata = NULL;
+}
+
+/*
+ * d_init callback — auto-initialize agfs_dentry_info on every dentry
+ * at allocation time.  This replaces the manual
+ * agfs_new_dentry_private_data() call and ensures tombstone dentries
+ * created via d_alloc() have d_fsdata ready.
+ */
+static int agfs_d_init(struct dentry *dentry)
 {
 	struct agfs_dentry_info *info;
 
-	info = kmem_cache_zalloc(agfs_dentry_cachep, GFP_ATOMIC);
+	info = kmem_cache_zalloc(agfs_dentry_cachep, GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
 	spin_lock_init(&info->lock);
+	info->packed = (agfs_pde_t){0};
+	INIT_LIST_HEAD(&info->de_node);
+	info->dentry = dentry;
 	info->perm = AGFS_PERM_NONE;
 	INIT_LIST_HEAD(&info->rule_pin);
 	info->rule_dentry = NULL;
 	dentry->d_fsdata = info;
 	return 0;
-}
-
-void agfs_free_dentry_private_data(struct dentry *dentry)
-{
-	struct agfs_dentry_info *info = AGFS_D(dentry);
-	kmem_cache_free(agfs_dentry_cachep, info);
-	dentry->d_fsdata = NULL;
 }
 
 /*
@@ -86,15 +95,108 @@ static int agfs_d_revalidate(struct dentry *dentry, unsigned int flags)
 
 static void agfs_d_release(struct dentry *dentry)
 {
-	if (!AGFS_D(dentry))
+	struct agfs_dentry_info *info = AGFS_D(dentry);
+
+	if (!info)
 		return;
 
+	WARN_ON_ONCE(!list_empty(&info->de_node));
+	agfs_pde_free(info->packed);
 	agfs_put_reset_lower_path(dentry);
 	agfs_free_dentry_private_data(dentry);
 }
 
+/* ── Dentry Staging Helpers ────────────────────────────────────────── */
+
+/*
+ * Add dir to sbi->pinned_dirs if not already there.
+ * No igrab() needed — pinned child dentries hold a ref on d_parent,
+ * which transitively keeps the parent inode alive.
+ */
+void agfs_pin_dir_if_first(struct agfs_inode_info *dii,
+			   struct agfs_sb_info *sbi)
+{
+	if (!list_empty(&dii->de_pin))
+		return;
+	spin_lock(&sbi->pinned_dirs_lock);
+	if (list_empty(&dii->de_pin))
+		list_add(&dii->de_pin, &sbi->pinned_dirs);
+	spin_unlock(&sbi->pinned_dirs_lock);
+}
+
+/*
+ * Stage a VFS-provided dentry on its parent directory's de_list.
+ * Takes a dget() pin.  Caller must hold i_rwsem exclusive on dir.
+ */
+void agfs_stage_dentry(struct dentry *dentry, struct inode *dir,
+		       agfs_pde_t packed)
+{
+	struct agfs_dentry_info *di = AGFS_D(dentry);
+	struct agfs_inode_info *dii = AGFS_I(dir);
+
+	di->packed = packed;
+	dget(dentry);
+	list_add(&di->de_node, &dii->de_list);
+	agfs_pin_dir_if_first(dii, AGFS_SB(dir->i_sb));
+}
+
+/*
+ * Remove a dentry from its parent's de_list, free packed, release pin.
+ * The agfs_dentry_info (and its dentry) may be freed after this call
+ * if the dput drops the last reference.
+ * Caller must hold i_rwsem exclusive on the parent directory.
+ */
+void agfs_unstage_dentry(struct agfs_dentry_info *di)
+{
+	list_del_init(&di->de_node);
+	agfs_pde_free(di->packed);
+	di->packed = (agfs_pde_t){0};
+	dput(di->dentry);
+}
+
+/*
+ * Create a negative (tombstone) dentry at @name under @parent and
+ * stage it on @dir's de_list.  The d_alloc() reference serves as the
+ * pin — no extra dget().
+ *
+ * Returns the tombstone dentry, or NULL on allocation failure.
+ * Caller must hold i_rwsem exclusive on dir.
+ */
+struct dentry *agfs_add_tombstone(struct dentry *parent,
+				  const char *name, unsigned int len,
+				  struct inode *dir)
+{
+	struct agfs_inode_info *dii = AGFS_I(dir);
+	struct qstr qname = QSTR_INIT(name, len);
+	struct dentry *tomb;
+
+	qname.hash = full_name_hash(parent, name, len);
+	tomb = d_alloc(parent, &qname);
+	if (!tomb)
+		return NULL;
+
+	/* d_init set packed=0 (tombstone).  d_alloc ref is our pin. */
+	d_add(tomb, NULL);
+	list_add(&AGFS_D(tomb)->de_node, &dii->de_list);
+	agfs_pin_dir_if_first(dii, AGFS_SB(dir->i_sb));
+	return tomb;
+}
+
+/*
+ * Undo agfs_add_tombstone: remove from de_list, unhash, and release.
+ * Used for rollback when a subsequent step (e.g., journal write) fails.
+ * Caller must hold i_rwsem exclusive on dir.
+ */
+void agfs_remove_tombstone(struct dentry *tomb, struct inode *dir)
+{
+	list_del_init(&AGFS_D(tomb)->de_node);
+	d_drop(tomb);
+	dput(tomb);
+}
+
 /* Full ops: proxy d_revalidate to the lower filesystem (e.g. NFS). */
 const struct dentry_operations agfs_dops = {
+	.d_init		= agfs_d_init,
 	.d_revalidate	= agfs_d_revalidate,
 	.d_release	= agfs_d_release,
 };
@@ -103,6 +205,7 @@ const struct dentry_operations agfs_dops = {
  * The VFS won't set DCACHE_OP_REVALIDATE on these dentries, so
  * lookup_fast stays in pure RCU-walk without any function call. */
 const struct dentry_operations agfs_dops_fast = {
+	.d_init		= agfs_d_init,
 	.d_release	= agfs_d_release,
 };
 

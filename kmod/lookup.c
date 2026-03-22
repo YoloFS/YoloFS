@@ -85,81 +85,16 @@ int agfs_interpose(struct dentry *dentry, struct super_block *sb,
 	return 0;
 }
 
-/* ── Staging lookup helper ──────────────────────────────────────────── */
-
-/*
- * Try to resolve a name through the staging dirent table.
- * Returns  1 if the name was resolved (dentry is fully set up),
- *          0 if staging did not handle it (fall through to base),
- *         <0 on error.
- */
-static int agfs_lookup_staged(struct agfs_sb_info *sbi, struct dentry *dentry)
-{
-	struct inode *parent_inode = d_inode(dentry->d_parent);
-	struct agfs_dirent *de;
-
-	/* VFS holds inode_lock_shared(parent) during lookup */
-	de = agfs_find_dirent(parent_inode,
-				 dentry->d_name.name,
-				 dentry->d_name.len);
-	if (!de)
-		return 0;
-
-	AGFS_D(dentry)->dirent = de;
-
-	if (agfs_pde_is_inode(de->packed)) {
-		/* Staged inode */
-		struct inode *inode;
-		struct path ino_path;
-		int err;
-
-		err = agfs_inode_path(sbi, agfs_pde_ino(de->packed), &ino_path);
-		if (err)
-			return 0; /* resolution failed — fall through to base */
-
-		agfs_set_lower_path(dentry, &ino_path);
-		inode = agfs_iget(dentry->d_sb, d_inode(ino_path.dentry));
-		if (IS_ERR(inode)) {
-			path_put(&ino_path);
-			return PTR_ERR(inode);
-		}
-		agfs_cache_perm(inode, dentry);
-		d_add(dentry, inode);
-		return 1;
-	}
-
-	if (agfs_pde_is_link(de->packed)) {
-		/* Link: redirected base path (zero-copy rename) */
-		struct inode *inode;
-		struct path base;
-		int err;
-
-		err = kern_path(agfs_pde_base(de->packed), LOOKUP_FOLLOW, &base);
-		if (err)
-			return 0; /* base path gone — fall through */
-
-		agfs_set_lower_path(dentry, &base);
-		inode = agfs_iget(dentry->d_sb, d_inode(base.dentry));
-		if (IS_ERR(inode)) {
-			path_put(&base);
-			return PTR_ERR(inode);
-		}
-		agfs_cache_perm(inode, dentry);
-		d_add(dentry, inode);
-		return 1;
-	}
-
-	/* Tombstone (packed==0) */
-	d_add(dentry, NULL);
-	return 1;
-}
-
 /* ── Lookup ────────────────────────────────────────────────────────── */
 
+/*
+ * All staged entries are pinned in the dcache via dget(), so
+ * lookup_fast() finds them directly — this callback is only invoked
+ * for unstaged names.  Fall through to the base filesystem.
+ */
 struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 			   unsigned int flags)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
 	struct dentry *lower_dir_dentry;
 	struct dentry *lower_dentry;
 	struct vfsmount *lower_mnt;
@@ -167,25 +102,14 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 	struct inode *inode;
 	int err;
 
-	err = agfs_new_dentry_private_data(dentry);
-	if (err)
-		return ERR_PTR(err);
+	/* d_init already allocated d_fsdata */
 
-	/* 1. Check staging dirent table */
-	if (sbi->staging) {
-		err = agfs_lookup_staged(sbi, dentry);
-		if (err < 0)
-			goto out_free;
-		if (err > 0)
-			return NULL;
-	}
-
-	/* 2. Fall back to base (lower) filesystem */
+	/* Base (lower) filesystem lookup */
 	lower_dir_dentry = agfs_lower_dentry(dentry->d_parent);
 	lower_mnt = agfs_lower_mnt(dentry->d_parent);
 	if (!lower_dir_dentry || !lower_mnt) {
 		err = -ENOENT;
-		goto out_free;
+		goto out;
 	}
 
 	inode_lock_shared(d_inode(lower_dir_dentry));
@@ -195,7 +119,7 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 	inode_unlock_shared(d_inode(lower_dir_dentry));
 	if (IS_ERR(lower_dentry)) {
 		err = PTR_ERR(lower_dentry);
-		goto out_free;
+		goto out;
 	}
 
 	lower_path.dentry = lower_dentry;
@@ -219,7 +143,6 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 
 out_put:
 	path_put(&lower_path);
-out_free:
-	agfs_free_dentry_private_data(dentry);
+out:
 	return ERR_PTR(err);
 }

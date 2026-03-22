@@ -139,17 +139,10 @@ struct agfs_perm_request {
 	struct list_head	list;
 };
 
-/* ── Per-directory dirent ─────────────────────────────────────── */
+/* ── Packed dirent value ──────────────────────────────────────── */
 
 /* Opaque packed dirent value — use agfs_pde_* helpers to access. */
 typedef struct { u64 val; } agfs_pde_t;
-
-struct agfs_dirent {
-	struct hlist_node	node;
-	agfs_pde_t		packed;
-	unsigned int		name_len;
-	char			name[];
-};
 
 /* ── Packed dirent encoding ────────────────────────────────────── */
 
@@ -331,7 +324,7 @@ struct agfs_sb_info {
 	atomic_t		gen;		/* bumped on each checkpoint; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
 	bool			dirty;		/* data records written since last CKP/RST */
-	struct list_head	pinned_dirs;	/* igrab()'d directory inodes with dirents */
+	struct list_head	pinned_dirs;	/* dirs with staged child dentries */
 	spinlock_t		pinned_dirs_lock;/* protects pinned_dirs */
 
 	/* Permission gating */
@@ -346,19 +339,14 @@ struct agfs_sb_info {
 
 /* ── Per-Inode Info ────────────────────────────────────────────────── */
 
-/* dirent hash table: 64 buckets (shift=6) covers most directories well.
- * Allocated lazily on first agfs_add_dirent; NULL for leaf files. */
-#define AGFS_DE_SHIFT		10
-#define AGFS_DE_BUCKETS	(1u << AGFS_DE_SHIFT)
-
 struct agfs_inode_info {
 	struct inode		*lower_inode;
 	enum agfs_perm		cached_perm;
 	u64			perm_gen;
 
-	/* Directory dirent table (lazily allocated, protected by VFS i_rwsem) */
-	struct hlist_head	*de_buckets;	/* NULL until first dirent */
-	struct list_head	de_pin;	/* node in sbi->pinned_dirs */
+	/* Pinned staged child dentries (protected by VFS i_rwsem) */
+	struct list_head	de_list;	/* linked list of pinned staged children */
+	struct list_head	de_pin;		/* node in sbi->pinned_dirs */
 
 	struct inode		vfs_inode;	/* must be last for container_of */
 };
@@ -368,7 +356,9 @@ struct agfs_inode_info {
 struct agfs_dentry_info {
 	spinlock_t		lock;
 	struct path		lower_path;	/* resolved lower path (inode entry or base) */
-	struct agfs_dirent	*dirent;	/* entry in parent's dirent table */
+	agfs_pde_t		packed;		/* overlay state: inode/link/tombstone */
+	struct list_head	de_node;	/* node in parent's de_list */
+	struct dentry		*dentry;	/* back-pointer (always valid) */
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
 	struct list_head	rule_pin;	/* node in sbi->pinned_rules */
 	struct dentry		*rule_dentry;	/* back-pointer for dput on release */
@@ -512,8 +502,15 @@ extern const struct dentry_operations agfs_dops;
 extern const struct dentry_operations agfs_dops_fast;
 int agfs_init_dentry_cache(void);
 void agfs_destroy_dentry_cache(void);
-int agfs_new_dentry_private_data(struct dentry *dentry);
-void agfs_free_dentry_private_data(struct dentry *dentry);
+void agfs_pin_dir_if_first(struct agfs_inode_info *dii,
+			   struct agfs_sb_info *sbi);
+void agfs_stage_dentry(struct dentry *dentry, struct inode *dir,
+		       agfs_pde_t packed);
+void agfs_unstage_dentry(struct agfs_dentry_info *di);
+struct dentry *agfs_add_tombstone(struct dentry *parent,
+				  const char *name, unsigned int len,
+				  struct inode *dir);
+void agfs_remove_tombstone(struct dentry *tomb, struct inode *dir);
 
 /* lookup.c */
 struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
@@ -526,13 +523,6 @@ int agfs_interpose(struct dentry *dentry, struct super_block *sb,
 int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen);
 int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,
 		    struct path *result);
-struct agfs_dirent *agfs_find_dirent(struct inode *dir,
-					 const char *name,
-					 unsigned int namelen);
-struct agfs_dirent *agfs_add_dirent(struct inode *dir, const char *name,
-				    unsigned int namelen, agfs_pde_t packed);
-struct agfs_dirent *agfs_del_dirent(struct inode *dir, const char *name,
-				    unsigned int namelen);
 int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,
 		     struct path *inode_path, umode_t mode,
 		     const char *symname);
