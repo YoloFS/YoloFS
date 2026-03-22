@@ -43,12 +43,12 @@ pub enum Action {
     Add {
         path: String,
         dtype: Option<DType>,
-        ino: u64,
+        ino: u32,
     },
     Modify {
         path: String,
         dtype: Option<DType>,
-        ino: u64,
+        ino: u32,
     },
     Delete {
         path: String,

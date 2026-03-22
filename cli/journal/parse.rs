@@ -57,7 +57,7 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
                 let dtype = parse_dtype(fields[2]);
                 let ino_str = String::from_utf8_lossy(fields[3]);
 
-                if let Ok(ino) = ino_str.parse::<u64>() {
+                if let Ok(ino) = ino_str.parse::<u32>() {
                     if tag == b"A" {
                         records.push(Record::Action(Action::Add { path, dtype, ino }));
                     } else {

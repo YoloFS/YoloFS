@@ -41,23 +41,23 @@ pub fn dirents(s: &AgfsSession) -> Vec<(String, Dirent)> {
 }
 
 /// List numeric inode entries in the inode store.
-pub fn inos(s: &AgfsSession) -> Vec<u64> {
-    let mut ids: Vec<u64> = fs::read_dir(s.inodes_dir())
+pub fn inos(s: &AgfsSession) -> Vec<u32> {
+    let mut ids: Vec<u32> = fs::read_dir(s.inodes_dir())
         .expect("read inode dir")
         .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().to_string_lossy().parse::<u64>().ok())
+        .filter_map(|e| e.file_name().to_string_lossy().parse::<u32>().ok())
         .collect();
     ids.sort();
     ids
 }
 
 /// Get the inode path for a given ino.
-pub fn inode_path(s: &AgfsSession, ino: u64) -> PathBuf {
+pub fn inode_path(s: &AgfsSession, ino: u32) -> PathBuf {
     s.inodes_dir().join(ino.to_string())
 }
 
 /// Find the ino for a change matching a path suffix.
-pub fn ino_for(dirents: &[(String, Dirent)], suffix: &str) -> u64 {
+pub fn ino_for(dirents: &[(String, Dirent)], suffix: &str) -> u32 {
     dirents
         .iter()
         .find_map(|(path, c)| {

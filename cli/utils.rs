@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Get the staged inode path for a given ino.
-pub fn inode_path(agfs_dir: &Path, ino: u64) -> PathBuf {
+pub fn inode_path(agfs_dir: &Path, ino: u32) -> PathBuf {
     agfs_dir.join("inodes").join(ino.to_string())
 }
 

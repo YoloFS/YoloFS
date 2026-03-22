@@ -67,7 +67,7 @@ static int agfs_check_open_perm(struct agfs_sb_info *sbi,
  * ourselves before opening.
  */
 static struct file *agfs_open_staged_ino(struct agfs_sb_info *sbi,
-					 u64 ino, int flags)
+					 u32 ino, int flags)
 {
 	struct path ino_p;
 	struct file *f;
