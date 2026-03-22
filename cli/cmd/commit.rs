@@ -1,12 +1,9 @@
 // agfs CLI — commit.rs
 //
 // `agfs commit` — apply staged changes to base.
-// Journal is resolved first, then changes are applied sequentially.
+// Journal records are replayed sequentially on the base filesystem.
 
-use crate::journal;
-use crate::journal::Change;
-use crate::journal::SegmentedJournal;
-use crate::utils::to_base_path;
+use crate::journal::{self, Journal};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::HashSet;
@@ -25,6 +22,16 @@ fn ensure_parent(path: &Path, cache: &mut HashSet<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// Remove a file, symlink, or directory.
+fn remove_existing(path: &Path, meta: &fs::Metadata) -> Result<()> {
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+    .with_context(|| format!("removing {}", path.display()))
+}
+
 /// Apply a staged inode to base. Stats the inode to determine type.
 fn apply_inode(
     agfs_dir: &Path,
@@ -40,24 +47,19 @@ fn apply_inode(
 
     // Save existing file's permissions before removal so we can restore
     // them after moving the staged inode (preserves base file modes).
-    let original_perms = base_path
-        .symlink_metadata()
-        .ok()
+    let existing_meta = base_path.symlink_metadata().ok();
+    let original_perms = existing_meta
+        .as_ref()
         .filter(|m| m.is_file())
         .map(|m| m.permissions());
 
     // Remove whatever exists at the target path
-    if let Ok(existing) = base_path.symlink_metadata() {
-        if existing.is_dir() && !existing.file_type().is_symlink() {
-            fs::remove_dir_all(base_path)
-                .with_context(|| format!("removing existing dir {}", base_path.display()))?;
-        } else {
-            fs::remove_file(base_path)
-                .with_context(|| format!("removing existing file {}", base_path.display()))?;
-        }
+    if let Some(existing) = &existing_meta {
+        remove_existing(base_path, existing)?;
     }
 
-    if meta.file_type().is_symlink() {
+    let is_symlink = meta.file_type().is_symlink();
+    if is_symlink {
         let target = fs::read_link(&staged)?;
         std::os::unix::fs::symlink(&target, base_path)
             .with_context(|| format!("creating symlink at {}", base_path.display()))?;
@@ -73,8 +75,11 @@ fn apply_inode(
             .with_context(|| format!("moving inode to {}", base_path.display()))?;
     }
 
-    // Restore original permissions for modified files.
-    if let Some(perms) = original_perms {
+    // Restore original permissions for modified regular files.
+    if let Some(perms) = original_perms
+        && meta.is_file()
+        && !is_symlink
+    {
         fs::set_permissions(base_path, perms)
             .with_context(|| format!("restoring permissions on {}", base_path.display()))?;
     }
@@ -82,59 +87,51 @@ fn apply_inode(
     Ok(())
 }
 
-fn apply_changes(agfs: &Path, changes: &[(String, Change)]) -> Result<()> {
+/// Replay live actions sequentially on the base filesystem.
+fn apply_records(agfs: &Path, segments: &[journal::Segment]) -> Result<()> {
     let mut ensured: HashSet<PathBuf> = HashSet::new();
 
-    for (path, change) in changes {
-        match change {
-            Change::Renamed { from, .. } | Change::Replaced { from, .. } => {
-                let base_old = to_base_path(from);
-                let base_new = to_base_path(path);
-                ensure_parent(&base_new, &mut ensured)?;
-                // Guard: source may not exist in base when a staged-only
-                // file was renamed; the content is handled by a separate
-                // Modified change via apply_inode.
-                if base_old.exists() {
-                    fs::rename(&base_old, &base_new)
-                        .with_context(|| format!("rename {from} → {path}"))?;
+    for action in segments.iter().flat_map(|s| &s.records) {
+        match action {
+            journal::Action::Add { path, ino, .. }
+            | journal::Action::Modify { path, ino, .. } => {
+                let base_path = crate::utils::to_base_path(path);
+                apply_inode(agfs, *ino, &base_path, &mut ensured)?;
+            }
+            journal::Action::Delete { path, .. } => {
+                let base_path = crate::utils::to_base_path(path);
+                if let Ok(meta) = base_path.symlink_metadata() {
+                    remove_existing(&base_path, &meta)?;
                 }
             }
-            Change::Deleted => {
-                let base_file = to_base_path(path);
-                if base_file.exists() {
-                    if base_file.is_dir() {
-                        fs::remove_dir_all(&base_file)
-                    } else {
-                        fs::remove_file(&base_file)
-                    }
-                    .with_context(|| format!("deleting {path}"))?;
-                }
-            }
-            Change::Added { ino, .. } | Change::Modified { ino, .. } => {
-                let base_file = to_base_path(path);
-                apply_inode(agfs, *ino, &base_file, &mut ensured)?;
+            journal::Action::Rename { dst, src, .. }
+            | journal::Action::Replace { dst, src, .. } => {
+                let base_src = crate::utils::to_base_path(src);
+                let base_dst = crate::utils::to_base_path(dst);
+                ensure_parent(&base_dst, &mut ensured)?;
+                fs::rename(&base_src, &base_dst)
+                    .with_context(|| format!("renaming {} → {}", base_src.display(), base_dst.display()))?;
             }
         }
     }
-
     Ok(())
 }
 
 pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
-    let sj = SegmentedJournal::new(journal::read(&agfs)?);
-    let changes = journal::resolve::resolve(sj.live_records())?;
+    let journal = Journal::read(&agfs)?;
+    let live: Vec<_> = journal.into_live_segments_range(0, usize::MAX).collect();
+    let committed: usize = live.iter().map(|s| s.records.len()).sum();
 
-    if changes.is_empty() {
+    if committed == 0 {
         println!("{}", "Nothing to commit.".yellow());
         return Ok(());
     }
 
-    apply_changes(&agfs, &changes)?;
-    let committed = changes.len();
+    apply_records(&agfs, &live)?;
 
-    crate::abort::reset_staging(&agfs)?;
+    super::abort::reset_staging(&agfs)?;
 
     println!(
         "{}",
@@ -152,8 +149,6 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
-    use std::path::Path;
 
     #[test]
     fn ensure_parent_creates_directory() {

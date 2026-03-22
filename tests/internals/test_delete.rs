@@ -1,6 +1,6 @@
-use super::helpers::{changes, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::Record;
+use agfs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -12,18 +12,18 @@ fn delete_produces_delete_record() {
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/hello.txt"))),
-        "journal should have a Deleted record for hello.txt: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Delete { path, .. } if path.ends_with("/hello.txt"))),
+        "journal should have a Deleted record for hello.txt: {acts:?}"
     );
 }
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// Deleting a file does NOT create a new inode (only a journal D record).
+/// Deleting a file does NOT create a new inode (only a journal DEL record).
 #[test]
 fn delete_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
@@ -46,7 +46,7 @@ fn delete_recreate_gets_new_inode() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
     fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/hello.txt");
     assert_eq!(
         fs::read_to_string(inode_path(&s, ino)).unwrap(),

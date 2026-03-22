@@ -68,12 +68,16 @@ struct agfs_ioc_rule {
 	__u8	_pad[5];
 };
 
+/* Checkpoint flags */
+#define AGFS_CHK_IF_CHANGED	(1 << 0)	/* skip if no data records since last CKP/RST */
+
 /* userspace ↔ kernel: AGFS_IOC_CHECKPOINT (name in, gen out) */
 struct agfs_ioc_checkpoint {
-	__u64	gen;			/* out: assigned gen */
+	__u64	gen;			/* out: assigned gen (0 if skipped) */
 	__u64	name_ptr;		/* in: userspace pointer to name string */
 	__u16	name_len;		/* in: length excluding NUL */
-	__u8	_pad[6];
+	__u8	flags;			/* in: AGFS_CHK_IF_CHANGED, etc. */
+	__u8	_pad[5];
 };
 
 /* userspace → kernel: one entry in AGFS_IOC_RESTORE */
@@ -81,7 +85,7 @@ struct agfs_ioc_restore_entry {
 	__u64	path_ptr;		/* userspace pointer to path string */
 	__u16	path_len;		/* length excluding NUL */
 	__u8	d_type;			/* DT_REG / DT_DIR / DT_LNK */
-	__u8	in_base;		/* 1 if this name existed in base */
+	__u8	in_base;		/* 1 if this path had existing content */
 	__u8	_pad1[4];
 	__u64	ino;			/* inode store ID; 0 = deleted */
 	__u64	base_ptr;		/* userspace pointer to base path string */
@@ -146,47 +150,163 @@ struct agfs_perm_request {
 
 /* ── Per-directory dirent ─────────────────────────────────────── */
 
+/* Opaque packed dirent value — use agfs_pde_* helpers to access. */
+typedef struct { u64 val; } agfs_pde_t;
+
 struct agfs_dirent {
 	struct hlist_node	node;
-	u64			ino;		/* >0 = staged, 0 = deleted, (u64)-1 = redirect */
-	char			*base;		/* redirect: source path; else NULL */
-	u64			gen;		/* sbi->gen when inode was created */
+	agfs_pde_t		packed;
 	unsigned int		name_len;
-	unsigned char		d_type;		/* DT_REG / DT_DIR / DT_LNK for readdir */
-	bool			in_base;	/* path existed in base layer */
 	char			name[];
 };
 
-static inline bool agfs_de_in_base(const struct agfs_dirent *de)
+/* ── Packed dirent encoding ────────────────────────────────────── */
+
+/*
+ * Three mutually exclusive states in a single u64:
+ *   val == 0              → tombstone (always in_base=true)
+ *   (s64)val < 0          → link (kernel pointer with bit 63 as tag)
+ *   (s64)val > 0              → inode
+ *
+ * Inode layout:
+ *   [63]    0        (tag)
+ *   [62:61] d_type   2 bits (private encoding)
+ *   [60]    in_base  1 bit
+ *   [59:16] ino      44 bits (always > 0)
+ *   [15:0]  gen      16 bits
+ *
+ * Link layout:
+ *   [63]    1        (tag — matches kernel sign extension)
+ *   [62:61] d_type   2 bits (borrowed from sign extension)
+ *   [60]    in_base  1 bit  (borrowed from sign extension)
+ *   [59:0]  pointer bits [59:0]
+ *
+ * Pointer recovery: val | 0x7000000000000000
+ */
+
+/* ── d_type 2-bit private encoding ─────────────────────────────── */
+
+static inline u64 agfs_dtype_pack(unsigned char libc_dt)
 {
-	return de->in_base;
+	switch (libc_dt) {
+	case DT_REG: return 0;
+	case DT_DIR: return 1;
+	case DT_LNK: return 2;
+	default:
+		WARN_ON_ONCE(1);
+		return 3;
+	}
 }
 
-static inline void agfs_de_base_free(char *base)
+static inline unsigned char agfs_dtype_unpack(u64 packed_dt)
 {
-	kfree(base);
+	switch (packed_dt) {
+	case 0: return DT_REG;
+	case 1: return DT_DIR;
+	case 2: return DT_LNK;
+	default:
+		WARN_ON_ONCE(1);
+		return DT_UNKNOWN;
+	}
 }
 
-static inline char *agfs_de_base_dup(const char *base)
+/* ── Predicates ────────────────────────────────────────────────── */
+
+static inline bool agfs_pde_is_tombstone(agfs_pde_t p)
 {
-	if (!base)
-		return NULL;
-	return kstrdup(base, GFP_KERNEL);
+	return p.val == 0;
 }
 
-static inline bool agfs_ino_is_staged(u64 ino)
+static inline bool agfs_pde_is_link(agfs_pde_t p)
 {
-	return ino != AGFS_INO_DELETED && ino != AGFS_INO_REDIRECT;
+	return (s64)p.val < 0;
 }
 
-static inline bool agfs_ino_is_redirect(u64 ino)
+static inline bool agfs_pde_is_inode(agfs_pde_t p)
 {
-	return ino == AGFS_INO_REDIRECT;
+	return (s64)p.val > 0;
 }
 
-static inline bool agfs_ino_is_deleted(u64 ino)
+/* ── Decoders (valid for both inode and link unless noted) ──────── */
+
+static inline unsigned char agfs_pde_d_type(agfs_pde_t p)
 {
-	return ino == AGFS_INO_DELETED;
+	return agfs_dtype_unpack((p.val >> 61) & 3);
+}
+
+static inline bool agfs_pde_in_base(agfs_pde_t p)
+{
+	if (agfs_pde_is_tombstone(p))
+		return true; /* tombstones are always in_base */
+	return (p.val >> 60) & 1;
+}
+
+/* inode only */
+static inline u64 agfs_pde_ino(agfs_pde_t p)
+{
+	return (p.val >> 16) & 0xFFFFFFFFFFF;
+}
+
+/* inode only */
+static inline u16 agfs_pde_gen(agfs_pde_t p)
+{
+	return (u16)p.val;
+}
+
+/* True if packed is a current-generation inode (no COW needed). */
+static inline bool agfs_pde_is_current(agfs_pde_t p, u16 gen)
+{
+	return agfs_pde_is_inode(p) && agfs_pde_gen(p) >= gen;
+}
+
+/* link only — recover the kstrdup pointer */
+static inline char *agfs_pde_base(agfs_pde_t p)
+{
+	return (char *)(p.val | 0x7000000000000000);
+}
+
+/* ino for dir_emit: real ino for inodes, (u64)-1 for links */
+static inline u64 agfs_pde_emit_ino(agfs_pde_t p)
+{
+	if (agfs_pde_is_inode(p))
+		return agfs_pde_ino(p);
+	return AGFS_INO_REDIRECT;
+}
+
+/* ── Encoders ──────────────────────────────────────────────────── */
+
+static inline agfs_pde_t agfs_pde_inode(u64 ino, u16 gen,
+					unsigned char d_type, bool in_base)
+{
+	WARN_ON_ONCE(ino == 0);
+	WARN_ON_ONCE(ino > 0xFFFFFFFFFFF);
+	return (agfs_pde_t){ .val =
+		(agfs_dtype_pack(d_type) << 61) |
+		((u64)in_base << 60) |
+		(ino << 16) |
+		gen };
+}
+
+static inline agfs_pde_t agfs_pde_link(const char *base, unsigned char d_type,
+					bool in_base)
+{
+	u64 ptr = (u64)base;
+
+	WARN_ON_ONCE((ptr >> 60) != 0xF);
+	return (agfs_pde_t){ .val =
+		(1ULL << 63) |
+		(agfs_dtype_pack(d_type) << 61) |
+		((u64)in_base << 60) |
+		(ptr & 0x0FFFFFFFFFFFFFFF) };
+}
+
+/* ── Cleanup ───────────────────────────────────────────────────── */
+
+/* Free the link base pointer if packed is a link */
+static inline void agfs_pde_free(agfs_pde_t p)
+{
+	if (agfs_pde_is_link(p))
+		kfree(agfs_pde_base(p));
 }
 
 /* ── Ask Protocol Engine ───────────────────────────────────────────── */
@@ -217,8 +337,9 @@ struct agfs_sb_info {
 	struct file		*journal_file;	/* ./agfs/journal (append-only, opened lazily) */
 	struct rw_semaphore	staging_sem;	/* protects staging + journal writes */
 	atomic64_t		next_ino;	/* counter for inode store IDs */
-	atomic64_t		gen;		/* bumped on each checkpoint; triggers re-COW */
+	atomic_t		gen;		/* bumped on each checkpoint; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
+	bool			dirty;		/* data records written since last CKP/RST */
 	struct list_head	pinned_dirs;	/* igrab()'d directory inodes with dirents */
 	spinlock_t		pinned_dirs_lock;/* protects pinned_dirs */
 
@@ -256,6 +377,7 @@ struct agfs_inode_info {
 struct agfs_dentry_info {
 	spinlock_t		lock;
 	struct path		lower_path;	/* resolved lower path (inode entry or base) */
+	struct agfs_dirent	*dirent;	/* entry in parent's dirent table */
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
 	struct list_head	rule_pin;	/* node in sbi->pinned_rules */
 	struct dentry		*rule_dentry;	/* back-pointer for dput on release */
@@ -367,11 +489,6 @@ static inline struct vfsmount *agfs_lower_mnt(const struct dentry *d)
 	return info ? info->lower_path.mnt : NULL;
 }
 
-static inline struct super_block *agfs_lower_super(const struct super_block *sb)
-{
-	return AGFS_SB(sb)->lower_sb;
-}
-
 /* ── Extern Declarations ───────────────────────────────────────────── */
 
 /* super.c */
@@ -410,11 +527,10 @@ int agfs_inode_path(struct agfs_sb_info *sbi, u64 ino,
 struct agfs_dirent *agfs_find_dirent(struct inode *dir,
 					 const char *name,
 					 unsigned int namelen);
-int agfs_add_dirent(struct inode *dir, const char *name,
-		      unsigned int namelen,
-		      const struct agfs_dirent *de);
-int agfs_del_dirent(struct inode *dir, const char *name,
-		      unsigned int namelen);
+struct agfs_dirent *agfs_add_dirent(struct inode *dir, const char *name,
+				    unsigned int namelen, agfs_pde_t packed);
+struct agfs_dirent *agfs_del_dirent(struct inode *dir, const char *name,
+				    unsigned int namelen);
 int agfs_inode_alloc(struct agfs_sb_info *sbi, u64 *out_ino,
 		     struct path *inode_path, umode_t mode,
 		     const char *symname);
@@ -428,13 +544,14 @@ int agfs_journal_add(struct agfs_sb_info *sbi, struct dentry *dentry,
 		       u64 ino, unsigned char d_type);
 int agfs_journal_modify(struct agfs_sb_info *sbi, struct dentry *dentry,
 			  u64 ino, unsigned char d_type);
-int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry);
-int agfs_journal_redirect(struct agfs_sb_info *sbi, struct dentry *dentry,
-			    unsigned char d_type, const char *base);
-int agfs_journal_replace(struct agfs_sb_info *sbi, struct dentry *dentry,
-			   unsigned char d_type, const char *base);
-int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name);
-int agfs_journal_restore(struct agfs_sb_info *sbi, u64 gen, u64 target_gen);
+int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry,
+			 unsigned char d_type);
+int agfs_journal_rename(struct agfs_sb_info *sbi, struct dentry *old_dentry,
+			  struct dentry *new_dentry, unsigned char d_type);
+int agfs_journal_replace(struct agfs_sb_info *sbi, struct dentry *old_dentry,
+			   struct dentry *new_dentry, unsigned char d_type);
+int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u16 id, const char *name);
+int agfs_journal_restore(struct agfs_sb_info *sbi, u16 gen, u16 target_gen);
 
 /* perm.c */
 static inline void agfs_perm_request_release(struct kref *kref)

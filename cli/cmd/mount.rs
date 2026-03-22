@@ -4,6 +4,7 @@
 // `agfs unmount`  — unmount and clean up .agfs/.
 // `agfs remount`  — unmount then mount again (picks up new agfs.toml options).
 
+use crate::journal::Journal;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::env;
@@ -186,7 +187,7 @@ pub fn mount() -> Result<()> {
     }
 
     setup_agfs_dir(&agfs_dir)?;
-    crate::kmod::load()?;
+    super::load::load()?;
     do_mount(&agfs_dir)?;
     bind_mount_pseudofs(&mnt)?;
     create_cwd_symlink(&agfs_dir, &cwd)?;
@@ -221,10 +222,9 @@ pub fn remount(force: bool) -> Result<()> {
 
 /// If there are staged changes, ask the user to commit or abort before proceeding.
 fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
-    let records = crate::journal::read(agfs_dir).unwrap_or_default();
-    let sj = crate::journal::SegmentedJournal::new(records);
-    let changes = crate::journal::resolve::resolve(sj.live_records()).unwrap_or_default();
-    if changes.is_empty() {
+    let journal = Journal::read(agfs_dir).unwrap_or_else(|_| Journal::new(vec![]));
+    let dirents = journal.into_tree().into_dirents();
+    if dirents.is_empty() {
         return Ok(());
     }
 
@@ -232,8 +232,8 @@ fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
         "{}",
         format!(
             "Warning: {} staged change{} will be lost.",
-            changes.len(),
-            crate::utils::plural(changes.len())
+            dirents.len(),
+            crate::utils::plural(dirents.len())
         )
         .yellow()
         .bold()
@@ -248,8 +248,8 @@ fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
     io::stdin().lock().read_line(&mut line)?;
 
     match line.trim().to_ascii_lowercase().as_str() {
-        "c" | "commit" => crate::commit::run()?,
-        "a" | "abort" => crate::abort::reset_staging(agfs_dir)?,
+        "c" | "commit" => super::commit::run()?,
+        "a" | "abort" => super::abort::reset_staging(agfs_dir)?,
         _ => anyhow::bail!("unmount cancelled"),
     }
     Ok(())

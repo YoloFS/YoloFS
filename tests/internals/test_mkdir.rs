@@ -1,6 +1,6 @@
-use super::helpers::{changes, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::Record;
+use agfs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -12,12 +12,12 @@ fn mkdir_produces_add_record() {
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Added { path, dtype: Some(agfs::journal::DType::Dir), .. } if path.ends_with("/newdir"))),
-        "journal should have an Added(dtype=Dir) record for newdir: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Add { path, dtype: Some(agfs::journal::DType::Dir), .. } if path.ends_with("/newdir"))),
+        "journal should have an Added(dtype=Dir) record for newdir: {acts:?}"
     );
 }
 
@@ -30,12 +30,12 @@ fn rmdir_produces_delete_record() {
     fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
     fs::remove_dir(s.mnt_path("tmpdir")).expect("rmdir");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/tmpdir"))),
-        "journal should have a Deleted record for tmpdir: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Delete { path, .. } if path.ends_with("/tmpdir"))),
+        "journal should have a Deleted record for tmpdir: {acts:?}"
     );
 }
 
@@ -48,16 +48,16 @@ fn rmdir_base_dir_produces_delete_record() {
     fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink nested file");
     fs::remove_dir(s.mnt_path("subdir")).expect("rmdir base dir");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/subdir"))),
-        "journal should have a Deleted record for base dir: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Delete { path, .. } if path.ends_with("/subdir"))),
+        "journal should have a Deleted record for base dir: {acts:?}"
     );
 }
 
-/// Renaming a staged directory produces Delete + Staged (same ino) records.
+/// Renaming a staged directory produces a single R record.
 #[test]
 fn rename_dir_produces_rename_record() {
     let s = AgfsSession::new().expect("session setup");
@@ -65,18 +65,12 @@ fn rename_dir_produces_rename_record() {
     fs::create_dir(s.mnt_path("olddir")).expect("mkdir");
     fs::rename(s.mnt_path("olddir"), s.mnt_path("newdir")).expect("rename dir");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Deleted { path }
-            if path.ends_with("/olddir"))),
-        "journal should have a Delete record for olddir: {records:?}"
-    );
-    assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Added { path, .. }
-            if path.ends_with("/newdir"))),
-        "journal should have a Staged record for newdir: {records:?}"
+        acts.iter().any(|a| matches!(a, Action::Rename { dst, src, .. }
+            if dst.ends_with("/newdir") && src.ends_with("/olddir"))),
+        "journal should have a Redirect record for olddir → newdir: {acts:?}"
     );
 }
 
@@ -89,7 +83,7 @@ fn mkdir_creates_directory_inode() {
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/newdir");
     let path = inode_path(&s, ino);
 
@@ -109,7 +103,7 @@ fn mkdir_with_file_creates_separate_inodes() {
     fs::create_dir_all(s.mnt_path("parent/child")).expect("mkdir -p");
     fs::write(s.mnt_path("parent/child/data.txt"), "nested\n").expect("write");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
 
     // The file should have its own inode
     let file_ino = ino_for(&ch, "/data.txt");
@@ -127,7 +121,7 @@ fn mkdir_with_file_creates_separate_inodes() {
         .iter()
         .filter_map(|(path, c)| {
             if path.ends_with("/parent") || path.ends_with("/child") {
-                if let agfs::journal::Change::Added { ino, .. } = c {
+                if let agfs::journal::Dirent::Inode { ino, in_base: false, .. } = c {
                     return Some(*ino);
                 }
             }
@@ -142,7 +136,7 @@ fn mkdir_with_file_creates_separate_inodes() {
     }
 }
 
-/// rmdir does NOT create a staged inode (only journal D record).
+/// rmdir does NOT create a staged inode (only journal DEL record).
 #[test]
 fn rmdir_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
@@ -161,7 +155,7 @@ fn rmdir_creates_no_inode() {
     );
 }
 
-/// Pure directory rename creates no new inode (only journal R record).
+/// Pure directory rename creates no new inode (only journal RDR record).
 #[test]
 fn rename_dir_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");

@@ -696,7 +696,7 @@ On failure, the failing (workload, backend) combination is automatically rerun
 with verbose logging enabled. Verbose logs include:
 
 - Workload stdout/stderr
-- agfs journal contents at the point of failure (agfs backend only)
+- agfs audit contents at the point of failure (agfs backend only)
 
 ### Results
 
@@ -763,11 +763,12 @@ kfunctions via BTF (`kfunc`/`kretfunc` probes):
 | `agfs_do_cow` | Copy-on-write execution (at open time) |
 | `agfs_staging_alloc` | Inode allocation in inode store |
 | `agfs_readdir` | Directory listing merged from base + staging |
-| `agfs_journal_add` | Journal write for new entry (create/mkdir/symlink) |
-| `agfs_journal_modify` | Journal write for modified entry (COW) |
-| `agfs_journal_delete` | Journal write for deletion |
-| `agfs_journal_redirect` | Journal write for redirect (rename from base) |
-| `agfs_journal_checkpoint` | Journal write for checkpoint |
+| `agfs_journal_add` | Journal A record for new entry (create/mkdir/symlink) |
+| `agfs_journal_modify` | Journal M record for modified entry (COW) |
+| `agfs_journal_delete` | Journal D record for deletion |
+| `agfs_journal_rename` | Journal R record for rename (destination is new) |
+| `agfs_journal_replace` | Journal P record for replace (destination existed in base) |
+| `agfs_journal_checkpoint` | Journal K record for checkpoint |
 | `agfs_release` | File release |
 | `agfs_find_dirent` | Staging index lookup |
 

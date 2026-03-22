@@ -2,6 +2,7 @@
 //
 // `agfs abort` — discard staged changes.
 
+use crate::journal::Journal;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
@@ -40,10 +41,9 @@ pub fn reset_staging(agfs: &Path) -> Result<()> {
 pub fn run(force: bool) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
-    let sj = crate::journal::SegmentedJournal::new(crate::journal::read(&agfs)?);
-    let live_records = sj.live_records();
-    let changes = crate::journal::resolve::resolve(live_records)?;
-    if changes.is_empty() {
+    let journal = Journal::read(&agfs)?;
+    let dirents = journal.into_tree().into_dirents();
+    if dirents.is_empty() {
         println!("{}", "Nothing to discard.".yellow());
         return Ok(());
     }
@@ -53,8 +53,8 @@ pub fn run(force: bool) -> Result<()> {
             "{} ",
             format!(
                 "Discard {} staged change{}? [y/N]:",
-                changes.len(),
-                crate::utils::plural(changes.len())
+                dirents.len(),
+                crate::utils::plural(dirents.len())
             )
             .bold()
         );
@@ -68,7 +68,7 @@ pub fn run(force: bool) -> Result<()> {
         }
     }
 
-    crate::abort::reset_staging(&agfs)?;
+    reset_staging(&agfs)?;
 
     println!("{}", "Staging discarded.".yellow().bold());
 

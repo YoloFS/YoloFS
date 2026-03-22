@@ -126,10 +126,10 @@ Two changes that work together:
        `Delete(origin)`. New Redirect gets its `in_base` from the
        record, not inherited from the prior Redirect.
      - When destination has prior `Stage` → silently replaced. The
-       P/R record carries the correct `in_base` from the kernel
+       REP/RDR record carries the correct `in_base` from the kernel
        (which read the dirent's `in_base` before the rename).
      - When destination has prior `Delete` → silently replaced. Same
-       reasoning — the P/R record is authoritative.
+       reasoning — the REP/RDR record is authoritative.
    - `Change::Renamed` — add `in_base: bool`:
      ```rust
      Renamed { from: String, to: String, dtype: DType, in_base: bool }

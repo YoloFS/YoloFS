@@ -17,24 +17,6 @@ fn restore_shows_checkpoint_state() {
     assert_eq!(content, "version 1\n", "should see checkpoint state");
 }
 
-/// Restore to initial produces a clean base view.
-#[test]
-fn restore_to_initial() {
-    let s = AgfsSession::new().expect("session setup");
-
-    fs::write(s.mnt_path("hello.txt"), "new content\n").expect("write");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
-
-    // Restore to initial checkpoint (id=1)
-    s.cli(&["restore", "1"]).expect("restore to initial");
-
-    let status = s.cli(&["status"]).expect("status");
-    assert!(
-        !status.contains("hello.txt"),
-        "no staged changes after restore to initial: {status}"
-    );
-}
-
 /// Post-checkpoint created files are invisible after restore.
 #[test]
 fn restore_hides_post_checkpoint_creates() {
@@ -150,12 +132,12 @@ fn restore_by_numeric_id() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
-    // Checkpoint gets id=2 (id=1 is initial)
+    // Checkpoint gets id=1 (first user checkpoint)
     s.cli(&["checkpoint", "chk"]).expect("checkpoint");
 
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
 
-    s.cli(&["restore", "2"]).expect("restore by id");
+    s.cli(&["restore", "1"]).expect("restore by id");
 
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
     assert_eq!(content, "v1\n");
@@ -555,24 +537,6 @@ fn restore_base_file_deletion() {
 
 // ── Edge cases ───────────────────────────────────────────────────────────
 
-/// Restore to (initial) by name.
-#[test]
-fn restore_to_initial_by_name() {
-    let s = AgfsSession::new().expect("session setup");
-
-    fs::write(s.mnt_path("file.txt"), "content\n").expect("write");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
-
-    s.cli(&["restore", "(initial)"])
-        .expect("restore to (initial)");
-
-    let status = s.cli(&["status"]).expect("status");
-    assert!(
-        !status.contains("file.txt"),
-        "no staged changes after restore to (initial): {status}"
-    );
-}
-
 /// Deeply nested new directories: mkdir -p a/b/c with a file inside.
 #[test]
 fn restore_deeply_nested_new_dirs() {
@@ -766,7 +730,7 @@ fn kernel_appends_to_journal_after_restore() {
     );
 }
 
-// ── Append-only journal / S-record tests ─────────────────────────────
+// ── Append-only journal / RST-record tests ─────────────────────────────
 
 /// After restore, the journal is append-only (not truncated).
 /// Verify that `agfs timeline` shows the restore event.
@@ -869,23 +833,59 @@ fn undo_restore() {
     assert!(s.mnt_path("b.txt").exists(), "b.txt should reappear");
 }
 
-/// Restore to initial checkpoint after a previous restore still works.
+/// Create a new file (not in base), checkpoint, write to it again
+/// (triggering re-COW), then restore to the checkpoint and commit.
+/// The file should appear in base — it was staged at checkpoint time.
+///
+/// This exercises a bug where agfs_do_cow hardcodes overwrites=true,
+/// flipping the flag for staged-only files.  If restore uses the
+/// corrupted overwrites=true, the committed file might be missing or
+/// the abort path might leave a ghost entry.
 #[test]
-fn restore_to_initial_after_restore() {
+fn restore_created_file_after_recow_then_commit() {
     let s = AgfsSession::new().expect("session setup");
 
-    fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
-    s.cli(&["checkpoint", "c1"]).expect("checkpoint");
+    // Create a brand-new file (not in base) and checkpoint.
+    fs::write(s.mnt_path("newfile.txt"), "v1\n").expect("create");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
 
-    fs::write(s.mnt_path("b.txt"), "v2\n").expect("write b");
-    s.cli(&["checkpoint", "c2"]).expect("checkpoint");
+    // Write again — triggers re-COW (allocates new inode, may flip overwrites).
+    fs::write(s.mnt_path("newfile.txt"), "v2\n").expect("write v2 (re-COW)");
 
-    s.cli(&["restore", "c1"]).expect("restore to c1");
-    s.cli(&["restore", "1"]).expect("restore to initial");
+    // Restore to chk1 — should see v1 content.
+    s.cli(&["restore", "chk1"]).expect("restore");
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("newfile.txt")).unwrap(),
+        "v1\n",
+        "mount should show checkpoint content after restore"
+    );
 
-    let status = s.cli(&["status"]).expect("status");
+    // Commit the restored state.
+    s.cli(&["commit"]).expect("commit");
+
+    // The file should appear in base with v1 content.
+    assert_eq!(
+        fs::read_to_string(s.base_path("newfile.txt")).unwrap(),
+        "v1\n",
+        "committed file should have checkpoint content in base"
+    );
+}
+
+/// Same as above, but abort instead of commit.  The created file
+/// should NOT appear in base (it was never in base).
+#[test]
+fn restore_created_file_after_recow_then_abort() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("newfile.txt"), "v1\n").expect("create");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    fs::write(s.mnt_path("newfile.txt"), "v2\n").expect("write v2 (re-COW)");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["abort"]).expect("abort");
+
     assert!(
-        !status.contains("a.txt"),
-        "a.txt should be gone after restore to initial: {status}"
+        !s.base_path("newfile.txt").exists(),
+        "staged-only file should not appear in base after abort"
     );
 }

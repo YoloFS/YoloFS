@@ -85,7 +85,7 @@ directly — zero copy for the most common agent write pattern.
 
 **Rename**: OverlayFS does a real `vfs_rename()` in the upper directory,
 which requires copy-up. AgFS does zero-copy renames by adding dirents
-(DELETED on old parent, REDIRECTED on new parent). Rename chains
+(tombstone on old parent, link on new parent). Rename chains
 resolve naturally through the dirent table.
 
 **Lookup**: OverlayFS does two lookups per component (upper + lower) and
@@ -99,7 +99,9 @@ for interactive approval.
 **On-disk format**: OverlayFS requires filesystem support for whiteouts
 (`RENAME_WHITEOUT`, ext4/xfs). AgFS uses a flat inode store + append-only
 journal, working on any lower FS. The journal uses typed record tags
-(`A`/`M`/`D`/`R`/`P` for mutations, `K`/`S` for checkpoints/restores) so each record is self-describing.
+(`A`/`M`/`D`/`R`/`P` for mutations, `K`/`T` for checkpoints/restores) so
+each record is self-describing. All renames — staged or redirect — emit a
+single R or P record carrying both source and destination paths.
 
 ## Lifecycle Example
 
@@ -174,14 +176,14 @@ $ agfs commit
    -> kernel: release dirents, invalidate dentry + inode caches
    -> umount .agfs/mnt
 
-# 8. Restore to a previous checkpoint (appends S record, no truncation)
+# 8. Restore to a previous checkpoint (appends T record, no truncation)
 $ agfs restore "after make build"
-   -> CLI: SegmentedJournal → find_checkpoint → live_prefix → resolve
+   -> CLI: Journal → find_checkpoint → live_segments_at_name → build tree → restore entries
    -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, entries })
    -> kernel: wipe dirents, inject entries, increment gen to 4,
-      append S\04\02\n to journal
+      append T record to journal
    -> journal is append-only — dead records remain but are filtered
-      by SegmentedJournal reachability on subsequent operations
+      by Journal reachability on subsequent operations
 ```
 
 ## Source File Layout
@@ -213,23 +215,24 @@ agfs/
 │   ├── main.rs
 │   ├── lib.rs
 │   ├── config.rs              # agfs.toml management (init, rules, mount options)
-│   ├── kmod.rs                # `agfs load/unload/reload` -- kernel module management
-│   ├── mount.rs               # mount, unmount, remount (auto-loads kmod, prompts on staged changes)
-│   ├── exec.rs
-│   ├── commit.rs
-│   ├── abort.rs
-│   ├── diff.rs                # `agfs status` + `agfs diff` (summary and verbose views)
+│   ├── cmd/                   # CLI subcommand implementations
+│   │   ├── abort.rs
+│   │   ├── audit.rs           # `agfs audit` command (raw record display, --path filter)
+│   │   ├── checkpoint.rs      # `agfs checkpoint` (create only)
+│   │   ├── commit.rs
+│   │   ├── diff.rs            # `agfs status` + `agfs diff` (summary and verbose views)
+│   │   ├── exec.rs
+│   │   ├── load.rs            # `agfs load/unload/reload` -- kernel module management
+│   │   ├── mount.rs           # mount, unmount, remount (auto-loads kmod, prompts on staged changes)
+│   │   ├── restore.rs         # `agfs restore` -- restore to a previous checkpoint
+│   │   ├── timeline.rs        # `agfs timeline` command (checkpoint/restore DAG)
+│   │   └── watch.rs           # permission prompt daemon (handles TTY ownership)
 │   ├── journal/               # journal parsing, timeline, and resolution
-│   │   ├── types.rs           # Record, Change, DType, and related types
-│   │   ├── parse.rs           # journal file parsing
-│   │   ├── segment.rs         # journal pipeline (SegmentedJournal, Segment, Markers)
-│   │   ├── liveness.rs       # reachability filtering (alive_segments, live, live_prefix)
-│   │   └── resolve.rs         # journal resolution (collapse records into final ops)
-│   ├── restore.rs             # `agfs restore` -- restore to a previous checkpoint
-│   ├── checkpoint.rs          # `agfs checkpoint` (create only)
-│   ├── journal_cmd.rs         # `agfs journal` command (raw record display, --path filter)
-│   ├── timeline_cmd.rs        # `agfs timeline` command (checkpoint/restore DAG)
-│   ├── watch.rs               # permission prompt daemon (handles TTY ownership)
+│   │   ├── types.rs           # Action, Marker, Record, DType, Segment, INO_REDIRECT
+│   │   ├── parse.rs           # parse()  (pub(super))
+│   │   ├── markers.rs         # Markers (lookup + range + alive_segments + checkpoint_at)
+│   │   ├── journal.rs         # Journal (struct + new + read + live_segments_*)
+│   │   └── tree.rs            # DirTree, Dirent, DirNode
 │   ├── ioctl.rs               # binary protocol structs + ioctl helpers
 │   ├── kmsg.rs                # kernel log reading via /dev/kmsg
 │   └── utils.rs               # shared helpers (session_dir, plural)

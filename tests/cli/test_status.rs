@@ -114,20 +114,3 @@ fn status_at_checkpoint_after_restore() {
     );
 }
 
-/// Status after restoring to initial checkpoint (no mutations) should
-/// show nothing staged.
-#[test]
-fn status_after_restore_to_initial() {
-    let s = AgfsSession::new().expect("session setup");
-
-    fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
-
-    s.cli(&["restore", "1"]).expect("restore to initial");
-
-    let output = s.cli(&["status"]).expect("status");
-    assert!(
-        output.contains("No changes staged"),
-        "restoring to initial should have no staged changes: {output}"
-    );
-}

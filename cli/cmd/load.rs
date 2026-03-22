@@ -1,4 +1,4 @@
-// agfs CLI — kmod.rs
+// agfs CLI — load.rs
 //
 // `agfs load`   — load the kernel module.
 // `agfs unload` — unmount all sessions and unload the kernel module.
@@ -116,7 +116,7 @@ fn parse_mounts(content: &str) -> Vec<String> {
 fn unmount_all() -> Result<()> {
     for agfs_dir in find_agfs_dirs() {
         eprintln!("{} {}", "agfs: unmounting".green(), agfs_dir);
-        crate::mount::unmount_at(Path::new(&agfs_dir))?;
+        crate::cmd::mount::unmount_at(Path::new(&agfs_dir))?;
     }
     Ok(())
 }

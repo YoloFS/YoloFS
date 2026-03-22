@@ -6,12 +6,13 @@
  * commit/abort/status/diff. The kernel never reads it back.
  *
  * Record format (NUL-separated fields, newline-terminated):
- *   A\0<dir>\0<name>\0<dtype>\0<ino>\n       — add (new file)
- *   M\0<dir>\0<name>\0<dtype>\0<ino>\n       — modify (existing file)
- *   D\0<dir>\0<name>\n                        — delete
- *   R\0<dir>\0<name>\0<dtype>\0<base>\n       — redirect (rename)
- *   K\0<id>\0<name>\n                         — checkpoint marker
- *   S\0<gen>\0<target_gen>\n                  — restore
+ *   A\0<path>\0<dtype>\0<ino>\n       — Add (new path)
+ *   M\0<path>\0<dtype>\0<ino>\n       — Modify (existing path)
+ *   D\0<path>\0<dtype>\n              — Delete
+ *   R\0<dst>\0<src>\0<dtype>\n         — Rename (destination is new)
+ *   P\0<dst>\0<src>\0<dtype>\n         — Replace (destination existed in base)
+ *   K\0<gen>\0<name>\n                — Checkpoint
+ *   T\0<gen>\0<target_gen>\n          — Restore
  */
 
 #include "agfs.h"
@@ -71,6 +72,8 @@ static int journal_write(struct agfs_sb_info *sbi, char tag,
 
 	pos = f->f_pos;
 	err = kernel_write(f, buf, off, &pos);
+	if (err >= 0 && tag != 'K' && tag != 'T')
+		WRITE_ONCE(sbi->dirty, true);
 	return err < 0 ? err : 0;
 }
 
@@ -86,43 +89,24 @@ static char dtype_to_char(unsigned char d_type)
 	}
 }
 
-/* Compute dir_buf = relpath of dentry's parent. Returns 0 or -errno. */
-static int journal_dir(struct dentry *dentry, char *dir_buf, size_t size)
-{
-	char *p;
-
-	p = dentry_path_raw(dentry->d_parent, dir_buf, size);
-	if (IS_ERR(p))
-		return PTR_ERR(p);
-	if (p != dir_buf)
-		memmove(dir_buf, p, strlen(p) + 1);
-	/* Root parent shows as "/" — normalize to "" */
-	if (dir_buf[0] == '/' && dir_buf[1] == '\0')
-		dir_buf[0] = '\0';
-	return 0;
-}
-
 /* ── Public: typed journal record writers ──────────────────────────── */
 
-static int journal_ino_record(struct agfs_sb_info *sbi, char tag,
-			      struct dentry *dentry, u64 ino,
-			      unsigned char d_type)
+static int journal_emit_ino(struct agfs_sb_info *sbi,
+			    struct dentry *dentry, u64 ino,
+			    unsigned char d_type, char tag)
 {
-	char dir_buf[AGFS_PATH_MAX];
+	char path_buf[AGFS_PATH_MAX];
 	char ino_str[21];
 	char dtype_str[2] = { '\0', '\0' };
-	int err;
-
-	err = journal_dir(dentry, dir_buf, sizeof(dir_buf));
-	if (err)
-		return err;
+	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
+	if (IS_ERR(path))
+		return PTR_ERR(path);
 
 	snprintf(ino_str, sizeof(ino_str), "%llu", (unsigned long long)ino);
 	dtype_str[0] = dtype_to_char(d_type);
 
 	return journal_write(sbi, tag,
-			     (const char *[]){ dir_buf,
-					       dentry->d_name.name,
+			     (const char *[]){ path,
 					       dtype_str, ino_str,
 					       NULL });
 }
@@ -130,75 +114,76 @@ static int journal_ino_record(struct agfs_sb_info *sbi, char tag,
 int agfs_journal_add(struct agfs_sb_info *sbi, struct dentry *dentry,
 		     u64 ino, unsigned char d_type)
 {
-	return journal_ino_record(sbi, 'A', dentry, ino, d_type);
+	return journal_emit_ino(sbi, dentry, ino, d_type, 'A');
 }
 
 int agfs_journal_modify(struct agfs_sb_info *sbi, struct dentry *dentry,
 			u64 ino, unsigned char d_type)
 {
-	return journal_ino_record(sbi, 'M', dentry, ino, d_type);
+	return journal_emit_ino(sbi, dentry, ino, d_type, 'M');
 }
 
-int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry)
+int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry,
+		       unsigned char d_type)
 {
-	char dir_buf[AGFS_PATH_MAX];
-	int err;
+	char path_buf[AGFS_PATH_MAX];
+	char dtype_str[2] = { '\0', '\0' };
+	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
+	if (IS_ERR(path))
+		return PTR_ERR(path);
 
-	err = journal_dir(dentry, dir_buf, sizeof(dir_buf));
-	if (err)
-		return err;
+	dtype_str[0] = dtype_to_char(d_type);
 
 	return journal_write(sbi, 'D',
-			     (const char *[]){ dir_buf,
-					       dentry->d_name.name,
+			     (const char *[]){ path,
+					       dtype_str,
 					       NULL });
 }
 
-int agfs_journal_redirect(struct agfs_sb_info *sbi, struct dentry *dentry,
-			  unsigned char d_type, const char *base)
+static int journal_emit_paths(struct agfs_sb_info *sbi,
+			       struct dentry *old_dentry,
+			       struct dentry *new_dentry,
+			       unsigned char d_type, char tag)
 {
-	char dir_buf[AGFS_PATH_MAX];
+	char dst_buf[AGFS_PATH_MAX];
+	char src_buf[AGFS_PATH_MAX];
 	char dtype_str[2] = { '\0', '\0' };
-	int err;
+	char *dst_path, *src_path;
 
-	err = journal_dir(dentry, dir_buf, sizeof(dir_buf));
-	if (err)
-		return err;
+	dst_path = dentry_path_raw(new_dentry, dst_buf, sizeof(dst_buf));
+	if (IS_ERR(dst_path))
+		return PTR_ERR(dst_path);
+
+	src_path = dentry_path_raw(old_dentry, src_buf, sizeof(src_buf));
+	if (IS_ERR(src_path))
+		return PTR_ERR(src_path);
 
 	dtype_str[0] = dtype_to_char(d_type);
 
-	return journal_write(sbi, 'R',
-			     (const char *[]){ dir_buf,
-					       dentry->d_name.name,
-					       dtype_str, base,
+	return journal_write(sbi, tag,
+			     (const char *[]){ dst_path,
+					       src_path,
+					       dtype_str,
 					       NULL });
 }
 
-int agfs_journal_replace(struct agfs_sb_info *sbi, struct dentry *dentry,
-			 unsigned char d_type, const char *base)
+int agfs_journal_rename(struct agfs_sb_info *sbi, struct dentry *old_dentry,
+			struct dentry *new_dentry, unsigned char d_type)
 {
-	char dir_buf[AGFS_PATH_MAX];
-	char dtype_str[2] = { '\0', '\0' };
-	int err;
-
-	err = journal_dir(dentry, dir_buf, sizeof(dir_buf));
-	if (err)
-		return err;
-
-	dtype_str[0] = dtype_to_char(d_type);
-
-	return journal_write(sbi, 'P',
-			     (const char *[]){ dir_buf,
-					       dentry->d_name.name,
-					       dtype_str, base,
-					       NULL });
+	return journal_emit_paths(sbi, old_dentry, new_dentry, d_type, 'R');
 }
 
-int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name)
+int agfs_journal_replace(struct agfs_sb_info *sbi, struct dentry *old_dentry,
+			 struct dentry *new_dentry, unsigned char d_type)
 {
-	char id_str[21];
+	return journal_emit_paths(sbi, old_dentry, new_dentry, d_type, 'P');
+}
 
-	snprintf(id_str, sizeof(id_str), "%llu", (unsigned long long)id);
+int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u16 id, const char *name)
+{
+	char id_str[6];
+
+	snprintf(id_str, sizeof(id_str), "%u", (unsigned)id);
 	return journal_write(sbi, 'K',
 			     (const char *[]){ id_str, name, NULL });
 }
@@ -209,16 +194,16 @@ int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u64 id, const char *name)
  * @gen: new generation assigned to this restore
  * @target_gen: the checkpoint gen being restored to
  *
- * Format: S\0<gen>\0<target_gen>\n
+ * Format: T\0<gen>\0<target_gen>\n
  */
-int agfs_journal_restore(struct agfs_sb_info *sbi, u64 gen, u64 target_gen)
+int agfs_journal_restore(struct agfs_sb_info *sbi, u16 gen, u16 target_gen)
 {
-	char gen_str[21];
-	char target_str[21];
+	char gen_str[6];
+	char target_str[6];
 
-	snprintf(gen_str, sizeof(gen_str), "%llu", (unsigned long long)gen);
-	snprintf(target_str, sizeof(target_str), "%llu",
-		 (unsigned long long)target_gen);
-	return journal_write(sbi, 'S',
+	snprintf(gen_str, sizeof(gen_str), "%u", (unsigned)gen);
+	snprintf(target_str, sizeof(target_str), "%u",
+		 (unsigned)target_gen);
+	return journal_write(sbi, 'T',
 			     (const char *[]){ gen_str, target_str, NULL });
 }

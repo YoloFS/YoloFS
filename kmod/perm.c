@@ -106,19 +106,16 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 	wake_up_interruptible(&sbi->ask_engine.request_waitq);
 
 	/* Wait for decision */
-	if (sbi->ask_engine.timeout_s > 0) {
+	if (sbi->ask_engine.timeout_s > 0)
 		timeout = msecs_to_jiffies(sbi->ask_engine.timeout_s * 1000);
-		timeout = wait_for_completion_interruptible_timeout(&req->done,
-								   timeout);
-		if (timeout == 0) {
-			/* Timed out — apply default */
-			req->decision = sbi->ask_engine.default_perm;
-		} else if (timeout < 0) {
-			err = -EINTR;
-		}
-	} else {
-		err = wait_for_completion_interruptible(&req->done);
-	}
+	else
+		timeout = MAX_SCHEDULE_TIMEOUT;
+	timeout = wait_for_completion_interruptible_timeout(&req->done,
+							    timeout);
+	if (timeout == 0)
+		req->decision = sbi->ask_engine.default_perm;
+	else if (timeout < 0)
+		err = -EINTR;
 
 	/* Remove from pending list if the daemon hasn't dequeued it yet */
 	spin_lock(&sbi->ask_engine.pending_lock);

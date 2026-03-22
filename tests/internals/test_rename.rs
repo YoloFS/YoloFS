@@ -1,6 +1,6 @@
-use super::helpers::{changes, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::Record;
+use agfs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -12,19 +12,19 @@ fn rename_produces_rename_record() {
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Redirect { path, dtype: Some(agfs::journal::DType::File), base, .. }
-            if path.ends_with("/moved.txt") && base.ends_with("/hello.txt"))),
-        "journal should have a Redirect(dtype=File) record for hello.txt → moved.txt: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Rename { src, dst, dtype: Some(agfs::journal::DType::File), .. }
+            if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))),
+        "journal should have a Redirect(dtype=File) record for hello.txt → moved.txt: {acts:?}"
     );
 }
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// Pure rename of a base file creates no new inode (only journal R record).
+/// Pure rename of a base file creates no new inode (only journal RDR record).
 #[test]
 fn pure_rename_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
@@ -47,7 +47,7 @@ fn rename_then_write_produces_inode() {
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
     fs::write(s.mnt_path("moved.txt"), "new content\n").expect("write renamed file");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/moved.txt");
 
     assert_eq!(
@@ -69,7 +69,7 @@ fn write_then_rename_inode_content() {
     assert_eq!(content, "written first\n");
 
     // The inode should have the written content — resolves as Renamed + Modified.
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/final.txt");
     assert_eq!(
         fs::read_to_string(inode_path(&s, ino)).unwrap(),
@@ -77,9 +77,8 @@ fn write_then_rename_inode_content() {
     );
 }
 
-/// Rename chain: a→b→c. Journal should show Delete + Redirect for each step.
-/// The kernel follows redirect chains (b's base_path points to a, so c's
-/// redirect also points to a).
+/// Rename chain: a→b→c. Journal should show two Redirect records.
+/// Each carries the dentry path as old (no chain resolution in kernel).
 #[test]
 fn rename_chain_journal_records() {
     let s = AgfsSession::new().expect("session setup");
@@ -87,17 +86,18 @@ fn rename_chain_journal_records() {
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("step1.txt")).expect("a→b");
     fs::rename(s.mnt_path("step1.txt"), s.mnt_path("step2.txt")).expect("b→c");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
 
     // Both renames should produce Redirect records (base-file renames)
-    let redirects: Vec<_> = records
+    let redirects: Vec<_> = acts
         .iter()
-        .filter(|r| matches!(r, Record::Redirect { .. }))
+        .filter(|a| matches!(a, Action::Rename { .. }))
         .collect();
     assert_eq!(
         redirects.len(),
         2,
-        "chain should produce 2 Redirect records: {records:?}"
+        "chain should produce 2 Redirect records: {acts:?}"
     );
 }
 
@@ -111,22 +111,22 @@ fn rename_overwrite_journal() {
     // hello.txt overwrites subdir/deep.txt
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("subdir/deep.txt")).expect("overwrite");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
 
-    // Should have Delete(hello.txt) + Replace(subdir/deep.txt, base=hello.txt)
-    let has_delete = records.iter().any(|r| {
-        matches!(r, Record::Deleted { path }
-        if path.ends_with("/hello.txt"))
+    // Should have Replace(hello.txt → subdir/deep.txt) as a single record
+    // (no separate Delete for hello.txt — fused into the RDR/REP record).
+    let has_replace = acts.iter().any(|a| {
+        matches!(a, Action::Replace { src, dst, .. }
+        if dst.ends_with("/deep.txt") && src.ends_with("/hello.txt"))
     });
-    let has_replace = records.iter().any(|r| {
-        matches!(r, Record::Replace { path, base, .. }
-        if path.ends_with("/deep.txt") && base.ends_with("/hello.txt"))
-    });
-    assert!(has_delete, "should have Delete for hello.txt: {records:?}");
-    assert!(has_replace, "should have Replace for deep.txt: {records:?}");
+    assert!(
+        has_replace,
+        "should have Replace for hello.txt → deep.txt: {acts:?}"
+    );
 }
 
-/// Rename back and forth: a→b→a. After resolution, no staged changes
+/// Rename back and forth: a→b→a. After resolution, no staged dirents
 /// should remain (the rename cancels out).
 #[test]
 fn rename_back_and_forth_no_changes() {
@@ -135,15 +135,15 @@ fn rename_back_and_forth_no_changes() {
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("a→b");
     fs::rename(s.mnt_path("temp.txt"), s.mnt_path("hello.txt")).expect("b→a");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     assert!(
         ch.is_empty(),
-        "rename back and forth should produce no changes, got: {ch:?}"
+        "rename back and forth should produce no dirents, got: {ch:?}"
     );
 }
 
 /// Rename a staged (newly created) file to overwrite a base file.
-/// The destination exists in base, so the kernel emits D + M (not D + A).
+/// The destination exists in base, so the kernel emits P (Replace) record.
 #[test]
 fn rename_staged_file_to_base_path() {
     let s = AgfsSession::new().expect("session setup");
@@ -153,23 +153,18 @@ fn rename_staged_file_to_base_path() {
     // Rename it to overwrite multi.txt (which exists in base)
     fs::rename(s.mnt_path("brand_new.txt"), s.mnt_path("multi.txt")).expect("rename");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
 
-    // Should have Delete for brand_new.txt
-    let has_delete = records
+    // All renames now emit a single R or P record.
+    // Destination exists in base → P (Replace).
+    let has_replace = acts
         .iter()
-        .any(|r| matches!(r, Record::Deleted { path } if path.ends_with("/brand_new.txt")));
+        .any(|a| matches!(a, Action::Replace { dst, src, .. }
+            if dst.ends_with("/multi.txt") && src.ends_with("/brand_new.txt")));
     assert!(
-        has_delete,
-        "should have Delete for brand_new.txt: {records:?}"
-    );
-    // Destination exists in base → kernel emits Modified (not Added)
-    let has_modified = records
-        .iter()
-        .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/multi.txt")));
-    assert!(
-        has_modified,
-        "should have Modified for multi.txt (dest in base): {records:?}"
+        has_replace,
+        "should have Replace for brand_new.txt → multi.txt: {acts:?}"
     );
     // Verify the file content is correct
     let content = fs::read_to_string(s.mnt_path("multi.txt")).expect("read");

@@ -2,13 +2,10 @@
 
 ## Principles
 
-- Keep code simple and easy to understand.
-- No backwards compatibility needed — remove deprecated code. Freely change interfaces and update all callers.
-- Do not repeat the same code — extract shared logic.
+- Keep code simple: short functions, no duplication, extract shared logic, remove deprecated code.
+- Freely refactor and change any interface — rename, restructure, move, split, or merge. No backwards compatibility needed. This includes the kernel-userspace contract (ioctls, shared structs, protocol), kernel-internal interfaces, and userspace-internal interfaces.
 - Think through problems and implement the best solution; avoid fallbacks.
-- Keep functions short. Extract helpers when a function does multiple distinct things.
 - Do not change or remove existing comments unless they are outdated.
-- Do not be afraid of large-scale refactoring. If the design is better, do it.
 
 ## Workflow
 
@@ -40,16 +37,16 @@ make vm-build     # build cli + kmod
 make vm-test      # unit + e2e tests (auto-starts VM if needed)
 make vm-test-unit # unit tests only
 make vm-test-e2e  # e2e tests only
-make fix          # auto-fix lint issues (cargo fmt + clippy --fix)
 ```
 
 ## Code Review
 
-Before finalizing any change set, run a full review of the current changes. Launch all review checks **in parallel as separate sub-agents**. Each sub-agent examines `git diff` for one category:
+Before finalizing any change set, run a full review of the current changes. Launch all review checks **in parallel as separate sub-agents**. If the user specifies a commit to review, use `git show <commit>` for the diff; otherwise, use `git diff` for unstaged changes. Each sub-agent examines the diff for one category:
 
 1. **Bugs & correctness** — logic errors, off-by-one, unhandled errors, null/unwrap panics, race conditions, use-after-free, unsafe code, unchecked inputs.
 2. **Code quality** — unnecessary allocations/clones, redundant operations, overly complex logic, code that could be simplified or deduplicated, more idiomatic Rust/C patterns.
 3. **Doc consistency** — do `docs/` files accurately describe the new behavior? Do they contradict each other or the code?
 4. **Missing tests** — new code paths, features, or edge cases without test coverage; existing tests that need updating.
+5. **Plan adherence** — if a corresponding plan exists in `docs/plans/`, verify the changes follow the plan and flag anything specified in the plan that has not been implemented yet.
 
 Each sub-agent reports findings with file paths and line references. After all agents finish, triage the results and address issues.

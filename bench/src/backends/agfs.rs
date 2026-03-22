@@ -104,8 +104,9 @@ impl Session {
 
     fn journal_debug(&self) -> String {
         let agfs_dir = self.root.path().join(".agfs");
-        match agfs::journal::read(&agfs_dir) {
-            Ok(records) => records
+        match agfs::journal::Journal::read(&agfs_dir) {
+            Ok(journal) => journal
+                .segments
                 .iter()
                 .map(|r| format!("  {r:?}"))
                 .collect::<Vec<_>>()

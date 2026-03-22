@@ -105,13 +105,15 @@ static int agfs_lookup_staged(struct agfs_sb_info *sbi, struct dentry *dentry)
 	if (!de)
 		return 0;
 
-	if (agfs_ino_is_staged(de->ino)) {
+	AGFS_D(dentry)->dirent = de;
+
+	if (agfs_pde_is_inode(de->packed)) {
 		/* Staged inode */
 		struct inode *inode;
 		struct path ino_path;
 		int err;
 
-		err = agfs_inode_path(sbi, de->ino, &ino_path);
+		err = agfs_inode_path(sbi, agfs_pde_ino(de->packed), &ino_path);
 		if (err)
 			return 0; /* resolution failed — fall through to base */
 
@@ -126,13 +128,13 @@ static int agfs_lookup_staged(struct agfs_sb_info *sbi, struct dentry *dentry)
 		return 1;
 	}
 
-	if (agfs_ino_is_redirect(de->ino)) {
-		/* Redirected base path (zero-copy rename) */
+	if (agfs_pde_is_link(de->packed)) {
+		/* Link: redirected base path (zero-copy rename) */
 		struct inode *inode;
 		struct path base;
 		int err;
 
-		err = kern_path(de->base, LOOKUP_FOLLOW, &base);
+		err = kern_path(agfs_pde_base(de->packed), LOOKUP_FOLLOW, &base);
 		if (err)
 			return 0; /* base path gone — fall through */
 
@@ -147,7 +149,7 @@ static int agfs_lookup_staged(struct agfs_sb_info *sbi, struct dentry *dentry)
 		return 1;
 	}
 
-	/* Deleted (ino==0) */
+	/* Tombstone (packed==0) */
 	d_add(dentry, NULL);
 	return 1;
 }

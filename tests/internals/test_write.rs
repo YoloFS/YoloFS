@@ -1,6 +1,6 @@
-use super::helpers::{changes, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::Record;
+use agfs::journal::Action;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -14,16 +14,16 @@ fn modify_produces_add_record() {
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt"))),
-        "journal should have a Modified record for hello.txt: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt"))),
+        "journal should have a Modified record for hello.txt: {acts:?}"
     );
 }
 
-/// Overwrite an existing file multiple times — each write produces an A record
+/// Overwrite an existing file multiple times — each write produces an ADD record
 /// (the kernel doesn't coalesce; the CLI resolver handles that).
 #[test]
 fn multiple_writes_produce_multiple_adds() {
@@ -33,16 +33,17 @@ fn multiple_writes_produce_multiple_adds() {
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
 
-    let records = journal(&s);
-    let add_count = records
+    let j = journal(&s);
+    let acts = actions(&j);
+    let add_count = acts
         .iter()
-        .filter(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt")))
+        .filter(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt")))
         .count();
-    // At least 1 A record; the kernel may coalesce O_TRUNC reopens on the
+    // At least 1 ADD record; the kernel may coalesce O_TRUNC reopens on the
     // same inode, but the first COW always produces one.
     assert!(
         add_count >= 1,
-        "should have at least 1 A record, got {add_count}: {records:?}"
+        "should have at least 1 ADD record, got {add_count}: {acts:?}"
     );
 }
 
@@ -55,7 +56,7 @@ fn modify_creates_inode_with_content() {
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let path = inode_path(&s, ino);
 
@@ -75,7 +76,7 @@ fn overwrite_updates_inode_content() {
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     fs::write(s.mnt_path("hello.txt"), "v2 is longer\n").expect("write v2");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let path = inode_path(&s, ino);
 
@@ -100,7 +101,7 @@ fn append_updates_inode() {
     f.write_all(b"line2\n").expect("append");
     drop(f);
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let content = fs::read_to_string(inode_path(&s, ino)).unwrap();
     assert_eq!(
@@ -125,7 +126,7 @@ fn rewrite_without_checkpoint_reuses_inode() {
         "rewrite without checkpoint should reuse the same inode"
     );
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/hello.txt");
     assert_eq!(fs::read_to_string(inode_path(&s, ino)).unwrap(), "v2\n");
 }
@@ -155,7 +156,7 @@ fn truncate_rewrite_inode_has_exact_content() {
     fs::write(s.mnt_path("hello.txt"), "this is a long string\n").expect("write long");
     fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let path = inode_path(&s, ino);
 
@@ -190,7 +191,7 @@ fn truncate_only_produces_empty_inode() {
     assert_eq!(content, "", "mount should show empty file after O_TRUNC");
 
     // Inode in the store should be 0 bytes
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let path = inode_path(&s, ino);
 
@@ -202,8 +203,8 @@ fn truncate_only_produces_empty_inode() {
     );
 }
 
-/// Opening a base file with O_TRUNC produces a Modified (M) journal record,
-/// not an Added (A) — the file already exists in the base layer.
+/// Opening a base file with O_TRUNC produces a Modified (MOD) journal record,
+/// not an Added (ADD) — the file already exists in the base layer.
 #[test]
 fn truncate_open_base_file_produces_modify_record() {
     let s = AgfsSession::new().expect("session setup");
@@ -217,18 +218,17 @@ fn truncate_open_base_file_produces_modify_record() {
     f.write_all(b"truncated\n").expect("write");
     drop(f);
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let acts = actions(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Modified { path, .. } if path.ends_with("/hello.txt"))),
-        "O_TRUNC on a base file should produce a Modified record, got: {records:?}"
+        acts.iter()
+            .any(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt"))),
+        "O_TRUNC on a base file should produce a Modified record, got: {acts:?}"
     );
     assert!(
-        !records
-            .iter()
-            .any(|r| matches!(r, Record::Added { path, .. } if path.ends_with("/hello.txt"))),
-        "O_TRUNC on a base file should NOT produce an Added record, got: {records:?}"
+        !acts.iter()
+            .any(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/hello.txt"))),
+        "O_TRUNC on a base file should NOT produce an Added record, got: {acts:?}"
     );
 }
 
@@ -240,7 +240,7 @@ fn large_file_inode_size() {
     let data = "x".repeat(1024 * 1024); // 1 MiB
     fs::write(s.mnt_path("big.txt"), &data).expect("write large file");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/big.txt");
     let path = inode_path(&s, ino);
 
@@ -256,7 +256,7 @@ fn binary_content_preserved() {
     let data: Vec<u8> = (0..=255).collect();
     fs::write(s.mnt_path("binary.bin"), &data).expect("write binary");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/binary.bin");
     let inode_data = fs::read(inode_path(&s, ino)).unwrap();
     assert_eq!(
@@ -273,7 +273,7 @@ fn nul_bytes_preserved() {
     let data = b"before\0middle\0after\n";
     fs::write(s.mnt_path("nulls.txt"), data).expect("write with NULs");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/nulls.txt");
     let inode_data = fs::read(inode_path(&s, ino)).unwrap();
     assert_eq!(inode_data, data, "NUL bytes should be preserved in inode");
@@ -289,7 +289,7 @@ fn multiple_files_each_get_correct_inode() {
     fs::write(s.mnt_path("new1.txt"), "ccc\n").expect("create 1");
     fs::write(s.mnt_path("new2.txt"), "ddd\n").expect("create 2");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
 
     let pairs = [
         ("/hello.txt", "aaa\n"),
@@ -315,7 +315,7 @@ fn deep_nested_file_inode() {
     fs::create_dir_all(s.mnt_path("a/b/c")).expect("mkdir -p");
     fs::write(s.mnt_path("a/b/c/leaf.txt"), "deep content\n").expect("write nested");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/leaf.txt");
     assert_eq!(
         fs::read_to_string(inode_path(&s, ino)).unwrap(),
@@ -331,7 +331,7 @@ fn modify_nested_base_file() {
     // subdir/deep.txt is seeded in base
     fs::write(s.mnt_path("subdir/deep.txt"), "updated nested\n").expect("write");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/deep.txt");
     assert_eq!(
         fs::read_to_string(inode_path(&s, ino)).unwrap(),

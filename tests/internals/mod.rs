@@ -1,12 +1,13 @@
 mod helpers;
 
+mod test_cancel;
 mod test_checkpoint;
 mod test_commit_abort;
 mod test_create;
 mod test_delete;
-mod test_in_base;
 mod test_layout;
 mod test_mkdir;
+mod test_overwrites;
 mod test_ownership;
 mod test_rename;
 mod test_resolution;

@@ -1,4 +1,4 @@
-use super::helpers::{changes, ino_for, inode_path, inos};
+use super::helpers::{dirents, ino_for, inode_path, inos};
 use crate::helpers::AgfsSession;
 use agfs::utils;
 use std::fs;
@@ -53,7 +53,7 @@ fn staged_inode_owned_by_caller() {
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let path = inode_path(&s, ino);
 
@@ -73,7 +73,7 @@ fn inode_path_matches_library_api() {
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let ino = ino_for(&ch, "/hello.txt");
 
     let agfs_dir = s.root.join(".agfs");

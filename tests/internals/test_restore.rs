@@ -1,7 +1,6 @@
-use super::helpers::{changes, ino_for, inode_path, inos, journal};
+use super::helpers::{dirents, ino_for, inode_path, inos, journal, markers};
 use crate::helpers::AgfsSession;
-use agfs::journal;
-use agfs::journal::Record;
+use agfs::journal::Marker;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
@@ -18,16 +17,16 @@ fn restore_journal_contains_checkpoint_marker() {
 
     s.cli(&["restore", "chk1"]).expect("restore");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let mkrs = markers(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Checkpoint(c) if c.name == "chk1")),
-        "chk1 marker should be in journal: {records:?}"
+        mkrs.iter()
+            .any(|m| matches!(m, Marker::Checkpoint { name, .. } if name == "chk1")),
+        "chk1 marker should be in journal: {mkrs:?}"
     );
 }
 
-/// Restore appends an S record; reachable + resolve excludes post-checkpoint mutations.
+/// Restore appends an RST record; reachable + resolve excludes post-checkpoint mutations.
 #[test]
 fn restore_journal_has_no_post_checkpoint_records() {
     let s = AgfsSession::new().expect("session setup");
@@ -39,25 +38,25 @@ fn restore_journal_has_no_post_checkpoint_records() {
 
     s.cli(&["restore", "chk1"]).expect("restore");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let mkrs = markers(&j);
 
-    // S (Restore) record should be present in the raw journal.
+    // RST (Restore) record should be present in the raw journal.
     assert!(
-        records.iter().any(|r| matches!(r, Record::Restore { .. })),
-        "Restore record should be in journal: {records:?}"
+        mkrs.iter().any(|m| matches!(m, Marker::Restore { .. })),
+        "Restore record should be in journal: {mkrs:?}"
     );
 
     // reachable + resolve should match the checkpoint state (only a.txt).
-    let sj = journal::SegmentedJournal::new(records);
-    let ch = journal::resolve::resolve(sj.live_records()).expect("resolve");
+    let ch = j.into_tree().into_dirents();
     let debug = format!("{ch:?}");
     assert!(
         debug.contains("a.txt"),
-        "a.txt should be in live changes: {debug}"
+        "a.txt should be in live dirents: {debug}"
     );
     assert!(
         !debug.contains("b.txt"),
-        "b.txt should NOT be in live changes: {debug}"
+        "b.txt should NOT be in live dirents: {debug}"
     );
 }
 
@@ -69,7 +68,7 @@ fn restore_keeps_pre_checkpoint_inodes() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
-    let pre_ino = ino_for(&changes(&s), "/a.txt");
+    let pre_ino = ino_for(&dirents(&s), "/a.txt");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
 
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
@@ -95,7 +94,7 @@ fn restore_orphans_post_checkpoint_inodes() {
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
 
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
-    let post_ino = ino_for(&changes(&s), "/b.txt");
+    let post_ino = ino_for(&dirents(&s), "/b.txt");
 
     s.cli(&["restore", "chk1"]).expect("restore");
 
@@ -106,10 +105,10 @@ fn restore_orphans_post_checkpoint_inodes() {
     );
 
     // But not referenced by any resolved change
-    let ch = changes(&s);
+    let ch = dirents(&s);
     assert!(
         !ch.iter().any(|(_, c)| c.ino() == Some(post_ino)),
-        "orphaned inode should not appear in resolved changes"
+        "orphaned inode should not appear in resolved dirents"
     );
 }
 
@@ -235,7 +234,7 @@ fn recow_after_restore_preserves_old_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
-    let v1_ino = ino_for(&changes(&s), "/file.txt");
+    let v1_ino = ino_for(&dirents(&s), "/file.txt");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
 
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2 (re-COW)");
@@ -256,7 +255,7 @@ fn recow_after_restore_preserves_old_inode() {
 
 // ── Resolved state correctness after restore ─────────────────────────────
 
-/// Resolved changes after restore exactly match the checkpoint state.
+/// Resolved dirents after restore exactly match the checkpoint state.
 #[test]
 fn resolved_changes_match_checkpoint_state() {
     let s = AgfsSession::new().expect("session setup");
@@ -270,21 +269,21 @@ fn resolved_changes_match_checkpoint_state() {
 
     s.cli(&["restore", "chk1"]).expect("restore");
 
-    let ch = changes(&s);
-    assert_eq!(ch.len(), 2, "exactly 2 changes: {ch:?}");
+    let ch = dirents(&s);
+    assert_eq!(ch.len(), 2, "exactly 2 dirents: {ch:?}");
 
     let debug = format!("{ch:?}");
     assert!(
         debug.contains("a.txt"),
-        "a.txt should be in changes: {debug}"
+        "a.txt should be in dirents: {debug}"
     );
     assert!(
         debug.contains("b.txt"),
-        "b.txt should be in changes: {debug}"
+        "b.txt should be in dirents: {debug}"
     );
     assert!(
         !debug.contains("c.txt"),
-        "c.txt should NOT be in changes: {debug}"
+        "c.txt should NOT be in dirents: {debug}"
     );
 }
 
@@ -308,17 +307,17 @@ fn restore_renamed_directory_in_resolved_changes() {
 
     s.cli(&["restore", "chk1"]).expect("restore");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let debug = format!("{ch:?}");
 
     // The rename should survive restore
     assert!(
         debug.contains("new_dir"),
-        "new_dir should be in changes: {debug}"
+        "new_dir should be in dirents: {debug}"
     );
     assert!(
         !debug.contains("extra.txt"),
-        "post-checkpoint file should NOT be in changes: {debug}"
+        "post-checkpoint file should NOT be in dirents: {debug}"
     );
 
     // Verify the directory is accessible and d_type is dir via symlink_metadata
@@ -347,16 +346,16 @@ fn restore_renamed_symlink_in_resolved_changes() {
 
     s.cli(&["restore", "chk1"]).expect("restore");
 
-    let ch = changes(&s);
+    let ch = dirents(&s);
     let debug = format!("{ch:?}");
 
     assert!(
         debug.contains("new_link"),
-        "new_link should be in changes: {debug}"
+        "new_link should be in dirents: {debug}"
     );
     assert!(
         !debug.contains("post.txt"),
-        "post-checkpoint file should NOT be in changes: {debug}"
+        "post-checkpoint file should NOT be in dirents: {debug}"
     );
 
     // Verify d_type is symlink via lstat through the mount
@@ -367,12 +366,12 @@ fn restore_renamed_symlink_in_resolved_changes() {
     );
 
     // Journal should have the checkpoint marker and records up to it
-    let records = journal(&s);
+    let j = journal(&s);
+    let mkrs = markers(&j);
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, Record::Checkpoint(c) if c.name == "chk1")),
-        "chk1 should be in journal: {records:?}"
+        mkrs.iter()
+            .any(|m| matches!(m, Marker::Checkpoint { name, .. } if name == "chk1")),
+        "chk1 should be in journal: {mkrs:?}"
     );
 }
 
@@ -400,7 +399,7 @@ fn restore_preserves_journal_inode() {
     );
 }
 
-/// After restore, the journal grows (S record appended) and original bytes are preserved.
+/// After restore, the journal grows (RST record appended) and original bytes are preserved.
 #[test]
 fn restore_journal_is_byte_prefix() {
     let s = AgfsSession::new().expect("session setup");
@@ -418,7 +417,7 @@ fn restore_journal_is_byte_prefix() {
     let bytes_after = fs::read(&journal_path).expect("read after");
     assert!(
         bytes_after.len() > bytes_before.len(),
-        "journal should grow after restore (S record appended): before={} after={}",
+        "journal should grow after restore (RST record appended): before={} after={}",
         bytes_before.len(),
         bytes_after.len()
     );
@@ -428,15 +427,16 @@ fn restore_journal_is_byte_prefix() {
         "original journal bytes must be preserved as a prefix"
     );
 
-    // Verify the S record is present.
-    let records = journal(&s);
+    // Verify the RST record is present.
+    let j = journal(&s);
+    let mkrs = markers(&j);
     assert!(
-        records.iter().any(|r| matches!(r, Record::Restore { .. })),
-        "Restore record should be in journal: {records:?}"
+        mkrs.iter().any(|m| matches!(m, Marker::Restore { .. })),
+        "Restore record should be in journal: {mkrs:?}"
     );
 }
 
-/// The S record written by restore should have a gen_id higher than the
+/// The RST record written by restore should have a gen_id higher than the
 /// target checkpoint's gen_id (monotonically increasing).
 #[test]
 fn restore_s_record_has_correct_gen() {
@@ -450,36 +450,37 @@ fn restore_s_record_has_correct_gen() {
 
     s.cli(&["restore", "chk1"]).expect("restore");
 
-    let records = journal(&s);
+    let j = journal(&s);
+    let mkrs = markers(&j);
 
     // Find the checkpoint gen_ids and the restore record.
-    let chk1_gen = records
+    let chk1_gen = mkrs
         .iter()
-        .find_map(|r| match r {
-            Record::Checkpoint(c) if c.name == "chk1" => Some(c.gen_id),
+        .find_map(|m| match m {
+            Marker::Checkpoint { gen_id, name } if name == "chk1" => Some(*gen_id),
             _ => None,
         })
         .expect("chk1 should exist");
 
-    let chk2_gen = records
+    let chk2_gen = mkrs
         .iter()
-        .find_map(|r| match r {
-            Record::Checkpoint(c) if c.name == "chk2" => Some(c.gen_id),
+        .find_map(|m| match m {
+            Marker::Checkpoint { gen_id, name } if name == "chk2" => Some(*gen_id),
             _ => None,
         })
         .expect("chk2 should exist");
 
-    let (s_gen, s_target) = records
+    let (s_gen, s_target) = mkrs
         .iter()
-        .find_map(|r| match r {
-            Record::Restore { gen_id, target_gen } => Some((*gen_id, *target_gen)),
+        .find_map(|m| match m {
+            Marker::Restore { gen_id, target_gen } => Some((*gen_id, *target_gen)),
             _ => None,
         })
         .expect("restore record should exist");
 
-    assert_eq!(s_target, chk1_gen, "S record should target chk1");
+    assert_eq!(s_target, chk1_gen, "RST record should target chk1");
     assert!(
         s_gen > chk2_gen,
-        "S record gen ({s_gen}) should be greater than chk2 gen ({chk2_gen})"
+        "RST record gen ({s_gen}) should be greater than chk2 gen ({chk2_gen})"
     );
 }

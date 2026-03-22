@@ -25,7 +25,7 @@ where each level is a distinct transformation.
 ```rust
 struct Segment {
     from: Option<Checkpoint>,
-    records: Vec<Record>,   // A/M/D/R only
+    records: Vec<Record>,   // ADD/MOD/DEL/RDR/REP only
 }
 ```
 
@@ -36,7 +36,7 @@ No `to`, no `reachable`. Pure structural grouping. Resolution produces
 a `Changeset` per segment — no wrapper struct needed since the caller
 already has the segment's `from` checkpoint for context.
 
-**`Markers`** — the K/S skeleton of the journal:
+**`Markers`** — the CKP/RST skeleton of the journal:
 ```rust
 enum Marker {
     Checkpoint { pos: usize, checkpoint: Checkpoint },
@@ -47,7 +47,7 @@ struct Markers(Vec<Marker>);
 ```
 
 Lightweight metadata extracted alongside segments. Answers:
-- Which segments are alive (from S records + target K positions).
+- Which segments are alive (from RST records + target CKP positions).
 - Where is checkpoint X (for `find_checkpoint`).
 
 ### Pipeline
@@ -57,7 +57,7 @@ Level 0    RawJournal                         parsed from disk
               │
               │ segment (split at K and S boundaries)
               ▼
-Level 1    SegmentedJournal                   all segments + K/S skeleton
+Level 1    SegmentedJournal                   all segments + CKP/RST skeleton
               │
               │ filter by Markers
               ▼
@@ -77,7 +77,7 @@ A segment following an S boundary inherits `from = restore target checkpoint`.
 | Caller | Consumes |
 |--------|----------|
 | journal_cmd | SegmentedJournal (iterate all segments + Markers, dim dead) |
-| timeline_cmd | SegmentedJournal Markers only (display K/S events, dim dead) |
+| timeline_cmd | SegmentedJournal Markers only (display CKP/RST events, dim dead) |
 | commit | LiveSegments → resolve → Changeset flat |
 | restore | SegmentedJournal Markers (find checkpoint) → prefix → live filter → resolve → Changeset flat |
 | diff/status | LiveSegments (optionally sliced via Markers) → resolve each → Changeset per-segment |
@@ -92,7 +92,7 @@ A segment following an S boundary inherits `from = restore target checkpoint`.
   builds on the restored checkpoint state.
 
 - **Reachability is a transformation, not stored state.** The `Markers`
-  struct carries the K/S skeleton. Filtering live segments from all
+  struct carries the CKP/RST skeleton. Filtering live segments from all
   segments IS the reachability computation. No flags, no masks.
 
 - **`Segment` has no `to` field.** The closing checkpoint is the next
@@ -132,9 +132,9 @@ A segment following an S boundary inherits `from = restore target checkpoint`.
 - `Markers` can also serve `slice()` (--at/--from/--to) by locating
   checkpoints and filtering segments by range.
 - For `journal_cmd` display, iterate all segments interleaved with their
-  boundary K/S records from `Markers`. Use `Markers::is_segment_alive()`
-  for dimming. Since segments own the A/M/D/R records and `Markers`
-  owns the K/S records, the full journal order is reconstructed by
+  boundary CKP/RST records from `Markers`. Use `Markers::is_segment_alive()`
+  for dimming. Since segments own the ADD/MOD/DEL/RDR/REP records and `Markers`
+  owns the CKP/RST records, the full journal order is reconstructed by
   interleaving: emit marker, emit segment records, emit next marker, etc.
   Each `Marker` has a `pos` field that preserves original ordering.
 - Restore workflow in detail: find checkpoint via `Markers` (searches

@@ -53,8 +53,8 @@ $ agfs checkpoint              # checkpoint with timestamp as name
 $ agfs checkpoint "my label"   # checkpoint with explicit name
 $ agfs restore <name|gen>       # restore to a previous checkpoint (discards later changes)
 $ agfs timeline                # show checkpoint/restore DAG (unreachable dimmed)
-$ agfs journal                 # show every raw journal record (unreachable dimmed)
-$ agfs journal --path /src/main.rs  # trace operations on a specific file
+$ agfs audit                 # show every raw journal record (unreachable dimmed)
+$ agfs audit --path /src/main.rs  # trace operations on a specific file
 ```
 
 The `--at`, `--from`, and `--to` flags accept a checkpoint name or
@@ -65,11 +65,10 @@ zones created by restores).
 dimmed. Example `agfs timeline` output:
 
 ```
-checkpoint [1] (initial)
-checkpoint [2] after make build
-checkpoint [3] after make test
-restore    [4] restored to [2] after make build
-checkpoint [5] after make fix
+checkpoint [1] after make build
+checkpoint [2] after make test
+restore    [3] restored to [1]
+checkpoint [4] after make fix
 ```
 
 **Permission rules and diagnostics:**
@@ -90,7 +89,7 @@ Configured via top-level keys in `agfs.toml`:
 | `ask_default` | `deny` | Fallback when no daemon is connected or on timeout |
 | `permission` | true | Enable permission gating |
 | `staging` | true | Enable staging area |
-| `checkpoint` | true | Auto-checkpoint after each `agfs exec` invocation |
+| `checkpoint` | true | Auto-checkpoint after each `agfs exec` invocation (skipped when no changes) |
 
 ## Execution Environment
 

@@ -158,7 +158,7 @@ static void agfs_init_sbi(struct agfs_sb_info *sbi,
 	/* Staging state */
 	init_rwsem(&sbi->staging_sem);
 	atomic64_set(&sbi->next_ino, 0);
-	atomic64_set(&sbi->gen, 1);
+	atomic_set(&sbi->gen, 0);
 	atomic_set(&sbi->staging_fd_count, 0);
 	INIT_LIST_HEAD(&sbi->pinned_dirs);
 	spin_lock_init(&sbi->pinned_dirs_lock);
@@ -211,11 +211,6 @@ static int agfs_resolve_paths(struct agfs_sb_info *sbi,
 	err = agfs_journal_open(sbi);
 	if (err)
 		return err;
-
-	/* Write the implicit initial checkpoint (id=1) so userspace can
-	 * reference the mount-time state by id. */
-	if (sbi->staging)
-		agfs_journal_checkpoint(sbi, 1, "(initial)");
 
 	return 0;
 }
@@ -387,6 +382,9 @@ static void agfs_inode_init_once(void *obj)
 static int __init agfs_init(void)
 {
 	int err;
+
+	BUILD_BUG_ON(ARCH_KMALLOC_MINALIGN < 8);
+	BUILD_BUG_ON(!IS_ENABLED(CONFIG_X86_64));
 
 	agfs_inode_cachep = kmem_cache_create("agfs_inode_cache",
 					      sizeof(struct agfs_inode_info), 0,

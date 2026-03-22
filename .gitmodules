@@ -1,8 +1,8 @@
 [submodule "third_party/codex"]
-	path = third_party/codex
+	path = eval/third_party/codex
 	url = https://github.com/openai/codex
 [submodule "third_party/opencode"]
-	path = third_party/opencode
+	path = eval/third_party/opencode
 	url = https://github.com/anomalyco/opencode
 [submodule "results-bench"]
 	path = results-bench
@@ -16,3 +16,12 @@
 [submodule "bench/third_party/try"]
 	path = bench/third_party/try
 	url = https://github.com/binpash/try
+[submodule "paper-study"]
+	path = paper-study
+	url = git@github.com:ShawnZhong/AgFS-Paper-Study.git
+[submodule "paper-plan"]
+	path = paper-plan
+	url = git@github.com:ShawnZhong/AgFS-Paper-Plan.git
+[submodule "paper"]
+	path = paper
+	url = git@github.com:ShawnZhong/AgFS-Paper.git

@@ -331,7 +331,8 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
 	struct agfs_ioc_checkpoint chk;
 	char name_buf[AGFS_PATH_MAX];
-	u64 gen;
+	u16 gen;
+	int gen_raw;
 	int err;
 
 	if (!sbi->staging)
@@ -349,8 +350,18 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 		up_write(&sbi->staging_sem);
 		return -EBUSY;
 	}
-	gen = atomic64_inc_return(&sbi->gen);
+	if ((chk.flags & AGFS_CHK_IF_CHANGED) && !READ_ONCE(sbi->dirty)) {
+		up_write(&sbi->staging_sem);
+		chk.gen = 0;
+		if (copy_to_user((void __user *)arg, &chk, sizeof(chk)))
+			return -EFAULT;
+		return 0;
+	}
+	gen_raw = atomic_inc_return(&sbi->gen);
+	WARN_ON_ONCE(gen_raw > U16_MAX);
+	gen = gen_raw;
 	agfs_journal_checkpoint(sbi, gen, name_buf);
+	WRITE_ONCE(sbi->dirty, false);
 	up_write(&sbi->staging_sem);
 
 	/* Best-effort: checkpoint is already committed to the journal,
@@ -385,7 +396,7 @@ static const char *split_parent_child(const char *path, int *parent_len)
 }
 
 static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
-			       struct agfs_ioc_restore *hdr, u64 gen)
+			       struct agfs_ioc_restore *hdr, u16 gen)
 {
 	struct super_block *sb = file_inode(file)->i_sb;
 	struct agfs_ioc_restore_entry __user *uentries =
@@ -401,12 +412,13 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 	for (i = 0; i < hdr->entry_count; i++) {
 		char path_buf[AGFS_PATH_MAX];
 		char bp_buf[AGFS_PATH_MAX];
-		struct agfs_dirent de;
+		agfs_pde_t packed = {0};
 		const char *child;
 		int parent_len;
 		char saved;
 		struct path parent_path;
 		struct inode *dir;
+		struct agfs_dirent *de;
 		char *bp;
 
 		if (copy_from_user(&ent, &uentries[i], sizeof(ent))) {
@@ -455,20 +467,21 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 
 		dir = d_inode(parent_path.dentry);
 
-		de = (struct agfs_dirent){
-			.ino = ent.ino,
-			.base = bp,
-			.in_base = ent.in_base,
-			.d_type = ent.d_type,
-			.gen = gen,
-		};
+		if (ent.ino == AGFS_INO_REDIRECT) {
+			packed = agfs_pde_link(bp, ent.d_type, ent.in_base);
+		} else if (ent.ino != AGFS_INO_DELETED) {
+			packed = agfs_pde_inode(ent.ino, gen,
+					       ent.d_type, ent.in_base);
+		}
 		inode_lock(dir);
-		err = agfs_add_dirent(dir, child, strlen(child), &de);
+		de = agfs_add_dirent(dir, child, strlen(child), packed);
 		inode_unlock(dir);
 		path_put(&parent_path);
 
-		if (err)
+		if (IS_ERR(de)) {
+			err = PTR_ERR(de);
 			break;
+		}
 	}
 
 	return err;
@@ -479,7 +492,8 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	struct super_block *sb = file_inode(file)->i_sb;
 	struct agfs_sb_info *sbi = AGFS_SB(sb);
 	struct agfs_ioc_restore hdr;
-	u64 new_gen;
+	u16 new_gen;
+	int new_gen_raw;
 	int err = 0;
 
 	if (!sbi->staging)
@@ -487,6 +501,9 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 
 	if (copy_from_user(&hdr, (void __user *)arg, sizeof(hdr)))
 		return -EFAULT;
+
+	if (hdr.target_gen > U16_MAX)
+		return -EINVAL;
 
 	down_write(&sbi->staging_sem);
 	if (atomic_read(&sbi->staging_fd_count) > 0) {
@@ -501,13 +518,16 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 
 	if (hdr.target_gen == 0) {
 		/* Reset mode (commit/abort): no entries, no journal write */
-		atomic64_set(&sbi->gen, 1);
+		atomic_set(&sbi->gen, 0);
+		WRITE_ONCE(sbi->dirty, false);
 		up_write(&sbi->staging_sem);
 		return 0;
 	}
 
-	/* Restore mode: increment gen, inject entries, write S record */
-	new_gen = atomic64_inc_return(&sbi->gen);
+	/* Restore mode: increment gen, inject entries, write RST record */
+	new_gen_raw = atomic_inc_return(&sbi->gen);
+	WARN_ON_ONCE(new_gen_raw > U16_MAX);
+	new_gen = new_gen_raw;
 
 	err = agfs_restore_inject(file, sbi, &hdr, new_gen);
 	if (!err)
@@ -515,7 +535,9 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	/* Don't rollback gen on failure — dirents may already be injected
 	 * with new_gen.  Rolling back would leave those dirents with a gen
 	 * higher than sbi->gen, breaking COW checks.  The CLI can retry
-	 * the operation or abort (which resets gen to 1). */
+	 * the operation or abort (which resets gen to 0). */
+	if (!err)
+		WRITE_ONCE(sbi->dirty, false);
 
 	up_write(&sbi->staging_sem);
 
