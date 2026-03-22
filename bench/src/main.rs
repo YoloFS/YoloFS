@@ -1485,10 +1485,10 @@ fn diff_pdf(path: &Path, old_ref: &str, new_ref: &str, output: Option<&Path>) ->
     pdftoppm(&new_pdf, &new_png)?;
 
     // pdftoppm appends -1.png for single-page PDFs.
-    let old_img = find_pdftoppm_output(&old_png)?;
-    let new_img = find_pdftoppm_output(&new_png)?;
+    let old_img_path = find_pdftoppm_output(&old_png)?;
+    let new_img_path = find_pdftoppm_output(&new_png)?;
 
-    // Generate visual diff with Python.
+    // Generate visual diff in pure Rust.
     let out_path = if let Some(p) = output {
         p.to_path_buf()
     } else {
@@ -1507,68 +1507,71 @@ fn diff_pdf(path: &Path, old_ref: &str, new_ref: &str, output: Option<&Path>) ->
         diff_dir.join(format!("{stem}_{}_{}.png", short(old_ref), short(new_ref)))
     };
 
-    let diff_script = tmp.path().join("diff.py");
-    std::fs::write(
-        &diff_script,
-        format!(
-            r#"
-from PIL import Image
-import numpy as np
+    // Load images and compute visual diff.
+    let old_img = image::open(&old_img_path)
+        .with_context(|| format!("opening {}", old_img_path.display()))?
+        .to_rgb8();
+    let new_img = image::open(&new_img_path)
+        .with_context(|| format!("opening {}", new_img_path.display()))?
+        .to_rgb8();
 
-old = np.array(Image.open('{old_img}').convert('RGB'), dtype=np.float32)
-new = np.array(Image.open('{new_img}').convert('RGB'), dtype=np.float32)
+    // Pad to same size (white fill).
+    let w = old_img.width().max(new_img.width());
+    let h = old_img.height().max(new_img.height());
+    let pad = |img: &image::RgbImage| -> image::RgbImage {
+        let mut out = image::RgbImage::from_pixel(w, h, image::Rgb([255, 255, 255]));
+        for (x, y, px) in img.enumerate_pixels() {
+            out.put_pixel(x, y, *px);
+        }
+        out
+    };
+    let old_padded = pad(&old_img);
+    let new_padded = pad(&new_img);
 
-# Pad to same size if needed.
-h = max(old.shape[0], new.shape[0])
-w = max(old.shape[1], new.shape[1])
-def pad(img, h, w):
-    result = np.full((h, w, 3), 255.0, dtype=np.float32)
-    result[:img.shape[0], :img.shape[1]] = img
-    return result
-old = pad(old, h, w)
-new = pad(new, h, w)
+    // Build diff image.
+    let mut out_img = image::RgbImage::new(w, h);
+    let mut n_changed: u64 = 0;
+    const THRESHOLD: u8 = 8;
 
-# Compute per-pixel difference.
-diff = np.abs(new - old).max(axis=2)  # max channel diff per pixel
-changed = diff > 8  # threshold for noise
+    for y in 0..h {
+        for x in 0..w {
+            let op = old_padded.get_pixel(x, y).0;
+            let np = new_padded.get_pixel(x, y).0;
 
-# Build output: dimmed version of new image, with changed pixels highlighted.
-out = new * 0.3 + 180  # dim everything
-# Red channel: highlight changes.
-out[changed, 0] = np.clip(new[changed, 0] * 0.5 + 128, 0, 255)  # reddish tint
-out[changed, 1] = new[changed, 1] * 0.3  # suppress green
-out[changed, 2] = new[changed, 2] * 0.3  # suppress blue
+            let max_diff = (0..3)
+                .map(|c| (op[c] as i16 - np[c] as i16).unsigned_abs() as u8)
+                .max()
+                .unwrap();
 
-# Also show pixels only in old (deleted) as blue tint.
-only_old = (old.max(axis=2) < 250) & (new.max(axis=2) > 250) & changed
-out[only_old, 0] = 80
-out[only_old, 1] = 80
-out[only_old, 2] = 220
-
-Image.fromarray(out.clip(0, 255).astype(np.uint8)).save('{out_path}')
-n_changed = changed.sum()
-n_total = h * w
-pct = n_changed / n_total * 100
-print(f'{{n_changed}} pixels changed ({{pct:.1f}}% of {{w}}x{{h}})')
-"#,
-            old_img = old_img.display(),
-            new_img = new_img.display(),
-            out_path = out_path.display(),
-        ),
-    )?;
-
-    let out = Command::new("python3")
-        .arg(&diff_script)
-        .output()
-        .context("running diff script")?;
-
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        bail!("diff script failed: {stderr}");
+            if max_diff > THRESHOLD {
+                n_changed += 1;
+                // Deleted (was dark, now white): blue tint.
+                let old_bright = op.iter().copied().max().unwrap();
+                let new_bright = np.iter().copied().max().unwrap();
+                if old_bright < 250 && new_bright > 250 {
+                    out_img.put_pixel(x, y, image::Rgb([80, 80, 220]));
+                } else {
+                    // Changed: red-tinted version of new pixel.
+                    let r = ((np[0] as f32) * 0.5 + 128.0).min(255.0) as u8;
+                    let g = ((np[1] as f32) * 0.3) as u8;
+                    let b = ((np[2] as f32) * 0.3) as u8;
+                    out_img.put_pixel(x, y, image::Rgb([r, g, b]));
+                }
+            } else {
+                // Unchanged: dim.
+                let r = ((np[0] as f32) * 0.3 + 180.0).min(255.0) as u8;
+                let g = ((np[1] as f32) * 0.3 + 180.0).min(255.0) as u8;
+                let b = ((np[2] as f32) * 0.3 + 180.0).min(255.0) as u8;
+                out_img.put_pixel(x, y, image::Rgb([r, g, b]));
+            }
+        }
     }
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    eprint!("{stdout}");
+    out_img.save(&out_path)
+        .with_context(|| format!("writing {}", out_path.display()))?;
+
+    let pct = n_changed as f64 / (w as f64 * h as f64) * 100.0;
+    eprintln!("{n_changed} pixels changed ({pct:.1}% of {w}x{h})");
     eprintln!(
         "Diff: {old_ref}..{new_ref} {}\n  → {}",
         path.display(),
