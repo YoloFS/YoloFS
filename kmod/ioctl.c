@@ -14,6 +14,8 @@
 
 #include "agfs.h"
 #include <linux/file.h>
+#include <linux/vmalloc.h>
+#include <asm/unaligned.h>
 
 /* ── Claim daemon connection on first GET_REQUEST ──────────────────── */
 
@@ -77,7 +79,7 @@ static long agfs_get_request_ioctl(struct file *file, unsigned long arg)
 	kref_get(&req->ref); /* daemon takes a reference */
 	spin_unlock(&eng->pending_lock);
 
-	path_len = strlen(req->path);
+	path_len = req->path_len;
 
 	if (path_len > out.path_buf_len) {
 		err = -EOVERFLOW;
@@ -114,7 +116,7 @@ requeue_dispatched:
 	spin_unlock(&eng->dispatch_lock);
 requeue_pending:
 	spin_lock(&eng->pending_lock);
-	list_add(&req->list, &eng->pending_reqs);
+	list_add_tail(&req->list, &eng->pending_reqs);
 	spin_unlock(&eng->pending_lock);
 	wake_up_interruptible(&eng->request_waitq);
 	kref_put(&req->ref, agfs_perm_request_release);
@@ -332,7 +334,6 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 	struct agfs_ioc_checkpoint chk;
 	char name_buf[AGFS_PATH_MAX];
 	u16 gen;
-	int gen_raw;
 	int err;
 
 	if (!sbi->staging)
@@ -357,9 +358,11 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 			return -EFAULT;
 		return 0;
 	}
-	gen_raw = atomic_inc_return(&sbi->gen);
-	WARN_ON_ONCE(gen_raw > U16_MAX);
-	gen = gen_raw;
+	if (atomic_read(&sbi->gen) >= U16_MAX) {
+		up_write(&sbi->staging_sem);
+		return -EOVERFLOW;
+	}
+	gen = (u16)atomic_inc_return(&sbi->gen);
 	agfs_journal_checkpoint(sbi, gen, name_buf);
 	WRITE_ONCE(sbi->dirty, false);
 	up_write(&sbi->staging_sem);
@@ -375,115 +378,242 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 
 /* ── Restore ioctl handler ─────────────────────────────────────────── */
 
-/*
- * Split an absolute path into parent directory and child name.
- * Returns pointer to the child name within path. Sets *parent_len
- * to the byte length of the parent portion (excluding NUL).
- * E.g. "/src/main.rs" → parent_len=4 ("/src"), child="main.rs".
- *       "/README" → parent_len=1 ("/"), child="README".
- */
-static const char *split_parent_child(const char *path, int *parent_len)
-{
-	const char *last_slash;
+/* ── Cursor helpers for reading the serialized DirTree buffer ──────── */
 
-	last_slash = strrchr(path, '/');
-	if (!last_slash || last_slash == path) {
-		*parent_len = 1; /* "/" */
-		return last_slash ? last_slash + 1 : path;
-	}
-	*parent_len = last_slash - path;
-	return last_slash + 1;
+struct tree_cursor {
+	const u8 *buf;
+	const u8 *end;
+};
+
+static inline int read_u8(struct tree_cursor *c, u8 *out)
+{
+	if (c->buf + 1 > c->end)
+		return -EINVAL;
+	*out = *c->buf++;
+	return 0;
 }
+
+static inline int read_le16(struct tree_cursor *c, u16 *out)
+{
+	if (c->buf + 2 > c->end)
+		return -EINVAL;
+	*out = get_unaligned_le16(c->buf);
+	c->buf += 2;
+	return 0;
+}
+
+static inline int read_le64(struct tree_cursor *c, u64 *out)
+{
+	if (c->buf + 8 > c->end)
+		return -EINVAL;
+	*out = get_unaligned_le64(c->buf);
+	c->buf += 8;
+	return 0;
+}
+
+static inline int read_bytes(struct tree_cursor *c, u16 len, const u8 **out)
+{
+	if (c->buf + len > c->end)
+		return -EINVAL;
+	*out = c->buf;
+	c->buf += len;
+	return 0;
+}
+
+struct dir_frame {
+	struct dentry *dentry;
+	u16 remaining;
+};
 
 static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 			       struct agfs_ioc_restore *hdr, u16 gen)
 {
 	struct super_block *sb = file_inode(file)->i_sb;
-	struct agfs_ioc_restore_entry __user *uentries =
-		(struct agfs_ioc_restore_entry __user *)hdr->entries_ptr;
-	struct agfs_ioc_restore_entry ent;
-	u64 i;
+	struct dir_frame stack[AGFS_RESTORE_MAX_DEPTH];
+	struct tree_cursor cur;
+	u8 *kbuf;
+	int depth;
 	int err = 0;
+	u16 root_count;
 
-	/*
-	 * Inject dirent entries.  On failure midway, the mount is left
-	 * with a partial set of dirents — the CLI can retry or abort.
-	 */
-	for (i = 0; i < hdr->entry_count; i++) {
-		char path_buf[AGFS_PATH_MAX];
-		char bp_buf[AGFS_PATH_MAX];
-		agfs_pde_t packed = {0};
-		const char *child;
-		int parent_len;
-		char saved;
-		struct path parent_path;
+	if (hdr->tree_len > AGFS_RESTORE_MAX_TREE_LEN)
+		return -EINVAL;
+
+	kbuf = vmalloc(hdr->tree_len);
+	if (!kbuf)
+		return -ENOMEM;
+
+	if (copy_from_user(kbuf, (const void __user *)hdr->tree_ptr,
+			   hdr->tree_len)) {
+		vfree(kbuf);
+		return -EFAULT;
+	}
+
+	cur.buf = kbuf;
+	cur.end = kbuf + hdr->tree_len;
+
+	/* Read root child_count */
+	err = read_le16(&cur, &root_count);
+	if (err)
+		goto out_free;
+
+	if (root_count == 0)
+		goto check_trailing;
+
+	stack[0].dentry = dget(sb->s_root);
+	stack[0].remaining = root_count;
+	depth = 0;
+
+	while (depth >= 0) {
+		u16 name_len, child_count, base_len;
+		const u8 *name_ptr, *base_ptr;
+		u8 has_dirent, nul;
+		u64 packed;
 		struct inode *dir;
 		struct agfs_dirent *de;
-		char *bp;
 
-		if (copy_from_user(&ent, &uentries[i], sizeof(ent))) {
-			err = -EFAULT;
-			break;
+		if (stack[depth].remaining == 0) {
+			dput(stack[depth].dentry);
+			depth--;
+			continue;
 		}
+		stack[depth].remaining--;
 
-		err = agfs_copy_user_path(ent.path_ptr, ent.path_len,
-					  path_buf);
+		/* Read name */
+		err = read_le16(&cur, &name_len);
 		if (err)
-			break;
-
-		bp = NULL;
-		if (ent.base_len > 0) {
-			err = agfs_copy_user_path(ent.base_ptr,
-						  ent.base_len, bp_buf);
-			if (err)
-				break;
-			bp = bp_buf;
-		}
-
-		child = split_parent_child(path_buf, &parent_len);
-		if (!*child) {
+			goto out_unwind;
+		if (name_len == 0 || name_len > NAME_MAX) {
 			err = -EINVAL;
-			break;
+			goto out_unwind;
 		}
-
-		if (parent_len >= AGFS_PATH_MAX) {
-			err = -ENAMETOOLONG;
-			break;
-		}
-
-		/* NUL-terminate path_buf at the parent boundary in-place */
-		saved = path_buf[parent_len];
-		path_buf[parent_len] = '\0';
-
-		err = vfs_path_lookup(sb->s_root, file->f_path.mnt,
-				      path_buf,
-				      LOOKUP_FOLLOW | LOOKUP_DIRECTORY,
-				      &parent_path);
-
-		path_buf[parent_len] = saved;
-
+		err = read_bytes(&cur, name_len, &name_ptr);
 		if (err)
-			break;
+			goto out_unwind;
 
-		dir = d_inode(parent_path.dentry);
+		dir = d_inode(stack[depth].dentry);
 
-		if (ent.ino == AGFS_INO_REDIRECT) {
-			packed = agfs_pde_link(bp, ent.d_type, ent.in_base);
-		} else if (ent.ino != AGFS_INO_DELETED) {
-			packed = agfs_pde_inode(ent.ino, gen,
-					       ent.d_type, ent.in_base);
+		/* Read has_dirent */
+		err = read_u8(&cur, &has_dirent);
+		if (err)
+			goto out_unwind;
+		if (has_dirent > 1) {
+			err = -EINVAL;
+			goto out_unwind;
 		}
-		inode_lock(dir);
-		de = agfs_add_dirent(dir, child, strlen(child), packed);
-		inode_unlock(dir);
-		path_put(&parent_path);
 
-		if (IS_ERR(de)) {
-			err = PTR_ERR(de);
-			break;
+		if (has_dirent) {
+			agfs_pde_t pde = {0};
+
+			err = read_le64(&cur, &packed);
+			if (err)
+				goto out_unwind;
+
+			if (packed == 0) {
+				/* Tombstone */
+			} else if ((s64)packed > 0) {
+				/* Inode — validate and stamp gen */
+				u64 ino = (packed >> 16) & 0xFFFFFFFFFFFULL;
+				u64 dt = (packed >> 61) & 3;
+
+				if (ino == 0 || dt == 3) {
+					err = -EINVAL;
+					goto out_unwind;
+				}
+				packed = (packed & ~0xFFFFULL) | gen;
+				pde.val = packed;
+			} else {
+				/* Link — read trailing base_path */
+				u64 dt = (packed >> 61) & 3;
+				u8 d_type, ib;
+
+				if (dt == 3) {
+					err = -EINVAL;
+					goto out_unwind;
+				}
+				d_type = agfs_dtype_unpack(dt);
+				ib = (packed >> 60) & 1;
+
+				err = read_le16(&cur, &base_len);
+				if (err)
+					goto out_unwind;
+				if (base_len == 0 || base_len >= AGFS_PATH_MAX) {
+					err = -EINVAL;
+					goto out_unwind;
+				}
+				err = read_bytes(&cur, base_len, &base_ptr);
+				if (err)
+					goto out_unwind;
+				err = read_u8(&cur, &nul);
+				if (err)
+					goto out_unwind;
+				if (nul != 0) {
+					err = -EINVAL;
+					goto out_unwind;
+				}
+
+				/*
+				 * Pass a temporary pointer into the vmalloc'd
+				 * buffer — agfs_add_dirent kstrdup's it, so no
+				 * separate allocation needed here.  The NUL
+				 * terminator is already verified above.
+				 */
+				pde = agfs_pde_link((const char *)base_ptr,
+						    d_type, ib);
+			}
+
+			inode_lock(dir);
+			de = agfs_add_dirent(dir, (const char *)name_ptr,
+					     name_len, pde);
+			inode_unlock(dir);
+			if (IS_ERR(de)) {
+				err = PTR_ERR(de);
+				goto out_unwind;
+			}
+		}
+
+		/* Read child_count */
+		err = read_le16(&cur, &child_count);
+		if (err)
+			goto out_unwind;
+
+		/* Skip empty passthrough nodes (no dirent, no children). */
+		if (!has_dirent && child_count == 0)
+			continue;
+
+		if (child_count > 0) {
+			struct dentry *child;
+
+			if (depth + 1 >= AGFS_RESTORE_MAX_DEPTH) {
+				err = -EINVAL;
+				goto out_unwind;
+			}
+			child = lookup_one_len_unlocked(
+					(const char *)name_ptr,
+					stack[depth].dentry, name_len);
+			if (IS_ERR(child)) {
+				err = PTR_ERR(child);
+				goto out_unwind;
+			}
+			depth++;
+			stack[depth].dentry = child;
+			stack[depth].remaining = child_count;
 		}
 	}
 
+check_trailing:
+	if (cur.buf != cur.end)
+		err = -EINVAL;
+	goto out_free;
+
+out_unwind:
+	/* Clean up stacked dentries */
+	while (depth >= 0) {
+		dput(stack[depth].dentry);
+		depth--;
+	}
+out_free:
+	vfree(kbuf);
 	return err;
 }
 
@@ -493,7 +623,6 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	struct agfs_sb_info *sbi = AGFS_SB(sb);
 	struct agfs_ioc_restore hdr;
 	u16 new_gen;
-	int new_gen_raw;
 	int err = 0;
 
 	if (!sbi->staging)
@@ -525,9 +654,11 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	}
 
 	/* Restore mode: increment gen, inject entries, write RST record */
-	new_gen_raw = atomic_inc_return(&sbi->gen);
-	WARN_ON_ONCE(new_gen_raw > U16_MAX);
-	new_gen = new_gen_raw;
+	if (atomic_read(&sbi->gen) >= U16_MAX) {
+		up_write(&sbi->staging_sem);
+		return -EOVERFLOW;
+	}
+	new_gen = (u16)atomic_inc_return(&sbi->gen);
 
 	err = agfs_restore_inject(file, sbi, &hdr, new_gen);
 	if (!err)

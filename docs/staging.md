@@ -118,7 +118,7 @@ time is valid for the lifetime of the fd.
 
 | Field | Purpose |
 |-------|---------|
-| `packed` | Single `u64` encoding the dirent state. Three mutually exclusive variants discriminated by bit 63 and zero: **tombstone** (`packed == 0`, always `in_base=true`), **link** (bit 63 set — kernel pointer with tag), **inode** (bit 63 clear, non-zero — staged in `inodes/<ino>`). Bits [62:61] encode `d_type` (2-bit private encoding), bit [60] encodes `in_base`. Inode variant packs `ino` (44 bits) and `gen` (16 bits). See [Packed Encoding](#packed-encoding). |
+| `packed` | Single `u64` encoding the dirent state. Three mutually exclusive variants discriminated by bit 63 and zero: **tombstone** (`packed == 0`, always `in_base=true`), **link** (bit 63 set — kernel pointer with tag), **inode** (bit 63 clear, non-zero — staged in `inodes/<ino>`). Bits [62:61] encode `d_type` (2-bit private encoding). Inode variant packs `in_base` (bit [60]), `ino` (44 bits), and `gen` (16 bits). See [Packed Encoding](#packed-encoding). |
 
 ## Path Resolution
 
@@ -148,9 +148,8 @@ Three mutually exclusive states discriminated by **bit 63** and zero:
   Staged content in `inodes/<ino>`.
 - no entry at all → fall through to base filesystem
 
-`d_type` (bits [62:61]) and `in_base` (bit [60]) occupy the same
-position in both inode and link variants, making common accessors
-branchless.
+`d_type` (bits [62:61]) occupies the same position in both inode and
+link variants, making the accessor branchless.
 
 **Inode layout** (bit 63 clear, non-zero):
 
@@ -166,14 +165,15 @@ branchless.
 
 The `kstrdup` pointer (≥ 8-byte aligned) is stored with bit 63 set as
 the tag. This coincides with the kernel sign-extension bit (always 1
-for kernel addresses). `d_type` and `in_base` borrow bits [62:60]
-from sign-extension (safe on x86_64 — at least bits [63:60] are 1 for
-kernel addresses).
+for kernel addresses). `d_type` borrows bits [62:61] from
+sign-extension (safe on x86_64 — at least bits [63:60] are 1 for
+kernel addresses). Bit [60] stores `in_base` (safe because pointer
+recovery ORs `0x7000000000000000` back, restoring bit 60 to 1).
 
 ```
 [63]     1                    (tag — matches kernel sign extension)
 [62:61]  d_type    2 bits     (borrowed from sign extension)
-[60]     in_base   1 bit      (borrowed from sign extension)
+[60]     in_base   1 bit      (safe: pointer recovery ORs 0x7 back)
 [59:0]   pointer bits [59:0]  (real address bits)
 ```
 
@@ -213,10 +213,11 @@ gen          = (u16)packed                              // inode only
 base         = packed | 0x7000000000000000              // link only
 ```
 
-`in_base` is orthogonal to the variant — it tracks whether the
-destination name existed in the base filesystem, inherited through
-deletes and used to select journal tags (A/M for staged, R/P for
-renames).
+`in_base` tracks whether the path position had content in the base
+filesystem before staging. It is inherited through deletes and used to
+select journal tags (A/M for staged, R/P for renames). It is stored in
+both inodes (bit [60]) and links (bit [60], safe because pointer
+recovery restores the bit).
 
 **`find_dirent`** — hash lookup in the parent directory's dirent table:
 
@@ -467,9 +468,13 @@ agfs_rename(old_parent, old_name, new_parent, new_name):
                      packed=agfs_pde_inode(agfs_pde_ino(old_de.packed),
                                           agfs_pde_gen(old_de.packed),
                                           d_type, dst_in_base))
+    elif old_de and agfs_pde_is_link(old_de.packed):
+        # Source is already a link -- follow its base_path.
+        add_dirent(new_parent, new_name,
+                     packed=agfs_pde_link(agfs_pde_base(old_de.packed), d_type, dst_in_base))
     else:
-        # File only in base or already a link -- create link to
-        # the current dentry path (no chain resolution).
+        # File only in base (no overlay dirent) -- create link to
+        # the current dentry path.
         add_dirent(new_parent, new_name,
                      packed=agfs_pde_link(src, d_type, dst_in_base))
 
@@ -750,14 +755,14 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
    No temp files, no sorting, no conflict detection — the temporal order
    from the journal is the correct replay order.
 3. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
-4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `entry_count=0` — reset mode, no T record written).
+4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `tree_len=0` — reset mode, no T record written).
 
 **Abort** (`agfs abort`):
 
 1. Count staged changes; if none, print "nothing to discard" and exit.
 2. Prompt for confirmation: `Discard N staged changes? [y/N]`.
 3. Remove all files under `.agfs/inodes/` and truncate `.agfs/journal`.
-4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `entry_count=0` — reset mode, no T record written).
+4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `tree_len=0` — reset mode, no T record written).
 
 **Status** (`agfs status`):
 
@@ -922,15 +927,14 @@ O(R) backward walk to build reachable ranges, skip unreachable T records.
    resolves the name internally) to get an iterator over live segments in the
    prefix up to the target checkpoint, handling any T records in that
    prefix.
-3. CLI builds the dir tree from live records → dirents.
-4. CLI converts the dir tree to dirent entries (path, ino, base, d_type).
-   Entries are sorted by path — parents before children — so that
-   `vfs_path_lookup` in the kernel can find staged parent directories
-   when injecting child dirents.
-5. `ioctl(AGFS_IOC_RESTORE, { target_gen=N, entries })`:
-   kernel wipes all dirents, shrinks dcache, injects entries with
-   new gen, appends `T\0<new_gen>\0<target_gen>\n`, returns new_gen.
-   The `AGFS_IOC_RESTORE` ioctl **increments** gen (monotonically)
+3. CLI builds the dir tree from live records.
+4. CLI serializes the dir tree into a contiguous byte buffer (depth-first,
+   children sorted by name).
+5. `ioctl(AGFS_IOC_RESTORE, { target_gen=N, tree_buf })`:
+   kernel wipes all dirents, shrinks dcache, `vmalloc`s + `copy_from_user`s
+   the tree buffer, walks it iteratively with a directory stack to inject
+   dirents with new gen, appends `T\0<new_gen>\0<target_gen>\n`, returns
+   new_gen.  The `AGFS_IOC_RESTORE` ioctl **increments** gen (monotonically)
    instead of setting it to the target value — this avoids gen
    collisions. Injected dirents receive the new gen value.
 6. No journal truncation.

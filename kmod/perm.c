@@ -89,7 +89,7 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 
 	kref_init(&req->ref);
 	req->id = atomic64_inc_return(&sbi->ask_engine.next_req_id);
-	strscpy(req->path, relpath, AGFS_PATH_MAX);
+	req->path_len = strscpy(req->path, relpath, AGFS_PATH_MAX);
 	req->op = op;
 	req->pid = current->pid;
 	get_task_comm(req->comm, current);

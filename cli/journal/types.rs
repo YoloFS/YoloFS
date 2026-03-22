@@ -2,8 +2,6 @@
 //
 // Pure data types for journal records. No I/O dependencies.
 
-pub const INO_REDIRECT: u64 = u64::MAX;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DType {
     File,
@@ -26,6 +24,15 @@ impl DType {
             DType::File => libc::DT_REG,
             DType::Dir => libc::DT_DIR,
             DType::Link => libc::DT_LNK,
+        }
+    }
+
+    /// 2-bit encoding matching the kernel's `agfs_dtype_pack`.
+    pub fn to_packed(&self) -> u64 {
+        match self {
+            DType::File => 0,
+            DType::Dir => 1,
+            DType::Link => 2,
         }
     }
 }

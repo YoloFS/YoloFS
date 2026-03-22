@@ -175,12 +175,12 @@ struct agfs_dirent *agfs_add_dirent(struct inode *dir, const char *name,
 	/* If packed is a link, duplicate the base string */
 	if (agfs_pde_is_link(packed)) {
 		unsigned char dt = agfs_pde_d_type(packed);
-		bool ib = agfs_pde_in_base(packed);
 
 		base_copy = kstrdup(agfs_pde_base(packed), GFP_KERNEL);
 		if (!base_copy)
 			return ERR_PTR(-ENOMEM);
-		packed = agfs_pde_link(base_copy, dt, ib);
+		packed = agfs_pde_link(base_copy, dt,
+				       agfs_pde_in_base(packed));
 	}
 
 	err = agfs_ensure_de_buckets(dii, &first_de);

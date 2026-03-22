@@ -3,7 +3,7 @@
 // Structured access to the append-only journal.
 //
 // Submodules:
-//   types     — Action, Marker, Record, DType, Segment, INO_REDIRECT
+//   types     — Action, Marker, Record, DType, Segment
 //   parse     — read(), parse()  (pub(super) only)
 //   markers   — Markers (K/T skeleton: lookup, range, liveness computation)
 //   journal   — Journal (segments + markers + precomputed liveness, borrowing filters)

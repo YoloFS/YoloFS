@@ -748,3 +748,70 @@ fn rename_child_then_parent_commit_reversed_order() {
         "subdir should be gone from base"
     );
 }
+
+/// Rename chain a→b→c: the kernel follows the link's base_path so the
+/// final link points to the original source, not an intermediate link.
+#[test]
+fn rename_chain_follows_link_base_path() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // Rename a base file twice: hello.txt → step1 → step2
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("step1.txt")).expect("a→b");
+    fs::rename(s.mnt_path("step1.txt"), s.mnt_path("step2.txt")).expect("b→c");
+
+    // The final name should read the original content
+    let content = fs::read_to_string(s.mnt_path("step2.txt")).expect("read step2");
+    assert_eq!(content, "base content\n");
+
+    // Checkpoint + restore to verify the chain survives serialization
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write post");
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    let content = fs::read_to_string(s.mnt_path("step2.txt")).expect("read after restore");
+    assert_eq!(content, "base content\n");
+    assert!(
+        !s.mnt_path("hello.txt").exists(),
+        "original name should be hidden"
+    );
+    assert!(
+        !s.mnt_path("step1.txt").exists(),
+        "intermediate name should be hidden"
+    );
+}
+
+/// Replace /a → /b (overwrite) then delete /b. Both /a and /b had base
+/// content, so both must have tombstones. Without the tombstone at /b,
+/// the base content would reappear after restore.
+#[test]
+fn replace_then_delete_tombstones_both() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // hello.txt and multi.txt both exist in base
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("multi.txt")).expect("replace");
+    fs::remove_file(s.mnt_path("multi.txt")).expect("delete multi");
+
+    // Both should be gone through the mount
+    assert!(
+        !s.mnt_path("hello.txt").exists(),
+        "hello.txt should be hidden"
+    );
+    assert!(
+        !s.mnt_path("multi.txt").exists(),
+        "multi.txt should be hidden"
+    );
+
+    // Checkpoint + restore to verify tombstones survive serialization
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write post");
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    assert!(
+        !s.mnt_path("hello.txt").exists(),
+        "hello.txt should be hidden after restore"
+    );
+    assert!(
+        !s.mnt_path("multi.txt").exists(),
+        "multi.txt should be hidden after restore (tombstone must survive)"
+    );
+}

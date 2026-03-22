@@ -3,6 +3,7 @@ mod helpers;
 mod test_cancel;
 mod test_checkpoint;
 mod test_commit_abort;
+mod test_consistency;
 mod test_create;
 mod test_delete;
 mod test_layout;

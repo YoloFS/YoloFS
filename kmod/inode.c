@@ -131,7 +131,9 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (flags)
 		return -EINVAL;
 
-	/* old_buf is needed as the redirect base for base-only renames */
+	/* old_buf is needed as the redirect base when source has no
+	 * overlay dirent (base-only file).  If source is already a link,
+	 * we follow its stored base_path instead. */
 	err = agfs_dentry_relpath(old_dentry, old_buf, sizeof(old_buf));
 	if (err)
 		return err;
@@ -166,7 +168,12 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		packed = agfs_pde_inode(agfs_pde_ino(src_de->packed),
 				       agfs_pde_gen(src_de->packed),
 				       d_type, dst_in_base);
+	} else if (src_de && agfs_pde_is_link(src_de->packed)) {
+		/* Follow existing link's base_path (don't break chain) */
+		packed = agfs_pde_link(agfs_pde_base(src_de->packed), d_type,
+				       dst_in_base);
 	} else {
+		/* Base-only source — use current dentry path */
 		packed = agfs_pde_link(old_buf, d_type, dst_in_base);
 	}
 	{
