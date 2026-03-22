@@ -13,8 +13,9 @@ replaced by VFS-native structures:
 
 2. **`pinned_dirs` / `de_pin` / `pinned_dirs_lock`** — global list of
    directories with staged children.  Only used for cleanup during restore
-   and unmount (`agfs_release_pinned_dirs()`).  Can be replaced by walking
-   `sb->s_inodes` and checking `d_children` for staged entries.
+   and unmount (`agfs_release_pinned_dirs()`).  Can be replaced by a
+   recursive dentry tree walk from `sb->s_root`, checking `d_children`
+   for staged entries.
 
 This removes five struct fields, one spinlock, one function
 (`agfs_pin_dir_if_first()`), and simplifies six call-sites.
@@ -26,7 +27,8 @@ This removes five struct fields, one spinlock, one function
 - Readdir emit (phase 1): walk `d_children` + `dstate.val != 0` filter.
 - Readdir dedup (phase 2): use `d_lookup()` per base entry — O(1) dcache
   hash lookup, strictly better than the current O(staged) `de_list` scan.
-- Bulk cleanup: replace `pinned_dirs` iteration with `sb->s_inodes` scan.
+- Bulk cleanup: replace `pinned_dirs` iteration with a recursive dentry
+  tree walk from `sb->s_root`.
 - Drop unused `dir` parameter from `agfs_stage_dentry()` and
   `agfs_remove_tombstone()`.
 - Drop the readdir fast-path `de_list` emptiness check — the remaining
@@ -198,54 +200,45 @@ entries with no ambiguity.
 - COW path (line 172): replace `list_empty(&di->de_node)` with
   `agfs_dstate_is_passthrough(di->dstate)`.
 
-- `agfs_release_pinned_dirs()` (lines 208–227): rewrite to walk
-  `sb->s_inodes` instead of `pinned_dirs`.  This function is only called
-  during restore (ioctl.c, line 713) and unmount (super.c, line 349) —
-  both are exclusive contexts with no concurrent VFS operations.
-  Walking `sb->s_inodes` requires `sb->s_inode_list_lock` (a spinlock),
-  but `agfs_unstage_dentry()` calls `dput()` which can sleep.  Use a
-  two-phase approach: collect dentries-to-unstage under the lock, then
-  unstage them after releasing it:
+- `agfs_release_pinned_dirs()` (lines 208–227): rewrite as a lockless
+  recursive dentry tree walk from `sb->s_root`.  This function is only
+  called during restore (ioctl.c, line 713) and unmount (super.c,
+  line 349) — both are exclusive contexts with no concurrent VFS
+  operations (restore holds `staging_sem` write + checks
+  `staging_fd_count == 0`; unmount has no active references).
+
+  Walk each directory's `d_children` with `hlist_for_each_entry_safe`:
+  unstage any child with `dstate.val != 0`, and recurse into
+  subdirectories.  `_safe` saves the next pointer before processing,
+  so our own `dput()` (which may remove the current entry from
+  `d_children`) does not corrupt the iteration.  No locks, no temp
+  fields needed.
+
   ```c
+  static void release_staged_children(struct dentry *parent)
+  {
+      struct dentry *child;
+      struct hlist_node *tmp;
+
+      hlist_for_each_entry_safe(child, tmp, &parent->d_children, d_sib) {
+          if (!hlist_empty(&child->d_children))
+              release_staged_children(child);
+          if (AGFS_D(child) &&
+              !agfs_dstate_is_passthrough(AGFS_D(child)->dstate))
+              agfs_unstage_dentry(AGFS_D(child));
+      }
+  }
+
   void agfs_release_pinned_dirs(struct super_block *sb)
   {
-      struct inode *inode;
-      LIST_HEAD(to_unstage);
-
-      spin_lock(&sb->s_inode_list_lock);
-      list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
-          struct dentry *alias;
-
-          if (!S_ISDIR(inode->i_mode))
-              continue;
-
-          hlist_for_each_entry(alias, &inode->i_dentry, d_u.d_alias) {
-              struct dentry *child;
-
-              hlist_for_each_entry(child, &alias->d_children, d_sib) {
-                  struct agfs_dentry_info *di = AGFS_D(child);
-                  if (!agfs_dstate_is_passthrough(di->dstate))
-                      list_add(&di->de_unstage, &to_unstage);
-              }
-          }
-      }
-      spin_unlock(&sb->s_inode_list_lock);
-
-      while (!list_empty(&to_unstage)) {
-          struct agfs_dentry_info *di =
-              list_first_entry(&to_unstage, struct agfs_dentry_info,
-                               de_unstage);
-          list_del_init(&di->de_unstage);
-          agfs_unstage_dentry(di);
-      }
+      if (sb->s_root)
+          release_staged_children(sb->s_root);
   }
   ```
 
-  This requires a temporary `de_unstage` list_head in
-  `agfs_dentry_info`.  Alternatively, since these are exclusive contexts,
-  use `list_for_each_entry` to build a simple array/count, or accept the
-  simpler lockless walk given that unmount and restore already drain all
-  VFS activity before running.
+  No new struct fields required.  Recursion depth is bounded by the
+  directory tree depth of staged entries (in practice shallow; the
+  kernel stack is 16 KiB which supports ~200+ frames of this size).
 
 ### 7. ioctl.c — restore path
 
