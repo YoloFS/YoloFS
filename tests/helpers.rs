@@ -90,6 +90,15 @@ impl AgfsSession {
         Ok(())
     }
 
+    /// Re-read the daemon PID from .agfs/pid. Call this after unmount+remount
+    /// from the host to update the stored PID for run_in_namespace().
+    pub fn refresh_daemon_pid(&mut self) -> Result<()> {
+        let pid_str = std::fs::read_to_string(self.root.join(".agfs/pid"))
+            .context("reading .agfs/pid after remount")?;
+        self.daemon_pid = Some(pid_str.trim().parse().context("parsing daemon pid")?);
+        Ok(())
+    }
+
     /// Resolve a relative path through the agfs mount.
     /// e.g., "hello.txt" → <mnt>/<root>/hello.txt
     pub fn mnt_path(&self, rel: &str) -> PathBuf {
