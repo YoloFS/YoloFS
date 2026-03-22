@@ -529,8 +529,20 @@ mv a c      # Journal: R(/c, /a, f)      — destination /c is not in base
 `readdir` (`iterate_shared`) presents a merged view: dirents first,
 then base entries that aren't overridden.
 
+**Fast path — no dirents**: when a directory has no dirent table
+(`!de_buckets`), nothing in that directory has been staged, deleted, or
+renamed. The merge is unnecessary — every base entry passes through
+unchanged. In this case `agfs_readdir` delegates directly to
+`iterate_dir(lower_file, ctx)`, identical to the non-staging path. The
+lower filesystem manages `f_pos` itself, so the cost matches native.
+
+**Merge path — has dirents**:
+
 ```
 agfs_readdir(dir, ctx):
+    if not dir.de_buckets:
+        return iterate_dir(lower_file, ctx)   # fast path
+
     # 1. Emit non-tombstone dirents.
     for de in dir.de_buckets[*]:
         if not agfs_pde_is_tombstone(de.packed):
@@ -539,9 +551,11 @@ agfs_readdir(dir, ctx):
                      agfs_pde_d_type(de.packed))
 
     # 2. Emit base entries not overridden by dirents.
+    lower_file.f_pos = file_info.base_pos   # resume, not restart
     for entry in base_readdir(dir):
         if not find_dirent(dir, entry.name):
             dir_emit(ctx, entry.name)
+    file_info.base_pos = lower_file.f_pos   # save for next call
 ```
 
 Dirent entries are emitted with the correct `d_type` (DT_REG, DT_DIR,
@@ -552,6 +566,16 @@ the `AGFS_INO_REDIRECT` behavior so readdir output is unchanged).
 The merged list is built fresh on every `readdir` call — no caching.
 This ensures creates, deletes, and renames between `getdents64` calls
 are always visible. Dirent hash tables are small, so the cost is negligible.
+
+**Position tracking**: the merge path must not reset the lower file's
+`f_pos` to 0 on each `getdents64` call. Doing so forces the lower
+filesystem (e.g. ext4 htree) to re-read and re-sort the entire
+directory from scratch on every call, turning readdir into an O(n²)
+operation. Instead, `agfs_file_info` stores `base_pos` (the lower
+`f_pos` at the end of the previous phase-2 pass) and `dirent_off` (the
+number of virtual entries counted in phase 1). On re-entry,
+phase 1 is skipped once all dirents have been emitted (`off` starts at
+the saved `dirent_off`), and phase 2 resumes from `base_pos`.
 
 ## setattr / getattr / fsync
 
