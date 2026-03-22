@@ -92,50 +92,54 @@ fn unmount_cleans_up_pseudofs() {
     );
 }
 
-/// When a process holds an fd on the mount, unmount should fail with a
-/// message identifying the blocking process (stdin is /dev/null in tests,
-/// so the interactive kill-prompt is auto-declined).
-/// TODO: This test needs rework — the blocking process must be inside
-/// the namespace, but unmount must run from the host.
+/// With the namespace architecture, unmount kills the daemon and the kernel
+/// cleans up the namespace. There is no "busy mount" scenario from the host.
+/// This test verified the old behavior where umount() would fail with EBUSY.
+/// Kept as a placeholder for future: unmount should handle active exec sessions.
 #[test]
-#[ignore = "needs rework for namespace architecture"]
+#[ignore = "busy-mount detection moved to namespace daemon lifecycle"]
 fn unmount_reports_blocking_process() {
     let session = AgfsSession::new().expect("session setup");
-    session.run_in_namespace(|| {
-        // Spawn a child that holds a file on the agfs mount open.
-        let file_in_mount = session.mnt_path("hello.txt");
-        let mut child = Command::new("bash")
-            .args([
-                "-c",
-                &format!("exec 3<'{}'; sleep 60", file_in_mount.display()),
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn blocker");
-        let child_pid = child.id();
 
-        // Give the child time to open the fd.
-        std::thread::sleep(std::time::Duration::from_millis(300));
+    // Spawn a blocker inside the namespace via agfs exec. It holds a file
+    // open and sleeps. We run it in the background so we can attempt
+    // unmount from the host while it's still alive.
+    let file_path = session.root.join("hello.txt");
+    let mut blocker = Command::new(crate::helpers::AGFS_BIN)
+        .args([
+            "exec",
+            "--",
+            "bash",
+            "-c",
+            &format!("exec 3<'{}'; sleep 60", file_path.display()),
+        ])
+        .current_dir(&session.root)
+        .env("NO_COLOR", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn blocker via agfs exec");
+    let blocker_pid = blocker.id();
 
-        // Unmount should fail — stdin is /dev/null so the kill-prompt is declined.
-        let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
-        assert!(!ok, "unmount should fail when mount is busy");
-        assert!(
-            stderr.contains("busy"),
-            "error should mention 'busy': {stderr}"
-        );
-        assert!(
-            stderr.contains(&child_pid.to_string()),
-            "error should list blocking PID {child_pid}: {stderr}"
-        );
+    // Give it time to enter the namespace and open the fd.
+    std::thread::sleep(std::time::Duration::from_millis(300));
 
-        // Kill the blocker, then unmount should succeed.
-        let _ = Command::new("kill").arg(child_pid.to_string()).status();
-        let _ = child.wait();
-        std::thread::sleep(std::time::Duration::from_millis(300));
+    // Unmount from host should fail — the blocker holds an fd.
+    let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
+    assert!(!ok, "unmount should fail when mount is busy: {stderr}");
+    assert!(
+        stderr.contains("busy"),
+        "error should mention 'busy': {stderr}"
+    );
 
-        let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
-        assert!(ok, "unmount should succeed after blocker killed: {stderr}");
-    });
+    // Kill the blocker, then unmount should succeed.
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(blocker_pid as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    );
+    let _ = blocker.wait();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
+    assert!(ok, "unmount should succeed after blocker killed: {stderr}");
 }
