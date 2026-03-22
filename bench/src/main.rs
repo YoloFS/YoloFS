@@ -7,6 +7,7 @@
 
 mod backend;
 mod backends;
+mod paper;
 mod profiler;
 mod report;
 mod workload;
@@ -102,9 +103,9 @@ enum Cmd {
         /// Backend to profile (default: agfs-no-perm + agfs-realistic)
         #[arg(long)]
         backend: Option<String>,
-        /// Disable bpftrace op-latency histograms; only run perf for a clean flamegraph
+        /// Enable bpftrace op-latency histograms (default: perf flamegraph only)
         #[arg(long)]
-        no_bpftrace: bool,
+        bpftrace: bool,
     },
     /// Run a workload at a given path (used internally by all backends)
     ExecWorkload {
@@ -1201,7 +1202,7 @@ fn main() -> Result<()> {
     if let Some(Cmd::Profile {
         workload: wname,
         backend: bname,
-        no_bpftrace,
+        bpftrace,
     }) = cli.cmd
     {
         let backends: Vec<&str> = match bname.as_deref() {
@@ -1209,7 +1210,7 @@ fn main() -> Result<()> {
             None => vec!["agfs-no-perm", "agfs-realistic"],
         };
         for bname in backends {
-            run_profile(&env, &wname, bname, !no_bpftrace)?;
+            run_profile(&env, &wname, bname, bpftrace)?;
         }
         // Generate cross-backend comparison if multiple backends were profiled.
         let prof_workload_dir = results_dir(&env, false).join("profiling").join(&wname);

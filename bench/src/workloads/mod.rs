@@ -38,10 +38,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-pub const OP_FILE_COUNT: usize = 10_000;
 pub const OP_FILE_SIZE: usize = 4096;
-pub const READDIR_DIR_COUNT: usize = 1_000;
-pub const READDIR_FILES_PER_DIR: usize = 10;
 pub const FIO_FILE_SIZE: &str = "1g";
 pub const FIO_IO_SIZE: &str = "256m";
 pub const FIO_FILE_NAME: &str = "testfile.dat";
@@ -53,6 +50,8 @@ pub struct FioSpec {
     pub warm_cache: bool,
     pub seed_existing_file: bool,
     pub mix_read_percent: Option<u8>,
+    /// Override io_size (default: FIO_IO_SIZE = "256m").
+    pub io_size: Option<&'static str>,
 }
 
 pub struct WorkloadDetails {
@@ -428,7 +427,7 @@ fn build_fio_job(spec: FioSpec, testfile: &Path) -> String {
         file = testfile.display(),
         rw = spec.rw,
         filesize = FIO_FILE_SIZE,
-        io_size = FIO_IO_SIZE,
+        io_size = spec.io_size.unwrap_or(FIO_IO_SIZE),
     );
 
     if let Some(mix) = spec.mix_read_percent {

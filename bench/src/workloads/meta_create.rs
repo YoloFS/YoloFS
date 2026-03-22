@@ -29,22 +29,17 @@ fn run_create(dest: &Path, count: usize) -> Result<()> {
     ))
 }
 
-crate::workloads::define_rust_execution!(
-    fn run_meta_create(dest: &Path) -> Result<()> {
-        std::fs::create_dir_all(dest).context("creating work dir")?;
-        let mut latencies = Vec::with_capacity(workloads::OP_FILE_COUNT);
-        let total = Instant::now();
-
-        for i in 0..workloads::OP_FILE_COUNT {
-            let t0 = Instant::now();
-            File::create(dest.join(format!("f-{i:05}.dat")))
-                .with_context(|| format!("creating f-{i:05}.dat"))?;
-            latencies.push(t0.elapsed());
-        }
-
-        workloads::emit_op_result(&workloads::summarize_latencies(latencies, total.elapsed(), None))
-    } => meta_create_execution
-);
+// The execution display delegates to run_create() which is a plain function.
+// We show the core loop body for the report.
+fn meta_create_execution() -> String {
+    workloads::rust_execution(
+        "for i in 0..count {\n\
+         \x20   let t0 = Instant::now();\n\
+         \x20   File::create(dest.join(format!(\"f-{i:05}.dat\")))?;\n\
+         \x20   latencies.push(t0.elapsed());\n\
+         }",
+    )
+}
 
 pub fn details() -> workloads::WorkloadDetails {
     workloads::workload_details(

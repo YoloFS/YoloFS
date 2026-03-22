@@ -1,0 +1,263 @@
+//! Publication figure: metadata operation latency small multiples.
+
+use super::util::backend_display_name;
+use super::Artifact;
+use crate::report;
+use crate::workload::WorkloadKind;
+use crate::workloads;
+use crate::BenchResults;
+use anyhow::{Context, Result};
+use std::path::Path;
+
+const CAPTION: &str =
+    "Per-operation metadata latency (\\textmu s) on staged files. \
+     Light bars = 100-file directory; dark bars = 10\\,000-file directory.";
+const LABEL: &str = "fig:meta-ops";
+
+/// Backends in display order.
+const BACKENDS: &[&str] = &[
+    "native",
+    "agfs-no-perm",
+    "agfs-realistic",
+    "overlayfs",
+    "branchfs",
+];
+
+/// Operations and their workload name stems.
+const OPS: &[(&str, &str)] = &[
+    ("create", "meta-create"),
+    ("open", "meta-open"),
+    ("stat", "meta-stat"),
+    ("readdir", "meta-readdir"),
+    ("append", "meta-append"),
+    ("rename", "meta-rename"),
+    ("unlink", "meta-unlink"),
+];
+
+pub fn render(results: &BenchResults, paper_dir: &Path) -> Result<Artifact> {
+    let py_path = paper_dir.join("meta-ops-figure.py");
+    let pdf_path = paper_dir.join("meta-ops-figure.pdf");
+
+    let script = build_matplotlib_script(results, &pdf_path)?;
+    std::fs::write(&py_path, &script)
+        .with_context(|| format!("writing {}", py_path.display()))?;
+
+    // Run the script.
+    let out = std::process::Command::new("python3")
+        .arg(&py_path)
+        .output()
+        .with_context(|| "running matplotlib script")?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        eprintln!("  warning: matplotlib script failed: {stderr}");
+        return Ok(Artifact {
+            title: "Metadata operation latency".to_string(),
+            tex_path: format!("paper/{}", py_path.file_name().unwrap().to_string_lossy()),
+            pdf_path: None,
+        });
+    }
+
+    // Write a minimal .tex wrapper with the figure float.
+    let tex_path = paper_dir.join("meta-ops-figure.tex");
+    let mut tex = String::new();
+    tex.push_str("% --- BEGIN figure fragment (includable via \\input) ---\n");
+    tex.push_str("\\begin{figure*}[t]\n");
+    tex.push_str("\\centering\n");
+    tex.push_str(&format!(
+        "\\includegraphics[width=\\textwidth]{{{}}}\n",
+        pdf_path.file_name().unwrap().to_string_lossy()
+    ));
+    tex.push_str(&format!("\\caption{{{CAPTION}}}\n"));
+    tex.push_str(&format!("\\label{{{LABEL}}}\n"));
+    tex.push_str("\\end{figure*}\n");
+    tex.push_str("% --- END figure fragment ---\n");
+    std::fs::write(&tex_path, &tex)
+        .with_context(|| format!("writing {}", tex_path.display()))?;
+
+    Ok(Artifact {
+        title: "Metadata operation latency".to_string(),
+        tex_path: format!("paper/{}", tex_path.file_name().unwrap().to_string_lossy()),
+        pdf_path: Some(format!(
+            "paper/{}",
+            pdf_path.file_name().unwrap().to_string_lossy()
+        )),
+    })
+}
+
+fn build_matplotlib_script(results: &BenchResults, pdf_path: &Path) -> Result<String> {
+    // Collect data: for each (op, size, backend) → avg latency in µs.
+    let mut data_lines = Vec::new();
+    // Header.
+    data_lines.push("op,size,backend,lat_us".to_string());
+
+    for &(op_label, stem) in OPS {
+        for &(size, size_suffix) in &[(100, "-100"), (10000, "")] {
+            for &backend in BACKENDS {
+                let wl_name = if stem == "meta-create" {
+                    if size == 100 {
+                        "meta-create-100".to_string()
+                    } else {
+                        "meta-create".to_string()
+                    }
+                } else {
+                    // Use stage source as representative.
+                    format!("{stem}{size_suffix}-stage")
+                };
+
+                let lat_us = results
+                    .workloads
+                    .iter()
+                    .find(|w| {
+                        let canonical = report::normalize_legacy_workload_name(&w.workload);
+                        canonical == wl_name
+                    })
+                    .and_then(|wl| {
+                        wl.backends
+                            .iter()
+                            .find(|b| b.backend == backend)
+                            .and_then(|b| b.mean_iops)
+                            .map(|iops| 1_000_000.0 / iops)
+                    });
+
+                if let Some(lat) = lat_us {
+                    data_lines.push(format!(
+                        "{op_label},{size},{},{lat:.2}",
+                        backend_display_name(backend)
+                    ));
+                }
+            }
+        }
+    }
+
+    let data_csv = data_lines.join("\n");
+
+    let ops_py: Vec<String> = OPS.iter().map(|(l, _)| format!("'{l}'")).collect();
+    let backends_py: Vec<String> = BACKENDS
+        .iter()
+        .map(|b| format!("'{}'", backend_display_name(b)))
+        .collect();
+
+    let mut s = String::new();
+    s.push_str("#!/usr/bin/env python3\n");
+    s.push_str("\"\"\"Auto-generated by agfs-bench. Do not edit.\"\"\"\n");
+    s.push_str("import matplotlib\n");
+    s.push_str("matplotlib.use('Agg')\n");
+    s.push_str("import matplotlib.pyplot as plt\n");
+    s.push_str("import numpy as np\n");
+    s.push_str("from io import StringIO\n");
+    s.push_str("import csv\n\n");
+    s.push_str("DATA = \"\"\"\\\n");
+    s.push_str(&data_csv);
+    s.push_str("\n\"\"\"\n\n");
+    s.push_str("reader = csv.DictReader(StringIO(DATA.strip()))\n");
+    s.push_str("rows = list(reader)\n\n");
+    s.push_str(&format!("ops = [{}]\n", ops_py.join(", ")));
+    s.push_str(&format!("backends = [{}]\n", backends_py.join(", ")));
+    s.push_str("sizes = [100, 10000]\n\n");
+    s.push_str(&format!(
+        r#"
+# Build lookup: (op, size, backend) -> lat_us
+lookup = {{}}
+for r in rows:
+    key = (r['op'].strip(), int(r['size'].strip()), r['backend'].strip())
+    lookup[key] = float(r['lat_us'].strip())
+
+# Short labels for x-axis (no line breaks).
+short = {{'Native': 'Native', 'AgFS': 'AgFS', 'AgFS-R': 'AgFS-R',
+          'OverlayFS': 'OvlFS', 'BranchFS': 'BrFS'}}
+
+CAP_FACTOR = 3  # cap outliers at 3x the second-largest value
+
+ncols = 4
+nrows = 2
+fig, axes = plt.subplots(nrows, ncols, figsize=(10, 3.8), sharey=False)
+axes = axes.flatten()
+
+bar_width = 0.32
+x = np.arange(len(backends))
+colors_small = '#a0c4e8'
+colors_large = '#2b6ca3'
+
+def fmt_lat(v):
+    """Format a latency value for annotation."""
+    if v >= 1_000_000:
+        return f'{{v/1_000_000:.0f}}s'
+    if v >= 1000:
+        return f'{{v/1000:.0f}}ms'
+    return f'{{v:.0f}}'
+
+for idx, op in enumerate(ops):
+    ax = axes[idx]
+    small_vals = [lookup.get((op, 100, b), 0) for b in backends]
+    large_vals = [lookup.get((op, 10000, b), 0) for b in backends]
+
+    # Determine y-axis cap: exclude extreme outliers.
+    all_vals = [v for v in small_vals + large_vals if v > 0]
+    if not all_vals:
+        continue
+    all_vals_sorted = sorted(all_vals)
+    # Iteratively strip values that are >CAP_FACTOR times the next-largest.
+    reasonable = all_vals_sorted[:]
+    while len(reasonable) > 1 and reasonable[-1] > reasonable[-2] * CAP_FACTOR:
+        reasonable.pop()
+    cap = reasonable[-1] * 1.35  # 35% headroom for labels
+
+    small_display = []
+    large_display = []
+    annotations = []
+    for i, (sv, lv) in enumerate(zip(small_vals, large_vals)):
+        sd = min(sv, cap) if sv > 0 else 0
+        ld = min(lv, cap) if lv > 0 else 0
+        small_display.append(sd)
+        large_display.append(ld)
+        if sv > cap * 0.85 and sv > 0:
+            annotations.append((i - bar_width/2, min(sv, cap), fmt_lat(sv)))
+        if lv > cap * 0.85 and lv > 0:
+            annotations.append((i + bar_width/2, min(lv, cap), fmt_lat(lv)))
+
+    bars_s = ax.bar(x - bar_width/2, small_display, bar_width, color=colors_small,
+                    edgecolor='#888', linewidth=0.3,
+                    label='100 files' if idx == 0 else None)
+    bars_l = ax.bar(x + bar_width/2, large_display, bar_width, color=colors_large,
+                    edgecolor='#555', linewidth=0.3,
+                    label='10K files' if idx == 0 else None)
+
+    # Hatching on capped bars to show they're truncated.
+    for i, (sv, lv) in enumerate(zip(small_vals, large_vals)):
+        if sv > cap:
+            bars_s[i].set_hatch('//')
+            bars_s[i].set_edgecolor('#666')
+        if lv > cap:
+            bars_l[i].set_hatch('//')
+            bars_l[i].set_edgecolor('#444')
+
+    for (xpos, ypos, txt) in annotations:
+        ax.annotate(txt, (xpos, ypos), fontsize=5, ha='center', va='bottom',
+                    color='#b00', fontweight='bold', rotation=90)
+
+    ax.set_title(op, fontsize=8.5, fontweight='bold', pad=3)
+    ax.set_xticks(x)
+    ax.set_xticklabels([short.get(b, b) for b in backends], fontsize=6)
+    ax.tick_params(axis='y', labelsize=6.5)
+    ax.tick_params(axis='x', length=0, pad=2)
+    if idx % ncols == 0:
+        ax.set_ylabel('latency (\u00b5s)', fontsize=7.5)
+    ax.set_ylim(bottom=0, top=cap)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+# Hide unused subplots.
+for idx in range(len(ops), nrows * ncols):
+    axes[idx].set_visible(False)
+
+axes[0].legend(fontsize=6.5, loc='upper left', framealpha=0.9,
+               edgecolor='#ccc', borderpad=0.4, handlelength=1.2)
+fig.tight_layout(w_pad=1.0, h_pad=1.5)
+fig.savefig('{pdf_path}', bbox_inches='tight', dpi=300)
+"#,
+        pdf_path = pdf_path.display()
+    ));
+
+    Ok(s)
+}
