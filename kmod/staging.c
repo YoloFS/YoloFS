@@ -265,18 +265,19 @@ int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,
 	struct dentry *ino_dentry;
 	struct inode *dir;
 	u32 ino;
-	int err;
+	int err, len;
 
 	if (!sbi->inodes_dir.dentry)
 		return -ENOENT;
 
-	ino = atomic_inc_return(&sbi->next_ino);
-	snprintf(name, sizeof(name), "%u", ino);
+	ino = (u32)atomic_inc_return(&sbi->next_ino);
+	if (unlikely(ino == 0))
+		return -ENOSPC;
+	len = snprintf(name, sizeof(name), "%u", ino);
 
 	dir = d_inode(sbi->inodes_dir.dentry);
 	inode_lock(dir);
-	ino_dentry = lookup_one_len(name, sbi->inodes_dir.dentry,
-				    strlen(name));
+	ino_dentry = lookup_one_len(name, sbi->inodes_dir.dentry, len);
 	if (IS_ERR(ino_dentry)) {
 		inode_unlock(dir);
 		return PTR_ERR(ino_dentry);

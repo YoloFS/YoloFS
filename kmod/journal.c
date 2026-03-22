@@ -96,7 +96,7 @@ static int journal_emit_ino(struct agfs_sb_info *sbi,
 			    unsigned char d_type, char tag)
 {
 	char path_buf[AGFS_PATH_MAX];
-	char ino_str[21];
+	char ino_str[11];
 	char dtype_str[2] = { '\0', '\0' };
 	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
 	if (IS_ERR(path))
