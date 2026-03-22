@@ -129,6 +129,7 @@ struct agfs_perm_request {
 	struct kref		ref;
 	u64			id;
 	char			path[AGFS_PATH_MAX];
+	u16			path_len;
 	enum agfs_op		op;
 	pid_t			pid;
 	char			comm[TASK_COMM_LEN];

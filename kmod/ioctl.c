@@ -79,7 +79,7 @@ static long agfs_get_request_ioctl(struct file *file, unsigned long arg)
 	kref_get(&req->ref); /* daemon takes a reference */
 	spin_unlock(&eng->pending_lock);
 
-	path_len = strlen(req->path);
+	path_len = req->path_len;
 
 	if (path_len > out.path_buf_len) {
 		err = -EOVERFLOW;
@@ -116,7 +116,7 @@ requeue_dispatched:
 	spin_unlock(&eng->dispatch_lock);
 requeue_pending:
 	spin_lock(&eng->pending_lock);
-	list_add(&req->list, &eng->pending_reqs);
+	list_add_tail(&req->list, &eng->pending_reqs);
 	spin_unlock(&eng->pending_lock);
 	wake_up_interruptible(&eng->request_waitq);
 	kref_put(&req->ref, agfs_perm_request_release);
@@ -334,7 +334,6 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 	struct agfs_ioc_checkpoint chk;
 	char name_buf[AGFS_PATH_MAX];
 	u16 gen;
-	int gen_raw;
 	int err;
 
 	if (!sbi->staging)
@@ -359,9 +358,11 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 			return -EFAULT;
 		return 0;
 	}
-	gen_raw = atomic_inc_return(&sbi->gen);
-	WARN_ON_ONCE(gen_raw > U16_MAX);
-	gen = gen_raw;
+	if (atomic_read(&sbi->gen) >= U16_MAX) {
+		up_write(&sbi->staging_sem);
+		return -EOVERFLOW;
+	}
+	gen = (u16)atomic_inc_return(&sbi->gen);
 	agfs_journal_checkpoint(sbi, gen, name_buf);
 	WRITE_ONCE(sbi->dirty, false);
 	up_write(&sbi->staging_sem);
@@ -576,11 +577,9 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 		if (err)
 			goto out_unwind;
 
-		/* Validate: node must have dirent or children */
-		if (!has_dirent && child_count == 0) {
-			err = -EINVAL;
-			goto out_unwind;
-		}
+		/* Skip empty passthrough nodes (no dirent, no children). */
+		if (!has_dirent && child_count == 0)
+			continue;
 
 		if (child_count > 0) {
 			struct dentry *child;
@@ -624,7 +623,6 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	struct agfs_sb_info *sbi = AGFS_SB(sb);
 	struct agfs_ioc_restore hdr;
 	u16 new_gen;
-	int new_gen_raw;
 	int err = 0;
 
 	if (!sbi->staging)
@@ -656,9 +654,11 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	}
 
 	/* Restore mode: increment gen, inject entries, write RST record */
-	new_gen_raw = atomic_inc_return(&sbi->gen);
-	WARN_ON_ONCE(new_gen_raw > U16_MAX);
-	new_gen = new_gen_raw;
+	if (atomic_read(&sbi->gen) >= U16_MAX) {
+		up_write(&sbi->staging_sem);
+		return -EOVERFLOW;
+	}
+	new_gen = (u16)atomic_inc_return(&sbi->gen);
 
 	err = agfs_restore_inject(file, sbi, &hdr, new_gen);
 	if (!err)

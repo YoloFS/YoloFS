@@ -172,15 +172,15 @@ $ echo x >> /etc/hosts
 # 7. Commit all staged changes to the real filesystem (userspace)
 $ agfs commit
    -> userspace: replay journal -- apply renames, deletes, move inodes to base
-   -> userspace: ioctl(AGFS_IOC_RESTORE) with entry_count=0 on .agfs/mnt
+   -> userspace: ioctl(AGFS_IOC_RESTORE) with tree_len=0 on .agfs/mnt
    -> kernel: release dirents, invalidate dentry + inode caches
    -> umount .agfs/mnt
 
 # 8. Restore to a previous checkpoint (appends T record, no truncation)
 $ agfs restore "after make build"
-   -> CLI: Journal → find_checkpoint → live_segments_at_name → build tree → restore entries
-   -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, entries })
-   -> kernel: wipe dirents, inject entries, increment gen to 4,
+   -> CLI: Journal → find_checkpoint → live_segments_at_name → build tree → serialize tree
+   -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, tree_buf })
+   -> kernel: wipe dirents, inject dirents from tree, increment gen to 4,
       append T record to journal
    -> journal is append-only — dead records remain but are filtered
       by Journal reachability on subsequent operations

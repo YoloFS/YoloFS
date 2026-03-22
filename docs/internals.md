@@ -91,12 +91,12 @@ descriptor (typically `.agfs/mnt`). Ioctl command macros are defined in
 
 | Ioctl                    | Behavior                                                                                                                                                                       |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `AGFS_IOC_GET_REQUEST`     | Dequeue the oldest pending permission request. Userspace passes a `struct agfs_ctl_request` with a path buffer pointer and capacity; kernel fills in the request fields and writes the path into the buffer. Blocks if queue is empty (or returns `-EAGAIN` for `O_NONBLOCK`). |
-| `AGFS_IOC_PUT_RESPONSE`    | Submit a decision: one `struct agfs_ctl_response`. Wakes the sleeping thread.                                                                               |
-| `AGFS_IOC_RULE_ADD`     | Add a permission rule to a dentry. Kernel resolves the path, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps `perm_gen`.                                                |
-| `AGFS_IOC_RULE_REMOVE`  | Remove a rule from a dentry. Kernel sets `perm = NONE`, unpins the dentry, and bumps `perm_gen`.                                                                                |
-| `AGFS_IOC_RESTORE`    | Atomically reset staging state and optionally inject dirent entries. Two modes: reset (`target_gen=0`) for commit/abort, restore (`target_gen>0`) for restore. Restore mode: increments `gen`, injects entries with new gen, appends T record to journal, returns `new_gen`. Reset mode: wipes dirents, sets `gen=1`, no journal write. Ioctl is `_IOWR` to return `new_gen`. Rejects with `-EBUSY` if staging fds are open. See detailed steps below and [staging.md — Restore](staging.md#checkpoint-aware-cli-operations). |
-| `AGFS_IOC_CHECKPOINT`     | Bump `gen`, append K record to journal, return checkpoint ID. Rejects with `-EBUSY` if staging fds are open. Triggers re-COW on next open-for-write to any staged file (see [staging.md — Checkpoints](staging.md#checkpoint-mechanism)). |
+| `AGFS_IOC_GET_REQUEST`     | Dequeue the oldest pending permission request. Userspace passes a `struct agfs_ctl_request` with a path buffer pointer and capacity; kernel fills in the request fields and writes the path into the buffer. Blocks if queue is empty (or returns `-EAGAIN` for `O_NONBLOCK`). Returns `-EBUSY` if another daemon is already connected. Returns `-EOVERFLOW` if the path exceeds the supplied buffer capacity. |
+| `AGFS_IOC_PUT_RESPONSE`    | Submit a decision: one `struct agfs_ctl_response`. Wakes the sleeping thread. Returns `-EINVAL` if the caller is not the connected daemon or if `decision > AGFS_PERM_DENY`. Returns `-ENOENT` if the request ID is not found in the dispatched list. |
+| `AGFS_IOC_RULE_ADD`     | Add a permission rule to a dentry. Kernel resolves the path, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps `perm_gen`. Returns `-EINVAL` if `perm > AGFS_PERM_DENY`. Returns `-EXDEV` if the path is on a different superblock. |
+| `AGFS_IOC_RULE_REMOVE`  | Remove a rule from a dentry. Kernel sets `perm = NONE`, unpins the dentry, and bumps `perm_gen`. Returns `-EXDEV` if the path is on a different superblock. |
+| `AGFS_IOC_RESTORE`    | Atomically reset staging state and optionally inject dirent entries. Two modes: reset (`target_gen=0`) for commit/abort, restore (`target_gen>0`) for restore. Restore mode: increments `gen`, injects entries with new gen, appends T record to journal, returns `new_gen`. Reset mode: wipes dirents, sets `gen=0`, no journal write. Ioctl is `_IOWR` to return `new_gen`. Returns `-EBUSY` if staging fds are open. Returns `-EOPNOTSUPP` if staging is not enabled. Returns `-EOVERFLOW` if `gen` would exceed `U16_MAX`. Returns `-EINVAL` for malformed tree data. See detailed steps below and [staging.md — Restore](staging.md#checkpoint-aware-cli-operations). |
+| `AGFS_IOC_CHECKPOINT`     | Bump `gen`, append K record to journal, return checkpoint ID. Returns `-EBUSY` if staging fds are open. Returns `-EOPNOTSUPP` if staging is not enabled. Returns `-EOVERFLOW` if `gen` would exceed `U16_MAX`. Triggers re-COW on next open-for-write to any staged file (see [staging.md — Checkpoints](staging.md#checkpoint-mechanism)). If `AGFS_CHK_IF_CHANGED` flag is set and no data has changed since the last checkpoint/restore, returns success with `gen=0` (checkpoint skipped). |
 
 `AGFS_IOC_RESTORE` is called by userspace after commit/abort (with
 `tree_len=0`, `tree_ptr=0`, `target_gen=0` to reset) and for restore (with a
@@ -112,7 +112,7 @@ It:
    pinned directory inode.
 4. Calls `shrink_dcache_sb()` to drop stale dentry caches so the mount
    reflects the new base state.
-5. **Reset mode** (`target_gen=0`): Sets `sbi->gen` to 1 and returns.
+5. **Reset mode** (`target_gen=0`): Sets `sbi->gen` to 0 and returns.
    Steps 6–9 are skipped.
 6. **Restore mode** (`target_gen>0`): Increments `sbi->gen` to allocate
    `new_gen`.

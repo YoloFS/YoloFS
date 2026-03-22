@@ -208,11 +208,13 @@ impl DirTree {
             .collect();
         children.sort_by_key(|(name, _)| *name);
 
-        buf.extend_from_slice(&(children.len() as u16).to_le_bytes());
+        let count: u16 = children.len().try_into().expect("too many children");
+        buf.extend_from_slice(&count.to_le_bytes());
 
         for (name, node) in children {
             let name_bytes = name.as_bytes();
-            buf.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+            let name_len: u16 = name_bytes.len().try_into().expect("name too long");
+            buf.extend_from_slice(&name_len.to_le_bytes());
             buf.extend_from_slice(name_bytes);
 
             match node {
@@ -266,7 +268,8 @@ impl DirTree {
                 // pointer bits [59:0] zeroed — base path travels inline
                 buf.extend_from_slice(&packed.to_le_bytes());
                 let bp = base_path.as_bytes();
-                buf.extend_from_slice(&(bp.len() as u16).to_le_bytes());
+                let bp_len: u16 = bp.len().try_into().expect("base_path too long");
+                buf.extend_from_slice(&bp_len.to_le_bytes());
                 buf.extend_from_slice(bp);
                 buf.push(0); // NUL terminator
             }
@@ -1612,6 +1615,40 @@ mod tests {
     }
 
     #[test]
+    fn serialize_stale_intermediates_after_cancel() {
+        // Add a deeply nested file then delete it.  The cancel removes the
+        // leaf File node but leaves Dir(None) intermediates.  The leaf-level
+        // empty dir is filtered, but upper intermediates remain in the
+        // serialized output.  The kernel tolerates these (skips nodes with
+        // has_dirent=0 and child_count=0).
+        let tree = build(&[add("/a/b/c/file", 1), delete("/a/b/c/file")]);
+        assert_eq!(tree.len(), 0, "no dirents after cancel");
+        // Serialization still succeeds (doesn't panic).
+        let _buf = tree.serialize();
+    }
+
+    #[test]
+    fn serialize_partial_stale_intermediates() {
+        // /a/b/c/file1 added + deleted (cancel), but /a/x still exists.
+        // The stale /a/b branch remains in the tree but is harmless — the
+        // kernel skips empty passthrough nodes.
+        let tree = build(&[
+            add("/a/b/c/file1", 1),
+            add("/a/x", 2),
+            delete("/a/b/c/file1"),
+        ]);
+        assert_eq!(tree.len(), 1, "only /a/x survives");
+        let buf = tree.serialize();
+        // Root should have one child: "a"
+        let root_cc = u16::from_le_bytes([buf[0], buf[1]]);
+        assert_eq!(root_cc, 1);
+        let mut cursor = 2usize;
+        let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+        cursor += 2;
+        assert_eq!(&buf[cursor..cursor + name_len], b"a");
+    }
+
+    #[test]
     fn serialize_inode_bits_correct() {
         // Verify the packed bit layout for an inode dirent
         let tree = build(&[Action::Modify {
@@ -1668,5 +1705,20 @@ mod tests {
         assert_eq!(DType::File.to_packed(), 0);
         assert_eq!(DType::Dir.to_packed(), 1);
         assert_eq!(DType::Link.to_packed(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "base_path too long")]
+    fn serialize_rejects_oversized_base_path() {
+        let mut tree = DirTree::new();
+        tree.nodes.insert(
+            "link".to_string(),
+            DirNode::File(Dirent::Link {
+                base_path: "a".repeat(u16::MAX as usize + 1),
+                dtype: DType::File,
+                in_base: false,
+            }),
+        );
+        tree.serialize();
     }
 }
