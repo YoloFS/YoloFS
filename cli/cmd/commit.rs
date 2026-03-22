@@ -117,21 +117,35 @@ fn apply_records(agfs: &Path, segments: &[journal::Segment]) -> Result<()> {
     Ok(())
 }
 
-pub fn run() -> Result<()> {
-    let agfs = crate::utils::session_dir()?;
-    crate::utils::join_daemon_namespace(&agfs)?;
-
-    let journal = Journal::read(&agfs)?;
+/// Apply staged changes to the host filesystem. Does not need namespace
+/// access — reads journal + inodes from the host .agfs/ directory.
+/// Returns the number of changes applied (0 = nothing to commit).
+pub fn apply_to_host(agfs: &Path) -> Result<usize> {
+    let journal = Journal::read(agfs)?;
     let live: Vec<_> = journal.into_live_segments_range(0, usize::MAX).collect();
     let committed: usize = live.iter().map(|s| s.records.len()).sum();
 
+    if committed == 0 {
+        return Ok(0);
+    }
+
+    apply_records(agfs, &live)?;
+    Ok(committed)
+}
+
+/// Full commit: apply to host + reset kernel staging state.
+/// Use this while the mount is alive (standalone `agfs commit`).
+pub fn run() -> Result<()> {
+    let agfs = crate::utils::session_dir()?;
+
+    let committed = apply_to_host(&agfs)?;
     if committed == 0 {
         println!("{}", "Nothing to commit.".yellow());
         return Ok(());
     }
 
-    apply_records(&agfs, &live)?;
-
+    // Reset kernel staging state (needs namespace — joins via setns).
+    crate::utils::join_daemon_namespace(&agfs)?;
     super::abort::reset_staging(&agfs)?;
 
     println!(

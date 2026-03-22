@@ -433,6 +433,9 @@ pub fn remount(force: bool) -> Result<()> {
 }
 
 /// If there are staged changes, ask the user to commit or abort before proceeding.
+/// This runs from the host — no namespace access needed. Commit applies records
+/// to the host filesystem; abort just discards (kernel state will be gone after
+/// unmount anyway).
 fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
     let journal = Journal::read(agfs_dir).unwrap_or_else(|_| Journal::new(vec![]));
     let tree = journal.into_tree();
@@ -460,8 +463,20 @@ fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
     io::stdin().lock().read_line(&mut line)?;
 
     match line.trim().to_ascii_lowercase().as_str() {
-        "c" | "commit" => super::commit::run()?,
-        "a" | "abort" => super::abort::reset_staging(agfs_dir)?,
+        "c" | "commit" => {
+            // Apply to host only — no ioctl reset needed since we're
+            // about to kill the daemon (kernel state goes away).
+            let n = super::commit::apply_to_host(agfs_dir)?;
+            if n > 0 {
+                eprintln!(
+                    "{}",
+                    format!("Committed {n} change{}.", crate::utils::plural(n))
+                        .green()
+                        .bold()
+                );
+            }
+        }
+        "a" | "abort" => {} // just discard — daemon death cleans up
         _ => anyhow::bail!("unmount cancelled"),
     }
     Ok(())
