@@ -14,6 +14,43 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process;
 
+/// Drop all capabilities so user commands run without elevated privileges.
+/// This prevents CAP_DAC_OVERRIDE from bypassing directory permission checks
+/// on the base filesystem, and generally follows the principle of least privilege.
+unsafe fn drop_caps() {
+    // PR_SET_NO_NEW_PRIVS: prevent regaining caps via setuid binaries
+    libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+
+    // Drop all capabilities from all sets.
+    // capset with empty data clears everything.
+    #[repr(C)]
+    struct CapHeader {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct CapData {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    let header = CapHeader {
+        version: 0x20080522, // _LINUX_CAPABILITY_VERSION_3
+        pid: 0,
+    };
+    let data = [CapData {
+        effective: 0,
+        permitted: 0,
+        inheritable: 0,
+    }; 2];
+    libc::syscall(
+        libc::SYS_capset,
+        &header as *const CapHeader,
+        data.as_ptr(),
+    );
+}
+
 /// Pre-exec hook: join the daemon's namespace, pivot_root into mnt, then
 /// exec the command. Called after fork but before exec.
 ///
@@ -111,6 +148,10 @@ unsafe fn namespace_pre_exec(
         if libc::chdir(cwd_cstr.as_ptr()) != 0 {
             return Err(std::io::Error::last_os_error());
         }
+
+        // 9. Drop all capabilities — user commands should not have
+        // CAP_DAC_OVERRIDE or any other elevated privileges.
+        drop_caps();
     }
     Ok(())
 }
@@ -175,6 +216,8 @@ unsafe fn pivot_only_pre_exec(
             eprintln!("pivot_only: chdir(cwd) failed: {e}");
             return Err(e);
         }
+
+        drop_caps();
     }
     Ok(())
 }

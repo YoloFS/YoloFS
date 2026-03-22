@@ -141,10 +141,9 @@ fn readdir_allowed_under_deny() {
 
 /// Creating a file inside a read-only base directory should fail because
 /// agfs_permission delegates directory checks to the lower filesystem.
-/// TODO: In user namespaces, base dir permission checks may behave differently
-/// because the uid mapping affects ownership semantics.
+/// Uses agfs exec (which drops CAP_DAC_OVERRIDE) so base dir permissions
+/// are enforced.
 #[test]
-#[ignore = "base dir permissions differ in user namespace"]
 fn create_in_readonly_base_dir_denied() {
     let s = AgfsSession::new_with_config(Config {
         permission: true,
@@ -153,21 +152,22 @@ fn create_in_readonly_base_dir_denied() {
     })
     .expect("session setup");
 
-    // chmod from host (before entering namespace)
     let dir = s.base_path("subdir");
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("chmod");
 
-    s.run_in_namespace(|| {
-        let result = fs::write(s.mnt_path("subdir/newfile.txt"), "data");
-        assert!(result.is_err(), "create should fail in read-only base dir");
-    });
+    // Run through agfs exec which drops caps — CAP_DAC_OVERRIDE would
+    // otherwise bypass the directory permission check.
+    let target = s.root.join("subdir/newfile.txt");
+    let code = s
+        .run_in_sandbox(&["sh", "-c", &format!("echo data > {}", target.display())])
+        .unwrap();
+    assert_ne!(code, 0, "create should fail in read-only base dir");
 
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("restore");
 }
 
 /// mkdir inside a read-only base directory should fail.
 #[test]
-#[ignore = "base dir permissions differ in user namespace"]
 fn mkdir_in_readonly_base_dir_denied() {
     let s = AgfsSession::new_with_config(Config {
         permission: true,
@@ -179,10 +179,11 @@ fn mkdir_in_readonly_base_dir_denied() {
     let dir = s.base_path("subdir");
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("chmod");
 
-    s.run_in_namespace(|| {
-        let result = fs::create_dir(s.mnt_path("subdir/newdir"));
-        assert!(result.is_err(), "mkdir should fail in read-only base dir");
-    });
+    let target = s.root.join("subdir/newdir");
+    let code = s
+        .run_in_sandbox(&["mkdir", &target.display().to_string()])
+        .unwrap();
+    assert_ne!(code, 0, "mkdir should fail in read-only base dir");
 
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("restore");
 }
