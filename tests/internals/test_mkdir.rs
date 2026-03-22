@@ -9,70 +9,74 @@ use std::fs;
 #[test]
 fn mkdir_produces_add_record() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
-    fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
-
-    let j = journal(&s);
-    let acts = actions(&j);
-    assert!(
-        acts.iter()
-            .any(|a| matches!(a, Action::Add { path, dtype: Some(agfs::journal::DType::Dir), .. } if path.ends_with("/newdir"))),
-        "journal should have an Added(dtype=Dir) record for newdir: {acts:?}"
-    );
+        let j = journal(&s);
+        let acts = actions(&j);
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, Action::Add { path, dtype: Some(agfs::journal::DType::Dir), .. } if path.ends_with("/newdir"))),
+            "journal should have an Added(dtype=Dir) record for newdir: {acts:?}"
+        );
+    });
 }
 
 /// Removing a directory produces a Delete record.
 #[test]
 fn rmdir_produces_delete_record() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        // Create through mount then remove
+        fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
+        fs::remove_dir(s.mnt_path("tmpdir")).expect("rmdir");
 
-    // Create through mount then remove
-    fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
-    fs::remove_dir(s.mnt_path("tmpdir")).expect("rmdir");
-
-    let j = journal(&s);
-    let acts = actions(&j);
-    assert!(
-        acts.iter()
-            .any(|a| matches!(a, Action::Delete { path, .. } if path.ends_with("/tmpdir"))),
-        "journal should have a Deleted record for tmpdir: {acts:?}"
-    );
+        let j = journal(&s);
+        let acts = actions(&j);
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, Action::Delete { path, .. } if path.ends_with("/tmpdir"))),
+            "journal should have a Deleted record for tmpdir: {acts:?}"
+        );
+    });
 }
 
 /// Removing a base directory produces a Delete record.
 #[test]
 fn rmdir_base_dir_produces_delete_record() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        // subdir/ is seeded in base
+        fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink nested file");
+        fs::remove_dir(s.mnt_path("subdir")).expect("rmdir base dir");
 
-    // subdir/ is seeded in base
-    fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink nested file");
-    fs::remove_dir(s.mnt_path("subdir")).expect("rmdir base dir");
-
-    let j = journal(&s);
-    let acts = actions(&j);
-    assert!(
-        acts.iter()
-            .any(|a| matches!(a, Action::Delete { path, .. } if path.ends_with("/subdir"))),
-        "journal should have a Deleted record for base dir: {acts:?}"
-    );
+        let j = journal(&s);
+        let acts = actions(&j);
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, Action::Delete { path, .. } if path.ends_with("/subdir"))),
+            "journal should have a Deleted record for base dir: {acts:?}"
+        );
+    });
 }
 
 /// Renaming a staged directory produces a single R record.
 #[test]
 fn rename_dir_produces_rename_record() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("olddir")).expect("mkdir");
+        fs::rename(s.mnt_path("olddir"), s.mnt_path("newdir")).expect("rename dir");
 
-    fs::create_dir(s.mnt_path("olddir")).expect("mkdir");
-    fs::rename(s.mnt_path("olddir"), s.mnt_path("newdir")).expect("rename dir");
-
-    let j = journal(&s);
-    let acts = actions(&j);
-    assert!(
-        acts.iter()
-            .any(|a| matches!(a, Action::Rename { dst, src, .. }
-            if dst.ends_with("/newdir") && src.ends_with("/olddir"))),
-        "journal should have a Redirect record for olddir → newdir: {acts:?}"
-    );
+        let j = journal(&s);
+        let acts = actions(&j);
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, Action::Rename { dst, src, .. }
+                if dst.ends_with("/newdir") && src.ends_with("/olddir"))),
+            "journal should have a Redirect record for olddir → newdir: {acts:?}"
+        );
+    });
 }
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────
@@ -81,99 +85,103 @@ fn rename_dir_produces_rename_record() {
 #[test]
 fn mkdir_creates_directory_inode() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
-    fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
+        let ch = dirents(&s);
+        let ino = ino_for(&ch, "/newdir");
+        let path = inode_path(&s, ino);
 
-    let ch = dirents(&s);
-    let ino = ino_for(&ch, "/newdir");
-    let path = inode_path(&s, ino);
-
-    assert!(path.is_dir(), "mkdir inode should be a directory");
-    let entries: Vec<_> = fs::read_dir(&path).unwrap().collect();
-    assert!(
-        entries.is_empty(),
-        "mkdir inode should be empty (children get their own inodes)"
-    );
+        assert!(path.is_dir(), "mkdir inode should be a directory");
+        let entries: Vec<_> = fs::read_dir(&path).unwrap().collect();
+        assert!(
+            entries.is_empty(),
+            "mkdir inode should be empty (children get their own inodes)"
+        );
+    });
 }
 
 /// mkdir -p with a file inside: both directory and file get inodes.
 #[test]
 fn mkdir_with_file_creates_separate_inodes() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::create_dir_all(s.mnt_path("parent/child")).expect("mkdir -p");
+        fs::write(s.mnt_path("parent/child/data.txt"), "nested\n").expect("write");
 
-    fs::create_dir_all(s.mnt_path("parent/child")).expect("mkdir -p");
-    fs::write(s.mnt_path("parent/child/data.txt"), "nested\n").expect("write");
+        let ch = dirents(&s);
 
-    let ch = dirents(&s);
-
-    // The file should have its own inode
-    let file_ino = ino_for(&ch, "/data.txt");
-    assert!(
-        inode_path(&s, file_ino).is_file(),
-        "file should have its own inode"
-    );
-    assert_eq!(
-        fs::read_to_string(inode_path(&s, file_ino)).unwrap(),
-        "nested\n"
-    );
-
-    // Parent directories should also have inode entries
-    let dir_ids: Vec<u32> = ch
-        .iter()
-        .filter_map(|(path, c)| {
-            if path.ends_with("/parent") || path.ends_with("/child") {
-                if let agfs::journal::Dirent::Inode {
-                    ino,
-                    in_base: false,
-                    ..
-                } = c
-                {
-                    return Some(*ino);
-                }
-            }
-            None
-        })
-        .collect();
-    for ino in &dir_ids {
+        // The file should have its own inode
+        let file_ino = ino_for(&ch, "/data.txt");
         assert!(
-            inode_path(&s, *ino).is_dir(),
-            "directory inode {ino} should be a dir"
+            inode_path(&s, file_ino).is_file(),
+            "file should have its own inode"
         );
-    }
+        assert_eq!(
+            fs::read_to_string(inode_path(&s, file_ino)).unwrap(),
+            "nested\n"
+        );
+
+        // Parent directories should also have inode entries
+        let dir_ids: Vec<u32> = ch
+            .iter()
+            .filter_map(|(path, c)| {
+                if path.ends_with("/parent") || path.ends_with("/child") {
+                    if let agfs::journal::Dirent::Inode {
+                        ino,
+                        in_base: false,
+                        ..
+                    } = c
+                    {
+                        return Some(*ino);
+                    }
+                }
+                None
+            })
+            .collect();
+        for ino in &dir_ids {
+            assert!(
+                inode_path(&s, *ino).is_dir(),
+                "directory inode {ino} should be a dir"
+            );
+        }
+    });
 }
 
 /// rmdir does NOT create a staged inode (only journal DEL record).
 #[test]
 fn rmdir_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
+        let inos_before = inos(&s);
 
-    fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
-    let inos_before = inos(&s);
+        fs::remove_dir(s.mnt_path("tmpdir")).expect("rmdir");
+        let inos_after = inos(&s);
 
-    fs::remove_dir(s.mnt_path("tmpdir")).expect("rmdir");
-    let inos_after = inos(&s);
-
-    // rmdir should not add new inodes (the mkdir inode may be cleaned up or kept,
-    // but no *new* inode should appear for the delete operation).
-    assert!(
-        inos_after.len() <= inos_before.len(),
-        "rmdir should not create new staged inodes: before={inos_before:?} after={inos_after:?}"
-    );
+        // rmdir should not add new inodes (the mkdir inode may be cleaned up or kept,
+        // but no *new* inode should appear for the delete operation).
+        assert!(
+            inos_after.len() <= inos_before.len(),
+            "rmdir should not create new staged inodes: before={inos_before:?} after={inos_after:?}"
+        );
+    });
 }
 
 /// Pure directory rename creates no new inode (only journal RDR record).
 #[test]
 fn rename_dir_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("olddir")).expect("mkdir");
+        let inos_after_mkdir = inos(&s);
 
-    fs::create_dir(s.mnt_path("olddir")).expect("mkdir");
-    let inos_after_mkdir = inos(&s);
+        fs::rename(s.mnt_path("olddir"), s.mnt_path("newdir")).expect("rename dir");
+        let inos_after_rename = inos(&s);
 
-    fs::rename(s.mnt_path("olddir"), s.mnt_path("newdir")).expect("rename dir");
-    let inos_after_rename = inos(&s);
-
-    assert_eq!(
-        inos_after_mkdir, inos_after_rename,
-        "pure dir rename should not create new staged inodes"
-    );
+        assert_eq!(
+            inos_after_mkdir, inos_after_rename,
+            "pure dir rename should not create new staged inodes"
+        );
+    });
 }

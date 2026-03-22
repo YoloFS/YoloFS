@@ -9,6 +9,7 @@ use colored::Colorize;
 
 pub fn run(checkpoint_name: &str) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
+    crate::utils::join_daemon_namespace(&agfs)?;
 
     // Search all markers (including dead zones) for the target checkpoint,
     // so that undo-restore (restoring to a dead checkpoint) works.

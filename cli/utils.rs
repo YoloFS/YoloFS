@@ -34,6 +34,88 @@ pub fn normalize_path(p: &str) -> String {
     normalize_path_with_cwd(p, &cwd)
 }
 
+/// Join the mount daemon's user + mount namespace so that the agfs
+/// mount (and ioctls on it) are accessible. Call this before any
+/// ioctl::open() or mount-path access outside of `agfs exec`.
+///
+/// Reads the daemon PID from `.agfs/pid` and calls setns(2) for the
+/// user and mount namespaces. This works because the calling process
+/// is in the parent user namespace and has the same euid as the
+/// namespace creator (see security/commoncap.c cap_capable line 92).
+pub fn join_daemon_namespace(agfs_dir: &Path) -> Result<()> {
+    let pid_path = agfs_dir.join("pid");
+    let pid_str = std::fs::read_to_string(&pid_path)
+        .with_context(|| format!("reading {} — is `agfs mount` running?", pid_path.display()))?;
+    let pid: u32 = pid_str
+        .trim()
+        .parse()
+        .with_context(|| format!("parsing pid from {}", pid_path.display()))?;
+
+    // If we're already in the daemon's namespace (e.g. spawned from a
+    // process that did setns, or from run_in_namespace in tests), the
+    // /proc/<host_pid>/ns/* paths won't be accessible. Detect this by
+    // checking if the agfs mount is already visible (different device
+    // than its parent directory).
+    {
+        use std::os::unix::fs::MetadataExt;
+        let mnt = agfs_dir.join("mnt");
+        if let (Ok(mnt_meta), Ok(parent_meta)) =
+            (std::fs::metadata(&mnt), std::fs::metadata(&agfs_dir))
+        {
+            if mnt_meta.dev() != parent_meta.dev() {
+                // Mount is visible — already in the namespace.
+                return Ok(());
+            }
+        }
+    }
+
+    // Verify daemon is alive.
+    let proc_path = format!("/proc/{pid}");
+    if !Path::new(&proc_path).exists() {
+        anyhow::bail!("mount daemon (pid {pid}) is not running — run `agfs mount` first");
+    }
+
+    unsafe {
+        // setns into user namespace first (grants CAP_SYS_ADMIN in target ns)
+        let user_ns = std::ffi::CString::new(format!("/proc/{pid}/ns/user")).unwrap();
+        let fd = libc::open(user_ns.as_ptr(), libc::O_RDONLY);
+        if fd < 0 {
+            anyhow::bail!(
+                "opening /proc/{pid}/ns/user: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        if libc::setns(fd, libc::CLONE_NEWUSER) != 0 {
+            libc::close(fd);
+            anyhow::bail!(
+                "setns(user) for pid {pid}: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        libc::close(fd);
+
+        // Then setns into mount namespace
+        let mnt_ns = std::ffi::CString::new(format!("/proc/{pid}/ns/mnt")).unwrap();
+        let fd = libc::open(mnt_ns.as_ptr(), libc::O_RDONLY);
+        if fd < 0 {
+            anyhow::bail!(
+                "opening /proc/{pid}/ns/mnt: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        if libc::setns(fd, libc::CLONE_NEWNS) != 0 {
+            libc::close(fd);
+            anyhow::bail!(
+                "setns(mnt) for pid {pid}: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        libc::close(fd);
+    }
+
+    Ok(())
+}
+
 /// Locate the agfs session directory.
 /// Checks AGFS_SESSION env var first, then falls back to .agfs/.
 pub fn session_dir() -> Result<PathBuf> {

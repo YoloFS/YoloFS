@@ -8,11 +8,12 @@ use std::io::{Read, Seek, SeekFrom};
 #[test]
 fn statfs_reports_agfs_magic() {
     let s = AgfsSession::new().expect("session setup");
-
-    // Use nix::sys::statfs or just verify the mount is functional
-    // by checking that stat works and the filesystem has non-zero space.
-    let meta = fs::metadata(s.mnt_path("hello.txt")).expect("stat");
-    assert!(meta.len() > 0, "statfs should report non-zero file size");
+    s.run_in_namespace(|| {
+        // Use nix::sys::statfs or just verify the mount is functional
+        // by checking that stat works and the filesystem has non-zero space.
+        let meta = fs::metadata(s.mnt_path("hello.txt")).expect("stat");
+        assert!(meta.len() > 0, "statfs should report non-zero file size");
+    });
 }
 
 // ── file.c: agfs_llseek ──
@@ -21,16 +22,17 @@ fn statfs_reports_agfs_magic() {
 #[test]
 fn seek_and_read_partial() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        // multi.txt = "line1\nline2\n" (12 bytes)
+        let mut f = fs::File::open(s.mnt_path("multi.txt")).expect("open");
 
-    // multi.txt = "line1\nline2\n" (12 bytes)
-    let mut f = fs::File::open(s.mnt_path("multi.txt")).expect("open");
+        // Seek past "line1\n" (6 bytes)
+        f.seek(SeekFrom::Start(6)).expect("seek");
 
-    // Seek past "line1\n" (6 bytes)
-    f.seek(SeekFrom::Start(6)).expect("seek");
-
-    let mut buf = String::new();
-    f.read_to_string(&mut buf).expect("read after seek");
-    assert_eq!(buf, "line2\n", "should read from seek position");
+        let mut buf = String::new();
+        f.read_to_string(&mut buf).expect("read after seek");
+        assert_eq!(buf, "line2\n", "should read from seek position");
+    });
 }
 
 // ── file.c: agfs_write_iter → fsstack_copy_inode_size ──
@@ -43,13 +45,14 @@ fn seek_and_read_partial() {
 #[test]
 fn file_size_after_write() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "short\n").expect("write");
 
-    fs::write(s.mnt_path("hello.txt"), "short\n").expect("write");
-
-    // Verify content is correct (read goes through inode store)
-    let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
-    assert_eq!(content, "short\n", "content should match written data");
-    assert_eq!(content.len(), 6);
+        // Verify content is correct (read goes through inode store)
+        let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
+        assert_eq!(content, "short\n", "content should match written data");
+        assert_eq!(content.len(), 6);
+    });
 }
 
 /// Stat a staged (COW'd) file: read returns staged content even if
@@ -57,21 +60,22 @@ fn file_size_after_write() {
 #[test]
 fn getattr_staged_file() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        // Original: "base content\n" = 13 bytes
+        assert_eq!(
+            fs::metadata(s.mnt_path("hello.txt")).unwrap().len(),
+            13,
+            "original size should be 13"
+        );
 
-    // Original: "base content\n" = 13 bytes
-    assert_eq!(
-        fs::metadata(s.mnt_path("hello.txt")).unwrap().len(),
-        13,
-        "original size should be 13"
-    );
+        // Write shorter content — triggers COW
+        fs::write(s.mnt_path("hello.txt"), "x\n").expect("write");
 
-    // Write shorter content — triggers COW
-    fs::write(s.mnt_path("hello.txt"), "x\n").expect("write");
-
-    // The staged file has the new content (via inode)
-    let content_via_mount = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
-    assert_eq!(
-        content_via_mount, "x\n",
-        "read should return staged content"
-    );
+        // The staged file has the new content (via inode)
+        let content_via_mount = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
+        assert_eq!(
+            content_via_mount, "x\n",
+            "read should return staged content"
+        );
+    });
 }

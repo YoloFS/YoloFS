@@ -16,30 +16,32 @@ fn newly_created_file_checked_on_reopen() {
     })
     .expect("session setup");
 
-    // Create a file (dir op, bypasses perm).
-    fs::write(s.mnt_path("newfile.txt"), "hello").expect("create should succeed");
+    s.run_in_namespace(|| {
+        // Create a file (dir op, bypasses perm).
+        fs::write(s.mnt_path("newfile.txt"), "hello").expect("create should succeed");
 
-    // Now change rules to deny and re-read.
-    s.cli(&["unmount", "--force"]).unwrap();
-    Config {
-        ask_default: Some(Perm::Deny),
-        rules: BTreeMap::from([("/".into(), Perm::Deny)]),
-        ..Default::default()
-    }
-    .save(&s.root.join("agfs.toml"))
-    .unwrap();
-    std::process::Command::new(AGFS_BIN)
-        .arg("mount")
-        .current_dir(&s.root)
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("remount");
+        // Now change rules to deny and re-read.
+        s.cli(&["unmount", "--force"]).unwrap();
+        Config {
+            ask_default: Some(Perm::Deny),
+            rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+            ..Default::default()
+        }
+        .save(&s.root.join("agfs.toml"))
+        .unwrap();
+        std::process::Command::new(AGFS_BIN)
+            .arg("mount")
+            .current_dir(&s.root)
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("remount");
 
-    let result = fs::read_to_string(s.mnt_path("hello.txt"));
-    assert!(
-        result.is_err(),
-        "read should be denied after rule change to deny"
-    );
+        let result = fs::read_to_string(s.mnt_path("hello.txt"));
+        assert!(
+            result.is_err(),
+            "read should be denied after rule change to deny"
+        );
+    });
 }
 
 // ── Rule change via live ioctl (cache invalidation) ──
@@ -55,16 +57,18 @@ fn live_rule_change_takes_effect() {
     })
     .expect("session setup");
 
-    let result = fs::read_to_string(s.mnt_path("hello.txt"));
-    assert!(result.is_err(), "read should fail under deny");
+    s.run_in_namespace(|| {
+        let result = fs::read_to_string(s.mnt_path("hello.txt"));
+        assert!(result.is_err(), "read should fail under deny");
 
-    // `rule add` takes a host path and resolves it through the mount internally.
-    s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"])
-        .unwrap();
+        // `rule add` takes a host path and resolves it through the mount internally.
+        s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"])
+            .unwrap();
 
-    let content = fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("read should succeed after live rule add");
-    assert_eq!(content, "base content\n");
+        let content = fs::read_to_string(s.mnt_path("hello.txt"))
+            .expect("read should succeed after live rule add");
+        assert_eq!(content, "base content\n");
+    });
 }
 
 /// Removing a rule at runtime should re-gate access.
@@ -77,14 +81,16 @@ fn live_rule_remove_reapplies_gating() {
     })
     .expect("session setup");
 
-    s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"])
-        .unwrap();
-    fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with allow-rw rule");
+    s.run_in_namespace(|| {
+        s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"])
+            .unwrap();
+        fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with allow-rw rule");
 
-    s.cli(&["rule", "remove", &s.root.display().to_string()])
-        .unwrap();
-    let result = fs::read_to_string(s.mnt_path("hello.txt"));
-    assert!(result.is_err(), "read should fail after rule removal");
+        s.cli(&["rule", "remove", &s.root.display().to_string()])
+            .unwrap();
+        let result = fs::read_to_string(s.mnt_path("hello.txt"));
+        assert!(result.is_err(), "read should fail after rule removal");
+    });
 }
 
 // ── Rename across permission boundaries ──
@@ -102,53 +108,55 @@ fn rename_across_permission_boundary() {
     })
     .expect("session setup");
 
-    // Create base files directly.
-    fs::create_dir_all(s.root.join("allowed")).expect("mkdir allowed");
-    fs::create_dir_all(s.root.join("denied")).expect("mkdir denied");
-    fs::write(s.root.join("allowed/file.txt"), "content\n").expect("create file");
+    s.run_in_namespace(|| {
+        // Create base files directly.
+        fs::create_dir_all(s.root.join("allowed")).expect("mkdir allowed");
+        fs::create_dir_all(s.root.join("denied")).expect("mkdir denied");
+        fs::write(s.root.join("allowed/file.txt"), "content\n").expect("create file");
 
-    s.cli(&["unmount"]).unwrap();
-    Config {
-        ask_default: Some(Perm::Deny),
-        rules: BTreeMap::from([
-            (s.root.join("allowed").display().to_string(), Perm::AllowRw),
-            (s.root.join("denied").display().to_string(), Perm::Deny),
-        ]),
-        ..Default::default()
-    }
-    .save(&s.root.join("agfs.toml"))
-    .unwrap();
-    std::process::Command::new(AGFS_BIN)
-        .arg("mount")
-        .current_dir(&s.root)
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("remount");
+        s.cli(&["unmount"]).unwrap();
+        Config {
+            ask_default: Some(Perm::Deny),
+            rules: BTreeMap::from([
+                (s.root.join("allowed").display().to_string(), Perm::AllowRw),
+                (s.root.join("denied").display().to_string(), Perm::Deny),
+            ]),
+            ..Default::default()
+        }
+        .save(&s.root.join("agfs.toml"))
+        .unwrap();
+        std::process::Command::new(AGFS_BIN)
+            .arg("mount")
+            .current_dir(&s.root)
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("remount");
 
-    // Can read the file in the allowed dir.
-    fs::read_to_string(s.mnt_path("allowed/file.txt"))
-        .expect("reading file in allowed dir should succeed");
+        // Can read the file in the allowed dir.
+        fs::read_to_string(s.mnt_path("allowed/file.txt"))
+            .expect("reading file in allowed dir should succeed");
 
-    // Rename is a dir op — should succeed.
-    fs::rename(
-        s.mnt_path("allowed/file.txt"),
-        s.mnt_path("denied/file.txt"),
-    )
-    .expect("rename is a dir op and should succeed");
+        // Rename is a dir op — should succeed.
+        fs::rename(
+            s.mnt_path("allowed/file.txt"),
+            s.mnt_path("denied/file.txt"),
+        )
+        .expect("rename is a dir op and should succeed");
 
-    // Force cache invalidation so the permission is re-resolved at the new location.
-    s.cli(&[
-        "rule",
-        "add",
-        &s.root.join("denied").display().to_string(),
-        "deny",
-    ])
-    .unwrap();
+        // Force cache invalidation so the permission is re-resolved at the new location.
+        s.cli(&[
+            "rule",
+            "add",
+            &s.root.join("denied").display().to_string(),
+            "deny",
+        ])
+        .unwrap();
 
-    // Reading from the denied directory should now fail.
-    let result = fs::read_to_string(s.mnt_path("denied/file.txt"));
-    assert!(
-        result.is_err(),
-        "reading renamed file in denied dir should fail"
-    );
+        // Reading from the denied directory should now fail.
+        let result = fs::read_to_string(s.mnt_path("denied/file.txt"));
+        assert!(
+            result.is_err(),
+            "reading renamed file in denied dir should fail"
+        );
+    });
 }

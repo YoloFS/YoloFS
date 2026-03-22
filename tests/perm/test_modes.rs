@@ -15,14 +15,16 @@ fn allow_ro_permits_read_denies_write() {
     })
     .expect("session setup");
 
-    // Read should succeed
-    let content =
-        fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with allow-ro");
-    assert_eq!(content, "base content\n");
+    s.run_in_namespace(|| {
+        // Read should succeed
+        let content =
+            fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with allow-ro");
+        assert_eq!(content, "base content\n");
 
-    // Write should fail
-    let result = fs::write(s.mnt_path("hello.txt"), "modified\n");
-    assert!(result.is_err(), "write should be denied with allow-ro rule");
+        // Write should fail
+        let result = fs::write(s.mnt_path("hello.txt"), "modified\n");
+        assert!(result.is_err(), "write should be denied with allow-ro rule");
+    });
 }
 
 // ── allow-rw tests (perm.c: agfs_check_perm, inode.c: agfs_permission) ──
@@ -37,9 +39,11 @@ fn allow_rw_permits_read() {
     })
     .expect("session setup");
 
-    let content =
-        fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with allow-rw");
-    assert_eq!(content, "base content\n");
+    s.run_in_namespace(|| {
+        let content =
+            fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with allow-rw");
+        assert_eq!(content, "base content\n");
+    });
 }
 
 /// allow-rw should permit writes.
@@ -52,7 +56,9 @@ fn allow_rw_permits_write() {
     })
     .expect("session setup");
 
-    fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write should succeed with allow-rw");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write should succeed with allow-rw");
+    });
 }
 
 /// allow-rw should deny exec (MAY_EXEC check in agfs_permission).
@@ -65,12 +71,14 @@ fn allow_rw_denies_exec() {
     })
     .expect("session setup");
 
-    let result = std::process::Command::new(s.mnt_path("test.sh")).output();
-    // execve should fail with EACCES (permission denied)
-    assert!(
-        result.is_err() || !result.unwrap().status.success(),
-        "exec should be denied with allow-rw"
-    );
+    s.run_in_namespace(|| {
+        let result = std::process::Command::new(s.mnt_path("test.sh")).output();
+        // execve should fail with EACCES (permission denied)
+        assert!(
+            result.is_err() || !result.unwrap().status.success(),
+            "exec should be denied with allow-rw"
+        );
+    });
 }
 
 // ── allow-rx tests (perm.c: agfs_check_perm, inode.c: agfs_permission) ──
@@ -85,9 +93,11 @@ fn allow_rx_permits_read() {
     })
     .expect("session setup");
 
-    let content =
-        fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with allow-rx");
-    assert_eq!(content, "base content\n");
+    s.run_in_namespace(|| {
+        let content =
+            fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with allow-rx");
+        assert_eq!(content, "base content\n");
+    });
 }
 
 /// allow-rx should deny writes.
@@ -100,8 +110,10 @@ fn allow_rx_denies_write() {
     })
     .expect("session setup");
 
-    let result = fs::write(s.mnt_path("hello.txt"), "modified\n");
-    assert!(result.is_err(), "write should be denied with allow-rx rule");
+    s.run_in_namespace(|| {
+        let result = fs::write(s.mnt_path("hello.txt"), "modified\n");
+        assert!(result.is_err(), "write should be denied with allow-rx rule");
+    });
 }
 
 /// allow-rx should permit exec.
@@ -114,10 +126,12 @@ fn allow_rx_permits_exec() {
     })
     .expect("session setup");
 
-    let output = std::process::Command::new(s.mnt_path("test.sh"))
-        .output()
-        .expect("should be able to spawn executable");
-    assert!(output.status.success(), "exec should succeed with allow-rx");
+    s.run_in_namespace(|| {
+        let output = std::process::Command::new(s.mnt_path("test.sh"))
+            .output()
+            .expect("should be able to spawn executable");
+        assert!(output.status.success(), "exec should succeed with allow-rx");
+    });
 }
 
 // ── allow (full access) ──
@@ -132,10 +146,12 @@ fn allow_permits_exec() {
     })
     .expect("session setup");
 
-    let output = std::process::Command::new(s.mnt_path("test.sh"))
-        .output()
-        .expect("should be able to spawn executable");
-    assert!(output.status.success(), "exec should succeed with allow");
+    s.run_in_namespace(|| {
+        let output = std::process::Command::new(s.mnt_path("test.sh"))
+            .output()
+            .expect("should be able to spawn executable");
+        assert!(output.status.success(), "exec should succeed with allow");
+    });
 }
 
 // ── deny (all blocked) ──
@@ -150,8 +166,10 @@ fn deny_blocks_write() {
     })
     .expect("session setup");
 
-    let result = fs::write(s.mnt_path("hello.txt"), "modified\n");
-    assert!(result.is_err(), "write should be denied with deny rule");
+    s.run_in_namespace(|| {
+        let result = fs::write(s.mnt_path("hello.txt"), "modified\n");
+        assert!(result.is_err(), "write should be denied with deny rule");
+    });
 }
 
 /// deny should block exec.
@@ -164,9 +182,11 @@ fn deny_blocks_exec() {
     })
     .expect("session setup");
 
-    let result = std::process::Command::new(s.mnt_path("test.sh")).output();
-    assert!(
-        result.is_err() || !result.unwrap().status.success(),
-        "exec should be denied with deny rule"
-    );
+    s.run_in_namespace(|| {
+        let result = std::process::Command::new(s.mnt_path("test.sh")).output();
+        assert!(
+            result.is_err() || !result.unwrap().status.success(),
+            "exec should be denied with deny rule"
+        );
+    });
 }

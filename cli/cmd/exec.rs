@@ -1,7 +1,7 @@
 // agfs CLI — exec.rs
 //
-// `agfs exec [-- cmd]` — chroot into .agfs/mnt and exec a command,
-// preserving the caller's working directory.
+// `agfs exec [-- cmd]` — join the mount daemon's namespace, pivot_root into
+// .agfs/mnt, and exec a command, preserving the caller's working directory.
 // When config.checkpoint=true, a checkpoint is created after the command
 // finishes, capturing what the command did.
 
@@ -14,36 +14,116 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process;
 
-/// Pre-exec hook: chroot into mnt, chdir back to the original cwd, then
-/// permanently drop root privileges to the invoking user's real uid/gid.
-/// Called after fork but before exec, so it only affects the child.
-unsafe fn chroot_pre_exec(mnt: &Path, cwd: &Path) -> Result<(), std::io::Error> {
-    let mnt_cstr = std::ffi::CString::new(mnt.as_os_str().as_encoded_bytes())
+/// Pre-exec hook: join the daemon's namespace, pivot_root into mnt, then
+/// exec the command. Called after fork but before exec.
+///
+/// Steps:
+/// 1. setns into daemon's user namespace (same uid → CAP_SYS_ADMIN in target)
+/// 2. setns into daemon's mount namespace (see agfs mount)
+/// 3. unshare(CLONE_NEWNS) — private child mount namespace for pivot_root
+/// 4. pivot_root(".", ".") — agfs mount becomes new root
+/// 5. umount old root via saved fd
+/// 6. chdir to original working directory
+unsafe fn namespace_pre_exec(
+    daemon_pid: u32,
+    mnt: &Path,
+    cwd: &Path,
+) -> Result<(), std::io::Error> {
+    use std::ffi::CString;
+
+    let mnt_cstr = CString::new(mnt.as_os_str().as_encoded_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    let cwd_cstr = std::ffi::CString::new(cwd.as_os_str().as_encoded_bytes())
+    let cwd_cstr = CString::new(cwd.as_os_str().as_encoded_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let dot = CString::new(".").unwrap();
 
     unsafe {
-        if libc::chroot(mnt_cstr.as_ptr()) != 0 {
+        // 1. setns into daemon's user namespace
+        let user_ns = CString::new(format!("/proc/{daemon_pid}/ns/user")).unwrap();
+        let user_fd = libc::open(user_ns.as_ptr(), libc::O_RDONLY);
+        if user_fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        if libc::chdir(cwd_cstr.as_ptr()) != 0 {
+        if libc::setns(user_fd, libc::CLONE_NEWUSER) != 0 {
+            libc::close(user_fd);
+            return Err(std::io::Error::last_os_error());
+        }
+        libc::close(user_fd);
+
+        // 2. setns into daemon's PID namespace (for /proc access)
+        let pid_ns = CString::new(format!("/proc/{daemon_pid}/ns/pid")).unwrap();
+        let pid_fd = libc::open(pid_ns.as_ptr(), libc::O_RDONLY);
+        if pid_fd >= 0 {
+            // Non-fatal: if PID ns join fails, /proc just won't work
+            libc::setns(pid_fd, libc::CLONE_NEWPID);
+            libc::close(pid_fd);
+        }
+
+        // 3. setns into daemon's mount namespace
+        let mnt_ns = CString::new(format!("/proc/{daemon_pid}/ns/mnt")).unwrap();
+        let mnt_fd = libc::open(mnt_ns.as_ptr(), libc::O_RDONLY);
+        if mnt_fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::setns(mnt_fd, libc::CLONE_NEWNS) != 0 {
+            libc::close(mnt_fd);
+            return Err(std::io::Error::last_os_error());
+        }
+        libc::close(mnt_fd);
+
+        // 4. Private child mount namespace so pivot_root doesn't affect
+        //    the daemon or other exec sessions
+        if libc::unshare(libc::CLONE_NEWNS) != 0 {
             return Err(std::io::Error::last_os_error());
         }
 
-        // Drop root: restore the invoking user's real gid/uid.
-        // Order matters — setgid first, because setuid drops the ability to
-        // change gid. Both calls are permanent (no re-elevation possible).
-        let real_gid = libc::getgid();
-        let real_uid = libc::getuid();
-        if libc::setgid(real_gid) != 0 {
+        // 4. Save fd to old root, then pivot_root(".", ".")
+        let old_root_fd = libc::open(b"/\0".as_ptr() as _, libc::O_RDONLY | libc::O_DIRECTORY);
+        if old_root_fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        if libc::setuid(real_uid) != 0 {
+        if libc::chdir(mnt_cstr.as_ptr()) != 0 {
+            libc::close(old_root_fd);
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::syscall(libc::SYS_pivot_root, dot.as_ptr(), dot.as_ptr()) != 0 {
+            libc::close(old_root_fd);
+            return Err(std::io::Error::last_os_error());
+        }
+
+        // 6. Detach old root
+        libc::fchdir(old_root_fd);
+        libc::umount2(dot.as_ptr(), libc::MNT_DETACH);
+        libc::close(old_root_fd);
+
+        // 7. Mount fresh /proc (we're in the daemon's PID namespace)
+        let proc_cstr = CString::new("/proc").unwrap();
+        libc::mount(
+            proc_cstr.as_ptr(),
+            proc_cstr.as_ptr(),
+            proc_cstr.as_ptr(),
+            0,
+            std::ptr::null(),
+        );
+        // Non-fatal if this fails — /proc just won't be available
+
+        // 8. chdir to original working directory
+        if libc::chdir(cwd_cstr.as_ptr()) != 0 {
             return Err(std::io::Error::last_os_error());
         }
     }
     Ok(())
+}
+
+/// Read the daemon pid from .agfs/pid.
+fn read_daemon_pid(agfs_dir: &Path) -> Result<u32> {
+    let pid_path = agfs_dir.join("pid");
+    let content = std::fs::read_to_string(&pid_path)
+        .with_context(|| format!("reading {} — is `agfs mount` running?", pid_path.display()))?;
+    content
+        .trim()
+        .parse::<u32>()
+        .with_context(|| format!("parsing pid from {}", pid_path.display()))
 }
 
 /// Spawn a command in the sandbox and wait for it to exit.
@@ -57,6 +137,24 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         bail!("mount point .agfs/mnt/ does not exist — run `agfs mount` first");
     }
 
+    // Detect if already in the daemon's namespace (e.g. called from
+    // run_in_namespace in tests). If so, skip setns + pivot_root.
+    let already_in_ns = {
+        use std::os::unix::fs::MetadataExt;
+        matches!(
+            (std::fs::metadata(&mnt), std::fs::metadata(&agfs_dir)),
+            (Ok(m), Ok(p)) if m.dev() != p.dev()
+        )
+    };
+
+    if !already_in_ns {
+        let daemon_pid = read_daemon_pid(&agfs_dir)?;
+        let proc_dir = format!("/proc/{daemon_pid}");
+        if !Path::new(&proc_dir).exists() {
+            bail!("mount daemon (pid {daemon_pid}) is not running — run `agfs mount` first");
+        }
+    }
+
     let default_shell = env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
 
     let (cmd, args) = if exec_args.is_empty() {
@@ -66,13 +164,23 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         (exec_args[0].clone(), exec_args[1..].to_vec())
     };
 
-    let status = unsafe {
+    let status = if already_in_ns {
+        // Already in namespace — just exec directly with the mount path.
         process::Command::new(&cmd)
             .args(&args)
             .env("AGFS_SESSION", agfs_dir.to_string_lossy().as_ref())
-            .pre_exec(move || chroot_pre_exec(&mnt, &cwd))
             .status()
             .with_context(|| format!("spawning {cmd}"))?
+    } else {
+        let daemon_pid = read_daemon_pid(&agfs_dir)?;
+        unsafe {
+            process::Command::new(&cmd)
+                .args(&args)
+                .env("AGFS_SESSION", agfs_dir.to_string_lossy().as_ref())
+                .pre_exec(move || namespace_pre_exec(daemon_pid, &mnt, &cwd))
+                .status()
+                .with_context(|| format!("spawning {cmd}"))?
+        }
     };
 
     let code = status.code().unwrap_or(1) as u8;
@@ -107,6 +215,7 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
 /// Create a checkpoint only if there are staged changes (kernel-side check).
 fn auto_checkpoint(name: &str) -> Result<bool> {
     let agfs = crate::utils::session_dir()?;
+    crate::utils::join_daemon_namespace(&agfs)?;
     let ctl_file = ioctl::open(&agfs).context("opening ctl for checkpoint")?;
     let gen_id = ioctl::create_checkpoint(&ctl_file, name, ioctl::AGFS_CHK_IF_CHANGED)?;
     if gen_id == 0 {

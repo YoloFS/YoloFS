@@ -33,7 +33,7 @@ $(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(TARGET_DIR)
 .PHONY: install uninstall
 
 install: cli kmod
-	sudo install -m 4755 -o root target/release/agfs /usr/local/bin/agfs
+	sudo install -m 755 target/release/agfs /usr/local/bin/agfs
 	sudo install -d $(KMOD_INSTALL_DIR)
 	sudo install -m 644 $(KMOD_OUT) $(KMOD_INSTALL_DIR)/agfs.ko
 

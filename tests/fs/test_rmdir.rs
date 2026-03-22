@@ -7,18 +7,19 @@ use std::fs;
 #[test]
 fn rmdir_staged_dir() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        // Create a directory through the mount (goes to inode store)
+        fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
+        assert!(s.mnt_path("tmpdir").is_dir());
 
-    // Create a directory through the mount (goes to inode store)
-    fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
-    assert!(s.mnt_path("tmpdir").is_dir());
+        // Remove it
+        fs::remove_dir(s.mnt_path("tmpdir")).expect("rmdir");
 
-    // Remove it
-    fs::remove_dir(s.mnt_path("tmpdir")).expect("rmdir");
-
-    assert!(
-        !s.mnt_path("tmpdir").is_dir(),
-        "removed dir should not be visible through mount"
-    );
+        assert!(
+            !s.mnt_path("tmpdir").is_dir(),
+            "removed dir should not be visible through mount"
+        );
+    });
 }
 
 /// rmdir a base directory adds a DELETED dirent.
@@ -26,18 +27,19 @@ fn rmdir_staged_dir() {
 #[test]
 fn rmdir_base_dir_adds_dirent() {
     let s = AgfsSession::new().expect("session setup");
-
-    // subdir/ exists in base with files inside.
-    // agfs_rmdir adds a DELETED dirent.
-    let result = fs::remove_dir(s.mnt_path("subdir"));
-    if result.is_ok() {
-        // Base should be untouched
-        assert!(
-            s.base_path("subdir").is_dir(),
-            "base subdir should still exist after rmdir through mount"
-        );
-    }
-    // rmdir may fail with ENOTEMPTY if the VFS checks emptiness — that's fine
+    s.run_in_namespace(|| {
+        // subdir/ exists in base with files inside.
+        // agfs_rmdir adds a DELETED dirent.
+        let result = fs::remove_dir(s.mnt_path("subdir"));
+        if result.is_ok() {
+            // Base should be untouched
+            assert!(
+                s.base_path("subdir").is_dir(),
+                "base subdir should still exist after rmdir through mount"
+            );
+        }
+        // rmdir may fail with ENOTEMPTY if the VFS checks emptiness — that's fine
+    });
 }
 
 /// rmdir on a non-empty staged directory succeeds because agfs adds a
@@ -45,27 +47,29 @@ fn rmdir_base_dir_adds_dirent() {
 #[test]
 fn rmdir_nonempty_staged_dir() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("hasfiles")).expect("mkdir");
+        fs::write(s.mnt_path("hasfiles/child.txt"), "data\n").expect("write");
 
-    fs::create_dir(s.mnt_path("hasfiles")).expect("mkdir");
-    fs::write(s.mnt_path("hasfiles/child.txt"), "data\n").expect("write");
+        // agfs rmdir adds a DELETED dirent — the child file becomes unreachable
+        fs::remove_dir(s.mnt_path("hasfiles")).expect("rmdir non-empty staged dir");
 
-    // agfs rmdir adds a DELETED dirent — the child file becomes unreachable
-    fs::remove_dir(s.mnt_path("hasfiles")).expect("rmdir non-empty staged dir");
-
-    assert!(
-        !s.mnt_path("hasfiles").is_dir(),
-        "removed dir should not be visible through mount"
-    );
+        assert!(
+            !s.mnt_path("hasfiles").is_dir(),
+            "removed dir should not be visible through mount"
+        );
+    });
 }
 
 /// rmdir on a nonexistent directory should fail.
 #[test]
 fn rmdir_nonexistent_fails() {
     let s = AgfsSession::new().expect("session setup");
-
-    let result = fs::remove_dir(s.mnt_path("no_such_dir"));
-    assert!(
-        result.is_err(),
-        "rmdir on nonexistent directory should fail"
-    );
+    s.run_in_namespace(|| {
+        let result = fs::remove_dir(s.mnt_path("no_such_dir"));
+        assert!(
+            result.is_err(),
+            "rmdir on nonexistent directory should fail"
+        );
+    });
 }

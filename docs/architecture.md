@@ -107,19 +107,17 @@ single R or P record carrying both source and destination paths.
 ## Lifecycle Example
 
 ```
-# 1. Full interactive workflow (mount -> watch + run -> diff -> commit/abort)
+# 1. Full interactive workflow (mount -> exec -> diff -> commit/abort)
 $ cd /home/user/project
 $ agfs
-   -> creates .agfs/, mounts / -> .agfs/mnt, applies rules from agfs.toml,
-     starts background watch daemon for permission requests, enters a mount
-     namespace with pivot_root into .agfs/mnt, spawns $SHELL with cwd preserved
-     as the caller's original CWD
-   -> on shell exit: stops watch daemon, runs `agfs diff`, prompts user to
-     commit, abort, or keep staged (user runs `agfs unmount` when done)
+   -> creates .agfs/, enters user+mount namespace, mounts / -> .agfs/mnt,
+     applies rules from agfs.toml, starts watch loop for permission requests,
+     spawns $SHELL via agfs exec (pivot_root into .agfs/mnt, cwd preserved)
+   -> on shell exit: runs `agfs diff`, prompts user to commit, abort, or
+     keep staged (user runs `agfs unmount` when done)
 
 # 1b. Or use individual commands for more control:
-$ agfs mount
-$ agfs watch &           # start daemon in background
+$ agfs mount             # namespace daemon (holds mount + watch loop)
 $ agfs exec -- make build
 $ agfs diff
 $ agfs commit

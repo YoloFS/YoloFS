@@ -15,11 +15,13 @@ fn truncate_denied_on_allow_ro() {
     })
     .expect("session setup");
 
-    let result = fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(s.mnt_path("hello.txt"));
-    assert!(result.is_err(), "O_TRUNC should be denied with allow-ro");
+    s.run_in_namespace(|| {
+        let result = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(s.mnt_path("hello.txt"));
+        assert!(result.is_err(), "O_TRUNC should be denied with allow-ro");
+    });
 }
 
 /// O_APPEND counts as a write operation; allow-ro should deny it.
@@ -32,10 +34,12 @@ fn append_denied_on_allow_ro() {
     })
     .expect("session setup");
 
-    let result = fs::OpenOptions::new()
-        .append(true)
-        .open(s.mnt_path("hello.txt"));
-    assert!(result.is_err(), "O_APPEND should be denied with allow-ro");
+    s.run_in_namespace(|| {
+        let result = fs::OpenOptions::new()
+            .append(true)
+            .open(s.mnt_path("hello.txt"));
+        assert!(result.is_err(), "O_APPEND should be denied with allow-ro");
+    });
 }
 
 /// O_RDWR counts as a write; allow-ro should deny it.
@@ -48,11 +52,13 @@ fn rdwr_denied_on_allow_ro() {
     })
     .expect("session setup");
 
-    let result = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(s.mnt_path("hello.txt"));
-    assert!(result.is_err(), "O_RDWR should be denied with allow-ro");
+    s.run_in_namespace(|| {
+        let result = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(s.mnt_path("hello.txt"));
+        assert!(result.is_err(), "O_RDWR should be denied with allow-ro");
+    });
 }
 
 // ── allow-rw permits truncate/append ──
@@ -67,11 +73,13 @@ fn truncate_allowed_on_allow_rw() {
     })
     .expect("session setup");
 
-    fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(s.mnt_path("hello.txt"))
-        .expect("O_TRUNC should succeed with allow-rw");
+    s.run_in_namespace(|| {
+        fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(s.mnt_path("hello.txt"))
+            .expect("O_TRUNC should succeed with allow-rw");
+    });
 }
 
 // ── allow-rx ──
@@ -86,11 +94,13 @@ fn allow_rx_denies_truncate() {
     })
     .expect("session setup");
 
-    let result = fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(s.mnt_path("hello.txt"));
-    assert!(result.is_err(), "O_TRUNC should be denied with allow-rx");
+    s.run_in_namespace(|| {
+        let result = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(s.mnt_path("hello.txt"));
+        assert!(result.is_err(), "O_TRUNC should be denied with allow-rx");
+    });
 }
 
 /// allow-rx should deny O_APPEND.
@@ -103,8 +113,10 @@ fn allow_rx_denies_append() {
     })
     .expect("session setup");
 
-    let result = fs::OpenOptions::new()
-        .append(true)
-        .open(s.mnt_path("hello.txt"));
-    assert!(result.is_err(), "O_APPEND should be denied with allow-rx");
+    s.run_in_namespace(|| {
+        let result = fs::OpenOptions::new()
+            .append(true)
+            .open(s.mnt_path("hello.txt"));
+        assert!(result.is_err(), "O_APPEND should be denied with allow-rx");
+    });
 }

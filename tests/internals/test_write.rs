@@ -11,16 +11,17 @@ use std::io::Write;
 #[test]
 fn modify_produces_add_record() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
-    fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-
-    let j = journal(&s);
-    let acts = actions(&j);
-    assert!(
-        acts.iter()
-            .any(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt"))),
-        "journal should have a Modified record for hello.txt: {acts:?}"
-    );
+        let j = journal(&s);
+        let acts = actions(&j);
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt"))),
+            "journal should have a Modified record for hello.txt: {acts:?}"
+        );
+    });
 }
 
 /// Overwrite an existing file multiple times — each write produces an ADD record
@@ -28,23 +29,24 @@ fn modify_produces_add_record() {
 #[test]
 fn multiple_writes_produce_multiple_adds() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
+        fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
+        fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
 
-    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
-    fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
-
-    let j = journal(&s);
-    let acts = actions(&j);
-    let add_count = acts
-        .iter()
-        .filter(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt")))
-        .count();
-    // At least 1 ADD record; the kernel may coalesce O_TRUNC reopens on the
-    // same inode, but the first COW always produces one.
-    assert!(
-        add_count >= 1,
-        "should have at least 1 ADD record, got {add_count}: {acts:?}"
-    );
+        let j = journal(&s);
+        let acts = actions(&j);
+        let add_count = acts
+            .iter()
+            .filter(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt")))
+            .count();
+        // At least 1 ADD record; the kernel may coalesce O_TRUNC reopens on the
+        // same inode, but the first COW always produces one.
+        assert!(
+            add_count >= 1,
+            "should have at least 1 ADD record, got {add_count}: {acts:?}"
+        );
+    });
 }
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────
@@ -53,82 +55,86 @@ fn multiple_writes_produce_multiple_adds() {
 #[test]
 fn modify_creates_inode_with_content() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
-    fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
+        let ch = dirents(&s);
+        let ino = ino_for(&ch, "/hello.txt");
+        let path = inode_path(&s, ino);
 
-    let ch = dirents(&s);
-    let ino = ino_for(&ch, "/hello.txt");
-    let path = inode_path(&s, ino);
-
-    assert!(path.is_file(), "staged inode should be a regular file");
-    assert_eq!(
-        fs::read_to_string(&path).unwrap(),
-        "modified\n",
-        "staged inode content should match what was written"
-    );
+        assert!(path.is_file(), "staged inode should be a regular file");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "modified\n",
+            "staged inode content should match what was written"
+        );
+    });
 }
 
 /// Overwriting a file multiple times updates the inode content in-place.
 #[test]
 fn overwrite_updates_inode_content() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
+        fs::write(s.mnt_path("hello.txt"), "v2 is longer\n").expect("write v2");
 
-    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    fs::write(s.mnt_path("hello.txt"), "v2 is longer\n").expect("write v2");
+        let ch = dirents(&s);
+        let ino = ino_for(&ch, "/hello.txt");
+        let path = inode_path(&s, ino);
 
-    let ch = dirents(&s);
-    let ino = ino_for(&ch, "/hello.txt");
-    let path = inode_path(&s, ino);
-
-    assert_eq!(
-        fs::read_to_string(&path).unwrap(),
-        "v2 is longer\n",
-        "inode should contain the latest write"
-    );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "v2 is longer\n",
+            "inode should contain the latest write"
+        );
+    });
 }
 
 /// Appending to a file updates the inode content.
 #[test]
 fn append_updates_inode() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "line1\n").expect("write");
 
-    fs::write(s.mnt_path("hello.txt"), "line1\n").expect("write");
+        let mut f = OpenOptions::new()
+            .append(true)
+            .open(s.mnt_path("hello.txt"))
+            .expect("open for append");
+        f.write_all(b"line2\n").expect("append");
+        drop(f);
 
-    let mut f = OpenOptions::new()
-        .append(true)
-        .open(s.mnt_path("hello.txt"))
-        .expect("open for append");
-    f.write_all(b"line2\n").expect("append");
-    drop(f);
-
-    let ch = dirents(&s);
-    let ino = ino_for(&ch, "/hello.txt");
-    let content = fs::read_to_string(inode_path(&s, ino)).unwrap();
-    assert_eq!(
-        content, "line1\nline2\n",
-        "inode should contain appended content"
-    );
+        let ch = dirents(&s);
+        let ino = ino_for(&ch, "/hello.txt");
+        let content = fs::read_to_string(inode_path(&s, ino)).unwrap();
+        assert_eq!(
+            content, "line1\nline2\n",
+            "inode should contain appended content"
+        );
+    });
 }
 
 /// Without a checkpoint, rewriting a file reuses the same inode (no new allocation).
 #[test]
 fn rewrite_without_checkpoint_reuses_inode() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
+        let inos_after_v1 = inos(&s);
 
-    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    let inos_after_v1 = inos(&s);
+        fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
+        let inos_after_v2 = inos(&s);
 
-    fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
-    let inos_after_v2 = inos(&s);
+        assert_eq!(
+            inos_after_v1, inos_after_v2,
+            "rewrite without checkpoint should reuse the same inode"
+        );
 
-    assert_eq!(
-        inos_after_v1, inos_after_v2,
-        "rewrite without checkpoint should reuse the same inode"
-    );
-
-    let ch = dirents(&s);
-    let ino = ino_for(&ch, "/hello.txt");
-    assert_eq!(fs::read_to_string(inode_path(&s, ino)).unwrap(), "v2\n");
+        let ch = dirents(&s);
+        let ino = ino_for(&ch, "/hello.txt");
+        assert_eq!(fs::read_to_string(inode_path(&s, ino)).unwrap(), "v2\n");
+    });
 }
 
 /// O_TRUNC on an already-staged file: verify the read-through-mount returns
@@ -136,15 +142,16 @@ fn rewrite_without_checkpoint_reuses_inode() {
 #[test]
 fn truncate_rewrite_overwrites_from_start() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "this is a long string\n").expect("write long");
+        fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
 
-    fs::write(s.mnt_path("hello.txt"), "this is a long string\n").expect("write long");
-    fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
-
-    let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
-    assert_eq!(
-        content, "short\n",
-        "mount content should be exactly the new data"
-    );
+        let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
+        assert_eq!(
+            content, "short\n",
+            "mount content should be exactly the new data"
+        );
+    });
 }
 
 /// O_TRUNC on an already-staged file: the inode in the store must contain
@@ -152,55 +159,57 @@ fn truncate_rewrite_overwrites_from_start() {
 #[test]
 fn truncate_rewrite_inode_has_exact_content() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "this is a long string\n").expect("write long");
+        fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
 
-    fs::write(s.mnt_path("hello.txt"), "this is a long string\n").expect("write long");
-    fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
+        let ch = dirents(&s);
+        let ino = ino_for(&ch, "/hello.txt");
+        let path = inode_path(&s, ino);
 
-    let ch = dirents(&s);
-    let ino = ino_for(&ch, "/hello.txt");
-    let path = inode_path(&s, ino);
+        let inode_content = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            inode_content, "short\n",
+            "inode should contain only the truncated content"
+        );
 
-    let inode_content = fs::read_to_string(&path).unwrap();
-    assert_eq!(
-        inode_content, "short\n",
-        "inode should contain only the truncated content"
-    );
-
-    let meta = fs::metadata(&path).unwrap();
-    assert_eq!(meta.len(), 6, "inode size should be exactly 6 bytes");
+        let meta = fs::metadata(&path).unwrap();
+        assert_eq!(meta.len(), 6, "inode size should be exactly 6 bytes");
+    });
 }
 
 /// Opening with O_TRUNC and writing nothing: the inode must be empty (0 bytes).
 #[test]
 fn truncate_only_produces_empty_inode() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        // First write to stage the file
+        fs::write(s.mnt_path("hello.txt"), "some content\n").expect("initial write");
 
-    // First write to stage the file
-    fs::write(s.mnt_path("hello.txt"), "some content\n").expect("initial write");
+        // Open with O_WRONLY | O_TRUNC, write nothing, close
+        let _f = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(s.mnt_path("hello.txt"))
+            .expect("open O_TRUNC");
+        drop(_f);
 
-    // Open with O_WRONLY | O_TRUNC, write nothing, close
-    let _f = OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(s.mnt_path("hello.txt"))
-        .expect("open O_TRUNC");
-    drop(_f);
+        // Mount should show empty file
+        let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
+        assert_eq!(content, "", "mount should show empty file after O_TRUNC");
 
-    // Mount should show empty file
-    let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
-    assert_eq!(content, "", "mount should show empty file after O_TRUNC");
+        // Inode in the store should be 0 bytes
+        let ch = dirents(&s);
+        let ino = ino_for(&ch, "/hello.txt");
+        let path = inode_path(&s, ino);
 
-    // Inode in the store should be 0 bytes
-    let ch = dirents(&s);
-    let ino = ino_for(&ch, "/hello.txt");
-    let path = inode_path(&s, ino);
-
-    let meta = fs::metadata(&path).unwrap();
-    assert_eq!(
-        meta.len(),
-        0,
-        "inode should be 0 bytes after O_TRUNC with no write"
-    );
+        let meta = fs::metadata(&path).unwrap();
+        assert_eq!(
+            meta.len(),
+            0,
+            "inode should be 0 bytes after O_TRUNC with no write"
+        );
+    });
 }
 
 /// Opening a base file with O_TRUNC produces a Modified (MOD) journal record,
@@ -208,134 +217,141 @@ fn truncate_only_produces_empty_inode() {
 #[test]
 fn truncate_open_base_file_produces_modify_record() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        // hello.txt exists in base; open with O_WRONLY | O_TRUNC and write new content.
+        let mut f = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(s.mnt_path("hello.txt"))
+            .expect("open O_TRUNC");
+        f.write_all(b"truncated\n").expect("write");
+        drop(f);
 
-    // hello.txt exists in base; open with O_WRONLY | O_TRUNC and write new content.
-    let mut f = OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(s.mnt_path("hello.txt"))
-        .expect("open O_TRUNC");
-    f.write_all(b"truncated\n").expect("write");
-    drop(f);
-
-    let j = journal(&s);
-    let acts = actions(&j);
-    assert!(
-        acts.iter()
-            .any(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt"))),
-        "O_TRUNC on a base file should produce a Modified record, got: {acts:?}"
-    );
-    assert!(
-        !acts
-            .iter()
-            .any(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/hello.txt"))),
-        "O_TRUNC on a base file should NOT produce an Added record, got: {acts:?}"
-    );
+        let j = journal(&s);
+        let acts = actions(&j);
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt"))),
+            "O_TRUNC on a base file should produce a Modified record, got: {acts:?}"
+        );
+        assert!(
+            !acts
+                .iter()
+                .any(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/hello.txt"))),
+            "O_TRUNC on a base file should NOT produce an Added record, got: {acts:?}"
+        );
+    });
 }
 
 /// A large file write produces an inode with the correct size.
 #[test]
 fn large_file_inode_size() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        let data = "x".repeat(1024 * 1024); // 1 MiB
+        fs::write(s.mnt_path("big.txt"), &data).expect("write large file");
 
-    let data = "x".repeat(1024 * 1024); // 1 MiB
-    fs::write(s.mnt_path("big.txt"), &data).expect("write large file");
+        let ch = dirents(&s);
+        let ino = ino_for(&ch, "/big.txt");
+        let path = inode_path(&s, ino);
 
-    let ch = dirents(&s);
-    let ino = ino_for(&ch, "/big.txt");
-    let path = inode_path(&s, ino);
-
-    let meta = fs::metadata(&path).unwrap();
-    assert_eq!(meta.len(), 1024 * 1024, "inode should be 1 MiB");
+        let meta = fs::metadata(&path).unwrap();
+        assert_eq!(meta.len(), 1024 * 1024, "inode should be 1 MiB");
+    });
 }
 
 /// Binary (non-UTF8) content is preserved exactly in the inode.
 #[test]
 fn binary_content_preserved() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        let data: Vec<u8> = (0..=255).collect();
+        fs::write(s.mnt_path("binary.bin"), &data).expect("write binary");
 
-    let data: Vec<u8> = (0..=255).collect();
-    fs::write(s.mnt_path("binary.bin"), &data).expect("write binary");
-
-    let ch = dirents(&s);
-    let ino = ino_for(&ch, "/binary.bin");
-    let inode_data = fs::read(inode_path(&s, ino)).unwrap();
-    assert_eq!(
-        inode_data, data,
-        "binary inode content should match exactly"
-    );
+        let ch = dirents(&s);
+        let ino = ino_for(&ch, "/binary.bin");
+        let inode_data = fs::read(inode_path(&s, ino)).unwrap();
+        assert_eq!(
+            inode_data, data,
+            "binary inode content should match exactly"
+        );
+    });
 }
 
 /// Inode preserves NUL bytes and other control characters.
 #[test]
 fn nul_bytes_preserved() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        let data = b"before\0middle\0after\n";
+        fs::write(s.mnt_path("nulls.txt"), data).expect("write with NULs");
 
-    let data = b"before\0middle\0after\n";
-    fs::write(s.mnt_path("nulls.txt"), data).expect("write with NULs");
-
-    let ch = dirents(&s);
-    let ino = ino_for(&ch, "/nulls.txt");
-    let inode_data = fs::read(inode_path(&s, ino)).unwrap();
-    assert_eq!(inode_data, data, "NUL bytes should be preserved in inode");
+        let ch = dirents(&s);
+        let ino = ino_for(&ch, "/nulls.txt");
+        let inode_data = fs::read(inode_path(&s, ino)).unwrap();
+        assert_eq!(inode_data, data, "NUL bytes should be preserved in inode");
+    });
 }
 
 /// Writing multiple files produces one inode per file, each with correct content.
 #[test]
 fn multiple_files_each_get_correct_inode() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "aaa\n").expect("write 1");
+        fs::write(s.mnt_path("multi.txt"), "bbb\n").expect("write 2");
+        fs::write(s.mnt_path("new1.txt"), "ccc\n").expect("create 1");
+        fs::write(s.mnt_path("new2.txt"), "ddd\n").expect("create 2");
 
-    fs::write(s.mnt_path("hello.txt"), "aaa\n").expect("write 1");
-    fs::write(s.mnt_path("multi.txt"), "bbb\n").expect("write 2");
-    fs::write(s.mnt_path("new1.txt"), "ccc\n").expect("create 1");
-    fs::write(s.mnt_path("new2.txt"), "ddd\n").expect("create 2");
+        let ch = dirents(&s);
 
-    let ch = dirents(&s);
-
-    let pairs = [
-        ("/hello.txt", "aaa\n"),
-        ("/multi.txt", "bbb\n"),
-        ("/new1.txt", "ccc\n"),
-        ("/new2.txt", "ddd\n"),
-    ];
-    for (suffix, expected) in &pairs {
-        let ino = ino_for(&ch, suffix);
-        let actual = fs::read_to_string(inode_path(&s, ino)).unwrap();
-        assert_eq!(
-            &actual, expected,
-            "inode for {suffix} should have correct content"
-        );
-    }
+        let pairs = [
+            ("/hello.txt", "aaa\n"),
+            ("/multi.txt", "bbb\n"),
+            ("/new1.txt", "ccc\n"),
+            ("/new2.txt", "ddd\n"),
+        ];
+        for (suffix, expected) in &pairs {
+            let ino = ino_for(&ch, suffix);
+            let actual = fs::read_to_string(inode_path(&s, ino)).unwrap();
+            assert_eq!(
+                &actual, expected,
+                "inode for {suffix} should have correct content"
+            );
+        }
+    });
 }
 
 /// Writing to a deeply nested path produces an inode with correct content.
 #[test]
 fn deep_nested_file_inode() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::create_dir_all(s.mnt_path("a/b/c")).expect("mkdir -p");
+        fs::write(s.mnt_path("a/b/c/leaf.txt"), "deep content\n").expect("write nested");
 
-    fs::create_dir_all(s.mnt_path("a/b/c")).expect("mkdir -p");
-    fs::write(s.mnt_path("a/b/c/leaf.txt"), "deep content\n").expect("write nested");
-
-    let ch = dirents(&s);
-    let ino = ino_for(&ch, "/leaf.txt");
-    assert_eq!(
-        fs::read_to_string(inode_path(&s, ino)).unwrap(),
-        "deep content\n"
-    );
+        let ch = dirents(&s);
+        let ino = ino_for(&ch, "/leaf.txt");
+        assert_eq!(
+            fs::read_to_string(inode_path(&s, ino)).unwrap(),
+            "deep content\n"
+        );
+    });
 }
 
 /// Modifying a pre-existing nested file creates an inode.
 #[test]
 fn modify_nested_base_file() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        // subdir/deep.txt is seeded in base
+        fs::write(s.mnt_path("subdir/deep.txt"), "updated nested\n").expect("write");
 
-    // subdir/deep.txt is seeded in base
-    fs::write(s.mnt_path("subdir/deep.txt"), "updated nested\n").expect("write");
-
-    let ch = dirents(&s);
-    let ino = ino_for(&ch, "/deep.txt");
-    assert_eq!(
-        fs::read_to_string(inode_path(&s, ino)).unwrap(),
-        "updated nested\n"
-    );
+        let ch = dirents(&s);
+        let ino = ino_for(&ch, "/deep.txt");
+        assert_eq!(
+            fs::read_to_string(inode_path(&s, ino)).unwrap(),
+            "updated nested\n"
+        );
+    });
 }

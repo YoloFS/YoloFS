@@ -40,6 +40,7 @@ pub fn reset_staging(agfs: &Path) -> Result<()> {
 
 pub fn run(force: bool) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
+    crate::utils::join_daemon_namespace(&agfs)?;
 
     let journal = Journal::read(&agfs)?;
     let tree = journal.into_tree();

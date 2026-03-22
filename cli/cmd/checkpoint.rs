@@ -9,6 +9,7 @@ use colored::Colorize;
 /// Create a checkpoint with the given name (or a timestamp if empty).
 pub fn create(name: Option<&str>) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
+    crate::utils::join_daemon_namespace(&agfs)?;
     let chk_name = match name {
         Some(n) if !n.is_empty() => n.to_string(),
         _ => default_name(),

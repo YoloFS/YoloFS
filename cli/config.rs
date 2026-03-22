@@ -273,6 +273,7 @@ pub fn add_rule(path: &str, perm_str: &str) -> Result<()> {
     // Apply live if mounted
     if is_mounted() {
         let agfs = crate::utils::session_dir()?;
+        crate::utils::join_daemon_namespace(&agfs)?;
         let mnt = agfs.join("mnt");
         let abs_path = resolve_to_abs(path)?;
         let resolved = resolve_through_mount(&abs_path, &mnt);
@@ -304,6 +305,7 @@ pub fn remove_rule(path: &str) -> Result<()> {
     // Apply live if mounted
     if is_mounted() {
         let agfs = crate::utils::session_dir()?;
+        crate::utils::join_daemon_namespace(&agfs)?;
         let mnt = agfs.join("mnt");
         let abs_path = resolve_to_abs(path)?;
         let resolved = resolve_through_mount(&abs_path, &mnt);

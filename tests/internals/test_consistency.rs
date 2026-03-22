@@ -219,31 +219,37 @@ fn assert_consistent(s: &AgfsSession) {
 #[test]
 fn add_file() {
     let s = AgfsSession::new().expect("session setup");
-    fs::write(s.mnt_path("new.txt"), "data\n").expect("create");
-    assert_consistent(&s);
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("new.txt"), "data\n").expect("create");
+        assert_consistent(&s);
+    });
 }
 
 #[test]
 fn add_nested_file() {
     let s = AgfsSession::new().expect("session setup");
-    fs::create_dir(s.mnt_path("d")).expect("mkdir");
-    fs::write(s.mnt_path("d/nested.txt"), "deep\n").expect("create");
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
-    assert_dir_matches(&s, "d");
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("d")).expect("mkdir");
+        fs::write(s.mnt_path("d/nested.txt"), "deep\n").expect("create");
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
+        assert_dir_matches(&s, "d");
+    });
 }
 
 #[test]
 fn add_multiple_files() {
     let s = AgfsSession::new().expect("session setup");
-    for i in 0..10 {
-        fs::write(
-            s.mnt_path(&format!("f{i}.txt")),
-            format!("data {i}\n"),
-        )
-        .expect("create");
-    }
-    assert_consistent(&s);
+    s.run_in_namespace(|| {
+        for i in 0..10 {
+            fs::write(
+                s.mnt_path(&format!("f{i}.txt")),
+                format!("data {i}\n"),
+            )
+            .expect("create");
+        }
+        assert_consistent(&s);
+    });
 }
 
 // ── Modify (M) ───────────────────────────────────────────────────────
@@ -251,8 +257,10 @@ fn add_multiple_files() {
 #[test]
 fn modify_base_file() {
     let s = AgfsSession::new().expect("session setup");
-    fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    assert_consistent(&s);
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
+        assert_consistent(&s);
+    });
 }
 
 // ── Delete (D) ───────────────────────────────────────────────────────
@@ -261,44 +269,50 @@ fn modify_base_file() {
 #[test]
 fn delete_staged_file_cancels() {
     let s = AgfsSession::new().expect("session setup");
-    fs::write(s.mnt_path("temp.txt"), "temp\n").expect("create");
-    fs::remove_file(s.mnt_path("temp.txt")).expect("delete");
-    assert_consistent(&s);
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("temp.txt"), "temp\n").expect("create");
+        fs::remove_file(s.mnt_path("temp.txt")).expect("delete");
+        assert_consistent(&s);
 
-    // CLI should have no entry (cancelled)
-    let d = dirents(&s);
-    assert!(
-        !d.iter().any(|(p, _)| p.ends_with("/temp.txt")),
-        "A+D on staged-only should cancel: {d:?}"
-    );
+        // CLI should have no entry (cancelled)
+        let d = dirents(&s);
+        assert!(
+            !d.iter().any(|(p, _)| p.ends_with("/temp.txt")),
+            "A+D on staged-only should cancel: {d:?}"
+        );
+    });
 }
 
 /// D on a base file produces a tombstone.
 #[test]
 fn delete_base_file_tombstones() {
     let s = AgfsSession::new().expect("session setup");
-    fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
-    assert_consistent(&s);
+    s.run_in_namespace(|| {
+        fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
+        assert_consistent(&s);
 
-    let d = dirents(&s);
-    assert!(
-        d.iter()
-            .any(|(p, e)| p.ends_with("/hello.txt") && matches!(e, Dirent::Tombstone)),
-        "D on base file should produce tombstone: {d:?}"
-    );
+        let d = dirents(&s);
+        assert!(
+            d.iter()
+                .any(|(p, e)| p.ends_with("/hello.txt") && matches!(e, Dirent::Tombstone)),
+            "D on base file should produce tombstone: {d:?}"
+        );
+    });
 }
 
 /// Delete all base files — everything tombstoned, mount shows nothing.
 #[test]
 fn delete_all_base_files() {
     let s = AgfsSession::new().expect("session setup");
-    fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
-    fs::remove_file(s.mnt_path("multi.txt")).expect("delete");
-    fs::remove_file(s.mnt_path("test.sh")).expect("delete");
-    fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("delete");
-    fs::remove_dir(s.mnt_path("subdir")).expect("rmdir");
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
+    s.run_in_namespace(|| {
+        fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
+        fs::remove_file(s.mnt_path("multi.txt")).expect("delete");
+        fs::remove_file(s.mnt_path("test.sh")).expect("delete");
+        fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("delete");
+        fs::remove_dir(s.mnt_path("subdir")).expect("rmdir");
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
+    });
 }
 
 // ── Rename (R) ───────────────────────────────────────────────────────
@@ -307,90 +321,102 @@ fn delete_all_base_files() {
 #[test]
 fn rename_base_file() {
     let s = AgfsSession::new().expect("session setup");
-    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
-    assert_consistent(&s);
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("moved.txt")).unwrap(),
-        "base content\n"
-    );
+    s.run_in_namespace(|| {
+        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
+        assert_consistent(&s);
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("moved.txt")).unwrap(),
+            "base content\n"
+        );
+    });
 }
 
 /// Rename a staged file: inode reference moves, no tombstone at source.
 #[test]
 fn rename_staged_file() {
     let s = AgfsSession::new().expect("session setup");
-    fs::write(s.mnt_path("new.txt"), "staged\n").expect("create");
-    fs::rename(s.mnt_path("new.txt"), s.mnt_path("renamed.txt")).expect("rename");
-    assert_consistent(&s);
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("renamed.txt")).unwrap(),
-        "staged\n"
-    );
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("new.txt"), "staged\n").expect("create");
+        fs::rename(s.mnt_path("new.txt"), s.mnt_path("renamed.txt")).expect("rename");
+        assert_consistent(&s);
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("renamed.txt")).unwrap(),
+            "staged\n"
+        );
+    });
 }
 
 /// Chain renames: a→b→c.
 #[test]
 fn rename_chain() {
     let s = AgfsSession::new().expect("session setup");
-    fs::write(s.mnt_path("a.txt"), "start\n").expect("create");
-    fs::rename(s.mnt_path("a.txt"), s.mnt_path("b.txt")).expect("rename 1");
-    fs::rename(s.mnt_path("b.txt"), s.mnt_path("c.txt")).expect("rename 2");
-    assert_consistent(&s);
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("c.txt")).unwrap(),
-        "start\n"
-    );
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("a.txt"), "start\n").expect("create");
+        fs::rename(s.mnt_path("a.txt"), s.mnt_path("b.txt")).expect("rename 1");
+        fs::rename(s.mnt_path("b.txt"), s.mnt_path("c.txt")).expect("rename 2");
+        assert_consistent(&s);
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("c.txt")).unwrap(),
+            "start\n"
+        );
+    });
 }
 
 /// Rename a base directory: Link at dest dir, contents accessible.
 #[test]
 fn rename_base_dir() {
     let s = AgfsSession::new().expect("session setup");
-    fs::rename(s.mnt_path("subdir"), s.mnt_path("newdir")).expect("rename dir");
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
-    assert_dir_matches(&s, "newdir");
+    s.run_in_namespace(|| {
+        fs::rename(s.mnt_path("subdir"), s.mnt_path("newdir")).expect("rename dir");
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
+        assert_dir_matches(&s, "newdir");
 
-    // Content accessible under new name
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("newdir/deep.txt")).unwrap(),
-        "nested\n"
-    );
+        // Content accessible under new name
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("newdir/deep.txt")).unwrap(),
+            "nested\n"
+        );
+    });
 }
 
 /// Rename across directories: file moves from root to a new staged dir.
 #[test]
 fn rename_into_new_dir() {
     let s = AgfsSession::new().expect("session setup");
-    fs::create_dir(s.mnt_path("target")).expect("mkdir");
-    fs::write(s.mnt_path("src.txt"), "moved\n").expect("create");
-    fs::rename(
-        s.mnt_path("src.txt"),
-        s.mnt_path("target/dst.txt"),
-    )
-    .expect("rename cross-dir");
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
-    assert_dir_matches(&s, "target");
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("target")).expect("mkdir");
+        fs::write(s.mnt_path("src.txt"), "moved\n").expect("create");
+        fs::rename(
+            s.mnt_path("src.txt"),
+            s.mnt_path("target/dst.txt"),
+        )
+        .expect("rename cross-dir");
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
+        assert_dir_matches(&s, "target");
+    });
 }
 
 /// Rename a base file into a new staged directory.
 #[test]
 fn rename_base_into_new_dir() {
     let s = AgfsSession::new().expect("session setup");
-    fs::create_dir(s.mnt_path("dest")).expect("mkdir");
-    fs::rename(
-        s.mnt_path("hello.txt"),
-        s.mnt_path("dest/moved.txt"),
-    )
-    .expect("rename");
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
-    assert_dir_matches(&s, "dest");
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("dest/moved.txt")).unwrap(),
-        "base content\n"
-    );
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("dest")).expect("mkdir");
+        fs::rename(
+            s.mnt_path("hello.txt"),
+            s.mnt_path("dest/moved.txt"),
+        )
+        .expect("rename");
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
+        assert_dir_matches(&s, "dest");
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("dest/moved.txt")).unwrap(),
+            "base content\n"
+        );
+    });
 }
 
 // ── Replace (P) ──────────────────────────────────────────────────────
@@ -399,13 +425,15 @@ fn rename_base_into_new_dir() {
 #[test]
 fn replace_base_file() {
     let s = AgfsSession::new().expect("session setup");
-    fs::write(s.mnt_path("new.txt"), "overwrite\n").expect("create");
-    fs::rename(s.mnt_path("new.txt"), s.mnt_path("hello.txt")).expect("replace");
-    assert_consistent(&s);
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
-        "overwrite\n"
-    );
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("new.txt"), "overwrite\n").expect("create");
+        fs::rename(s.mnt_path("new.txt"), s.mnt_path("hello.txt")).expect("replace");
+        assert_consistent(&s);
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
+            "overwrite\n"
+        );
+    });
 }
 
 // ── mkdir / rmdir ────────────────────────────────────────────────────
@@ -413,27 +441,33 @@ fn replace_base_file() {
 #[test]
 fn mkdir() {
     let s = AgfsSession::new().expect("session setup");
-    fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
-    assert_consistent(&s);
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
+        assert_consistent(&s);
+    });
 }
 
 #[test]
 fn mkdir_with_files() {
     let s = AgfsSession::new().expect("session setup");
-    fs::create_dir(s.mnt_path("d")).expect("mkdir");
-    fs::write(s.mnt_path("d/a.txt"), "a\n").expect("write a");
-    fs::write(s.mnt_path("d/b.txt"), "b\n").expect("write b");
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
-    assert_dir_matches(&s, "d");
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("d")).expect("mkdir");
+        fs::write(s.mnt_path("d/a.txt"), "a\n").expect("write a");
+        fs::write(s.mnt_path("d/b.txt"), "b\n").expect("write b");
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
+        assert_dir_matches(&s, "d");
+    });
 }
 
 #[test]
 fn rmdir_base() {
     let s = AgfsSession::new().expect("session setup");
-    fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink");
-    fs::remove_dir(s.mnt_path("subdir")).expect("rmdir");
-    assert_consistent(&s);
+    s.run_in_namespace(|| {
+        fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink");
+        fs::remove_dir(s.mnt_path("subdir")).expect("rmdir");
+        assert_consistent(&s);
+    });
 }
 
 // ── Symlink ──────────────────────────────────────────────────────────
@@ -441,8 +475,10 @@ fn rmdir_base() {
 #[test]
 fn symlink() {
     let s = AgfsSession::new().expect("session setup");
-    std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
-    assert_consistent(&s);
+    s.run_in_namespace(|| {
+        std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
+        assert_consistent(&s);
+    });
 }
 
 // ── Complex sequences ────────────────────────────────────────────────
@@ -450,79 +486,88 @@ fn symlink() {
 #[test]
 fn mixed_operations() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("added.txt"), "new\n").expect("create");
+        fs::create_dir(s.mnt_path("d")).expect("mkdir");
+        fs::write(s.mnt_path("d/x.txt"), "x\n").expect("create nested");
+        fs::write(s.mnt_path("multi.txt"), "modified\n").expect("modify base");
+        fs::remove_file(s.mnt_path("hello.txt")).expect("delete base");
+        fs::rename(s.mnt_path("added.txt"), s.mnt_path("moved.txt")).expect("rename staged");
 
-    fs::write(s.mnt_path("added.txt"), "new\n").expect("create");
-    fs::create_dir(s.mnt_path("d")).expect("mkdir");
-    fs::write(s.mnt_path("d/x.txt"), "x\n").expect("create nested");
-    fs::write(s.mnt_path("multi.txt"), "modified\n").expect("modify base");
-    fs::remove_file(s.mnt_path("hello.txt")).expect("delete base");
-    fs::rename(s.mnt_path("added.txt"), s.mnt_path("moved.txt")).expect("rename staged");
-
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
-    assert_dir_matches(&s, "d");
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
+        assert_dir_matches(&s, "d");
+    });
 }
 
 #[test]
 fn create_delete_recreate() {
     let s = AgfsSession::new().expect("session setup");
-    fs::write(s.mnt_path("cycle.txt"), "v1\n").expect("create v1");
-    fs::remove_file(s.mnt_path("cycle.txt")).expect("delete");
-    fs::write(s.mnt_path("cycle.txt"), "v2\n").expect("create v2");
-    assert_consistent(&s);
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("cycle.txt")).unwrap(),
-        "v2\n"
-    );
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("cycle.txt"), "v1\n").expect("create v1");
+        fs::remove_file(s.mnt_path("cycle.txt")).expect("delete");
+        fs::write(s.mnt_path("cycle.txt"), "v2\n").expect("create v2");
+        assert_consistent(&s);
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("cycle.txt")).unwrap(),
+            "v2\n"
+        );
+    });
 }
 
 /// Modify a base file then delete it (M+D → tombstone).
 #[test]
 fn modify_then_delete_base() {
     let s = AgfsSession::new().expect("session setup");
-    fs::write(s.mnt_path("hello.txt"), "modified\n").expect("modify");
-    fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
-    assert_consistent(&s);
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("hello.txt"), "modified\n").expect("modify");
+        fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
+        assert_consistent(&s);
 
-    let d = dirents(&s);
-    assert!(
-        d.iter()
-            .any(|(p, e)| p.ends_with("/hello.txt") && matches!(e, Dirent::Tombstone)),
-        "M+D on base should produce tombstone: {d:?}"
-    );
+        let d = dirents(&s);
+        assert!(
+            d.iter()
+                .any(|(p, e)| p.ends_with("/hello.txt") && matches!(e, Dirent::Tombstone)),
+            "M+D on base should produce tombstone: {d:?}"
+        );
+    });
 }
 
 /// Rename a base file then delete it at the new location.
 #[test]
 fn rename_then_delete() {
     let s = AgfsSession::new().expect("session setup");
-    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("rename");
-    fs::remove_file(s.mnt_path("temp.txt")).expect("delete");
-    assert_consistent(&s);
+    s.run_in_namespace(|| {
+        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("rename");
+        fs::remove_file(s.mnt_path("temp.txt")).expect("delete");
+        assert_consistent(&s);
 
-    // Both old and new paths should be invisible
-    assert!(!path_visible(&s.mnt_path("hello.txt")));
-    assert!(!path_visible(&s.mnt_path("temp.txt")));
+        // Both old and new paths should be invisible
+        assert!(!path_visible(&s.mnt_path("hello.txt")));
+        assert!(!path_visible(&s.mnt_path("temp.txt")));
+    });
 }
 
 /// Swap two base files via a temporary name.
 #[test]
 fn swap_via_tmp() {
     let s = AgfsSession::new().expect("session setup");
-    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("tmp.txt")).expect("step 1");
-    fs::rename(s.mnt_path("multi.txt"), s.mnt_path("hello.txt")).expect("step 2");
-    fs::rename(s.mnt_path("tmp.txt"), s.mnt_path("multi.txt")).expect("step 3");
-    assert_consistent(&s);
+    s.run_in_namespace(|| {
+        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("tmp.txt")).expect("step 1");
+        fs::rename(s.mnt_path("multi.txt"), s.mnt_path("hello.txt")).expect("step 2");
+        fs::rename(s.mnt_path("tmp.txt"), s.mnt_path("multi.txt")).expect("step 3");
+        assert_consistent(&s);
 
-    // Content should be swapped
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
-        "line1\nline2\n"
-    );
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("multi.txt")).unwrap(),
-        "base content\n"
-    );
+        // Content should be swapped
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
+            "line1\nline2\n"
+        );
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("multi.txt")).unwrap(),
+            "base content\n"
+        );
+    });
 }
 
 // ── Checkpoint / Restore ─────────────────────────────────────────────
@@ -531,64 +576,67 @@ fn swap_via_tmp() {
 #[test]
 fn restore_state() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("a.txt"), "aa\n").expect("create a");
+        fs::write(s.mnt_path("hello.txt"), "mod\n").expect("modify");
+        s.cli(&["checkpoint", "snap"]).expect("checkpoint");
 
-    fs::write(s.mnt_path("a.txt"), "aa\n").expect("create a");
-    fs::write(s.mnt_path("hello.txt"), "mod\n").expect("modify");
-    s.cli(&["checkpoint", "snap"]).expect("checkpoint");
+        // Dead zone: changes after checkpoint
+        fs::write(s.mnt_path("dead.txt"), "gone\n").expect("create dead");
+        fs::remove_file(s.mnt_path("a.txt")).expect("delete a");
 
-    // Dead zone: changes after checkpoint
-    fs::write(s.mnt_path("dead.txt"), "gone\n").expect("create dead");
-    fs::remove_file(s.mnt_path("a.txt")).expect("delete a");
+        s.cli(&["restore", "snap"]).expect("restore");
 
-    s.cli(&["restore", "snap"]).expect("restore");
-
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
-    assert!(path_visible(&s.mnt_path("a.txt")));
-    assert!(!path_visible(&s.mnt_path("dead.txt")));
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
+        assert!(path_visible(&s.mnt_path("a.txt")));
+        assert!(!path_visible(&s.mnt_path("dead.txt")));
+    });
 }
 
 /// Two checkpoints, restore to the first one.
 #[test]
 fn restore_to_earlier_checkpoint() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("a.txt"), "v1\n").expect("create");
+        s.cli(&["checkpoint", "c1"]).expect("checkpoint 1");
 
-    fs::write(s.mnt_path("a.txt"), "v1\n").expect("create");
-    s.cli(&["checkpoint", "c1"]).expect("checkpoint 1");
+        fs::write(s.mnt_path("b.txt"), "v2\n").expect("create");
+        s.cli(&["checkpoint", "c2"]).expect("checkpoint 2");
 
-    fs::write(s.mnt_path("b.txt"), "v2\n").expect("create");
-    s.cli(&["checkpoint", "c2"]).expect("checkpoint 2");
+        s.cli(&["restore", "c1"]).expect("restore to c1");
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
 
-    s.cli(&["restore", "c1"]).expect("restore to c1");
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
-
-    assert!(path_visible(&s.mnt_path("a.txt")));
-    assert!(!path_visible(&s.mnt_path("b.txt")));
+        assert!(path_visible(&s.mnt_path("a.txt")));
+        assert!(!path_visible(&s.mnt_path("b.txt")));
+    });
 }
 
 /// Restore with renames: verify Link entries survive the round-trip.
 #[test]
 fn restore_with_renames() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
+        fs::write(s.mnt_path("new.txt"), "new\n").expect("create");
+        s.cli(&["checkpoint", "snap"]).expect("checkpoint");
 
-    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
-    fs::write(s.mnt_path("new.txt"), "new\n").expect("create");
-    s.cli(&["checkpoint", "snap"]).expect("checkpoint");
+        // Dead zone
+        fs::remove_file(s.mnt_path("moved.txt")).expect("delete");
 
-    // Dead zone
-    fs::remove_file(s.mnt_path("moved.txt")).expect("delete");
+        s.cli(&["restore", "snap"]).expect("restore");
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
 
-    s.cli(&["restore", "snap"]).expect("restore");
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
-
-    assert!(path_visible(&s.mnt_path("moved.txt")));
-    assert!(!path_visible(&s.mnt_path("hello.txt")));
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("moved.txt")).unwrap(),
-        "base content\n"
-    );
+        assert!(path_visible(&s.mnt_path("moved.txt")));
+        assert!(!path_visible(&s.mnt_path("hello.txt")));
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("moved.txt")).unwrap(),
+            "base content\n"
+        );
+    });
 }
 
 // ── Create over tombstone ────────────────────────────────────────────
@@ -599,34 +647,38 @@ fn restore_with_renames() {
 #[test]
 fn create_over_tombstone() {
     let s = AgfsSession::new().expect("session setup");
-    fs::remove_file(s.mnt_path("hello.txt")).expect("delete base");
-    fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
-    assert_consistent(&s);
+    s.run_in_namespace(|| {
+        fs::remove_file(s.mnt_path("hello.txt")).expect("delete base");
+        fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
+        assert_consistent(&s);
 
-    // CLI should have in_base=true (inherited from tombstone)
-    let d = dirents(&s);
-    assert!(
-        d.iter().any(|(p, e)| p.ends_with("/hello.txt")
-            && matches!(e, Dirent::Inode { in_base: true, .. })),
-        "recreated file over tombstone should have in_base=true: {d:?}"
-    );
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
-        "reborn\n"
-    );
+        // CLI should have in_base=true (inherited from tombstone)
+        let d = dirents(&s);
+        assert!(
+            d.iter().any(|(p, e)| p.ends_with("/hello.txt")
+                && matches!(e, Dirent::Inode { in_base: true, .. })),
+            "recreated file over tombstone should have in_base=true: {d:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
+            "reborn\n"
+        );
+    });
 }
 
 /// Delete a base dir, recreate it, add files inside.
 #[test]
 fn recreate_base_dir_with_files() {
     let s = AgfsSession::new().expect("session setup");
-    fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink child");
-    fs::remove_dir(s.mnt_path("subdir")).expect("rmdir");
-    fs::create_dir(s.mnt_path("subdir")).expect("mkdir again");
-    fs::write(s.mnt_path("subdir/new.txt"), "fresh\n").expect("create");
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
-    assert_dir_matches(&s, "subdir");
+    s.run_in_namespace(|| {
+        fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink child");
+        fs::remove_dir(s.mnt_path("subdir")).expect("rmdir");
+        fs::create_dir(s.mnt_path("subdir")).expect("mkdir again");
+        fs::write(s.mnt_path("subdir/new.txt"), "fresh\n").expect("create");
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
+        assert_dir_matches(&s, "subdir");
+    });
 }
 
 // ── d_type and inode number in readdir ───────────────────────────────
@@ -635,48 +687,49 @@ fn recreate_base_dir_with_files() {
 #[test]
 fn readdir_dtype_matches_cli() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("reg.txt"), "data\n").expect("create file");
+        fs::create_dir(s.mnt_path("dir")).expect("mkdir");
+        std::os::unix::fs::symlink("reg.txt", s.mnt_path("lnk")).expect("symlink");
 
-    fs::write(s.mnt_path("reg.txt"), "data\n").expect("create file");
-    fs::create_dir(s.mnt_path("dir")).expect("mkdir");
-    std::os::unix::fs::symlink("reg.txt", s.mnt_path("lnk")).expect("symlink");
+        let prefix = root_prefix(&s);
+        let cli = dirents(&s);
 
-    let prefix = root_prefix(&s);
-    let cli = dirents(&s);
+        for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+            let entry = entry.expect("entry");
+            let name = entry.file_name().to_string_lossy().to_string();
 
-    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
-        let entry = entry.expect("entry");
-        let name = entry.file_name().to_string_lossy().to_string();
+            // Find matching CLI entry
+            let tree_path = format!("{prefix}/{name}");
+            let cli_entry = cli.iter().find(|(p, _)| p == &tree_path);
+            let Some((_, dirent)) = cli_entry else {
+                continue; // base-only entry, no CLI overlay
+            };
 
-        // Find matching CLI entry
-        let tree_path = format!("{prefix}/{name}");
-        let cli_entry = cli.iter().find(|(p, _)| p == &tree_path);
-        let Some((_, dirent)) = cli_entry else {
-            continue; // base-only entry, no CLI overlay
-        };
-
-        let ft = entry.file_type().expect("file_type");
-        let cli_dtype = dirent.dtype();
-        match cli_dtype {
-            DType::File => assert!(
-                ft.is_file(),
-                "readdir d_type for '{name}': CLI=File but kernel reports dir={} sym={}",
-                ft.is_dir(),
-                ft.is_symlink()
-            ),
-            DType::Dir => assert!(
-                ft.is_dir(),
-                "readdir d_type for '{name}': CLI=Dir but kernel reports file={} sym={}",
-                ft.is_file(),
-                ft.is_symlink()
-            ),
-            DType::Link => assert!(
-                ft.is_symlink(),
-                "readdir d_type for '{name}': CLI=Link but kernel reports file={} dir={}",
-                ft.is_file(),
-                ft.is_dir()
-            ),
+            let ft = entry.file_type().expect("file_type");
+            let cli_dtype = dirent.dtype();
+            match cli_dtype {
+                DType::File => assert!(
+                    ft.is_file(),
+                    "readdir d_type for '{name}': CLI=File but kernel reports dir={} sym={}",
+                    ft.is_dir(),
+                    ft.is_symlink()
+                ),
+                DType::Dir => assert!(
+                    ft.is_dir(),
+                    "readdir d_type for '{name}': CLI=Dir but kernel reports file={} sym={}",
+                    ft.is_file(),
+                    ft.is_symlink()
+                ),
+                DType::Link => assert!(
+                    ft.is_symlink(),
+                    "readdir d_type for '{name}': CLI=Link but kernel reports file={} dir={}",
+                    ft.is_file(),
+                    ft.is_dir()
+                ),
+            }
         }
-    }
+    });
 }
 
 /// Verify that kernel readdir ino for staged Inode entries matches the
@@ -684,24 +737,25 @@ fn readdir_dtype_matches_cli() {
 #[test]
 fn readdir_ino_matches_cli() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::write(s.mnt_path("check_ino.txt"), "data\n").expect("create");
 
-    fs::write(s.mnt_path("check_ino.txt"), "data\n").expect("create");
+        let d = dirents(&s);
+        let cli_ino = ino_for(&d, "/check_ino.txt");
 
-    let d = dirents(&s);
-    let cli_ino = ino_for(&d, "/check_ino.txt");
-
-    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
-        let entry = entry.expect("entry");
-        if entry.file_name() == "check_ino.txt" {
-            let kernel_ino = entry.ino();
-            assert_eq!(
-                kernel_ino, cli_ino as u64,
-                "readdir ino mismatch: kernel={kernel_ino} CLI={cli_ino}"
-            );
-            return;
+        for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+            let entry = entry.expect("entry");
+            if entry.file_name() == "check_ino.txt" {
+                let kernel_ino = entry.ino();
+                assert_eq!(
+                    kernel_ino, cli_ino as u64,
+                    "readdir ino mismatch: kernel={kernel_ino} CLI={cli_ino}"
+                );
+                return;
+            }
         }
-    }
-    panic!("check_ino.txt not found in readdir");
+        panic!("check_ino.txt not found in readdir");
+    });
 }
 
 // ── Deep nesting ─────────────────────────────────────────────────────
@@ -710,38 +764,40 @@ fn readdir_ino_matches_cli() {
 #[test]
 fn deep_nesting() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("a")).expect("mkdir a");
+        fs::create_dir(s.mnt_path("a/b")).expect("mkdir a/b");
+        fs::create_dir(s.mnt_path("a/b/c")).expect("mkdir a/b/c");
+        fs::write(s.mnt_path("a/b/c/deep.txt"), "deep\n").expect("write");
+        fs::write(s.mnt_path("a/top.txt"), "top\n").expect("write");
+        fs::write(s.mnt_path("a/b/mid.txt"), "mid\n").expect("write");
 
-    fs::create_dir(s.mnt_path("a")).expect("mkdir a");
-    fs::create_dir(s.mnt_path("a/b")).expect("mkdir a/b");
-    fs::create_dir(s.mnt_path("a/b/c")).expect("mkdir a/b/c");
-    fs::write(s.mnt_path("a/b/c/deep.txt"), "deep\n").expect("write");
-    fs::write(s.mnt_path("a/top.txt"), "top\n").expect("write");
-    fs::write(s.mnt_path("a/b/mid.txt"), "mid\n").expect("write");
-
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
-    assert_dir_matches(&s, "a");
-    assert_dir_matches(&s, "a/b");
-    assert_dir_matches(&s, "a/b/c");
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
+        assert_dir_matches(&s, "a");
+        assert_dir_matches(&s, "a/b");
+        assert_dir_matches(&s, "a/b/c");
+    });
 }
 
 /// Rename a file from deep nesting to root, then delete at root.
 #[test]
 fn deep_rename_to_root() {
     let s = AgfsSession::new().expect("session setup");
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("a")).expect("mkdir a");
+        fs::create_dir(s.mnt_path("a/b")).expect("mkdir a/b");
+        fs::write(s.mnt_path("a/b/f.txt"), "deep\n").expect("write");
+        fs::rename(s.mnt_path("a/b/f.txt"), s.mnt_path("surfaced.txt")).expect("rename");
 
-    fs::create_dir(s.mnt_path("a")).expect("mkdir a");
-    fs::create_dir(s.mnt_path("a/b")).expect("mkdir a/b");
-    fs::write(s.mnt_path("a/b/f.txt"), "deep\n").expect("write");
-    fs::rename(s.mnt_path("a/b/f.txt"), s.mnt_path("surfaced.txt")).expect("rename");
-
-    assert_overlay_visible(&s);
-    assert_dir_matches(&s, "");
-    assert_dir_matches(&s, "a");
-    assert_dir_matches(&s, "a/b");
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("surfaced.txt")).unwrap(),
-        "deep\n"
-    );
+        assert_overlay_visible(&s);
+        assert_dir_matches(&s, "");
+        assert_dir_matches(&s, "a");
+        assert_dir_matches(&s, "a/b");
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("surfaced.txt")).unwrap(),
+            "deep\n"
+        );
+    });
 }
 

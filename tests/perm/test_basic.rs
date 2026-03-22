@@ -13,11 +13,13 @@ fn no_daemon_denies_by_default() {
     })
     .expect("session setup");
 
-    let result = fs::read_to_string(s.mnt_path("hello.txt"));
-    assert!(
-        result.is_err(),
-        "read should be denied without daemon or rule"
-    );
+    s.run_in_namespace(|| {
+        let result = fs::read_to_string(s.mnt_path("hello.txt"));
+        assert!(
+            result.is_err(),
+            "read should be denied without daemon or rule"
+        );
+    });
 }
 
 /// With no daemon and ask_default=allow, reading an unruled file should succeed.
@@ -30,9 +32,11 @@ fn no_daemon_allows_when_configured() {
     })
     .expect("session setup");
 
-    let content = fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("read should succeed with ask_default=allow");
-    assert_eq!(content, "base content\n");
+    s.run_in_namespace(|| {
+        let content = fs::read_to_string(s.mnt_path("hello.txt"))
+            .expect("read should succeed with ask_default=allow");
+        assert_eq!(content, "base content\n");
+    });
 }
 
 /// An explicit allow rule should bypass the ask mechanism entirely.
@@ -45,9 +49,11 @@ fn explicit_rule_bypasses_ask() {
     })
     .expect("session setup");
 
-    let content = fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("read should succeed with explicit allow rule");
-    assert_eq!(content, "base content\n");
+    s.run_in_namespace(|| {
+        let content = fs::read_to_string(s.mnt_path("hello.txt"))
+            .expect("read should succeed with explicit allow rule");
+        assert_eq!(content, "base content\n");
+    });
 }
 
 /// An explicit deny rule should block access even with permission=true.
@@ -60,11 +66,13 @@ fn deny_rule_blocks_access() {
     })
     .expect("session setup");
 
-    let result = fs::read_to_string(s.mnt_path("hello.txt"));
-    assert!(
-        result.is_err(),
-        "read should be denied with explicit deny rule"
-    );
+    s.run_in_namespace(|| {
+        let result = fs::read_to_string(s.mnt_path("hello.txt"));
+        assert!(
+            result.is_err(),
+            "read should be denied with explicit deny rule"
+        );
+    });
 }
 
 /// With permission=false, everything is allowed regardless of rules.
@@ -77,7 +85,9 @@ fn permission_disabled_allows_everything() {
     })
     .expect("session setup");
 
-    let content = fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("read should succeed with permission=false even with deny rule");
-    assert_eq!(content, "base content\n");
+    s.run_in_namespace(|| {
+        let content = fs::read_to_string(s.mnt_path("hello.txt"))
+            .expect("read should succeed with permission=false even with deny rule");
+        assert_eq!(content, "base content\n");
+    });
 }

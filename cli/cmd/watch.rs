@@ -107,6 +107,7 @@ fn prompt_decision(req: &PermRequest) -> Perm {
 /// Interactive watch — blocks on ioctl read for each ask request.
 pub fn run(allow_all: bool) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
+    crate::utils::join_daemon_namespace(&agfs)?;
 
     let ctl_file = ioctl::open(&agfs)?;
     if allow_all {
@@ -172,25 +173,41 @@ fn parse_input(input: &str) -> Perm {
     }
 }
 
-/// Spawn a background watch daemon thread that prompts for ask requests.
-/// The thread runs until the process exits (it cannot be stopped early
-/// because it blocks on a kernel ioctl).
+/// Spawn a background watch process that handles ask requests.
+/// Uses fork instead of a thread because setns(CLONE_NEWUSER) prevents
+/// subsequent thread creation.
 pub fn run_background() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
-    let ctl_file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY)
-        .open(agfs.join("mnt"))
-        .context("opening .agfs/mnt for background watch")?;
-
-    std::thread::spawn(move || {
-        if let Err(e) = watch_loop(&ctl_file, false) {
-            eprintln!("{} {e}", "agfs watch:".red());
+    match unsafe { libc::fork() } {
+        -1 => anyhow::bail!("fork for watch: {}", std::io::Error::last_os_error()),
+        0 => {
+            // Child: enter namespace and run watch loop.
+            if let Err(e) = crate::utils::join_daemon_namespace(&agfs) {
+                eprintln!("{} join namespace: {e}", "agfs watch:".red());
+                unsafe { libc::_exit(1) };
+            }
+            let ctl_file = match std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY)
+                .open(agfs.join("mnt"))
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("{} opening mnt: {e}", "agfs watch:".red());
+                    unsafe { libc::_exit(1) };
+                }
+            };
+            if let Err(e) = watch_loop(&ctl_file, false) {
+                eprintln!("{} {e}", "agfs watch:".red());
+            }
+            unsafe { libc::_exit(0) };
         }
-    });
-
-    Ok(())
+        _child_pid => {
+            // Parent: continue immediately.
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

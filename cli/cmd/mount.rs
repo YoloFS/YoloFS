@@ -13,8 +13,51 @@ use std::io::{self, BufRead, Write};
 use std::os::unix;
 use std::path::Path;
 
-/// Bind-mount host pseudo filesystems into the agfs mount so they're visible inside the chroot.
-const BIND_MOUNTS: &[&str] = &["/proc", "/sys", "/dev"];
+
+/// Enter a user + mount namespace (unprivileged). After this, the process
+/// has CAP_SYS_ADMIN inside the namespace and can mount/pivot_root.
+fn enter_namespace() -> Result<()> {
+    let uid = nix::unistd::getuid();
+    let gid = nix::unistd::getgid();
+
+    // Create user + mount + PID namespace.
+    // CLONE_NEWPID is needed so we can mount a fresh /proc inside the
+    // namespace (the kernel requires a PID namespace for proc mounts).
+    // Note: the calling process is NOT in the new PID namespace — its
+    // next fork'd child will be PID 1 in it.
+    nix::sched::unshare(
+        nix::sched::CloneFlags::CLONE_NEWUSER
+            | nix::sched::CloneFlags::CLONE_NEWNS
+            | nix::sched::CloneFlags::CLONE_NEWPID,
+    )
+    .context("unshare(CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID)")?;
+
+    // Write uid/gid maps: map real uid/gid 1:1 inside the namespace
+    // Must deny setgroups first (kernel requirement for unprivileged)
+    fs::write("/proc/self/setgroups", "deny").context("writing /proc/self/setgroups")?;
+    fs::write(
+        "/proc/self/uid_map",
+        format!("{uid} {uid} 1"),
+    )
+    .context("writing uid_map")?;
+    fs::write(
+        "/proc/self/gid_map",
+        format!("{gid} {gid} 1"),
+    )
+    .context("writing gid_map")?;
+
+    // Make all mounts private so changes don't propagate to parent namespace
+    nix::mount::mount(
+        None::<&str>,
+        "/",
+        None::<&str>,
+        nix::mount::MsFlags::MS_PRIVATE | nix::mount::MsFlags::MS_REC,
+        None::<&str>,
+    )
+    .context("making mounts private")?;
+
+    Ok(())
+}
 
 /// Try to unmount a path. If busy, show blocking processes and offer to kill them.
 fn umount_or_prompt(target: &Path) -> Result<()> {
@@ -115,36 +158,85 @@ fn get_blocking_pids(mount_path: &Path) -> Vec<u32> {
     pids
 }
 
-fn bind_mount_pseudofs(mnt: &Path) -> Result<()> {
-    for source in BIND_MOUNTS {
-        let source_path = Path::new(source);
-        if !source_path.exists() {
-            continue;
-        }
-        let target = mnt.join(source.trim_start_matches('/'));
-        if !target.exists() {
-            continue;
-        }
-        if is_mountpoint(&target) {
-            continue;
-        }
+/// Mount fresh pseudo filesystems into the agfs mount. Called in the
+/// daemon's namespace before any exec does pivot_root, so they appear
+/// at /proc, /sys, /dev inside the sandbox.
+fn mount_pseudofs(mnt: &Path) -> Result<()> {
+    // proc: requires CLONE_NEWPID (the daemon is PID 1 in the new ns).
+    let proc_target = mnt.join("proc");
+    if proc_target.exists() && !is_mountpoint(&proc_target) {
         nix::mount::mount(
-            Some(*source),
-            &target,
-            None::<&str>,
-            nix::mount::MsFlags::MS_BIND,
+            Some("proc"),
+            &proc_target,
+            Some("proc"),
+            nix::mount::MsFlags::empty(),
             None::<&str>,
         )
-        .with_context(|| format!("bind-mounting {source}"))?;
+        .with_context(|| format!("mounting proc on {}", proc_target.display()))?;
     }
+
+    // dev: tmpfs + bind-mount individual device nodes from host.
+    // devtmpfs can't be mounted in a user namespace, but individual
+    // device files can be bind-mounted. Same approach as bubblewrap/podman.
+    let dev_target = mnt.join("dev");
+    if dev_target.exists() && !is_mountpoint(&dev_target) {
+        nix::mount::mount(
+            Some("tmpfs"),
+            &dev_target,
+            Some("tmpfs"),
+            nix::mount::MsFlags::MS_NOSUID | nix::mount::MsFlags::MS_NOEXEC,
+            Some("size=64k,mode=0755"),
+        )
+        .with_context(|| "mounting tmpfs on dev")?;
+
+        // Bind-mount essential device nodes from host.
+        const DEV_NODES: &[&str] = &["null", "zero", "full", "random", "urandom", "tty"];
+        for name in DEV_NODES {
+            let src = Path::new("/dev").join(name);
+            let dst = dev_target.join(name);
+            if !src.exists() {
+                continue;
+            }
+            // Create the target file for bind-mount.
+            fs::File::create(&dst).ok();
+            if let Err(e) = nix::mount::mount(
+                Some(&src),
+                &dst,
+                None::<&str>,
+                nix::mount::MsFlags::MS_BIND,
+                None::<&str>,
+            ) {
+                eprintln!("{} bind /dev/{name}: {e}", "agfs:".yellow());
+                let _ = fs::remove_file(&dst);
+            }
+        }
+
+        // Symlinks: /dev/stdin, /dev/stdout, /dev/stderr, /dev/fd
+        let _ = unix::fs::symlink("/proc/self/fd", dev_target.join("fd"));
+        let _ = unix::fs::symlink("/proc/self/fd/0", dev_target.join("stdin"));
+        let _ = unix::fs::symlink("/proc/self/fd/1", dev_target.join("stdout"));
+        let _ = unix::fs::symlink("/proc/self/fd/2", dev_target.join("stderr"));
+
+        // /dev/shm and /dev/pts
+        let shm = dev_target.join("shm");
+        fs::create_dir_all(&shm).ok();
+        let _ = nix::mount::mount(
+            Some("tmpfs"),
+            &shm,
+            Some("tmpfs"),
+            nix::mount::MsFlags::MS_NOSUID | nix::mount::MsFlags::MS_NODEV,
+            Some("size=64m"),
+        );
+    }
+
     Ok(())
 }
 
-fn unbind_mount_pseudofs(mnt: &Path) -> Result<()> {
-    for source in BIND_MOUNTS.iter().rev() {
-        let target = mnt.join(source.trim_start_matches('/'));
+fn unmount_pseudofs(mnt: &Path) -> Result<()> {
+    for dir in ["dev", "sys", "proc"] {
+        let target = mnt.join(dir);
         if target.exists() && is_mountpoint(&target) {
-            umount_or_prompt(&target).with_context(|| format!("unbinding {source}"))?;
+            umount_or_prompt(&target).with_context(|| format!("unmounting {dir}"))?;
         }
     }
     Ok(())
@@ -158,7 +250,7 @@ pub fn unmount_at(agfs_dir: &Path) -> Result<()> {
     let _ = fs::remove_file(agfs_dir.join("cwd"));
 
     // Unbind pseudo filesystems, then unmount agfs
-    unbind_mount_pseudofs(&mnt)?;
+    unmount_pseudofs(&mnt)?;
     if mnt.exists() && is_mountpoint(&mnt) {
         umount_or_prompt(&mnt).with_context(|| format!("unmounting {}", mnt.display()))?;
     }
@@ -168,8 +260,8 @@ pub fn unmount_at(agfs_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create .agfs/ layout, mount, and apply rules.
-/// If already mounted, re-applies rules from agfs.toml.
+/// Create .agfs/ layout, enter a namespace, mount, apply rules, and stay
+/// alive as a daemon holding the namespace. Other commands join via setns.
 pub fn mount() -> Result<()> {
     let cwd = env::current_dir().context("getting cwd")?;
     let agfs_dir = cwd.join(".agfs");
@@ -186,22 +278,136 @@ pub fn mount() -> Result<()> {
         return Ok(());
     }
 
+    // Setup and load kmod on host (before entering namespace).
     setup_agfs_dir(&agfs_dir)?;
     super::load::load()?;
-    do_mount(&agfs_dir)?;
-    bind_mount_pseudofs(&mnt)?;
-    create_cwd_symlink(&agfs_dir, &cwd)?;
-    crate::config::apply_rules(&agfs_dir)?;
-    Ok(())
+
+    // Fork first so the parent stays on the host. The child enters the
+    // namespace, mounts agfs, and becomes the daemon. CLONE_NEWPID puts
+    // the child (not the parent) into the new PID namespace, so the
+    // child is PID 1 in it.
+    match unsafe { libc::fork() } {
+        -1 => anyhow::bail!("fork failed: {}", std::io::Error::last_os_error()),
+        0 => {
+            // Child: enter namespace, mount, become daemon.
+            enter_namespace()?;
+            do_mount(&agfs_dir)?;
+            create_cwd_symlink(&agfs_dir, &cwd)?;
+            crate::config::apply_rules(&agfs_dir)?;
+
+            // Fork again for PID namespace: this grandchild is PID 1
+            // inside the new PID namespace (needed for /proc mount).
+            match unsafe { libc::fork() } {
+                -1 => std::process::exit(1),
+                0 => {
+                    // Grandchild: daemon process (PID 1 in PID namespace).
+                    mount_pseudofs(&mnt)?;
+
+                    eprintln!(
+                        "{} {}",
+                        "agfs: daemon ready".green(),
+                        mnt.display(),
+                    );
+
+                    // Detach from parent's stdio so callers using
+                    // Command::output() don't block.
+                    unsafe {
+                        let devnull = libc::open(
+                            b"/dev/null\0".as_ptr() as _,
+                            libc::O_RDWR,
+                        );
+                        if devnull >= 0 {
+                            libc::dup2(devnull, 0);
+                            libc::dup2(devnull, 1);
+                            libc::dup2(devnull, 2);
+                            libc::close(devnull);
+                        }
+                    }
+
+                    // Signal readiness.
+                    let ready_path = agfs_dir.join("ready");
+                    let _ = fs::File::create(&ready_path);
+
+                    wait_for_shutdown(&agfs_dir);
+                    std::process::exit(0);
+                }
+                grandchild_pid => {
+                    // Child (middle process): write grandchild's host PID
+                    // and exit. The grandchild holds the namespace.
+                    let pid_path = agfs_dir.join("pid");
+                    let _ = fs::write(&pid_path, format!("{grandchild_pid}"));
+                    std::process::exit(0);
+                }
+            }
+        }
+        child_pid => {
+            // Parent: wait for the middle child to exit, then wait for
+            // the daemon to signal readiness.
+            unsafe {
+                let mut status = 0i32;
+                libc::waitpid(child_pid, &mut status, 0);
+            }
+
+            let ready_path = agfs_dir.join("ready");
+            for _ in 0..50 {
+                if ready_path.exists() {
+                    let _ = fs::remove_file(&ready_path);
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            anyhow::bail!("daemon did not become ready in time");
+        }
+    }
 }
 
-/// Unmount the agfs filesystem and remove the .agfs/ directory.
+/// Block until SIGTERM or SIGINT, then clean up.
+fn wait_for_shutdown(agfs_dir: &Path) {
+    use nix::sys::signal::{SigSet, Signal};
+
+    // Block SIGTERM and SIGINT, then wait for either.
+    let mut mask = SigSet::empty();
+    mask.add(Signal::SIGTERM);
+    mask.add(Signal::SIGINT);
+    mask.thread_block().ok();
+
+    // sigwait blocks until one of the masked signals arrives.
+    let _ = mask.wait();
+
+    eprintln!("{}", "agfs: shutting down".yellow());
+    let _ = fs::remove_file(agfs_dir.join("pid"));
+}
+
+/// Unmount by signaling the daemon to shut down.
 pub fn unmount(force: bool) -> Result<()> {
     let agfs_dir = crate::utils::session_dir()?;
     if !force {
         prompt_if_staged(&agfs_dir)?;
     }
-    unmount_at(&agfs_dir)?;
+
+    // Signal the daemon to shut down
+    let pid_path = agfs_dir.join("pid");
+    if pid_path.exists() {
+        let pid_str = fs::read_to_string(&pid_path).context("reading .agfs/pid")?;
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGTERM,
+            );
+            // Wait briefly for the daemon to clean up
+            for _ in 0..20 {
+                if !pid_path.exists() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+
+    // Clean up any remaining state
+    let _ = fs::remove_file(agfs_dir.join("cwd"));
+    let _ = fs::remove_dir_all(&agfs_dir);
+
     eprintln!(
         "{} {}",
         "agfs: unmounted".green(),
@@ -275,21 +481,6 @@ pub fn setup_agfs_dir(agfs_dir: &Path) -> Result<()> {
     let journal = agfs_dir.join("journal");
     if !journal.exists() {
         fs::File::create(&journal).context("creating .agfs/journal")?;
-    }
-
-    // Chown .agfs/ and its contents to the real user. The CLI runs setuid
-    // root, so dirs/files created above are root-owned. After exec drops
-    // privileges, the real user needs write access to inodes/ (for staging
-    // blobs) and journal (for appends).
-    let uid = Some(nix::unistd::getuid());
-    let gid = Some(nix::unistd::getgid());
-    for path in [
-        agfs_dir.to_path_buf(),
-        agfs_dir.join("inodes"),
-        agfs_dir.join("mnt"),
-        journal,
-    ] {
-        nix::unistd::chown(&path, uid, gid).with_context(|| format!("chown {}", path.display()))?;
     }
 
     Ok(())

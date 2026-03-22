@@ -26,7 +26,7 @@ $ agfs -- make build     # run a specific command instead of sh
 
 ```bash
 $ agfs mount             # create .agfs/ layout and mount (auto-loads kmod if needed)
-$ agfs exec              # chroot $SHELL into .agfs/mnt (requires existing mount)
+$ agfs exec              # join namespace, pivot into .agfs/mnt, run $SHELL
 $ agfs exec -- make build
 $ agfs status            # show staged changes (grouped by checkpoint when present)
 $ agfs status --at <name|gen>           # show single checkpoint segment
@@ -76,7 +76,7 @@ checkpoint [4] after make fix
 ```bash
 $ agfs rule add src allow-rw
 $ agfs rule remove src
-$ agfs watch             # handle ask requests (daemon mode)
+$ agfs watch             # handle ask requests (runs inside mount daemon)
 ```
 
 ## Options
@@ -130,8 +130,9 @@ module (`agfs load` / `agfs unload`), which delegates to `sudo insmod`
 
 ### `agfs mount` — namespace daemon
 
-`agfs mount` creates the namespace and stays alive as a daemon to hold
-it. Other commands join the namespace via `setns(2)`.
+`agfs mount` creates the namespace and stays alive as a daemon,
+holding both the namespace and the permission watch loop. Other
+commands join the namespace via `setns(2)`.
 
 1. `unshare(CLONE_NEWUSER | CLONE_NEWNS)` — create a user namespace
    (granting `CAP_SYS_ADMIN` inside it) and a private mount namespace.
@@ -142,12 +143,16 @@ it. Other commands join the namespace via `setns(2)`.
 4. Mount the agfs filesystem on `.agfs/mnt`.
 5. Bind-mount `/proc`, `/sys`, `/dev` into `.agfs/mnt`.
 6. Write the daemon pid to `.agfs/pid`.
-7. Stay alive, holding the namespace. On `SIGTERM` (from `agfs
-   unmount`), unmount and exit.
+7. Enter the watch loop — handle permission `ask` requests via ioctl
+   on `.agfs/mnt`. This is the same logic as `agfs watch` but runs
+   inside the mount daemon instead of as a separate process.
+8. On `SIGTERM` (from `agfs unmount`), stop the watch loop, unmount,
+   and exit.
 
-The namespace and all mounts inside it persist as long as the daemon
-is alive. If the daemon dies unexpectedly the namespace is cleaned up
-by the kernel.
+The namespace, mounts, and watch loop all live in a single daemon
+process. If the daemon dies unexpectedly the namespace is cleaned up
+by the kernel. `agfs watch` as a standalone command is no longer
+needed — it is subsumed by `agfs mount`.
 
 ### `agfs exec` — join namespace and pivot
 
@@ -175,7 +180,8 @@ No privilege drop needed — the process never had elevated privileges.
 ### `agfs unmount`
 
 Sends `SIGTERM` to the daemon (pid from `.agfs/pid`). The daemon
-unmounts the filesystem and exits, releasing the namespace.
+stops the watch loop, unmounts the filesystem, and exits, releasing
+the namespace.
 
 ### Other commands (`commit`, `restore`, `status`, `diff`)
 

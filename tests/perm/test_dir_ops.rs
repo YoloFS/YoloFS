@@ -18,7 +18,9 @@ fn mkdir_allowed_under_deny() {
     })
     .expect("session setup");
 
-    fs::create_dir(s.mnt_path("newdir")).expect("mkdir should succeed: dir ops bypass agfs perm");
+    s.run_in_namespace(|| {
+        fs::create_dir(s.mnt_path("newdir")).expect("mkdir should succeed: dir ops bypass agfs perm");
+    });
 }
 
 /// unlink should succeed under allow-ro because inode removal is a
@@ -32,9 +34,11 @@ fn unlink_allowed_under_allow_ro() {
     })
     .expect("session setup");
 
-    // unlink goes through agfs_unlink which adds a DELETED dirent
-    fs::remove_file(s.mnt_path("hello.txt"))
-        .expect("unlink should succeed: it is a dir op on the parent");
+    s.run_in_namespace(|| {
+        // unlink goes through agfs_unlink which adds a DELETED dirent
+        fs::remove_file(s.mnt_path("hello.txt"))
+            .expect("unlink should succeed: it is a dir op on the parent");
+    });
 }
 
 /// symlink creation should succeed under deny because symlink is a
@@ -48,8 +52,10 @@ fn symlink_allowed_under_deny() {
     })
     .expect("session setup");
 
-    std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt"))
-        .expect("symlink should succeed: dir ops bypass agfs perm");
+    s.run_in_namespace(|| {
+        std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt"))
+            .expect("symlink should succeed: dir ops bypass agfs perm");
+    });
 }
 
 /// rmdir should succeed even under deny because it is a directory inode op.
@@ -62,7 +68,9 @@ fn rmdir_allowed_under_deny() {
     })
     .expect("session setup");
 
-    fs::remove_dir(s.mnt_path("subdir")).expect("rmdir should succeed: dir ops bypass agfs perm");
+    s.run_in_namespace(|| {
+        fs::remove_dir(s.mnt_path("subdir")).expect("rmdir should succeed: dir ops bypass agfs perm");
+    });
 }
 
 /// rename should succeed under deny because it is a directory inode op.
@@ -75,8 +83,10 @@ fn rename_allowed_under_deny() {
     })
     .expect("session setup");
 
-    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt"))
-        .expect("rename should succeed: dir ops bypass agfs perm");
+    s.run_in_namespace(|| {
+        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt"))
+            .expect("rename should succeed: dir ops bypass agfs perm");
+    });
 }
 
 /// file creation should succeed under deny because it is a directory inode op.
@@ -89,21 +99,23 @@ fn create_allowed_under_deny() {
     })
     .expect("session setup");
 
-    // O_CREAT goes through agfs_create (dir op) then agfs_open checks perm.
-    // fs::write uses O_WRONLY|O_CREAT|O_TRUNC, so the create (dir op) succeeds
-    // but the open (file op) should fail under deny.
-    let result = fs::write(s.mnt_path("newfile.txt"), "data");
-    assert!(
-        result.is_err(),
-        "write to new file should fail under deny (open is gated)"
-    );
+    s.run_in_namespace(|| {
+        // O_CREAT goes through agfs_create (dir op) then agfs_open checks perm.
+        // fs::write uses O_WRONLY|O_CREAT|O_TRUNC, so the create (dir op) succeeds
+        // but the open (file op) should fail under deny.
+        let result = fs::write(s.mnt_path("newfile.txt"), "data");
+        assert!(
+            result.is_err(),
+            "write to new file should fail under deny (open is gated)"
+        );
 
-    // The file was created in inode store (dir op succeeded). Verify via status.
-    let status = s.cli(&["status"]).unwrap();
-    assert!(
-        status.contains("newfile.txt"),
-        "status should show the created file: {status}"
-    );
+        // The file was created in inode store (dir op succeeded). Verify via status.
+        let status = s.cli(&["status"]).unwrap();
+        assert!(
+            status.contains("newfile.txt"),
+            "status should show the created file: {status}"
+        );
+    });
 }
 
 /// Listing a directory's contents should work even under deny
@@ -117,10 +129,12 @@ fn readdir_allowed_under_deny() {
     })
     .expect("session setup");
 
-    let entries: Vec<_> = fs::read_dir(s.mnt_path(""))
-        .expect("readdir should succeed under deny")
-        .collect();
-    assert!(!entries.is_empty(), "directory should have entries");
+    s.run_in_namespace(|| {
+        let entries: Vec<_> = fs::read_dir(s.mnt_path(""))
+            .expect("readdir should succeed under deny")
+            .collect();
+        assert!(!entries.is_empty(), "directory should have entries");
+    });
 }
 
 // ── Base directory permissions are enforced ──────────────────────────
@@ -136,13 +150,15 @@ fn create_in_readonly_base_dir_denied() {
     })
     .expect("session setup");
 
-    let dir = s.base_path("subdir");
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("chmod");
+    s.run_in_namespace(|| {
+        let dir = s.base_path("subdir");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("chmod");
 
-    let result = fs::write(s.mnt_path("subdir/newfile.txt"), "data");
-    assert!(result.is_err(), "create should fail in read-only base dir");
+        let result = fs::write(s.mnt_path("subdir/newfile.txt"), "data");
+        assert!(result.is_err(), "create should fail in read-only base dir");
 
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("restore");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("restore");
+    });
 }
 
 /// mkdir inside a read-only base directory should fail.
@@ -155,11 +171,13 @@ fn mkdir_in_readonly_base_dir_denied() {
     })
     .expect("session setup");
 
-    let dir = s.base_path("subdir");
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("chmod");
+    s.run_in_namespace(|| {
+        let dir = s.base_path("subdir");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("chmod");
 
-    let result = fs::create_dir(s.mnt_path("subdir/newdir"));
-    assert!(result.is_err(), "mkdir should fail in read-only base dir");
+        let result = fs::create_dir(s.mnt_path("subdir/newdir"));
+        assert!(result.is_err(), "mkdir should fail in read-only base dir");
 
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("restore");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("restore");
+    });
 }
