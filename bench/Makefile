@@ -1,12 +1,13 @@
 # ── Paper artifact installation ───────────────────────────────────────
 
-PAPER_DIR ?= ../AgFS-paper
+REPO_ROOT := $(shell git -C $(dir $(lastword $(MAKEFILE_LIST))) rev-parse --show-toplevel)
+PAPER_DIR ?= $(REPO_ROOT)/../AgFS-paper
 
 .PHONY: install-paper
 
 install-paper:
-	cargo build --release -p agfs-bench
-	../target/release/agfs-bench install-paper --paper-dir $(PAPER_DIR)
+	cargo build --release --manifest-path $(REPO_ROOT)/Cargo.toml -p agfs-bench
+	$(REPO_ROOT)/target/release/agfs-bench install-paper --paper-dir $(PAPER_DIR)
 
 # ── Third-party backends ──────────────────────────────────────────────
 

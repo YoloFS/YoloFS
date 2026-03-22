@@ -50,9 +50,11 @@ struct Artifact {
 
 /// Install preferred paper artifacts into the paper repository.
 ///
-/// Extracts float fragments (between BEGIN/END markers) from the generated
-/// .tex files, copies associated plot PDFs, and writes everything to
-/// `<paper_dir>/generated/`.
+/// Reads already-rendered .tex and plot PDFs from `<out_dir>/paper/`,
+/// extracts float fragments (between BEGIN/END markers), and writes
+/// everything to `<paper_dir>/generated/`.
+///
+/// Run `agfs-bench rerender` first if artifacts are stale.
 pub fn install(results: &crate::BenchResults, out_dir: &Path, paper_dir: &Path) -> Result<()> {
     if !paper_dir.join("main.tex").exists() {
         anyhow::bail!(
@@ -61,13 +63,18 @@ pub fn install(results: &crate::BenchResults, out_dir: &Path, paper_dir: &Path) 
         );
     }
 
-    // First, render all artifacts so we have the .tex and plot PDFs.
     let bench_paper_dir = out_dir.join("paper");
-    std::fs::create_dir_all(&bench_paper_dir)?;
+    if !bench_paper_dir.exists() {
+        anyhow::bail!(
+            "{} not found — run `agfs-bench rerender` first",
+            bench_paper_dir.display()
+        );
+    }
 
+    // Collect artifact metadata from the known generators without re-rendering.
     let mut artifacts: Vec<Artifact> = Vec::new();
-    artifacts.push(fio_data_table::render(results, &bench_paper_dir)?);
-    artifacts.extend(meta_ops_figure::render(results, &bench_paper_dir)?);
+    artifacts.push(fio_data_table::artifact_meta(&bench_paper_dir));
+    artifacts.extend(meta_ops_figure::artifact_metas(&bench_paper_dir));
 
     let gen_dir = paper_dir.join("generated");
     std::fs::create_dir_all(&gen_dir)

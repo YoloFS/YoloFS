@@ -39,6 +39,20 @@ pub fn render(results: &BenchResults, paper_dir: &Path) -> Result<Artifact> {
     })
 }
 
+/// Return artifact metadata without rendering (for install-paper).
+pub fn artifact_meta(paper_dir: &Path) -> Artifact {
+    let tex_path = paper_dir.join("op-data-summary.tex");
+    Artifact {
+        group: None,
+        title: "Data-op throughput summary (fio)".to_string(),
+        preferred: true,
+        tex_path: format!("paper/{}", tex_path.file_name().unwrap().to_string_lossy()),
+        pdf_path: None,
+        tex_abs: tex_path,
+        plot_pdfs: vec![],
+    }
+}
+
 // ── Internal ─────────────────────────────────────────────────────────────────
 
 fn build_tex(results: &BenchResults) -> Result<String> {
