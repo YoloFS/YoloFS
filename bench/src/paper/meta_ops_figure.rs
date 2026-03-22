@@ -13,11 +13,6 @@ use crate::BenchResults;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const CAPTION: &str =
-    "Per-operation metadata latency (\\textmu s). \
-     Top row: 100-file directory; bottom row: 10\\,000-file directory. \
-     Bars grouped by file source layer (base / staged / checkpoint).";
-const LABEL: &str = "fig:meta-ops";
 
 /// Native is drawn as a horizontal reference line, not a bar.
 const NATIVE: &str = "native";
@@ -43,10 +38,10 @@ const ALL_BACKENDS: &[&str] = &[
 fn fig_backend_name(key: &str) -> &'static str {
     match key {
         "native" => "Native",
-        "agfs-no-perm" => "AgFS-NP",
+        "agfs-no-perm" => "AgFS (no perm)",
         "agfs-realistic" => "AgFS",
-        "overlayfs" => "OvlFS",
-        "branchfs" => "BrFS",
+        "overlayfs" => "OverlayFS",
+        "branchfs" => "BranchFS",
         _ => backend_display_name(key),
     }
 }
@@ -62,8 +57,8 @@ const OPS: &[(&str, &str)] = &[
     ("unlink", "meta-unlink"),
 ];
 
-/// Source variants.
-const SOURCES: &[(&str, &str)] = &[("base", "B"), ("stage", "S"), ("checkpoint", "C")];
+/// Source variants in display order.
+const SOURCES: &[(&str, &str)] = &[("base", "Base"), ("checkpoint", "Chkpt"), ("stage", "Stage")];
 
 // ── Figure variant configuration ────────────────────────────────────────────
 
@@ -82,13 +77,23 @@ struct FigureVariant {
     name: &'static str,
     /// Human-readable title for the HTML index.
     title: &'static str,
+    /// The preferred variant is shown expanded; others are collapsed.
+    preferred: bool,
     strategy: OutlierStrategy,
 }
+
+/// Shared caption and label — only one variant ends up in the paper.
+const CAPTION: &str =
+    "Metadata operation latency (\\textmu s). \
+     The dashed line marks the native ext4 baseline. \
+     Bars grouped by file source layer (base / checkpoint / staged). TODO";
+const LABEL: &str = "fig:meta-ops";
 
 const VARIANTS: &[FigureVariant] = &[
     FigureVariant {
         name: "meta-ops-broken",
         title: "Meta ops (broken axis)",
+        preferred: false,
         strategy: OutlierStrategy::BrokenAxis {
             break_threshold: 3.0,
             height_ratios: (1, 5),
@@ -97,11 +102,13 @@ const VARIANTS: &[FigureVariant] = &[
     FigureVariant {
         name: "meta-ops-capped",
         title: "Meta ops (capped + annotated)",
+        preferred: true,
         strategy: OutlierStrategy::CapAndAnnotate { cap_factor: 5.0 },
     },
     FigureVariant {
         name: "meta-ops-plain",
         title: "Meta ops (plain)",
+        preferred: false,
         strategy: OutlierStrategy::Plain,
     },
 ];
@@ -128,7 +135,7 @@ fn render_variant(
     paper_dir: &Path,
 ) -> Result<Artifact> {
     let py_path = paper_dir.join(format!("{}.py", variant.name));
-    let pdf_path = paper_dir.join(format!("{}.pdf", variant.name));
+    let pdf_path = paper_dir.join(format!("{}-plot.pdf", variant.name));
 
     let script = build_script(variant, data_csv, &pdf_path);
     std::fs::write(&py_path, &script)
@@ -144,29 +151,48 @@ fn render_variant(
         anyhow::bail!("matplotlib script failed: {stderr}");
     }
 
+    // Write a full LaTeX document that wraps the matplotlib PDF in a
+    // captioned figure float, then compile + crop for preview.
+    let plot_pdf_name = pdf_path.file_name().unwrap().to_string_lossy();
     let tex_path = paper_dir.join(format!("{}.tex", variant.name));
     let tex = format!(
-        "% --- BEGIN figure fragment (includable via \\input) ---\n\
-         \\begin{{figure*}}[t]\n\
+        "\\PassOptionsToPackage{{activate=false}}{{microtype}}\n\
+         \\documentclass[sigplan,screen]{{acmart}}\n\
+         \\settopmatter{{printacmref=false,printfolios=false}}\n\
+         \\renewcommand\\footnotetextcopyrightpermission[1]{{}}\n\
+         \\usepackage{{graphicx}}\n\
+         \\begin{{document}}\n\
+         \\thispagestyle{{empty}}\n\
+         % --- BEGIN figure fragment (includable via \\input) ---\n\
+         \\begin{{figure*}}[h]\n\
          \\centering\n\
-         \\includegraphics[width=\\textwidth]{{{pdf_name}}}\n\
+         \\includegraphics[width=\\textwidth]{{{plot_pdf_name}}}\n\
          \\caption{{{CAPTION}}}\n\
          \\label{{{LABEL}}}\n\
          \\end{{figure*}}\n\
-         % --- END figure fragment ---\n",
-        pdf_name = pdf_path.file_name().unwrap().to_string_lossy(),
+         % --- END figure fragment ---\n\
+         \\end{{document}}\n",
     );
     std::fs::write(&tex_path, &tex)
         .with_context(|| format!("writing {}", tex_path.display()))?;
 
+    let preview_pdf = match super::run_pdflatex_cropped(&tex_path, paper_dir) {
+        Ok(p) => Some(format!("paper/{}", p.file_name().unwrap().to_string_lossy())),
+        Err(e) => {
+            eprintln!("  warning: {}: {e:#}", variant.name);
+            // Fall back to the raw matplotlib PDF.
+            Some(format!("paper/{plot_pdf_name}"))
+        }
+    };
+
     Ok(Artifact {
         group: Some("Metadata operation latency".to_string()),
         title: variant.title.to_string(),
+        preferred: variant.preferred,
         tex_path: format!("paper/{}", tex_path.file_name().unwrap().to_string_lossy()),
-        pdf_path: Some(format!(
-            "paper/{}",
-            pdf_path.file_name().unwrap().to_string_lossy(),
-        )),
+        pdf_path: preview_pdf,
+        tex_abs: tex_path.to_path_buf(),
+        plot_pdfs: vec![pdf_path.to_path_buf()],
     })
 }
 
@@ -255,9 +281,19 @@ fn build_script(variant: &FigureVariant, data_csv: &str, pdf_path: &Path) -> Str
 """Auto-generated by agfs-bench. Do not edit."""
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.font_manager as fm
+# Register Linux Libertine OTF fonts (matplotlib doesn't auto-discover them).
+_libertine_dir = '/usr/share/fonts/opentype/linux-libertine'
+import os as _os
+if _os.path.isdir(_libertine_dir):
+    for _f in fm.findSystemFonts(fontpaths=[_libertine_dir]):
+        fm.fontManager.addfont(_f)
 import matplotlib.pyplot as plt
+plt.rcParams['font.family'] = 'serif'
+plt.rcParams['font.serif'] = ['Linux Libertine O']
 import matplotlib.gridspec as gridspec
 import matplotlib.lines as mlines
+import matplotlib.patheffects as pe
 import numpy as np
 from matplotlib.ticker import MaxNLocator
 from io import StringIO
@@ -274,7 +310,7 @@ ops = [{ops}]
 bar_backends = [{bar_backends}]
 native_key = '{native_key}'
 sources = [{sources}]
-source_full = {{'B': 'base', 'S': 'stage', 'C': 'checkpoint'}}
+source_full = {{'Base': 'base', 'Chkpt': 'checkpoint', 'Stage': 'stage'}}
 sizes = [100, 10000]
 size_labels = {{100: '100 files', 10000: '10K files'}}
 
@@ -286,13 +322,14 @@ for r in rows:
     key = (r['op'].strip(), int(r['size'].strip()), r['source'].strip(), r['backend'].strip())
     lookup[key] = float(r['lat_us'].strip())
 
+# Tableau-10 palette; paired blues for the two AgFS configs.
 bar_colors = {{
-    'AgFS-NP': '#7bafd4',
-    'AgFS':    '#2b6ca3',
-    'OvlFS':   '#e8963a',
-    'BrFS':    '#c44e52',
+    'AgFS (no perm)': '#a0c8e2',   # Tableau-20 light blue (paired with #4e79a7)
+    'AgFS':           '#4e79a7',   # Tableau-10 blue
+    'OverlayFS':      '#59a14f',   # Tableau-10 green
+    'BranchFS':       '#f28e2b',   # Tableau-10 orange
 }}
-native_color = '#555555'
+native_color = 'black'
 
 nb = len(bar_backends)
 bar_width = 0.8 / nb
@@ -304,7 +341,10 @@ def fmt_lat(v):
         return f'{{v/1000:.0f}}ms'
     return f'{{v:.0f}}'
 
-def find_break(vals):
+UNCAPPABLE = {{'OverlayFS'}}  # these backends are never capped/broken out
+
+def find_break(vals, floor_vals):
+    """Find break point. floor_vals must be fully visible (not in upper segment)."""
     sv = sorted(set(v for v in vals if v > 0))
     if len(sv) < 2:
         return None
@@ -315,9 +355,16 @@ def find_break(vals):
             best_ratio, best_idx = ratio, i
     if best_ratio < BREAK_THRESHOLD:
         return None
-    return ((0, sv[best_idx] * 1.3), (sv[best_idx + 1] * 0.85, sv[-1] * 1.15))
+    lo_max = sv[best_idx] * 1.3
+    # Ensure all floor values fit in the lower segment.
+    floor_max = max((v for v in floor_vals if v > 0), default=0)
+    if floor_max > lo_max:
+        # Floor values cross the break — no break possible.
+        return None
+    return ((0, lo_max), (sv[best_idx + 1] * 0.85, sv[-1] * 1.15))
 
-def compute_cap(vals):
+def compute_cap(vals, floor_vals):
+    """Compute cap, ensuring floor_vals are never capped."""
     sv = sorted(v for v in vals if v > 0)
     if len(sv) < 2:
         return sv[-1] * 1.35 if sv else 1.0
@@ -328,7 +375,12 @@ def compute_cap(vals):
             reasonable.pop()
         else:
             break
-    return reasonable[-1] * 1.35
+    cap = reasonable[-1] * 1.35
+    # Ensure uncappable backends always fit.
+    floor_max = max((v for v in floor_vals if v > 0), default=0)
+    if floor_max > 0:
+        cap = max(cap, floor_max * 1.15)
+    return cap
 
 # ── Figure setup ──
 ncols = len(ops)
@@ -357,11 +409,14 @@ for row_idx, size in enumerate(sizes):
 
         # Collect all values (native + bar backends) for scale.
         all_vals = []
+        floor_vals = []  # values from uncappable backends
         for sk in src_keys:
             for b in [native_key] + bar_backends:
                 v = lookup.get((op, size, sk, b), 0)
                 if v > 0:
                     all_vals.append(v)
+                    if b in UNCAPPABLE:
+                        floor_vals.append(v)
         if not all_vals:
             continue
 
@@ -370,7 +425,7 @@ for row_idx, size in enumerate(sizes):
         cap = None
 
         if STRATEGY == 'broken':
-            brk = find_break(all_vals)
+            brk = find_break(all_vals, floor_vals)
             if brk is not None:
                 ax = brokenaxes(ylims=brk, subplot_spec=gs[row_idx, col_idx],
                                 height_ratios=HEIGHT_RATIOS, d=0.008, tilt=45,
@@ -381,7 +436,7 @@ for row_idx, size in enumerate(sizes):
                 ax.set_ylim(0, max(all_vals) * 1.15)
         elif STRATEGY == 'capped':
             ax = fig.add_subplot(gs[row_idx, col_idx])
-            cap = compute_cap(all_vals)
+            cap = compute_cap(all_vals, floor_vals)
             ax.set_ylim(0, cap)
         else:  # plain
             ax = fig.add_subplot(gs[row_idx, col_idx])
@@ -396,13 +451,16 @@ for row_idx, size in enumerate(sizes):
         native_src = 'base' if op != 'create' else 'stage'
         nv = lookup.get((op, size, native_src, native_key), 0)
         if nv > 0:
-            ax.axhline(y=nv, color=native_color, linewidth=1.2, linestyle='--',
-                       zorder=5, label=native_key if not drew_native_line else None)
+            ax.axhline(y=nv, color=native_color, linewidth=1.0, linestyle='-',
+                       zorder=5,
+                       path_effects=[pe.withStroke(linewidth=3.0, foreground='white', alpha=0.5)],
+                       label=native_key if not drew_native_line else None)
             if not drew_native_line:
                 drew_native_line = True
 
         # ── Draw bars for non-native backends ──
         annotations = []
+        capped_at_src = {{}}  # src_idx -> [(actual_val, xpos, backend), ...]
         for bi, b in enumerate(bar_backends):
             vals = [lookup.get((op, size, sk, b), 0) for sk in src_keys]
             offset = (bi - (nb - 1) / 2) * bar_width
@@ -425,28 +483,42 @@ for row_idx, size in enumerate(sizes):
                         fade_bottom = cap * 0.65
                         fade_height = cap - fade_bottom
                         xpos = x[i] + offset
-                        # Overlay white rectangles with increasing opacity.
-                        n_steps = 20
+                        # Smooth white overlay via many thin rectangles.
+                        n_steps = 80
                         step_h = fade_height / n_steps
                         for s in range(n_steps):
-                            alpha = (s / (n_steps - 1)) * 0.9  # 0 → 0.9
+                            alpha = (s / (n_steps - 1)) * 0.92
                             y_bot = fade_bottom + s * step_h
                             ax.bar(xpos, step_h, bw, bottom=y_bot,
                                    color=(1, 1, 1, alpha), edgecolor='none',
                                    zorder=6)
-                        # Annotation text in the faded region.
-                        annotations.append((xpos, cap * 0.88, fmt_lat(v)))
+                        # Record for ranked annotation placement.
+                        capped_at_src.setdefault(i, []).append((v, xpos, b))
+
+        # Place capped-bar annotations ranked globally within the subplot.
+        if cap is not None:
+            all_capped = []
+            for si, entries in capped_at_src.items():
+                all_capped.extend(entries)
+            if all_capped:
+                ranked = sorted(all_capped, key=lambda e: e[0], reverse=True)
+                n = len(ranked)
+                for rank, (v, xp, _b) in enumerate(ranked):
+                    yp = cap * (0.95 - rank * 0.05)
+                    annotations.append((xp, yp, fmt_lat(v)))
 
         for (xp, yp, txt) in annotations:
-            ax.annotate(txt, (xp, yp), fontsize=4.5, ha='center', va='center',
-                        color='#b00', fontweight='bold', zorder=7)
+            ax.annotate(txt, (xp, yp), fontsize=5, ha='center', va='center',
+                        color='#b00', fontweight='bold', zorder=7,
+                        bbox=dict(boxstyle='round,pad=0.15', fc='white',
+                                  ec='none', alpha=0.7))
 
-        # ── Titles (top row only) ──
-        if row_idx == 0:
+        # ── Op name below bottom row ──
+        if row_idx == nrows - 1:
             if is_broken:
-                ax.axs[0].set_title(op, fontsize=8, fontweight='bold', pad=3)
+                ax.axs[-1].set_xlabel(op, fontsize=8, fontweight='bold', labelpad=4)
             else:
-                ax.set_title(op, fontsize=8, fontweight='bold', pad=3)
+                ax.set_xlabel(op, fontsize=8, fontweight='bold', labelpad=4)
 
         # ── Ticks and labels ──
         if is_broken:
@@ -471,7 +543,8 @@ for row_idx, size in enumerate(sizes):
 # ── Legend ──
 # Build custom legend: dashed line for Native, colored patches for bar backends.
 legend_items = [
-    mlines.Line2D([], [], color=native_color, linestyle='--', linewidth=1.2,
+    mlines.Line2D([], [], color=native_color, linestyle='-', linewidth=1.0,
+                  path_effects=[pe.withStroke(linewidth=3.0, foreground='white', alpha=0.5)],
                   label=native_key),
 ]
 for b in bar_backends:

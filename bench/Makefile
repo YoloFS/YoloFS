@@ -1,3 +1,13 @@
+# ── Paper artifact installation ───────────────────────────────────────
+
+PAPER_DIR ?= ../AgFS-paper
+
+.PHONY: install-paper
+
+install-paper:
+	cargo build --release -p agfs-bench
+	../target/release/agfs-bench install-paper --paper-dir $(PAPER_DIR)
+
 # ── Third-party backends ──────────────────────────────────────────────
 
 BRANCHFS_OUT := third_party/branchfs/target/release/branchfs

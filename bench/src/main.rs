@@ -107,6 +107,12 @@ enum Cmd {
         #[arg(long)]
         bpftrace: bool,
     },
+    /// Install preferred paper artifacts (tables + figures) into the paper repo
+    InstallPaper {
+        /// Path to the paper repository root (default: ../AgFS-paper)
+        #[arg(long, default_value = "../AgFS-paper")]
+        paper_dir: PathBuf,
+    },
     /// Run a workload at a given path (used internally by all backends)
     ExecWorkload {
         /// Workload name
@@ -1252,6 +1258,16 @@ fn main() -> Result<()> {
                 println!("  {}", b.name());
             }
         }
+        return Ok(());
+    }
+
+    if let Some(Cmd::InstallPaper { paper_dir }) = cli.cmd {
+        let out_dir = results_dir(&env, false);
+        let results_path = out_dir.join("results.json");
+        let json = fs::read_to_string(&results_path)
+            .with_context(|| format!("reading {}", results_path.display()))?;
+        let results: BenchResults = serde_json::from_str(&json).context("parsing results.json")?;
+        paper::install(&results, &out_dir, &paper_dir)?;
         return Ok(());
     }
 

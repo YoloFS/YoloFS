@@ -44,8 +44,8 @@ pub fn latex_escape(s: &str) -> String {
 ///
 /// Returns the path to the cropped PDF, or an error if compilation fails.
 pub fn run_pdflatex_cropped(tex_path: &Path, output_dir: &Path) -> Result<std::path::PathBuf> {
-    // Compile .tex → .pdf
-    let out = Command::new("pdflatex")
+    // Compile .tex → .pdf (two passes — acmart needs a second pass for page counting).
+    let mut out = Command::new("pdflatex")
         .arg("-interaction=nonstopmode")
         .arg("-halt-on-error")
         .arg("-output-directory")
@@ -53,6 +53,17 @@ pub fn run_pdflatex_cropped(tex_path: &Path, output_dir: &Path) -> Result<std::p
         .arg(tex_path)
         .output()
         .with_context(|| format!("running pdflatex on {}", tex_path.display()))?;
+
+    if out.status.success() {
+        out = Command::new("pdflatex")
+            .arg("-interaction=nonstopmode")
+            .arg("-halt-on-error")
+            .arg("-output-directory")
+            .arg(output_dir)
+            .arg(tex_path)
+            .output()
+            .with_context(|| format!("running pdflatex (pass 2) on {}", tex_path.display()))?;
+    }
 
     let stem = tex_path.file_stem().unwrap().to_string_lossy();
     let pdf_path = output_dir.join(format!("{stem}.pdf"));
