@@ -17,19 +17,16 @@ use super::types::*;
 /// A dirent — the state of a single entry in the overlay.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Dirent {
-    /// Staged content (A or M).
     Inode {
         ino: u64,
         dtype: DType,
         in_base: bool,
     },
-    /// Renamed from another path (R or P).
     Link {
         base_path: String,
         dtype: DType,
         in_base: bool,
     },
-    /// Deleted base path.
     Tombstone,
 }
 
@@ -324,8 +321,9 @@ impl DirTree {
             };
             if let Some((parent, name)) = self.walk_or_create_parent(src_path) {
                 match parent.nodes.get_mut(name.as_str()) {
+                    Some(DirNode::File(d)) => *d = Dirent::Tombstone,
                     Some(DirNode::Dir(d, _)) => *d = Some(Dirent::Tombstone),
-                    _ => { parent.nodes.insert(name, node); }
+                    None => { parent.nodes.insert(name, node); }
                 }
             }
         }
