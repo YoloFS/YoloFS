@@ -1,4 +1,4 @@
-use super::helpers::{dirents, ino_for, inode_path, inos, journal, records};
+use super::helpers::{tree, ino_for, inode_path, inos, journal, records};
 use crate::helpers::AgfsSession;
 use agfs::journal::{Marker, Record};
 use std::fs;
@@ -216,7 +216,7 @@ fn restore_preserves_all_inodes() {
     fs::write(s.mnt_path("multi.txt"), "post-chk\n").expect("write post");
 
     // Grab the post-checkpoint inode id before restore
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let post_id = ino_for(&ch, "/multi.txt");
 
     s.cli(&["restore", "s1"]).expect("restore");

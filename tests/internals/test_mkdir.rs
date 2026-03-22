@@ -1,4 +1,4 @@
-use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, tree, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Action;
 use std::fs;
@@ -84,7 +84,7 @@ fn mkdir_creates_directory_inode() {
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/newdir");
     let path = inode_path(&s, ino);
 
@@ -104,7 +104,7 @@ fn mkdir_with_file_creates_separate_inodes() {
     fs::create_dir_all(s.mnt_path("parent/child")).expect("mkdir -p");
     fs::write(s.mnt_path("parent/child/data.txt"), "nested\n").expect("write");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
 
     // The file should have its own inode
     let file_ino = ino_for(&ch, "/data.txt");
@@ -118,28 +118,16 @@ fn mkdir_with_file_creates_separate_inodes() {
     );
 
     // Parent directories should also have inode entries
-    let dir_ids: Vec<u32> = ch
-        .iter()
-        .filter_map(|(path, c)| {
-            if path.ends_with("/parent") || path.ends_with("/child") {
-                if let agfs::journal::Dstate::StagedInode {
-                    ino,
-                    in_base: false,
-                    ..
-                } = c
-                {
-                    return Some(*ino);
-                }
-            }
-            None
-        })
-        .collect();
-    for ino in &dir_ids {
-        assert!(
-            inode_path(&s, *ino).is_dir(),
-            "directory inode {ino} should be a dir"
-        );
-    }
+    let parent_ino = ino_for(&ch, "/parent");
+    assert!(
+        inode_path(&s, parent_ino).is_dir(),
+        "directory inode {parent_ino} should be a dir"
+    );
+    let child_ino = ino_for(&ch, "/child");
+    assert!(
+        inode_path(&s, child_ino).is_dir(),
+        "directory inode {child_ino} should be a dir"
+    );
 }
 
 /// rmdir does NOT create a staged inode (only journal DEL record).

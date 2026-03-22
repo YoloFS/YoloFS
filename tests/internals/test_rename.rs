@@ -1,6 +1,6 @@
-use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, tree, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
-use agfs::journal::{Action, Dstate};
+use agfs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ fn rename_then_write_produces_inode() {
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
     fs::write(s.mnt_path("moved.txt"), "new content\n").expect("write renamed file");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/moved.txt");
 
     assert_eq!(
@@ -70,7 +70,7 @@ fn write_then_rename_inode_content() {
     assert_eq!(content, "written first\n");
 
     // The inode should have the written content — resolves as Renamed + Modified.
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/final.txt");
     assert_eq!(
         fs::read_to_string(inode_path(&s, ino)).unwrap(),
@@ -127,7 +127,7 @@ fn rename_overwrite_journal() {
     );
 }
 
-/// Rename back and forth: a→b→a. After resolution, no staged dirents
+/// Rename back and forth: a→b→a. After resolution, no staged tree
 /// should remain (the rename cancels out).
 #[test]
 fn rename_back_and_forth_no_changes() {
@@ -136,12 +136,9 @@ fn rename_back_and_forth_no_changes() {
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("a→b");
     fs::rename(s.mnt_path("temp.txt"), s.mnt_path("hello.txt")).expect("b→a");
 
-    let ch = dirents(&s);
-    let staged: Vec<_> = ch.iter().filter(|(_, d)| !matches!(d, Dstate::Passthrough)).collect();
-    assert!(
-        staged.is_empty(),
-        "rename back and forth should produce no staged changes, got: {staged:?}"
-    );
+    let ch = tree(&s);
+    assert_eq!(ch.len(), 0,
+        "rename back and forth should produce no staged changes, got: {ch:?}");
 }
 
 /// Rename a staged (newly created) file to overwrite a base file.

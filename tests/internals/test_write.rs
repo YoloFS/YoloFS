@@ -1,4 +1,4 @@
-use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, tree, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Action;
 use std::fs;
@@ -56,7 +56,7 @@ fn modify_creates_inode_with_content() {
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let path = inode_path(&s, ino);
 
@@ -76,7 +76,7 @@ fn overwrite_updates_inode_content() {
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     fs::write(s.mnt_path("hello.txt"), "v2 is longer\n").expect("write v2");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let path = inode_path(&s, ino);
 
@@ -101,7 +101,7 @@ fn append_updates_inode() {
     f.write_all(b"line2\n").expect("append");
     drop(f);
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let content = fs::read_to_string(inode_path(&s, ino)).unwrap();
     assert_eq!(
@@ -126,7 +126,7 @@ fn rewrite_without_checkpoint_reuses_inode() {
         "rewrite without checkpoint should reuse the same inode"
     );
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/hello.txt");
     assert_eq!(fs::read_to_string(inode_path(&s, ino)).unwrap(), "v2\n");
 }
@@ -156,7 +156,7 @@ fn truncate_rewrite_inode_has_exact_content() {
     fs::write(s.mnt_path("hello.txt"), "this is a long string\n").expect("write long");
     fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let path = inode_path(&s, ino);
 
@@ -191,7 +191,7 @@ fn truncate_only_produces_empty_inode() {
     assert_eq!(content, "", "mount should show empty file after O_TRUNC");
 
     // Inode in the store should be 0 bytes
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let path = inode_path(&s, ino);
 
@@ -241,7 +241,7 @@ fn large_file_inode_size() {
     let data = "x".repeat(1024 * 1024); // 1 MiB
     fs::write(s.mnt_path("big.txt"), &data).expect("write large file");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/big.txt");
     let path = inode_path(&s, ino);
 
@@ -257,7 +257,7 @@ fn binary_content_preserved() {
     let data: Vec<u8> = (0..=255).collect();
     fs::write(s.mnt_path("binary.bin"), &data).expect("write binary");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/binary.bin");
     let inode_data = fs::read(inode_path(&s, ino)).unwrap();
     assert_eq!(
@@ -274,7 +274,7 @@ fn nul_bytes_preserved() {
     let data = b"before\0middle\0after\n";
     fs::write(s.mnt_path("nulls.txt"), data).expect("write with NULs");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/nulls.txt");
     let inode_data = fs::read(inode_path(&s, ino)).unwrap();
     assert_eq!(inode_data, data, "NUL bytes should be preserved in inode");
@@ -290,7 +290,7 @@ fn multiple_files_each_get_correct_inode() {
     fs::write(s.mnt_path("new1.txt"), "ccc\n").expect("create 1");
     fs::write(s.mnt_path("new2.txt"), "ddd\n").expect("create 2");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
 
     let pairs = [
         ("/hello.txt", "aaa\n"),
@@ -316,7 +316,7 @@ fn deep_nested_file_inode() {
     fs::create_dir_all(s.mnt_path("a/b/c")).expect("mkdir -p");
     fs::write(s.mnt_path("a/b/c/leaf.txt"), "deep content\n").expect("write nested");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/leaf.txt");
     assert_eq!(
         fs::read_to_string(inode_path(&s, ino)).unwrap(),
@@ -332,7 +332,7 @@ fn modify_nested_base_file() {
     // subdir/deep.txt is seeded in base
     fs::write(s.mnt_path("subdir/deep.txt"), "updated nested\n").expect("write");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/deep.txt");
     assert_eq!(
         fs::read_to_string(inode_path(&s, ino)).unwrap(),

@@ -143,7 +143,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
 	struct agfs_dentry_info *old_di = AGFS_D(old_dentry);
 	struct agfs_dentry_info *new_di = AGFS_D(new_dentry);
-	char old_buf[AGFS_PATH_MAX];
+	char path_buf[AGFS_PATH_MAX];
 	char saved_name[NAME_MAX + 1];
 	unsigned int saved_name_len;
 	struct dentry *saved_parent;
@@ -151,7 +151,8 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	unsigned char d_type = DT_UNKNOWN;
 	struct agfs_dstate src_dstate, dst_dstate;
 	char *base_copy = NULL;
-	bool src_staged, dst_in_base, old_was_in_base;
+	const char *base_src, *p;
+	bool src_staged, dst_in_base, old_was_in_base, is_roundtrip;
 	int err;
 
 	if (flags)
@@ -162,11 +163,6 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	memcpy(saved_name, old_dentry->d_name.name, saved_name_len);
 	saved_name[saved_name_len] = '\0';
 	saved_parent = old_dentry->d_parent;
-
-	/* Relpath needed for base-only source (link redirect) */
-	err = agfs_dentry_relpath(old_dentry, old_buf, sizeof(old_buf));
-	if (err)
-		return err;
 
 	/* Read source state */
 	src_staged = !list_empty(&old_di->de_node);
@@ -198,21 +194,48 @@ static int agfs_rename(struct mnt_idmap *idmap,
 			return -ENOMEM;
 	}
 
-	/* Build destination dstate */
+	/*
+	 * Roundtrip detection: if the effective base source equals the
+	 * destination relpath, the rename chain is a no-op (e.g. a→b→a).
+	 * Skip the kstrdup and leave old_dentry as passthrough.
+	 */
 	if (src_staged && agfs_dstate_is_staged_inode(src_dstate)) {
+		base_src = NULL; /* staged inode — no base redirect needed */
+	} else if (src_staged && agfs_dstate_is_base_path(src_dstate)) {
+		base_src = agfs_dstate_src(src_dstate);
+	} else {
+		/* Base-only source — compute relpath for redirect */
+		p = dentry_path_raw(old_dentry, path_buf,
+				    sizeof(path_buf));
+		if (IS_ERR(p)) {
+			err = PTR_ERR(p);
+			goto out_tomb;
+		}
+		base_src = p;
+	}
+
+	is_roundtrip = false;
+	if (base_src) {
+		char dst_buf[AGFS_PATH_MAX];
+
+		p = dentry_path_raw(new_dentry, dst_buf,
+				    sizeof(dst_buf));
+		if (IS_ERR(p)) {
+			err = PTR_ERR(p);
+			goto out_tomb;
+		}
+		is_roundtrip = strcmp(base_src, p) == 0;
+	}
+
+	/* Build destination dstate */
+	if (is_roundtrip) {
+		/* no-op — passthrough set below */
+	} else if (src_staged && agfs_dstate_is_staged_inode(src_dstate)) {
 		dst_dstate = agfs_dstate_staged_inode(agfs_dstate_ino(src_dstate),
 					      agfs_dstate_gen(src_dstate),
 					      d_type, dst_in_base);
-	} else if (src_staged && agfs_dstate_is_base_path(src_dstate)) {
-		base_copy = kstrdup(agfs_dstate_src(src_dstate), GFP_KERNEL);
-		if (!base_copy) {
-			err = -ENOMEM;
-			goto out_tomb;
-		}
-		dst_dstate = agfs_dstate_base_path(base_copy, d_type, dst_in_base);
 	} else {
-		/* Base-only source — redirect via relpath */
-		base_copy = kstrdup(old_buf, GFP_KERNEL);
+		base_copy = kstrdup(base_src, GFP_KERNEL);
 		if (!base_copy) {
 			err = -ENOMEM;
 			goto out_tomb;
@@ -240,8 +263,12 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	}
 
 	/* Set destination dstate on old_dentry (will be at new position
-	 * after d_move) and pin it on new parent's de_list */
-	agfs_stage_dentry(old_dentry, new_dir, dst_dstate);
+	 * after d_move) and pin it on new parent's de_list.
+	 * Roundtrip: leave as passthrough — the rename chain is a no-op. */
+	if (is_roundtrip)
+		old_di->dstate = (struct agfs_dstate){0};
+	else
+		agfs_stage_dentry(old_dentry, new_dir, dst_dstate);
 
 	/*
 	 * d_drop old_dentry so d_move does not conflict with the

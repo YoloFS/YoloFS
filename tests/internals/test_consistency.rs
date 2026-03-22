@@ -9,9 +9,9 @@
 //!   2. Reads the journal and reconstructs a DirTree (CLI replay logic)
 //!   3. Asserts the two views agree on visibility and readdir contents
 
-use super::helpers::{dirents, ino_for, inode_path};
+use super::helpers::{ino_for, inode_path, tree};
 use crate::helpers::AgfsSession;
-use agfs::journal::Dstate;
+use agfs::journal::{DirTree, Dstate};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
@@ -48,11 +48,12 @@ fn root_prefix(s: &AgfsSession) -> String {
 ///   - The inode content matches what the mount shows (for regular files)
 fn assert_overlay_visible(s: &AgfsSession) {
     let prefix = root_prefix(s);
-    for (path, dirent) in &dirents(s) {
+    let t = tree(s);
+    t.for_each(|path, dstate| {
         let rel = path.strip_prefix(&prefix).unwrap();
         let rel = rel.strip_prefix('/').unwrap_or(rel);
         let mnt = s.mnt_path(rel);
-        match dirent {
+        match dstate {
             Dstate::StagedInode { ino, dtype, .. } => {
                 let meta = mnt.symlink_metadata().unwrap_or_else(|e| {
                     panic!("overlay inode at '/{rel}' should be visible: {e}")
@@ -109,12 +110,12 @@ fn assert_overlay_visible(s: &AgfsSession) {
             }
             Dstate::Passthrough => {}
         }
-    }
+    });
 }
 
 /// Resolve the base filesystem directory for a given relative path,
 /// following any Links in the CLI DirTree (handles renamed base dirs).
-fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &[(String, Dstate)]) -> PathBuf {
+fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
     if rel_dir.is_empty() {
         return s.root.clone();
     }
@@ -124,18 +125,14 @@ fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &[(String, Dstate)]) ->
 
     for component in rel_dir.split('/') {
         tree_path = format!("{tree_path}/{component}");
-        let link_target = cli.iter().find_map(|(p, d)| {
-            if p == &tree_path {
-                if let Dstate::BasePath {
-                    src,
-                    dtype: libc::DT_DIR,
-                    ..
-                } = d
-                {
-                    Some(src.clone())
-                } else {
-                    None
-                }
+        let link_target = cli.get(&tree_path).and_then(|d| {
+            if let Dstate::BasePath {
+                src,
+                dtype: libc::DT_DIR,
+                ..
+            } = d
+            {
+                Some(src.clone())
             } else {
                 None
             }
@@ -169,20 +166,20 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
 
     let mnt_names = entry_names(&s.mnt_path(rel_dir), skip);
 
-    let cli = dirents(s);
-    let effective_base = resolve_base_dir(s, rel_dir, &cli);
+    let t = tree(s);
+    let effective_base = resolve_base_dir(s, rel_dir, &t);
     let base_names = entry_names(&effective_base, skip);
 
     // Overlay entries that are direct children of this directory
-    let mut staged: BTreeMap<String, &Dstate> = BTreeMap::new();
-    for (path, dirent) in &cli {
+    let mut staged: BTreeMap<String, Dstate> = BTreeMap::new();
+    t.for_each(|path, dstate| {
         if let Some(rest) = path.strip_prefix(&dir_prefix) {
             let rest = rest.strip_prefix('/').unwrap_or(rest);
             if !rest.is_empty() && !rest.contains('/') {
-                staged.insert(rest.to_string(), dirent);
+                staged.insert(rest.to_string(), dstate.clone());
             }
         }
-    }
+    });
 
     // expected = base (not overridden) ∪ staged (non-tombstone)
     let mut expected = BTreeSet::new();
@@ -191,8 +188,8 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
             expected.insert(name.clone());
         }
     }
-    for (name, dirent) in &staged {
-        if !matches!(dirent, Dstate::Tombstone { .. }) {
+    for (name, dstate) in &staged {
+        if !matches!(dstate, Dstate::Tombstone { .. }) {
             expected.insert(name.clone());
         }
     }
@@ -267,10 +264,16 @@ fn delete_staged_file_cancels() {
     assert_consistent(&s);
 
     // CLI should have no entry (cancelled)
-    let d = dirents(&s);
+    let t = tree(&s);
+    let mut found = false;
+    t.for_each(|p, _| {
+        if p.ends_with("/temp.txt") {
+            found = true;
+        }
+    });
     assert!(
-        !d.iter().any(|(p, _)| p.ends_with("/temp.txt")),
-        "A+D on staged-only should cancel: {d:?}"
+        !found,
+        "A+D on staged-only should cancel: {t:?}"
     );
 }
 
@@ -281,11 +284,16 @@ fn delete_base_file_tombstones() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
     assert_consistent(&s);
 
-    let d = dirents(&s);
+    let t = tree(&s);
+    let mut found = false;
+    t.for_each(|p, e| {
+        if p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. }) {
+            found = true;
+        }
+    });
     assert!(
-        d.iter()
-            .any(|(p, e)| p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. })),
-        "D on base file should produce tombstone: {d:?}"
+        found,
+        "D on base file should produce tombstone: {t:?}"
     );
 }
 
@@ -485,11 +493,16 @@ fn modify_then_delete_base() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
     assert_consistent(&s);
 
-    let d = dirents(&s);
+    let t = tree(&s);
+    let mut found = false;
+    t.for_each(|p, e| {
+        if p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. }) {
+            found = true;
+        }
+    });
     assert!(
-        d.iter()
-            .any(|(p, e)| p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. })),
-        "M+D on base should produce tombstone: {d:?}"
+        found,
+        "M+D on base should produce tombstone: {t:?}"
     );
 }
 
@@ -605,11 +618,18 @@ fn create_over_tombstone() {
     assert_consistent(&s);
 
     // CLI should have in_base=true (inherited from tombstone)
-    let d = dirents(&s);
+    let t = tree(&s);
+    let mut found = false;
+    t.for_each(|p, e| {
+        if p.ends_with("/hello.txt")
+            && matches!(e, Dstate::StagedInode { in_base: true, .. })
+        {
+            found = true;
+        }
+    });
     assert!(
-        d.iter().any(|(p, e)| p.ends_with("/hello.txt")
-            && matches!(e, Dstate::StagedInode { in_base: true, .. })),
-        "recreated file over tombstone should have in_base=true: {d:?}"
+        found,
+        "recreated file over tombstone should have in_base=true: {t:?}"
     );
     assert_eq!(
         fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
@@ -642,7 +662,7 @@ fn readdir_dtype_matches_cli() {
     std::os::unix::fs::symlink("reg.txt", s.mnt_path("lnk")).expect("symlink");
 
     let prefix = root_prefix(&s);
-    let cli = dirents(&s);
+    let t = tree(&s);
 
     for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
         let entry = entry.expect("entry");
@@ -650,13 +670,12 @@ fn readdir_dtype_matches_cli() {
 
         // Find matching CLI entry
         let tree_path = format!("{prefix}/{name}");
-        let cli_entry = cli.iter().find(|(p, _)| p == &tree_path);
-        let Some((_, dirent)) = cli_entry else {
+        let Some(dstate) = t.get(&tree_path) else {
             continue; // base-only entry, no CLI overlay
         };
 
         let ft = entry.file_type().expect("file_type");
-        let cli_dtype = dirent.dtype();
+        let cli_dtype = dstate.dtype();
         match cli_dtype {
             libc::DT_REG => assert!(
                 ft.is_file(),
@@ -689,8 +708,8 @@ fn readdir_ino_matches_cli() {
 
     fs::write(s.mnt_path("check_ino.txt"), "data\n").expect("create");
 
-    let d = dirents(&s);
-    let cli_ino = ino_for(&d, "/check_ino.txt");
+    let t = tree(&s);
+    let cli_ino = ino_for(&t, "/check_ino.txt");
 
     for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
         let entry = entry.expect("entry");

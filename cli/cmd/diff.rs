@@ -68,8 +68,8 @@ fn print_segment_footer(closing: &Option<(u64, String)>) {
 
 // ── Per-change printing (summary vs verbose) ─────────────────────────
 
-fn print_change(agfs: &Path, path: &str, dirent: &Dstate, verbose: bool) {
-    match dirent {
+fn print_change(agfs: &Path, path: &str, dstate: &Dstate, verbose: bool) {
+    match dstate {
         Dstate::StagedInode {
             ino,
             in_base: false,
@@ -186,9 +186,9 @@ fn run(
             }
         }
 
-        tree.for_each(|p, dirent| {
-            if path.is_none() || dirent.matches_path(p, path.unwrap()) {
-                print_change(&agfs, p, dirent, verbose);
+        tree.for_each(|p, dstate| {
+            if path.is_none() || dstate.matches_path(p, path.unwrap()) {
+                print_change(&agfs, p, dstate, verbose);
             }
         });
         total += count;
@@ -241,11 +241,11 @@ mod tests {
 
     fn state_map<'a>(
         agfs: &Path,
-        dirents: &'a [(String, Dstate)],
+        dstates: &'a [(String, Dstate)],
     ) -> BTreeMap<&'a str, Option<String>> {
         let mut map = BTreeMap::new();
-        for (path, dirent) in dirents {
-            match dirent {
+        for (path, dstate) in dstates {
+            match dstate {
                 Dstate::StagedInode { ino, .. } => {
                     map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
                 }
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn state_map_added() {
         let tmp = make_agfs(&[(1, "hello\n")]);
-        let dirents = vec![(
+        let dstates = vec![(
             "/src/main.rs".into(),
             Dstate::StagedInode {
                 ino: 1,
@@ -292,7 +292,7 @@ mod tests {
                 in_base: false,
             },
         )];
-        let map = state_map(tmp.path(), &dirents);
+        let map = state_map(tmp.path(), &dstates);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/src/main.rs"], Some("hello\n".into()));
     }
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn state_map_modified() {
         let tmp = make_agfs(&[(5, "new content")]);
-        let dirents = vec![(
+        let dstates = vec![(
             "/etc/config".into(),
             Dstate::StagedInode {
                 ino: 5,
@@ -308,7 +308,7 @@ mod tests {
                 in_base: true,
             },
         )];
-        let map = state_map(tmp.path(), &dirents);
+        let map = state_map(tmp.path(), &dstates);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/etc/config"], Some("new content".into()));
     }
@@ -316,11 +316,11 @@ mod tests {
     #[test]
     fn state_map_deleted() {
         let tmp = make_agfs(&[]);
-        let dirents = vec![(
+        let dstates = vec![(
             "/old/file.txt".into(),
             Dstate::Tombstone { dtype: libc::DT_REG },
         )];
-        let map = state_map(tmp.path(), &dirents);
+        let map = state_map(tmp.path(), &dstates);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/old/file.txt"], None);
     }
@@ -330,7 +330,7 @@ mod tests {
         // Renamed reads base content via read_base(from). Since the `from` path
         // won't exist on the real filesystem, read_file_lossy returns "".
         let tmp = make_agfs(&[]);
-        let dirents = vec![(
+        let dstates = vec![(
             "/nonexistent/new.rs".into(),
             Dstate::BasePath {
                 src: "/nonexistent/old.rs".into(),
@@ -338,7 +338,7 @@ mod tests {
                 in_base: false,
             },
         )];
-        let map = state_map(tmp.path(), &dirents);
+        let map = state_map(tmp.path(), &dstates);
         assert_eq!(map.len(), 2);
         assert_eq!(map["/nonexistent/old.rs"], None);
         // read_base on a missing path returns ""
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn state_map_renamed_modified() {
         let tmp = make_agfs(&[(7, "modified content")]);
-        let dirents = vec![
+        let dstates = vec![
             (
                 "/nonexistent/new.rs".into(),
                 Dstate::BasePath {
@@ -366,7 +366,7 @@ mod tests {
                 },
             ),
         ];
-        let map = state_map(tmp.path(), &dirents);
+        let map = state_map(tmp.path(), &dstates);
         assert_eq!(map.len(), 2);
         assert_eq!(map["/nonexistent/old.rs"], None);
         assert_eq!(map["/nonexistent/new.rs"], Some("modified content".into()));
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn state_map_multiple_changes() {
         let tmp = make_agfs(&[(1, "aaa"), (2, "bbb")]);
-        let dirents = vec![
+        let dstates = vec![
             (
                 "/a.txt".into(),
                 Dstate::StagedInode {
@@ -397,7 +397,7 @@ mod tests {
                 Dstate::Tombstone { dtype: libc::DT_REG },
             ),
         ];
-        let map = state_map(tmp.path(), &dirents);
+        let map = state_map(tmp.path(), &dstates);
         assert_eq!(map.len(), 3);
         assert_eq!(map["/a.txt"], Some("aaa".into()));
         assert_eq!(map["/b.txt"], Some("bbb".into()));

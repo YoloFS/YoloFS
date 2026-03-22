@@ -567,60 +567,73 @@ fn complex_multi_operation_commit() {
 
     let agfs_dir = s.root.join(".agfs");
     let journal_obj = journal::Journal::read(&agfs_dir).expect("read journal");
-    let dirents = journal_obj.into_tree().to_dirents();
+    let t = journal_obj.into_tree();
 
-    let has_modified_hello = dirents.iter().any(|(path, c): &(String, Dstate)| {
-        matches!(c, Dstate::StagedInode { in_base: true, .. }) && path.ends_with("/hello.txt")
-    });
-    let has_modified_multi = dirents.iter().any(|(path, c): &(String, Dstate)| {
-        matches!(c, Dstate::StagedInode { in_base: true, .. }) && path.ends_with("/multi.txt")
-    });
-    // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
-    // Tree builder preserves original base path through rename chains.
-    let has_renamed_deep_to_top = dirents.iter().any(|(to, c): &(String, Dstate)| {
-        matches!(c, Dstate::BasePath { src, .. }
-            if src.ends_with("/subdir/deep.txt") && to.ends_with("/top.txt"))
-    });
-    let has_deleted_deep = dirents.iter().any(|(path, c): &(String, Dstate)| {
-        matches!(c, Dstate::Tombstone { .. }) && path.ends_with("/deep.txt")
-    });
-    let has_added_link = dirents.iter().any(|(path, c): &(String, Dstate)| {
-        matches!(c, Dstate::StagedInode { in_base: false, .. }) && path.ends_with("/link.txt")
-    });
-    let has_temp = dirents.iter().any(|(path, c): &(String, Dstate)| {
+    let (
+        mut has_modified_hello,
+        mut has_modified_multi,
+        mut has_renamed_deep_to_top,
+        mut has_deleted_deep,
+        mut has_added_link,
+        mut has_temp,
+        mut has_brand_new,
+    ) = (false, false, false, false, false, false, false);
+
+    t.for_each(|path, dstate| {
+        if matches!(dstate, Dstate::StagedInode { in_base: true, .. }) && path.ends_with("/hello.txt") {
+            has_modified_hello = true;
+        }
+        if matches!(dstate, Dstate::StagedInode { in_base: true, .. }) && path.ends_with("/multi.txt") {
+            has_modified_multi = true;
+        }
+        // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
+        // Tree builder preserves original base path through rename chains.
+        if let Dstate::BasePath { src, .. } = dstate {
+            if src.ends_with("/subdir/deep.txt") && path.ends_with("/top.txt") {
+                has_renamed_deep_to_top = true;
+            }
+            if src.ends_with("/temp.txt") {
+                has_temp = true;
+            }
+            if src.ends_with("/brand_new.txt") {
+                has_brand_new = true;
+            }
+        }
+        if matches!(dstate, Dstate::Tombstone { .. }) && path.ends_with("/deep.txt") {
+            has_deleted_deep = true;
+        }
+        if matches!(dstate, Dstate::StagedInode { in_base: false, .. }) && path.ends_with("/link.txt") {
+            has_added_link = true;
+        }
         if path.ends_with("/temp.txt") {
-            return true;
+            has_temp = true;
         }
-        matches!(c, Dstate::BasePath { src, .. } if src.ends_with("/temp.txt"))
-    });
-    let has_brand_new = dirents.iter().any(|(path, c): &(String, Dstate)| {
         if path.ends_with("/brand_new.txt") {
-            return true;
+            has_brand_new = true;
         }
-        matches!(c, Dstate::BasePath { src, .. } if src.ends_with("/brand_new.txt"))
     });
 
     assert!(
         has_modified_hello,
-        "expected Modified(hello.txt): {dirents:?}"
+        "expected Modified(hello.txt): {t:?}"
     );
     assert!(
         has_modified_multi,
-        "expected Modified(multi.txt): {dirents:?}"
+        "expected Modified(multi.txt): {t:?}"
     );
     assert!(
         has_renamed_deep_to_top,
-        "expected Renamed(subdir/deep.txt → top.txt): {dirents:?}"
+        "expected Renamed(subdir/deep.txt → top.txt): {t:?}"
     );
-    assert!(has_deleted_deep, "expected Deleted(deep.txt): {dirents:?}");
-    assert!(has_added_link, "expected Added(link.txt): {dirents:?}");
+    assert!(has_deleted_deep, "expected Deleted(deep.txt): {t:?}");
+    assert!(has_added_link, "expected Added(link.txt): {t:?}");
     assert!(
         !has_temp,
-        "temp.txt should have cancelled out (A+D): {dirents:?}"
+        "temp.txt should have cancelled out (A+D): {t:?}"
     );
     assert!(
         !has_brand_new,
-        "brand_new.txt should not appear (staged rename absorbed): {dirents:?}"
+        "brand_new.txt should not appear (staged rename absorbed): {t:?}"
     );
 
     // ── Commit and verify base ──

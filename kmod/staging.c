@@ -10,22 +10,6 @@
 #include <linux/file.h>
 #include <linux/namei.h>
 
-/* ── Relative Path from Dentry ─────────────────────────────────────── */
-
-int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen)
-{
-	char *p;
-
-	p = dentry_path_raw(dentry, buf, buflen);
-	if (IS_ERR(p))
-		return PTR_ERR(p);
-
-	/* dentry_path_raw returns pointer into buf; shift if needed */
-	if (p != buf)
-		memmove(buf, p, strlen(p) + 1);
-	return 0;
-}
-
 /* ── Public Helpers ────────────────────────────────────────────────── */
 
 int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,

@@ -1,4 +1,4 @@
-use super::helpers::{actions, dirents, ino_for, inode_path, journal};
+use super::helpers::{actions, tree, ino_for, inode_path, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Action;
 use std::fs;
@@ -30,7 +30,7 @@ fn create_file_produces_inode() {
 
     fs::write(s.mnt_path("brandnew.txt"), "fresh content\n").expect("create");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/brandnew.txt");
     let path = inode_path(&s, ino);
 
@@ -45,7 +45,7 @@ fn empty_file_creates_empty_inode() {
 
     fs::write(s.mnt_path("empty.txt"), "").expect("touch");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/empty.txt");
     let path = inode_path(&s, ino);
 

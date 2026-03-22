@@ -38,6 +38,7 @@ static int agfs_check_open_perm(struct agfs_sb_info *sbi,
 
 	if (perm == AGFS_PERM_ASK) {
 		unsigned int op;
+		char *relpath;
 
 		if (file->f_mode & FMODE_EXEC)
 			op = AGFS_OP_EXEC;
@@ -46,10 +47,10 @@ static int agfs_check_open_perm(struct agfs_sb_info *sbi,
 		else
 			op = AGFS_OP_READ;
 
-		err = agfs_dentry_relpath(dentry, buf, AGFS_PATH_MAX);
-		if (err)
-			return err;
-		err = agfs_ask_userspace(sbi, dentry, buf, op, &perm);
+		relpath = dentry_path_raw(dentry, buf, AGFS_PATH_MAX);
+		if (IS_ERR(relpath))
+			return PTR_ERR(relpath);
+		err = agfs_ask_userspace(sbi, dentry, relpath, op, &perm);
 		if (err)
 			return err;
 	}

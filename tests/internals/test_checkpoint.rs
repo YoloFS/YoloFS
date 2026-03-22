@@ -1,4 +1,4 @@
-use super::helpers::{dirents, ino_for, inode_path, journal, markers, records};
+use super::helpers::{tree, ino_for, inode_path, journal, markers, records};
 use crate::helpers::AgfsSession;
 use agfs::journal::{Action, Marker, Record};
 use std::fs;
@@ -162,7 +162,7 @@ fn recow_preserves_pre_checkpoint_inode() {
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
 
-    let ch_v1 = dirents(&s);
+    let ch_v1 = tree(&s);
     let id_v1 = ino_for(&ch_v1, "/hello.txt");
 
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
@@ -176,7 +176,7 @@ fn recow_preserves_pre_checkpoint_inode() {
     );
 
     // v2 should be in a different inode
-    let ch_v2 = dirents(&s);
+    let ch_v2 = tree(&s);
     let id_v2 = ino_for(&ch_v2, "/hello.txt");
     assert_ne!(id_v1, id_v2, "re-COW should allocate a new inode ID");
     assert_eq!(
@@ -193,15 +193,15 @@ fn multiple_checkpoints_preserve_all_inodes() {
 
     // v1 → chk → v2 → chk → v3
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    let id_v1 = ino_for(&dirents(&s), "/hello.txt");
+    let id_v1 = ino_for(&tree(&s), "/hello.txt");
 
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
-    let id_v2 = ino_for(&dirents(&s), "/hello.txt");
+    let id_v2 = ino_for(&tree(&s), "/hello.txt");
 
     s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
-    let id_v3 = ino_for(&dirents(&s), "/hello.txt");
+    let id_v3 = ino_for(&tree(&s), "/hello.txt");
 
     // All three inode IDs should be different
     assert_ne!(id_v1, id_v2);
@@ -237,7 +237,7 @@ fn untouched_base_file_cow_after_checkpoint() {
     );
 
     // Verify a new inode was allocated in the store.
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/multi.txt");
     assert_eq!(
         fs::read_to_string(inode_path(&s, ino)).unwrap(),

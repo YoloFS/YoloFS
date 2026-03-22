@@ -528,7 +528,6 @@ int agfs_interpose(struct dentry *dentry, struct super_block *sb,
 		   struct path *lower_path);
 
 /* staging.c */
-int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen);
 int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,
 		    struct path *result);
 int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,

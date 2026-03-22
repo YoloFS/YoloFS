@@ -2,7 +2,7 @@ use crate::helpers::AgfsSession;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
-use super::helpers::{dirents, ino_for, inode_path};
+use super::helpers::{tree, ino_for, inode_path};
 
 /// A newly created file's inode in the store should be owned by the
 /// calling user, not root.
@@ -13,7 +13,7 @@ fn staged_file_owned_by_caller() {
 
     fs::write(s.mnt_path("owned.txt"), "mine").expect("create");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/owned.txt");
     let meta = fs::metadata(inode_path(&s, ino)).expect("stat inode");
     assert_eq!(
@@ -33,7 +33,7 @@ fn staged_dir_owned_by_caller() {
 
     fs::create_dir(s.mnt_path("owneddir")).expect("mkdir");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/owneddir");
     let meta = fs::metadata(inode_path(&s, ino)).expect("stat inode dir");
     assert_eq!(
@@ -53,7 +53,7 @@ fn cow_file_owned_by_caller() {
 
     fs::write(s.mnt_path("hello.txt"), "cow data").expect("COW write");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/hello.txt");
     let meta = fs::metadata(inode_path(&s, ino)).expect("stat COW inode");
     assert_eq!(

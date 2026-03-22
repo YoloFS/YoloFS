@@ -1,4 +1,4 @@
-use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, tree, ino_for, inode_path, inos, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Action;
 use std::fs;
@@ -46,7 +46,7 @@ fn delete_recreate_gets_new_inode() {
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
     fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/hello.txt");
     assert_eq!(
         fs::read_to_string(inode_path(&s, ino)).unwrap(),

@@ -1,4 +1,4 @@
-use super::helpers::{actions, dirents, ino_for, inode_path, journal};
+use super::helpers::{actions, tree, ino_for, inode_path, journal};
 use crate::helpers::AgfsSession;
 use agfs::journal::Action;
 use std::fs;
@@ -30,7 +30,7 @@ fn symlink_creates_symlink_inode() {
 
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/link.txt");
     let path = inode_path(&s, ino);
 
@@ -53,7 +53,7 @@ fn symlink_absolute_target() {
 
     std::os::unix::fs::symlink("/etc/hostname", s.mnt_path("abs_link")).expect("symlink");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/abs_link");
     let target = fs::read_link(inode_path(&s, ino)).unwrap();
     assert_eq!(target.to_str().unwrap(), "/etc/hostname");
@@ -66,7 +66,7 @@ fn symlink_relative_with_dirs() {
 
     std::os::unix::fs::symlink("../hello.txt", s.mnt_path("subdir/uplink")).expect("symlink");
 
-    let ch = dirents(&s);
+    let ch = tree(&s);
     let ino = ino_for(&ch, "/uplink");
     let target = fs::read_link(inode_path(&s, ino)).unwrap();
     assert_eq!(target.to_str().unwrap(), "../hello.txt");
