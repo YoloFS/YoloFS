@@ -470,7 +470,6 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 		u8 has_dirent, nul;
 		u64 packed;
 		struct inode *dir;
-		struct agfs_dirent *de;
 
 		if (stack[depth].remaining == 0) {
 			dput(stack[depth].dentry);
@@ -504,13 +503,16 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 
 		if (has_dirent) {
 			agfs_pde_t pde = {0};
+			struct qstr qname;
+			struct dentry *child;
+			struct agfs_inode_info *dii = AGFS_I(dir);
 
 			err = read_le64(&cur, &packed);
 			if (err)
 				goto out_unwind;
 
 			if (packed == 0) {
-				/* Tombstone */
+				/* Tombstone — pde stays {0} */
 			} else if ((s64)packed > 0) {
 				/* Inode — validate and stamp gen */
 				u32 ino = (packed >> 16) & 0xFFFFFFFFULL;
@@ -526,6 +528,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 				/* Link — read trailing base_path */
 				u64 dt = (packed >> 61) & 3;
 				u8 d_type, ib;
+				char *base_copy;
 
 				if (dt == 3) {
 					err = -EINVAL;
@@ -552,24 +555,81 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 					goto out_unwind;
 				}
 
-				/*
-				 * Pass a temporary pointer into the vmalloc'd
-				 * buffer — agfs_add_dirent kstrdup's it, so no
-				 * separate allocation needed here.  The NUL
-				 * terminator is already verified above.
-				 */
-				pde = agfs_pde_link((const char *)base_ptr,
-						    d_type, ib);
+				/* kstrdup the base string (vmalloc buf is freed later) */
+				base_copy = kstrdup((const char *)base_ptr,
+						    GFP_KERNEL);
+				if (!base_copy) {
+					err = -ENOMEM;
+					goto out_unwind;
+				}
+				pde = agfs_pde_link(base_copy, d_type, ib);
 			}
 
-			inode_lock(dir);
-			de = agfs_add_dirent(dir, (const char *)name_ptr,
-					     name_len, pde);
-			inode_unlock(dir);
-			if (IS_ERR(de)) {
-				err = PTR_ERR(de);
+			/* Create VFS dentry and pin it */
+			qname.name = name_ptr;
+			qname.len = name_len;
+			qname.hash = full_name_hash(stack[depth].dentry,
+						    (const char *)name_ptr,
+						    name_len);
+			child = d_alloc(stack[depth].dentry, &qname);
+			if (!child) {
+				agfs_pde_free(pde);
+				err = -ENOMEM;
 				goto out_unwind;
 			}
+
+			if (agfs_pde_is_inode(pde)) {
+				struct path ino_path;
+				struct inode *inode;
+
+				err = agfs_inode_path(sbi, agfs_pde_ino(pde),
+						     &ino_path);
+				if (err) {
+					dput(child);
+					goto out_unwind;
+				}
+				agfs_set_lower_path(child, &ino_path);
+				AGFS_D(child)->packed = pde;
+				inode = agfs_iget(sb, d_inode(ino_path.dentry));
+				if (IS_ERR(inode)) {
+					/* dput(child) → d_release releases lower_path + packed */
+					dput(child);
+					err = PTR_ERR(inode);
+					goto out_unwind;
+				}
+				d_add(child, inode);
+			} else if (agfs_pde_is_link(pde)) {
+				struct path base;
+				struct inode *inode;
+
+				err = kern_path(agfs_pde_base(pde),
+						LOOKUP_FOLLOW, &base);
+				if (err) {
+					agfs_pde_free(pde);
+					dput(child);
+					goto out_unwind;
+				}
+				agfs_set_lower_path(child, &base);
+				inode = agfs_iget(sb, d_inode(base.dentry));
+				if (IS_ERR(inode)) {
+					/* dput(child) → d_release releases lower_path + packed */
+					AGFS_D(child)->packed = pde;
+					dput(child);
+					err = PTR_ERR(inode);
+					goto out_unwind;
+				}
+				AGFS_D(child)->packed = pde;
+				d_add(child, inode);
+			} else {
+				/* Tombstone — d_init already set packed=0 */
+				d_add(child, NULL);
+			}
+
+			/* d_alloc ref is our pin — no extra dget */
+			inode_lock(dir);
+			list_add(&AGFS_D(child)->de_node, &dii->de_list);
+			agfs_pin_dir_if_first(dii, sbi);
+			inode_unlock(dir);
 		}
 
 		/* Read child_count */
@@ -640,7 +700,7 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 		return -EBUSY;
 	}
 
-	/* Wipe perm caches, dirents, dentry cache */
+	/* Wipe perm caches, staged dentries, dentry cache */
 	atomic64_inc(&sbi->perm_gen);
 	agfs_release_pinned_dirs(sbi);
 	shrink_dcache_sb(sb);

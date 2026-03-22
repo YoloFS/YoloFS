@@ -770,7 +770,7 @@ kfunctions via BTF (`kfunc`/`kretfunc` probes):
 | `agfs_journal_replace` | Journal P record for replace (destination existed in base) |
 | `agfs_journal_checkpoint` | Journal K record for checkpoint |
 | `agfs_release` | File release |
-| `agfs_find_dirent` | Staging index lookup |
+| `agfs_fill_base` | Readdir phase-2 base-entry dedup |
 
 Each function gets its own per-tid start map (`@s_<func>[tid]`) to avoid
 clobbering timestamps on nested calls (e.g. `agfs_create` calling

@@ -48,7 +48,7 @@ static struct inode *agfs_alloc_inode(struct super_block *sb)
 	i->lower_inode = NULL;
 	i->cached_perm = AGFS_PERM_NONE;
 	i->perm_gen = 0;
-	i->de_buckets = NULL;
+	INIT_LIST_HEAD(&i->de_list);
 	INIT_LIST_HEAD(&i->de_pin);
 	return &i->vfs_inode;
 }
@@ -67,7 +67,7 @@ static void agfs_evict_inode(struct inode *inode)
 	clear_inode(inode);
 
 	/* Pinned dirs are cleaned by agfs_release_pinned_dirs; warn if leaked */
-	WARN_ON_ONCE(ii->de_buckets);
+	WARN_ON_ONCE(!list_empty(&ii->de_list));
 
 	lower_inode = agfs_lower_inode(inode);
 	if (lower_inode)
@@ -266,9 +266,7 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		goto out_put;
 	}
 
-	err = agfs_new_dentry_private_data(sb->s_root);
-	if (err)
-		goto out_root;
+	/* d_init already allocated d_fsdata for the root dentry */
 
 	path_get(&sbi->base_path);
 	agfs_set_lower_path(sb->s_root, &sbi->base_path);
@@ -277,9 +275,6 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	return 0;
 
-out_root:
-	dput(sb->s_root);
-	sb->s_root = NULL;
 out_put:
 	agfs_put_super(sb);
 	return err;
