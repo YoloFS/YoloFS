@@ -343,7 +343,7 @@ static loff_t agfs_llseek(struct file *file, loff_t offset, int whence)
 
 struct agfs_readdir_data {
 	struct dir_context	ctx;
-	struct inode		*dir;
+	struct dentry		*dentry;	/* parent dentry for d_lookup */
 	struct dir_context	*caller_ctx;
 	loff_t			*off;
 };
@@ -354,15 +354,17 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 {
 	struct agfs_readdir_data *rdd =
 		container_of(ctx, struct agfs_readdir_data, ctx);
-	struct agfs_inode_info *dii = AGFS_I(rdd->dir);
-	struct agfs_dentry_info *di;
+	struct qstr qname = QSTR_INIT(name, namelen);
+	struct dentry *child;
 
 	/* Check if this base entry is overridden by a staged entry */
-	list_for_each_entry(di, &dii->de_list, de_node) {
-		struct dentry *child = di->dentry;
-
-		if (child->d_name.len == (unsigned int)namelen &&
-		    !memcmp(child->d_name.name, name, namelen))
+	qname.hash = full_name_hash(rdd->dentry, name, namelen);
+	child = d_lookup(rdd->dentry, &qname);
+	if (child) {
+		bool overridden =
+			!agfs_dstate_is_passthrough(AGFS_D(child)->dstate);
+		dput(child);
+		if (overridden)
 			return true; /* skip — overridden */
 	}
 
@@ -378,37 +380,45 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 }
 
 /*
- * Emit non-deleted staged entries from parent's de_list.
+ * Emit non-deleted staged entries from parent's d_children.
  * Caller holds inode_lock_shared(dir) via VFS iterate_shared.
  * Returns true if the dir_emit buffer filled up.
  */
-static bool agfs_emit_dirents(struct inode *dir, struct dir_context *ctx,
+static bool agfs_emit_dirents(struct dentry *parent, struct dir_context *ctx,
 			      loff_t *off)
 {
-	struct agfs_inode_info *dii = AGFS_I(dir);
-	struct agfs_dentry_info *di;
+	struct dentry *child;
 
-	if (list_empty(&dii->de_list))
-		return false;
+	spin_lock(&parent->d_lock);
+	hlist_for_each_entry(child, &parent->d_children, d_sib) {
+		struct agfs_dentry_info *di = AGFS_D(child);
 
-	list_for_each_entry(di, &dii->de_list, de_node) {
-		struct dentry *child = di->dentry;
-		struct agfs_dstate dstate = di->dstate;
-
-		if (agfs_dstate_is_tombstone(dstate))
+		if (!di || agfs_dstate_is_passthrough(di->dstate))
 			continue;
+
+		if (agfs_dstate_is_tombstone(di->dstate))
+			continue;
+
+		dget_dlock(child);
+		spin_unlock(&parent->d_lock);
+
 		if (*off < ctx->pos) {
 			(*off)++;
-			continue;
+		} else if (!dir_emit(ctx, child->d_name.name,
+				     child->d_name.len,
+				     agfs_dstate_emit_ino(di->dstate),
+				     agfs_dstate_d_type(di->dstate))) {
+			dput(child);
+			return true;
+		} else {
+			(*off)++;
+			ctx->pos++;
 		}
 
-		if (!dir_emit(ctx, child->d_name.name, child->d_name.len,
-			      agfs_dstate_emit_ino(dstate),
-			      agfs_dstate_d_type(dstate)))
-			return true;
-		(*off)++;
-		ctx->pos++;
+		dput(child);
+		spin_lock(&parent->d_lock);
 	}
+	spin_unlock(&parent->d_lock);
 	return false;
 }
 
@@ -426,9 +436,8 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	if (!lower_file)
 		return -EIO;
 
-	/* No staging or no staged entries on this directory → passthrough */
-	if (!sbi->staging || !sbi->inodes_dir.dentry ||
-	    list_empty(&AGFS_I(file_inode(file))->de_list)) {
+	/* No staging → passthrough */
+	if (!sbi->staging || !sbi->inodes_dir.dentry) {
 		lower_file->f_pos = ctx->pos;
 		err = iterate_dir(lower_file, ctx);
 		file->f_pos = lower_file->f_pos;
@@ -448,15 +457,23 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 		off = ctx->pos;
 	} else {
 		/* Phase 1: emit non-deleted dirent entries */
-		if (agfs_emit_dirents(file_inode(file), ctx, &off))
+		if (agfs_emit_dirents(file_dentry(file), ctx, &off))
 			return 0;
 		di->dirent_off = off;
+		/*
+		 * If no staged entries were emitted (off == 0), sync off
+		 * with the caller's position so the skip logic in
+		 * agfs_fill_base does not double-skip base entries on
+		 * resumed getdents64 calls.
+		 */
+		if (!off)
+			off = ctx->pos;
 	}
 
 	/* Phase 2: read base directory, skip overridden names */
 	rdd.ctx.actor = agfs_fill_base;
 	rdd.ctx.pos = 0;
-	rdd.dir = file_inode(file);
+	rdd.dentry = file_dentry(file);
 	rdd.caller_ctx = ctx;
 	rdd.off = &off;
 

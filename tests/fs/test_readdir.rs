@@ -439,9 +439,9 @@ fn readdir_small_buf_base_only() {
 /// Mixed directory: base files + staged creates + staged deletes.
 /// Exercises the merge path with multiple getdents64 calls.
 ///
-/// BUG: currently fails — tombstones increment `off` without emitting,
-/// so `off` and `ctx->pos` desync across getdents64 calls. On re-entry
-/// the `off < ctx->pos` skip under-skips, producing duplicate base entries.
+/// Fixed: tombstones no longer desync `off` and `ctx->pos` — the kernel
+/// now syncs `off = ctx->pos` when no staged entries are emitted in
+/// Phase 1, preventing double-skip of base entries on resumed getdents64.
 #[test]
 fn readdir_small_buf_mixed() {
     let s = AgfsSession::new().expect("session setup");
@@ -500,6 +500,37 @@ fn readdir_small_buf_staged_only() {
     assert_eq!(names.len(), expected.len(), "staged-only: duplicate or missing entries (got {} names for {} expected)", names.len(), expected.len());
     let got: BTreeSet<String> = names.into_iter().collect();
     assert_eq!(got, expected, "staged-only small-buf readdir mismatch");
+}
+
+/// All-tombstone directory: base files all deleted, no staged creates.
+/// Exercises the edge case where Phase 1 emits nothing (all entries are
+/// tombstones) and the `off = ctx->pos` sync must kick in to avoid
+/// double-skipping base entries in Phase 2.
+#[test]
+fn readdir_small_buf_all_tombstones() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // Base layer: 15 files.
+    let host_dir = s.base_path("tombdir");
+    fs::create_dir(&host_dir).expect("mkdir host");
+    for i in 0..15 {
+        fs::write(host_dir.join(format!("base-{i:03}.txt")), "x").expect("write base");
+    }
+
+    let dir = s.mnt_path("tombdir");
+
+    // Delete all 15 base files through the mount (creates 15 tombstones).
+    for i in 0..15 {
+        fs::remove_file(dir.join(format!("base-{i:03}.txt"))).expect("unlink");
+    }
+
+    // readdir should return zero entries (all base entries overridden by
+    // tombstones, no staged creates).
+    let (names, _calls) = readdir_small_buf(&dir);
+    assert!(
+        names.is_empty(),
+        "all-tombstone dir should be empty, got: {names:?}"
+    );
 }
 
 /// Few staged entries + many base entries: the phase 1→2 boundary

@@ -505,7 +505,6 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 			struct agfs_dstate pde = {0};
 			struct qstr qname;
 			struct dentry *child;
-			struct agfs_inode_info *dii = AGFS_I(dir);
 
 			err = read_le64(&cur, &packed);
 			if (err)
@@ -623,10 +622,6 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 			}
 
 			/* d_alloc ref is our pin — no extra dget */
-			inode_lock(dir);
-			list_add(&AGFS_D(child)->de_node, &dii->de_list);
-			agfs_pin_dir_if_first(dii, sbi);
-			inode_unlock(dir);
 		}
 
 		/* Read child_count */
@@ -699,7 +694,7 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 
 	/* Wipe perm caches, staged dentries, dentry cache */
 	atomic64_inc(&sbi->perm_gen);
-	agfs_release_pinned_dirs(sbi);
+	agfs_unstage_all(sb);
 	shrink_dcache_sb(sb);
 
 	if (hdr.target_gen == 0) {

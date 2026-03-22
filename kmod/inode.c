@@ -36,14 +36,14 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	agfs_replace_lower_path(dentry, &inode_path);
 	dt = S_ISDIR(mode) ? DT_DIR : S_ISLNK(mode) ? DT_LNK : DT_REG;
 
-	/* If dentry is already on de_list, it's a tombstone — inherit in_base */
-	already_staged = !list_empty(&di->de_node);
+	/* If dentry is already staged, it's a tombstone — inherit in_base */
+	already_staged = !agfs_dstate_is_passthrough(di->dstate);
 	in_base = already_staged;
 	dstate = agfs_dstate_staged_inode(ino, (u16)atomic_read(&sbi->gen),
 				dt, in_base);
 
 	if (!already_staged)
-		agfs_stage_dentry(dentry, dir, dstate);
+		agfs_stage_dentry(dentry, dstate);
 	else
 		di->dstate = dstate;
 
@@ -74,27 +74,25 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
 	struct agfs_dentry_info *di = AGFS_D(dentry);
 	unsigned char d_type;
-	bool in_base, need_tombstone;
+	bool need_tombstone;
 	struct dentry *tomb = NULL;
 	int err;
 
 	d_type = d_inode(dentry) ?
 		 fs_umode_to_dtype(d_inode(dentry)->i_mode) : DT_UNKNOWN;
 
-	/* Determine whether we need a tombstone */
-	if (!list_empty(&di->de_node)) {
-		in_base = agfs_dstate_in_base(di->dstate);
-		need_tombstone = in_base;
-	} else {
-		in_base = false;
-		need_tombstone = true; /* base-only entry */
-	}
+	/*
+	 * Tombstone needed if dentry has base content — either passthrough
+	 * (base-only) or staged with in_base flag (modified base entry).
+	 */
+	need_tombstone = agfs_dstate_is_passthrough(di->dstate) ||
+			 agfs_dstate_in_base(di->dstate);
 
 	/* Pre-allocate tombstone before journaling so we can fail cleanly */
 	if (need_tombstone) {
 		tomb = agfs_add_tombstone(dentry->d_parent,
 					  dentry->d_name.name,
-					  dentry->d_name.len, dir,
+					  dentry->d_name.len,
 					  d_type);
 		if (!tomb)
 			return -ENOMEM;
@@ -104,11 +102,11 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 	err = agfs_journal_delete(sbi, dentry, d_type);
 	if (err) {
 		if (tomb)
-			agfs_remove_tombstone(tomb, dir);
+			agfs_remove_tombstone(tomb);
 		return err;
 	}
 
-	if (!list_empty(&di->de_node))
+	if (!agfs_dstate_is_passthrough(di->dstate))
 		agfs_unstage_dentry(di);
 
 	d_drop(dentry);
@@ -152,7 +150,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	struct agfs_dstate src_dstate, dst_dstate;
 	char *base_copy = NULL;
 	const char *base_src, *p;
-	bool src_staged, dst_in_base, old_was_in_base, is_roundtrip;
+	bool src_staged, dst_in_base, is_roundtrip;
 	int err;
 
 	if (flags)
@@ -165,7 +163,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	saved_parent = old_dentry->d_parent;
 
 	/* Read source state */
-	src_staged = !list_empty(&old_di->de_node);
+	src_staged = !agfs_dstate_is_passthrough(old_di->dstate);
 	src_dstate = src_staged ? old_di->dstate : (struct agfs_dstate){0};
 
 	if (src_staged && !agfs_dstate_is_tombstone(src_dstate))
@@ -174,21 +172,16 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		d_type = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
 
 	/* Check if destination has existing base content (for R vs P tag) */
-	if (!list_empty(&new_di->de_node))
+	if (!agfs_dstate_is_passthrough(new_di->dstate))
 		dst_in_base = agfs_dstate_in_base(new_di->dstate);
 	else
 		dst_in_base = d_inode(new_dentry) != NULL;
 
-	/* Determine if old name needs a tombstone */
-	if (src_staged)
-		old_was_in_base = agfs_dstate_in_base(src_dstate);
-	else
-		old_was_in_base = true; /* was only in base */
-
-	/* Pre-allocate tombstone before any irreversible changes */
-	if (old_was_in_base) {
+	/* Pre-allocate tombstone if old name has base content */
+	if (agfs_dstate_is_passthrough(src_dstate) ||
+	    agfs_dstate_in_base(src_dstate)) {
 		tomb = agfs_add_tombstone(saved_parent, saved_name,
-					  saved_name_len, old_dir,
+					  saved_name_len,
 					  d_type);
 		if (!tomb)
 			return -ENOMEM;
@@ -252,23 +245,23 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		goto out_free;
 
 	/* Clean up new_dentry if it was staged */
-	if (!list_empty(&new_di->de_node))
+	if (!agfs_dstate_is_passthrough(new_di->dstate))
 		agfs_unstage_dentry(new_di);
 
-	/* Remove old_dentry from old parent's de_list */
-	if (src_staged) {
+	/* Update old_dentry staging state */
+	if (src_staged)
 		agfs_dstate_free(src_dstate);
-		list_del_init(&old_di->de_node);
-		dput(old_dentry);
-	}
 
-	/* Set destination dstate on old_dentry (will be at new position
-	 * after d_move) and pin it on new parent's de_list.
-	 * Roundtrip: leave as passthrough — the rename chain is a no-op. */
-	if (is_roundtrip)
+	if (is_roundtrip) {
 		old_di->dstate = (struct agfs_dstate){0};
-	else
-		agfs_stage_dentry(old_dentry, new_dir, dst_dstate);
+		if (src_staged)
+			dput(old_dentry);
+	} else if (src_staged) {
+		/* Already pinned — overwrite dstate, no dput/dget churn */
+		old_di->dstate = dst_dstate;
+	} else {
+		agfs_stage_dentry(old_dentry, dst_dstate);
+	}
 
 	/*
 	 * d_drop old_dentry so d_move does not conflict with the
@@ -286,7 +279,7 @@ out_free:
 	kfree(base_copy);
 out_tomb:
 	if (tomb)
-		agfs_remove_tombstone(tomb, old_dir);
+		agfs_remove_tombstone(tomb);
 	return err;
 }
 

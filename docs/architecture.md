@@ -1,6 +1,6 @@
 # Architecture
 
-AgFS stacks on top of any lower filesystem (ext4, xfs, NFS, ...) using VFS
+AgFS stacks on top of any local lower filesystem (ext4, xfs, btrfs, ...) using VFS
 interposition. It adds two orthogonal capabilities:
 
 | Capability            | Summary |
@@ -62,7 +62,7 @@ and `vfs_*()` calls.
 
 ## Why Stackable VFS?
 
-- **Portability**: Works on any underlying filesystem (ext4, xfs, NFS, tmpfs).
+- **Portability**: Works on any local underlying filesystem (ext4, xfs, btrfs, tmpfs).
 - **File-level granularity**: Permission gating operates on files and
   directories, which map naturally to inodes in a stackable FS.
 - **Simplicity**: No need to manage block allocation, journaling, or

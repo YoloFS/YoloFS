@@ -221,6 +221,10 @@ static inline unsigned char agfs_dstate_d_type(struct agfs_dstate p)
 
 static inline bool agfs_dstate_in_base(struct agfs_dstate p)
 {
+	/*
+	 * Only valid for staged dentries (non-passthrough).  For passthrough
+	 * dentries, base presence is determined by d_inode(dentry) != NULL.
+	 */
 	WARN_ON_ONCE(agfs_dstate_is_passthrough(p));
 	return (p.val >> 59) & 1;
 }
@@ -332,8 +336,6 @@ struct agfs_sb_info {
 	atomic_t		gen;		/* bumped on each checkpoint; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
 	bool			dirty;		/* data records written since last CKP/RST */
-	struct list_head	pinned_dirs;	/* dirs with staged child dentries */
-	spinlock_t		pinned_dirs_lock;/* protects pinned_dirs */
 
 	/* Permission gating */
 	bool			permission;	/* enable/disable toggle */
@@ -352,10 +354,6 @@ struct agfs_inode_info {
 	enum agfs_perm		cached_perm;
 	u64			perm_gen;
 
-	/* Pinned staged child dentries (protected by VFS i_rwsem) */
-	struct list_head	de_list;	/* linked list of pinned staged children */
-	struct list_head	de_pin;		/* node in sbi->pinned_dirs */
-
 	struct inode		vfs_inode;	/* must be last for container_of */
 };
 
@@ -365,7 +363,6 @@ struct agfs_dentry_info {
 	spinlock_t		lock;
 	struct path		lower_path;	/* resolved lower path (inode entry or base) */
 	struct agfs_dstate	dstate;		/* state: inode/link/tombstone */
-	struct list_head	de_node;	/* node in parent's de_list */
 	struct dentry		*dentry;	/* back-pointer (always valid) */
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
 	struct list_head	rule_pin;	/* node in sbi->pinned_rules */
@@ -507,18 +504,15 @@ extern const struct address_space_operations agfs_aops;
 
 /* dentry.c */
 extern const struct dentry_operations agfs_dops;
-extern const struct dentry_operations agfs_dops_fast;
 int agfs_init_dentry_cache(void);
 void agfs_destroy_dentry_cache(void);
-void agfs_pin_dir_if_first(struct agfs_inode_info *dii,
-			   struct agfs_sb_info *sbi);
-void agfs_stage_dentry(struct dentry *dentry, struct inode *dir,
-		       struct agfs_dstate dstate);
+void agfs_stage_dentry(struct dentry *dentry, struct agfs_dstate dstate);
 void agfs_unstage_dentry(struct agfs_dentry_info *di);
 struct dentry *agfs_add_tombstone(struct dentry *parent,
 				  const char *name, unsigned int len,
-				  struct inode *dir, unsigned char d_type);
-void agfs_remove_tombstone(struct dentry *tomb, struct inode *dir);
+				  unsigned char d_type);
+void agfs_remove_tombstone(struct dentry *tomb);
+void agfs_unstage_all(struct super_block *sb);
 
 /* lookup.c */
 struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
@@ -535,7 +529,6 @@ int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,
 		     const char *symname);
 int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 		struct file **new_file, int flags, bool truncate);
-void agfs_release_pinned_dirs(struct agfs_sb_info *sbi);
 
 /* journal.c */
 int agfs_journal_open(struct agfs_sb_info *sbi);

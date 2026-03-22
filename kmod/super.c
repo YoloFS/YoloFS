@@ -48,8 +48,6 @@ static struct inode *agfs_alloc_inode(struct super_block *sb)
 	i->lower_inode = NULL;
 	i->cached_perm = AGFS_PERM_NONE;
 	i->perm_gen = 0;
-	INIT_LIST_HEAD(&i->de_list);
-	INIT_LIST_HEAD(&i->de_pin);
 	return &i->vfs_inode;
 }
 
@@ -60,14 +58,10 @@ static void agfs_free_inode(struct inode *inode)
 
 static void agfs_evict_inode(struct inode *inode)
 {
-	struct agfs_inode_info *ii = AGFS_I(inode);
 	struct inode *lower_inode;
 
 	truncate_inode_pages(&inode->i_data, 0);
 	clear_inode(inode);
-
-	/* Pinned dirs are cleaned by agfs_release_pinned_dirs; warn if leaked */
-	WARN_ON_ONCE(!list_empty(&ii->de_list));
 
 	lower_inode = agfs_lower_inode(inode);
 	if (lower_inode)
@@ -160,8 +154,6 @@ static void agfs_init_sbi(struct agfs_sb_info *sbi,
 	atomic_set(&sbi->next_ino, 0);
 	atomic_set(&sbi->gen, 0);
 	atomic_set(&sbi->staging_fd_count, 0);
-	INIT_LIST_HEAD(&sbi->pinned_dirs);
-	spin_lock_init(&sbi->pinned_dirs_lock);
 }
 
 static int agfs_resolve_paths(struct agfs_sb_info *sbi,
@@ -241,17 +233,16 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		goto out_put;
 
 	/*
-	 * Choose dentry operations based on whether the lower filesystem
-	 * needs d_revalidate.  Local filesystems (ext4, xfs, …) don't,
-	 * so we use the fast dentry ops that skip d_revalidate entirely —
-	 * keeping lookup_fast in pure RCU-walk mode.  Remote filesystems
-	 * (NFS) set DCACHE_OP_REVALIDATE on their dentries, so we use
-	 * the full ops that proxy revalidation to the lower layer.
+	 * Reject lower filesystems that need d_revalidate (e.g. NFS).
+	 * AgFS only supports local filesystems (ext4, xfs, btrfs, …).
 	 */
-	if (sbi->base_path.dentry->d_flags & DCACHE_OP_REVALIDATE)
-		sb->s_d_op = &agfs_dops;
-	else
-		sb->s_d_op = &agfs_dops_fast;
+	if (sbi->base_path.dentry->d_flags & DCACHE_OP_REVALIDATE) {
+		pr_err("agfs: lower filesystem requires d_revalidate; "
+		       "only local filesystems are supported\n");
+		err = -EINVAL;
+		goto out_put;
+	}
+	sb->s_d_op = &agfs_dops;
 
 	/* Create root inode from lower root */
 	inode = agfs_iget(sb, d_inode(sbi->base_path.dentry));
@@ -346,7 +337,7 @@ static void agfs_kill_super(struct super_block *sb)
 
 	if (sbi) {
 		agfs_release_pinned_rules(sbi);
-		agfs_release_pinned_dirs(sbi);
+		agfs_unstage_all(sb);
 	}
 
 	/* Pre-prune cached dentries (especially those created by chroot

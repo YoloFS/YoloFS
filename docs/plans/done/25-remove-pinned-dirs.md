@@ -116,7 +116,7 @@ entries with no ambiguity.
       dget(dentry);    /* pin in dcache so it stays in d_children */
   }
   ```
-  Update call sites: inode.c:46, inode.c:244, staging.c:173.
+  Update call sites: inode.c:46, inode.c:271, staging.c:157.
 - `agfs_unstage_dentry()` (lines 149–155): remove `list_del_init(
   &di->de_node)`.  Becomes:
   ```c
@@ -130,24 +130,25 @@ entries with no ambiguity.
 - `agfs_add_tombstone()` (lines 165–183): remove `list_add` to `de_list`
   (line 180) and `agfs_pin_dir_if_first()` call (line 181).  Drop `dir`
   parameter (was only used for those two calls).  Update call sites:
-  inode.c:107, inode.c:262.
+  inode.c:95, inode.c:190.
 - `agfs_remove_tombstone()` (lines 190–195): remove `list_del_init` of
-  `de_node` (line 192).  Add `dstate = {0}` clear before `d_drop` so the
-  dentry is no longer identified as staged if it lingers in `d_children`:
+  `de_node` (line 192).  Drop `dir` parameter (unused after removal).
+  Add `dstate = {0}` clear before `d_drop` so the dentry is no longer
+  identified as staged if it lingers in `d_children`:
   ```c
-  void agfs_remove_tombstone(struct dentry *tomb, struct inode *dir)
+  void agfs_remove_tombstone(struct dentry *tomb)
   {
       AGFS_D(tomb)->dstate = (struct agfs_dstate){0};
       d_drop(tomb);
       dput(tomb);
   }
-  ```  Drop `dir` parameter (unused after removal).
-  Update call sites: inode.c:107, inode.c:262.
+  ```
+  Update call sites: inode.c:107, inode.c:289.
 - Remove `agfs_pin_dir_if_first()` function entirely (lines 116–125).
 
 ### 4. file.c — readdir
 
-- `agfs_fill_base()` (lines 350–377): replace `de_list` iteration with
+- `agfs_fill_base()` (lines 351–378): replace `de_list` iteration with
   `d_children` walk.  For each base entry name, look up in parent's
   `d_children` via `d_lookup()` and check `dstate.val != 0`:
   ```c
@@ -161,7 +162,7 @@ entries with no ambiguity.
   This is O(1) per base entry via dcache hash, same as Plan 22's Phase 2
   design (no `d_children` scan needed here).
 
-- `agfs_emit_dirents()` (lines 384–412): change parameter from
+- `agfs_emit_dirents()` (lines 385–413): change parameter from
   `struct inode *dir` to `struct dentry *parent` (caller passes
   `file_dentry(file)`).  Replace `de_list` iteration with `d_children`
   walk.  `dir_emit()` copies to userspace and can page-fault, so we
@@ -189,23 +190,26 @@ entries with no ambiguity.
 - `agfs_delete_entry()` (lines 85, 111): replace `!list_empty(&di->de_node)`
   with `!agfs_dstate_is_passthrough(di->dstate)`.
 
-- `agfs_rename()` (lines 172, 181, 232, 238): replace all
+- `agfs_rename()` (lines 168, 177, 255, 261): replace all
   `!list_empty(&…->de_node)` checks with
   `!agfs_dstate_is_passthrough(…->dstate)`.  Remove `list_del_init(
-  &old_di->de_node)` at line 238 (unstaging now handled by
+  &old_di->de_node)` at line 261 (unstaging now handled by
   `agfs_unstage_dentry()` which clears dstate and calls dput).
 
 ### 6. staging.c — COW and bulk cleanup
 
-- COW path (line 172): replace `list_empty(&di->de_node)` with
+- COW path (line 156): replace `list_empty(&di->de_node)` with
   `agfs_dstate_is_passthrough(di->dstate)`.
 
-- `agfs_release_pinned_dirs()` (lines 208–227): rewrite as a lockless
+- `agfs_release_pinned_dirs()` (lines 192–210): rewrite as a lockless
   recursive dentry tree walk from `sb->s_root`.  This function is only
-  called during restore (ioctl.c, line 713) and unmount (super.c,
+  called during restore (ioctl.c, line 702) and unmount (super.c,
   line 349) — both are exclusive contexts with no concurrent VFS
   operations (restore holds `staging_sem` write + checks
-  `staging_fd_count == 0`; unmount has no active references).
+  `staging_fd_count == 0`; unmount has no active references).  The
+  current implementation acquires `inode_lock` per directory, but this
+  is unnecessary in these exclusive contexts and is dropped in the
+  rewrite.
 
   Walk each directory's `d_children` with `hlist_for_each_entry_safe`:
   unstage any child with `dstate.val != 0`, and recurse into
@@ -242,11 +246,11 @@ entries with no ambiguity.
 
 ### 7. ioctl.c — restore path
 
-- Remove `list_add(&AGFS_D(child)->de_node, &dii->de_list)` (line 638).
+- Remove `list_add(&AGFS_D(child)->de_node, &dii->de_list)` (line 627).
   The child is already pinned with `dget()` (or equivalent) by the
   restore code and is in `d_children` after `d_add()`.
-- Remove `agfs_pin_dir_if_first(dii, sbi)` call (line 639).
-- Update `agfs_release_pinned_dirs()` call (line 713) to pass `sb`
+- Remove `agfs_pin_dir_if_first(dii, sbi)` call (line 628).
+- Update `agfs_release_pinned_dirs()` call (line 702) to pass `sb`
   instead of `sbi`.
 
 ### 8. super.c — unmount
