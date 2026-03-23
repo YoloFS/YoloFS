@@ -179,7 +179,7 @@ impl DirTree {
     ///                   Dstate
     ///                   child_count:le16  DirNode[child_count]   (children of this dir)
     ///   Dstate       := val:le64                                 (0 = Passthrough)
-    ///                   [base_len:le16  base_path:u8[base_len]  if BasePath]
+    ///                   [base_len:le16  base_path:u8[base_len]  if Redirect]
     ///
     /// Passthrough dirs emit val=0.  File nodes always have child_count=0.
     pub fn serialize(&self) -> Vec<u8> {
@@ -243,7 +243,7 @@ impl DirTree {
                 // gen bits [15:0] zeroed — kernel assigns new_gen
                 buf.extend_from_slice(&val.to_le_bytes());
             }
-            Dstate::BasePath {
+            Dstate::Redirect {
                 src,
                 dtype,
                 in_base,
@@ -386,8 +386,8 @@ impl DirTree {
                 match &mut node {
                     DirNode::File(d) => d.set_in_base(dst_in_base),
                     DirNode::Dir(d, _) if matches!(d, Dstate::Passthrough) => {
-                        // Intermediate dir being explicitly renamed — create BasePath
-                        *d = Dstate::BasePath {
+                        // Intermediate dir being explicitly renamed — create Redirect
+                        *d = Dstate::Redirect {
                             src: src_path.clone(),
                             dtype,
                             in_base: dst_in_base,
@@ -398,8 +398,8 @@ impl DirTree {
                 node
             }
             None => {
-                // No source node — base-only file. Create BasePath.
-                DirNode::leaf(Dstate::BasePath {
+                // No source node — base-only file. Create Redirect.
+                DirNode::leaf(Dstate::Redirect {
                     src: src_path.clone(),
                     dtype,
                     in_base: dst_in_base,
@@ -412,11 +412,11 @@ impl DirTree {
             self.place_tombstone(src_path, dtype);
         }
 
-        // Roundtrip collapse: if dest ends up as a BasePath pointing to itself,
+        // Roundtrip collapse: if dest ends up as a Redirect pointing to itself,
         // the rename chain was a no-op (e.g. a→b→a). Replace with Passthrough.
         let is_roundtrip = match &dst_node {
-            DirNode::File(Dstate::BasePath { src, .. })
-            | DirNode::Dir(Dstate::BasePath { src, .. }, _) => src == &dst_path,
+            DirNode::File(Dstate::Redirect { src, .. })
+            | DirNode::Dir(Dstate::Redirect { src, .. }, _) => src == &dst_path,
             _ => false,
         };
 
@@ -668,7 +668,7 @@ mod tests {
         // Base-only: Link at /b, Tombstone at /a
         assert_eq!(tree.len(), 2);
         assert!(matches!(tree.get("/a"), Some(Dstate::Tombstone { .. })));
-        assert!(matches!(tree.get("/b"), Some(Dstate::BasePath { src: from, .. }) if from == "/a"));
+        assert!(matches!(tree.get("/b"), Some(Dstate::Redirect { src: from, .. }) if from == "/a"));
     }
 
     // ── Replace (P) ──────────────────────────────────────────────────
@@ -679,7 +679,7 @@ mod tests {
         // P: dest in_base=true, source had base content → Tombstone at /a, Link at /b
         assert_eq!(tree.len(), 2);
         assert!(matches!(tree.get("/a"), Some(Dstate::Tombstone { .. })));
-        assert!(matches!(tree.get("/b"), Some(Dstate::BasePath { src: from, .. }) if from == "/a"));
+        assert!(matches!(tree.get("/b"), Some(Dstate::Redirect { src: from, .. }) if from == "/a"));
     }
 
     // ── Rename chain ──────────────────────────────────────────────────
@@ -690,7 +690,7 @@ mod tests {
         // a→b→c: Tombstone at /a, nothing at /b (not in base), Link at /c
         assert_eq!(tree.len(), 2);
         assert!(matches!(tree.get("/a"), Some(Dstate::Tombstone { .. })));
-        assert!(matches!(tree.get("/c"), Some(Dstate::BasePath { src: from, .. }) if from == "/a"));
+        assert!(matches!(tree.get("/c"), Some(Dstate::Redirect { src: from, .. }) if from == "/a"));
     }
 
     // ── Rename then delete ────────────────────────────────────────────
@@ -782,7 +782,7 @@ mod tests {
         let tree = build(&[delete("/b"), rename("/b", "/a")]);
         assert_eq!(tree.len(), 2);
         assert!(matches!(tree.get("/a"), Some(Dstate::Tombstone { .. })));
-        assert!(matches!(tree.get("/b"), Some(Dstate::BasePath { src: from, .. }) if from == "/a"));
+        assert!(matches!(tree.get("/b"), Some(Dstate::Redirect { src: from, .. }) if from == "/a"));
     }
 
     // ── Add then rename (staged rename) ───────────────────────────────
@@ -993,12 +993,12 @@ mod tests {
         assert!(!tree.is_empty(), "swap should produce dstates: {:?}", tree);
         // /a should be a Renamed from /b, /b should be a Renamed from /a
         assert!(
-            matches!(tree.get("/a"), Some(Dstate::BasePath { src: from, .. }) if from == "/b"),
+            matches!(tree.get("/a"), Some(Dstate::Redirect { src: from, .. }) if from == "/b"),
             "a should come from b: {:?}",
             tree
         );
         assert!(
-            matches!(tree.get("/b"), Some(Dstate::BasePath { src: from, .. }) if from == "/a"),
+            matches!(tree.get("/b"), Some(Dstate::Redirect { src: from, .. }) if from == "/a"),
             "b should come from a: {:?}",
             tree
         );
@@ -1046,7 +1046,7 @@ mod tests {
         assert!(matches!(tree.get("/old"), Some(Dstate::Tombstone { .. })));
         assert!(matches!(
             tree.get("/new"),
-            Some(Dstate::BasePath {
+            Some(Dstate::Redirect {
                 dtype: libc::DT_LNK,
                 ..
             })
@@ -1077,7 +1077,7 @@ mod tests {
         assert_eq!(tree.len(), 2);
         assert!(matches!(tree.get("/src"), Some(Dstate::Tombstone { .. })));
         assert!(
-            matches!(tree.get("/dst"), Some(Dstate::BasePath { src: from, dtype: libc::DT_DIR, .. }) if from == "/src")
+            matches!(tree.get("/dst"), Some(Dstate::Redirect { src: from, dtype: libc::DT_DIR, .. }) if from == "/src")
         );
     }
 
@@ -1107,7 +1107,7 @@ mod tests {
         assert_eq!(tree.len(), 2);
         assert!(matches!(tree.get("/old"), Some(Dstate::Tombstone { .. })));
         assert!(
-            matches!(tree.get("/new"), Some(Dstate::BasePath { src: from, dtype: libc::DT_DIR, .. }) if from == "/old")
+            matches!(tree.get("/new"), Some(Dstate::Redirect { src: from, dtype: libc::DT_DIR, .. }) if from == "/old")
         );
     }
 
@@ -1132,7 +1132,7 @@ mod tests {
             tree
         );
         assert!(
-            matches!(tree.get("/c"), Some(Dstate::BasePath { src: from, .. }) if from == "/a"),
+            matches!(tree.get("/c"), Some(Dstate::Redirect { src: from, .. }) if from == "/a"),
             "/c should be Link from /a: {:?}",
             tree
         );
@@ -1151,7 +1151,7 @@ mod tests {
             tree
         );
         assert!(
-            matches!(tree.get("/c"), Some(Dstate::BasePath { src: from, .. }) if from == "/a"),
+            matches!(tree.get("/c"), Some(Dstate::Redirect { src: from, .. }) if from == "/a"),
             "/c should be Link from /a: {:?}",
             tree
         );
@@ -1227,7 +1227,7 @@ mod tests {
         );
         // /other should have a Link dstate (from intermediate dir rename)
         assert!(
-            matches!(tree.get("/other"), Some(Dstate::BasePath { src: from, .. }) if from == "/a/b"),
+            matches!(tree.get("/other"), Some(Dstate::Redirect { src: from, .. }) if from == "/a/b"),
             "/other should be Link from /a/b: {:?}",
             tree
         );
@@ -1700,7 +1700,7 @@ mod tests {
         let mut tree = DirTree::new();
         tree.nodes.insert(
             "link".to_string(),
-            DirNode::File(Dstate::BasePath {
+            DirNode::File(Dstate::Redirect {
                 src: "a".repeat(u16::MAX as usize + 1),
                 dtype: libc::DT_REG,
                 in_base: false,

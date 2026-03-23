@@ -100,7 +100,7 @@ mod tests {
 
         assert!(matches!(tree.get("/a.txt"), Some(Dstate::Tombstone { .. })));
         assert!(
-            matches!(tree.get("/b.txt"), Some(Dstate::BasePath { src, .. }) if src == "/a.txt")
+            matches!(tree.get("/b.txt"), Some(Dstate::Redirect { src, .. }) if src == "/a.txt")
         );
     }
 

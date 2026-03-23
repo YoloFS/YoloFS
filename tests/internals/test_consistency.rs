@@ -52,7 +52,7 @@ fn assert_overlay_visible(s: &AgfsSession) {
 
     let infer_dtype = |path: &str, dstate: &Dstate| -> u8 {
         match dstate {
-            Dstate::StagedInode { dtype, .. } | Dstate::BasePath { dtype, .. } => {
+            Dstate::StagedInode { dtype, .. } | Dstate::Redirect { dtype, .. } => {
                 if *dtype != libc::DT_REG {
                     return *dtype;
                 }
@@ -111,7 +111,7 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     );
                 }
             }
-            Dstate::BasePath { .. } => {
+            Dstate::Redirect { .. } => {
                 let meta = mnt
                     .symlink_metadata()
                     .unwrap_or_else(|e| panic!("overlay link at '/{rel}' should be visible: {e}"));
@@ -154,7 +154,7 @@ fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
     for component in rel_dir.split('/') {
         tree_path = format!("{tree_path}/{component}");
         let link_target = cli.get(&tree_path).and_then(|d| {
-            if let Dstate::BasePath {
+            if let Dstate::Redirect {
                 src,
                 dtype: libc::DT_DIR,
                 ..

@@ -662,7 +662,7 @@ fn complex_multi_operation_commit() {
             }
             // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
             // Tree builder preserves original base path through rename chains.
-            if let Dstate::BasePath { src, .. } = dstate {
+            if let Dstate::Redirect { src, .. } = dstate {
                 if src.ends_with("/subdir/deep.txt") && path.ends_with("/top.txt") {
                     has_renamed_deep_to_top = true;
                 }

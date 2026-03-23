@@ -100,7 +100,7 @@ fn print_change(agfs: &Path, path: &str, dstate: &Dstate, verbose: bool) {
                 print_unified_diff(&read_base(path), "");
             }
         }
-        Dstate::BasePath { src, .. } => {
+        Dstate::Redirect { src, .. } => {
             println!("{} → {} {}", src.bold(), path.bold(), "(renamed)".cyan());
         }
         Dstate::Passthrough => {}
@@ -247,7 +247,7 @@ mod tests {
                 Dstate::Tombstone { .. } => {
                     map.insert(path.as_str(), None);
                 }
-                Dstate::BasePath { src, .. } => {
+                Dstate::Redirect { src, .. } => {
                     map.insert(src.as_str(), None);
                     map.insert(path.as_str(), Some(read_base(src)));
                 }
@@ -329,7 +329,7 @@ mod tests {
         let tmp = make_agfs(&[]);
         let dstates = vec![(
             "/nonexistent/new.rs".into(),
-            Dstate::BasePath {
+            Dstate::Redirect {
                 src: "/nonexistent/old.rs".into(),
                 dtype: libc::DT_REG,
                 in_base: false,
@@ -348,7 +348,7 @@ mod tests {
         let dstates = vec![
             (
                 "/nonexistent/new.rs".into(),
-                Dstate::BasePath {
+                Dstate::Redirect {
                     src: "/nonexistent/old.rs".into(),
                     dtype: libc::DT_REG,
                     in_base: false,
