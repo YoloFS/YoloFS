@@ -17,22 +17,6 @@ use std::fs;
 use std::path::Path;
 
 fn parse_dtype(field: &[u8]) -> Option<u8> {
-    if field.len() == 1 {
-        let mapped = match field[0] {
-            b'f' => Some(libc::DT_REG),
-            b'd' => Some(libc::DT_DIR),
-            b'l' => Some(libc::DT_LNK),
-            b'b' => Some(libc::DT_BLK),
-            b'c' => Some(libc::DT_CHR),
-            b'p' => Some(libc::DT_FIFO),
-            b's' => Some(libc::DT_SOCK),
-            _ => None,
-        };
-        if mapped.is_some() {
-            return mapped;
-        }
-    }
-
     let s = std::str::from_utf8(field).ok()?;
     let val = s.parse::<u8>().ok()?;
     dtype_valid(val).then_some(val)
@@ -204,33 +188,6 @@ mod tests {
         ));
         assert!(matches!(
             &records[1],
-            Record::Action(Action::Add {
-                dtype: Some(libc::DT_LNK),
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn parse_char_dtypes() {
-        let records = parse(b"A\0/dir\0d\01\nA\0/file\0f\02\nA\0/link\0l\03\n").unwrap();
-        assert_eq!(records.len(), 3);
-        assert!(matches!(
-            &records[0],
-            Record::Action(Action::Add {
-                dtype: Some(libc::DT_DIR),
-                ..
-            })
-        ));
-        assert!(matches!(
-            &records[1],
-            Record::Action(Action::Add {
-                dtype: Some(libc::DT_REG),
-                ..
-            })
-        ));
-        assert!(matches!(
-            &records[2],
             Record::Action(Action::Add {
                 dtype: Some(libc::DT_LNK),
                 ..
