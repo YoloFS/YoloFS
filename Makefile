@@ -61,11 +61,11 @@ test-e2e: install | $(TARGET_DIR)
 
 lint: | $(TARGET_DIR)
 	cargo fmt --check
-	cargo clippy -- -D warnings
+	cargo clippy --release -- -D warnings
 
 fix: | $(TARGET_DIR)
 	cargo fmt
-	cargo clippy --fix --allow-dirty
+	cargo clippy --release --fix --allow-dirty
 
 # ── Bench ─────────────────────────────────────────────────────────────
 
