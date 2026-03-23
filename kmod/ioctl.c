@@ -425,10 +425,84 @@ struct dir_frame {
 	u16 remaining;
 };
 
+/*
+ * Parse the kind-specific payload from @cur and inject the corresponding
+ * dentry under @parent.  PASSTHROUGH entries have no payload.
+ */
+static int restore_inject_entry(struct tree_cursor *cur,
+				struct agfs_sb_info *sbi,
+				struct dentry *parent,
+				const u8 *name_ptr, u16 name_len,
+				u8 kind, u16 gen)
+{
+	struct super_block *sb = parent->d_sb;
+	struct path lower_path;
+	u8 in_base_byte;
+	int err;
+
+	switch (kind) {
+	case AGFS_DKIND_PASSTHROUGH:
+		return 0;
+
+	case AGFS_DKIND_TOMBSTONE:
+		if (!agfs_dentry_add_tombstone(parent,
+					       (const char *)name_ptr,
+					       name_len))
+			return -ENOMEM;
+		return 0;
+
+	case AGFS_DKIND_STAGED_INODE: {
+		u32 ino;
+
+		err = read_le32(cur, &ino);
+		if (err)
+			return err;
+		err = read_u8(cur, &in_base_byte);
+		if (err || in_base_byte > 1)
+			return err ?: -EINVAL;
+		err = agfs_inode_path(sbi, ino, &lower_path);
+		if (err)
+			return err;
+		return agfs_dentry_inject(parent, name_ptr, name_len, sb,
+					  &lower_path, AGFS_DKIND_STAGED_INODE,
+					  in_base_byte, gen);
+	}
+
+	case AGFS_DKIND_REDIRECT: {
+		char path_buf[AGFS_PATH_MAX];
+		const u8 *base_ptr;
+		u16 base_len;
+
+		err = read_le16(cur, &base_len);
+		if (err)
+			return err;
+		if (base_len == 0 || base_len >= AGFS_PATH_MAX)
+			return -EINVAL;
+		err = read_bytes(cur, base_len, &base_ptr);
+		if (err)
+			return err;
+		err = read_u8(cur, &in_base_byte);
+		if (err || in_base_byte > 1)
+			return err ?: -EINVAL;
+
+		memcpy(path_buf, base_ptr, base_len);
+		path_buf[base_len] = '\0';
+		err = kern_path(path_buf, LOOKUP_FOLLOW, &lower_path);
+		if (err)
+			return err;
+		return agfs_dentry_inject(parent, name_ptr, name_len, sb,
+					  &lower_path, AGFS_DKIND_REDIRECT,
+					  in_base_byte, gen);
+	}
+
+	default:
+		return -EINVAL;
+	}
+}
+
 static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 			       struct agfs_ioc_restore *hdr, u16 gen)
 {
-	struct super_block *sb = file_inode(file)->i_sb;
 	struct dir_frame stack[AGFS_RESTORE_MAX_DEPTH];
 	struct tree_cursor cur;
 	u8 *kbuf;
@@ -460,14 +534,14 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 	if (root_count == 0)
 		goto check_trailing;
 
-	stack[0].dentry = dget(sb->s_root);
+	stack[0].dentry = dget(file_inode(file)->i_sb->s_root);
 	stack[0].remaining = root_count;
 	depth = 0;
 
 	while (depth >= 0) {
 		u16 name_len, child_count;
 		const u8 *name_ptr;
-		u8 kind, in_base_byte;
+		u8 kind;
 
 		if (stack[depth].remaining == 0) {
 			dput(stack[depth].dentry);
@@ -488,92 +562,14 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 		if (err)
 			goto out_unwind;
 
-		/* Read dstate kind */
+		/* Read and handle entry kind */
 		err = read_u8(&cur, &kind);
 		if (err)
 			goto out_unwind;
-
-		if (kind != AGFS_DKIND_PASSTHROUGH) {
-			switch (kind) {
-			case AGFS_DKIND_TOMBSTONE:
-				if (!agfs_dentry_add_tombstone(
-						stack[depth].dentry,
-						(const char *)name_ptr,
-						name_len)) {
-					err = -ENOMEM;
-					goto out_unwind;
-				}
-				break;
-
-			case AGFS_DKIND_STAGED_INODE: {
-				struct path lower_path;
-				u32 ino;
-
-				err = read_le32(&cur, &ino);
-				if (err)
-					goto out_unwind;
-				err = read_u8(&cur, &in_base_byte);
-				if (err || in_base_byte > 1) {
-					err = err ?: -EINVAL;
-					goto out_unwind;
-				}
-				err = agfs_inode_path(sbi, ino, &lower_path);
-				if (err)
-					goto out_unwind;
-				err = agfs_dentry_inject(
-						stack[depth].dentry,
-						name_ptr, name_len,
-						sb, &lower_path,
-						AGFS_DKIND_STAGED_INODE,
-						in_base_byte, gen);
-				if (err)
-					goto out_unwind;
-				break;
-			}
-
-			case AGFS_DKIND_REDIRECT: {
-				struct path lower_path;
-				char path_buf[AGFS_PATH_MAX];
-				const u8 *base_ptr;
-				u16 base_len;
-
-				err = read_le16(&cur, &base_len);
-				if (err)
-					goto out_unwind;
-				if (base_len == 0 || base_len >= AGFS_PATH_MAX) {
-					err = -EINVAL;
-					goto out_unwind;
-				}
-				err = read_bytes(&cur, base_len, &base_ptr);
-				if (err)
-					goto out_unwind;
-				err = read_u8(&cur, &in_base_byte);
-				if (err || in_base_byte > 1) {
-					err = err ?: -EINVAL;
-					goto out_unwind;
-				}
-
-				memcpy(path_buf, base_ptr, base_len);
-				path_buf[base_len] = '\0';
-				err = kern_path(path_buf, LOOKUP_FOLLOW,
-						&lower_path);
-				if (err)
-					goto out_unwind;
-				err = agfs_dentry_inject(
-						stack[depth].dentry,
-						name_ptr, name_len,
-						sb, &lower_path,
-						AGFS_DKIND_REDIRECT,
-						in_base_byte, gen);
-				if (err)
-					goto out_unwind;
-				break;
-			}
-			default:
-				err = -EINVAL;
-				goto out_unwind;
-			}
-		}
+		err = restore_inject_entry(&cur, sbi, stack[depth].dentry,
+					   name_ptr, name_len, kind, gen);
+		if (err)
+			goto out_unwind;
 
 		/* Read child_count */
 		err = read_le16(&cur, &child_count);
