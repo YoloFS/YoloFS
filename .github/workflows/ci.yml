@@ -18,14 +18,6 @@ jobs:
       - name: Install dependencies
         run: ./install_deps.sh
 
-      - name: Auto-fix lint
-        run: |
-          make fix
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --quiet || (git commit -m "style: auto-fix lint" && git push)
-
       - name: Build and install
         run: make install
 
@@ -37,3 +29,11 @@ jobs:
 
       - name: Example script
         run: ./example.sh
+
+      - name: Auto-fix lint
+        run: |
+          make fix
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || (git commit -m "style: auto-fix lint" && git push)
