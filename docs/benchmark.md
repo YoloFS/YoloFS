@@ -411,11 +411,9 @@ place agfs in context relative to alternatives.
 | `agfs-realistic` | Kernel stackable fs; workload-defined rules | no (setuid) | yes |
 | `overlayfs` | User-namespace overlayfs; replay upper on commit | no (user-ns) | yes |
 | `branchfs` | FUSE copy-on-write branches; `branchfs commit` | no | yes |
-| `try` | Shell wrapper around overlayfs (`try` tool) | no (user-ns) | **hidden** |
-| `btrfs` | btrfs subvolume checkpoint; rsync back on commit | yes (cap) | not yet |
 
 `agfs-bench` does **not** need to run as root. The agfs binary is setuid,
-overlayfs and `try` use user namespaces, and branchfs runs in userspace. Only
+overlayfs uses user namespaces, and branchfs runs in userspace. Only
 the profiler (§7) invokes `sudo` internally for `perf` and `bpftrace`.
 
 ### agfs backends
@@ -454,20 +452,6 @@ tool. Each iteration:
 
 This gives a clean measurement of overlayfs overhead without shell noise.
 
-### try (hidden)
-
-`try` is a shell script that wraps overlayfs in a user namespace. It is
-**hidden by default** because its shell-based setup (forking ~90 subprocesses,
-exec'ing ~130 commands per invocation) adds ~400ms of overhead unrelated to the
-staging mechanism being measured. The `overlayfs` backend measures the same
-underlying mechanism without this noise.
-
-To include `try` in a run: `agfs-bench --backend try`.
-
-The adapter uses a self-exec pattern: it invokes
-`try -n -D <sandbox> -- agfs-bench exec-workload …` (no auto-commit), then
-calls `try commit <sandbox>` as the commit step.
-
 ### branchfs
 
 `branchfs` is a FUSE filesystem (from `bench/third_party/branchfs`) that provides
@@ -479,30 +463,6 @@ O(1) branch creation and atomic commit-to-parent semantics. Each iteration:
 3. Runs the workload inside the mount (via `exec-workload` subprocess).
 4. Commits the branch (`branchfs commit <mnt>`).
 5. Unmounts (`branchfs unmount <mnt>`).
-
-### btrfs
-
-**Not yet implemented.** Design:
-
-btrfs subvolume checkpoints are O(1) copy-on-write clones within a btrfs volume.
-Because the root filesystem is ext4, btrfs requires a dedicated raw disk
-provided by the user (e.g. `/dev/sdb`). The bench tool would handle all setup
-automatically and idempotently:
-
-1. **`mkfs`**: if the device does not already contain a btrfs filesystem,
-   `mkfs.btrfs` is run once.
-2. **Mount**: if `/mnt/btrfs-bench` is not already mounted, the device is
-   mounted there.
-3. **Base subvolume**: if `/mnt/btrfs-bench/<workload>/base` does not exist,
-   it is created as a btrfs subvolume and the fixture is copied into it.
-
-The device would be specified via `--btrfs-device <path>`. If the flag is
-omitted the btrfs backend is skipped.
-
-Each iteration:
-1. Takes an O(1) checkpoint of `base` → `work`.
-2. Runs the workload inside the checkpoint.
-3. On commit, syncs changes back to `base` via rsync and deletes the checkpoint.
 
 ---
 
@@ -528,17 +488,15 @@ total = init_time + staging_time + commit_time
 | `native` | — | workload | — |
 | `agfs-*` | `agfs mount` | workload | `agfs commit` |
 | `overlayfs` | `unshare` + `mount -t overlay` | workload | replay upper → lower |
-| `try` | shell namespace setup | workload | `try commit` |
 | `branchfs` | `branchfs mount` + `create` | workload | `branchfs commit` |
-| `btrfs` | `btrfs subvolume checkpoint` | workload | rsync + delete |
 
 Every backend runs the workload as a subprocess via the `exec-workload`
 subcommand. The subprocess prints a `READY` marker to stdout just before it
 starts the workload. The parent watches for this marker — wall time before it
-arrives is startup overhead (process spawn, or for `try`/`overlayfs`, full
+arrives is startup overhead (process spawn, or for `overlayfs`, full
 namespace + overlayfs setup), wall time after is staging. For backends with a
 separate init step (agfs, branchfs), init is measured in the parent before
-spawning the subprocess; for `try` and `overlayfs`, init *is* the startup time
+spawning the subprocess; for `overlayfs`, init *is* the startup time
 reported by the subprocess protocol.
 
 All timings are taken with `std::time::Instant` inside the bench binary.
@@ -614,7 +572,6 @@ bench/src/
     native.rs
     agfs.rs        — agfs-no-perm + agfs-realistic + ProfileSession
     overlayfs.rs   — direct overlayfs in user namespace
-    try_backend.rs — try shell wrapper (hidden)
     branchfs.rs
   workload.rs      — Workload trait + IterResult
   workloads/
@@ -643,8 +600,7 @@ Each backend implements `available()`, `unavailable_reason()`, and `hidden()`.
 
 - **Unavailable** backends are missing required tools; they are always skipped.
 - **Hidden** backends are functional but excluded from default runs because
-  they add noise (e.g. `try`'s shell overhead dominates the overlayfs cost it
-  aims to measure). Use `--backend <name>` to run them explicitly.
+  they add noise. Use `--backend <name>` to run them explicitly.
 
 `agfs-bench list` shows all backends with their status.
 
@@ -652,7 +608,6 @@ Each backend implements `available()`, `unavailable_reason()`, and `hidden()`.
 
 | Tool | Source | Install |
 |---|---|---|
-| `try` | `bench/third_party/try/` | `make -C bench install-try` |
 | `branchfs` | `bench/third_party/branchfs/` | `make -C bench install-branchfs` |
 
 ### CLI
@@ -674,7 +629,7 @@ agfs-bench exec-workload --name <name> --dest <path> [--verbose]
   to metadata workloads or fio workloads only.
 - `--workload` / `--backend`: filter to a specific combination. `--workload`
   may be repeated to run multiple named workloads. `--backend` overrides
-  hidden status, so `--backend try` will run `try`.
+  hidden status for any backend.
 - For source-variant metadata workloads, `--workload` accepts either an
   individual variant (for example `meta-append-stage`) or the group name
   (for example `meta-append`), which expands to

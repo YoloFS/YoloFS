@@ -9,7 +9,7 @@ use std::path::Path;
 ///
 /// Phases: `init` (mount/checkpoint), `staging` (workload), `commit` (apply).
 /// Any phase may be None if the backend doesn't have that step (e.g. native
-/// has no phases, try has no separable init).
+/// has no phases).
 ///
 /// For Op workloads, `op_result` carries self-reported metrics; the phase
 /// timings are not meaningful.

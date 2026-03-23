@@ -1,6 +1,6 @@
 //! Shared helpers for paper artifact generation.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::process::Command;
 
@@ -13,8 +13,6 @@ pub fn backend_display_name(name: &str) -> &'static str {
         "agfs" => "AgFS",
         "overlayfs" => "OverlayFS",
         "branchfs" => "BranchFS",
-        "try" => "Try",
-        "btrfs" => "Btrfs",
         _ => "Unknown",
     }
 }

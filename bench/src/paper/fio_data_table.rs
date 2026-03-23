@@ -1,10 +1,10 @@
 //! Publication table: fio data-operation throughput summary.
 
-use super::Artifact;
 use super::util::{backend_display_name, latex_escape, run_pdflatex_cropped};
-use crate::BenchResults;
+use super::Artifact;
 use crate::workload::WorkloadKind;
 use crate::workloads;
+use crate::BenchResults;
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -295,13 +295,12 @@ fn collect_data(
         }
     }
 
-    for name in ["overlayfs", "branchfs", "try"] {
+    for name in ["overlayfs", "branchfs"] {
         if op_rows.iter().any(|(_, v)| v.contains_key(name)) {
             columns.push(Column {
                 key: match name {
                     "overlayfs" => "overlayfs",
                     "branchfs" => "branchfs",
-                    "try" => "try",
                     _ => unreachable!(),
                 },
                 display: backend_display_name(name),
@@ -374,7 +373,11 @@ impl FioDims {
     }
 
     fn locality_label(&self) -> &'static str {
-        if self.cold { "cold" } else { "warm" }
+        if self.cold {
+            "cold"
+        } else {
+            "warm"
+        }
     }
 }
 

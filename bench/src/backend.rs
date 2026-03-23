@@ -1,7 +1,7 @@
 // Backend trait — abstraction over staging/commit mechanisms.
 
 use crate::workload::{CheckpointLatencySeries, IterResult, OpResult, Workload};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::io::BufRead;
 use std::path::Path;
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -64,8 +64,7 @@ pub struct SubprocessResult {
 }
 
 /// Build the base `Command` for `exec-workload`. Backends that run the
-/// workload directly (native, agfs, branchfs) use this as-is. The `try`
-/// backend wraps it inside `try -n -D <sandbox> -- ...`.
+/// workload directly (native, agfs, overlayfs, branchfs) use this as-is.
 pub fn exec_workload_cmd(
     workload_name: &str,
     dest: &Path,

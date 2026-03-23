@@ -542,8 +542,6 @@ fn backend_color(backend: &str) -> &'static str {
         "agfs-realistic" => "#4F772D",
         "overlayfs" => "#C1666B",
         "branchfs" => "#D17B0F",
-        "try" => "#6C757D",
-        "btrfs" => "#7A5CFA",
         _ => "#4C6EF5",
     }
 }
