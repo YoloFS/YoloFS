@@ -915,24 +915,18 @@ fn restore_deep_tree_near_max_depth() {
         fs::create_dir(s.mnt_path(&path)).unwrap_or_else(|e| {
             panic!("mkdir {path} at depth {i}: {e}");
         });
-        fs::write(
-            s.mnt_path(&format!("{path}/f.txt")),
-            format!("depth-{i}\n"),
-        )
-        .unwrap_or_else(|e| {
-            panic!("write f.txt at depth {i}: {e}");
-        });
+        fs::write(s.mnt_path(&format!("{path}/f.txt")), format!("depth-{i}\n")).unwrap_or_else(
+            |e| {
+                panic!("write f.txt at depth {i}: {e}");
+            },
+        );
     }
 
     s.cli(&["checkpoint", "deep"]).expect("checkpoint");
 
     // Modify files at the deepest and shallowest levels.
     fs::write(s.mnt_path("d0/f.txt"), "modified\n").expect("modify shallow");
-    fs::write(
-        s.mnt_path(&format!("{path}/f.txt")),
-        "modified\n",
-    )
-    .expect("modify deep");
+    fs::write(s.mnt_path(&format!("{path}/f.txt")), "modified\n").expect("modify deep");
 
     s.cli(&["restore", "deep"]).expect("restore");
 

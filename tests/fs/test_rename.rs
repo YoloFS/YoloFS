@@ -598,10 +598,14 @@ fn complex_multi_operation_commit() {
     ) = (false, false, false, false, false, false, false);
 
     t.for_each(|path, dstate| {
-        if matches!(dstate, Dstate::StagedInode { in_base: true, .. }) && path.ends_with("/hello.txt") {
+        if matches!(dstate, Dstate::StagedInode { in_base: true, .. })
+            && path.ends_with("/hello.txt")
+        {
             has_modified_hello = true;
         }
-        if matches!(dstate, Dstate::StagedInode { in_base: true, .. }) && path.ends_with("/multi.txt") {
+        if matches!(dstate, Dstate::StagedInode { in_base: true, .. })
+            && path.ends_with("/multi.txt")
+        {
             has_modified_multi = true;
         }
         // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
@@ -620,7 +624,9 @@ fn complex_multi_operation_commit() {
         if matches!(dstate, Dstate::Tombstone { .. }) && path.ends_with("/deep.txt") {
             has_deleted_deep = true;
         }
-        if matches!(dstate, Dstate::StagedInode { in_base: false, .. }) && path.ends_with("/link.txt") {
+        if matches!(dstate, Dstate::StagedInode { in_base: false, .. })
+            && path.ends_with("/link.txt")
+        {
             has_added_link = true;
         }
         if path.ends_with("/temp.txt") {
@@ -631,24 +637,15 @@ fn complex_multi_operation_commit() {
         }
     });
 
-    assert!(
-        has_modified_hello,
-        "expected Modified(hello.txt): {t:?}"
-    );
-    assert!(
-        has_modified_multi,
-        "expected Modified(multi.txt): {t:?}"
-    );
+    assert!(has_modified_hello, "expected Modified(hello.txt): {t:?}");
+    assert!(has_modified_multi, "expected Modified(multi.txt): {t:?}");
     assert!(
         has_renamed_deep_to_top,
         "expected Renamed(subdir/deep.txt → top.txt): {t:?}"
     );
     assert!(has_deleted_deep, "expected Deleted(deep.txt): {t:?}");
     assert!(has_added_link, "expected Added(link.txt): {t:?}");
-    assert!(
-        !has_temp,
-        "temp.txt should have cancelled out (A+D): {t:?}"
-    );
+    assert!(!has_temp, "temp.txt should have cancelled out (A+D): {t:?}");
     assert!(
         !has_brand_new,
         "brand_new.txt should not appear (staged rename absorbed): {t:?}"

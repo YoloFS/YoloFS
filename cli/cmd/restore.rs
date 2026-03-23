@@ -83,7 +83,10 @@ mod tests {
             },
         ]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/old.txt"), Some(Dstate::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/old.txt"),
+            Some(Dstate::Tombstone { .. })
+        ));
     }
 
     #[test]
@@ -95,7 +98,9 @@ mod tests {
         }]);
 
         assert!(matches!(tree.get("/a.txt"), Some(Dstate::Tombstone { .. })));
-        assert!(matches!(tree.get("/b.txt"), Some(Dstate::Redirect { src, .. }) if src == "/a.txt"));
+        assert!(
+            matches!(tree.get("/b.txt"), Some(Dstate::Redirect { src, .. }) if src == "/a.txt")
+        );
     }
 
     #[test]
@@ -113,8 +118,14 @@ mod tests {
             },
         ]);
 
-        assert!(matches!(tree.get("/new.rs"), Some(Dstate::StagedInode { ino: 5, .. })));
-        assert!(matches!(tree.get("/old.rs"), Some(Dstate::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/new.rs"),
+            Some(Dstate::StagedInode { ino: 5, .. })
+        ));
+        assert!(matches!(
+            tree.get("/old.rs"),
+            Some(Dstate::Tombstone { .. })
+        ));
     }
 
     #[test]

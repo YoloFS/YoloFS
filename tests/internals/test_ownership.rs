@@ -2,7 +2,7 @@ use crate::helpers::AgfsSession;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
-use super::helpers::{tree, ino_for, inode_path};
+use super::helpers::{ino_for, inode_path, tree};
 
 /// A newly created file's inode in the store should be owned by the
 /// calling user, not root.

@@ -100,5 +100,6 @@ fn commit_rejects_while_staging_fd_open() {
     );
 
     drop(_fd);
-    s.cli(&["commit"]).expect("commit should succeed after fd close");
+    s.cli(&["commit"])
+        .expect("commit should succeed after fd close");
 }

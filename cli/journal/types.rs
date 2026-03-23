@@ -16,7 +16,6 @@ pub fn dtype_valid(val: u8) -> bool {
     )
 }
 
-
 /// A data mutation applied to the dir tree (A/M/D/R/P).
 #[derive(Debug, Clone)]
 pub enum Action {

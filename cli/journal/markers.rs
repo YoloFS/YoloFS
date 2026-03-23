@@ -41,9 +41,10 @@ impl Markers {
         }
         let idx = gen_id as usize;
         if let Some(Marker::Checkpoint { gen_id: g, name }) = self.0.get(idx)
-                && *g == gen_id {
-                    return Ok((*g, name));
-                }
+            && *g == gen_id
+        {
+            return Ok((*g, name));
+        }
         anyhow::bail!("checkpoint not found: {gen_id}");
     }
 
@@ -298,12 +299,10 @@ mod tests {
 
     #[test]
     fn find_checkpoint_by_gen_id_rejects_phantom() {
-        let records = vec![
-            Record::Marker(Marker::Checkpoint {
-                gen_id: 1,
-                name: "c1".into(),
-            }),
-        ];
+        let records = vec![Record::Marker(Marker::Checkpoint {
+            gen_id: 1,
+            name: "c1".into(),
+        })];
         let j = Journal::new(records);
         assert!(
             j.markers.find_checkpoint_by_gen_id(0).is_err(),
@@ -353,12 +352,10 @@ mod tests {
 
     #[test]
     fn segment_range_at_rejects_phantom_id() {
-        let records = vec![
-            Record::Marker(Marker::Checkpoint {
-                gen_id: 1,
-                name: "c1".into(),
-            }),
-        ];
+        let records = vec![Record::Marker(Marker::Checkpoint {
+            gen_id: 1,
+            name: "c1".into(),
+        })];
         let j = Journal::new(records);
         assert!(
             j.markers

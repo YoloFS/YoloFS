@@ -1,10 +1,10 @@
 //! Publication table: fio data-operation throughput summary.
 
-use super::util::{backend_display_name, latex_escape, run_pdflatex_cropped};
 use super::Artifact;
-use crate::workloads;
-use crate::workload::WorkloadKind;
+use super::util::{backend_display_name, latex_escape, run_pdflatex_cropped};
 use crate::BenchResults;
+use crate::workload::WorkloadKind;
+use crate::workloads;
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -17,8 +17,7 @@ pub fn render(results: &BenchResults, paper_dir: &Path) -> Result<Artifact> {
     let tex_path = paper_dir.join("op-data-summary.tex");
 
     let tex = build_tex(results)?;
-    std::fs::write(&tex_path, &tex)
-        .with_context(|| format!("writing {}", tex_path.display()))?;
+    std::fs::write(&tex_path, &tex).with_context(|| format!("writing {}", tex_path.display()))?;
 
     let pdf_path = match run_pdflatex_cropped(&tex_path, paper_dir) {
         Ok(p) => Some(p),
@@ -33,7 +32,9 @@ pub fn render(results: &BenchResults, paper_dir: &Path) -> Result<Artifact> {
         title: "Data-op throughput summary (fio)".to_string(),
         preferred: true,
         tex_path: format!("paper/{}", tex_path.file_name().unwrap().to_string_lossy()),
-        pdf_path: pdf_path.as_ref().map(|p| format!("paper/{}", p.file_name().unwrap().to_string_lossy())),
+        pdf_path: pdf_path
+            .as_ref()
+            .map(|p| format!("paper/{}", p.file_name().unwrap().to_string_lossy())),
         tex_abs: tex_path.to_path_buf(),
         plot_pdfs: vec![], // table has no plot PDFs
     })
@@ -84,9 +85,7 @@ fn build_tex(results: &BenchResults) -> Result<String> {
     for _ in &columns {
         col_spec.push('c');
     }
-    tex.push_str(&format!(
-        "\\begin{{tabular}}{{{col_spec}}}\n\\toprule\n"
-    ));
+    tex.push_str(&format!("\\begin{{tabular}}{{{col_spec}}}\n\\toprule\n"));
 
     // Header row: "Workload" with right border, Base with both borders.
     tex.push_str("\\multicolumn{3}{l|}{Workload}");
@@ -173,9 +172,7 @@ fn build_tex(results: &BenchResults) -> Result<String> {
                     };
                     // Wrap the Base column in \multicolumn to get vertical rules.
                     if ci == 0 {
-                        tex.push_str(&format!(
-                            " & \\multicolumn{{1}}{{|c|}}{{{rendered}}}"
-                        ));
+                        tex.push_str(&format!(" & \\multicolumn{{1}}{{|c|}}{{{rendered}}}"));
                     } else {
                         tex.push_str(&format!(" & {rendered}"));
                     }
@@ -210,7 +207,10 @@ struct Column {
 
 fn collect_data(
     results: &BenchResults,
-) -> (Vec<Column>, Vec<(String, std::collections::BTreeMap<String, u64>)>) {
+) -> (
+    Vec<Column>,
+    Vec<(String, std::collections::BTreeMap<String, u64>)>,
+) {
     let mut op_rows: Vec<(String, std::collections::BTreeMap<String, u64>)> = Vec::new();
 
     for wl in &results.workloads {
@@ -278,10 +278,7 @@ fn collect_data(
             });
         }
     } else {
-        if op_rows
-            .iter()
-            .any(|(_, v)| v.contains_key("agfs-no-perm"))
-        {
+        if op_rows.iter().any(|(_, v)| v.contains_key("agfs-no-perm")) {
             columns.push(Column {
                 key: "agfs-no-perm",
                 display: backend_display_name("agfs-no-perm"),
@@ -377,11 +374,7 @@ impl FioDims {
     }
 
     fn locality_label(&self) -> &'static str {
-        if self.cold {
-            "cold"
-        } else {
-            "warm"
-        }
+        if self.cold { "cold" } else { "warm" }
     }
 }
 

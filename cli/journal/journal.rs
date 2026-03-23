@@ -21,8 +21,10 @@ impl Journal {
     /// Build from parsed journal records.
     pub fn new(records: Vec<Record>) -> Self {
         let mut segments = Vec::new();
-        let mut markers_vec: Vec<Marker> =
-            vec![Marker::Checkpoint { gen_id: 0, name: "(initial)".into() }];
+        let mut markers_vec: Vec<Marker> = vec![Marker::Checkpoint {
+            gen_id: 0,
+            name: "(initial)".into(),
+        }];
         let mut current_records: Vec<Action> = Vec::new();
         let mut current_from: u64 = 0;
 

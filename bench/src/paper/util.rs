@@ -41,8 +41,7 @@ pub fn latex_escape(s: &str) -> String {
 /// Returns the Python code to import it at the top of a figure script.
 pub fn ensure_plot_style(paper_dir: &Path) -> Result<()> {
     let path = paper_dir.join("plot_style.py");
-    std::fs::write(&path, PLOT_STYLE_PY)
-        .with_context(|| format!("writing {}", path.display()))?;
+    std::fs::write(&path, PLOT_STYLE_PY).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 

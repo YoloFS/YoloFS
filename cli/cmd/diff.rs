@@ -101,12 +101,7 @@ fn print_change(agfs: &Path, path: &str, dstate: &Dstate, verbose: bool) {
             }
         }
         Dstate::Redirect { src, .. } => {
-            println!(
-                "{} → {} {}",
-                src.bold(),
-                path.bold(),
-                "(renamed)".cyan()
-            );
+            println!("{} → {} {}", src.bold(), path.bold(), "(renamed)".cyan());
         }
         Dstate::Passthrough => {}
     }
@@ -318,7 +313,9 @@ mod tests {
         let tmp = make_agfs(&[]);
         let dstates = vec![(
             "/old/file.txt".into(),
-            Dstate::Tombstone { dtype: libc::DT_REG },
+            Dstate::Tombstone {
+                dtype: libc::DT_REG,
+            },
         )];
         let map = state_map(tmp.path(), &dstates);
         assert_eq!(map.len(), 1);
@@ -394,7 +391,9 @@ mod tests {
             ),
             (
                 "/c.txt".into(),
-                Dstate::Tombstone { dtype: libc::DT_REG },
+                Dstate::Tombstone {
+                    dtype: libc::DT_REG,
+                },
             ),
         ];
         let map = state_map(tmp.path(), &dstates);

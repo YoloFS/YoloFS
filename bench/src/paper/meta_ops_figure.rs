@@ -6,24 +6,18 @@
 //!
 //! Multiple figure variants are generated to allow comparison.
 
-use super::util::backend_display_name;
 use super::Artifact;
-use crate::report;
+use super::util::backend_display_name;
 use crate::BenchResults;
+use crate::report;
 use anyhow::{Context, Result};
 use std::path::Path;
-
 
 /// Native is drawn as a horizontal reference line, not a bar.
 const NATIVE: &str = "native";
 
 /// Backends drawn as bars (display order).
-const BAR_BACKENDS: &[&str] = &[
-    "agfs-no-perm",
-    "agfs-realistic",
-    "overlayfs",
-    "branchfs",
-];
+const BAR_BACKENDS: &[&str] = &["agfs-no-perm", "agfs-realistic", "overlayfs", "branchfs"];
 
 /// All backends emitted into the CSV (native + bar backends).
 const ALL_BACKENDS: &[&str] = &[
@@ -58,14 +52,21 @@ const OPS: &[(&str, &str)] = &[
 ];
 
 /// Source variants in display order.
-const SOURCES: &[(&str, &str)] = &[("base", "Base"), ("checkpoint", "Chkpt"), ("stage", "Stage")];
+const SOURCES: &[(&str, &str)] = &[
+    ("base", "Base"),
+    ("checkpoint", "Chkpt"),
+    ("stage", "Stage"),
+];
 
 // ── Figure variant configuration ────────────────────────────────────────────
 
 #[derive(Clone, Copy)]
 enum OutlierStrategy {
     /// Use brokenaxes to show both ranges.
-    BrokenAxis { break_threshold: f64, height_ratios: (u32, u32) },
+    BrokenAxis {
+        break_threshold: f64,
+        height_ratios: (u32, u32),
+    },
     /// Cap outlier bars with hatching and text annotations.
     CapAndAnnotate { cap_factor: f64 },
     /// Plain auto-scaled axes, no special treatment.
@@ -83,8 +84,7 @@ struct FigureVariant {
 }
 
 /// Shared caption and label — only one variant ends up in the paper.
-const CAPTION: &str =
-    "Metadata operation latency (\\textmu s). \
+const CAPTION: &str = "Metadata operation latency (\\textmu s). \
      The dashed line marks the native ext4 baseline. \
      Bars grouped by file source layer (base / checkpoint / staged). TODO";
 const LABEL: &str = "fig:meta-ops";
@@ -149,18 +149,13 @@ pub fn artifact_metas(paper_dir: &Path) -> Vec<Artifact> {
         .collect()
 }
 
-fn render_variant(
-    variant: &FigureVariant,
-    data_csv: &str,
-    paper_dir: &Path,
-) -> Result<Artifact> {
+fn render_variant(variant: &FigureVariant, data_csv: &str, paper_dir: &Path) -> Result<Artifact> {
     let py_path = paper_dir.join(format!("{}.py", variant.name));
     let pdf_path = paper_dir.join(format!("{}-plot.pdf", variant.name));
 
     super::util::ensure_plot_style(paper_dir)?;
     let script = build_script(variant, data_csv, &pdf_path);
-    std::fs::write(&py_path, &script)
-        .with_context(|| format!("writing {}", py_path.display()))?;
+    std::fs::write(&py_path, &script).with_context(|| format!("writing {}", py_path.display()))?;
 
     let out = std::process::Command::new("python3")
         .arg(&py_path)
@@ -194,11 +189,13 @@ fn render_variant(
          % --- END figure fragment ---\n\
          \\end{{document}}\n",
     );
-    std::fs::write(&tex_path, &tex)
-        .with_context(|| format!("writing {}", tex_path.display()))?;
+    std::fs::write(&tex_path, &tex).with_context(|| format!("writing {}", tex_path.display()))?;
 
     let preview_pdf = match super::run_pdflatex_cropped(&tex_path, paper_dir) {
-        Ok(p) => Some(format!("paper/{}", p.file_name().unwrap().to_string_lossy())),
+        Ok(p) => Some(format!(
+            "paper/{}",
+            p.file_name().unwrap().to_string_lossy()
+        )),
         Err(e) => {
             eprintln!("  warning: {}: {e:#}", variant.name);
             // Fall back to the raw matplotlib PDF.
@@ -246,9 +243,7 @@ fn build_data_csv(results: &BenchResults) -> String {
                     let lat_us = results
                         .workloads
                         .iter()
-                        .find(|w| {
-                            report::normalize_legacy_workload_name(&w.workload) == wl_name
-                        })
+                        .find(|w| report::normalize_legacy_workload_name(&w.workload) == wl_name)
                         .and_then(|wl| {
                             wl.backends
                                 .iter()

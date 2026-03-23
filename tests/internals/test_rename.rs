@@ -1,4 +1,4 @@
-use super::helpers::{actions, tree, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, ino_for, inode_path, inos, journal, tree};
 use crate::helpers::AgfsSession;
 use agfs::journal::Action;
 use std::fs;
@@ -137,8 +137,11 @@ fn rename_back_and_forth_no_changes() {
     fs::rename(s.mnt_path("temp.txt"), s.mnt_path("hello.txt")).expect("b→a");
 
     let ch = tree(&s);
-    assert_eq!(ch.len(), 0,
-        "rename back and forth should produce no staged changes, got: {ch:?}");
+    assert_eq!(
+        ch.len(),
+        0,
+        "rename back and forth should produce no staged changes, got: {ch:?}"
+    );
 }
 
 /// Three-step roundtrip: a→b→c→a. The rename chain is a no-op.
@@ -151,8 +154,11 @@ fn rename_three_step_roundtrip_no_changes() {
     fs::rename(s.mnt_path("temp2.txt"), s.mnt_path("hello.txt")).expect("c→a");
 
     let ch = tree(&s);
-    assert_eq!(ch.len(), 0,
-        "3-step roundtrip should produce no staged changes, got: {ch:?}");
+    assert_eq!(
+        ch.len(),
+        0,
+        "3-step roundtrip should produce no staged changes, got: {ch:?}"
+    );
 }
 
 /// Rename a staged (newly created) file to overwrite a base file.

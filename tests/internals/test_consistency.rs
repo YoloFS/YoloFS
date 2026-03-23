@@ -56,9 +56,9 @@ fn assert_overlay_visible(s: &AgfsSession) {
         let mnt = s.mnt_path(rel);
         match dstate {
             Dstate::StagedInode { ino, dtype, .. } => {
-                let meta = mnt.symlink_metadata().unwrap_or_else(|e| {
-                    panic!("overlay inode at '/{rel}' should be visible: {e}")
-                });
+                let meta = mnt
+                    .symlink_metadata()
+                    .unwrap_or_else(|e| panic!("overlay inode at '/{rel}' should be visible: {e}"));
                 let expected_dir = *dtype == libc::DT_DIR;
                 let expected_link = *dtype == libc::DT_LNK;
                 let expected_file = *dtype == libc::DT_REG;
@@ -86,9 +86,9 @@ fn assert_overlay_visible(s: &AgfsSession) {
                 }
             }
             Dstate::Redirect { dtype, .. } => {
-                let meta = mnt.symlink_metadata().unwrap_or_else(|e| {
-                    panic!("overlay link at '/{rel}' should be visible: {e}")
-                });
+                let meta = mnt
+                    .symlink_metadata()
+                    .unwrap_or_else(|e| panic!("overlay link at '/{rel}' should be visible: {e}"));
                 let expected_dir = *dtype == libc::DT_DIR;
                 let expected_link = *dtype == libc::DT_LNK;
                 let expected_file = *dtype == libc::DT_REG;
@@ -195,9 +195,14 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
         }
     }
 
-    let label = if rel_dir.is_empty() { "<root>" } else { rel_dir };
+    let label = if rel_dir.is_empty() {
+        "<root>"
+    } else {
+        rel_dir
+    };
     assert_eq!(
-        mnt_names, expected,
+        mnt_names,
+        expected,
         "'{label}' readdir mismatch\n\
          in mount not expected: {:?}\n\
          expected not in mount: {:?}\n\
@@ -236,11 +241,7 @@ fn add_nested_file() {
 fn add_multiple_files() {
     let s = AgfsSession::new().expect("session setup");
     for i in 0..10 {
-        fs::write(
-            s.mnt_path(&format!("f{i}.txt")),
-            format!("data {i}\n"),
-        )
-        .expect("create");
+        fs::write(s.mnt_path(&format!("f{i}.txt")), format!("data {i}\n")).expect("create");
     }
     assert_consistent(&s);
 }
@@ -334,10 +335,7 @@ fn rename_chain() {
     fs::rename(s.mnt_path("a.txt"), s.mnt_path("b.txt")).expect("rename 1");
     fs::rename(s.mnt_path("b.txt"), s.mnt_path("c.txt")).expect("rename 2");
     assert_consistent(&s);
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("c.txt")).unwrap(),
-        "start\n"
-    );
+    assert_eq!(fs::read_to_string(s.mnt_path("c.txt")).unwrap(), "start\n");
 }
 
 /// Rename a base directory: Link at dest dir, contents accessible.
@@ -362,11 +360,7 @@ fn rename_into_new_dir() {
     let s = AgfsSession::new().expect("session setup");
     fs::create_dir(s.mnt_path("target")).expect("mkdir");
     fs::write(s.mnt_path("src.txt"), "moved\n").expect("create");
-    fs::rename(
-        s.mnt_path("src.txt"),
-        s.mnt_path("target/dst.txt"),
-    )
-    .expect("rename cross-dir");
+    fs::rename(s.mnt_path("src.txt"), s.mnt_path("target/dst.txt")).expect("rename cross-dir");
     assert_overlay_visible(&s);
     assert_dir_matches(&s, "");
     assert_dir_matches(&s, "target");
@@ -377,11 +371,7 @@ fn rename_into_new_dir() {
 fn rename_base_into_new_dir() {
     let s = AgfsSession::new().expect("session setup");
     fs::create_dir(s.mnt_path("dest")).expect("mkdir");
-    fs::rename(
-        s.mnt_path("hello.txt"),
-        s.mnt_path("dest/moved.txt"),
-    )
-    .expect("rename");
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("dest/moved.txt")).expect("rename");
     assert_overlay_visible(&s);
     assert_dir_matches(&s, "");
     assert_dir_matches(&s, "dest");
@@ -468,10 +458,7 @@ fn create_delete_recreate() {
     fs::remove_file(s.mnt_path("cycle.txt")).expect("delete");
     fs::write(s.mnt_path("cycle.txt"), "v2\n").expect("create v2");
     assert_consistent(&s);
-    assert_eq!(
-        fs::read_to_string(s.mnt_path("cycle.txt")).unwrap(),
-        "v2\n"
-    );
+    assert_eq!(fs::read_to_string(s.mnt_path("cycle.txt")).unwrap(), "v2\n");
 }
 
 /// Modify a base file then delete it (M+D → tombstone).
@@ -741,4 +728,3 @@ fn deep_rename_to_root() {
         "deep\n"
     );
 }
-

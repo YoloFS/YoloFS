@@ -64,7 +64,9 @@ impl Dstate {
 
     pub(super) fn set_in_base(&mut self, val: bool) {
         match self {
-            Dstate::StagedInode { in_base, .. } | Dstate::Redirect { in_base, .. } => *in_base = val,
+            Dstate::StagedInode { in_base, .. } | Dstate::Redirect { in_base, .. } => {
+                *in_base = val
+            }
             Dstate::Tombstone { .. } | Dstate::Passthrough => {}
         }
     }
