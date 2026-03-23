@@ -924,3 +924,112 @@ fn restore_created_file_after_recow_then_abort() {
         );
     });
 }
+
+// ── Depth-limit and cleanup tests ────────────────────────────────────
+
+/// Create a directory tree near the AGFS_RESTORE_MAX_DEPTH limit (32)
+/// with staged files at every level, checkpoint, modify, restore.
+/// Exercises the iterative depth-first `agfs_unstage_all` walk at depth.
+#[test]
+fn restore_deep_tree_near_max_depth() {
+    let s = AgfsSession::new().expect("session setup");
+
+    s.run_in_namespace(|| {
+        // Build a 20-level deep directory tree with a file at each level.
+        // The restore ioctl depth limit (AGFS_RESTORE_MAX_DEPTH=32) also
+        // counts intermediate passthrough dirs for the path from / to the
+        // session root, so we stay under the budget.
+        let depth = 20;
+        let mut path = String::new();
+        for i in 0..depth {
+            let dir_name = format!("d{i}");
+            if path.is_empty() {
+                path = dir_name;
+            } else {
+                path = format!("{path}/{dir_name}");
+            }
+            fs::create_dir(s.mnt_path(&path)).unwrap_or_else(|e| {
+                panic!("mkdir {path} at depth {i}: {e}");
+            });
+            fs::write(s.mnt_path(&format!("{path}/f.txt")), format!("depth-{i}\n")).unwrap_or_else(
+                |e| {
+                    panic!("write f.txt at depth {i}: {e}");
+                },
+            );
+        }
+
+        s.cli(&["checkpoint", "deep"]).expect("checkpoint");
+
+        // Modify files at the deepest and shallowest levels.
+        fs::write(s.mnt_path("d0/f.txt"), "modified\n").expect("modify shallow");
+        fs::write(s.mnt_path(&format!("{path}/f.txt")), "modified\n").expect("modify deep");
+
+        s.cli(&["restore", "deep"]).expect("restore");
+
+        // Verify files at both extremes reverted.
+        assert_eq!(
+            fs::read_to_string(s.mnt_path("d0/f.txt")).unwrap(),
+            "depth-0\n",
+            "shallow file should be restored"
+        );
+        assert_eq!(
+            fs::read_to_string(s.mnt_path(&format!("{path}/f.txt"))).unwrap(),
+            format!("depth-{}\n", depth - 1),
+            "deep file should be restored"
+        );
+
+        // Spot-check a middle level.
+        let mid_depth = depth / 2;
+        let mid = (0..mid_depth)
+            .map(|i| format!("d{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        assert_eq!(
+            fs::read_to_string(s.mnt_path(&format!("{mid}/f.txt"))).unwrap(),
+            format!("depth-{}\n", mid_depth - 1),
+            "mid-depth file should be restored"
+        );
+    });
+}
+
+/// Restore a checkpoint with deeply nested staged entries, then
+/// immediately unmount (without reading files).  Verifies that
+/// `agfs_unstage_all` properly releases all pinned dentries during
+/// unmount — the AgfsSession Drop handler will panic if the kernel
+/// produces any warnings (e.g. from leaked dentry refs).
+#[test]
+fn restore_then_immediate_unmount() {
+    let s = AgfsSession::new().expect("session setup");
+
+    s.run_in_namespace(|| {
+        // Create a non-trivial tree across multiple directories.
+        for dir in &["ra", "rb", "rc"] {
+            fs::create_dir(s.mnt_path(dir)).expect("mkdir");
+            for i in 0..5 {
+                fs::write(
+                    s.mnt_path(&format!("{dir}/f{i}.txt")),
+                    format!("{dir}-{i}\n"),
+                )
+                .expect("write");
+            }
+        }
+        // Nested subtree.
+        fs::create_dir(s.mnt_path("ra/sub")).expect("mkdir sub");
+        fs::write(s.mnt_path("ra/sub/nested.txt"), "nested\n").expect("write nested");
+
+        s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+        // Post-checkpoint modifications.
+        fs::write(s.mnt_path("ra/f0.txt"), "changed\n").expect("modify");
+        fs::remove_file(s.mnt_path("rb/f1.txt")).expect("delete");
+        fs::write(s.mnt_path("rc/extra.txt"), "extra\n").expect("create extra");
+
+        s.cli(&["restore", "chk1"]).expect("restore");
+
+        // Immediately unmount without reading any files.
+        // AgfsSession::drop checks for kernel warnings — if agfs_unstage_all
+        // leaks dentry references, the kernel will WARN and this test fails.
+        let (ok, _, stderr) = s.cli_output(&["unmount", "--force"]).unwrap();
+        assert!(ok, "unmount after restore should succeed: {stderr}");
+    });
+}

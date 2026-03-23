@@ -83,8 +83,8 @@ impl AgfsSession {
         self.mounted = true;
 
         // Read daemon pid for run_in_namespace().
-        let pid_str = std::fs::read_to_string(self.root.join(".agfs/pid"))
-            .context("reading .agfs/pid")?;
+        let pid_str =
+            std::fs::read_to_string(self.root.join(".agfs/pid")).context("reading .agfs/pid")?;
         self.daemon_pid = Some(pid_str.trim().parse().context("parsing daemon pid")?);
 
         Ok(())
@@ -121,18 +121,14 @@ impl AgfsSession {
             0 => {
                 // Child: setns into daemon's namespace, run closure, exit.
                 unsafe {
-                    let user_ns = std::ffi::CString::new(
-                        format!("/proc/{pid}/ns/user"),
-                    ).unwrap();
+                    let user_ns = std::ffi::CString::new(format!("/proc/{pid}/ns/user")).unwrap();
                     let fd = libc::open(user_ns.as_ptr(), libc::O_RDONLY);
                     if fd < 0 || libc::setns(fd, libc::CLONE_NEWUSER) != 0 {
                         libc::_exit(99);
                     }
                     libc::close(fd);
 
-                    let mnt_ns = std::ffi::CString::new(
-                        format!("/proc/{pid}/ns/mnt"),
-                    ).unwrap();
+                    let mnt_ns = std::ffi::CString::new(format!("/proc/{pid}/ns/mnt")).unwrap();
                     let fd = libc::open(mnt_ns.as_ptr(), libc::O_RDONLY);
                     if fd < 0 || libc::setns(fd, libc::CLONE_NEWNS) != 0 {
                         libc::_exit(98);
@@ -152,9 +148,7 @@ impl AgfsSession {
                 let deadline = Instant::now() + Duration::from_secs(30);
                 loop {
                     let mut status: i32 = 0;
-                    let r = unsafe {
-                        libc::waitpid(child_pid, &mut status, libc::WNOHANG)
-                    };
+                    let r = unsafe { libc::waitpid(child_pid, &mut status, libc::WNOHANG) };
                     if r > 0 {
                         if libc::WIFEXITED(status) {
                             let code = libc::WEXITSTATUS(status);
@@ -177,7 +171,6 @@ impl AgfsSession {
             }
         }
     }
-
 
     /// Resolve a base (host) path.
     pub fn base_path(&self, rel: &str) -> PathBuf {

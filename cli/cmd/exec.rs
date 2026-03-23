@@ -7,7 +7,7 @@
 
 use crate::config;
 use crate::ioctl;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use colored::Colorize;
 use std::env;
 use std::os::unix::process::CommandExt;

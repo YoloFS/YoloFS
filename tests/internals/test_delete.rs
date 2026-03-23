@@ -1,4 +1,4 @@
-use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, ino_for, inode_path, inos, journal, tree};
 use crate::helpers::AgfsSession;
 use agfs::journal::Action;
 use std::fs;
@@ -9,6 +9,7 @@ use std::fs;
 #[test]
 fn delete_produces_delete_record() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
@@ -28,6 +29,7 @@ fn delete_produces_delete_record() {
 #[test]
 fn delete_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         let inos_before = inos(&s);
         fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
@@ -44,11 +46,12 @@ fn delete_creates_no_inode() {
 #[test]
 fn delete_recreate_gets_new_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
         fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/hello.txt");
         assert_eq!(
             fs::read_to_string(inode_path(&s, ino)).unwrap(),

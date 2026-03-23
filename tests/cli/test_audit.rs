@@ -94,7 +94,9 @@ fn audit_fresh_session() {
         let output = s.cli(&["audit"]).expect("audit");
         // A fresh session has no records at all
         assert!(
-            !output.contains("added") && !output.contains("modified") && !output.contains("deleted"),
+            !output.contains("added")
+                && !output.contains("modified")
+                && !output.contains("deleted"),
             "fresh session should have no data records: {output}"
         );
     });

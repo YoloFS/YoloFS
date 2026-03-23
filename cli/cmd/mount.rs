@@ -13,7 +13,6 @@ use std::io::{self, BufRead, Write};
 use std::os::unix;
 use std::path::Path;
 
-
 /// Enter a user + mount namespace (unprivileged). After this, the process
 /// has CAP_SYS_ADMIN inside the namespace and can mount/pivot_root.
 fn enter_namespace() -> Result<()> {
@@ -35,16 +34,8 @@ fn enter_namespace() -> Result<()> {
     // Write uid/gid maps: map real uid/gid 1:1 inside the namespace
     // Must deny setgroups first (kernel requirement for unprivileged)
     fs::write("/proc/self/setgroups", "deny").context("writing /proc/self/setgroups")?;
-    fs::write(
-        "/proc/self/uid_map",
-        format!("{uid} {uid} 1"),
-    )
-    .context("writing uid_map")?;
-    fs::write(
-        "/proc/self/gid_map",
-        format!("{gid} {gid} 1"),
-    )
-    .context("writing gid_map")?;
+    fs::write("/proc/self/uid_map", format!("{uid} {uid} 1")).context("writing uid_map")?;
+    fs::write("/proc/self/gid_map", format!("{gid} {gid} 1")).context("writing gid_map")?;
 
     // Make all mounts private so changes don't propagate to parent namespace
     nix::mount::mount(
@@ -303,19 +294,12 @@ pub fn mount() -> Result<()> {
                     // Grandchild: daemon process (PID 1 in PID namespace).
                     mount_pseudofs(&mnt)?;
 
-                    eprintln!(
-                        "{} {}",
-                        "agfs: daemon ready".green(),
-                        mnt.display(),
-                    );
+                    eprintln!("{} {}", "agfs: daemon ready".green(), mnt.display(),);
 
                     // Detach from parent's stdio so callers using
                     // Command::output() don't block.
                     unsafe {
-                        let devnull = libc::open(
-                            b"/dev/null\0".as_ptr() as _,
-                            libc::O_RDWR,
-                        );
+                        let devnull = libc::open(b"/dev/null\0".as_ptr() as _, libc::O_RDWR);
                         if devnull >= 0 {
                             libc::dup2(devnull, 0);
                             libc::dup2(devnull, 1);
@@ -397,12 +381,7 @@ pub fn unmount(force: bool) -> Result<()> {
             // Wait for daemon to exit. Use kill(pid, 0) to check if
             // the process still exists — faster than polling the pid file.
             for _ in 0..200 {
-                if nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(pid),
-                    None,
-                )
-                .is_err()
-                {
+                if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err() {
                     break; // process gone
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));

@@ -142,8 +142,9 @@ fn create_then_delete() {
             "should have ADD record: {acts:?}"
         );
         assert!(
-            acts.iter()
-                .any(|a| matches!(a, Action::Delete { path, .. } if path.ends_with("/ephemeral.txt"))),
+            acts.iter().any(
+                |a| matches!(a, Action::Delete { path, .. } if path.ends_with("/ephemeral.txt"))
+            ),
             "should have DEL record: {acts:?}"
         );
     });

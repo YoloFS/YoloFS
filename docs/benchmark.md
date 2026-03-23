@@ -752,7 +752,6 @@ kfunctions via BTF (`kfunc`/`kretfunc` probes):
 | Function | What it covers |
 |---|---|
 | `agfs_lookup` | Dentry resolution (every path component) |
-| `agfs_d_revalidate` | Dentry cache validation |
 | `agfs_permission` | Permission check |
 | `agfs_resolve_perm` | Rule match + inode cache lookup/store |
 | `agfs_open` | File open |

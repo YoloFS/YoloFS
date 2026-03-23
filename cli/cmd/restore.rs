@@ -43,142 +43,135 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::journal::{Action, DType, DirTree, Dirent, Segment};
+    use crate::journal::{Action, DirTree, Dstate, Segment};
 
-    /// Helper: build a tree from actions and get dirents.
-    fn build_dirents(actions: &[Action]) -> Vec<(String, Dirent)> {
+    fn build(actions: &[Action]) -> DirTree {
         DirTree::build(std::iter::once(Segment {
             from: 0,
             records: actions.to_vec(),
         }))
-        .into_dirents()
-    }
-
-    /// Helper: find a dirent by path suffix.
-    fn find<'a>(cs: &'a [(String, Dirent)], suffix: &str) -> &'a (String, Dirent) {
-        cs.iter().find(|(p, _)| p.ends_with(suffix)).unwrap()
     }
 
     #[test]
     fn added_produces_single_entry() {
-        let cs = build_dirents(&[Action::Add {
+        let tree = build(&[Action::Add {
             path: "/src/main.rs".into(),
             ino: 1,
-            dtype: Some(DType::File),
+            dtype: Some(libc::DT_REG),
         }]);
-        assert_eq!(cs.len(), 1);
-        let (path, dirent) = &cs[0];
-        assert_eq!(path, "/src/main.rs");
+        assert_eq!(tree.len(), 1);
         assert!(matches!(
-            dirent,
-            Dirent::Inode {
+            tree.get("/src/main.rs"),
+            Some(Dstate::StagedInode {
                 ino: 1,
                 in_base: false,
                 ..
-            }
+            })
         ));
     }
 
     #[test]
     fn deleted_produces_tombstone_entry() {
-        let cs = build_dirents(&[
+        let tree = build(&[
             Action::Modify {
                 path: "/old.txt".into(),
                 ino: 1,
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
             },
             Action::Delete {
                 path: "/old.txt".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
             },
         ]);
-        assert_eq!(cs.len(), 1);
-        assert_eq!(cs[0].0, "/old.txt");
-        assert!(matches!(cs[0].1, Dirent::Tombstone));
+        assert_eq!(tree.len(), 1);
+        assert!(matches!(
+            tree.get("/old.txt"),
+            Some(Dstate::Tombstone { .. })
+        ));
     }
 
     #[test]
     fn renamed_produces_tombstone_and_redirect() {
-        let cs = build_dirents(&[Action::Rename {
+        let tree = build(&[Action::Rename {
             src: "/a.txt".into(),
             dst: "/b.txt".into(),
-            dtype: Some(DType::File),
+            dtype: Some(libc::DT_REG),
         }]);
 
-        let (_, del) = find(&cs, "/a.txt");
-        assert!(matches!(del, Dirent::Tombstone));
-
-        let (_, redirect) = find(&cs, "/b.txt");
-        assert!(matches!(redirect, Dirent::Link { base_path, .. } if base_path == "/a.txt"));
+        assert!(matches!(tree.get("/a.txt"), Some(Dstate::Tombstone { .. })));
+        assert!(
+            matches!(tree.get("/b.txt"), Some(Dstate::BasePath { src, .. }) if src == "/a.txt")
+        );
     }
 
     #[test]
     fn renamed_then_modified_produces_tombstone_and_inode() {
-        let cs = build_dirents(&[
+        let tree = build(&[
             Action::Rename {
                 src: "/old.rs".into(),
                 dst: "/new.rs".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
             },
             Action::Modify {
                 path: "/new.rs".into(),
                 ino: 5,
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
             },
         ]);
 
-        let (_, new) = find(&cs, "/new.rs");
-        assert!(matches!(new, Dirent::Inode { ino: 5, .. }));
-
-        let (_, old) = find(&cs, "/old.rs");
-        assert!(matches!(old, Dirent::Tombstone));
+        assert!(matches!(
+            tree.get("/new.rs"),
+            Some(Dstate::StagedInode { ino: 5, .. })
+        ));
+        assert!(matches!(
+            tree.get("/old.rs"),
+            Some(Dstate::Tombstone { .. })
+        ));
     }
 
     #[test]
     fn directory_inode_gets_dir_dtype() {
-        let cs = build_dirents(&[Action::Add {
+        let tree = build(&[Action::Add {
             path: "/newdir".into(),
             ino: 1,
-            dtype: Some(DType::Dir),
+            dtype: Some(libc::DT_DIR),
         }]);
-        assert_eq!(cs[0].1.dtype(), DType::Dir);
+        assert_eq!(tree.get("/newdir").unwrap().dtype(), libc::DT_DIR);
     }
 
     #[test]
     fn symlink_inode_gets_link_dtype() {
-        let cs = build_dirents(&[Action::Add {
+        let tree = build(&[Action::Add {
             path: "/link".into(),
             ino: 1,
-            dtype: Some(DType::Link),
+            dtype: Some(libc::DT_LNK),
         }]);
-        assert_eq!(cs[0].1.dtype(), DType::Link);
+        assert_eq!(tree.get("/link").unwrap().dtype(), libc::DT_LNK);
     }
 
     #[test]
     fn empty_records_produces_no_entries() {
-        let cs = build_dirents(&[]);
-        assert!(cs.is_empty());
+        let tree = build(&[]);
+        assert!(tree.is_empty());
     }
 
     #[test]
     fn renamed_directory_gets_dir_dtype() {
-        let cs = build_dirents(&[Action::Rename {
+        let tree = build(&[Action::Rename {
             src: "/mydir".into(),
             dst: "/newdir".into(),
-            dtype: Some(DType::Dir),
+            dtype: Some(libc::DT_DIR),
         }]);
-        let (_, dirent) = find(&cs, "/newdir");
-        assert_eq!(dirent.dtype(), DType::Dir);
+        assert_eq!(tree.get("/newdir").unwrap().dtype(), libc::DT_DIR);
     }
 
     #[test]
     fn renamed_symlink_gets_link_dtype() {
-        let cs = build_dirents(&[Action::Rename {
+        let tree = build(&[Action::Rename {
             src: "/mylink".into(),
             dst: "/newlink".into(),
-            dtype: Some(DType::Link),
+            dtype: Some(libc::DT_LNK),
         }]);
-        let (_, dirent) = find(&cs, "/newlink");
-        assert_eq!(dirent.dtype(), DType::Link);
+        assert_eq!(tree.get("/newlink").unwrap().dtype(), libc::DT_LNK);
     }
 }

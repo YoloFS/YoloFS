@@ -2,39 +2,23 @@
 //
 // Pure data types for journal records. No I/O dependencies.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DType {
-    File,
-    Dir,
-    Link,
+/// Validate a raw d_type value (libc DT_* constant).
+pub fn dtype_valid(val: u8) -> bool {
+    matches!(
+        val,
+        libc::DT_REG
+            | libc::DT_DIR
+            | libc::DT_LNK
+            | libc::DT_BLK
+            | libc::DT_CHR
+            | libc::DT_FIFO
+            | libc::DT_SOCK
+    )
 }
 
-impl DType {
-    pub fn from_char(c: u8) -> Option<DType> {
-        match c {
-            b'f' => Some(DType::File),
-            b'd' => Some(DType::Dir),
-            b'l' => Some(DType::Link),
-            _ => None,
-        }
-    }
-
-    pub fn to_libc(&self) -> u8 {
-        match self {
-            DType::File => libc::DT_REG,
-            DType::Dir => libc::DT_DIR,
-            DType::Link => libc::DT_LNK,
-        }
-    }
-
-    /// 2-bit encoding matching the kernel's `agfs_dtype_pack`.
-    pub fn to_packed(&self) -> u64 {
-        match self {
-            DType::File => 0,
-            DType::Dir => 1,
-            DType::Link => 2,
-        }
-    }
+/// 3-bit encoding matching the kernel's `agfs_dtype_pack` (libc_dt >> 1).
+pub fn dtype_pack(dt: u8) -> u64 {
+    (dt >> 1) as u64
 }
 
 /// A data mutation applied to the dir tree (A/M/D/R/P).
@@ -42,27 +26,27 @@ impl DType {
 pub enum Action {
     Add {
         path: String,
-        dtype: Option<DType>,
+        dtype: Option<u8>,
         ino: u32,
     },
     Modify {
         path: String,
-        dtype: Option<DType>,
+        dtype: Option<u8>,
         ino: u32,
     },
     Delete {
         path: String,
-        dtype: Option<DType>,
+        dtype: Option<u8>,
     },
     Rename {
         src: String,
         dst: String,
-        dtype: Option<DType>,
+        dtype: Option<u8>,
     },
     Replace {
         src: String,
         dst: String,
-        dtype: Option<DType>,
+        dtype: Option<u8>,
     },
 }
 

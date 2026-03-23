@@ -1,4 +1,4 @@
-use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, ino_for, inode_path, inos, journal, tree};
 use crate::helpers::AgfsSession;
 use agfs::journal::Action;
 use std::fs;
@@ -11,6 +11,7 @@ use std::io::Write;
 #[test]
 fn modify_produces_add_record() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
@@ -29,6 +30,7 @@ fn modify_produces_add_record() {
 #[test]
 fn multiple_writes_produce_multiple_adds() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
         fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
@@ -55,10 +57,11 @@ fn multiple_writes_produce_multiple_adds() {
 #[test]
 fn modify_creates_inode_with_content() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/hello.txt");
         let path = inode_path(&s, ino);
 
@@ -75,11 +78,12 @@ fn modify_creates_inode_with_content() {
 #[test]
 fn overwrite_updates_inode_content() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
         fs::write(s.mnt_path("hello.txt"), "v2 is longer\n").expect("write v2");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/hello.txt");
         let path = inode_path(&s, ino);
 
@@ -95,6 +99,7 @@ fn overwrite_updates_inode_content() {
 #[test]
 fn append_updates_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "line1\n").expect("write");
 
@@ -105,7 +110,7 @@ fn append_updates_inode() {
         f.write_all(b"line2\n").expect("append");
         drop(f);
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/hello.txt");
         let content = fs::read_to_string(inode_path(&s, ino)).unwrap();
         assert_eq!(
@@ -119,6 +124,7 @@ fn append_updates_inode() {
 #[test]
 fn rewrite_without_checkpoint_reuses_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
         let inos_after_v1 = inos(&s);
@@ -131,7 +137,7 @@ fn rewrite_without_checkpoint_reuses_inode() {
             "rewrite without checkpoint should reuse the same inode"
         );
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/hello.txt");
         assert_eq!(fs::read_to_string(inode_path(&s, ino)).unwrap(), "v2\n");
     });
@@ -142,6 +148,7 @@ fn rewrite_without_checkpoint_reuses_inode() {
 #[test]
 fn truncate_rewrite_overwrites_from_start() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "this is a long string\n").expect("write long");
         fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
@@ -159,11 +166,12 @@ fn truncate_rewrite_overwrites_from_start() {
 #[test]
 fn truncate_rewrite_inode_has_exact_content() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "this is a long string\n").expect("write long");
         fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/hello.txt");
         let path = inode_path(&s, ino);
 
@@ -182,6 +190,7 @@ fn truncate_rewrite_inode_has_exact_content() {
 #[test]
 fn truncate_only_produces_empty_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // First write to stage the file
         fs::write(s.mnt_path("hello.txt"), "some content\n").expect("initial write");
@@ -199,7 +208,7 @@ fn truncate_only_produces_empty_inode() {
         assert_eq!(content, "", "mount should show empty file after O_TRUNC");
 
         // Inode in the store should be 0 bytes
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/hello.txt");
         let path = inode_path(&s, ino);
 
@@ -217,6 +226,7 @@ fn truncate_only_produces_empty_inode() {
 #[test]
 fn truncate_open_base_file_produces_modify_record() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // hello.txt exists in base; open with O_WRONLY | O_TRUNC and write new content.
         let mut f = OpenOptions::new()
@@ -247,11 +257,12 @@ fn truncate_open_base_file_produces_modify_record() {
 #[test]
 fn large_file_inode_size() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         let data = "x".repeat(1024 * 1024); // 1 MiB
         fs::write(s.mnt_path("big.txt"), &data).expect("write large file");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/big.txt");
         let path = inode_path(&s, ino);
 
@@ -264,11 +275,12 @@ fn large_file_inode_size() {
 #[test]
 fn binary_content_preserved() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         let data: Vec<u8> = (0..=255).collect();
         fs::write(s.mnt_path("binary.bin"), &data).expect("write binary");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/binary.bin");
         let inode_data = fs::read(inode_path(&s, ino)).unwrap();
         assert_eq!(
@@ -282,11 +294,12 @@ fn binary_content_preserved() {
 #[test]
 fn nul_bytes_preserved() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         let data = b"before\0middle\0after\n";
         fs::write(s.mnt_path("nulls.txt"), data).expect("write with NULs");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/nulls.txt");
         let inode_data = fs::read(inode_path(&s, ino)).unwrap();
         assert_eq!(inode_data, data, "NUL bytes should be preserved in inode");
@@ -297,13 +310,14 @@ fn nul_bytes_preserved() {
 #[test]
 fn multiple_files_each_get_correct_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "aaa\n").expect("write 1");
         fs::write(s.mnt_path("multi.txt"), "bbb\n").expect("write 2");
         fs::write(s.mnt_path("new1.txt"), "ccc\n").expect("create 1");
         fs::write(s.mnt_path("new2.txt"), "ddd\n").expect("create 2");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
 
         let pairs = [
             ("/hello.txt", "aaa\n"),
@@ -326,11 +340,12 @@ fn multiple_files_each_get_correct_inode() {
 #[test]
 fn deep_nested_file_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir_all(s.mnt_path("a/b/c")).expect("mkdir -p");
         fs::write(s.mnt_path("a/b/c/leaf.txt"), "deep content\n").expect("write nested");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/leaf.txt");
         assert_eq!(
             fs::read_to_string(inode_path(&s, ino)).unwrap(),
@@ -343,11 +358,12 @@ fn deep_nested_file_inode() {
 #[test]
 fn modify_nested_base_file() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // subdir/deep.txt is seeded in base
         fs::write(s.mnt_path("subdir/deep.txt"), "updated nested\n").expect("write");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/deep.txt");
         assert_eq!(
             fs::read_to_string(inode_path(&s, ino)).unwrap(),

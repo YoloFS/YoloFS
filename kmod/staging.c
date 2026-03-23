@@ -10,22 +10,6 @@
 #include <linux/file.h>
 #include <linux/namei.h>
 
-/* ── Relative Path from Dentry ─────────────────────────────────────── */
-
-int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen)
-{
-	char *p;
-
-	p = dentry_path_raw(dentry, buf, buflen);
-	if (IS_ERR(p))
-		return PTR_ERR(p);
-
-	/* dentry_path_raw returns pointer into buf; shift if needed */
-	if (p != buf)
-		memmove(buf, p, strlen(p) + 1);
-	return 0;
-}
-
 /* ── Public Helpers ────────────────────────────────────────────────── */
 
 int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,
@@ -164,19 +148,19 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	}
 
 	/*
-	 * Set packed on dentry and pin if needed.
+	 * Set dstate on dentry and pin if needed.
 	 * Take inode_lock(parent) to serialize against VFS-driven
 	 * create/unlink/rename on the same directory.
 	 */
 	inode_lock(parent);
-	if (list_empty(&di->de_node)) {
-		agfs_stage_dentry(dentry, parent,
-				  agfs_pde_inode(ino,
+	if (agfs_dstate_is_passthrough(di->dstate)) {
+		agfs_stage_dentry(dentry,
+				  agfs_dstate_staged_inode(ino,
 						(u16)atomic_read(&sbi->gen),
 						DT_REG, true));
 	} else {
-		agfs_pde_free(di->packed);
-		di->packed = agfs_pde_inode(ino,
+		agfs_dstate_free(di->dstate);
+		di->dstate = agfs_dstate_staged_inode(ino,
 					   (u16)atomic_read(&sbi->gen),
 					   DT_REG, true);
 	}
@@ -187,7 +171,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	/* Update dentry lower_path to point at the inode (consumes original ref) */
 	agfs_replace_lower_path(dentry, &inode_path);
 
-	/* Append journal record (best-effort — packed is already set) */
+	/* Append journal record (best-effort — dstate is already set) */
 	agfs_journal_modify(sbi, dentry, ino, DT_REG);
 
 	/* Reopen with requested flags */
@@ -201,27 +185,4 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	}
 	path_put(&inode_path); /* drop extra ref */
 	return err;
-}
-
-/* ── Release Pinned Directory Inodes ───────────────────────────────── */
-
-void agfs_release_pinned_dirs(struct agfs_sb_info *sbi)
-{
-	LIST_HEAD(local);
-	struct agfs_inode_info *ii, *tmp;
-
-	spin_lock(&sbi->pinned_dirs_lock);
-	list_splice_init(&sbi->pinned_dirs, &local);
-	spin_unlock(&sbi->pinned_dirs_lock);
-
-	list_for_each_entry_safe(ii, tmp, &local, de_pin) {
-		struct agfs_dentry_info *di, *di_tmp;
-
-		list_del_init(&ii->de_pin);
-		inode_lock(&ii->vfs_inode);
-		list_for_each_entry_safe(di, di_tmp, &ii->de_list, de_node)
-			agfs_unstage_dentry(di);
-		inode_unlock(&ii->vfs_inode);
-		/* No iput() — child dput() cascades to parent via d_parent refs */
-	}
 }

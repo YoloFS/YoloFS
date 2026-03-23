@@ -57,7 +57,8 @@ fn allow_rw_permits_write() {
     .expect("session setup");
 
     s.run_in_namespace(|| {
-        fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write should succeed with allow-rw");
+        fs::write(s.mnt_path("hello.txt"), "modified\n")
+            .expect("write should succeed with allow-rw");
     });
 }
 

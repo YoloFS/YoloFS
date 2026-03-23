@@ -1,4 +1,4 @@
-use super::helpers::{dirents, ino_for, inode_path, inos, journal, records};
+use super::helpers::{ino_for, inode_path, inos, journal, records, tree};
 use crate::helpers::AgfsSession;
 use agfs::journal::{Marker, Record};
 use std::fs;
@@ -10,6 +10,7 @@ use std::os::unix::fs::MetadataExt;
 #[test]
 fn restore_to_checkpoint_appends_s_record() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
         s.cli(&["checkpoint", "s1"]).expect("checkpoint");
@@ -33,8 +34,9 @@ fn restore_to_checkpoint_appends_s_record() {
         );
         // The s1 checkpoint itself should still be present
         assert!(
-            recs.iter()
-                .any(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1")),
+            recs.iter().any(
+                |r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1")
+            ),
             "s1 checkpoint should be preserved: {recs:?}"
         );
     });
@@ -44,6 +46,7 @@ fn restore_to_checkpoint_appends_s_record() {
 #[test]
 fn commit_clears_journal() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
         assert!(
@@ -66,6 +69,7 @@ fn commit_clears_journal() {
 #[test]
 fn abort_clears_journal() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
         assert!(
@@ -89,6 +93,7 @@ fn abort_clears_journal() {
 #[test]
 fn commit_preserves_journal_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         let journal_path = s.root.join(".agfs/journal");
 
@@ -112,6 +117,7 @@ fn commit_preserves_journal_inode() {
 #[test]
 fn abort_preserves_journal_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         let journal_path = s.root.join(".agfs/journal");
 
@@ -136,6 +142,7 @@ fn abort_preserves_journal_inode() {
 #[test]
 fn commit_empties_inode_store() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
         fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
@@ -157,6 +164,7 @@ fn commit_empties_inode_store() {
 #[test]
 fn abort_empties_inode_store() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
         assert!(
@@ -178,6 +186,7 @@ fn abort_empties_inode_store() {
 #[test]
 fn commit_preserves_inodes_dir_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         let inodes_dir = s.root.join(".agfs/inodes");
 
@@ -201,6 +210,7 @@ fn commit_preserves_inodes_dir_inode() {
 #[test]
 fn abort_preserves_inodes_dir_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         let inodes_dir = s.root.join(".agfs/inodes");
 
@@ -223,13 +233,14 @@ fn abort_preserves_inodes_dir_inode() {
 #[test]
 fn restore_preserves_all_inodes() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "pre-chk\n").expect("write pre");
         s.cli(&["checkpoint", "s1"]).expect("checkpoint");
         fs::write(s.mnt_path("multi.txt"), "post-chk\n").expect("write post");
 
         // Grab the post-checkpoint inode id before restore
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let post_id = ino_for(&ch, "/multi.txt");
 
         s.cli(&["restore", "s1"]).expect("restore");

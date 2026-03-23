@@ -1,4 +1,4 @@
-use super::helpers::{dirents, ino_for, inode_path, inos};
+use super::helpers::{ino_for, inode_path, inos, tree};
 use crate::helpers::AgfsSession;
 use agfs::utils;
 use std::fs;
@@ -9,6 +9,7 @@ use std::fs;
 #[test]
 fn inode_store_is_flat() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // Create a mix of operations
         fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
@@ -33,6 +34,7 @@ fn inode_store_is_flat() {
 #[test]
 fn inos_are_unique() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "a\n").expect("write 1");
         fs::write(s.mnt_path("multi.txt"), "b\n").expect("write 2");
@@ -52,10 +54,11 @@ fn inos_are_unique() {
 #[test]
 fn staged_inode_owned_by_caller() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/hello.txt");
         let path = inode_path(&s, ino);
 
@@ -73,10 +76,11 @@ fn staged_inode_owned_by_caller() {
 #[test]
 fn inode_path_matches_library_api() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/hello.txt");
 
         let agfs_dir = s.root.join(".agfs");

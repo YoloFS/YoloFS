@@ -392,7 +392,11 @@ fn readdir_small_buf(path: &std::path::Path) -> (Vec<String>, usize) {
 
     let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
     let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY) };
-    assert!(fd >= 0, "open directory failed: {}", std::io::Error::last_os_error());
+    assert!(
+        fd >= 0,
+        "open directory failed: {}",
+        std::io::Error::last_os_error()
+    );
 
     // 128 bytes fits ~1 entry, forcing many getdents64 calls.
     let mut buf = [0u8; 128];
@@ -400,10 +404,13 @@ fn readdir_small_buf(path: &std::path::Path) -> (Vec<String>, usize) {
     let mut calls = 0usize;
 
     loop {
-        let n = unsafe {
-            libc::syscall(libc::SYS_getdents64, fd, buf.as_mut_ptr(), buf.len() as u32)
-        };
-        assert!(n >= 0, "getdents64 failed: {}", std::io::Error::last_os_error());
+        let n =
+            unsafe { libc::syscall(libc::SYS_getdents64, fd, buf.as_mut_ptr(), buf.len() as u32) };
+        assert!(
+            n >= 0,
+            "getdents64 failed: {}",
+            std::io::Error::last_os_error()
+        );
         if n == 0 {
             break;
         }
@@ -413,8 +420,13 @@ fn readdir_small_buf(path: &std::path::Path) -> (Vec<String>, usize) {
             // struct linux_dirent64: d_ino(8), d_off(8), d_reclen(2), d_type(1), d_name(...)
             let reclen = u16::from_ne_bytes([buf[offset + 16], buf[offset + 17]]) as usize;
             let name_ptr = &buf[offset + 19..offset + reclen];
-            let name_end = name_ptr.iter().position(|&b| b == 0).unwrap_or(name_ptr.len());
-            let name = std::str::from_utf8(&name_ptr[..name_end]).unwrap().to_string();
+            let name_end = name_ptr
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(name_ptr.len());
+            let name = std::str::from_utf8(&name_ptr[..name_end])
+                .unwrap()
+                .to_string();
             if name != "." && name != ".." {
                 names.push(name);
             }
@@ -445,7 +457,13 @@ fn readdir_small_buf_base_only() {
 
         let (names, calls) = readdir_small_buf(&dir);
         assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
-        assert_eq!(names.len(), expected.len(), "base-only: duplicate or missing entries (got {} names for {} expected)", names.len(), expected.len());
+        assert_eq!(
+            names.len(),
+            expected.len(),
+            "base-only: duplicate or missing entries (got {} names for {} expected)",
+            names.len(),
+            expected.len()
+        );
         let got: BTreeSet<String> = names.into_iter().collect();
         assert_eq!(got, expected, "base-only small-buf readdir mismatch");
     });
@@ -454,9 +472,9 @@ fn readdir_small_buf_base_only() {
 /// Mixed directory: base files + staged creates + staged deletes.
 /// Exercises the merge path with multiple getdents64 calls.
 ///
-/// BUG: currently fails — tombstones increment `off` without emitting,
-/// so `off` and `ctx->pos` desync across getdents64 calls. On re-entry
-/// the `off < ctx->pos` skip under-skips, producing duplicate base entries.
+/// Fixed: tombstones no longer desync `off` and `ctx->pos` — the kernel
+/// now syncs `off = ctx->pos` when no staged entries are emitted in
+/// Phase 1, preventing double-skip of base entries on resumed getdents64.
 #[test]
 fn readdir_small_buf_mixed() {
     let s = AgfsSession::new().expect("session setup");
@@ -489,7 +507,13 @@ fn readdir_small_buf_mixed() {
 
         let (names, calls) = readdir_small_buf(&dir);
         assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
-        assert_eq!(names.len(), expected.len(), "mixed: duplicate or missing entries (got {} names for {} expected)", names.len(), expected.len());
+        assert_eq!(
+            names.len(),
+            expected.len(),
+            "mixed: duplicate or missing entries (got {} names for {} expected)",
+            names.len(),
+            expected.len()
+        );
         let got: BTreeSet<String> = names.into_iter().collect();
         assert_eq!(got, expected, "mixed small-buf readdir mismatch");
     });
@@ -513,9 +537,48 @@ fn readdir_small_buf_staged_only() {
 
         let (names, calls) = readdir_small_buf(&dir);
         assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
-        assert_eq!(names.len(), expected.len(), "staged-only: duplicate or missing entries (got {} names for {} expected)", names.len(), expected.len());
+        assert_eq!(
+            names.len(),
+            expected.len(),
+            "staged-only: duplicate or missing entries (got {} names for {} expected)",
+            names.len(),
+            expected.len()
+        );
         let got: BTreeSet<String> = names.into_iter().collect();
         assert_eq!(got, expected, "staged-only small-buf readdir mismatch");
+    });
+}
+
+/// All-tombstone directory: base files all deleted, no staged creates.
+/// Exercises the edge case where Phase 1 emits nothing (all entries are
+/// tombstones) and the `off = ctx->pos` sync must kick in to avoid
+/// double-skipping base entries in Phase 2.
+#[test]
+fn readdir_small_buf_all_tombstones() {
+    let s = AgfsSession::new().expect("session setup");
+
+    s.run_in_namespace(|| {
+        // Base layer: 15 files.
+        let host_dir = s.base_path("tombdir");
+        fs::create_dir(&host_dir).expect("mkdir host");
+        for i in 0..15 {
+            fs::write(host_dir.join(format!("base-{i:03}.txt")), "x").expect("write base");
+        }
+
+        let dir = s.mnt_path("tombdir");
+
+        // Delete all 15 base files through the mount (creates 15 tombstones).
+        for i in 0..15 {
+            fs::remove_file(dir.join(format!("base-{i:03}.txt"))).expect("unlink");
+        }
+
+        // readdir should return zero entries (all base entries overridden by
+        // tombstones, no staged creates).
+        let (names, _calls) = readdir_small_buf(&dir);
+        assert!(
+            names.is_empty(),
+            "all-tombstone dir should be empty, got: {names:?}"
+        );
     });
 }
 
@@ -547,7 +610,13 @@ fn readdir_small_buf_few_staged_many_base() {
 
         let (names, calls) = readdir_small_buf(&dir);
         assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
-        assert_eq!(names.len(), expected.len(), "few-staged: duplicate or missing entries (got {} names for {} expected)", names.len(), expected.len());
+        assert_eq!(
+            names.len(),
+            expected.len(),
+            "few-staged: duplicate or missing entries (got {} names for {} expected)",
+            names.len(),
+            expected.len()
+        );
         let got: BTreeSet<String> = names.into_iter().collect();
         assert_eq!(got, expected, "few-staged small-buf readdir mismatch");
     });

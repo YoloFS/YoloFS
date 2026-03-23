@@ -77,8 +77,7 @@ pub fn install(results: &crate::BenchResults, out_dir: &Path, paper_dir: &Path) 
     artifacts.extend(meta_ops_figure::artifact_metas(&bench_paper_dir));
 
     let gen_dir = paper_dir.join("generated");
-    std::fs::create_dir_all(&gen_dir)
-        .with_context(|| format!("creating {}", gen_dir.display()))?;
+    std::fs::create_dir_all(&gen_dir).with_context(|| format!("creating {}", gen_dir.display()))?;
 
     let mut installed = Vec::new();
 
@@ -105,8 +104,9 @@ pub fn install(results: &crate::BenchResults, out_dir: &Path, paper_dir: &Path) 
         for pdf in &art.plot_pdfs {
             if pdf.exists() {
                 let dest_pdf = gen_dir.join(pdf.file_name().unwrap());
-                std::fs::copy(pdf, &dest_pdf)
-                    .with_context(|| format!("copying {} → {}", pdf.display(), dest_pdf.display()))?;
+                std::fs::copy(pdf, &dest_pdf).with_context(|| {
+                    format!("copying {} → {}", pdf.display(), dest_pdf.display())
+                })?;
                 installed.push(format!("  pdf: {}", dest_pdf.display()));
             }
         }
@@ -138,7 +138,10 @@ fn extract_fragment(tex: &str) -> Option<&str> {
     let end_marker = "% --- END ";
     let start = tex.find(start_marker)?;
     let end = tex.find(end_marker)?;
-    let end_line = tex[end..].find('\n').map(|i| end + i + 1).unwrap_or(tex.len());
+    let end_line = tex[end..]
+        .find('\n')
+        .map(|i| end + i + 1)
+        .unwrap_or(tex.len());
     Some(&tex[start..end_line])
 }
 
@@ -173,7 +176,8 @@ fn render_index(artifacts: &[Artifact], out_dir: &Path) -> Result<()> {
     let mut html = String::new();
     html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\">\n");
     html.push_str("<title>agfs-bench paper report</title>\n");
-    html.push_str("<style>\n\
+    html.push_str(
+        "<style>\n\
         body { font-family: system-ui, sans-serif; margin: 1.5em; background: #fafafa; }\n\
         h1 { font-size: 1.2em; }\n\
         h2 { font-size: 1.05em; color: #333; margin-top: 1.5em; }\n\
@@ -181,7 +185,8 @@ fn render_index(artifacts: &[Artifact], out_dir: &Path) -> Result<()> {
         .variant { margin-left: 1em; }\n\
         ul { line-height: 1.6; }\n\
         iframe { border: 1px solid #ddd; background: #fff; }\n\
-    </style>\n");
+    </style>\n",
+    );
     html.push_str("</head><body>\n");
     html.push_str("<h1>Paper Artifacts</h1>\n");
 
@@ -195,9 +200,7 @@ fn render_index(artifacts: &[Artifact], out_dir: &Path) -> Result<()> {
             // Emit group heading, then all consecutive artifacts with the same group.
             html.push_str(&format!("<h2>{}</h2>\n", esc(group)));
             let group_name = group.clone();
-            while i < artifacts.len()
-                && artifacts[i].group.as_deref() == Some(&group_name)
-            {
+            while i < artifacts.len() && artifacts[i].group.as_deref() == Some(&group_name) {
                 let a = &artifacts[i];
                 if a.preferred {
                     // Preferred variant: shown expanded.
@@ -218,10 +221,7 @@ fn render_index(artifacts: &[Artifact], out_dir: &Path) -> Result<()> {
                     esc(&a.tex_path)
                 ));
                 if let Some(ref pdf) = a.pdf_path {
-                    html.push_str(&format!(
-                        "<li><a href=\"{}\">.pdf</a></li>\n",
-                        esc(pdf)
-                    ));
+                    html.push_str(&format!("<li><a href=\"{}\">.pdf</a></li>\n", esc(pdf)));
                 }
                 html.push_str("</ul>\n");
                 if let Some(ref pdf) = a.pdf_path {
@@ -245,10 +245,7 @@ fn render_index(artifacts: &[Artifact], out_dir: &Path) -> Result<()> {
                 esc(&art.tex_path)
             ));
             if let Some(ref pdf) = art.pdf_path {
-                html.push_str(&format!(
-                    "<li><a href=\"{}\">.pdf</a></li>\n",
-                    esc(pdf)
-                ));
+                html.push_str(&format!("<li><a href=\"{}\">.pdf</a></li>\n", esc(pdf)));
             }
             html.push_str("</ul>\n");
             if let Some(ref pdf) = art.pdf_path {

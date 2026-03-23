@@ -1,6 +1,6 @@
 # Architecture
 
-AgFS stacks on top of any lower filesystem (ext4, xfs, NFS, ...) using VFS
+AgFS stacks on top of any local lower filesystem (ext4, xfs, btrfs, ...) using VFS
 interposition. It adds two orthogonal capabilities:
 
 | Capability            | Summary |
@@ -62,7 +62,7 @@ and `vfs_*()` calls.
 
 ## Why Stackable VFS?
 
-- **Portability**: Works on any underlying filesystem (ext4, xfs, NFS, tmpfs).
+- **Portability**: Works on any local underlying filesystem (ext4, xfs, btrfs, tmpfs).
 - **File-level granularity**: Permission gating operates on files and
   directories, which map naturally to inodes in a stackable FS.
 - **Simplicity**: No need to manage block allocation, journaling, or
@@ -203,6 +203,7 @@ agfs/
 │   ├── super.c
 │   ├── inode.c
 │   ├── file.c
+│   ├── dir.c
 │   ├── dentry.c
 │   ├── lookup.c
 │   ├── staging.c
@@ -228,11 +229,11 @@ agfs/
 │   │   ├── timeline.rs        # `agfs timeline` command (checkpoint/restore DAG)
 │   │   └── watch.rs           # permission prompt daemon (handles TTY ownership)
 │   ├── journal/               # journal parsing, timeline, and resolution
-│   │   ├── types.rs           # Action, Marker, Record, DType, Segment, INO_REDIRECT
+│   │   ├── types.rs           # Action, Marker, Record, Segment, dtype_valid, dtype_pack
 │   │   ├── parse.rs           # parse()  (pub(super))
 │   │   ├── markers.rs         # Markers (lookup + range + alive_segments + checkpoint_at)
 │   │   ├── journal.rs         # Journal (struct + new + read + live_segments_*)
-│   │   └── tree.rs            # DirTree, Dirent, DirNode
+│   │   └── tree.rs            # DirTree, Dstate, DirNode
 │   ├── ioctl.rs               # binary protocol structs + ioctl helpers
 │   ├── kmsg.rs                # kernel log reading via /dev/kmsg
 │   └── utils.rs               # shared helpers (session_dir, plural)

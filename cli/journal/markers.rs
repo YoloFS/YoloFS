@@ -41,9 +41,10 @@ impl Markers {
         }
         let idx = gen_id as usize;
         if let Some(Marker::Checkpoint { gen_id: g, name }) = self.0.get(idx)
-                && *g == gen_id {
-                    return Ok((*g, name));
-                }
+            && *g == gen_id
+        {
+            return Ok((*g, name));
+        }
         anyhow::bail!("checkpoint not found: {gen_id}");
     }
 
@@ -195,7 +196,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -217,7 +218,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -249,7 +250,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -271,7 +272,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -298,12 +299,10 @@ mod tests {
 
     #[test]
     fn find_checkpoint_by_gen_id_rejects_phantom() {
-        let records = vec![
-            Record::Marker(Marker::Checkpoint {
-                gen_id: 1,
-                name: "c1".into(),
-            }),
-        ];
+        let records = vec![Record::Marker(Marker::Checkpoint {
+            gen_id: 1,
+            name: "c1".into(),
+        })];
         let j = Journal::new(records);
         assert!(
             j.markers.find_checkpoint_by_gen_id(0).is_err(),
@@ -323,7 +322,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -332,7 +331,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Marker(Marker::Restore {
@@ -353,12 +352,10 @@ mod tests {
 
     #[test]
     fn segment_range_at_rejects_phantom_id() {
-        let records = vec![
-            Record::Marker(Marker::Checkpoint {
-                gen_id: 1,
-                name: "c1".into(),
-            }),
-        ];
+        let records = vec![Record::Marker(Marker::Checkpoint {
+            gen_id: 1,
+            name: "c1".into(),
+        })];
         let j = Journal::new(records);
         assert!(
             j.markers
@@ -377,7 +374,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -386,7 +383,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -410,7 +407,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -436,7 +433,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -445,7 +442,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -473,7 +470,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -482,7 +479,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -495,7 +492,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/d".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -524,7 +521,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -533,7 +530,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -546,7 +543,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/d".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -573,7 +570,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -582,7 +579,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -609,7 +606,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Restore {
@@ -618,7 +615,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
         ];
@@ -641,7 +638,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -672,7 +669,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -681,7 +678,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -694,7 +691,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/d".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -727,7 +724,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -736,7 +733,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -768,7 +765,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -798,7 +795,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -807,7 +804,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -820,7 +817,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/d".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -829,7 +826,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/e".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 4,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -863,7 +860,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/a".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -872,7 +869,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/b".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Marker(Marker::Checkpoint {
@@ -885,7 +882,7 @@ mod tests {
             }),
             Record::Action(Action::Add {
                 path: "/d".into(),
-                dtype: Some(DType::File),
+                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Marker(Marker::Checkpoint {

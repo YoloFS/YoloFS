@@ -5,6 +5,7 @@ use std::fs;
 #[test]
 fn rename_then_read() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt")).expect("rename");
 
@@ -26,6 +27,7 @@ fn rename_then_read() {
 #[test]
 fn rename_then_write_cow() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
@@ -46,6 +48,7 @@ fn rename_then_write_cow() {
 #[test]
 fn rename_write_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("final.txt")).expect("rename");
         fs::write(s.mnt_path("final.txt"), "committed content\n").expect("write");
@@ -69,6 +72,7 @@ fn rename_write_commit() {
 #[test]
 fn rename_nested_file() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(
             s.mnt_path("subdir/deep.txt"),
@@ -92,6 +96,7 @@ fn rename_nested_file() {
 #[test]
 fn rename_pure_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
         s.cli(&["commit"]).expect("commit");
@@ -112,6 +117,7 @@ fn rename_pure_commit() {
 #[test]
 fn rename_abort_preserves_base() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
         s.cli(&["abort"]).expect("abort");
@@ -133,6 +139,7 @@ fn rename_abort_preserves_base() {
 #[test]
 fn rename_then_recreate_old_name() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
@@ -148,7 +155,8 @@ fn rename_then_recreate_old_name() {
         assert_eq!(content, "new file\n");
 
         // Renamed file still accessible at new path
-        let moved = fs::read_to_string(s.mnt_path("moved.txt")).expect("moved.txt should be readable");
+        let moved =
+            fs::read_to_string(s.mnt_path("moved.txt")).expect("moved.txt should be readable");
         assert_eq!(moved, "base content\n");
     });
 }
@@ -157,6 +165,7 @@ fn rename_then_recreate_old_name() {
 #[test]
 fn rename_recreate_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
         fs::write(s.mnt_path("hello.txt"), "replacement\n").expect("recreate");
@@ -183,6 +192,7 @@ fn rename_recreate_commit() {
 #[test]
 fn rename_deleted_file_fails() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
@@ -198,6 +208,7 @@ fn rename_deleted_file_fails() {
 #[test]
 fn rename_nonexistent_fails() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         let result = fs::rename(s.mnt_path("no_such_file.txt"), s.mnt_path("dest.txt"));
         assert!(result.is_err(), "renaming nonexistent file should fail");
@@ -208,6 +219,7 @@ fn rename_nonexistent_fails() {
 #[test]
 fn rename_back_and_forth() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("rename a→b");
         fs::rename(s.mnt_path("temp.txt"), s.mnt_path("hello.txt")).expect("rename b→a");
@@ -228,6 +240,7 @@ fn rename_back_and_forth() {
 #[test]
 fn rename_back_and_forth_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("rename a→b");
         fs::rename(s.mnt_path("temp.txt"), s.mnt_path("hello.txt")).expect("rename b→a");
@@ -246,13 +259,35 @@ fn rename_back_and_forth_commit() {
     });
 }
 
+/// Three-step roundtrip: a→b→c→a. File ends up back at original path.
+#[test]
+fn rename_three_step_roundtrip() {
+    let s = AgfsSession::new().expect("session setup");
+
+    s.run_in_namespace(|| {
+        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp1.txt")).expect("a→b");
+        fs::rename(s.mnt_path("temp1.txt"), s.mnt_path("temp2.txt")).expect("b→c");
+        fs::rename(s.mnt_path("temp2.txt"), s.mnt_path("hello.txt")).expect("c→a");
+
+        // File should be back at original path with original content
+        let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
+        assert_eq!(content, "base content\n");
+
+        // Temp names should not exist
+        assert!(fs::read_to_string(s.mnt_path("temp1.txt")).is_err());
+        assert!(fs::read_to_string(s.mnt_path("temp2.txt")).is_err());
+    });
+}
+
 /// Rename onto an existing file (overwrite target).
 #[test]
 fn rename_overwrite_existing() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // hello.txt and subdir/deep.txt both exist in base
-        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("subdir/deep.txt")).expect("rename overwrite");
+        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("subdir/deep.txt"))
+            .expect("rename overwrite");
 
         // New location has old content (hello.txt's content)
         let content = fs::read_to_string(s.mnt_path("subdir/deep.txt")).expect("read");
@@ -270,8 +305,10 @@ fn rename_overwrite_existing() {
 #[test]
 fn rename_overwrite_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
-        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("subdir/deep.txt")).expect("rename overwrite");
+        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("subdir/deep.txt"))
+            .expect("rename overwrite");
         s.cli(&["commit"]).expect("commit");
 
         assert_eq!(
@@ -290,6 +327,7 @@ fn rename_overwrite_commit() {
 #[test]
 fn rename_chain() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("step1.txt")).expect("a→b");
         fs::rename(s.mnt_path("step1.txt"), s.mnt_path("step2.txt")).expect("b→c");
@@ -305,6 +343,7 @@ fn rename_chain() {
 #[test]
 fn rename_chain_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("step1.txt")).expect("a→b");
         fs::rename(s.mnt_path("step1.txt"), s.mnt_path("step2.txt")).expect("b→c");
@@ -325,6 +364,7 @@ fn rename_chain_commit() {
 #[test]
 fn rename_swap_like_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename hello→moved");
         fs::rename(s.mnt_path("multi.txt"), s.mnt_path("hello.txt")).expect("rename multi→hello");
@@ -353,6 +393,7 @@ fn rename_swap_like_commit() {
 #[test]
 fn rename_cyclic_swap_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("tmp")).expect("rename hello→tmp");
         fs::rename(s.mnt_path("multi.txt"), s.mnt_path("hello.txt")).expect("rename multi→hello");
@@ -387,6 +428,7 @@ fn rename_cyclic_swap_commit() {
 #[test]
 fn rename_directory_with_contents() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("subdir"), s.mnt_path("moved_dir")).expect("rename dir");
 
@@ -406,6 +448,7 @@ fn rename_directory_with_contents() {
 #[test]
 fn rename_directory_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("subdir"), s.mnt_path("moved_dir")).expect("rename dir");
         s.cli(&["commit"]).expect("commit");
@@ -422,6 +465,7 @@ fn rename_directory_commit() {
 #[test]
 fn rename_symlink_preserves_target() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         std::os::unix::fs::symlink("hello.txt", s.mnt_path("link")).expect("create symlink");
         fs::rename(s.mnt_path("link"), s.mnt_path("moved_link")).expect("rename symlink");
@@ -442,6 +486,7 @@ fn rename_symlink_preserves_target() {
 #[test]
 fn rename_staged_file_to_new_path_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("brand_new.txt"), "staged content\n").expect("create staged");
         fs::rename(s.mnt_path("brand_new.txt"), s.mnt_path("final.txt")).expect("rename staged");
@@ -474,6 +519,7 @@ fn rename_staged_file_to_new_path_commit() {
 #[test]
 fn rename_staged_file_overwrite_base_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("brand_new.txt"), "replacement\n").expect("create staged");
         fs::rename(s.mnt_path("brand_new.txt"), s.mnt_path("multi.txt")).expect("rename overwrite");
@@ -524,6 +570,7 @@ fn rename_staged_file_overwrite_base_commit() {
 #[test]
 fn complex_multi_operation_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // ── 1. COW modify hello.txt ──
         fs::write(s.mnt_path("hello.txt"), "first edit\n").expect("write hello v1");
@@ -586,64 +633,74 @@ fn complex_multi_operation_commit() {
 
         // ── Verify resolved dirents ──
         use agfs::journal;
-        use agfs::journal::Dirent;
+        use agfs::journal::Dstate;
 
         let agfs_dir = s.root.join(".agfs");
         let journal_obj = journal::Journal::read(&agfs_dir).expect("read journal");
-        let dirents = journal_obj.into_tree().into_dirents();
+        let t = journal_obj.into_tree();
 
-        let has_modified_hello = dirents.iter().any(|(path, c): &(String, Dirent)| {
-            matches!(c, Dirent::Inode { in_base: true, .. }) && path.ends_with("/hello.txt")
-        });
-        let has_modified_multi = dirents.iter().any(|(path, c): &(String, Dirent)| {
-            matches!(c, Dirent::Inode { in_base: true, .. }) && path.ends_with("/multi.txt")
-        });
-        // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
-        // Tree builder preserves original base path through rename chains.
-        let has_renamed_deep_to_top = dirents.iter().any(|(to, c): &(String, Dirent)| {
-            matches!(c, Dirent::Link { base_path, .. }
-                if base_path.ends_with("/subdir/deep.txt") && to.ends_with("/top.txt"))
-        });
-        let has_deleted_deep = dirents.iter().any(|(path, c): &(String, Dirent)| {
-            matches!(c, Dirent::Tombstone { .. }) && path.ends_with("/deep.txt")
-        });
-        let has_added_link = dirents.iter().any(|(path, c): &(String, Dirent)| {
-            matches!(c, Dirent::Inode { in_base: false, .. }) && path.ends_with("/link.txt")
-        });
-        let has_temp = dirents.iter().any(|(path, c): &(String, Dirent)| {
+        let (
+            mut has_modified_hello,
+            mut has_modified_multi,
+            mut has_renamed_deep_to_top,
+            mut has_deleted_deep,
+            mut has_added_link,
+            mut has_temp,
+            mut has_brand_new,
+        ) = (false, false, false, false, false, false, false);
+
+        t.for_each(|path, dstate| {
+            if matches!(dstate, Dstate::StagedInode { in_base: true, .. })
+                && path.ends_with("/hello.txt")
+            {
+                has_modified_hello = true;
+            }
+            if matches!(dstate, Dstate::StagedInode { in_base: true, .. })
+                && path.ends_with("/multi.txt")
+            {
+                has_modified_multi = true;
+            }
+            // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
+            // Tree builder preserves original base path through rename chains.
+            if let Dstate::BasePath { src, .. } = dstate {
+                if src.ends_with("/subdir/deep.txt") && path.ends_with("/top.txt") {
+                    has_renamed_deep_to_top = true;
+                }
+                if src.ends_with("/temp.txt") {
+                    has_temp = true;
+                }
+                if src.ends_with("/brand_new.txt") {
+                    has_brand_new = true;
+                }
+            }
+            if matches!(dstate, Dstate::Tombstone { .. }) && path.ends_with("/deep.txt") {
+                has_deleted_deep = true;
+            }
+            if matches!(dstate, Dstate::StagedInode { in_base: false, .. })
+                && path.ends_with("/link.txt")
+            {
+                has_added_link = true;
+            }
             if path.ends_with("/temp.txt") {
-                return true;
+                has_temp = true;
             }
-            matches!(c, Dirent::Link { base_path, .. } if base_path.ends_with("/temp.txt"))
-        });
-        let has_brand_new = dirents.iter().any(|(path, c): &(String, Dirent)| {
             if path.ends_with("/brand_new.txt") {
-                return true;
+                has_brand_new = true;
             }
-            matches!(c, Dirent::Link { base_path, .. } if base_path.ends_with("/brand_new.txt"))
         });
 
-        assert!(
-            has_modified_hello,
-            "expected Modified(hello.txt): {dirents:?}"
-        );
-        assert!(
-            has_modified_multi,
-            "expected Modified(multi.txt): {dirents:?}"
-        );
+        assert!(has_modified_hello, "expected Modified(hello.txt): {t:?}");
+        assert!(has_modified_multi, "expected Modified(multi.txt): {t:?}");
         assert!(
             has_renamed_deep_to_top,
-            "expected Renamed(subdir/deep.txt → top.txt): {dirents:?}"
+            "expected Renamed(subdir/deep.txt → top.txt): {t:?}"
         );
-        assert!(has_deleted_deep, "expected Deleted(deep.txt): {dirents:?}");
-        assert!(has_added_link, "expected Added(link.txt): {dirents:?}");
-        assert!(
-            !has_temp,
-            "temp.txt should have cancelled out (A+D): {dirents:?}"
-        );
+        assert!(has_deleted_deep, "expected Deleted(deep.txt): {t:?}");
+        assert!(has_added_link, "expected Added(link.txt): {t:?}");
+        assert!(!has_temp, "temp.txt should have cancelled out (A+D): {t:?}");
         assert!(
             !has_brand_new,
-            "brand_new.txt should not appear (staged rename absorbed): {dirents:?}"
+            "brand_new.txt should not appear (staged rename absorbed): {t:?}"
         );
 
         // ── Commit and verify base ──
@@ -705,6 +762,7 @@ fn complex_multi_operation_commit() {
 #[test]
 fn rename_child_then_parent_commit() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // Move deep.txt out of subdir, then rename subdir itself.
         fs::rename(s.mnt_path("subdir/deep.txt"), s.mnt_path("extracted.txt"))
@@ -749,9 +807,11 @@ fn rename_child_then_parent_commit() {
 #[test]
 fn rename_child_then_parent_commit_reversed_order() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // "a_dir" < "zoo.txt" — forces parent rename first in BTreeMap order.
-        fs::rename(s.mnt_path("subdir/deep.txt"), s.mnt_path("zoo.txt")).expect("rename deep → zoo");
+        fs::rename(s.mnt_path("subdir/deep.txt"), s.mnt_path("zoo.txt"))
+            .expect("rename deep → zoo");
         fs::rename(s.mnt_path("subdir"), s.mnt_path("a_dir")).expect("rename subdir → a_dir");
 
         assert_eq!(
@@ -780,6 +840,7 @@ fn rename_child_then_parent_commit_reversed_order() {
 #[test]
 fn rename_chain_follows_link_base_path() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // Rename a base file twice: hello.txt → step1 → step2
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("step1.txt")).expect("a→b");
@@ -813,6 +874,7 @@ fn rename_chain_follows_link_base_path() {
 #[test]
 fn replace_then_delete_tombstones_both() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // hello.txt and multi.txt both exist in base
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("multi.txt")).expect("replace");

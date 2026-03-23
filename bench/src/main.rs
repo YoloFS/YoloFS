@@ -1275,7 +1275,13 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(Cmd::DiffPdf { path, old, new, output }) = cli.cmd {
+    if let Some(Cmd::DiffPdf {
+        path,
+        old,
+        new,
+        output,
+    }) = cli.cmd
+    {
         diff_pdf(&path, &old, &new, output.as_deref())?;
         return Ok(());
     }
@@ -1496,7 +1502,8 @@ fn diff_pdf(path: &Path, old_ref: &str, new_ref: &str, output: Option<&Path>) ->
         std::fs::create_dir_all(&diff_dir)?;
         let short = |r: &str| {
             Command::new("git")
-                .arg("-C").arg(&git_dir)
+                .arg("-C")
+                .arg(&git_dir)
                 .args(["rev-parse", "--short", r])
                 .output()
                 .ok()
@@ -1567,7 +1574,8 @@ fn diff_pdf(path: &Path, old_ref: &str, new_ref: &str, output: Option<&Path>) ->
         }
     }
 
-    out_img.save(&out_path)
+    out_img
+        .save(&out_path)
         .with_context(|| format!("writing {}", out_path.display()))?;
 
     let pct = n_changed as f64 / (w as f64 * h as f64) * 100.0;
@@ -1584,7 +1592,8 @@ fn diff_pdf(path: &Path, old_ref: &str, new_ref: &str, output: Option<&Path>) ->
 fn git_show_to_file(rev: &str, path: &Path, dest: &Path, git_dir: &Path) -> Result<()> {
     let spec = format!("{rev}:{}", path.display());
     let out = Command::new("git")
-        .arg("-C").arg(git_dir)
+        .arg("-C")
+        .arg(git_dir)
         .args(["show", &spec])
         .output()
         .with_context(|| format!("git -C {} show {spec}", git_dir.display()))?;
@@ -1592,8 +1601,7 @@ fn git_show_to_file(rev: &str, path: &Path, dest: &Path, git_dir: &Path) -> Resu
         let stderr = String::from_utf8_lossy(&out.stderr);
         bail!("git show {spec} failed: {stderr}");
     }
-    std::fs::write(dest, &out.stdout)
-        .with_context(|| format!("writing {}", dest.display()))?;
+    std::fs::write(dest, &out.stdout).with_context(|| format!("writing {}", dest.display()))?;
     Ok(())
 }
 
@@ -1613,7 +1621,8 @@ fn resolve_git_context(path: &Path) -> Result<(PathBuf, PathBuf)> {
 
     let dir = abs.parent().unwrap_or(Path::new("."));
     let out = Command::new("git")
-        .arg("-C").arg(dir)
+        .arg("-C")
+        .arg(dir)
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .context("git rev-parse --show-toplevel")?;
@@ -1621,7 +1630,8 @@ fn resolve_git_context(path: &Path) -> Result<(PathBuf, PathBuf)> {
         bail!("{} is not in a git repository", path.display());
     }
     let repo_root = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-    let rel = abs.strip_prefix(&repo_root)
+    let rel = abs
+        .strip_prefix(&repo_root)
         .with_context(|| format!("{} not under {}", abs.display(), repo_root.display()))?;
     Ok((repo_root, rel.to_path_buf()))
 }

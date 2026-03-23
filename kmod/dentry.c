@@ -29,8 +29,7 @@ static int agfs_d_init(struct dentry *dentry)
 		return -ENOMEM;
 
 	spin_lock_init(&info->lock);
-	info->packed = (agfs_pde_t){0};
-	INIT_LIST_HEAD(&info->de_node);
+	info->dstate = (struct agfs_dstate){0}; /* passthrough */
 	info->dentry = dentry;
 	info->perm = AGFS_PERM_NONE;
 	INIT_LIST_HEAD(&info->rule_pin);
@@ -42,56 +41,11 @@ static int agfs_d_init(struct dentry *dentry)
 /*
  * Dentry revalidation.
  *
- * For local lower filesystems (ext4, xfs, …) the lower dentry never has
- * d_revalidate, so there is nothing to proxy.  In that common case we can
- * return 1 immediately — including under RCU-walk — so that lookup_fast
- * stays on the fast RCU path and avoids the refcount bouncing that
- * path_get/path_put would cause.
- *
- * If the lower filesystem *does* set DCACHE_OP_REVALIDATE (e.g. NFS),
- * we fall back to ref-walk and proxy the call, exactly like overlayfs
- * does in ovl_revalidate_real().
+ * AgFS only supports local lower filesystems (ext4, xfs, …) that never
+ * set DCACHE_OP_REVALIDATE.  Mount is rejected for remote filesystems
+ * (e.g. NFS) that need revalidation.  Since agfs_dops omits
+ * d_revalidate, the VFS keeps lookup_fast in pure RCU-walk mode.
  */
-static int agfs_d_revalidate(struct dentry *dentry, unsigned int flags)
-{
-	struct agfs_dentry_info *info;
-	struct dentry *lower_dentry;
-
-	if (flags & LOOKUP_RCU) {
-		if (!d_inode_rcu(dentry))
-			return -ECHILD;
-		info = AGFS_D(dentry);
-		if (!info)
-			return -ECHILD;
-		lower_dentry = info->lower_path.dentry;
-		/* No lower revalidate → dentry is valid, stay in RCU-walk. */
-		if (!lower_dentry ||
-		    !(lower_dentry->d_flags & DCACHE_OP_REVALIDATE))
-			return 1;
-		/* Lower needs revalidation — drop to ref-walk. */
-		return -ECHILD;
-	}
-
-	if (!AGFS_D(dentry))
-		return 0;
-
-	/* ref-walk: proxy to the lower dentry's revalidate if it has one. */
-	{
-		struct path lower_path;
-		int err = 1;
-
-		agfs_get_lower_path(dentry, &lower_path);
-		lower_dentry = lower_path.dentry;
-
-		if (lower_dentry &&
-		    (lower_dentry->d_flags & DCACHE_OP_REVALIDATE))
-			err = lower_dentry->d_op->d_revalidate(lower_dentry,
-							       flags);
-
-		agfs_put_lower_path(dentry, &lower_path);
-		return err;
-	}
-}
 
 static void agfs_d_release(struct dentry *dentry)
 {
@@ -100,8 +54,7 @@ static void agfs_d_release(struct dentry *dentry)
 	if (!info)
 		return;
 
-	WARN_ON_ONCE(!list_empty(&info->de_node));
-	agfs_pde_free(info->packed);
+	agfs_dstate_free(info->dstate);
 	agfs_put_reset_lower_path(dentry);
 	agfs_free_dentry_private_data(dentry);
 }
@@ -109,64 +62,41 @@ static void agfs_d_release(struct dentry *dentry)
 /* ── Dentry Staging Helpers ────────────────────────────────────────── */
 
 /*
- * Add dir to sbi->pinned_dirs if not already there.
- * No igrab() needed — pinned child dentries hold a ref on d_parent,
- * which transitively keeps the parent inode alive.
+ * Stage a VFS-provided dentry.  Sets dstate and takes a dget() pin
+ * so the dentry persists in d_children.
+ * Caller must hold i_rwsem exclusive on the parent directory.
  */
-void agfs_pin_dir_if_first(struct agfs_inode_info *dii,
-			   struct agfs_sb_info *sbi)
+void agfs_stage_dentry(struct dentry *dentry, struct agfs_dstate dstate)
 {
-	if (!list_empty(&dii->de_pin))
-		return;
-	spin_lock(&sbi->pinned_dirs_lock);
-	if (list_empty(&dii->de_pin))
-		list_add(&dii->de_pin, &sbi->pinned_dirs);
-	spin_unlock(&sbi->pinned_dirs_lock);
+	AGFS_D(dentry)->dstate = dstate;
+	dget(dentry);	/* pin in dcache so it stays in d_children */
 }
 
 /*
- * Stage a VFS-provided dentry on its parent directory's de_list.
- * Takes a dget() pin.  Caller must hold i_rwsem exclusive on dir.
- */
-void agfs_stage_dentry(struct dentry *dentry, struct inode *dir,
-		       agfs_pde_t packed)
-{
-	struct agfs_dentry_info *di = AGFS_D(dentry);
-	struct agfs_inode_info *dii = AGFS_I(dir);
-
-	di->packed = packed;
-	dget(dentry);
-	list_add(&di->de_node, &dii->de_list);
-	agfs_pin_dir_if_first(dii, AGFS_SB(dir->i_sb));
-}
-
-/*
- * Remove a dentry from its parent's de_list, free packed, release pin.
- * The agfs_dentry_info (and its dentry) may be freed after this call
- * if the dput drops the last reference.
+ * Remove a dentry from staging: free dstate, clear to passthrough,
+ * release pin.  The agfs_dentry_info (and its dentry) may be freed
+ * after this call if the dput drops the last reference.
  * Caller must hold i_rwsem exclusive on the parent directory.
  */
 void agfs_unstage_dentry(struct agfs_dentry_info *di)
 {
-	list_del_init(&di->de_node);
-	agfs_pde_free(di->packed);
-	di->packed = (agfs_pde_t){0};
+	agfs_dstate_free(di->dstate);
+	di->dstate = (struct agfs_dstate){0}; /* passthrough */
 	dput(di->dentry);
 }
 
 /*
  * Create a negative (tombstone) dentry at @name under @parent and
- * stage it on @dir's de_list.  The d_alloc() reference serves as the
- * pin — no extra dget().
+ * stage it.  The d_alloc() reference serves as the pin — no extra
+ * dget().
  *
  * Returns the tombstone dentry, or NULL on allocation failure.
  * Caller must hold i_rwsem exclusive on dir.
  */
 struct dentry *agfs_add_tombstone(struct dentry *parent,
 				  const char *name, unsigned int len,
-				  struct inode *dir)
+				  unsigned char d_type)
 {
-	struct agfs_inode_info *dii = AGFS_I(dir);
 	struct qstr qname = QSTR_INIT(name, len);
 	struct dentry *tomb;
 
@@ -175,36 +105,77 @@ struct dentry *agfs_add_tombstone(struct dentry *parent,
 	if (!tomb)
 		return NULL;
 
-	/* d_init set packed=0 (tombstone).  d_alloc ref is our pin. */
+	AGFS_D(tomb)->dstate = agfs_dstate_tombstone(d_type);
 	d_add(tomb, NULL);
-	list_add(&AGFS_D(tomb)->de_node, &dii->de_list);
-	agfs_pin_dir_if_first(dii, AGFS_SB(dir->i_sb));
 	return tomb;
 }
 
 /*
- * Undo agfs_add_tombstone: remove from de_list, unhash, and release.
+ * Undo agfs_add_tombstone: unhash, clear dstate, and release.
  * Used for rollback when a subsequent step (e.g., journal write) fails.
  * Caller must hold i_rwsem exclusive on dir.
  */
-void agfs_remove_tombstone(struct dentry *tomb, struct inode *dir)
+void agfs_remove_tombstone(struct dentry *tomb)
 {
-	list_del_init(&AGFS_D(tomb)->de_node);
 	d_drop(tomb);
-	dput(tomb);
+	agfs_unstage_dentry(AGFS_D(tomb));
 }
 
-/* Full ops: proxy d_revalidate to the lower filesystem (e.g. NFS). */
-const struct dentry_operations agfs_dops = {
-	.d_init		= agfs_d_init,
-	.d_revalidate	= agfs_d_revalidate,
-	.d_release	= agfs_d_release,
-};
+/*
+ * Iteratively unstage all staged child dentries via depth-first walk.
+ *
+ * The hlist traversal is lockless — holding d_lock across the loop is
+ * not possible because agfs_unstage_dentry() calls dput(), which may
+ * re-acquire d_lock and deadlock.  To make the lockless walk safe we
+ * call shrink_dcache_sb() first: this evicts every unreferenced
+ * (passthrough) dentry, so every entry still in d_children has a
+ * positive refcount and cannot be freed mid-iteration.  Concurrent
+ * lookups only hlist_add_head (at the front) which does not disturb
+ * our forward ->next traversal.
+ *
+ * A second shrink_dcache_sb() after the walk evicts the dentries that
+ * were just unstaged (dput drops their refcount but leaves them cached
+ * on the LRU), so subsequent VFS lookups go through the module again.
+ */
+void agfs_unstage_all(struct super_block *sb)
+{
+	struct hlist_node *pos[AGFS_RESTORE_MAX_DEPTH];
+	struct dentry *cur;
+	int depth = 0;
 
-/* Fast ops: no d_revalidate — for local lower filesystems (ext4, xfs).
- * The VFS won't set DCACHE_OP_REVALIDATE on these dentries, so
- * lookup_fast stays in pure RCU-walk without any function call. */
-const struct dentry_operations agfs_dops_fast = {
+	if (!sb->s_root)
+		return;
+
+	shrink_dcache_sb(sb);
+
+	if (hlist_empty(&sb->s_root->d_children))
+		return;
+
+	pos[0] = sb->s_root->d_children.first;
+
+	while (depth >= 0) {
+		if (!pos[depth]) {
+			depth--;
+			continue;
+		}
+
+		cur = hlist_entry(pos[depth], struct dentry, d_sib);
+		pos[depth] = pos[depth]->next;
+
+		/* Descend into children before unstaging this entry */
+		if (!hlist_empty(&cur->d_children) &&
+		    depth + 1 < AGFS_RESTORE_MAX_DEPTH)
+			pos[++depth] = cur->d_children.first;
+
+		if (AGFS_D(cur) &&
+		    !agfs_dstate_is_passthrough(AGFS_D(cur)->dstate))
+			agfs_unstage_dentry(AGFS_D(cur));
+	}
+
+	shrink_dcache_sb(sb);
+}
+
+const struct dentry_operations agfs_dops = {
 	.d_init		= agfs_d_init,
 	.d_release	= agfs_d_release,
 };

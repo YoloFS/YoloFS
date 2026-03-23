@@ -20,13 +20,14 @@ the kernel, not merely assumed.
 2. **Staged child dentries are pinned.** When the first
    staged entry is added to a directory, the child dentry is pinned with
    `dget()`, keeping it in the dcache. The packed overlay state
-   (`agfs_pde_t`) lives on the VFS dentry (via `d_fsdata` in
+   (`struct agfs_dstate`) lives on the VFS dentry (via `d_fsdata` in
    `agfs_dentry_info`), so it survives dentry cache pressure naturally.
    Pinned child dentries hold a ref on `dentry->d_parent`, which
-   transitively keeps the parent inode (and its `de_list`) alive through
+   transitively keeps the parent inode alive through
    VFS refcounting — no `igrab()` is needed. Pins are released in bulk by
    `AGFS_IOC_RESTORE` (called by commit/abort/restore) and during
-   `kill_sb` (unmount). Directories are never COW'd, so their inode
+   `kill_sb` (unmount) via a recursive dentry tree walk from
+   `sb->s_root`. Directories are never COW'd, so their inode
    identity (keyed by `lower_inode` in `iget5_locked`) is stable for
    the entire staging session.
 
@@ -36,7 +37,7 @@ the kernel, not merely assumed.
 | --------------------- | ------- |
 | **base**              | Always `/` — the entire root filesystem, read-only from AgFS's perspective until commit. |
 | **inode store**       | `.agfs/inodes/` — a flat store of inodes. Each entry is identified by a numeric ino (`inodes/1`, `inodes/2`, ...). Regular files and symlinks are stored as inodes; directories created by `mkdir` are empty directory inodes (children live in their own entries). No mirrored directory tree. |
-| **staged dentry list** | Per-directory linked list (`de_list`) of pinned staged VFS dentries. Each pinned dentry carries overlay state in its `agfs_dentry_info`. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
+| **staged dentry list** | Per-directory set of pinned staged VFS dentries, identified by `dstate.val != 0` in the VFS `d_children` list. Each pinned dentry carries overlay state in its `agfs_dentry_info`. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
 | **journal**           | `.agfs/journal` — append-only log of all mutations. Written by the kernel, read by the CLI for commit/abort/status/diff. The kernel never reads it back. |
 | **mount point**       | `.agfs/mnt/` — the agent's view of the filesystem. Shows the merged base + staged changes with permission gating applied. |
 | **commit**            | CLI reads the journal and applies all operations to the base filesystem. |
@@ -71,7 +72,8 @@ All staging state lives in the structures below. Nothing is shared
 across mounts. The two design invariants (no open fds during checkpoint,
 staged child dentries pinned) keep the state minimal: the file struct carries
 zero staging-specific fields; all staging truth lives in the packed overlay
-state on pinned VFS dentries, organized per-directory via `de_list`.
+state on pinned VFS dentries, identified by `dstate.val != 0` in the
+VFS `d_children` list.
 
 **Per-superblock** (`agfs_sb_info`) — one instance, lives for the mount:
 
@@ -84,16 +86,12 @@ state on pinned VFS dentries, organized per-directory via `de_list`.
 | `gen` | Atomic counter, starts at 1, bumped by each checkpoint and restore ioctl. Compared against the gen field in the dentry's packed state at open time to decide COW / re-COW. |
 | `staging_fd_count` | Atomic counter of open staging fds (opened for write). Checkpoint ioctl rejects with `-EBUSY` when > 0. |
 | `dirty` | Boolean flag set on every data journal write (A/M/D/R/P), cleared on checkpoint or restore. Used by `AGFS_CHK_IF_CHANGED` to skip empty auto-checkpoints. |
-| `pinned_dirs` | List head tracking directory inodes that have staged child dentries (those with non-empty `de_list`) for bulk release at cache invalidation / unmount. |
-| `pinned_dirs_lock` | Spinlock protecting `pinned_dirs`. |
 
 **Per-inode** (`agfs_inode_info`) — one per cached inode:
 
 | Field | Purpose |
 |-------|---------|
 | `lower_inode` | Pointer to the lower-FS inode (base file at lookup time). Not updated after COW — stale but harmless. Used only for `evict_inode` cleanup and directory permission pass-through. |
-| `de_list` | *(directories only)* Linked list of pinned staged child dentries (`list_head`). Each child's `agfs_dentry_info.de_node` links into this list. This is the kernel's source of truth for staged changes. Protected by the VFS `inode->i_rwsem` (shared for reads, exclusive for writes). |
-| `de_pin` | *(directories only)* Node in `sbi->pinned_dirs`. Linked when the first child is added to `de_list`, removed at cache invalidation / unmount. |
 
 The staging state lives on the VFS dentries (via `d_fsdata`), not on the
 directory inode. Directories are never COW'd, so their inode identity is
@@ -106,8 +104,7 @@ the inode.
 | Field | Purpose |
 |-------|---------|
 | `lower_path` | Resolved path to the backing file — either `inodes/<ino>` or the base file. Updated in-place by COW. |
-| `packed` | Single `u64` (`agfs_pde_t`) encoding the overlay state. Three mutually exclusive variants discriminated by bit 63 and zero: **tombstone** (`packed == 0`), **link** (bit 63 set — kernel pointer with tag), **inode** (bit 63 clear, non-zero — staged in `inodes/<ino>`). See [Packed Encoding](#packed-encoding). |
-| `de_node` | `list_head` — node in parent directory's `de_list`. Initialized to empty by `d_init`. A dentry is staged iff `!list_empty(&de_node)`. |
+| `dstate` | Single `u64` (`struct agfs_dstate`) encoding the overlay state. Four mutually exclusive variants: **passthrough** (`val == 0`), **tombstone** (positive, `ino == 0` — deleted, carries `d_type`, always `in_base`), **link** (bit 63 set — kernel pointer with tag), **inode** (positive, `ino != 0` — staged in `inodes/<ino>`). See [Packed Encoding](#packed-encoding). A dentry is staged iff `!agfs_dstate_is_passthrough(dstate)` (equivalently `dstate.val != 0`). |
 | `dentry` | Back-pointer to the owning VFS dentry. |
 
 **Per-file** (`agfs_file_info`) — one per open file descriptor:
@@ -124,88 +121,93 @@ time is valid for the lifetime of the fd.
 
 ### Packed Encoding
 
-Three mutually exclusive states discriminated by **bit 63** and zero:
+Four mutually exclusive states:
 
-- `packed == 0` → **tombstone** (deleted). Always `in_base=true`.
-  A delete of an `in_base=false` entry removes the dentry from `de_list`
+- `packed == 0` → **passthrough** (default). Dentry follows the base filesystem.
+  Zero-initialized by `d_init`; also set by `agfs_unstage_dentry`.
+- `(s64)packed > 0 && ino == 0` → **tombstone** (deleted). Has `d_type`
+  (bits [62:60]) and `in_base` always set (bit 59 = 1).
+  A delete of an `in_base=false` entry clears the dentry's `dstate`
   and calls `dput()` (cancelled-entry removal) rather than creating a
   tombstone.
 - `(s64)packed < 0` → **link** (bit 63 set — kernel pointer with tag).
   Zero-copy rename redirect to a base path.
-- `packed != 0 && (s64)packed >= 0` → **inode** (bit 63 clear, non-zero).
+- `(s64)packed > 0 && ino != 0` → **inode** (bit 63 clear, ino non-zero).
   Staged content in `inodes/<ino>`.
-- not staged (`list_empty(&de_node)`) → fall through to base filesystem
+- not staged (`agfs_dstate_is_passthrough(dstate)`) → fall through to base filesystem
 
-`d_type` (bits [62:61]) occupies the same position in both inode and
-link variants, making the accessor branchless.
+`d_type` (bits [62:60]) occupies the same position in staged inode,
+base_path, and tombstone variants, making the accessor branchless.
 
-**Inode layout** (bit 63 clear, non-zero):
+**Tombstone layout** (bit 63 clear, `ino == 0`):
 
 ```
-[63]     0                 (tag: inode)
-[62:61]  d_type    2 bits  (private 2-bit encoding)
-[60]     in_base   1 bit
-[59:48]  reserved 12 bits  (must be 0)
+[63]     0                 (tag: not base_path)
+[62:60]  d_type    3 bits
+[59]     1                 (in_base, always true)
+[58:0]   0                 (reserved + ino=0 + gen=0)
+```
+
+**Staged inode layout** (bit 63 clear, `ino != 0`):
+
+```
+[63]     0                 (tag: staged inode)
+[62:60]  d_type    3 bits
+[59]     in_base   1 bit
+[58:48]  reserved 11 bits  (must be 0)
 [47:16]  ino      32 bits  (max ~4.3 billion; always > 0)
 [15:0]   gen      16 bits  (max 65535)
 ```
 
-**Link layout** (bit 63 set):
+**Base_path layout** (bit 63 set):
 
 The `kstrdup` pointer (≥ 8-byte aligned) is stored with bit 63 set as
 the tag. This coincides with the kernel sign-extension bit (always 1
-for kernel addresses). `d_type` borrows bits [62:61] from
-sign-extension (safe on x86_64 — at least bits [63:60] are 1 for
-kernel addresses). Bit [60] stores `in_base` (safe because pointer
-recovery ORs `0x7000000000000000` back, restoring bit 60 to 1).
+for kernel addresses). `d_type` borrows bits [62:60] from
+sign-extension (safe on x86_64 — at least bits [63:59] are 1 for
+kernel addresses). Bit [59] stores `in_base` (safe because pointer
+recovery ORs `0x7800000000000000` back, restoring bits [62:59] to 1).
 
 ```
 [63]     1                    (tag — matches kernel sign extension)
-[62:61]  d_type    2 bits     (borrowed from sign extension)
-[60]     in_base   1 bit      (safe: pointer recovery ORs 0x7 back)
-[59:0]   pointer bits [59:0]  (real address bits)
+[62:60]  d_type    3 bits     (borrowed from sign extension)
+[59]     in_base   1 bit      (safe: pointer recovery ORs 0x78 back)
+[58:0]   pointer bits [58:0]  (real address bits)
 ```
 
-Pointer recovery: `packed | 0x7000000000000000`
-(restore sign-extension bits [62:60] = 111; bit 63 is already 1).
+Pointer recovery: `packed | 0x7800000000000000`
+(restore sign-extension bits [62:59] = 1111; bit 63 is already 1).
 
-**d_type 2-bit encoding**: The libc `DT_*` constants need 4 bits.
-We compress to 2 bits with a private encoding, converting at
-encode/decode boundaries:
-
-| 2-bit | Meaning   | Libc       |
-|-------|-----------|------------|
-| `00`  | regular   | `DT_REG`   |
-| `01`  | directory | `DT_DIR`   |
-| `10`  | symlink   | `DT_LNK`   |
-| `11`  | invalid   | bug check  |
+**d_type 3-bit encoding**: The libc `DT_*` constants are even numbers
+(0, 2, 4, 6, 8, 10, 12, 14). We pack by right-shifting by 1,
+giving a dense 3-bit encoding (0–7). Unpack by left-shifting by 1.
 
 **Cancelled-entry removal**: When unlinking an `in_base=false` entry
-(staging-only, on `de_list`), the dentry is removed from the parent's
-`de_list` and released via `dput()`. No tombstone is created. This is
+(staging-only), the dentry's `dstate` is cleared to passthrough
+and it is released via `dput()`. No tombstone is created. This is
 safe because lookup finds no cached dentry (it was `d_drop()`'d), and
 `->lookup()` falls through to the base filesystem — identical semantics
 to an `in_base=false` tombstone since no base entry exists. Benefits:
-less memory, faster readdir, and the tombstone remains a single zero
-constant (no `in_base` variation).
+less memory and faster readdir.
 
 **Branchless accessors**:
 
 ```c
-is_tombstone = !packed
+is_passthrough = !packed
 is_link      = (s64)packed < 0
-is_inode     = (s64)packed > 0
-d_type       = agfs_dtype_unpack((packed >> 61) & 3)   // inode + link
-in_base      = (packed >> 60) & 1                       // inode + link
+is_tombstone = (s64)packed > 0 && ((packed >> 16) & 0xFFFFFFFF) == 0
+is_inode     = (s64)packed > 0 && ((packed >> 16) & 0xFFFFFFFF) != 0
+d_type       = agfs_dtype_unpack((packed >> 60) & 7)   // tombstone + inode + link
+in_base      = (packed >> 59) & 1                       // tombstone + inode + link (undefined for passthrough)
 ino          = (packed >> 16) & 0xFFFFFFFF              // inode only
 gen          = (u16)packed                              // inode only
-base         = packed | 0x7000000000000000              // link only
+base         = packed | 0x7800000000000000              // link only
 ```
 
 `in_base` tracks whether the path position had content in the base
 filesystem before staging. It is inherited through deletes and used to
 select journal tags (A/M for staged, R/P for renames). It is stored in
-both inodes (bit [60]) and links (bit [60], safe because pointer
+both inodes (bit [59]) and links (bit [59], safe because pointer
 recovery restores the bit).
 
 Link base pointers are owned by the packed encoding. Readers that
@@ -216,10 +218,10 @@ before resolving, because writers are free to replace the entry.
 
 ```c
 agfs_read_dirent(dentry):
-    return READ_ONCE(AGFS_D(dentry)->packed)
+    return READ_ONCE(AGFS_D(dentry)->dstate)
 ```
 
-Since `agfs_pde_t` is a `u64` (naturally atomic on x86-64),
+Since `struct agfs_dstate` is a `u64` (naturally atomic on x86-64),
 `READ_ONCE()` / `WRITE_ONCE()` suffice — the dentry_info spinlock
 is only needed for `lower_path` (two-pointer swap). This eliminates
 lock contention on the COW fast path.
@@ -236,19 +238,22 @@ agfs_lookup(dir, dentry):
     return base_lookup(dir, dentry->d_name)   # base-only lookup
 ```
 
-**Readdir** merges the staged dentry list with the base directory:
+**Readdir** merges the staged dentries with the base directory:
 
 ```
 agfs_readdir(dir):
-    for child_dentry in dir.de_list (via de_node):
+    # Phase 1: walk d_children with d_lock pin-and-release pattern.
+    for child_dentry in parent_dentry->d_children (via d_lock):
         packed = AGFS_D(child_dentry)->packed
-        if not agfs_pde_is_tombstone(packed):
-            dir_emit(child_dentry->d_name,
-                     agfs_pde_emit_ino(packed),
-                     agfs_pde_d_type(packed))
+        if agfs_dstate_is_passthrough(packed) or agfs_dstate_is_tombstone(packed):
+            continue
+        dir_emit(child_dentry->d_name,
+                 agfs_dstate_emit_ino(packed),
+                 agfs_dstate_d_type(packed))
+    # Phase 2: emit base entries not overridden.
     for entry in base_readdir(dir):
-        result = d_lookup(dir_dentry, entry.name)
-        if result and !list_empty(&AGFS_D(result)->de_node):
+        result = d_lookup(dir_dentry, &entry.name)
+        if result and !agfs_dstate_is_passthrough(AGFS_D(result)->dstate):
             dput(result)
             continue   # overridden by staged entry
         if result:
@@ -285,12 +290,12 @@ agfs_open(inode, file):
     packed = agfs_read_dirent(dentry)   # lockless READ_ONCE (0 if not staged)
 
     if file->f_flags & (O_WRONLY | O_RDWR):
-        if agfs_pde_is_current(packed, sbi->gen):
+        if agfs_dstate_is_current(packed, sbi->gen):
             // Inode is current — open it directly (O_TRUNC truncates in place).
             down_read(staging_sem)
             atomic_inc(staging_fd_count)
             up_read(staging_sem)
-            file_info->lower_file = open(inodes/<agfs_pde_ino(packed)>, file->f_flags)
+            file_info->lower_file = open(inodes/<agfs_dstate_ino(packed)>, file->f_flags)
 
         else:
             // Needs COW (base file, link, or stale inode).
@@ -353,13 +358,12 @@ staged (preventing a spurious re-COW on next open-for-write):
 agfs_create(dir, dentry, mode):
     ino = next_ino++
     create file inodes/<ino>
-    staged = !list_empty(&AGFS_D(dentry)->de_node)
-    in_base = staged ? agfs_pde_in_base(AGFS_D(dentry)->packed) : false
+    staged = !agfs_dstate_is_passthrough(AGFS_D(dentry)->dstate)
+    in_base = staged ? agfs_dstate_in_base(AGFS_D(dentry)->packed) : false
     WRITE_ONCE(AGFS_D(dentry)->packed,
-               agfs_pde_inode(ino, sbi->gen, dt, in_base))
+               agfs_dstate_staged_inode(ino, sbi->gen, dt, in_base))
     if not staged:
         dget(dentry)                     # pin in dcache
-        list_add(&AGFS_D(dentry)->de_node, &dir.de_list)
     if in_base:
         journal(M, path, dtype, ino)
     else:
@@ -368,13 +372,12 @@ agfs_create(dir, dentry, mode):
 agfs_mkdir(dir, dentry, mode):
     ino = next_ino++
     create dir inodes/<ino>/
-    staged = !list_empty(&AGFS_D(dentry)->de_node)
-    in_base = staged ? agfs_pde_in_base(AGFS_D(dentry)->packed) : false
+    staged = !agfs_dstate_is_passthrough(AGFS_D(dentry)->dstate)
+    in_base = staged ? agfs_dstate_in_base(AGFS_D(dentry)->packed) : false
     WRITE_ONCE(AGFS_D(dentry)->packed,
-               agfs_pde_inode(ino, sbi->gen, dt, in_base))
+               agfs_dstate_staged_inode(ino, sbi->gen, dt, in_base))
     if not staged:
         dget(dentry)
-        list_add(&AGFS_D(dentry)->de_node, &dir.de_list)
     if in_base:
         journal(M, path, dtype, ino)
     else:
@@ -383,13 +386,12 @@ agfs_mkdir(dir, dentry, mode):
 agfs_symlink(dir, dentry, target):
     ino = next_ino++
     create symlink inodes/<ino> -> target
-    staged = !list_empty(&AGFS_D(dentry)->de_node)
-    in_base = staged ? agfs_pde_in_base(AGFS_D(dentry)->packed) : false
+    staged = !agfs_dstate_is_passthrough(AGFS_D(dentry)->dstate)
+    in_base = staged ? agfs_dstate_in_base(AGFS_D(dentry)->packed) : false
     WRITE_ONCE(AGFS_D(dentry)->packed,
-               agfs_pde_inode(ino, sbi->gen, dt, in_base))
+               agfs_dstate_staged_inode(ino, sbi->gen, dt, in_base))
     if not staged:
         dget(dentry)
-        list_add(&AGFS_D(dentry)->de_node, &dir.de_list)
     if in_base:
         journal(M, path, dtype, ino)
     else:
@@ -407,18 +409,18 @@ Three cases based on current dentry state:
 
 ```
 agfs_unlink(dir, dentry):
-    staged = !list_empty(&AGFS_D(dentry)->de_node)
-    need_tombstone = staged ? agfs_pde_in_base(AGFS_D(dentry)->packed) : true
+    staged = !agfs_dstate_is_passthrough(AGFS_D(dentry)->dstate)
+    need_tombstone = staged ? agfs_dstate_in_base(AGFS_D(dentry)->packed) : true
 
     # Pre-allocate tombstone before journal so we can fail cleanly.
     if need_tombstone:
-        tomb = agfs_add_tombstone(parent, &name)  # d_alloc ref is pin
+        tomb = agfs_add_tombstone(parent, &name, dtype)  # d_alloc ref is pin
         if !tomb: return -ENOMEM
 
     journal(D, path, dtype)  # must be before d_drop (uses dentry path)
 
     if staged:
-        agfs_unstage_dentry(AGFS_D(dentry))   # list_del + pde_free + dput
+        agfs_unstage_dentry(AGFS_D(dentry))   # clear dstate + dput
     d_drop(dentry)
     # If !need_tombstone: staged + !in_base — entry disappears entirely.
 
@@ -442,28 +444,28 @@ record. R if the destination is NOT in base; P if the destination IS in base.
 agfs_rename(old_parent, old_dentry, new_parent, new_dentry):
     old_packed = agfs_read_dirent(old_dentry)
     new_packed = agfs_read_dirent(new_dentry)
-    new_staged = !list_empty(&AGFS_D(new_dentry)->de_node)
-    dst_in_base = new_staged ? agfs_pde_in_base(new_packed) : file_exists_in_base(new_name)
+    new_staged = !agfs_dstate_is_passthrough(new_packed)
+    dst_in_base = new_staged ? agfs_dstate_in_base(new_packed) : file_exists_in_base(new_name)
     dst = join(new_parent, new_name)
     src = join(old_parent, old_name)
 
     # Determine if old name needs a tombstone, pre-allocate before
     # any irreversible changes.
-    old_was_in_base = src_staged ? agfs_pde_in_base(old_packed) : true
+    old_was_in_base = src_staged ? agfs_dstate_in_base(old_packed) : true
     if old_was_in_base:
-        tomb = agfs_add_tombstone(old_parent, old_name)  # d_alloc ref is pin
+        tomb = agfs_add_tombstone(old_parent, old_name, d_type)  # d_alloc ref is pin
         if !tomb: return -ENOMEM
 
     # Build destination packed value.
-    if agfs_pde_is_inode(old_packed):
-        dst_packed = agfs_pde_inode(agfs_pde_ino(old_packed),
-                                    agfs_pde_gen(old_packed),
+    if agfs_dstate_is_staged_inode(old_packed):
+        dst_packed = agfs_dstate_staged_inode(agfs_dstate_ino(old_packed),
+                                    agfs_dstate_gen(old_packed),
                                     d_type, dst_in_base)
-    elif agfs_pde_is_link(old_packed):
-        dst_packed = agfs_pde_link(kstrdup(agfs_pde_base(old_packed)),
+    elif agfs_dstate_is_base_path(old_packed):
+        dst_packed = agfs_dstate_base_path(kstrdup(agfs_dstate_src(old_packed)),
                                    d_type, dst_in_base)
     else:
-        dst_packed = agfs_pde_link(kstrdup(src), d_type, dst_in_base)
+        dst_packed = agfs_dstate_base_path(kstrdup(src), d_type, dst_in_base)
 
     # Journal BEFORE d_move (uses dentry paths).
     # All renames emit a single R or P record.
@@ -476,16 +478,17 @@ agfs_rename(old_parent, old_dentry, new_parent, new_dentry):
     if new_staged:
         agfs_unstage_dentry(new_dentry)
 
-    # Remove old_dentry from old parent's de_list.
+    # Update old_dentry staging state.
     if src_staged:
-        agfs_pde_free(old_packed)
-        list_del_init(&old_di->de_node)
-        dput(old_dentry)
+        agfs_dstate_free(old_packed)
 
-    # Set destination packed on old_dentry — VFS calls
-    # d_move(old_dentry, new_dentry) after we return, moving
-    # old_dentry to the new name + parent position.
-    agfs_stage_dentry(old_dentry, new_dir, dst_packed)  # dget + list_add
+    if is_roundtrip:
+        old_dentry.dstate = passthrough
+        if src_staged: dput(old_dentry)        # drop pin
+    elif src_staged:
+        old_dentry.dstate = dst_packed          # already pinned
+    else:
+        agfs_stage_dentry(old_dentry, dst_packed)  # dget + set dstate
 
     d_drop(old_dentry)
     d_drop(new_dentry)
@@ -496,6 +499,13 @@ rename finds the link state on `b`'s dentry, uses its dentry path as the
 old path, and sets a new link on `c`'s dentry. The packed state stores the
 current dentry path (not the resolved base path) — each rename is
 recorded as a separate journal entry and replayed in order at commit time.
+**Roundtrip renames** (`mv a->tmp`, then `mv tmp->a`) are detected at
+rename time: when the effective base source equals the destination
+relpath, the rename chain is a no-op. The kernel skips the `kstrdup` and
+leaves the destination dentry as passthrough. The journal still records
+the R/P entries (the CLI has its own roundtrip detection). Tombstones at
+intermediate positions (e.g. `/tmp` in a swap via third path) are
+independently correct and unaffected.
 
 **Rename + recreate** (`mv a->b`, then `touch a`) works because the new
 `touch a` sees the tombstone dentry (with `in_base` inherited from the
@@ -537,34 +547,38 @@ mv a c      # Journal: R(/c, /a, f)      — destination /c is not in base
 `readdir` (`iterate_shared`) presents a merged view: staged entries
 first, then base entries that aren't overridden.
 
-**Fast path — no staged entries**: when a directory has no staged
-children (`list_empty(&de_list)`), nothing in that directory has been
-staged, deleted, or renamed. The merge is unnecessary — every base
-entry passes through unchanged. In this case `agfs_readdir` delegates
-directly to `iterate_dir(lower_file, ctx)`, identical to the
-non-staging path. The lower filesystem manages `f_pos` itself, so the
-cost matches native.
+**Fast path — staging disabled**: when staging is disabled or the
+inodes directory is not set up (`!sbi->staging || !sbi->inodes_dir.dentry`),
+the merge is unnecessary — every base entry passes through unchanged. In
+this case `agfs_readdir` delegates directly to
+`iterate_dir(lower_file, ctx)`, identical to the non-staging path. The
+lower filesystem manages `f_pos` itself, so the cost matches native.
 
-**Merge path — has staged entries**:
+**Merge path — staging enabled**:
 
 ```
 agfs_readdir(dir, ctx):
-    if list_empty(&dir.de_list):
+    if !sbi->staging || !sbi->inodes_dir.dentry:
         return iterate_dir(lower_file, ctx)   # fast path
 
-    # Phase 1: Emit non-tombstone staged entries.
-    for child_dentry in dir.de_list (via de_node):
+    # Phase 1 (agfs_emit_dirents): walk d_children with d_lock
+    # pin-and-release pattern, filtering by dstate.val != 0 and
+    # !tombstone.
+    for child_dentry in parent_dentry->d_children (via d_lock):
         packed = AGFS_D(child_dentry)->packed
-        if not agfs_pde_is_tombstone(packed):
-            dir_emit(ctx, child_dentry->d_name,
-                     agfs_pde_emit_ino(packed),
-                     agfs_pde_d_type(packed))
+        if agfs_dstate_is_passthrough(packed) or agfs_dstate_is_tombstone(packed):
+            continue
+        dir_emit(ctx, child_dentry->d_name,
+                 agfs_dstate_emit_ino(packed),
+                 agfs_dstate_d_type(packed))
 
-    # Phase 2: Emit base entries not overridden by staged entries.
+    # Phase 2 (agfs_fill_base): emit base entries not overridden by
+    # staged entries. Uses d_lookup() (O(1) dcache hash) per base
+    # entry to check if overridden.
     lower_file.f_pos = file_info.base_pos   # resume, not restart
     for entry in base_readdir(dir):
         result = d_lookup(dir_dentry, &entry.name)
-        if result and !list_empty(&AGFS_D(result)->de_node):
+        if result and !agfs_dstate_is_passthrough(AGFS_D(result)->dstate):
             dput(result)
             continue   # overridden by staged entry
         if result:
@@ -606,7 +620,7 @@ triggered by setattr itself.
 **`getattr`** (e.g., `stat`): Stats from the resolved path — the staged
 inode if the file has been modified, otherwise the base file.
 
-**`fsync`**: If the file is staged (`agfs_pde_is_inode(packed)`),
+**`fsync`**: If the file is staged (`agfs_dstate_is_staged_inode(packed)`),
 returns 0 immediately — staged inodes are ephemeral and will be committed or
 discarded as a batch. For base files opened read-only, fsync is delegated to
 the lower filesystem as usual.
@@ -649,6 +663,7 @@ strictly sequential: marker\[i\] has gen_id = i (marker\[0\] is a phantom
 `<path>` is the full overlay path (e.g. `/dir/file`).
 `<src>` is the overlay path before the rename (R/P only).
 `<dtype>` is `f` (regular file), `d` (directory), or `l` (symlink).
+The CLI parser also accepts numeric `libc::DT_*` values for compatibility.
 `<ino>` is the staged inode ID (decimal).
 
 All renames — staged or redirect, file or directory — emit a single R or P
@@ -664,7 +679,7 @@ self-describing.
 
 The kernel determines the journal tag at write time using `in_base`
 decoded from the packed field on the dentry
-(`agfs_pde_in_base(AGFS_D(dentry)->packed)`). This flag means "the path
+(`agfs_dstate_in_base(AGFS_D(dentry)->packed)`). This flag means "the path
 had existing content at operation time" — it applies to both base and
 staged content. The field is set at staging time and inherited through
 deletes:
@@ -676,17 +691,18 @@ deletes:
 | `agfs_do_cow` (write to existing) | `true` | Path had content (base or staged) |
 | Rename (any source) | `dst_in_base` | Whether destination had content |
 | Delete (staged + in_base=true) | inherited | Tombstone dentry preserves origin info |
-| Delete (staged + in_base=false) | — | Dentry removed from `de_list` + `dput()` (cancelled) |
+| Delete (staged + in_base=false) | — | Dentry `dstate` cleared + `dput()` (cancelled) |
 | Delete (not staged, base-only) | `true` | Path had content (base only) |
 
 The link base pointer in the packed encoding is used only for link
 source paths. It is not used as an `in_base` indicator.
 
 When `agfs_create_staged` is called and a tombstone dentry already exists
-for that name (re-create after delete, dentry is on `de_list`), the
+for that name (re-create after delete, dentry is staged with a tombstone), the
 tombstone's `in_base` determines the journal tag: M if true, A if false.
 (Tombstones always have `in_base=true` after cancelled-entry removal,
-so re-creates after a base file delete always emit M.)
+so re-creates after a base file delete always emit M.  Tombstones also
+carry `d_type`, encoded in bits [62:60].)
 
 **Edge cases:**
 
@@ -697,7 +713,7 @@ so re-creates after a base file delete always emit M.)
 
 - **Delete + re-create of a staged-only file** (`touch x && rm x && touch x`
   within a session): The first create sets `in_base=false`. Delete triggers
-  cancelled-entry removal (dentry removed from `de_list` + `dput()`).
+  cancelled-entry removal (dentry `dstate` cleared + `dput()`).
   Re-create finds no staged dentry, defaults `in_base=false` → emits A.
   The tree builder correctly processes the `Add` action.
 
@@ -843,7 +859,7 @@ checkpoints from read-only or no-op commands.
 
 ### Re-COW on First Open-for-Write After Checkpoint
 
-The COW check is per-dentry: `agfs_pde_gen(AGFS_D(dentry)->packed)`
+The COW check is per-dentry: `agfs_dstate_gen(AGFS_D(dentry)->packed)`
 records the `sbi->gen` at which the current inode was created.
 `sbi->gen` starts at 1. Newly created files set
 `gen = sbi->gen` at creation time, so they are already
@@ -860,8 +876,8 @@ tombstone), or has a stale `gen`, a fresh inode is created.
 the base file before any COW, or the current staged inode after one.
 The same function handles both cases; no separate re-COW path.
 `agfs_do_cow` also sets the packed field on the dentry (with updated gen)
-after a successful COW, pins the dentry if not already on `de_list`,
-and adds it to the parent's `de_list`.
+after a successful COW and pins the dentry with `dget()` if not already
+staged.
 
 Because no fd spans a checkpoint boundary (enforced by `staging_fd_count`),
 the write and mmap paths need no COW checks — they are pure pass-throughs.
@@ -948,11 +964,11 @@ O(R) backward walk to build reachable ranges, skip unreachable T records.
 4. CLI serializes the dir tree into a contiguous byte buffer (depth-first,
    children sorted by name).
 5. `ioctl(AGFS_IOC_RESTORE, { target_gen=N, tree_buf })`:
-   kernel releases all pinned staged dentries (walk `de_list` per
-   directory, `dput()` each), shrinks dcache, `vmalloc`s +
-   `copy_from_user`s the tree buffer, walks it iteratively with a
-   directory stack to inject VFS dentries with new gen (via `d_alloc()`,
-   set packed, `d_add()`, `dget()` to pin, add to `de_list`), appends
+   kernel releases all pinned staged dentries (recursive `d_children`
+   tree walk from `sb->s_root`, `dput()` each), shrinks dcache,
+   `vmalloc`s + `copy_from_user`s the tree buffer, walks it iteratively
+   with a directory stack to inject VFS dentries with new gen (via
+   `d_alloc()`, set packed, `d_add()`, `dget()` to pin), appends
    `T\0<new_gen>\0<target_gen>\n`, returns new_gen.  The
    `AGFS_IOC_RESTORE` ioctl **increments** gen (monotonically) instead
    of setting it to the target value — this avoids gen collisions.

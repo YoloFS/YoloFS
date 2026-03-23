@@ -13,7 +13,7 @@ entry — the dirent is purely redundant.
 ## Proposed approach
 
 Eliminate `struct agfs_dirent` and the per-inode `de_buckets` hash table.
-Store the packed overlay state (`agfs_pde_t`) directly in
+Store the packed overlay state (`struct agfs_dstate`) directly in
 `struct agfs_dentry_info` (attached to every VFS dentry via `d_fsdata`).
 Pin staged dentries with `dget()` to guarantee lifetime.
 
@@ -40,7 +40,7 @@ struct agfs_dentry_info {
     spinlock_t          lock;
     struct path         lower_path;
 -   struct agfs_dirent  *dirent;      /* remove back-pointer */
-+   agfs_pde_t          packed;       /* overlay state: inode/link/tombstone */
++   struct agfs_dstate          packed;       /* overlay state: inode/link/tombstone */
 +   struct list_head    de_node;      /* node in parent's de_list */
     enum agfs_perm      perm;
     struct list_head    rule_pin;
@@ -106,7 +106,7 @@ inode:
 1. Check if dentry is staged: `!list_empty(&AGFS_D(dentry)->de_node)`.
    If so, it's a tombstone — inherit `in_base = true`.  Otherwise
    `in_base = false`.
-2. Set `AGFS_D(dentry)->packed = agfs_pde_inode(ino, gen, d_type, in_base)`.
+2. Set `AGFS_D(dentry)->packed = agfs_dstate_staged_inode(ino, gen, d_type, in_base)`.
    Use `WRITE_ONCE()` for the store.
 3. If not already on `de_list`: `dget(dentry)` to pin, add to parent's
    `de_list`.  (Tombstone reuse: already pinned and on `de_list`, skip.)
@@ -153,13 +153,13 @@ VFS provides old and new dentries with `i_rwsem` held on both parents.
 
 Currently follows `AGFS_D(dentry)->dirent->packed` under parent's `i_rwsem`.
 With the new design, `packed` is directly in `AGFS_D(dentry)`.  Since
-`agfs_pde_t` is a u64 (naturally atomic on x86-64), reads use `READ_ONCE()`
+`struct agfs_dstate` is a u64 (naturally atomic on x86-64), reads use `READ_ONCE()`
 and writes use `WRITE_ONCE()` — no lock needed to read own state:
 
 ```c
-static agfs_pde_t agfs_read_dirent(struct dentry *dentry)
+static struct agfs_dstate agfs_read_dirent(struct dentry *dentry)
 {
-    return (agfs_pde_t){ .val = READ_ONCE(AGFS_D(dentry)->packed.val) };
+    return (struct agfs_dstate){ .val = READ_ONCE(AGFS_D(dentry)->packed.val) };
 }
 ```
 
@@ -235,7 +235,7 @@ No change needed — checkpoint only bumps generation and writes journal.
 - `d_init` callback in `agfs_dops` / `agfs_dops_fast`: allocate
   `agfs_dentry_info`, `INIT_LIST_HEAD(&de_node)`, zero `packed`
 - `d_release`: `WARN_ON_ONCE(!list_empty(&de_node))`, call
-  `agfs_pde_free(packed)` for link cleanup
+  `agfs_dstate_free(packed)` for link cleanup
 - `agfs_pin_dir()`: trigger on first `de_list` entry; no `igrab()` (child
   dentry refs keep parent alive)
 - `agfs_release_pinned_dirs()`: walk `de_list` per directory, `dput()` each
@@ -298,7 +298,7 @@ No change needed — checkpoint only bumps generation and writes journal.
    `de_pin` remains as a list node in `sbi->pinned_dirs` for enumeration
    during bulk cleanup, but `igrab()`/`iput()` are no longer needed.
 
-7. **Lockless `packed` reads**: `agfs_pde_t` is a u64, naturally atomic on
+7. **Lockless `packed` reads**: `struct agfs_dstate` is a u64, naturally atomic on
    x86-64.  `READ_ONCE()` / `WRITE_ONCE()` suffice — the dentry_info
    spinlock is only needed for `lower_path` (two-pointer swap).  Eliminates
    lock contention on the COW fast path.

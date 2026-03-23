@@ -89,7 +89,8 @@ fn live_rule_remove_reapplies_gating() {
     s.run_in_namespace(|| {
         s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"])
             .unwrap();
-        fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with allow-rw rule");
+        fs::read_to_string(s.mnt_path("hello.txt"))
+            .expect("read should succeed with allow-rw rule");
 
         s.cli(&["rule", "remove", &s.root.display().to_string()])
             .unwrap();

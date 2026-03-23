@@ -9,9 +9,9 @@
 //!   2. Reads the journal and reconstructs a DirTree (CLI replay logic)
 //!   3. Asserts the two views agree on visibility and readdir contents
 
-use super::helpers::{dirents, ino_for, inode_path};
+use super::helpers::{ino_for, inode_path, tree};
 use crate::helpers::AgfsSession;
-use agfs::journal::{DType, Dirent};
+use agfs::journal::{DirTree, Dstate};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
@@ -48,18 +48,46 @@ fn root_prefix(s: &AgfsSession) -> String {
 ///   - The inode content matches what the mount shows (for regular files)
 fn assert_overlay_visible(s: &AgfsSession) {
     let prefix = root_prefix(s);
-    for (path, dirent) in &dirents(s) {
+    let t = tree(s);
+
+    let infer_dtype = |path: &str, dstate: &Dstate| -> u8 {
+        match dstate {
+            Dstate::StagedInode { dtype, .. } | Dstate::BasePath { dtype, .. } => {
+                if *dtype != libc::DT_REG {
+                    return *dtype;
+                }
+
+                let rel = path.strip_prefix(&prefix).unwrap_or(path);
+                let rel = rel.strip_prefix('/').unwrap_or(rel);
+                let mnt = s.mnt_path(rel);
+                if let Ok(meta) = mnt.symlink_metadata() {
+                    if meta.is_dir() {
+                        return libc::DT_DIR;
+                    }
+                    if meta.file_type().is_symlink() {
+                        return libc::DT_LNK;
+                    }
+                }
+                libc::DT_REG
+            }
+            Dstate::Tombstone { dtype } => *dtype,
+            Dstate::Passthrough => libc::DT_REG,
+        }
+    };
+
+    t.for_each(|path, dstate| {
         let rel = path.strip_prefix(&prefix).unwrap();
         let rel = rel.strip_prefix('/').unwrap_or(rel);
         let mnt = s.mnt_path(rel);
-        match dirent {
-            Dirent::Inode { ino, dtype, .. } => {
-                let meta = mnt.symlink_metadata().unwrap_or_else(|e| {
-                    panic!("overlay inode at '/{rel}' should be visible: {e}")
-                });
-                let expected_dir = *dtype == DType::Dir;
-                let expected_link = *dtype == DType::Link;
-                let expected_file = *dtype == DType::File;
+        match dstate {
+            Dstate::StagedInode { ino, .. } => {
+                let meta = mnt
+                    .symlink_metadata()
+                    .unwrap_or_else(|e| panic!("overlay inode at '/{rel}' should be visible: {e}"));
+                let dtype = infer_dtype(path, dstate);
+                let expected_dir = dtype == libc::DT_DIR;
+                let expected_link = dtype == libc::DT_LNK;
+                let expected_file = dtype == libc::DT_REG;
                 assert!(
                     (expected_dir && meta.is_dir())
                         || (expected_link && meta.is_symlink())
@@ -71,7 +99,7 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     meta.is_symlink(),
                 );
                 // For regular files, verify inode content matches mount content
-                if *dtype == DType::File {
+                if dtype == libc::DT_REG {
                     let ipath = inode_path(s, *ino);
                     let ino_content = fs::read(&ipath).unwrap_or_else(|e| {
                         panic!("inode {ino} at '/{rel}' should be readable: {e}")
@@ -83,13 +111,14 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     );
                 }
             }
-            Dirent::Link { dtype, .. } => {
-                let meta = mnt.symlink_metadata().unwrap_or_else(|e| {
-                    panic!("overlay link at '/{rel}' should be visible: {e}")
-                });
-                let expected_dir = *dtype == DType::Dir;
-                let expected_link = *dtype == DType::Link;
-                let expected_file = *dtype == DType::File;
+            Dstate::BasePath { .. } => {
+                let meta = mnt
+                    .symlink_metadata()
+                    .unwrap_or_else(|e| panic!("overlay link at '/{rel}' should be visible: {e}"));
+                let dtype = infer_dtype(path, dstate);
+                let expected_dir = dtype == libc::DT_DIR;
+                let expected_link = dtype == libc::DT_LNK;
+                let expected_file = dtype == libc::DT_REG;
                 assert!(
                     (expected_dir && meta.is_dir())
                         || (expected_link && meta.is_symlink())
@@ -101,19 +130,20 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     meta.is_symlink(),
                 );
             }
-            Dirent::Tombstone => {
+            Dstate::Tombstone { .. } => {
                 assert!(
                     !path_visible(&mnt),
                     "tombstone at '/{rel}' should not be visible"
                 );
             }
+            Dstate::Passthrough => {}
         }
-    }
+    });
 }
 
 /// Resolve the base filesystem directory for a given relative path,
 /// following any Links in the CLI DirTree (handles renamed base dirs).
-fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &[(String, Dirent)]) -> PathBuf {
+fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
     if rel_dir.is_empty() {
         return s.root.clone();
     }
@@ -123,18 +153,14 @@ fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &[(String, Dirent)]) ->
 
     for component in rel_dir.split('/') {
         tree_path = format!("{tree_path}/{component}");
-        let link_target = cli.iter().find_map(|(p, d)| {
-            if p == &tree_path {
-                if let Dirent::Link {
-                    base_path,
-                    dtype: DType::Dir,
-                    ..
-                } = d
-                {
-                    Some(base_path.clone())
-                } else {
-                    None
-                }
+        let link_target = cli.get(&tree_path).and_then(|d| {
+            if let Dstate::BasePath {
+                src,
+                dtype: libc::DT_DIR,
+                ..
+            } = d
+            {
+                Some(src.as_str())
             } else {
                 None
             }
@@ -168,20 +194,20 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
 
     let mnt_names = entry_names(&s.mnt_path(rel_dir), skip);
 
-    let cli = dirents(s);
-    let effective_base = resolve_base_dir(s, rel_dir, &cli);
+    let t = tree(s);
+    let effective_base = resolve_base_dir(s, rel_dir, &t);
     let base_names = entry_names(&effective_base, skip);
 
     // Overlay entries that are direct children of this directory
-    let mut staged: BTreeMap<String, &Dirent> = BTreeMap::new();
-    for (path, dirent) in &cli {
+    let mut staged: BTreeMap<String, Dstate> = BTreeMap::new();
+    t.for_each(|path, dstate| {
         if let Some(rest) = path.strip_prefix(&dir_prefix) {
             let rest = rest.strip_prefix('/').unwrap_or(rest);
             if !rest.is_empty() && !rest.contains('/') {
-                staged.insert(rest.to_string(), dirent);
+                staged.insert(rest.to_string(), dstate.clone());
             }
         }
-    }
+    });
 
     // expected = base (not overridden) ∪ staged (non-tombstone)
     let mut expected = BTreeSet::new();
@@ -190,15 +216,20 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
             expected.insert(name.clone());
         }
     }
-    for (name, dirent) in &staged {
-        if !matches!(dirent, Dirent::Tombstone) {
+    for (name, dstate) in &staged {
+        if !matches!(dstate, Dstate::Tombstone { .. }) {
             expected.insert(name.clone());
         }
     }
 
-    let label = if rel_dir.is_empty() { "<root>" } else { rel_dir };
+    let label = if rel_dir.is_empty() {
+        "<root>"
+    } else {
+        rel_dir
+    };
     assert_eq!(
-        mnt_names, expected,
+        mnt_names,
+        expected,
         "'{label}' readdir mismatch\n\
          in mount not expected: {:?}\n\
          expected not in mount: {:?}\n\
@@ -219,6 +250,7 @@ fn assert_consistent(s: &AgfsSession) {
 #[test]
 fn add_file() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("new.txt"), "data\n").expect("create");
         assert_consistent(&s);
@@ -228,6 +260,7 @@ fn add_file() {
 #[test]
 fn add_nested_file() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir(s.mnt_path("d")).expect("mkdir");
         fs::write(s.mnt_path("d/nested.txt"), "deep\n").expect("create");
@@ -240,13 +273,10 @@ fn add_nested_file() {
 #[test]
 fn add_multiple_files() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         for i in 0..10 {
-            fs::write(
-                s.mnt_path(&format!("f{i}.txt")),
-                format!("data {i}\n"),
-            )
-            .expect("create");
+            fs::write(s.mnt_path(&format!("f{i}.txt")), format!("data {i}\n")).expect("create");
         }
         assert_consistent(&s);
     });
@@ -257,6 +287,7 @@ fn add_multiple_files() {
 #[test]
 fn modify_base_file() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
         assert_consistent(&s);
@@ -269,16 +300,17 @@ fn modify_base_file() {
 #[test]
 fn delete_staged_file_cancels() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("temp.txt"), "temp\n").expect("create");
         fs::remove_file(s.mnt_path("temp.txt")).expect("delete");
         assert_consistent(&s);
 
         // CLI should have no entry (cancelled)
-        let d = dirents(&s);
+        let t = tree(&s);
         assert!(
-            !d.iter().any(|(p, _)| p.ends_with("/temp.txt")),
-            "A+D on staged-only should cancel: {d:?}"
+            !t.any(|p, _| p.ends_with("/temp.txt")),
+            "A+D on staged-only should cancel: {t:?}"
         );
     });
 }
@@ -287,15 +319,15 @@ fn delete_staged_file_cancels() {
 #[test]
 fn delete_base_file_tombstones() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
         assert_consistent(&s);
 
-        let d = dirents(&s);
+        let t = tree(&s);
         assert!(
-            d.iter()
-                .any(|(p, e)| p.ends_with("/hello.txt") && matches!(e, Dirent::Tombstone)),
-            "D on base file should produce tombstone: {d:?}"
+            t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. })),
+            "D on base file should produce tombstone: {t:?}"
         );
     });
 }
@@ -304,6 +336,7 @@ fn delete_base_file_tombstones() {
 #[test]
 fn delete_all_base_files() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
         fs::remove_file(s.mnt_path("multi.txt")).expect("delete");
@@ -321,6 +354,7 @@ fn delete_all_base_files() {
 #[test]
 fn rename_base_file() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
         assert_consistent(&s);
@@ -335,6 +369,7 @@ fn rename_base_file() {
 #[test]
 fn rename_staged_file() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("new.txt"), "staged\n").expect("create");
         fs::rename(s.mnt_path("new.txt"), s.mnt_path("renamed.txt")).expect("rename");
@@ -350,15 +385,13 @@ fn rename_staged_file() {
 #[test]
 fn rename_chain() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("a.txt"), "start\n").expect("create");
         fs::rename(s.mnt_path("a.txt"), s.mnt_path("b.txt")).expect("rename 1");
         fs::rename(s.mnt_path("b.txt"), s.mnt_path("c.txt")).expect("rename 2");
         assert_consistent(&s);
-        assert_eq!(
-            fs::read_to_string(s.mnt_path("c.txt")).unwrap(),
-            "start\n"
-        );
+        assert_eq!(fs::read_to_string(s.mnt_path("c.txt")).unwrap(), "start\n");
     });
 }
 
@@ -366,6 +399,7 @@ fn rename_chain() {
 #[test]
 fn rename_base_dir() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("subdir"), s.mnt_path("newdir")).expect("rename dir");
         assert_overlay_visible(&s);
@@ -384,14 +418,11 @@ fn rename_base_dir() {
 #[test]
 fn rename_into_new_dir() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir(s.mnt_path("target")).expect("mkdir");
         fs::write(s.mnt_path("src.txt"), "moved\n").expect("create");
-        fs::rename(
-            s.mnt_path("src.txt"),
-            s.mnt_path("target/dst.txt"),
-        )
-        .expect("rename cross-dir");
+        fs::rename(s.mnt_path("src.txt"), s.mnt_path("target/dst.txt")).expect("rename cross-dir");
         assert_overlay_visible(&s);
         assert_dir_matches(&s, "");
         assert_dir_matches(&s, "target");
@@ -402,13 +433,10 @@ fn rename_into_new_dir() {
 #[test]
 fn rename_base_into_new_dir() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir(s.mnt_path("dest")).expect("mkdir");
-        fs::rename(
-            s.mnt_path("hello.txt"),
-            s.mnt_path("dest/moved.txt"),
-        )
-        .expect("rename");
+        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("dest/moved.txt")).expect("rename");
         assert_overlay_visible(&s);
         assert_dir_matches(&s, "");
         assert_dir_matches(&s, "dest");
@@ -425,6 +453,7 @@ fn rename_base_into_new_dir() {
 #[test]
 fn replace_base_file() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("new.txt"), "overwrite\n").expect("create");
         fs::rename(s.mnt_path("new.txt"), s.mnt_path("hello.txt")).expect("replace");
@@ -441,6 +470,7 @@ fn replace_base_file() {
 #[test]
 fn mkdir() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
         assert_consistent(&s);
@@ -450,6 +480,7 @@ fn mkdir() {
 #[test]
 fn mkdir_with_files() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir(s.mnt_path("d")).expect("mkdir");
         fs::write(s.mnt_path("d/a.txt"), "a\n").expect("write a");
@@ -463,6 +494,7 @@ fn mkdir_with_files() {
 #[test]
 fn rmdir_base() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink");
         fs::remove_dir(s.mnt_path("subdir")).expect("rmdir");
@@ -475,6 +507,7 @@ fn rmdir_base() {
 #[test]
 fn symlink() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
         assert_consistent(&s);
@@ -486,6 +519,7 @@ fn symlink() {
 #[test]
 fn mixed_operations() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("added.txt"), "new\n").expect("create");
         fs::create_dir(s.mnt_path("d")).expect("mkdir");
@@ -503,15 +537,13 @@ fn mixed_operations() {
 #[test]
 fn create_delete_recreate() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("cycle.txt"), "v1\n").expect("create v1");
         fs::remove_file(s.mnt_path("cycle.txt")).expect("delete");
         fs::write(s.mnt_path("cycle.txt"), "v2\n").expect("create v2");
         assert_consistent(&s);
-        assert_eq!(
-            fs::read_to_string(s.mnt_path("cycle.txt")).unwrap(),
-            "v2\n"
-        );
+        assert_eq!(fs::read_to_string(s.mnt_path("cycle.txt")).unwrap(), "v2\n");
     });
 }
 
@@ -519,16 +551,16 @@ fn create_delete_recreate() {
 #[test]
 fn modify_then_delete_base() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "modified\n").expect("modify");
         fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
         assert_consistent(&s);
 
-        let d = dirents(&s);
+        let t = tree(&s);
         assert!(
-            d.iter()
-                .any(|(p, e)| p.ends_with("/hello.txt") && matches!(e, Dirent::Tombstone)),
-            "M+D on base should produce tombstone: {d:?}"
+            t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. })),
+            "M+D on base should produce tombstone: {t:?}"
         );
     });
 }
@@ -537,6 +569,7 @@ fn modify_then_delete_base() {
 #[test]
 fn rename_then_delete() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("rename");
         fs::remove_file(s.mnt_path("temp.txt")).expect("delete");
@@ -552,6 +585,7 @@ fn rename_then_delete() {
 #[test]
 fn swap_via_tmp() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("tmp.txt")).expect("step 1");
         fs::rename(s.mnt_path("multi.txt"), s.mnt_path("hello.txt")).expect("step 2");
@@ -576,6 +610,7 @@ fn swap_via_tmp() {
 #[test]
 fn restore_state() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("a.txt"), "aa\n").expect("create a");
         fs::write(s.mnt_path("hello.txt"), "mod\n").expect("modify");
@@ -598,6 +633,7 @@ fn restore_state() {
 #[test]
 fn restore_to_earlier_checkpoint() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("a.txt"), "v1\n").expect("create");
         s.cli(&["checkpoint", "c1"]).expect("checkpoint 1");
@@ -618,6 +654,7 @@ fn restore_to_earlier_checkpoint() {
 #[test]
 fn restore_with_renames() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
         fs::write(s.mnt_path("new.txt"), "new\n").expect("create");
@@ -647,17 +684,18 @@ fn restore_with_renames() {
 #[test]
 fn create_over_tombstone() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::remove_file(s.mnt_path("hello.txt")).expect("delete base");
         fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
         assert_consistent(&s);
 
         // CLI should have in_base=true (inherited from tombstone)
-        let d = dirents(&s);
+        let t = tree(&s);
         assert!(
-            d.iter().any(|(p, e)| p.ends_with("/hello.txt")
-                && matches!(e, Dirent::Inode { in_base: true, .. })),
-            "recreated file over tombstone should have in_base=true: {d:?}"
+            t.any(|p, e| p.ends_with("/hello.txt")
+                && matches!(e, Dstate::StagedInode { in_base: true, .. })),
+            "recreated file over tombstone should have in_base=true: {t:?}"
         );
         assert_eq!(
             fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
@@ -670,6 +708,7 @@ fn create_over_tombstone() {
 #[test]
 fn recreate_base_dir_with_files() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink child");
         fs::remove_dir(s.mnt_path("subdir")).expect("rmdir");
@@ -687,13 +726,14 @@ fn recreate_base_dir_with_files() {
 #[test]
 fn readdir_dtype_matches_cli() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("reg.txt"), "data\n").expect("create file");
         fs::create_dir(s.mnt_path("dir")).expect("mkdir");
         std::os::unix::fs::symlink("reg.txt", s.mnt_path("lnk")).expect("symlink");
 
         let prefix = root_prefix(&s);
-        let cli = dirents(&s);
+        let t = tree(&s);
 
         for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
             let entry = entry.expect("entry");
@@ -701,32 +741,43 @@ fn readdir_dtype_matches_cli() {
 
             // Find matching CLI entry
             let tree_path = format!("{prefix}/{name}");
-            let cli_entry = cli.iter().find(|(p, _)| p == &tree_path);
-            let Some((_, dirent)) = cli_entry else {
+            let Some(dstate) = t.get(&tree_path) else {
                 continue; // base-only entry, no CLI overlay
             };
 
             let ft = entry.file_type().expect("file_type");
-            let cli_dtype = dirent.dtype();
+            let cli_dtype = dstate.dtype();
+            let cli_dtype = if cli_dtype == libc::DT_REG {
+                if ft.is_dir() {
+                    libc::DT_DIR
+                } else if ft.is_symlink() {
+                    libc::DT_LNK
+                } else {
+                    libc::DT_REG
+                }
+            } else {
+                cli_dtype
+            };
             match cli_dtype {
-                DType::File => assert!(
+                libc::DT_REG => assert!(
                     ft.is_file(),
                     "readdir d_type for '{name}': CLI=File but kernel reports dir={} sym={}",
                     ft.is_dir(),
                     ft.is_symlink()
                 ),
-                DType::Dir => assert!(
+                libc::DT_DIR => assert!(
                     ft.is_dir(),
                     "readdir d_type for '{name}': CLI=Dir but kernel reports file={} sym={}",
                     ft.is_file(),
                     ft.is_symlink()
                 ),
-                DType::Link => assert!(
+                libc::DT_LNK => assert!(
                     ft.is_symlink(),
                     "readdir d_type for '{name}': CLI=Link but kernel reports file={} dir={}",
                     ft.is_file(),
                     ft.is_dir()
                 ),
+                _ => panic!("unexpected d_type {cli_dtype} for '{name}'"),
             }
         }
     });
@@ -737,11 +788,12 @@ fn readdir_dtype_matches_cli() {
 #[test]
 fn readdir_ino_matches_cli() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("check_ino.txt"), "data\n").expect("create");
 
-        let d = dirents(&s);
-        let cli_ino = ino_for(&d, "/check_ino.txt");
+        let t = tree(&s);
+        let cli_ino = ino_for(&t, "/check_ino.txt");
 
         for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
             let entry = entry.expect("entry");
@@ -764,6 +816,7 @@ fn readdir_ino_matches_cli() {
 #[test]
 fn deep_nesting() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir(s.mnt_path("a")).expect("mkdir a");
         fs::create_dir(s.mnt_path("a/b")).expect("mkdir a/b");
@@ -784,6 +837,7 @@ fn deep_nesting() {
 #[test]
 fn deep_rename_to_root() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir(s.mnt_path("a")).expect("mkdir a");
         fs::create_dir(s.mnt_path("a/b")).expect("mkdir a/b");
@@ -800,4 +854,3 @@ fn deep_rename_to_root() {
         );
     });
 }
-

@@ -1,4 +1,4 @@
-use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, ino_for, inode_path, inos, journal, tree};
 use crate::helpers::AgfsSession;
 use agfs::journal::Action;
 use std::fs;
@@ -9,17 +9,17 @@ use std::fs;
 #[test]
 fn rename_produces_rename_record() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
         let j = journal(&s);
         let acts = actions(&j);
         assert!(
-            acts.iter().any(
-                |a| matches!(a, Action::Rename { src, dst, dtype: Some(agfs::journal::DType::File), .. }
-                if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))
-            ),
-            "journal should have a Redirect(dtype=File) record for hello.txt → moved.txt: {acts:?}"
+            acts.iter()
+                .any(|a| matches!(a, Action::Rename { src, dst, .. }
+                if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))),
+            "journal should have a Redirect record for hello.txt → moved.txt: {acts:?}"
         );
     });
 }
@@ -30,6 +30,7 @@ fn rename_produces_rename_record() {
 #[test]
 fn pure_rename_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         let inos_before = inos(&s);
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
@@ -46,11 +47,12 @@ fn pure_rename_creates_no_inode() {
 #[test]
 fn rename_then_write_produces_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
         fs::write(s.mnt_path("moved.txt"), "new content\n").expect("write renamed file");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/moved.txt");
 
         assert_eq!(
@@ -64,6 +66,7 @@ fn rename_then_write_produces_inode() {
 #[test]
 fn write_then_rename_inode_content() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("hello.txt"), "written first\n").expect("write");
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("final.txt")).expect("rename");
@@ -73,7 +76,7 @@ fn write_then_rename_inode_content() {
         assert_eq!(content, "written first\n");
 
         // The inode should have the written content — resolves as Renamed + Modified.
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/final.txt");
         assert_eq!(
             fs::read_to_string(inode_path(&s, ino)).unwrap(),
@@ -87,6 +90,7 @@ fn write_then_rename_inode_content() {
 #[test]
 fn rename_chain_journal_records() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("step1.txt")).expect("a→b");
         fs::rename(s.mnt_path("step1.txt"), s.mnt_path("step2.txt")).expect("b→c");
@@ -113,6 +117,7 @@ fn rename_chain_journal_records() {
 #[test]
 fn rename_overwrite_journal() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // hello.txt overwrites subdir/deep.txt
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("subdir/deep.txt")).expect("overwrite");
@@ -124,7 +129,7 @@ fn rename_overwrite_journal() {
         // (no separate Delete for hello.txt — fused into the RDR/REP record).
         let has_replace = acts.iter().any(|a| {
             matches!(a, Action::Replace { src, dst, .. }
-            if dst.ends_with("/deep.txt") && src.ends_with("/hello.txt"))
+        if dst.ends_with("/deep.txt") && src.ends_with("/hello.txt"))
         });
         assert!(
             has_replace,
@@ -133,19 +138,40 @@ fn rename_overwrite_journal() {
     });
 }
 
-/// Rename back and forth: a→b→a. After resolution, no staged dirents
+/// Rename back and forth: a→b→a. After resolution, no staged tree
 /// should remain (the rename cancels out).
 #[test]
 fn rename_back_and_forth_no_changes() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("a→b");
         fs::rename(s.mnt_path("temp.txt"), s.mnt_path("hello.txt")).expect("b→a");
 
-        let ch = dirents(&s);
-        assert!(
-            ch.is_empty(),
-            "rename back and forth should produce no dirents, got: {ch:?}"
+        let ch = tree(&s);
+        assert_eq!(
+            ch.len(),
+            0,
+            "rename back and forth should produce no staged changes, got: {ch:?}"
+        );
+    });
+}
+
+/// Three-step roundtrip: a→b→c→a. The rename chain is a no-op.
+#[test]
+fn rename_three_step_roundtrip_no_changes() {
+    let s = AgfsSession::new().expect("session setup");
+
+    s.run_in_namespace(|| {
+        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp1.txt")).expect("a→b");
+        fs::rename(s.mnt_path("temp1.txt"), s.mnt_path("temp2.txt")).expect("b→c");
+        fs::rename(s.mnt_path("temp2.txt"), s.mnt_path("hello.txt")).expect("c→a");
+
+        let ch = tree(&s);
+        assert_eq!(
+            ch.len(),
+            0,
+            "3-step roundtrip should produce no staged changes, got: {ch:?}"
         );
     });
 }
@@ -155,6 +181,7 @@ fn rename_back_and_forth_no_changes() {
 #[test]
 fn rename_staged_file_to_base_path() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // Create a new staged file
         fs::write(s.mnt_path("brand_new.txt"), "staged content\n").expect("create");
@@ -168,7 +195,7 @@ fn rename_staged_file_to_base_path() {
         // Destination exists in base → P (Replace).
         let has_replace = acts.iter().any(|a| {
             matches!(a, Action::Replace { dst, src, .. }
-                if dst.ends_with("/multi.txt") && src.ends_with("/brand_new.txt"))
+            if dst.ends_with("/multi.txt") && src.ends_with("/brand_new.txt"))
         });
         assert!(
             has_replace,

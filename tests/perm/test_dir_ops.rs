@@ -19,7 +19,8 @@ fn mkdir_allowed_under_deny() {
     .expect("session setup");
 
     s.run_in_namespace(|| {
-        fs::create_dir(s.mnt_path("newdir")).expect("mkdir should succeed: dir ops bypass agfs perm");
+        fs::create_dir(s.mnt_path("newdir"))
+            .expect("mkdir should succeed: dir ops bypass agfs perm");
     });
 }
 
@@ -69,7 +70,8 @@ fn rmdir_allowed_under_deny() {
     .expect("session setup");
 
     s.run_in_namespace(|| {
-        fs::remove_dir(s.mnt_path("subdir")).expect("rmdir should succeed: dir ops bypass agfs perm");
+        fs::remove_dir(s.mnt_path("subdir"))
+            .expect("rmdir should succeed: dir ops bypass agfs perm");
     });
 }
 

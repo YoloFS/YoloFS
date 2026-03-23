@@ -21,7 +21,8 @@ fn concurrent_writes_to_different_files() {
 
         // Verify all files exist with correct content
         for i in 0..10 {
-            let content = fs::read_to_string(s.mnt_path(&format!("concurrent_{i}.txt"))).expect("read");
+            let content =
+                fs::read_to_string(s.mnt_path(&format!("concurrent_{i}.txt"))).expect("read");
             assert_eq!(content, format!("content from thread {i}\n"));
         }
     });

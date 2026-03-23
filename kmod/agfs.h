@@ -139,158 +139,170 @@ struct agfs_perm_request {
 	struct list_head	list;
 };
 
-/* ── Packed dirent value ──────────────────────────────────────── */
+/* ── Dentry state ────────────────────────────────────────────── */
 
-/* Opaque packed dirent value — use agfs_pde_* helpers to access. */
-typedef struct { u64 val; } agfs_pde_t;
+/* Opaque dentry state — use agfs_dstate_* helpers to access. */
+struct agfs_dstate { u64 val; };
 
-/* ── Packed dirent encoding ────────────────────────────────────── */
+/* ── Dentry state encoding ─────────────────────────────────────── */
 
 /*
- * Three mutually exclusive states in a single u64:
- *   val == 0              → tombstone (always in_base=true)
- *   (s64)val < 0          → link (kernel pointer with bit 63 as tag)
- *   (s64)val > 0              → inode
+ * Four mutually exclusive states in a single u64:
+ *   val == 0              → passthrough (default, follows base)
+ *   (s64)val > 0, ino==0  → tombstone (deleted, carries d_type, in_base=1)
+ *   (s64)val > 0, ino!=0  → staged inode
+ *   (s64)val < 0          → base_path (kernel pointer with bit 63 as tag)
  *
- * Inode layout:
+ * Tombstone layout:
  *   [63]    0        (tag)
- *   [62:61] d_type   2 bits (private encoding)
- *   [60]    in_base  1 bit
- *   [59:48] reserved 12 bits (must be 0)
+ *   [62:60] d_type   3 bits
+ *   [59]    1        (in_base, always true)
+ *   [58:0]  0        (reserved + ino=0 + gen=0)
+ *
+ * Staged inode layout:
+ *   [63]    0        (tag)
+ *   [62:60] d_type   3 bits
+ *   [59]    in_base  1 bit
+ *   [58:48] reserved 11 bits (must be 0)
  *   [47:16] ino      32 bits (always > 0)
  *   [15:0]  gen      16 bits
  *
- * Link layout:
+ * Base_path layout:
  *   [63]    1        (tag — matches kernel sign extension)
- *   [62:61] d_type   2 bits (borrowed from sign extension)
- *   [60]    in_base  1 bit  (borrowed from sign extension)
- *   [59:0]  pointer bits [59:0]
+ *   [62:60] d_type   3 bits (borrowed from sign extension)
+ *   [59]    in_base  1 bit  (borrowed from sign extension)
+ *   [58:0]  pointer bits [58:0]
  *
- * Pointer recovery: val | 0x7000000000000000
+ * Pointer recovery: val | 0x7800000000000000
  */
 
-/* ── d_type 2-bit private encoding ─────────────────────────────── */
+/* ── d_type 3-bit encoding ──────────────────────────────────────── */
 
 static inline u64 agfs_dtype_pack(unsigned char libc_dt)
 {
-	switch (libc_dt) {
-	case DT_REG: return 0;
-	case DT_DIR: return 1;
-	case DT_LNK: return 2;
-	default:
-		WARN_ON_ONCE(1);
-		return 3;
-	}
+	WARN_ON_ONCE(libc_dt > 14 || (libc_dt & 1));
+	return libc_dt >> 1;
 }
 
 static inline unsigned char agfs_dtype_unpack(u64 packed_dt)
 {
-	switch (packed_dt) {
-	case 0: return DT_REG;
-	case 1: return DT_DIR;
-	case 2: return DT_LNK;
-	default:
-		WARN_ON_ONCE(1);
-		return DT_UNKNOWN;
-	}
+	WARN_ON_ONCE(packed_dt > 7);
+	return packed_dt << 1;
 }
 
 /* ── Predicates ────────────────────────────────────────────────── */
 
-static inline bool agfs_pde_is_tombstone(agfs_pde_t p)
+static inline bool agfs_dstate_is_passthrough(struct agfs_dstate p)
 {
 	return p.val == 0;
 }
 
-static inline bool agfs_pde_is_link(agfs_pde_t p)
+static inline bool agfs_dstate_is_tombstone(struct agfs_dstate p)
+{
+	return (s64)p.val > 0 && ((p.val >> 16) & 0xFFFFFFFF) == 0;
+}
+
+static inline bool agfs_dstate_is_base_path(struct agfs_dstate p)
 {
 	return (s64)p.val < 0;
 }
 
-static inline bool agfs_pde_is_inode(agfs_pde_t p)
+static inline bool agfs_dstate_is_staged_inode(struct agfs_dstate p)
 {
-	return (s64)p.val > 0;
+	return (s64)p.val > 0 && ((p.val >> 16) & 0xFFFFFFFF) != 0;
 }
 
 /* ── Decoders (valid for both inode and link unless noted) ──────── */
 
-static inline unsigned char agfs_pde_d_type(agfs_pde_t p)
+static inline unsigned char agfs_dstate_d_type(struct agfs_dstate p)
 {
-	return agfs_dtype_unpack((p.val >> 61) & 3);
+	return agfs_dtype_unpack((p.val >> 60) & 7);
 }
 
-static inline bool agfs_pde_in_base(agfs_pde_t p)
+static inline bool agfs_dstate_in_base(struct agfs_dstate p)
 {
-	if (agfs_pde_is_tombstone(p))
-		return true; /* tombstones are always in_base */
-	return (p.val >> 60) & 1;
+	/*
+	 * Only valid for staged dentries (non-passthrough).  For passthrough
+	 * dentries, base presence is determined by d_inode(dentry) != NULL.
+	 */
+	WARN_ON_ONCE(agfs_dstate_is_passthrough(p));
+	return (p.val >> 59) & 1;
 }
 
-/* inode only */
-static inline u32 agfs_pde_ino(agfs_pde_t p)
+/* staged inode only */
+static inline u32 agfs_dstate_ino(struct agfs_dstate p)
 {
 	return (p.val >> 16) & 0xFFFFFFFF;
 }
 
-/* inode only */
-static inline u16 agfs_pde_gen(agfs_pde_t p)
+/* staged inode only */
+static inline u16 agfs_dstate_gen(struct agfs_dstate p)
 {
 	return (u16)p.val;
 }
 
-/* True if packed is a current-generation inode (no COW needed). */
-static inline bool agfs_pde_is_current(agfs_pde_t p, u16 gen)
+/* True if dstate is a current-generation staged inode (no COW needed). */
+static inline bool agfs_dstate_is_current(struct agfs_dstate p, u16 gen)
 {
-	return agfs_pde_is_inode(p) && agfs_pde_gen(p) >= gen;
+	return agfs_dstate_is_staged_inode(p) && agfs_dstate_gen(p) >= gen;
 }
 
-/* link only — recover the kstrdup pointer */
-static inline char *agfs_pde_base(agfs_pde_t p)
+/* base_path only — recover the kstrdup pointer */
+static inline char *agfs_dstate_src(struct agfs_dstate p)
 {
-	return (char *)(p.val | 0x7000000000000000);
+	return (char *)(p.val | 0x7800000000000000);
 }
 
-/* ino for dir_emit: real ino for inodes, (u64)-1 for links */
-static inline u64 agfs_pde_emit_ino(agfs_pde_t p)
+/* ino for dir_emit: real ino for staged inodes, (u64)-1 for base_paths */
+static inline u64 agfs_dstate_emit_ino(struct agfs_dstate p)
 {
-	if (agfs_pde_is_inode(p))
-		return agfs_pde_ino(p);
+	if (agfs_dstate_is_staged_inode(p))
+		return agfs_dstate_ino(p);
 	return AGFS_INO_REDIRECT;
 }
 
 /* ── Encoders ──────────────────────────────────────────────────── */
 
-static inline agfs_pde_t agfs_pde_inode(u32 ino, u16 gen,
-					unsigned char d_type, bool in_base)
+static inline struct agfs_dstate agfs_dstate_staged_inode(u32 ino, u16 gen,
+						   unsigned char d_type,
+						   bool in_base)
 {
 	WARN_ON_ONCE(ino == 0);
-	return (agfs_pde_t){ .val =
-		(agfs_dtype_pack(d_type) << 61) |
-		((u64)in_base << 60) |
+	return (struct agfs_dstate){ .val =
+		(agfs_dtype_pack(d_type) << 60) |
+		((u64)in_base << 59) |
 		((u64)ino << 16) |
 		gen };
 }
 
-static inline agfs_pde_t agfs_pde_link(const char *base, unsigned char d_type,
-				       bool in_base)
+static inline struct agfs_dstate agfs_dstate_base_path(const char *base,
+						   unsigned char d_type,
+						   bool in_base)
 {
 	u64 ptr = (u64)base;
 
-	WARN_ON_ONCE((ptr >> 60) != 0xF);
-	return (agfs_pde_t){ .val =
+	WARN_ON_ONCE((ptr >> 59) != 0x1F);
+	return (struct agfs_dstate){ .val =
 		(1ULL << 63) |
-		(agfs_dtype_pack(d_type) << 61) |
-		((u64)in_base << 60) |
-		(ptr & 0x0FFFFFFFFFFFFFFF) };
+		(agfs_dtype_pack(d_type) << 60) |
+		((u64)in_base << 59) |
+		(ptr & 0x07FFFFFFFFFFFFFF) };
+}
+
+static inline struct agfs_dstate agfs_dstate_tombstone(unsigned char d_type)
+{
+	return (struct agfs_dstate){ .val =
+		(agfs_dtype_pack(d_type) << 60) |
+		(1ULL << 59) };
 }
 
 /* ── Cleanup ───────────────────────────────────────────────────── */
 
-/* Free the link base pointer if packed is a link */
-static inline void agfs_pde_free(agfs_pde_t p)
+/* Free the base_path src pointer if dstate is a base_path */
+static inline void agfs_dstate_free(struct agfs_dstate p)
 {
-	if (agfs_pde_is_link(p))
-		kfree(agfs_pde_base(p));
+	if (agfs_dstate_is_base_path(p))
+		kfree(agfs_dstate_src(p));
 }
 
 /* ── Ask Protocol Engine ───────────────────────────────────────────── */
@@ -324,8 +336,6 @@ struct agfs_sb_info {
 	atomic_t		gen;		/* bumped on each checkpoint; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
 	bool			dirty;		/* data records written since last CKP/RST */
-	struct list_head	pinned_dirs;	/* dirs with staged child dentries */
-	spinlock_t		pinned_dirs_lock;/* protects pinned_dirs */
 
 	/* Permission gating */
 	bool			permission;	/* enable/disable toggle */
@@ -344,10 +354,6 @@ struct agfs_inode_info {
 	enum agfs_perm		cached_perm;
 	u64			perm_gen;
 
-	/* Pinned staged child dentries (protected by VFS i_rwsem) */
-	struct list_head	de_list;	/* linked list of pinned staged children */
-	struct list_head	de_pin;		/* node in sbi->pinned_dirs */
-
 	struct inode		vfs_inode;	/* must be last for container_of */
 };
 
@@ -356,8 +362,7 @@ struct agfs_inode_info {
 struct agfs_dentry_info {
 	spinlock_t		lock;
 	struct path		lower_path;	/* resolved lower path (inode entry or base) */
-	agfs_pde_t		packed;		/* overlay state: inode/link/tombstone */
-	struct list_head	de_node;	/* node in parent's de_list */
+	struct agfs_dstate	dstate;		/* state: inode/link/tombstone */
 	struct dentry		*dentry;	/* back-pointer (always valid) */
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
 	struct list_head	rule_pin;	/* node in sbi->pinned_rules */
@@ -494,23 +499,22 @@ extern const struct inode_operations agfs_symlink_iops;
 
 /* file.c */
 extern const struct file_operations agfs_main_fops;
-extern const struct file_operations agfs_dir_fops;
 extern const struct address_space_operations agfs_aops;
+
+/* dir.c */
+extern const struct file_operations agfs_dir_fops;
 
 /* dentry.c */
 extern const struct dentry_operations agfs_dops;
-extern const struct dentry_operations agfs_dops_fast;
 int agfs_init_dentry_cache(void);
 void agfs_destroy_dentry_cache(void);
-void agfs_pin_dir_if_first(struct agfs_inode_info *dii,
-			   struct agfs_sb_info *sbi);
-void agfs_stage_dentry(struct dentry *dentry, struct inode *dir,
-		       agfs_pde_t packed);
+void agfs_stage_dentry(struct dentry *dentry, struct agfs_dstate dstate);
 void agfs_unstage_dentry(struct agfs_dentry_info *di);
 struct dentry *agfs_add_tombstone(struct dentry *parent,
 				  const char *name, unsigned int len,
-				  struct inode *dir);
-void agfs_remove_tombstone(struct dentry *tomb, struct inode *dir);
+				  unsigned char d_type);
+void agfs_remove_tombstone(struct dentry *tomb);
+void agfs_unstage_all(struct super_block *sb);
 
 /* lookup.c */
 struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
@@ -520,7 +524,6 @@ int agfs_interpose(struct dentry *dentry, struct super_block *sb,
 		   struct path *lower_path);
 
 /* staging.c */
-int agfs_dentry_relpath(struct dentry *dentry, char *buf, int buflen);
 int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,
 		    struct path *result);
 int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,
@@ -528,7 +531,6 @@ int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,
 		     const char *symname);
 int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 		struct file **new_file, int flags, bool truncate);
-void agfs_release_pinned_dirs(struct agfs_sb_info *sbi);
 
 /* journal.c */
 int agfs_journal_open(struct agfs_sb_info *sbi);

@@ -1,4 +1,4 @@
-use super::helpers::{dirents, ino_for, inode_path, inos, journal, markers};
+use super::helpers::{ino_for, inode_path, inos, journal, markers, tree};
 use crate::helpers::AgfsSession;
 use agfs::journal::Marker;
 use std::fs;
@@ -10,6 +10,7 @@ use std::os::unix::fs::MetadataExt;
 #[test]
 fn restore_journal_contains_checkpoint_marker() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
         s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -31,6 +32,7 @@ fn restore_journal_contains_checkpoint_marker() {
 #[test]
 fn restore_journal_has_no_post_checkpoint_records() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
         s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -49,15 +51,15 @@ fn restore_journal_has_no_post_checkpoint_records() {
         );
 
         // reachable + resolve should match the checkpoint state (only a.txt).
-        let ch = j.into_tree().into_dirents();
-        let debug = format!("{ch:?}");
+        let t = j.into_tree();
+        let debug = format!("{t:?}");
         assert!(
             debug.contains("a.txt"),
-            "a.txt should be in live dirents: {debug}"
+            "a.txt should be in live dstates: {debug}"
         );
         assert!(
             !debug.contains("b.txt"),
-            "b.txt should NOT be in live dirents: {debug}"
+            "b.txt should NOT be in live dstates: {debug}"
         );
     });
 }
@@ -68,9 +70,10 @@ fn restore_journal_has_no_post_checkpoint_records() {
 #[test]
 fn restore_keeps_pre_checkpoint_inodes() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
-        let pre_ino = ino_for(&dirents(&s), "/a.txt");
+        let pre_ino = ino_for(&tree(&s), "/a.txt");
         s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
 
         fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
@@ -92,12 +95,13 @@ fn restore_keeps_pre_checkpoint_inodes() {
 #[test]
 fn restore_orphans_post_checkpoint_inodes() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
         s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
 
         fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
-        let post_ino = ino_for(&dirents(&s), "/b.txt");
+        let post_ino = ino_for(&tree(&s), "/b.txt");
 
         s.cli(&["restore", "chk1"]).expect("restore");
 
@@ -108,10 +112,10 @@ fn restore_orphans_post_checkpoint_inodes() {
         );
 
         // But not referenced by any resolved change
-        let ch = dirents(&s);
+        let t = tree(&s);
         assert!(
-            !ch.iter().any(|(_, c)| c.ino() == Some(post_ino)),
-            "orphaned inode should not appear in resolved dirents"
+            !t.any(|_, d| d.ino() == Some(post_ino)),
+            "orphaned inode should not appear in resolved dstates"
         );
     });
 }
@@ -120,6 +124,7 @@ fn restore_orphans_post_checkpoint_inodes() {
 #[test]
 fn abort_after_restore_cleans_orphans() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
         s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -141,6 +146,7 @@ fn abort_after_restore_cleans_orphans() {
 #[test]
 fn restore_new_files_get_fresh_inodes() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // Create a file and checkpoint.
         fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
@@ -188,6 +194,7 @@ fn restore_new_files_get_fresh_inodes() {
 #[test]
 fn write_after_restore_without_checkpoint_reuses_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
         s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -214,6 +221,7 @@ fn write_after_restore_without_checkpoint_reuses_inode() {
 #[test]
 fn write_after_restore_and_checkpoint_triggers_recow() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
         s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -240,9 +248,10 @@ fn write_after_restore_and_checkpoint_triggers_recow() {
 #[test]
 fn recow_after_restore_preserves_old_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
-        let v1_ino = ino_for(&dirents(&s), "/file.txt");
+        let v1_ino = ino_for(&tree(&s), "/file.txt");
         s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
 
         fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2 (re-COW)");
@@ -264,10 +273,11 @@ fn recow_after_restore_preserves_old_inode() {
 
 // ── Resolved state correctness after restore ─────────────────────────────
 
-/// Resolved dirents after restore exactly match the checkpoint state.
+/// Resolved dstates after restore exactly match the checkpoint state.
 #[test]
 fn resolved_changes_match_checkpoint_state() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
         fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
@@ -278,21 +288,21 @@ fn resolved_changes_match_checkpoint_state() {
 
         s.cli(&["restore", "chk1"]).expect("restore");
 
-        let ch = dirents(&s);
-        assert_eq!(ch.len(), 2, "exactly 2 dirents: {ch:?}");
+        let t = tree(&s);
+        assert_eq!(t.len(), 2, "exactly 2 dstates: {t:?}");
 
-        let debug = format!("{ch:?}");
+        let debug = format!("{t:?}");
         assert!(
             debug.contains("a.txt"),
-            "a.txt should be in dirents: {debug}"
+            "a.txt should be in dstates: {debug}"
         );
         assert!(
             debug.contains("b.txt"),
-            "b.txt should be in dirents: {debug}"
+            "b.txt should be in dstates: {debug}"
         );
         assert!(
             !debug.contains("c.txt"),
-            "c.txt should NOT be in dirents: {debug}"
+            "c.txt should NOT be in dstates: {debug}"
         );
     });
 }
@@ -303,6 +313,7 @@ fn resolved_changes_match_checkpoint_state() {
 #[test]
 fn restore_renamed_directory_in_resolved_changes() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // Create directory in base first via commit
         fs::create_dir(s.mnt_path("old_dir")).expect("mkdir");
@@ -317,17 +328,17 @@ fn restore_renamed_directory_in_resolved_changes() {
 
         s.cli(&["restore", "chk1"]).expect("restore");
 
-        let ch = dirents(&s);
-        let debug = format!("{ch:?}");
+        let t = tree(&s);
+        let debug = format!("{t:?}");
 
         // The rename should survive restore
         assert!(
             debug.contains("new_dir"),
-            "new_dir should be in dirents: {debug}"
+            "new_dir should be in dstates: {debug}"
         );
         assert!(
             !debug.contains("extra.txt"),
-            "post-checkpoint file should NOT be in dirents: {debug}"
+            "post-checkpoint file should NOT be in dstates: {debug}"
         );
 
         // Verify the directory is accessible and d_type is dir via symlink_metadata
@@ -347,6 +358,7 @@ fn restore_renamed_directory_in_resolved_changes() {
 #[test]
 fn restore_renamed_symlink_in_resolved_changes() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("target.txt"), "target\n").expect("write target");
         std::os::unix::fs::symlink("target.txt", s.mnt_path("old_link")).expect("symlink");
@@ -357,16 +369,16 @@ fn restore_renamed_symlink_in_resolved_changes() {
 
         s.cli(&["restore", "chk1"]).expect("restore");
 
-        let ch = dirents(&s);
-        let debug = format!("{ch:?}");
+        let t = tree(&s);
+        let debug = format!("{t:?}");
 
         assert!(
             debug.contains("new_link"),
-            "new_link should be in dirents: {debug}"
+            "new_link should be in dstates: {debug}"
         );
         assert!(
             !debug.contains("post.txt"),
-            "post-checkpoint file should NOT be in dirents: {debug}"
+            "post-checkpoint file should NOT be in dstates: {debug}"
         );
 
         // Verify d_type is symlink via lstat through the mount
@@ -393,6 +405,7 @@ fn restore_renamed_symlink_in_resolved_changes() {
 #[test]
 fn restore_preserves_journal_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         let journal_path = s.root.join(".agfs/journal");
 
@@ -416,6 +429,7 @@ fn restore_preserves_journal_inode() {
 #[test]
 fn restore_journal_is_byte_prefix() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         let journal_path = s.root.join(".agfs/journal");
 
@@ -455,6 +469,7 @@ fn restore_journal_is_byte_prefix() {
 #[test]
 fn restore_s_record_has_correct_gen() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
         s.cli(&["checkpoint", "chk1"]).expect("checkpoint");

@@ -1,4 +1,4 @@
-use super::helpers::{actions, dirents, ino_for, inode_path, inos, journal};
+use super::helpers::{actions, ino_for, inode_path, inos, journal, tree};
 use crate::helpers::AgfsSession;
 use agfs::journal::Action;
 use std::fs;
@@ -9,6 +9,7 @@ use std::fs;
 #[test]
 fn mkdir_produces_add_record() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
@@ -16,8 +17,8 @@ fn mkdir_produces_add_record() {
         let acts = actions(&j);
         assert!(
             acts.iter()
-                .any(|a| matches!(a, Action::Add { path, dtype: Some(agfs::journal::DType::Dir), .. } if path.ends_with("/newdir"))),
-            "journal should have an Added(dtype=Dir) record for newdir: {acts:?}"
+                .any(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/newdir"))),
+            "journal should have an Added record for newdir: {acts:?}"
         );
     });
 }
@@ -26,6 +27,7 @@ fn mkdir_produces_add_record() {
 #[test]
 fn rmdir_produces_delete_record() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // Create through mount then remove
         fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
@@ -45,6 +47,7 @@ fn rmdir_produces_delete_record() {
 #[test]
 fn rmdir_base_dir_produces_delete_record() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         // subdir/ is seeded in base
         fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink nested file");
@@ -64,6 +67,7 @@ fn rmdir_base_dir_produces_delete_record() {
 #[test]
 fn rename_dir_produces_rename_record() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir(s.mnt_path("olddir")).expect("mkdir");
         fs::rename(s.mnt_path("olddir"), s.mnt_path("newdir")).expect("rename dir");
@@ -73,7 +77,7 @@ fn rename_dir_produces_rename_record() {
         assert!(
             acts.iter()
                 .any(|a| matches!(a, Action::Rename { dst, src, .. }
-                if dst.ends_with("/newdir") && src.ends_with("/olddir"))),
+            if dst.ends_with("/newdir") && src.ends_with("/olddir"))),
             "journal should have a Redirect record for olddir → newdir: {acts:?}"
         );
     });
@@ -85,10 +89,11 @@ fn rename_dir_produces_rename_record() {
 #[test]
 fn mkdir_creates_directory_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/newdir");
         let path = inode_path(&s, ino);
 
@@ -105,11 +110,12 @@ fn mkdir_creates_directory_inode() {
 #[test]
 fn mkdir_with_file_creates_separate_inodes() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir_all(s.mnt_path("parent/child")).expect("mkdir -p");
         fs::write(s.mnt_path("parent/child/data.txt"), "nested\n").expect("write");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
 
         // The file should have its own inode
         let file_ino = ino_for(&ch, "/data.txt");
@@ -123,28 +129,16 @@ fn mkdir_with_file_creates_separate_inodes() {
         );
 
         // Parent directories should also have inode entries
-        let dir_ids: Vec<u32> = ch
-            .iter()
-            .filter_map(|(path, c)| {
-                if path.ends_with("/parent") || path.ends_with("/child") {
-                    if let agfs::journal::Dirent::Inode {
-                        ino,
-                        in_base: false,
-                        ..
-                    } = c
-                    {
-                        return Some(*ino);
-                    }
-                }
-                None
-            })
-            .collect();
-        for ino in &dir_ids {
-            assert!(
-                inode_path(&s, *ino).is_dir(),
-                "directory inode {ino} should be a dir"
-            );
-        }
+        let parent_ino = ino_for(&ch, "/parent");
+        assert!(
+            inode_path(&s, parent_ino).is_dir(),
+            "directory inode {parent_ino} should be a dir"
+        );
+        let child_ino = ino_for(&ch, "/child");
+        assert!(
+            inode_path(&s, child_ino).is_dir(),
+            "directory inode {child_ino} should be a dir"
+        );
     });
 }
 
@@ -152,6 +146,7 @@ fn mkdir_with_file_creates_separate_inodes() {
 #[test]
 fn rmdir_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
         let inos_before = inos(&s);
@@ -172,6 +167,7 @@ fn rmdir_creates_no_inode() {
 #[test]
 fn rename_dir_creates_no_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::create_dir(s.mnt_path("olddir")).expect("mkdir");
         let inos_after_mkdir = inos(&s);

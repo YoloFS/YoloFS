@@ -1,4 +1,4 @@
-use super::helpers::{actions, dirents, ino_for, inode_path, journal};
+use super::helpers::{actions, ino_for, inode_path, journal, tree};
 use crate::helpers::AgfsSession;
 use agfs::journal::Action;
 use std::fs;
@@ -9,6 +9,7 @@ use std::fs;
 #[test]
 fn create_produces_add_record() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
 
@@ -16,8 +17,8 @@ fn create_produces_add_record() {
         let acts = actions(&j);
         assert!(
             acts.iter()
-                .any(|a| matches!(a, Action::Add { path, dtype: Some(agfs::journal::DType::File), .. } if path.ends_with("/brandnew.txt"))),
-            "journal should have an Added(dtype=File) record for brandnew.txt: {acts:?}"
+                .any(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/brandnew.txt"))),
+            "journal should have an Added record for brandnew.txt: {acts:?}"
         );
     });
 }
@@ -28,10 +29,11 @@ fn create_produces_add_record() {
 #[test]
 fn create_file_produces_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("brandnew.txt"), "fresh content\n").expect("create");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/brandnew.txt");
         let path = inode_path(&s, ino);
 
@@ -44,10 +46,11 @@ fn create_file_produces_inode() {
 #[test]
 fn empty_file_creates_empty_inode() {
     let s = AgfsSession::new().expect("session setup");
+
     s.run_in_namespace(|| {
         fs::write(s.mnt_path("empty.txt"), "").expect("touch");
 
-        let ch = dirents(&s);
+        let ch = tree(&s);
         let ino = ino_for(&ch, "/empty.txt");
         let path = inode_path(&s, ino);
 

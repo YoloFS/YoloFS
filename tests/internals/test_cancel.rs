@@ -36,7 +36,9 @@ fn staged_only_delete_recreate_emits_add() {
 
         let modifies: Vec<_> = acts
             .iter()
-            .filter(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/ephemeral.txt")))
+            .filter(
+                |a| matches!(a, Action::Modify { path, .. } if path.ends_with("/ephemeral.txt")),
+            )
             .collect();
         assert!(
             modifies.is_empty(),
