@@ -42,7 +42,7 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::journal::{Action, DirTree, Dstate, Segment};
+    use crate::journal::{Action, DirTree, Dentry, Segment};
 
     fn build(actions: &[Action]) -> DirTree {
         DirTree::build(std::iter::once(Segment {
@@ -61,7 +61,7 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/src/main.rs"),
-            Some(Dstate::StagedInode {
+            Some(Dentry::StagedInode {
                 ino: 1,
                 in_base: false,
                 ..
@@ -85,7 +85,7 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/old.txt"),
-            Some(Dstate::Tombstone { .. })
+            Some(Dentry::Tombstone { .. })
         ));
     }
 
@@ -97,9 +97,9 @@ mod tests {
             dtype: Some(libc::DT_REG),
         }]);
 
-        assert!(matches!(tree.get("/a.txt"), Some(Dstate::Tombstone { .. })));
+        assert!(matches!(tree.get("/a.txt"), Some(Dentry::Tombstone { .. })));
         assert!(
-            matches!(tree.get("/b.txt"), Some(Dstate::Redirect { src, .. }) if src == "/a.txt")
+            matches!(tree.get("/b.txt"), Some(Dentry::Redirect { src, .. }) if src == "/a.txt")
         );
     }
 
@@ -120,11 +120,11 @@ mod tests {
 
         assert!(matches!(
             tree.get("/new.rs"),
-            Some(Dstate::StagedInode { ino: 5, .. })
+            Some(Dentry::StagedInode { ino: 5, .. })
         ));
         assert!(matches!(
             tree.get("/old.rs"),
-            Some(Dstate::Tombstone { .. })
+            Some(Dentry::Tombstone { .. })
         ));
     }
 

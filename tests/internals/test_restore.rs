@@ -52,11 +52,11 @@ fn restore_journal_has_no_post_checkpoint_records() {
     let debug = format!("{t:?}");
     assert!(
         debug.contains("a.txt"),
-        "a.txt should be in live dstates: {debug}"
+        "a.txt should be in live dentries: {debug}"
     );
     assert!(
         !debug.contains("b.txt"),
-        "b.txt should NOT be in live dstates: {debug}"
+        "b.txt should NOT be in live dentries: {debug}"
     );
 }
 
@@ -108,7 +108,7 @@ fn restore_orphans_post_checkpoint_inodes() {
     let t = tree(&s);
     assert!(
         !t.any(|_, d| d.ino() == Some(post_ino)),
-        "orphaned inode should not appear in resolved dstates"
+        "orphaned inode should not appear in resolved dentries"
     );
 }
 
@@ -255,7 +255,7 @@ fn recow_after_restore_preserves_old_inode() {
 
 // ── Resolved state correctness after restore ─────────────────────────────
 
-/// Resolved dstates after restore exactly match the checkpoint state.
+/// Resolved dentries after restore exactly match the checkpoint state.
 #[test]
 fn resolved_changes_match_checkpoint_state() {
     let s = AgfsSession::new().expect("session setup");
@@ -270,20 +270,20 @@ fn resolved_changes_match_checkpoint_state() {
     s.cli(&["restore", "chk1"]).expect("restore");
 
     let t = tree(&s);
-    assert_eq!(t.len(), 2, "exactly 2 dstates: {t:?}");
+    assert_eq!(t.len(), 2, "exactly 2 dentries: {t:?}");
 
     let debug = format!("{t:?}");
     assert!(
         debug.contains("a.txt"),
-        "a.txt should be in dstates: {debug}"
+        "a.txt should be in dentries: {debug}"
     );
     assert!(
         debug.contains("b.txt"),
-        "b.txt should be in dstates: {debug}"
+        "b.txt should be in dentries: {debug}"
     );
     assert!(
         !debug.contains("c.txt"),
-        "c.txt should NOT be in dstates: {debug}"
+        "c.txt should NOT be in dentries: {debug}"
     );
 }
 
@@ -313,11 +313,11 @@ fn restore_renamed_directory_in_resolved_changes() {
     // The rename should survive restore
     assert!(
         debug.contains("new_dir"),
-        "new_dir should be in dstates: {debug}"
+        "new_dir should be in dentries: {debug}"
     );
     assert!(
         !debug.contains("extra.txt"),
-        "post-checkpoint file should NOT be in dstates: {debug}"
+        "post-checkpoint file should NOT be in dentries: {debug}"
     );
 
     // Verify the directory is accessible and d_type is dir via symlink_metadata
@@ -351,11 +351,11 @@ fn restore_renamed_symlink_in_resolved_changes() {
 
     assert!(
         debug.contains("new_link"),
-        "new_link should be in dstates: {debug}"
+        "new_link should be in dentries: {debug}"
     );
     assert!(
         !debug.contains("post.txt"),
-        "post-checkpoint file should NOT be in dstates: {debug}"
+        "post-checkpoint file should NOT be in dentries: {debug}"
     );
 
     // Verify d_type is symlink via lstat through the mount

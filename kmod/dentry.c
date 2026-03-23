@@ -133,7 +133,7 @@ struct dentry *agfs_dentry_add_tombstone(struct dentry *parent,
 }
 
 /*
- * Undo agfs_dentry_add_tombstone: unhash, clear dstate, and release.
+ * Undo agfs_dentry_add_tombstone: unhash, clear, and release.
  * Used for rollback when a subsequent step (e.g., journal write) fails.
  * Caller must hold i_rwsem exclusive on dir.
  */

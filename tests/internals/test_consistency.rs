@@ -11,7 +11,7 @@
 
 use super::helpers::{ino_for, inode_path, tree};
 use crate::helpers::AgfsSession;
-use agfs::journal::{DirTree, Dstate};
+use agfs::journal::{DirTree, Dentry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
@@ -50,12 +50,12 @@ fn root_prefix(s: &AgfsSession) -> String {
 fn assert_overlay_visible(s: &AgfsSession) {
     let prefix = root_prefix(s);
     let t = tree(s);
-    t.for_each(|path, dstate| {
+    t.for_each(|path, dentry| {
         let rel = path.strip_prefix(&prefix).unwrap();
         let rel = rel.strip_prefix('/').unwrap_or(rel);
         let mnt = s.mnt_path(rel);
-        match dstate {
-            Dstate::StagedInode { ino, dtype, .. } => {
+        match dentry {
+            Dentry::StagedInode { ino, dtype, .. } => {
                 let meta = mnt
                     .symlink_metadata()
                     .unwrap_or_else(|e| panic!("overlay inode at '/{rel}' should be visible: {e}"));
@@ -85,7 +85,7 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     );
                 }
             }
-            Dstate::Redirect { dtype, .. } => {
+            Dentry::Redirect { dtype, .. } => {
                 let meta = mnt
                     .symlink_metadata()
                     .unwrap_or_else(|e| panic!("overlay link at '/{rel}' should be visible: {e}"));
@@ -103,13 +103,13 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     meta.is_symlink(),
                 );
             }
-            Dstate::Tombstone { .. } => {
+            Dentry::Tombstone { .. } => {
                 assert!(
                     !path_visible(&mnt),
                     "tombstone at '/{rel}' should not be visible"
                 );
             }
-            Dstate::Passthrough => {}
+            Dentry::Passthrough => {}
         }
     });
 }
@@ -127,7 +127,7 @@ fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
     for component in rel_dir.split('/') {
         tree_path = format!("{tree_path}/{component}");
         let link_target = cli.get(&tree_path).and_then(|d| {
-            if let Dstate::Redirect {
+            if let Dentry::Redirect {
                 src,
                 dtype: libc::DT_DIR,
                 ..
@@ -172,12 +172,12 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
     let base_names = entry_names(&effective_base, skip);
 
     // Overlay entries that are direct children of this directory
-    let mut staged: BTreeMap<String, Dstate> = BTreeMap::new();
-    t.for_each(|path, dstate| {
+    let mut staged: BTreeMap<String, Dentry> = BTreeMap::new();
+    t.for_each(|path, dentry| {
         if let Some(rest) = path.strip_prefix(&dir_prefix) {
             let rest = rest.strip_prefix('/').unwrap_or(rest);
             if !rest.is_empty() && !rest.contains('/') {
-                staged.insert(rest.to_string(), dstate.clone());
+                staged.insert(rest.to_string(), dentry.clone());
             }
         }
     });
@@ -189,8 +189,8 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
             expected.insert(name.clone());
         }
     }
-    for (name, dstate) in &staged {
-        if !matches!(dstate, Dstate::Tombstone { .. }) {
+    for (name, dentry) in &staged {
+        if !matches!(dentry, Dentry::Tombstone { .. }) {
             expected.insert(name.clone());
         }
     }
@@ -282,7 +282,7 @@ fn delete_base_file_tombstones() {
 
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. })),
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Dentry::Tombstone { .. })),
         "D on base file should produce tombstone: {t:?}"
     );
 }
@@ -471,7 +471,7 @@ fn modify_then_delete_base() {
 
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Dstate::Tombstone { .. })),
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Dentry::Tombstone { .. })),
         "M+D on base should produce tombstone: {t:?}"
     );
 }
@@ -591,7 +591,7 @@ fn create_over_tombstone() {
     let t = tree(&s);
     assert!(
         t.any(|p, e| p.ends_with("/hello.txt")
-            && matches!(e, Dstate::StagedInode { in_base: true, .. })),
+            && matches!(e, Dentry::StagedInode { in_base: true, .. })),
         "recreated file over tombstone should have in_base=true: {t:?}"
     );
     assert_eq!(
@@ -633,12 +633,12 @@ fn readdir_dtype_matches_cli() {
 
         // Find matching CLI entry
         let tree_path = format!("{prefix}/{name}");
-        let Some(dstate) = t.get(&tree_path) else {
+        let Some(dentry) = t.get(&tree_path) else {
             continue; // base-only entry, no CLI overlay
         };
 
         let ft = entry.file_type().expect("file_type");
-        let cli_dtype = dstate.dtype();
+        let cli_dtype = dentry.dtype();
         match cli_dtype {
             libc::DT_REG => assert!(
                 ft.is_file(),

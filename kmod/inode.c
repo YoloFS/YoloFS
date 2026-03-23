@@ -9,7 +9,7 @@
 #include "agfs.h"
 #include <linux/xattr.h>
 
-/* ── create/mkdir/symlink — allocate inode + set dstate on dentry ──── */
+/* ── create/mkdir/symlink — allocate inode + set up dentry ────────── */
 
 static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 			      umode_t mode, const char *symname)

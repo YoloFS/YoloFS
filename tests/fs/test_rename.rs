@@ -581,7 +581,7 @@ fn complex_multi_operation_commit() {
 
     // ── Verify resolved dirents ──
     use agfs::journal;
-    use agfs::journal::Dstate;
+    use agfs::journal::Dentry;
 
     let agfs_dir = s.root.join(".agfs");
     let journal_obj = journal::Journal::read(&agfs_dir).expect("read journal");
@@ -597,20 +597,20 @@ fn complex_multi_operation_commit() {
         mut has_brand_new,
     ) = (false, false, false, false, false, false, false);
 
-    t.for_each(|path, dstate| {
-        if matches!(dstate, Dstate::StagedInode { in_base: true, .. })
+    t.for_each(|path, dentry| {
+        if matches!(dentry, Dentry::StagedInode { in_base: true, .. })
             && path.ends_with("/hello.txt")
         {
             has_modified_hello = true;
         }
-        if matches!(dstate, Dstate::StagedInode { in_base: true, .. })
+        if matches!(dentry, Dentry::StagedInode { in_base: true, .. })
             && path.ends_with("/multi.txt")
         {
             has_modified_multi = true;
         }
         // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
         // Tree builder preserves original base path through rename chains.
-        if let Dstate::Redirect { src, .. } = dstate {
+        if let Dentry::Redirect { src, .. } = dentry {
             if src.ends_with("/subdir/deep.txt") && path.ends_with("/top.txt") {
                 has_renamed_deep_to_top = true;
             }
@@ -621,10 +621,10 @@ fn complex_multi_operation_commit() {
                 has_brand_new = true;
             }
         }
-        if matches!(dstate, Dstate::Tombstone { .. }) && path.ends_with("/deep.txt") {
+        if matches!(dentry, Dentry::Tombstone { .. }) && path.ends_with("/deep.txt") {
             has_deleted_deep = true;
         }
-        if matches!(dstate, Dstate::StagedInode { in_base: false, .. })
+        if matches!(dentry, Dentry::StagedInode { in_base: false, .. })
             && path.ends_with("/link.txt")
         {
             has_added_link = true;

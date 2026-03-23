@@ -7,7 +7,7 @@
 // `--to <name>` — diff changes up to a checkpoint.
 // `--from <name> --to <name>` — diff changes between two checkpoints.
 
-use crate::journal::{DirTree, Dstate, Journal};
+use crate::journal::{DirTree, Dentry, Journal};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -68,9 +68,9 @@ fn print_segment_footer(closing: &Option<(u64, String)>) {
 
 // ── Per-change printing (summary vs verbose) ─────────────────────────
 
-fn print_change(agfs: &Path, path: &str, dstate: &Dstate, verbose: bool) {
-    match dstate {
-        Dstate::StagedInode {
+fn print_change(agfs: &Path, path: &str, dentry: &Dentry, verbose: bool) {
+    match dentry {
+        Dentry::StagedInode {
             ino,
             in_base: false,
             ..
@@ -80,7 +80,7 @@ fn print_change(agfs: &Path, path: &str, dstate: &Dstate, verbose: bool) {
                 print_unified_diff("", &read_inode(agfs, *ino));
             }
         }
-        Dstate::StagedInode {
+        Dentry::StagedInode {
             ino, in_base: true, ..
         } => {
             if verbose {
@@ -94,16 +94,16 @@ fn print_change(agfs: &Path, path: &str, dstate: &Dstate, verbose: bool) {
                 println!("{} {}", path.bold(), "(modified)".yellow());
             }
         }
-        Dstate::Tombstone { .. } => {
+        Dentry::Tombstone { .. } => {
             println!("{} {}", path.bold(), "(deleted)".red());
             if verbose {
                 print_unified_diff(&read_base(path), "");
             }
         }
-        Dstate::Redirect { src, .. } => {
+        Dentry::Redirect { src, .. } => {
             println!("{} → {} {}", src.bold(), path.bold(), "(renamed)".cyan());
         }
-        Dstate::Passthrough => {}
+        Dentry::Passthrough => {}
     }
 }
 
@@ -181,9 +181,9 @@ fn run(
             }
         }
 
-        tree.for_each(|p, dstate| {
-            if path.is_none() || dstate.matches_path(p, path.unwrap()) {
-                print_change(&agfs, p, dstate, verbose);
+        tree.for_each(|p, dentry| {
+            if path.is_none() || dentry.matches_path(p, path.unwrap()) {
+                print_change(&agfs, p, dentry, verbose);
             }
         });
         total += count;
@@ -229,29 +229,29 @@ fn range_label(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::Dstate;
+    use crate::journal::Dentry;
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::TempDir;
 
     fn state_map<'a>(
         agfs: &Path,
-        dstates: &'a [(String, Dstate)],
+        dentries: &'a [(String, Dentry)],
     ) -> BTreeMap<&'a str, Option<String>> {
         let mut map = BTreeMap::new();
-        for (path, dstate) in dstates {
-            match dstate {
-                Dstate::StagedInode { ino, .. } => {
+        for (path, dentry) in dentries {
+            match dentry {
+                Dentry::StagedInode { ino, .. } => {
                     map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
                 }
-                Dstate::Tombstone { .. } => {
+                Dentry::Tombstone { .. } => {
                     map.insert(path.as_str(), None);
                 }
-                Dstate::Redirect { src, .. } => {
+                Dentry::Redirect { src, .. } => {
                     map.insert(src.as_str(), None);
                     map.insert(path.as_str(), Some(read_base(src)));
                 }
-                Dstate::Passthrough => {}
+                Dentry::Passthrough => {}
             }
         }
         map
@@ -279,15 +279,15 @@ mod tests {
     #[test]
     fn state_map_added() {
         let tmp = make_agfs(&[(1, "hello\n")]);
-        let dstates = vec![(
+        let dentries = vec![(
             "/src/main.rs".into(),
-            Dstate::StagedInode {
+            Dentry::StagedInode {
                 ino: 1,
                 dtype: libc::DT_REG,
                 in_base: false,
             },
         )];
-        let map = state_map(tmp.path(), &dstates);
+        let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/src/main.rs"], Some("hello\n".into()));
     }
@@ -295,15 +295,15 @@ mod tests {
     #[test]
     fn state_map_modified() {
         let tmp = make_agfs(&[(5, "new content")]);
-        let dstates = vec![(
+        let dentries = vec![(
             "/etc/config".into(),
-            Dstate::StagedInode {
+            Dentry::StagedInode {
                 ino: 5,
                 dtype: libc::DT_REG,
                 in_base: true,
             },
         )];
-        let map = state_map(tmp.path(), &dstates);
+        let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/etc/config"], Some("new content".into()));
     }
@@ -311,13 +311,13 @@ mod tests {
     #[test]
     fn state_map_deleted() {
         let tmp = make_agfs(&[]);
-        let dstates = vec![(
+        let dentries = vec![(
             "/old/file.txt".into(),
-            Dstate::Tombstone {
+            Dentry::Tombstone {
                 dtype: libc::DT_REG,
             },
         )];
-        let map = state_map(tmp.path(), &dstates);
+        let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/old/file.txt"], None);
     }
@@ -327,15 +327,15 @@ mod tests {
         // Renamed reads base content via read_base(from). Since the `from` path
         // won't exist on the real filesystem, read_file_lossy returns "".
         let tmp = make_agfs(&[]);
-        let dstates = vec![(
+        let dentries = vec![(
             "/nonexistent/new.rs".into(),
-            Dstate::Redirect {
+            Dentry::Redirect {
                 src: "/nonexistent/old.rs".into(),
                 dtype: libc::DT_REG,
                 in_base: false,
             },
         )];
-        let map = state_map(tmp.path(), &dstates);
+        let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 2);
         assert_eq!(map["/nonexistent/old.rs"], None);
         // read_base on a missing path returns ""
@@ -345,10 +345,10 @@ mod tests {
     #[test]
     fn state_map_renamed_modified() {
         let tmp = make_agfs(&[(7, "modified content")]);
-        let dstates = vec![
+        let dentries = vec![
             (
                 "/nonexistent/new.rs".into(),
-                Dstate::Redirect {
+                Dentry::Redirect {
                     src: "/nonexistent/old.rs".into(),
                     dtype: libc::DT_REG,
                     in_base: false,
@@ -356,14 +356,14 @@ mod tests {
             ),
             (
                 "/nonexistent/new.rs".into(),
-                Dstate::StagedInode {
+                Dentry::StagedInode {
                     ino: 7,
                     dtype: libc::DT_REG,
                     in_base: true,
                 },
             ),
         ];
-        let map = state_map(tmp.path(), &dstates);
+        let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 2);
         assert_eq!(map["/nonexistent/old.rs"], None);
         assert_eq!(map["/nonexistent/new.rs"], Some("modified content".into()));
@@ -372,10 +372,10 @@ mod tests {
     #[test]
     fn state_map_multiple_changes() {
         let tmp = make_agfs(&[(1, "aaa"), (2, "bbb")]);
-        let dstates = vec![
+        let dentries = vec![
             (
                 "/a.txt".into(),
-                Dstate::StagedInode {
+                Dentry::StagedInode {
                     ino: 1,
                     dtype: libc::DT_REG,
                     in_base: false,
@@ -383,7 +383,7 @@ mod tests {
             ),
             (
                 "/b.txt".into(),
-                Dstate::StagedInode {
+                Dentry::StagedInode {
                     ino: 2,
                     dtype: libc::DT_REG,
                     in_base: true,
@@ -391,12 +391,12 @@ mod tests {
             ),
             (
                 "/c.txt".into(),
-                Dstate::Tombstone {
+                Dentry::Tombstone {
                     dtype: libc::DT_REG,
                 },
             ),
         ];
-        let map = state_map(tmp.path(), &dstates);
+        let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 3);
         assert_eq!(map["/a.txt"], Some("aaa".into()));
         assert_eq!(map["/b.txt"], Some("bbb".into()));

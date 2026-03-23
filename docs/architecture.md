@@ -234,7 +234,7 @@ agfs/
 │   │   ├── parse.rs           # parse()  (pub(super))
 │   │   ├── markers.rs         # Markers (lookup + range + alive_segments + checkpoint_at)
 │   │   ├── journal.rs         # Journal (struct + new + read + live_segments_*)
-│   │   └── tree.rs            # DirTree, Dstate, DirNode
+│   │   └── tree.rs            # DirTree, Dentry, DirNode
 │   ├── ioctl.rs               # binary protocol structs + ioctl helpers
 │   ├── kmsg.rs                # kernel log reading via /dev/kmsg
 │   └── utils.rs               # shared helpers (session_dir, plural)

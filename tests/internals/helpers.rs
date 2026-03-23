@@ -55,12 +55,12 @@ pub fn inode_path(s: &AgfsSession, ino: u32) -> PathBuf {
     s.inodes_dir().join(ino.to_string())
 }
 
-/// Find the ino for a dstate matching a path suffix.
+/// Find the ino for a dentry matching a path suffix.
 pub fn ino_for(tree: &DirTree, suffix: &str) -> u32 {
     let mut result = None;
-    tree.for_each(|path, dstate| {
+    tree.for_each(|path, dentry| {
         if result.is_none() && path.ends_with(suffix) {
-            result = dstate.ino();
+            result = dentry.ino();
         }
     });
     result.unwrap_or_else(|| panic!("no inode found for path ending with {suffix}"))
