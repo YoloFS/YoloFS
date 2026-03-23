@@ -77,9 +77,7 @@ impl Markers {
     pub fn marker_at(&self, marker_idx: usize) -> Option<&Marker> {
         let m = self.0.get(marker_idx)?;
         match m {
-            Marker::Checkpoint { gen_id, .. } | Marker::Restore { gen_id, .. }
-                if *gen_id > 0 =>
-            {
+            Marker::Checkpoint { gen_id, .. } | Marker::Restore { gen_id, .. } if *gen_id > 0 => {
                 Some(m)
             }
             _ => None,
