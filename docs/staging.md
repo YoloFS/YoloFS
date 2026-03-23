@@ -470,10 +470,10 @@ agfs_readdir(dir, ctx):
     if !sbi->staging || !sbi->inodes_dir.dentry:
         return iterate_dir(lower_file, ctx)   # fast path
 
-    # Phase 1 (agfs_emit_dirents): walk d_children with d_lock
-    # pin-and-release pattern, filtering by kind != UNSET and
-    # kind != TOMBSTONE.
-    for child in parent_dentry->d_children (via d_lock):
+    # Phase 1 (agfs_emit_dirents): keep a per-open cursor dentry in
+    # d_children and resume from cursor successor on repeated calls.
+    # This is robust against sibling-list mutations.
+    for child in staged_children_from(cursor_or_head):
         if AGFS_D(child)->kind == AGFS_DKIND_UNSET or AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE:
             continue
         dir_emit(ctx, child->d_name,

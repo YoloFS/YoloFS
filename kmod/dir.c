@@ -7,6 +7,20 @@
 
 #include "agfs.h"
 #include <linux/file.h>
+#include <linux/dcache.h>
+
+extern struct dentry *file_dentry(const struct file *file);
+
+static struct dentry *agfs_alloc_cursor(struct dentry *parent)
+{
+	struct dentry *cursor = d_alloc_anon(parent->d_sb);
+
+	if (!cursor)
+		return NULL;
+	cursor->d_flags |= DCACHE_DENTRY_CURSOR;
+	cursor->d_parent = dget(parent);
+	return cursor;
+}
 
 /* ── dir_open ──────────────────────────────────────────────────────── */
 
@@ -29,6 +43,12 @@ static int agfs_dir_open(struct inode *inode, struct file *file)
 	}
 
 	di->fi.lower_file = lower_file;
+	di->phase1_cursor = agfs_alloc_cursor(file_dentry(file));
+	if (!di->phase1_cursor) {
+		fput(lower_file);
+		kfree(di);
+		return -ENOMEM;
+	}
 	file->private_data = di;
 	return 0;
 }
@@ -40,6 +60,10 @@ static int agfs_dir_release(struct inode *inode, struct file *file)
 	struct agfs_dir_info *di = AGFS_DI(file);
 
 	if (di) {
+		if (di->phase1_cursor) {
+			dput(di->phase1_cursor);
+			di->phase1_cursor = NULL;
+		}
 		if (di->fi.lower_file)
 			fput(di->fi.lower_file);
 		kfree(di);
@@ -102,40 +126,75 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
  * Caller holds inode_lock_shared(dir) via VFS iterate_shared.
  * Returns true if the dir_emit buffer filled up.
  */
-static bool agfs_emit_dirents(struct dentry *parent, struct dir_context *ctx,
-			      loff_t *off)
+static struct dentry *agfs_next_staged_child(struct dentry *parent,
+					     struct hlist_node **p,
+					     struct dentry *last)
 {
 	struct dentry *child;
 
 	spin_lock(&parent->d_lock);
-	hlist_for_each_entry(child, &parent->d_children, d_sib) {
+	while (*p) {
+		child = hlist_entry(*p, struct dentry, d_sib);
+		*p = child->d_sib.next;
+		if (child->d_flags & DCACHE_DENTRY_CURSOR)
+			continue;
 		if (AGFS_D(child)->kind == AGFS_DKIND_UNSET)
 			continue;
-
 		if (AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE)
 			continue;
-
-		dget_dlock(child);
-		spin_unlock(&parent->d_lock);
-
-		if (*off < ctx->pos) {
-			(*off)++;
-		} else if (!dir_emit(ctx, child->d_name.name,
-				     child->d_name.len,
-				     d_inode(child)->i_ino,
-				     fs_umode_to_dtype(d_inode(child)->i_mode))) {
-			dput(child);
-			return true;
-		} else {
-			(*off)++;
-			ctx->pos++;
+		spin_lock_nested(&child->d_lock, DENTRY_D_LOCK_NESTED);
+		if (AGFS_D(child)->kind == AGFS_DKIND_UNSET ||
+		    AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE) {
+			spin_unlock(&child->d_lock);
+			continue;
 		}
-
-		dput(child);
-		spin_lock(&parent->d_lock);
+		dget_dlock(child);
+		spin_unlock(&child->d_lock);
+		spin_unlock(&parent->d_lock);
+		dput(last);
+		return child;
 	}
 	spin_unlock(&parent->d_lock);
-	return false;
+	dput(last);
+	return NULL;
+}
+
+static bool agfs_emit_dirents(struct dentry *parent, struct dir_context *ctx,
+			      loff_t *off, struct agfs_dir_info *di)
+{
+	struct dentry *cursor = di->phase1_cursor;
+	struct dentry *next = NULL;
+	struct hlist_node *p;
+
+	if (!cursor)
+		return false;
+
+	if (ctx->pos <= 2)
+		p = parent->d_children.first;
+	else
+		p = cursor->d_sib.next;
+
+	*off = ctx->pos;
+	while ((next = agfs_next_staged_child(parent, &p, next)) != NULL) {
+		if (!dir_emit(ctx, next->d_name.name,
+			      next->d_name.len,
+			      d_inode(next)->i_ino,
+			      fs_umode_to_dtype(d_inode(next)->i_mode)))
+			break;
+		ctx->pos++;
+		(*off)++;
+		p = next->d_sib.next;
+	}
+
+	spin_lock(&parent->d_lock);
+	hlist_del_init(&cursor->d_sib);
+	if (next)
+		hlist_add_before(&cursor->d_sib, &next->d_sib);
+	spin_unlock(&parent->d_lock);
+
+	dput(next);
+
+	return next != NULL;
 }
 
 /* ── readdir entry point ───────────────────────────────────────────── */
@@ -173,7 +232,7 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 		off = ctx->pos;
 	} else {
 		/* Phase 1: emit non-deleted dirent entries */
-		if (agfs_emit_dirents(file_dentry(file), ctx, &off))
+		if (agfs_emit_dirents(file_dentry(file), ctx, &off, di))
 			return 0;
 		di->dirent_off = off;
 		/*

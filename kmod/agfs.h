@@ -224,6 +224,7 @@ struct agfs_dir_info {
 	struct agfs_file_info	fi;		/* must be first */
 	loff_t			base_pos;	/* saved lower f_pos for readdir resume */
 	loff_t			dirent_off;	/* virtual offset at end of phase 1 */
+	struct dentry		*phase1_cursor;	/* in-list phase-1 cursor */
 };
 
 /* ── Accessor Macros ───────────────────────────────────────────────── */
