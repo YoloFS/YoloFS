@@ -5,17 +5,15 @@ use std::os::unix::fs::DirEntryExt;
 
 #[test]
 fn readdir() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
-            .expect("readdir")
-            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
-            .collect();
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
+        .expect("readdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
 
-        assert!(entries.contains(&"hello.txt".to_string()));
-        assert!(entries.contains(&"multi.txt".to_string()));
-        assert!(entries.contains(&"subdir".to_string()));
-    });
+    assert!(entries.contains(&"hello.txt".to_string()));
+    assert!(entries.contains(&"multi.txt".to_string()));
+    assert!(entries.contains(&"subdir".to_string()));
 }
 
 // ── readdir with staged changes (file.c: agfs_readdir) ──
@@ -23,41 +21,37 @@ fn readdir() {
 /// Newly created files should appear in readdir.
 #[test]
 fn readdir_shows_created_file() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::write(s.mnt_path("newfile.txt"), "new\n").expect("create");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::write(s.mnt_path("newfile.txt"), "new\n").expect("create");
 
-        let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
-            .expect("readdir")
-            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
-            .collect();
+    let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
+        .expect("readdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
 
-        assert!(
-            entries.contains(&"newfile.txt".to_string()),
-            "readdir should include newly created file, got: {entries:?}"
-        );
-        assert!(entries.contains(&"hello.txt".to_string()));
-    });
+    assert!(
+        entries.contains(&"newfile.txt".to_string()),
+        "readdir should include newly created file, got: {entries:?}"
+    );
+    assert!(entries.contains(&"hello.txt".to_string()));
 }
 
 /// Deleted files should be hidden from readdir.
 #[test]
 fn readdir_hides_deleted_file() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
-        let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
-            .expect("readdir")
-            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
-            .collect();
+    let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
+        .expect("readdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
 
-        assert!(
-            !entries.contains(&"hello.txt".to_string()),
-            "readdir should not include deleted file, got: {entries:?}"
-        );
-        assert!(entries.contains(&"multi.txt".to_string()));
-    });
+    assert!(
+        !entries.contains(&"hello.txt".to_string()),
+        "readdir should not include deleted file, got: {entries:?}"
+    );
+    assert!(entries.contains(&"multi.txt".to_string()));
 }
 
 /// After rename, readdir shows new name and hides old name.
@@ -65,87 +59,79 @@ fn readdir_hides_deleted_file() {
 /// discovers it when merging dirents + base.
 #[test]
 fn readdir_after_rename() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt")).expect("rename");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt")).expect("rename");
 
-        let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
-            .expect("readdir")
-            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
-            .collect();
+    let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
+        .expect("readdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
 
-        // Old name should be hidden (via renamed_children on parent)
-        assert!(
-            !entries.contains(&"hello.txt".to_string()),
-            "readdir should not include old name after rename, got: {entries:?}"
-        );
+    // Old name should be hidden (via renamed_children on parent)
+    assert!(
+        !entries.contains(&"hello.txt".to_string()),
+        "readdir should not include old name after rename, got: {entries:?}"
+    );
 
-        // New name should appear (staged stub)
-        assert!(
-            entries.contains(&"renamed.txt".to_string()),
-            "readdir should include renamed file, got: {entries:?}"
-        );
+    // New name should appear (staged stub)
+    assert!(
+        entries.contains(&"renamed.txt".to_string()),
+        "readdir should include renamed file, got: {entries:?}"
+    );
 
-        // Content still accessible via the new name
-        let content =
-            fs::read_to_string(s.mnt_path("renamed.txt")).expect("renamed file should be readable");
-        assert_eq!(content, "base content\n");
-    });
+    // Content still accessible via the new name
+    let content =
+        fs::read_to_string(s.mnt_path("renamed.txt")).expect("renamed file should be readable");
+    assert_eq!(content, "base content\n");
 }
 
 /// Newly created directories appear in readdir.
 #[test]
 fn readdir_shows_created_dir() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
-        let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
-            .expect("readdir")
-            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
-            .collect();
+    let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
+        .expect("readdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
 
-        assert!(
-            entries.contains(&"newdir".to_string()),
-            "readdir should include new directory, got: {entries:?}"
-        );
-    });
+    assert!(
+        entries.contains(&"newdir".to_string()),
+        "readdir should include new directory, got: {entries:?}"
+    );
 }
 
 /// readdir on a subdirectory lists its contents.
 #[test]
 fn readdir_subdir() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        let entries: Vec<String> = fs::read_dir(s.mnt_path("subdir"))
-            .expect("readdir subdir")
-            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
-            .collect();
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    let entries: Vec<String> = fs::read_dir(s.mnt_path("subdir"))
+        .expect("readdir subdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
 
-        assert!(
-            entries.contains(&"deep.txt".to_string()),
-            "readdir on subdir should list deep.txt, got: {entries:?}"
-        );
-    });
+    assert!(
+        entries.contains(&"deep.txt".to_string()),
+        "readdir on subdir should list deep.txt, got: {entries:?}"
+    );
 }
 
 /// readdir on a newly created dir with files inside it.
 #[test]
 fn readdir_new_dir_with_files() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
-        fs::write(s.mnt_path("newdir/a.txt"), "a\n").expect("write a");
-        fs::write(s.mnt_path("newdir/b.txt"), "b\n").expect("write b");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
+    fs::write(s.mnt_path("newdir/a.txt"), "a\n").expect("write a");
+    fs::write(s.mnt_path("newdir/b.txt"), "b\n").expect("write b");
 
-        let entries: Vec<String> = fs::read_dir(s.mnt_path("newdir"))
-            .expect("readdir newdir")
-            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
-            .collect();
+    let entries: Vec<String> = fs::read_dir(s.mnt_path("newdir"))
+        .expect("readdir newdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
 
-        assert!(entries.contains(&"a.txt".to_string()), "got: {entries:?}");
-        assert!(entries.contains(&"b.txt".to_string()), "got: {entries:?}");
-    });
+    assert!(entries.contains(&"a.txt".to_string()), "got: {entries:?}");
+    assert!(entries.contains(&"b.txt".to_string()), "got: {entries:?}");
 }
 
 // ── readdir d_type correctness ──
@@ -154,98 +140,90 @@ fn readdir_new_dir_with_files() {
 /// Overridden directories must report as directories, not regular files.
 #[test]
 fn readdir_dtype_dir() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::create_dir(s.mnt_path("dtype_dir")).expect("mkdir");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::create_dir(s.mnt_path("dtype_dir")).expect("mkdir");
 
-        for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
-            let entry = entry.expect("entry");
-            if entry.file_name() == "dtype_dir" {
-                let ft = entry.file_type().expect("file_type");
-                assert!(
-                    ft.is_dir(),
-                    "readdir d_type for created directory should be dir, got: {ft:?}"
-                );
-                return;
-            }
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "dtype_dir" {
+            let ft = entry.file_type().expect("file_type");
+            assert!(
+                ft.is_dir(),
+                "readdir d_type for created directory should be dir, got: {ft:?}"
+            );
+            return;
         }
-        panic!("dtype_dir not found in readdir");
-    });
+    }
+    panic!("dtype_dir not found in readdir");
 }
 
 /// Overridden symlinks must report as symlinks in readdir d_type.
 #[test]
 fn readdir_dtype_symlink() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        std::os::unix::fs::symlink("hello.txt", s.mnt_path("dtype_link")).expect("symlink");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    std::os::unix::fs::symlink("hello.txt", s.mnt_path("dtype_link")).expect("symlink");
 
-        for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
-            let entry = entry.expect("entry");
-            if entry.file_name() == "dtype_link" {
-                let ft = entry.file_type().expect("file_type");
-                assert!(
-                    ft.is_symlink(),
-                    "readdir d_type for created symlink should be symlink, got: {ft:?}"
-                );
-                return;
-            }
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "dtype_link" {
+            let ft = entry.file_type().expect("file_type");
+            assert!(
+                ft.is_symlink(),
+                "readdir d_type for created symlink should be symlink, got: {ft:?}"
+            );
+            return;
         }
-        panic!("dtype_link not found in readdir");
-    });
+    }
+    panic!("dtype_link not found in readdir");
 }
 
 /// Overridden regular files should still report as regular files.
 #[test]
 fn readdir_dtype_file() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::write(s.mnt_path("dtype_file.txt"), "data\n").expect("create");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::write(s.mnt_path("dtype_file.txt"), "data\n").expect("create");
 
-        for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
-            let entry = entry.expect("entry");
-            if entry.file_name() == "dtype_file.txt" {
-                let ft = entry.file_type().expect("file_type");
-                assert!(
-                    ft.is_file(),
-                    "readdir d_type for created file should be file, got: {ft:?}"
-                );
-                return;
-            }
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "dtype_file.txt" {
+            let ft = entry.file_type().expect("file_type");
+            assert!(
+                ft.is_file(),
+                "readdir d_type for created file should be file, got: {ft:?}"
+            );
+            return;
         }
-        panic!("dtype_file.txt not found in readdir");
-    });
+    }
+    panic!("dtype_file.txt not found in readdir");
 }
 
 #[test]
 fn readdir_many_files() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::create_dir(s.mnt_path("bigdir")).expect("mkdir");
-        for i in 0..100 {
-            fs::write(
-                s.mnt_path(&format!("bigdir/file_{i:03}.txt")),
-                format!("content {i}\n"),
-            )
-            .expect("write");
-        }
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::create_dir(s.mnt_path("bigdir")).expect("mkdir");
+    for i in 0..100 {
+        fs::write(
+            s.mnt_path(&format!("bigdir/file_{i:03}.txt")),
+            format!("content {i}\n"),
+        )
+        .expect("write");
+    }
 
-        let entries: Vec<String> = fs::read_dir(s.mnt_path("bigdir"))
-            .expect("readdir")
-            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
-            .collect();
+    let entries: Vec<String> = fs::read_dir(s.mnt_path("bigdir"))
+        .expect("readdir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
 
-        assert_eq!(
-            entries.len(),
-            100,
-            "expected 100 entries, got {}",
-            entries.len()
-        );
-        for i in 0..100 {
-            let name = format!("file_{i:03}.txt");
-            assert!(entries.contains(&name), "missing {name} in readdir");
-        }
-    });
+    assert_eq!(
+        entries.len(),
+        100,
+        "expected 100 entries, got {}",
+        entries.len()
+    );
+    for i in 0..100 {
+        let name = format!("file_{i:03}.txt");
+        assert!(entries.contains(&name), "missing {name} in readdir");
+    }
 }
 
 // ── readdir inode number correctness ──
@@ -255,20 +233,18 @@ fn readdir_many_files() {
 /// entries, which caused some kernels to silently drop the entry.
 #[test]
 fn readdir_created_file_has_nonzero_ino() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::write(s.mnt_path("newfile.txt"), "data\n").expect("create");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::write(s.mnt_path("newfile.txt"), "data\n").expect("create");
 
-        for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
-            let entry = entry.expect("entry");
-            if entry.file_name() == "newfile.txt" {
-                let ino = entry.ino();
-                assert_ne!(ino, 0, "staged file should have non-zero ino in readdir");
-                return;
-            }
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "newfile.txt" {
+            let ino = entry.ino();
+            assert_ne!(ino, 0, "staged file should have non-zero ino in readdir");
+            return;
         }
-        panic!("newfile.txt not found in readdir");
-    });
+    }
+    panic!("newfile.txt not found in readdir");
 }
 
 /// A renamed file must have a non-zero inode number in readdir.
@@ -276,20 +252,18 @@ fn readdir_created_file_has_nonzero_ino() {
 /// dir_emit because de->ino is 0 for redirects.
 #[test]
 fn readdir_renamed_file_has_nonzero_ino() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt")).expect("rename");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt")).expect("rename");
 
-        for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
-            let entry = entry.expect("entry");
-            if entry.file_name() == "renamed.txt" {
-                let ino = entry.ino();
-                assert_ne!(ino, 0, "renamed file should have non-zero ino in readdir");
-                return;
-            }
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "renamed.txt" {
+            let ino = entry.ino();
+            assert_ne!(ino, 0, "renamed file should have non-zero ino in readdir");
+            return;
         }
-        panic!("renamed.txt not found in readdir");
-    });
+    }
+    panic!("renamed.txt not found in readdir");
 }
 
 // ── d_type after rename (link dirent encoding) ──
@@ -298,86 +272,80 @@ fn readdir_renamed_file_has_nonzero_ino() {
 /// This exercises the link variant's d_type encoding.
 #[test]
 fn readdir_dtype_renamed_file() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::rename(s.mnt_path("hello.txt"), s.mnt_path("link_file.txt")).expect("rename");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("link_file.txt")).expect("rename");
 
-        for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
-            let entry = entry.expect("entry");
-            if entry.file_name() == "link_file.txt" {
-                let ft = entry.file_type().expect("file_type");
-                assert!(
-                    ft.is_file(),
-                    "renamed (link) file should have d_type = file, got: {ft:?}"
-                );
-                return;
-            }
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "link_file.txt" {
+            let ft = entry.file_type().expect("file_type");
+            assert!(
+                ft.is_file(),
+                "renamed (link) file should have d_type = file, got: {ft:?}"
+            );
+            return;
         }
-        panic!("link_file.txt not found in readdir");
-    });
+    }
+    panic!("link_file.txt not found in readdir");
 }
 
 /// A renamed directory should still report as a directory.
 /// This exercises the link variant's d_type encoding for directories.
 #[test]
 fn readdir_dtype_renamed_dir() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::rename(s.mnt_path("subdir"), s.mnt_path("link_dir")).expect("rename dir");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::rename(s.mnt_path("subdir"), s.mnt_path("link_dir")).expect("rename dir");
 
-        for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
-            let entry = entry.expect("entry");
-            if entry.file_name() == "link_dir" {
-                let ft = entry.file_type().expect("file_type");
-                assert!(
-                    ft.is_dir(),
-                    "renamed (link) directory should have d_type = dir, got: {ft:?}"
-                );
-                return;
-            }
+    for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
+        let entry = entry.expect("entry");
+        if entry.file_name() == "link_dir" {
+            let ft = entry.file_type().expect("file_type");
+            assert!(
+                ft.is_dir(),
+                "renamed (link) directory should have d_type = dir, got: {ft:?}"
+            );
+            return;
         }
-        panic!("link_dir not found in readdir");
-    });
+    }
+    panic!("link_dir not found in readdir");
 }
 
 /// All three d_types in one directory: regular, directory, symlink.
 /// Verifies the 2-bit d_type encoding handles all variants correctly.
 #[test]
 fn readdir_dtype_all_three_types() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        fs::create_dir(s.mnt_path("typedir")).expect("mkdir container");
-        fs::write(s.mnt_path("typedir/reg.txt"), "regular\n").expect("create regular");
-        fs::create_dir(s.mnt_path("typedir/sub")).expect("mkdir sub");
-        std::os::unix::fs::symlink("reg.txt", s.mnt_path("typedir/lnk")).expect("symlink");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    fs::create_dir(s.mnt_path("typedir")).expect("mkdir container");
+    fs::write(s.mnt_path("typedir/reg.txt"), "regular\n").expect("create regular");
+    fs::create_dir(s.mnt_path("typedir/sub")).expect("mkdir sub");
+    std::os::unix::fs::symlink("reg.txt", s.mnt_path("typedir/lnk")).expect("symlink");
 
-        let mut found = [false; 3]; // [regular, directory, symlink]
+    let mut found = [false; 3]; // [regular, directory, symlink]
 
-        for entry in fs::read_dir(s.mnt_path("typedir")).expect("readdir") {
-            let entry = entry.expect("entry");
-            let ft = entry.file_type().expect("file_type");
-            let name = entry.file_name().to_string_lossy().to_string();
+    for entry in fs::read_dir(s.mnt_path("typedir")).expect("readdir") {
+        let entry = entry.expect("entry");
+        let ft = entry.file_type().expect("file_type");
+        let name = entry.file_name().to_string_lossy().to_string();
 
-            match name.as_str() {
-                "reg.txt" => {
-                    assert!(ft.is_file(), "reg.txt should be file, got: {ft:?}");
-                    found[0] = true;
-                }
-                "sub" => {
-                    assert!(ft.is_dir(), "sub should be dir, got: {ft:?}");
-                    found[1] = true;
-                }
-                "lnk" => {
-                    assert!(ft.is_symlink(), "lnk should be symlink, got: {ft:?}");
-                    found[2] = true;
-                }
-                _ => panic!("unexpected entry: {name}"),
+        match name.as_str() {
+            "reg.txt" => {
+                assert!(ft.is_file(), "reg.txt should be file, got: {ft:?}");
+                found[0] = true;
             }
+            "sub" => {
+                assert!(ft.is_dir(), "sub should be dir, got: {ft:?}");
+                found[1] = true;
+            }
+            "lnk" => {
+                assert!(ft.is_symlink(), "lnk should be symlink, got: {ft:?}");
+                found[2] = true;
+            }
+            _ => panic!("unexpected entry: {name}"),
         }
-        assert!(found[0], "reg.txt not found in readdir");
-        assert!(found[1], "sub not found in readdir");
-        assert!(found[2], "lnk not found in readdir");
-    });
+    }
+    assert!(found[0], "reg.txt not found in readdir");
+    assert!(found[1], "sub not found in readdir");
+    assert!(found[2], "lnk not found in readdir");
 }
 
 // ── small-buffer getdents64 tests (exercises multi-call readdir) ──
@@ -442,31 +410,29 @@ fn readdir_small_buf(path: &std::path::Path) -> (Vec<String>, usize) {
 /// With a small getdents64 buffer, this makes many kernel re-entries.
 #[test]
 fn readdir_small_buf_base_only() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        let dir = s.mnt_path("basedir");
-        // Create files in the base layer by writing to the host path.
-        let host_dir = s.base_path("basedir");
-        fs::create_dir(&host_dir).expect("mkdir host");
-        let mut expected = BTreeSet::new();
-        for i in 0..30 {
-            let name = format!("f-{i:03}.txt");
-            fs::write(host_dir.join(&name), "x").expect("write");
-            expected.insert(name);
-        }
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    let dir = s.mnt_path("basedir");
+    // Create files in the base layer by writing to the host path.
+    let host_dir = s.base_path("basedir");
+    fs::create_dir(&host_dir).expect("mkdir host");
+    let mut expected = BTreeSet::new();
+    for i in 0..30 {
+        let name = format!("f-{i:03}.txt");
+        fs::write(host_dir.join(&name), "x").expect("write");
+        expected.insert(name);
+    }
 
-        let (names, calls) = readdir_small_buf(&dir);
-        assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
-        assert_eq!(
-            names.len(),
-            expected.len(),
-            "base-only: duplicate or missing entries (got {} names for {} expected)",
-            names.len(),
-            expected.len()
-        );
-        let got: BTreeSet<String> = names.into_iter().collect();
-        assert_eq!(got, expected, "base-only small-buf readdir mismatch");
-    });
+    let (names, calls) = readdir_small_buf(&dir);
+    assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
+    assert_eq!(
+        names.len(),
+        expected.len(),
+        "base-only: duplicate or missing entries (got {} names for {} expected)",
+        names.len(),
+        expected.len()
+    );
+    let got: BTreeSet<String> = names.into_iter().collect();
+    assert_eq!(got, expected, "base-only small-buf readdir mismatch");
 }
 
 /// Mixed directory: base files + staged creates + staged deletes.
@@ -477,76 +443,72 @@ fn readdir_small_buf_base_only() {
 /// Phase 1, preventing double-skip of base entries on resumed getdents64.
 #[test]
 fn readdir_small_buf_mixed() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        // Base layer: 20 files
-        let host_dir = s.base_path("mixdir");
-        fs::create_dir(&host_dir).expect("mkdir host");
-        let mut expected = BTreeSet::new();
-        for i in 0..20 {
-            let name = format!("base-{i:03}.txt");
-            fs::write(host_dir.join(&name), "x").expect("write base");
-            expected.insert(name);
-        }
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    // Base layer: 20 files
+    let host_dir = s.base_path("mixdir");
+    fs::create_dir(&host_dir).expect("mkdir host");
+    let mut expected = BTreeSet::new();
+    for i in 0..20 {
+        let name = format!("base-{i:03}.txt");
+        fs::write(host_dir.join(&name), "x").expect("write base");
+        expected.insert(name);
+    }
 
-        let dir = s.mnt_path("mixdir");
+    let dir = s.mnt_path("mixdir");
 
-        // Stage: create 10 new files
-        for i in 0..10 {
-            let name = format!("new-{i:03}.txt");
-            fs::write(dir.join(&name), "y").expect("write staged");
-            expected.insert(name);
-        }
+    // Stage: create 10 new files
+    for i in 0..10 {
+        let name = format!("new-{i:03}.txt");
+        fs::write(dir.join(&name), "y").expect("write staged");
+        expected.insert(name);
+    }
 
-        // Stage: delete 5 base files
-        for i in 0..5 {
-            let name = format!("base-{i:03}.txt");
-            fs::remove_file(dir.join(&name)).expect("unlink");
-            expected.remove(&name);
-        }
+    // Stage: delete 5 base files
+    for i in 0..5 {
+        let name = format!("base-{i:03}.txt");
+        fs::remove_file(dir.join(&name)).expect("unlink");
+        expected.remove(&name);
+    }
 
-        let (names, calls) = readdir_small_buf(&dir);
-        assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
-        assert_eq!(
-            names.len(),
-            expected.len(),
-            "mixed: duplicate or missing entries (got {} names for {} expected)",
-            names.len(),
-            expected.len()
-        );
-        let got: BTreeSet<String> = names.into_iter().collect();
-        assert_eq!(got, expected, "mixed small-buf readdir mismatch");
-    });
+    let (names, calls) = readdir_small_buf(&dir);
+    assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
+    assert_eq!(
+        names.len(),
+        expected.len(),
+        "mixed: duplicate or missing entries (got {} names for {} expected)",
+        names.len(),
+        expected.len()
+    );
+    let got: BTreeSet<String> = names.into_iter().collect();
+    assert_eq!(got, expected, "mixed small-buf readdir mismatch");
 }
 
 /// Staged-only directory: no base entries, all dirents.
 /// Exercises the merge path where phase 2 has nothing to emit.
 #[test]
 fn readdir_small_buf_staged_only() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        let dir = s.mnt_path("stagedir");
-        fs::create_dir(&dir).expect("mkdir");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    let dir = s.mnt_path("stagedir");
+    fs::create_dir(&dir).expect("mkdir");
 
-        let mut expected = BTreeSet::new();
-        for i in 0..25 {
-            let name = format!("s-{i:03}.txt");
-            fs::write(dir.join(&name), "z").expect("write");
-            expected.insert(name);
-        }
+    let mut expected = BTreeSet::new();
+    for i in 0..25 {
+        let name = format!("s-{i:03}.txt");
+        fs::write(dir.join(&name), "z").expect("write");
+        expected.insert(name);
+    }
 
-        let (names, calls) = readdir_small_buf(&dir);
-        assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
-        assert_eq!(
-            names.len(),
-            expected.len(),
-            "staged-only: duplicate or missing entries (got {} names for {} expected)",
-            names.len(),
-            expected.len()
-        );
-        let got: BTreeSet<String> = names.into_iter().collect();
-        assert_eq!(got, expected, "staged-only small-buf readdir mismatch");
-    });
+    let (names, calls) = readdir_small_buf(&dir);
+    assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
+    assert_eq!(
+        names.len(),
+        expected.len(),
+        "staged-only: duplicate or missing entries (got {} names for {} expected)",
+        names.len(),
+        expected.len()
+    );
+    let got: BTreeSet<String> = names.into_iter().collect();
+    assert_eq!(got, expected, "staged-only small-buf readdir mismatch");
 }
 
 /// All-tombstone directory: base files all deleted, no staged creates.
@@ -555,31 +517,28 @@ fn readdir_small_buf_staged_only() {
 /// double-skipping base entries in Phase 2.
 #[test]
 fn readdir_small_buf_all_tombstones() {
-    let s = AgfsSession::new().expect("session setup");
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    // Base layer: 15 files.
+    let host_dir = s.base_path("tombdir");
+    fs::create_dir(&host_dir).expect("mkdir host");
+    for i in 0..15 {
+        fs::write(host_dir.join(format!("base-{i:03}.txt")), "x").expect("write base");
+    }
 
-    s.run_in_namespace(|| {
-        // Base layer: 15 files.
-        let host_dir = s.base_path("tombdir");
-        fs::create_dir(&host_dir).expect("mkdir host");
-        for i in 0..15 {
-            fs::write(host_dir.join(format!("base-{i:03}.txt")), "x").expect("write base");
-        }
+    let dir = s.mnt_path("tombdir");
 
-        let dir = s.mnt_path("tombdir");
+    // Delete all 15 base files through the mount (creates 15 tombstones).
+    for i in 0..15 {
+        fs::remove_file(dir.join(format!("base-{i:03}.txt"))).expect("unlink");
+    }
 
-        // Delete all 15 base files through the mount (creates 15 tombstones).
-        for i in 0..15 {
-            fs::remove_file(dir.join(format!("base-{i:03}.txt"))).expect("unlink");
-        }
-
-        // readdir should return zero entries (all base entries overridden by
-        // tombstones, no staged creates).
-        let (names, _calls) = readdir_small_buf(&dir);
-        assert!(
-            names.is_empty(),
-            "all-tombstone dir should be empty, got: {names:?}"
-        );
-    });
+    // readdir should return zero entries (all base entries overridden by
+    // tombstones, no staged creates).
+    let (names, _calls) = readdir_small_buf(&dir);
+    assert!(
+        names.is_empty(),
+        "all-tombstone dir should be empty, got: {names:?}"
+    );
 }
 
 /// Few staged entries + many base entries: the phase 1→2 boundary
@@ -587,37 +546,35 @@ fn readdir_small_buf_all_tombstones() {
 /// resumption into phase 2 after phase 1 has been fully emitted.
 #[test]
 fn readdir_small_buf_few_staged_many_base() {
-    let s = AgfsSession::new().expect("session setup");
-    s.run_in_namespace(|| {
-        // Base layer: 28 files
-        let host_dir = s.base_path("fewstage");
-        fs::create_dir(&host_dir).expect("mkdir host");
-        let mut expected = BTreeSet::new();
-        for i in 0..28 {
-            let name = format!("base-{i:03}.txt");
-            fs::write(host_dir.join(&name), "x").expect("write base");
-            expected.insert(name);
-        }
+    let Some(s) = AgfsSession::new().expect("session setup") else { return };
+    // Base layer: 28 files
+    let host_dir = s.base_path("fewstage");
+    fs::create_dir(&host_dir).expect("mkdir host");
+    let mut expected = BTreeSet::new();
+    for i in 0..28 {
+        let name = format!("base-{i:03}.txt");
+        fs::write(host_dir.join(&name), "x").expect("write base");
+        expected.insert(name);
+    }
 
-        let dir = s.mnt_path("fewstage");
+    let dir = s.mnt_path("fewstage");
 
-        // Stage: create only 2 new files (phase 1 is tiny)
-        for i in 0..2 {
-            let name = format!("new-{i}.txt");
-            fs::write(dir.join(&name), "y").expect("write staged");
-            expected.insert(name);
-        }
+    // Stage: create only 2 new files (phase 1 is tiny)
+    for i in 0..2 {
+        let name = format!("new-{i}.txt");
+        fs::write(dir.join(&name), "y").expect("write staged");
+        expected.insert(name);
+    }
 
-        let (names, calls) = readdir_small_buf(&dir);
-        assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
-        assert_eq!(
-            names.len(),
-            expected.len(),
-            "few-staged: duplicate or missing entries (got {} names for {} expected)",
-            names.len(),
-            expected.len()
-        );
-        let got: BTreeSet<String> = names.into_iter().collect();
-        assert_eq!(got, expected, "few-staged small-buf readdir mismatch");
-    });
+    let (names, calls) = readdir_small_buf(&dir);
+    assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
+    assert_eq!(
+        names.len(),
+        expected.len(),
+        "few-staged: duplicate or missing entries (got {} names for {} expected)",
+        names.len(),
+        expected.len()
+    );
+    let got: BTreeSet<String> = names.into_iter().collect();
+    assert_eq!(got, expected, "few-staged small-buf readdir mismatch");
 }

@@ -2,28 +2,28 @@ use crate::helpers::AgfsSession;
 
 #[test]
 fn run_success_exit_code_zero() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let code = session.run_in_sandbox(&["true"]).unwrap();
     assert_eq!(code, 0, "successful command should return exit code 0");
 }
 
 #[test]
 fn run_failure_exit_code_propagated() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let code = session.run_in_sandbox(&["false"]).unwrap();
     assert_eq!(code, 1, "`false` should return exit code 1");
 }
 
 #[test]
 fn run_custom_exit_code() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let code = session.run_in_sandbox(&["sh", "-c", "exit 42"]).unwrap();
     assert_eq!(code, 42, "exit 42 should propagate as exit code 42");
 }
 
 #[test]
 fn run_command_not_found() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let code = session.run_in_sandbox(&["nonexistent_cmd_xyz"]).unwrap();
     assert_ne!(
         code, 0,
@@ -33,7 +33,7 @@ fn run_command_not_found() {
 
 #[test]
 fn run_shell_pipe() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let chroot_path = session.root.join("hello.txt");
     let code = session
         .run_in_sandbox(&[
@@ -47,7 +47,7 @@ fn run_shell_pipe() {
 
 #[test]
 fn run_shell_quotes() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let chroot_path = session.root.join("hello.txt");
     let code = session
         .run_in_sandbox(&[
@@ -61,7 +61,7 @@ fn run_shell_quotes() {
 
 #[test]
 fn run_reads_file_through_mount() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let chroot_path = session.root.join("hello.txt");
     let code = session
         .run_in_sandbox(&["cat", chroot_path.to_str().unwrap()])
@@ -75,7 +75,7 @@ fn run_reads_file_through_mount() {
 /// Writing to a file via absolute path inside the sandbox should succeed.
 #[test]
 fn run_write_file_absolute_path() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let target = session.root.join("exec_output.txt");
     let code = session
         .run_in_sandbox(&["sh", "-c", &format!("echo hello > {}", target.display())])
@@ -87,7 +87,7 @@ fn run_write_file_absolute_path() {
 /// The cwd after pivot_root+chdir is the session root directory.
 #[test]
 fn run_write_file_relative_path() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let code = session
         .run_in_sandbox(&["sh", "-c", "echo hello > relative_test.txt"])
         .unwrap();
@@ -99,7 +99,7 @@ fn run_write_file_relative_path() {
 
 #[test]
 fn run_env_var_propagated() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     // AGFS_SESSION is always set by exec.rs — verify the sandbox sees it
     let code = session
         .run_in_sandbox(&["sh", "-c", "test -n \"$AGFS_SESSION\""])
@@ -109,7 +109,7 @@ fn run_env_var_propagated() {
 
 #[test]
 fn run_stderr_output() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let code = session
         .run_in_sandbox(&["sh", "-c", "echo err >&2"])
         .unwrap();
@@ -119,7 +119,7 @@ fn run_stderr_output() {
 /// Verify modified file is visible inside the sandbox.
 #[test]
 fn run_reads_modified_file() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let target = session.root.join("hello.txt");
     // Write through agfs exec
     let code = session
@@ -139,7 +139,7 @@ fn run_reads_modified_file() {
 
 #[test]
 fn run_multiple_commands_sequentially() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let target = session.root.join("seq_test.txt");
 
     let code1 = session
@@ -156,7 +156,7 @@ fn run_multiple_commands_sequentially() {
 /// Auto-checkpoint is skipped when the exec command produces no changes.
 #[test]
 fn run_no_changes_skips_checkpoint() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let before = session.cli(&["timeline"]).expect("timeline before");
     let before_count = before.matches("checkpoint").count();
 
@@ -176,7 +176,7 @@ fn run_no_changes_skips_checkpoint() {
 /// Auto-checkpoint is created when the exec command makes changes.
 #[test]
 fn run_with_changes_creates_checkpoint() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let before = session.cli(&["timeline"]).expect("timeline before");
     let before_count = before.matches("checkpoint [").count();
 

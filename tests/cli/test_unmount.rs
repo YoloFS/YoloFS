@@ -3,7 +3,7 @@ use std::process::{Command, Stdio};
 
 #[test]
 fn unmount_command_cleans_up() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     let agfs_dir = session.root.join(".agfs");
 
     assert!(agfs_dir.join("mnt").exists(), "mnt exists before unmount");
@@ -17,71 +17,63 @@ fn unmount_command_cleans_up() {
 
 #[test]
 fn double_mount_is_idempotent() {
-    let session = AgfsSession::new().expect("session setup");
-    session.run_in_namespace(|| {
-        let (ok, _, stderr) = session.cli_output(&["mount"]).unwrap();
-        assert!(ok, "second mount should succeed (idempotent): {stderr}");
-    });
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
+    let (ok, _, stderr) = session.cli_output(&["mount"]).unwrap();
+    assert!(ok, "second mount should succeed (idempotent): {stderr}");
 }
 
 #[test]
 fn cwd_symlink_created() {
-    let session = AgfsSession::new().expect("session setup");
-    session.run_in_namespace(|| {
-        let cwd_link = session.root.join(".agfs/cwd");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
+    let cwd_link = session.root.join(".agfs/cwd");
 
-        assert!(
-            cwd_link
-                .symlink_metadata()
-                .unwrap()
-                .file_type()
-                .is_symlink(),
-            ".agfs/cwd should be a symlink"
-        );
+    assert!(
+        cwd_link
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        ".agfs/cwd should be a symlink"
+    );
 
-        let target = std::fs::read_link(&cwd_link).unwrap();
-        let expected_suffix = session.root.strip_prefix("/").unwrap();
-        assert!(
-            target.ends_with(expected_suffix),
-            "symlink target {target:?} should end with {expected_suffix:?}"
-        );
-    });
+    let target = std::fs::read_link(&cwd_link).unwrap();
+    let expected_suffix = session.root.strip_prefix("/").unwrap();
+    assert!(
+        target.ends_with(expected_suffix),
+        "symlink target {target:?} should end with {expected_suffix:?}"
+    );
 }
 
 #[test]
 fn pseudofs_mounted() {
-    let session = AgfsSession::new().expect("session setup");
-    session.run_in_namespace(|| {
-        // /proc and /dev should be visible inside the mount
-        for name in &["proc", "dev"] {
-            let path = session.mnt.join(name);
-            assert!(path.exists(), "{name} should exist in mount");
-            assert!(path.is_dir(), "{name} should be a directory");
-        }
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
+    // /proc and /dev should be visible inside the mount
+    for name in &["proc", "dev"] {
+        let path = session.mnt.join(name);
+        assert!(path.exists(), "{name} should exist in mount");
+        assert!(path.is_dir(), "{name} should be a directory");
+    }
 
-        // /proc/1 should be accessible (the daemon is PID 1 in the PID namespace;
-        // confirms a real procfs is mounted, not just an empty dir)
-        let proc_1 = session.mnt.join("proc/1");
-        assert!(
-            proc_1.exists(),
-            "/proc/1 should be accessible (daemon is PID 1 in PID namespace)"
-        );
+    // /proc/1 should be accessible (the daemon is PID 1 in the PID namespace;
+    // confirms a real procfs is mounted, not just an empty dir)
+    let proc_1 = session.mnt.join("proc/1");
+    assert!(
+        proc_1.exists(),
+        "/proc/1 should be accessible (daemon is PID 1 in PID namespace)"
+    );
 
-        // /dev/null should be accessible (confirms device nodes are set up)
-        let dev_null = session.mnt.join("dev/null");
-        assert!(dev_null.exists(), "/dev/null should be accessible");
-    });
+    // /dev/null should be accessible (confirms device nodes are set up)
+    let dev_null = session.mnt.join("dev/null");
+    assert!(dev_null.exists(), "/dev/null should be accessible");
 }
 
 #[test]
 fn unmount_cleans_up_pseudofs() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
 
     // Verify proc is mounted (from inside namespace)
-    session.run_in_namespace(|| {
-        let mnt = session.root.join(".agfs/mnt");
-        assert!(mnt.join("proc/1").exists(), "proc should be mounted");
-    });
+    let mnt = session.root.join(".agfs/mnt");
+    assert!(mnt.join("proc/1").exists(), "proc should be mounted");
 
     // Unmount from host (signals daemon to shut down)
     let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
@@ -99,7 +91,7 @@ fn unmount_cleans_up_pseudofs() {
 #[test]
 #[ignore = "busy-mount detection moved to namespace daemon lifecycle"]
 fn unmount_reports_blocking_process() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
 
     // Spawn a blocker inside the namespace via agfs exec. It holds a file
     // open and sleeps. We run it in the background so we can attempt

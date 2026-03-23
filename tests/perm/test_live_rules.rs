@@ -9,17 +9,15 @@ use std::fs;
 /// when reopened. The perm_gen fix ensures new inodes get re-resolved.
 #[test]
 fn newly_created_file_checked_on_reopen() {
-    let mut s = AgfsSession::new_with_config(Config {
+    let Some(mut s) = AgfsSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
         ..Default::default()
     })
-    .expect("session setup");
+    .expect("session setup") else { return };
 
     // Phase 1: create a file in the sandbox
-    s.run_in_namespace(|| {
-        fs::write(s.mnt_path("newfile.txt"), "hello").expect("create should succeed");
-    });
+    fs::write(s.mnt_path("newfile.txt"), "hello").expect("create should succeed");
 
     // Phase 2: unmount + change rules + remount (from host)
     s.cli(&["unmount", "--force"]).unwrap();
@@ -55,48 +53,42 @@ fn newly_created_file_checked_on_reopen() {
 /// on subsequent opens (perm_gen increment forces cache re-resolution).
 #[test]
 fn live_rule_change_takes_effect() {
-    let s = AgfsSession::new_with_config(Config {
+    let Some(s) = AgfsSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
-    .expect("session setup");
+    .expect("session setup") else { return };
+    let result = fs::read_to_string(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "read should fail under deny");
 
-    s.run_in_namespace(|| {
-        let result = fs::read_to_string(s.mnt_path("hello.txt"));
-        assert!(result.is_err(), "read should fail under deny");
+    // `rule add` takes a host path and resolves it through the mount internally.
+    s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"])
+        .unwrap();
 
-        // `rule add` takes a host path and resolves it through the mount internally.
-        s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"])
-            .unwrap();
-
-        let content = fs::read_to_string(s.mnt_path("hello.txt"))
-            .expect("read should succeed after live rule add");
-        assert_eq!(content, "base content\n");
-    });
+    let content = fs::read_to_string(s.mnt_path("hello.txt"))
+        .expect("read should succeed after live rule add");
+    assert_eq!(content, "base content\n");
 }
 
 /// Removing a rule at runtime should re-gate access.
 #[test]
 fn live_rule_remove_reapplies_gating() {
-    let s = AgfsSession::new_with_config(Config {
+    let Some(s) = AgfsSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })
-    .expect("session setup");
+    .expect("session setup") else { return };
+    s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"])
+        .unwrap();
+    fs::read_to_string(s.mnt_path("hello.txt"))
+        .expect("read should succeed with allow-rw rule");
 
-    s.run_in_namespace(|| {
-        s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"])
-            .unwrap();
-        fs::read_to_string(s.mnt_path("hello.txt"))
-            .expect("read should succeed with allow-rw rule");
-
-        s.cli(&["rule", "remove", &s.root.display().to_string()])
-            .unwrap();
-        let result = fs::read_to_string(s.mnt_path("hello.txt"));
-        assert!(result.is_err(), "read should fail after rule removal");
-    });
+    s.cli(&["rule", "remove", &s.root.display().to_string()])
+        .unwrap();
+    let result = fs::read_to_string(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "read should fail after rule removal");
 }
 
 // ── Rename across permission boundaries ──
@@ -106,19 +98,17 @@ fn live_rule_remove_reapplies_gating() {
 /// invalidation.
 #[test]
 fn rename_across_permission_boundary() {
-    let mut s = AgfsSession::new_with_config(Config {
+    let Some(mut s) = AgfsSession::new_with_config(Config {
         permission: false,
         rules: BTreeMap::new(),
         ..Default::default()
     })
-    .expect("session setup");
+    .expect("session setup") else { return };
 
     // Phase 1: create base files in the namespace
-    s.run_in_namespace(|| {
-        fs::create_dir_all(s.root.join("allowed")).expect("mkdir allowed");
-        fs::create_dir_all(s.root.join("denied")).expect("mkdir denied");
-        fs::write(s.root.join("allowed/file.txt"), "content\n").expect("create file");
-    });
+    fs::create_dir_all(s.root.join("allowed")).expect("mkdir allowed");
+    fs::create_dir_all(s.root.join("denied")).expect("mkdir denied");
+    fs::write(s.root.join("allowed/file.txt"), "content\n").expect("create file");
 
     // Phase 2: unmount + configure rules + remount (from host)
     s.cli(&["unmount"]).unwrap();

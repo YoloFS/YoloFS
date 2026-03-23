@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 #[test]
 fn apply_rules_shows_results() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     // Unmount from host, change config, remount from host
     session.cli(&["unmount"]).unwrap();
     Config {
@@ -34,7 +34,7 @@ fn apply_rules_shows_results() {
 
 #[test]
 fn apply_rules_rejects_invalid_toml() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     session.cli(&["unmount"]).unwrap();
     std::fs::write(
         session.root.join("agfs.toml"),
@@ -57,7 +57,7 @@ fn apply_rules_rejects_invalid_toml() {
 
 #[test]
 fn rule_add_persists_offline() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     // Unmount from host so rule add runs offline
     session.cli(&["unmount"]).unwrap();
     Config {
@@ -82,7 +82,7 @@ fn rule_add_persists_offline() {
 
 #[test]
 fn tilde_rule_resolves_to_home() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     session.cli(&["unmount"]).unwrap();
     std::fs::write(
         session.root.join("agfs.toml"),
@@ -108,7 +108,7 @@ fn tilde_rule_resolves_to_home() {
 
 #[test]
 fn nonexistent_rule_path_warns() {
-    let session = AgfsSession::new().expect("session setup");
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
     session.cli(&["unmount"]).unwrap();
     std::fs::write(
         session.root.join("agfs.toml"),

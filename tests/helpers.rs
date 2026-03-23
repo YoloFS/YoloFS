@@ -21,11 +21,32 @@ pub struct AgfsSession {
     mounted: bool,
     cursor: Option<kmsg::KmsgCursor>,
     daemon_pid: Option<u32>,
+    in_child_process: bool,
 }
 
 impl AgfsSession {
     /// Create a new test session with a custom agfs.toml config.
-    pub fn new_with_config(config: Config) -> Result<Self> {
+    ///
+    /// Returns `Some(session)` in the child process (inside the daemon's
+    /// namespace) and `None` in the parent (test-harness thread). Callers
+    /// should use `let Some(s) = … else { return };` so the parent
+    /// short-circuits while the child runs the test body.
+    pub fn new_with_config(config: Config) -> Result<Option<Self>> {
+        let session = Self::new_internal(config)?;
+        session.fork_into_namespace()
+    }
+
+    /// Create a new test session: seed files, write agfs.toml, `agfs mount`.
+    pub fn new() -> Result<Option<Self>> {
+        Self::new_with_config(Config {
+            permission: false,
+            ..Default::default()
+        })
+    }
+
+    /// Set up the temp directory, seed files, mount the daemon. Does NOT
+    /// fork — the caller is still in the host namespace.
+    fn new_internal(config: Config) -> Result<Self> {
         let root = tempfile::tempdir().context("creating temp dir")?.keep();
 
         // Seed base test files
@@ -48,17 +69,10 @@ impl AgfsSession {
             mounted: false,
             cursor: None,
             daemon_pid: None,
+            in_child_process: false,
         };
         session.mount()?;
         Ok(session)
-    }
-
-    /// Create a new test session: seed files, write agfs.toml, `agfs mount`.
-    pub fn new() -> Result<Self> {
-        Self::new_with_config(Config {
-            permission: false,
-            ..Default::default()
-        })
     }
 
     fn mount(&mut self) -> Result<()> {
@@ -91,12 +105,76 @@ impl AgfsSession {
     }
 
     /// Re-read the daemon PID from .agfs/pid. Call this after unmount+remount
-    /// from the host to update the stored PID for run_in_namespace().
+    /// to update the stored PID for run_in_namespace().
     pub fn refresh_daemon_pid(&mut self) -> Result<()> {
         let pid_str = std::fs::read_to_string(self.root.join(".agfs/pid"))
             .context("reading .agfs/pid after remount")?;
         self.daemon_pid = Some(pid_str.trim().parse().context("parsing daemon pid")?);
         Ok(())
+    }
+
+    /// Fork and enter the daemon's user + mount namespace.
+    ///
+    /// - **Child**: setns into the daemon, returns `Ok(Some(self))`.
+    /// - **Parent**: waits for the child to exit, returns `Ok(None)`.
+    ///   The parent's copy of `self` is dropped normally (unmount, cleanup).
+    fn fork_into_namespace(mut self) -> Result<Option<Self>> {
+        let pid = self.daemon_pid.expect("daemon not running");
+
+        match unsafe { libc::fork() } {
+            -1 => panic!("fork failed: {}", std::io::Error::last_os_error()),
+            0 => {
+                // Child: setns into daemon's namespace, then return.
+                unsafe {
+                    let user_ns = std::ffi::CString::new(format!("/proc/{pid}/ns/user")).unwrap();
+                    let fd = libc::open(user_ns.as_ptr(), libc::O_RDONLY);
+                    if fd < 0 || libc::setns(fd, libc::CLONE_NEWUSER) != 0 {
+                        libc::_exit(99);
+                    }
+                    libc::close(fd);
+
+                    let mnt_ns = std::ffi::CString::new(format!("/proc/{pid}/ns/mnt")).unwrap();
+                    let fd = libc::open(mnt_ns.as_ptr(), libc::O_RDONLY);
+                    if fd < 0 || libc::setns(fd, libc::CLONE_NEWNS) != 0 {
+                        libc::_exit(98);
+                    }
+                    libc::close(fd);
+                }
+
+                self.in_child_process = true;
+                Ok(Some(self))
+            }
+            child_pid => {
+                // Parent: wait for child with timeout, then return None.
+                // `self` is dropped here → normal cleanup (kmsg, unmount, rm).
+                use std::time::{Duration, Instant};
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    let mut status: i32 = 0;
+                    let r = unsafe { libc::waitpid(child_pid, &mut status, libc::WNOHANG) };
+                    if r > 0 {
+                        if libc::WIFEXITED(status) {
+                            let code = libc::WEXITSTATUS(status);
+                            match code {
+                                0 => return Ok(None),
+                                99 => panic!("fork_into_namespace: setns(user) failed"),
+                                98 => panic!("fork_into_namespace: setns(mnt) failed"),
+                                _ => panic!(
+                                    "fork_into_namespace: child failed (exit {code})"
+                                ),
+                            }
+                        } else {
+                            panic!("fork_into_namespace: child killed by signal");
+                        }
+                    }
+                    if Instant::now() > deadline {
+                        unsafe { libc::kill(child_pid, libc::SIGKILL) };
+                        panic!("fork_into_namespace: child timed out after 30s");
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
     }
 
     /// Resolve a relative path through the agfs mount.
@@ -111,8 +189,9 @@ impl AgfsSession {
     /// does setns(user) + setns(mnt), runs the closure, and exits.
     /// The parent waits and panics if the child failed.
     ///
-    /// This keeps the test process itself in the host namespace so
-    /// subsequent tests are not affected.
+    /// Use this only for multi-phase tests that unmount/remount and need
+    /// to re-enter a new daemon's namespace. Normal tests get namespace
+    /// entry automatically via `new()`.
     pub fn run_in_namespace<F: FnOnce()>(&self, f: F) {
         let pid = self.daemon_pid.expect("daemon not running");
 
@@ -240,6 +319,12 @@ impl AgfsSession {
 
 impl Drop for AgfsSession {
     fn drop(&mut self) {
+        // Child process: exit immediately — the parent handles cleanup.
+        if self.in_child_process {
+            let code = if std::thread::panicking() { 1 } else { 0 };
+            unsafe { libc::_exit(code) };
+        }
+
         // Check the kernel ring buffer for unexpected messages before tearing
         // down.  Guard against double-panic: skip the check if already unwinding.
         let kernel_msgs = if !std::thread::panicking() {

@@ -4,38 +4,34 @@ use std::collections::BTreeMap;
 
 #[test]
 fn mount_and_unmount() {
-    let session = AgfsSession::new().expect("session setup");
-    session.run_in_namespace(|| {
-        // Verify mount point exists and is accessible
-        assert!(session.mnt.exists(), "mount point exists");
-        assert!(
-            session.mnt.join("tmp").exists(),
-            "root fs visible through mount"
-        );
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
+    // Verify mount point exists and is accessible
+    assert!(session.mnt.exists(), "mount point exists");
+    assert!(
+        session.mnt.join("tmp").exists(),
+        "root fs visible through mount"
+    );
 
-        // Verify test files visible through mount
-        assert!(session.mnt_path("hello.txt").exists());
-        assert!(session.mnt_path("subdir/deep.txt").exists());
-    });
+    // Verify test files visible through mount
+    assert!(session.mnt_path("hello.txt").exists());
+    assert!(session.mnt_path("subdir/deep.txt").exists());
 }
 
 #[test]
 fn mount_creates_layout() {
-    let session = AgfsSession::new().expect("session setup");
-    session.run_in_namespace(|| {
-        assert!(session.root.join(".agfs").exists());
-        assert!(session.root.join(".agfs/inodes").exists());
-        assert!(session.mnt.exists());
-    });
+    let Some(session) = AgfsSession::new().expect("session setup") else { return };
+    assert!(session.root.join(".agfs").exists());
+    assert!(session.root.join(".agfs/inodes").exists());
+    assert!(session.mnt.exists());
 }
 
 #[test]
 fn remount_picks_up_new_rules() {
-    let session = AgfsSession::new_with_config(Config {
+    let Some(session) = AgfsSession::new_with_config(Config {
         permission: false,
         ..Default::default()
     })
-    .expect("session setup");
+    .expect("session setup") else { return };
 
     // Write config with rules, remount — both from host
     Config {
