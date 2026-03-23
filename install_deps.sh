@@ -68,3 +68,16 @@ if [ "$(cat /proc/sys/kernel/dmesg_restrict 2>/dev/null)" != "0" ]; then
     sudo sysctl -w kernel.dmesg_restrict=0 >/dev/null
     echo 'kernel.dmesg_restrict=0' | sudo tee /etc/sysctl.d/99-agfs.conf >/dev/null
 fi
+
+# ── AppArmor unprivileged userns ──────────────────────────────────────
+# Ubuntu's AppArmor restricts unprivileged user namespace creation,
+# which generates noisy audit messages that cause e2e tests to fail
+# (the test harness treats any unexpected kernel message as an error).
+
+if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+    if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" != "0" ]; then
+        info "Disabling AppArmor unprivileged userns restriction"
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null
+        echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee -a /etc/sysctl.d/99-agfs.conf >/dev/null
+    fi
+fi

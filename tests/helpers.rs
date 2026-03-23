@@ -347,10 +347,18 @@ impl Drop for AgfsSession {
         let _ = fs::remove_dir_all(&self.root);
 
         if !kernel_msgs.is_empty() {
-            panic!(
-                "Unexpected kernel messages during test:\n  {}",
-                kernel_msgs.join("\n  ")
-            );
+            // Filter out AppArmor audit messages (informational noise from
+            // namespace creation, not agfs kernel module errors).
+            let real_msgs: Vec<_> = kernel_msgs
+                .into_iter()
+                .filter(|m| !m.contains("apparmor="))
+                .collect();
+            if !real_msgs.is_empty() {
+                panic!(
+                    "Unexpected kernel messages during test:\n  {}",
+                    real_msgs.join("\n  ")
+                );
+            }
         }
     }
 }
