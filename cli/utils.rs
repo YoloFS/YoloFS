@@ -60,13 +60,11 @@ pub fn join_daemon_namespace(agfs_dir: &Path) -> Result<()> {
         use std::os::unix::fs::MetadataExt;
         let mnt = agfs_dir.join("mnt");
         if let (Ok(mnt_meta), Ok(parent_meta)) =
-            (std::fs::metadata(&mnt), std::fs::metadata(&agfs_dir))
-        {
-            if mnt_meta.dev() != parent_meta.dev() {
+            (std::fs::metadata(&mnt), std::fs::metadata(agfs_dir))
+            && mnt_meta.dev() != parent_meta.dev() {
                 // Mount is visible — already in the namespace.
                 return Ok(());
             }
-        }
     }
 
     // Verify daemon is alive.
