@@ -7,7 +7,7 @@
 // `--to <name>` — diff changes up to a checkpoint.
 // `--from <name> --to <name>` — diff changes between two checkpoints.
 
-use crate::journal::{DirTree, Dentry, Journal};
+use crate::journal::{Dentry, DirTree, Journal};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;

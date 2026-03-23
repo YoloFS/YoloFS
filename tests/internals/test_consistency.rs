@@ -11,7 +11,7 @@
 
 use super::helpers::{ino_for, inode_path, tree};
 use crate::helpers::AgfsSession;
-use agfs::journal::{DirTree, Dentry};
+use agfs::journal::{Dentry, DirTree};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::DirEntryExt;

@@ -8,8 +8,8 @@
 //   markers   — Markers (K/T skeleton: lookup, range, liveness computation)
 //   journal   — Journal (segments + markers + precomputed liveness, borrowing filters)
 //   tree      — DirTree builder: apply actions → dir tree, walk for display/restore
-pub mod dentry;
 pub(crate) mod core;
+pub mod dentry;
 
 pub mod markers;
 mod parse;

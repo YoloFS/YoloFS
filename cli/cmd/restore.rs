@@ -42,7 +42,7 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::journal::{Action, DirTree, Dentry, Segment};
+    use crate::journal::{Action, Dentry, DirTree, Segment};
 
     fn build(actions: &[Action]) -> DirTree {
         DirTree::build(std::iter::once(Segment {
