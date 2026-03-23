@@ -30,7 +30,6 @@ static int agfs_d_init(struct dentry *dentry)
 
 	spin_lock_init(&info->lock);
 	info->dstate = (struct agfs_dstate){0}; /* passthrough */
-	info->dentry = dentry;
 	info->perm = AGFS_PERM_NONE;
 	INIT_LIST_HEAD(&info->rule_pin);
 	info->rule_dentry = NULL;
@@ -78,11 +77,13 @@ void agfs_stage_dentry(struct dentry *dentry, struct agfs_dstate dstate)
  * after this call if the dput drops the last reference.
  * Caller must hold i_rwsem exclusive on the parent directory.
  */
-void agfs_unstage_dentry(struct agfs_dentry_info *di)
+void agfs_unstage_dentry(struct dentry *dentry)
 {
+	struct agfs_dentry_info *di = AGFS_D(dentry);
+
 	agfs_dstate_free(di->dstate);
 	di->dstate = (struct agfs_dstate){0}; /* passthrough */
-	dput(di->dentry);
+	dput(dentry);
 }
 
 /*
@@ -118,7 +119,7 @@ struct dentry *agfs_add_tombstone(struct dentry *parent,
 void agfs_remove_tombstone(struct dentry *tomb)
 {
 	d_drop(tomb);
-	agfs_unstage_dentry(AGFS_D(tomb));
+	agfs_unstage_dentry(tomb);
 }
 
 /*
@@ -169,7 +170,7 @@ void agfs_unstage_all(struct super_block *sb)
 
 		if (AGFS_D(cur) &&
 		    !agfs_dstate_is_passthrough(AGFS_D(cur)->dstate))
-			agfs_unstage_dentry(AGFS_D(cur));
+			agfs_unstage_dentry(cur);
 	}
 
 	shrink_dcache_sb(sb);

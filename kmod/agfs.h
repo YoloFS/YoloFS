@@ -363,7 +363,6 @@ struct agfs_dentry_info {
 	spinlock_t		lock;
 	struct path		lower_path;	/* resolved lower path (inode entry or base) */
 	struct agfs_dstate	dstate;		/* state: inode/link/tombstone */
-	struct dentry		*dentry;	/* back-pointer (always valid) */
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
 	struct list_head	rule_pin;	/* node in sbi->pinned_rules */
 	struct dentry		*rule_dentry;	/* back-pointer for dput on release */
@@ -509,7 +508,7 @@ extern const struct dentry_operations agfs_dops;
 int agfs_init_dentry_cache(void);
 void agfs_destroy_dentry_cache(void);
 void agfs_stage_dentry(struct dentry *dentry, struct agfs_dstate dstate);
-void agfs_unstage_dentry(struct agfs_dentry_info *di);
+void agfs_unstage_dentry(struct dentry *dentry);
 struct dentry *agfs_add_tombstone(struct dentry *parent,
 				  const char *name, unsigned int len,
 				  unsigned char d_type);
