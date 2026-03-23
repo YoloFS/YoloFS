@@ -107,7 +107,7 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 	}
 
 	if (!agfs_dstate_is_passthrough(di->dstate))
-		agfs_unstage_dentry(di);
+		agfs_unstage_dentry(dentry);
 
 	d_drop(dentry);
 	return 0;
@@ -246,7 +246,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 
 	/* Clean up new_dentry if it was staged */
 	if (!agfs_dstate_is_passthrough(new_di->dstate))
-		agfs_unstage_dentry(new_di);
+		agfs_unstage_dentry(new_dentry);
 
 	/* Update old_dentry staging state */
 	if (src_staged)

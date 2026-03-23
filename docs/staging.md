@@ -105,7 +105,6 @@ the inode.
 |-------|---------|
 | `lower_path` | Resolved path to the backing file — either `inodes/<ino>` or the base file. Updated in-place by COW. |
 | `dstate` | Single `u64` (`struct agfs_dstate`) encoding the overlay state. Four mutually exclusive variants: **passthrough** (`val == 0`), **tombstone** (positive, `ino == 0` — deleted, carries `d_type`, always `in_base`), **link** (bit 63 set — kernel pointer with tag), **inode** (positive, `ino != 0` — staged in `inodes/<ino>`). See [Packed Encoding](#packed-encoding). A dentry is staged iff `!agfs_dstate_is_passthrough(dstate)` (equivalently `dstate.val != 0`). |
-| `dentry` | Back-pointer to the owning VFS dentry. |
 
 **Per-file** (`agfs_file_info`) — one per open file descriptor:
 
@@ -420,7 +419,7 @@ agfs_unlink(dir, dentry):
     journal(D, path, dtype)  # must be before d_drop (uses dentry path)
 
     if staged:
-        agfs_unstage_dentry(AGFS_D(dentry))   # clear dstate + dput
+        agfs_unstage_dentry(dentry)   # clear dstate + dput
     d_drop(dentry)
     # If !need_tombstone: staged + !in_base — entry disappears entirely.
 
