@@ -15,7 +15,7 @@ pub enum Dstate {
         dtype: u8,
         in_base: bool,
     },
-    BasePath {
+    Redirect {
         /// The source path in the base filesystem (where the content lives).
         src: String,
         dtype: u8,
@@ -31,7 +31,7 @@ impl Dstate {
     pub fn dtype(&self) -> u8 {
         match self {
             Dstate::StagedInode { dtype, .. }
-            | Dstate::BasePath { dtype, .. }
+            | Dstate::Redirect { dtype, .. }
             | Dstate::Tombstone { dtype } => *dtype,
             Dstate::Passthrough => unreachable!("Passthrough has no dtype"),
         }
@@ -39,7 +39,7 @@ impl Dstate {
 
     pub fn in_base(&self) -> bool {
         match self {
-            Dstate::StagedInode { in_base, .. } | Dstate::BasePath { in_base, .. } => *in_base,
+            Dstate::StagedInode { in_base, .. } | Dstate::Redirect { in_base, .. } => *in_base,
             Dstate::Tombstone { .. } | Dstate::Passthrough => true,
         }
     }
@@ -58,13 +58,13 @@ impl Dstate {
             Dstate::StagedInode { .. } | Dstate::Tombstone { .. } | Dstate::Passthrough => {
                 dstate_path == query
             }
-            Dstate::BasePath { src, .. } => dstate_path == query || src == query,
+            Dstate::Redirect { src, .. } => dstate_path == query || src == query,
         }
     }
 
     pub(super) fn set_in_base(&mut self, val: bool) {
         match self {
-            Dstate::StagedInode { in_base, .. } | Dstate::BasePath { in_base, .. } => *in_base = val,
+            Dstate::StagedInode { in_base, .. } | Dstate::Redirect { in_base, .. } => *in_base = val,
             Dstate::Tombstone { .. } | Dstate::Passthrough => {}
         }
     }

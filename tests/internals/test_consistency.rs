@@ -15,6 +15,7 @@ use agfs::journal::{DirTree, Dstate};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -84,7 +85,7 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     );
                 }
             }
-            Dstate::BasePath { dtype, .. } => {
+            Dstate::Redirect { dtype, .. } => {
                 let meta = mnt.symlink_metadata().unwrap_or_else(|e| {
                     panic!("overlay link at '/{rel}' should be visible: {e}")
                 });
@@ -126,7 +127,7 @@ fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
     for component in rel_dir.split('/') {
         tree_path = format!("{tree_path}/{component}");
         let link_target = cli.get(&tree_path).and_then(|d| {
-            if let Dstate::BasePath {
+            if let Dstate::Redirect {
                 src,
                 dtype: libc::DT_DIR,
                 ..
@@ -675,24 +676,24 @@ fn readdir_dtype_matches_cli() {
     }
 }
 
-/// Verify that kernel readdir ino for staged Inode entries matches the
-/// CLI's ino field.
+/// Verify that kernel readdir ino for staged entries matches stat ino.
 #[test]
 fn readdir_ino_matches_cli() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("check_ino.txt"), "data\n").expect("create");
 
-    let t = tree(&s);
-    let cli_ino = ino_for(&t, "/check_ino.txt");
+    let stat_ino = fs::metadata(s.mnt_path("check_ino.txt"))
+        .expect("stat")
+        .ino();
 
     for entry in fs::read_dir(s.mnt_path("")).expect("readdir") {
         let entry = entry.expect("entry");
         if entry.file_name() == "check_ino.txt" {
             let kernel_ino = entry.ino();
             assert_eq!(
-                kernel_ino, cli_ino as u64,
-                "readdir ino mismatch: kernel={kernel_ino} CLI={cli_ino}"
+                kernel_ino, stat_ino,
+                "readdir ino mismatch: readdir={kernel_ino} stat={stat_ino}"
             );
             return;
         }

@@ -15,11 +15,9 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 			      umode_t mode, const char *symname)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
-	struct agfs_dentry_info *di = AGFS_D(dentry);
 	struct path inode_path;
 	unsigned char dt;
-	bool already_staged, in_base;
-	struct agfs_dstate dstate;
+	bool in_base;
 	u32 ino;
 	int err;
 
@@ -36,16 +34,15 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	agfs_replace_lower_path(dentry, &inode_path);
 	dt = S_ISDIR(mode) ? DT_DIR : S_ISLNK(mode) ? DT_LNK : DT_REG;
 
-	/* If dentry is already staged, it's a tombstone — inherit in_base */
-	already_staged = !agfs_dstate_is_passthrough(di->dstate);
-	in_base = already_staged;
-	dstate = agfs_dstate_staged_inode(ino, (u16)atomic_read(&sbi->gen),
-				dt, in_base);
-
-	if (!already_staged)
-		agfs_stage_dentry(dentry, dstate);
-	else
-		di->dstate = dstate;
+	/*
+	 * Capture base-presence before overwriting the kind.
+	 * Cannot read in_base here — for new files (passthrough, no base
+	 * content) agfs_interpose above already set d_inode, but in_base
+	 * is still false from zalloc.  Check kind: non-passthrough means
+	 * a tombstone (base entry was deleted, in_base inherited).
+	 */
+	in_base = AGFS_D(dentry)->kind != AGFS_DKIND_PASSTHROUGH;
+	agfs_dentry_stage_inode(dentry, sbi, in_base);
 
 	if (in_base)
 		agfs_journal_modify(sbi, dentry, ino, dt);
@@ -72,28 +69,18 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
-	struct agfs_dentry_info *di = AGFS_D(dentry);
 	unsigned char d_type;
-	bool need_tombstone;
 	struct dentry *tomb = NULL;
 	int err;
 
 	d_type = d_inode(dentry) ?
 		 fs_umode_to_dtype(d_inode(dentry)->i_mode) : DT_UNKNOWN;
 
-	/*
-	 * Tombstone needed if dentry has base content — either passthrough
-	 * (base-only) or staged with in_base flag (modified base entry).
-	 */
-	need_tombstone = agfs_dstate_is_passthrough(di->dstate) ||
-			 agfs_dstate_in_base(di->dstate);
-
-	/* Pre-allocate tombstone before journaling so we can fail cleanly */
-	if (need_tombstone) {
-		tomb = agfs_add_tombstone(dentry->d_parent,
-					  dentry->d_name.name,
-					  dentry->d_name.len,
-					  d_type);
+	/* Pre-allocate tombstone if dentry has base content */
+	if (AGFS_D(dentry)->in_base) {
+		tomb = agfs_dentry_add_tombstone(dentry->d_parent,
+						 dentry->d_name.name,
+						 dentry->d_name.len);
 		if (!tomb)
 			return -ENOMEM;
 	}
@@ -102,13 +89,12 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 	err = agfs_journal_delete(sbi, dentry, d_type);
 	if (err) {
 		if (tomb)
-			agfs_remove_tombstone(tomb);
+			agfs_dentry_remove_tombstone(tomb);
 		return err;
 	}
 
-	if (!agfs_dstate_is_passthrough(di->dstate))
-		agfs_unstage_dentry(dentry);
-
+	/* Release staging state (if any) on the original dentry before eviction */
+	agfs_dentry_unstage(dentry);
 	d_drop(dentry);
 	return 0;
 }
@@ -139,18 +125,14 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		       unsigned int flags)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
-	struct agfs_dentry_info *old_di = AGFS_D(old_dentry);
-	struct agfs_dentry_info *new_di = AGFS_D(new_dentry);
 	char path_buf[AGFS_PATH_MAX];
 	char saved_name[NAME_MAX + 1];
 	unsigned int saved_name_len;
 	struct dentry *saved_parent;
 	struct dentry *tomb = NULL;
 	unsigned char d_type = DT_UNKNOWN;
-	struct agfs_dstate src_dstate, dst_dstate;
-	char *base_copy = NULL;
 	const char *base_src, *p;
-	bool src_staged, dst_in_base, is_roundtrip;
+	bool dst_in_base, is_roundtrip;
 	int err;
 
 	if (flags)
@@ -162,27 +144,17 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	saved_name[saved_name_len] = '\0';
 	saved_parent = old_dentry->d_parent;
 
-	/* Read source state */
-	src_staged = !agfs_dstate_is_passthrough(old_di->dstate);
-	src_dstate = src_staged ? old_di->dstate : (struct agfs_dstate){0};
-
-	if (src_staged && !agfs_dstate_is_tombstone(src_dstate))
-		d_type = agfs_dstate_d_type(src_dstate);
-	else if (d_inode(old_dentry))
+	/* Read source type from inode (always present — can't rename a tombstone) */
+	if (d_inode(old_dentry))
 		d_type = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
 
 	/* Check if destination has existing base content (for R vs P tag) */
-	if (!agfs_dstate_is_passthrough(new_di->dstate))
-		dst_in_base = agfs_dstate_in_base(new_di->dstate);
-	else
-		dst_in_base = d_inode(new_dentry) != NULL;
+	dst_in_base = AGFS_D(new_dentry)->in_base;
 
 	/* Pre-allocate tombstone if old name has base content */
-	if (agfs_dstate_is_passthrough(src_dstate) ||
-	    agfs_dstate_in_base(src_dstate)) {
-		tomb = agfs_add_tombstone(saved_parent, saved_name,
-					  saved_name_len,
-					  d_type);
+	if (AGFS_D(old_dentry)->in_base) {
+		tomb = agfs_dentry_add_tombstone(saved_parent, saved_name,
+						 saved_name_len);
 		if (!tomb)
 			return -ENOMEM;
 	}
@@ -190,15 +162,16 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	/*
 	 * Roundtrip detection: if the effective base source equals the
 	 * destination relpath, the rename chain is a no-op (e.g. a→b→a).
-	 * Skip the kstrdup and leave old_dentry as passthrough.
+	 * For staged inodes there is no base redirect needed.
+	 * For passthrough and redirect dentries, derive the base source
+	 * from lower_path — both cases have a lower dentry pointing at
+	 * the original base location.
 	 */
-	if (src_staged && agfs_dstate_is_staged_inode(src_dstate)) {
+	if (AGFS_D(old_dentry)->kind == AGFS_DKIND_STAGED_INODE) {
 		base_src = NULL; /* staged inode — no base redirect needed */
-	} else if (src_staged && agfs_dstate_is_base_path(src_dstate)) {
-		base_src = agfs_dstate_src(src_dstate);
 	} else {
-		/* Base-only source — compute relpath for redirect */
-		p = dentry_path_raw(old_dentry, path_buf,
+		/* Passthrough or redirect — derive from lower dentry */
+		p = dentry_path_raw(agfs_lower_dentry(old_dentry), path_buf,
 				    sizeof(path_buf));
 		if (IS_ERR(p)) {
 			err = PTR_ERR(p);
@@ -220,47 +193,26 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		is_roundtrip = strcmp(base_src, p) == 0;
 	}
 
-	/* Build destination dstate */
-	if (is_roundtrip) {
-		/* no-op — passthrough set below */
-	} else if (src_staged && agfs_dstate_is_staged_inode(src_dstate)) {
-		dst_dstate = agfs_dstate_staged_inode(agfs_dstate_ino(src_dstate),
-					      agfs_dstate_gen(src_dstate),
-					      d_type, dst_in_base);
-	} else {
-		base_copy = kstrdup(base_src, GFP_KERNEL);
-		if (!base_copy) {
-			err = -ENOMEM;
-			goto out_tomb;
-		}
-		dst_dstate = agfs_dstate_base_path(base_copy, d_type, dst_in_base);
-	}
-
 	/* Journal BEFORE d_move (uses dentry paths) */
 	if (dst_in_base)
 		err = agfs_journal_replace(sbi, old_dentry, new_dentry, d_type);
 	else
 		err = agfs_journal_rename(sbi, old_dentry, new_dentry, d_type);
 	if (err)
-		goto out_free;
+		goto out_tomb;
 
 	/* Clean up new_dentry if it was staged */
-	if (!agfs_dstate_is_passthrough(new_di->dstate))
-		agfs_unstage_dentry(new_dentry);
+	agfs_dentry_unstage(new_dentry);
 
 	/* Update old_dentry staging state */
-	if (src_staged)
-		agfs_dstate_free(src_dstate);
-
 	if (is_roundtrip) {
-		old_di->dstate = (struct agfs_dstate){0};
-		if (src_staged)
-			dput(old_dentry);
-	} else if (src_staged) {
-		/* Already pinned — overwrite dstate, no dput/dget churn */
-		old_di->dstate = dst_dstate;
+		agfs_dentry_unstage(old_dentry);
+	} else if (AGFS_D(old_dentry)->kind == AGFS_DKIND_STAGED_INODE) {
+		agfs_dentry_stage(old_dentry, AGFS_DKIND_STAGED_INODE,
+				  dst_in_base);
 	} else {
-		agfs_stage_dentry(old_dentry, dst_dstate);
+		agfs_dentry_stage(old_dentry, AGFS_DKIND_REDIRECT,
+				  dst_in_base);
 	}
 
 	/*
@@ -275,11 +227,9 @@ static int agfs_rename(struct mnt_idmap *idmap,
 
 	return 0;
 
-out_free:
-	kfree(base_copy);
 out_tomb:
 	if (tomb)
-		agfs_remove_tombstone(tomb);
+		agfs_dentry_remove_tombstone(tomb);
 	return err;
 }
 

@@ -53,16 +53,16 @@ only `lower_path` is swapped.  Adding `staging_gen` to
 Replace the packed u64 dstate with a simple enum:
 
 ```c
-enum agfs_dentry_kind {
-    AGFS_DENTRY_PASSTHROUGH  = 0,
-    AGFS_DENTRY_STAGED_INODE       = 1,
-    AGFS_DENTRY_REDIRECT     = 2,
-    AGFS_DENTRY_TOMBSTONE    = 3,
+enum agfs_dkind {
+    AGFS_DKIND_PASSTHROUGH  = 0,
+    AGFS_DKIND_STAGED_INODE = 1,
+    AGFS_DKIND_REDIRECT     = 2,
+    AGFS_DKIND_TOMBSTONE    = 3,
 };
 
 struct agfs_dentry_info {
     ...
-    enum agfs_dentry_kind   kind;
+    enum agfs_dkind         kind;
     bool                    in_base;
     ...
 };
@@ -70,7 +70,9 @@ struct agfs_dentry_info {
 
 This matches the CLI's `Dstate` enum (`Passthrough`, `StagedInode`,
 `BasePath`, `Tombstone`) with `in_base` as a separate field.  The CLI
-should rename `BasePath` → `Redirect`.
+should rename the variant `BasePath` → `Redirect`; the variant's
+fields (`src`, `dtype`, `in_base`) stay the same since they are needed
+for journal serialization and the wire format.
 
 ### State transition rules
 
@@ -110,28 +112,23 @@ struct agfs_inode_info {
 
 ### 1. Dstate simplification
 
-Replace `struct agfs_dstate { u64 val; }` with `enum agfs_dentry_kind`.
+Replace `struct agfs_dstate { u64 val; }` with `enum agfs_dkind`.
 Remove all bit-packing, pointer embedding, dtype encoding.
 
-Query functions simplify to trivial field reads:
-
-```c
-static inline bool agfs_dentry_is_passthrough(const struct dentry *d)
-{
-    return AGFS_D(d)->kind == AGFS_DENTRY_PASSTHROUGH;
-}
-
-static inline bool agfs_dentry_in_base(const struct dentry *d)
-{
-    if (AGFS_D(d)->kind == AGFS_DENTRY_PASSTHROUGH)
-        return d_inode(d) != NULL;
-    return AGFS_D(d)->in_base;
-}
-```
+Query functions simplify to trivial field reads.  Remove
+`agfs_dentry_is_passthrough`, `agfs_dentry_is_base_path`,
+`agfs_dentry_is_staged_inode`, `agfs_dentry_is_tombstone`, and
+`agfs_dentry_in_base` — callers read `AGFS_D(d)->kind` and
+`AGFS_D(d)->in_base` directly.  Lookup sets `in_base = true` for
+positive base results, so the field is always valid.
 
 ### 2. Move gen to agfs_inode_info
 
-Add `u16 staging_gen` to `agfs_inode_info`.  Update:
+Add `u16 staging_gen` to `agfs_inode_info`.  Reads and writes are
+naturally atomic for `u16` on all kernel architectures; concurrent
+access is serialized by `i_rwsem` (held during create, COW, and open).
+
+Update:
 
 - **`agfs_create_staged`** — set `AGFS_I(inode)->staging_gen = sbi->gen`
 - **`agfs_do_cow`** — set `AGFS_I(inode)->staging_gen = sbi->gen`
@@ -142,15 +139,9 @@ Add `u16 staging_gen` to `agfs_inode_info`.  Update:
 ### 3. Open staged files via lower_path
 
 Replace `agfs_open_staged_ino(sbi, ino, flags)` with opening directly
-from `lower_path`:
-
-```c
-agfs_get_lower_path(dentry, &lower_path);
-f = dentry_open(&lower_path, flags, current_cred());
-agfs_put_lower_path(dentry, &lower_path);
-```
-
-Eliminates the ino → path name lookup entirely.
+from `lower_path`.  Keep the existing `O_TRUNC` handling
+(`vfs_truncate` before `dentry_open`) and `staging_fd_count` error-path
+accounting.  Eliminates the ino → path name lookup entirely.
 
 ### 4. Rename: derive base_src from lower_path
 
@@ -171,19 +162,30 @@ void agfs_dentry_set_redirect(struct dentry *d, bool in_base);
 void agfs_dentry_unstage(struct dentry *d);  /* → passthrough */
 ```
 
-No ino, gen, d_type, or base_copy parameters.
+No ino, gen, d_type, or base_copy parameters.  The caller is
+responsible for setting `lower_path` (via `agfs_set_lower_path`)
+*before* calling `agfs_dentry_set_staged` — this is already the case
+today for create and COW, which resolve the inode store path before
+updating dstate.
 
 ### 6. Restore inject
 
 `agfs_dentry_add_staged_inode` — no gen parameter (set on inode after
 `agfs_iget`).
 
-`agfs_dentry_add_redirect` — accepts path string for `kern_path` to set
-lower_path, then frees it.  No pointer embedding.
+`agfs_dentry_inject_inode` — resolves lower_path via ino, sets
+kind/in_base, sets `staging_gen` on the inode, and adds to dcache.
 
-Wire format unchanged — still carries the u64 and trailing base_path
-string.  The decode extracts ino + in_base + kind; ino is only used for
-`agfs_inode_path` during lower_path resolution.
+`agfs_dentry_inject_redirect` — resolves lower_path via
+`kern_path(base_path)`, sets kind/in_base, and adds to dcache.
+Takes ownership of the base_path string.
+
+Wire format changed from `u64` to a compact `kind:u8` + per-kind
+fields.  Each variant is self-describing:
+- Passthrough (0): no extra data.
+- StagedInode (1): `ino:le32` + `in_base:u8`.
+- Redirect (2): `base_len:le16` + `base:u8[base_len]` + `in_base:u8`.
+- Tombstone (3): no extra data.
 
 ### 7. Tombstone d_type
 
@@ -191,28 +193,30 @@ Remove d_type from tombstone encoding.  The journal delete record
 already carries d_type (from the caller, derived from `d_inode->i_mode`
 before deletion).  `agfs_dentry_add_tombstone` no longer needs a
 d_type parameter — tombstones are just negative dentries with
-`dstate = AGFS_DENTRY_TOMBSTONE`.
+`kind = AGFS_DKIND_TOMBSTONE`.
 
 Wire format: the d_type in the tombstone's serialized u64 is still
-read during restore but only passed to the journal (if needed), not
-stored in the dstate.
+read during restore but ignored (not stored in the dstate).
 
 ## What's removed
 
-- `struct agfs_dstate { u64 val; }` — replaced by `enum agfs_dentry_kind`
+- `struct agfs_dstate { u64 val; }` — replaced by `enum agfs_dkind`
 - All bit-packing/unpacking (dtype_pack, dtype_unpack, pointer recovery)
 - `agfs_dstate_free` — no embedded pointers to free
 - `kstrdup` in rename path — no string allocation
 - `agfs_open_staged_ino` — open via lower_path instead
 - `agfs_dentry_ino`, `agfs_dentry_gen`,
   `agfs_dentry_base_src` — all removed
-- `agfs_dentry_is_current` — replaced by inode gen check
+- `agfs_dentry_is_passthrough`, `agfs_dentry_is_staged_inode`,
+  `agfs_dentry_is_base_path`, `agfs_dentry_is_tombstone`,
+  `agfs_dentry_in_base` — callers read fields directly
+- `agfs_dentry_is_current` — replaced by `agfs_dentry_is_current()` inline using inode gen
 
 ## Files affected
 
 | File | Change |
 |------|--------|
-| `agfs.h` | Replace `struct agfs_dstate` with `enum agfs_dentry_kind`; add `in_base` to dentry_info; add `staging_gen` to inode_info; simplify query inlines |
+| `agfs.h` | Replace `struct agfs_dstate` with `enum agfs_dkind`; add `in_base` to dentry_info; add `staging_gen` to inode_info; simplify query inlines |
 | `dentry.c` | Remove all encoding internals; simplify mutations; update inject helpers |
 | `inode.c` | Simplify create/delete/rename; set staging_gen on inode |
 | `staging.c` | Simplify COW; set staging_gen on inode; open via lower_path |
