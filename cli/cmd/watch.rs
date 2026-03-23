@@ -12,12 +12,11 @@
 
 use crate::config::Perm;
 use crate::ioctl::{self, PermRequest};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use colored::Colorize;
 use nix::sys::signal::{SigHandler, Signal, signal};
 use nix::unistd::{Pid, getpgrp, tcgetpgrp, tcsetpgrp};
 use std::io::{self, BufRead, Write};
-use std::os::unix::fs::OpenOptionsExt;
 
 /// RAII guard that restores the terminal foreground group on drop.
 struct TtyGuard(Option<Pid>);
@@ -177,12 +176,7 @@ fn parse_input(input: &str) -> Perm {
 /// because it blocks on a kernel ioctl).
 pub fn run_background() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
-
-    let ctl_file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY)
-        .open(agfs.join("mnt"))
-        .context("opening .agfs/mnt for background watch")?;
+    let ctl_file = ioctl::open(&agfs)?;
 
     std::thread::spawn(move || {
         if let Err(e) = watch_loop(&ctl_file, false) {

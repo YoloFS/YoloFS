@@ -37,12 +37,12 @@ interposition. It adds two orthogonal capabilities:
  └──────────────────────────────────────────────────┘
 
  ┌──────────────────────────────────────────────────┐
- │  ioctl on any AgFS directory fd (.agfs/mnt)      │
+ │  ioctl on .agfs/mnt/.ctl control file            │
  │    ← AGFS_IOC_GET_REQUEST:  dequeue perm request │
  │    → AGFS_IOC_PUT_RESPONSE: post decision        │
  │    → AGFS_IOC_RULE_ADD/REMOVE: manage rules      │
- │    → AGFS_IOC_RESTORE: reset staging (commit/abort) or restore to checkpoint │
- │    → AGFS_IOC_CHECKPOINT: create checkpoint           │
+ │    → AGFS_IOC_RESTORE: reset/restore             │
+ │    → AGFS_IOC_CHECKPOINT: create checkpoint      │
  └──────────────────────────────────────────────────┘
 ```
 

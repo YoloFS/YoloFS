@@ -78,6 +78,8 @@ static void agfs_put_super(struct super_block *sb)
 	if (!sbi)
 		return;
 
+	if (sbi->ctl_inode)
+		iput(sbi->ctl_inode);
 	if (sbi->inodes_dir.dentry)
 		path_put(&sbi->inodes_dir);
 	if (sbi->journal_file)
@@ -129,6 +131,41 @@ const struct super_operations agfs_sops = {
 
 /* ── Fill Superblock helpers ────────────────────────────────────────── */
 
+/*
+ * Create the synthetic .ctl control file inode and pin its dentry
+ * in the dcache.  Must be called after sb->s_root is set up.
+ */
+static int agfs_init_ctl(struct super_block *sb)
+{
+	struct agfs_sb_info *sbi = AGFS_SB(sb);
+	struct inode *ctl;
+	struct dentry *ctl_dentry;
+	struct qstr ctl_name = QSTR_INIT(".ctl", 4);
+
+	ctl = new_inode(sb);
+	if (!ctl)
+		return -ENOMEM;
+
+	ctl->i_ino = get_next_ino();
+	ctl->i_mode = S_IFREG | 0600;
+	ctl->i_uid = current_uid();
+	ctl->i_gid = current_gid();
+	ctl->i_fop = &agfs_ctl_fops;
+	simple_inode_init_ts(ctl);
+	sbi->ctl_inode = ctl;
+
+	/* Pin .ctl in the dcache so lookup_fast() always finds it */
+	ctl_name.hash = full_name_hash(sb->s_root, ".ctl", 4);
+	ctl_dentry = d_alloc(sb->s_root, &ctl_name);
+	if (!ctl_dentry)
+		return -ENOMEM;
+
+	ihold(ctl);
+	d_add(ctl_dentry, ctl);
+	sbi->ctl_dentry = ctl_dentry;
+	return 0;
+}
+
 static void agfs_init_sbi(struct agfs_sb_info *sbi,
 			   const struct agfs_fs_opts *opts)
 {
@@ -141,7 +178,6 @@ static void agfs_init_sbi(struct agfs_sb_info *sbi,
 	spin_lock_init(&sbi->ask_engine.pending_lock);
 	init_waitqueue_head(&sbi->ask_engine.request_waitq);
 	atomic64_set(&sbi->ask_engine.next_req_id, 1);
-	sbi->ask_engine.daemon_file = NULL;
 	INIT_LIST_HEAD(&sbi->ask_engine.dispatched);
 	spin_lock_init(&sbi->ask_engine.dispatch_lock);
 	sbi->ask_engine.timeout_s = opts->ask_timeout_s;
@@ -265,6 +301,10 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	AGFS_D(sb->s_root)->perm = AGFS_PERM_ASK;
 
+	err = agfs_init_ctl(sb);
+	if (err)
+		goto out_put;
+
 	return 0;
 
 out_put:
@@ -338,6 +378,10 @@ static void agfs_kill_super(struct super_block *sb)
 
 	if (sbi) {
 		agfs_release_pinned_rules(sbi);
+		if (sbi->ctl_dentry) {
+			dput(sbi->ctl_dentry);
+			sbi->ctl_dentry = NULL;
+		}
 		agfs_unstage_all(sb);
 	}
 

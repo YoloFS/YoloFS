@@ -155,10 +155,10 @@ struct agfs_ask_engine {
 	unsigned int		timeout_s;	/* seconds before applying default */
 	enum agfs_perm		default_perm;	/* decision when no daemon or timeout */
 
-	/* Daemon connection (at most one) */
-	struct file		*daemon_file;	/* which fd is the daemon; NULL if none */
+	/* Daemon connection (at most one — enforced by .ctl single-open) */
+	atomic_t		has_daemon;	/* 1 if daemon connected, 0 otherwise */
 	struct list_head	dispatched;	/* requests sent to daemon */
-	spinlock_t		dispatch_lock;	/* protects dispatched + daemon_file */
+	spinlock_t		dispatch_lock;	/* protects dispatched */
 };
 
 /* ── Per-Superblock Info ───────────────────────────────────────────── */
@@ -167,6 +167,10 @@ struct agfs_sb_info {
 	struct super_block	*lower_sb;
 	struct path		base_path;	/* always "/" */
 	struct path		storage_path;	/* ./agfs/ directory */
+
+	/* Control file */
+	struct inode		*ctl_inode;	/* synthetic .ctl inode */
+	struct dentry		*ctl_dentry;	/* pinned .ctl dentry */
 
 	/* Staging */
 	struct path		inodes_dir;	/* ./agfs/inodes/ (flat inode store) */
@@ -417,7 +421,7 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 		       enum agfs_perm *result);
 
 /* ioctl.c */
-long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+extern const struct file_operations agfs_ctl_fops;
 void agfs_daemon_cleanup(struct agfs_sb_info *sbi);
 void agfs_release_pinned_rules(struct agfs_sb_info *sbi);
 

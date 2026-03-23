@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * agfs — control interface via ioctl on any agfs directory fd.
+ * agfs — control interface via .ctl control file.
  *
- * The permission daemon opens .agfs/mnt (or any dir on the mount) and uses:
- *   ioctl(fd, AGFS_IOC_GET_REQUEST, &req)  — dequeue pending ask request
- *   ioctl(fd, AGFS_IOC_PUT_RESPONSE, &resp) — submit decision
- *   ioctl(fd, AGFS_IOC_RULE_ADD, &rule)   — add permission rule
- *   ioctl(fd, AGFS_IOC_RULE_REMOVE, &rule)
- *   ioctl(fd, AGFS_IOC_RESTORE)     — reset staging / restore to checkpoint
+ * All ioctl operations go through the synthetic .ctl file at the mount
+ * root.  The permission daemon claims exclusive daemon status on its
+ * first GET_REQUEST call; only that fd may issue GET_REQUEST and
+ * PUT_RESPONSE.  All other operations may be issued from any fd.
  *
- * On close, any dispatched-but-unanswered requests get the default decision.
+ * On close of the daemon fd, any dispatched-but-unanswered requests
+ * get the default decision.
  */
 
 #include "agfs.h"
@@ -17,19 +16,21 @@
 #include <linux/vmalloc.h>
 #include <asm/unaligned.h>
 
-/* ── Claim daemon connection on first GET_REQUEST ──────────────────── */
+/* ── .ctl open/release ──────────────────────────────────────────────── */
 
-static int agfs_daemon_connect(struct file *file)
+static int agfs_ctl_open(struct inode *inode, struct file *file)
 {
-	struct agfs_ask_engine *eng = &AGFS_SB(file_inode(file)->i_sb)->ask_engine;
+	return 0;
+}
 
-	spin_lock(&eng->dispatch_lock);
-	if (eng->daemon_file) {
-		spin_unlock(&eng->dispatch_lock);
-		return -EBUSY;
+static int agfs_ctl_release(struct inode *inode, struct file *file)
+{
+	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
+
+	if (file->private_data) {
+		agfs_daemon_cleanup(sbi);
+		atomic_set(&sbi->ask_engine.has_daemon, 0);
 	}
-	eng->daemon_file = file;
-	spin_unlock(&eng->dispatch_lock);
 	return 0;
 }
 
@@ -44,10 +45,11 @@ static long agfs_get_request_ioctl(struct file *file, unsigned long arg)
 	int err;
 	__u16 path_len;
 
-	if (READ_ONCE(eng->daemon_file) != file) {
-		err = agfs_daemon_connect(file);
-		if (err)
-			return err;
+	/* Claim daemon status on first call; reject if another fd already has it */
+	if (!file->private_data) {
+		if (atomic_cmpxchg(&eng->has_daemon, 0, 1))
+			return -EBUSY;
+		file->private_data = (void *)1;
 	}
 
 	/* Read buffer info from userspace */
@@ -132,9 +134,6 @@ static long agfs_put_response_ioctl(struct file *file, unsigned long arg)
 	struct agfs_perm_request *req, *tmp;
 	bool found = false;
 
-	if (READ_ONCE(eng->daemon_file) != file)
-		return -EINVAL;
-
 	if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
 		return -EFAULT;
 
@@ -174,7 +173,6 @@ void agfs_daemon_cleanup(struct agfs_sb_info *sbi)
 		complete(&req->done);
 		kref_put(&req->ref, agfs_perm_request_release);
 	}
-	WRITE_ONCE(eng->daemon_file, NULL);
 	spin_unlock(&eng->dispatch_lock);
 }
 
@@ -681,9 +679,10 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	return err;
 }
 
-/* ── Unified ioctl handler (rules + ctl) ───────────────────────────── */
+/* ── .ctl ioctl handler (all operations) ────────────────────────────── */
 
-long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+static long agfs_ctl_ioctl(struct file *file, unsigned int cmd,
+			   unsigned long arg)
 {
 	switch (cmd) {
 	case AGFS_IOC_GET_REQUEST:
@@ -698,13 +697,20 @@ long agfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case AGFS_IOC_RULE_REMOVE:
 		return agfs_rule_remove_ioctl(file, arg);
 
-	case AGFS_IOC_RESTORE:
-		return agfs_restore_ioctl(file, arg);
-
 	case AGFS_IOC_CHECKPOINT:
 		return agfs_checkpoint_ioctl(file, arg);
+
+	case AGFS_IOC_RESTORE:
+		return agfs_restore_ioctl(file, arg);
 
 	default:
 		return -ENOTTY;
 	}
 }
+
+const struct file_operations agfs_ctl_fops = {
+	.open		= agfs_ctl_open,
+	.release	= agfs_ctl_release,
+	.unlocked_ioctl	= agfs_ctl_ioctl,
+	.compat_ioctl	= agfs_ctl_ioctl,
+};

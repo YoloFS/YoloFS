@@ -63,7 +63,7 @@ agfs.toml                       # config file in CWD (mount options + rules)
 │   ├── 2                        # inode: content of another file
 │   └── ...
 └── mnt/                         # mount point -- agent works here
-                                 #   ioctl on this directory fd for control
+    └── .ctl                     #   synthetic control file for ioctls
 ```
 
 ## In-Kernel State

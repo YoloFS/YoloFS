@@ -78,7 +78,7 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 	}
 
 	/* No daemon connected — apply default immediately */
-	if (!READ_ONCE(sbi->ask_engine.daemon_file)) {
+	if (!atomic_read(&sbi->ask_engine.has_daemon)) {
 		*result = sbi->ask_engine.default_perm;
 		return 0;
 	}

@@ -38,12 +38,8 @@ static int agfs_dir_open(struct inode *inode, struct file *file)
 static int agfs_dir_release(struct inode *inode, struct file *file)
 {
 	struct agfs_dir_info *di = AGFS_DI(file);
-	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
 
 	if (di) {
-		if (file == READ_ONCE(sbi->ask_engine.daemon_file))
-			agfs_daemon_cleanup(sbi);
-
 		if (di->fi.lower_file)
 			fput(di->fi.lower_file);
 		kfree(di);
@@ -212,6 +208,4 @@ const struct file_operations agfs_dir_fops = {
 	.iterate_shared	= agfs_readdir,
 	.llseek		= no_llseek,
 	.fsync		= noop_fsync,
-	.unlocked_ioctl	= agfs_ioctl,
-	.compat_ioctl	= agfs_ioctl,
 };

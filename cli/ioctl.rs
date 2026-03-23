@@ -1,7 +1,7 @@
 // agfs CLI — ioctl.rs
 //
 // Binary protocol helpers for communicating with the kernel module
-// via ioctl on .agfs/mnt directory.
+// via ioctl on .agfs/mnt/.ctl control file.
 
 use anyhow::{Context, Result};
 use std::fs::{File, OpenOptions};
@@ -155,13 +155,13 @@ pub fn write_response(fd: &File, id: u64, decision: u8) -> Result<()> {
     Ok(())
 }
 
-/// Open the mount point directory for ioctl.
+/// Open the .ctl control file for ioctl operations.
 pub fn open(agfs_dir: &Path) -> Result<File> {
-    let mnt = agfs_dir.join("mnt");
+    let ctl = agfs_dir.join("mnt").join(".ctl");
     OpenOptions::new()
         .read(true)
-        .open(&mnt)
-        .context("opening .agfs/mnt for ioctl")
+        .open(&ctl)
+        .context("opening .agfs/mnt/.ctl for ioctl")
 }
 
 fn make_rule(path: &str, perm: u8) -> Result<AgfsIocRule> {

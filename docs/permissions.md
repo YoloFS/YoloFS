@@ -79,11 +79,13 @@ grouped into `struct agfs_ask_engine` (embedded in `agfs_sb_info` as
 | `next_req_id` | Atomic counter for unique request IDs |
 | `timeout_s` | Seconds before an unanswered ask applies the default |
 | `default_perm` | Default decision (`deny` or `allow-ro`) when no daemon or timeout |
-| `daemon_file` | Pointer to the daemon's open `struct file`; NULL if no daemon connected. Only one daemon allowed. |
+| `daemon_file` | Pointer to the daemon's open `struct file` (the `.ctl` control file); NULL if no daemon connected. Set atomically on the first `GET_REQUEST` ioctl, cleared in `agfs_ctl_release()`. Only one daemon allowed — a second `GET_REQUEST` from a different fd returns `-EBUSY`. |
 | `dispatched` | Linked list of requests sent to daemon but not yet answered |
 | `dispatch_lock` | Spinlock protecting `dispatched` and `daemon_file` |
 
-On fd close, if the closing file is `daemon_file`, all dispatched-but-unanswered
+The daemon connects by opening `.agfs/mnt/.ctl` and issuing its first
+`GET_REQUEST` ioctl to claim exclusive daemon status. On close, all
+dispatched-but-unanswered
 requests receive `default_perm` and `daemon_file` is reset to NULL.
 
 **Per-request** (`agfs_perm_request`) — one per in-flight ask:
