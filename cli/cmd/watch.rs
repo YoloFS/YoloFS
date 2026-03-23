@@ -12,10 +12,10 @@
 
 use crate::config::Perm;
 use crate::ioctl::{self, PermRequest};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use colored::Colorize;
-use nix::sys::signal::{SigHandler, Signal, signal};
-use nix::unistd::{Pid, getpgrp, tcgetpgrp, tcsetpgrp};
+use nix::sys::signal::{signal, SigHandler, Signal};
+use nix::unistd::{getpgrp, tcgetpgrp, tcsetpgrp, Pid};
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::OpenOptionsExt;
 

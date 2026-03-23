@@ -7,7 +7,7 @@
 
 use crate::config;
 use crate::ioctl;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use std::env;
 use std::os::unix::process::CommandExt;
@@ -19,7 +19,9 @@ use std::process;
 /// on the base filesystem, and generally follows the principle of least privilege.
 unsafe fn drop_caps() {
     // PR_SET_NO_NEW_PRIVS: prevent regaining caps via setuid binaries
-    libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    unsafe {
+        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    }
 
     // Drop all capabilities from all sets.
     // capset with empty data clears everything.
@@ -44,11 +46,9 @@ unsafe fn drop_caps() {
         permitted: 0,
         inheritable: 0,
     }; 2];
-    libc::syscall(
-        libc::SYS_capset,
-        &header as *const CapHeader,
-        data.as_ptr(),
-    );
+    unsafe {
+        libc::syscall(libc::SYS_capset, &header as *const CapHeader, data.as_ptr());
+    }
 }
 
 /// Pre-exec hook: join the daemon's namespace, pivot_root into mnt, then
@@ -158,10 +158,7 @@ unsafe fn namespace_pre_exec(
 
 /// Pre-exec hook for when we're already in the namespace: just pivot_root
 /// and mount /proc (no setns needed).
-unsafe fn pivot_only_pre_exec(
-    mnt: &Path,
-    cwd: &Path,
-) -> Result<(), std::io::Error> {
+unsafe fn pivot_only_pre_exec(mnt: &Path, cwd: &Path) -> Result<(), std::io::Error> {
     use std::ffi::CString;
 
     let mnt_cstr = CString::new(mnt.as_os_str().as_encoded_bytes())
@@ -343,8 +340,7 @@ fn auto_checkpoint(name: &str) -> Result<bool> {
             let result: u8 = (|| -> Result<u8> {
                 crate::utils::join_daemon_namespace(&agfs)?;
                 let ctl_file = ioctl::open(&agfs).context("opening ctl for checkpoint")?;
-                let gen_id =
-                    ioctl::create_checkpoint(&ctl_file, name, ioctl::AGFS_CHK_IF_CHANGED)?;
+                let gen_id = ioctl::create_checkpoint(&ctl_file, name, ioctl::AGFS_CHK_IF_CHANGED)?;
                 if gen_id == 0 {
                     return Ok(0); // no changes
                 }
