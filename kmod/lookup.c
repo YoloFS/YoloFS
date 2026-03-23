@@ -138,6 +138,7 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 	}
 
 	agfs_cache_perm(inode, dentry);
+	AGFS_D(dentry)->in_base = true;
 	d_add(dentry, inode);
 	return NULL;
 

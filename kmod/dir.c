@@ -84,8 +84,7 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 	qname.hash = full_name_hash(rdd->dentry, name, namelen);
 	child = d_lookup(rdd->dentry, &qname);
 	if (child) {
-		bool overridden =
-			!agfs_dstate_is_passthrough(AGFS_D(child)->dstate);
+		bool overridden = AGFS_D(child)->kind != AGFS_DKIND_PASSTHROUGH;
 		dput(child);
 		if (overridden)
 			return true; /* skip — overridden */
@@ -114,12 +113,10 @@ static bool agfs_emit_dirents(struct dentry *parent, struct dir_context *ctx,
 
 	spin_lock(&parent->d_lock);
 	hlist_for_each_entry(child, &parent->d_children, d_sib) {
-		struct agfs_dentry_info *di = AGFS_D(child);
-
-		if (!di || agfs_dstate_is_passthrough(di->dstate))
+		if (AGFS_D(child)->kind == AGFS_DKIND_PASSTHROUGH)
 			continue;
 
-		if (agfs_dstate_is_tombstone(di->dstate))
+		if (AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE)
 			continue;
 
 		dget_dlock(child);
@@ -129,8 +126,8 @@ static bool agfs_emit_dirents(struct dentry *parent, struct dir_context *ctx,
 			(*off)++;
 		} else if (!dir_emit(ctx, child->d_name.name,
 				     child->d_name.len,
-				     agfs_dstate_emit_ino(di->dstate),
-				     agfs_dstate_d_type(di->dstate))) {
+				     d_inode(child)->i_ino,
+				     fs_umode_to_dtype(d_inode(child)->i_mode))) {
 			dput(child);
 			return true;
 		} else {

@@ -56,7 +56,7 @@ const char   *agfs_dentry_base_src(const struct dentry *d);
 
 ### 2. Dentry-centric mutations
 
-Replace `agfs_stage_dentry` / `agfs_dentry_reset` / manual
+Replace `agfs_stage_dentry` / `agfs_dentry_unstage` / manual
 stage-or-overwrite with three functions in `dentry.c`:
 
 ```c
@@ -64,7 +64,7 @@ void agfs_dentry_set_staged_ino(struct dentry *d, u32 ino, u16 gen,
                              unsigned char d_type, bool in_base);
 void agfs_dentry_set_base_path(struct dentry *d, char *base_copy,
                                  unsigned char d_type, bool in_base);
-void agfs_dentry_reset(struct dentry *d);
+void agfs_dentry_unstage(struct dentry *d);
 ```
 
 Each mutation handles:
@@ -210,14 +210,14 @@ need_tombstone = agfs_dstate_is_passthrough(di->dstate) ||
                  agfs_dstate_in_base(di->dstate);
 ...
 if (!agfs_dstate_is_passthrough(di->dstate))
-    agfs_dentry_reset(dentry);
+    agfs_dentry_unstage(dentry);
 ```
 
 After:
 ```c
 need_tombstone = agfs_dentry_in_base(dentry);
 ...
-agfs_dentry_reset(dentry);   /* no-op if passthrough */
+agfs_dentry_unstage(dentry);   /* no-op if passthrough */
 ```
 
 ### `agfs_rename` (inode.c)
@@ -239,7 +239,7 @@ if (is_roundtrip) {
 After:
 ```c
 if (is_roundtrip) {
-    agfs_dentry_reset(old_dentry);
+    agfs_dentry_unstage(old_dentry);
 } else if (agfs_dentry_is_staged_inode(old_dentry)) {
     agfs_dentry_set_staged_ino(old_dentry, agfs_dentry_ino(old_dentry),
                             agfs_dentry_gen(old_dentry),
@@ -273,7 +273,7 @@ dir_emit(..., agfs_dstate_emit_ino(di->dstate), agfs_dstate_d_type(di->dstate));
 
 After:
 ```c
-if (!di || !!agfs_dentry_is_passthrough(child)) continue;
+if (agfs_dentry_is_passthrough(child)) continue;
 if (agfs_dentry_is_tombstone(child)) continue;
 dir_emit(..., agfs_dentry_emit_ino(child), agfs_dentry_d_type(child));
 ```
@@ -314,8 +314,8 @@ if (agfs_dentry_is_current(dentry, gen)) {
 | Old function | Replacement |
 |---|---|
 | `agfs_stage_dentry(dentry, dstate)` | `agfs_dentry_set_staged_ino` / `agfs_dentry_set_base_path` |
-| `agfs_dentry_reset(dentry)` | `agfs_dentry_reset` (with no-op safety) |
-| `agfs_dstate_is_passthrough(p)` | `!agfs_dentry_is_passthrough(d)` (inverted) |
+| `agfs_unstage_dentry(dentry)` | `agfs_dentry_unstage` (with no-op safety) |
+| `agfs_dstate_is_passthrough(p)` | `agfs_dentry_is_passthrough(d)` |
 | `agfs_dstate_is_tombstone(p)` | `agfs_dentry_is_tombstone(d)` |
 | `agfs_dstate_is_base_path(p)` | `agfs_dentry_is_base_path(d)` |
 | `agfs_dstate_is_staged_inode(p)` | `agfs_dentry_is_staged_inode(d)` |
@@ -340,7 +340,7 @@ if (agfs_dentry_is_current(dentry, gen)) {
 | File | Change |
 |---|---|
 | `agfs.h` | Remove `agfs_dstate_*` and `agfs_dtype_*` inlines; add `agfs_dentry_*` query inlines and extern declarations for mutations/inject |
-| `dentry.c` | Add `agfs_dentry_set_staged_ino`, `agfs_dentry_set_base_path`, `agfs_dentry_reset`; rename `agfs_add_tombstone` → `agfs_dentry_add_tombstone`, `agfs_remove_tombstone` → `agfs_dentry_remove_tombstone`; move all dstate encoding internals here; move `agfs_inject_dentry` from `ioctl.c` (split into `agfs_dentry_add_staged_inode` / `agfs_dentry_add_base_path`); add `agfs_dstate_decode_wire` |
+| `dentry.c` | Add `agfs_dentry_set_staged_ino`, `agfs_dentry_set_base_path`, `agfs_dentry_unstage`; rename `agfs_add_tombstone` → `agfs_dentry_add_tombstone`, `agfs_remove_tombstone` → `agfs_dentry_remove_tombstone`; move all dstate encoding internals here; move `agfs_inject_dentry` from `ioctl.c` (split into `agfs_dentry_add_staged_inode` / `agfs_dentry_add_base_path`); add `agfs_dstate_decode_wire` |
 | `inode.c` | Rewrite `agfs_create_staged`, `agfs_delete_entry`, `agfs_rename` to use new API |
 | `staging.c` | Rewrite `agfs_do_cow` to use `agfs_dentry_set_staged_ino` |
 | `file.c` | Rewrite `agfs_open_staged` to use `agfs_dentry_is_current` / `agfs_dentry_ino` |

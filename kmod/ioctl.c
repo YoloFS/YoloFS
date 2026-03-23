@@ -402,12 +402,12 @@ static inline int read_le16(struct tree_cursor *c, u16 *out)
 	return 0;
 }
 
-static inline int read_le64(struct tree_cursor *c, u64 *out)
+static inline int read_le32(struct tree_cursor *c, u32 *out)
 {
-	if (c->buf + 8 > c->end)
+	if (c->buf + 4 > c->end)
 		return -EINVAL;
-	*out = get_unaligned_le64(c->buf);
-	c->buf += 8;
+	*out = get_unaligned_le32(c->buf);
+	c->buf += 4;
 	return 0;
 }
 
@@ -426,66 +426,83 @@ struct dir_frame {
 };
 
 /*
- * Create a VFS dentry under @parent, populate it with @dstate, and pin it.
- * Takes ownership of @dstate — frees it on error.
+ * Parse the kind-specific payload from @cur and inject the corresponding
+ * dentry under @parent.  PASSTHROUGH entries have no payload.
  */
-static int agfs_inject_dentry(struct dentry *parent, const u8 *name,
-			      u16 name_len, struct super_block *sb,
-			      struct agfs_sb_info *sbi,
-			      struct agfs_dstate dstate)
+static int restore_inject_entry(struct tree_cursor *cur,
+				struct agfs_sb_info *sbi,
+				struct dentry *parent,
+				const u8 *name_ptr, u16 name_len,
+				u8 kind, u16 gen)
 {
-	struct qstr qname;
-	struct dentry *child;
+	struct super_block *sb = parent->d_sb;
 	struct path lower_path;
-	struct inode *inode;
+	u8 in_base_byte;
 	int err;
 
-	if (agfs_dstate_is_tombstone(dstate)) {
-		if (!agfs_add_tombstone(parent, (const char *)name,
-					name_len, agfs_dstate_d_type(dstate)))
+	switch (kind) {
+	case AGFS_DKIND_PASSTHROUGH:
+		return 0;
+
+	case AGFS_DKIND_TOMBSTONE:
+		if (!agfs_dentry_add_tombstone(parent,
+					       (const char *)name_ptr,
+					       name_len))
 			return -ENOMEM;
 		return 0;
+
+	case AGFS_DKIND_STAGED_INODE: {
+		u32 ino;
+
+		err = read_le32(cur, &ino);
+		if (err)
+			return err;
+		err = read_u8(cur, &in_base_byte);
+		if (err || in_base_byte > 1)
+			return err ?: -EINVAL;
+		err = agfs_inode_path(sbi, ino, &lower_path);
+		if (err)
+			return err;
+		return agfs_dentry_inject(parent, name_ptr, name_len, sb,
+					  &lower_path, AGFS_DKIND_STAGED_INODE,
+					  in_base_byte, gen);
 	}
 
-	qname.name = name;
-	qname.len = name_len;
-	qname.hash = full_name_hash(parent, (const char *)name, name_len);
-	child = d_alloc(parent, &qname);
-	if (!child) {
-		agfs_dstate_free(dstate);
-		return -ENOMEM;
+	case AGFS_DKIND_REDIRECT: {
+		char path_buf[AGFS_PATH_MAX];
+		const u8 *base_ptr;
+		u16 base_len;
+
+		err = read_le16(cur, &base_len);
+		if (err)
+			return err;
+		if (base_len == 0 || base_len >= AGFS_PATH_MAX)
+			return -EINVAL;
+		err = read_bytes(cur, base_len, &base_ptr);
+		if (err)
+			return err;
+		err = read_u8(cur, &in_base_byte);
+		if (err || in_base_byte > 1)
+			return err ?: -EINVAL;
+
+		memcpy(path_buf, base_ptr, base_len);
+		path_buf[base_len] = '\0';
+		err = kern_path(path_buf, LOOKUP_FOLLOW, &lower_path);
+		if (err)
+			return err;
+		return agfs_dentry_inject(parent, name_ptr, name_len, sb,
+					  &lower_path, AGFS_DKIND_REDIRECT,
+					  in_base_byte, gen);
 	}
 
-	/* Resolve lower path — method depends on dstate type */
-	if (agfs_dstate_is_staged_inode(dstate)) {
-		err = agfs_inode_path(sbi, agfs_dstate_ino(dstate),
-				     &lower_path);
-	} else {
-		err = kern_path(agfs_dstate_src(dstate),
-				LOOKUP_FOLLOW, &lower_path);
+	default:
+		return -EINVAL;
 	}
-	if (err) {
-		agfs_dstate_free(dstate);
-		dput(child);
-		return err;
-	}
-
-	agfs_set_lower_path(child, &lower_path);
-	AGFS_D(child)->dstate = dstate;
-	inode = agfs_iget(sb, d_inode(lower_path.dentry));
-	if (IS_ERR(inode)) {
-		/* dput(child) → d_release releases lower_path + dstate */
-		dput(child);
-		return PTR_ERR(inode);
-	}
-	d_add(child, inode);
-	return 0;
 }
 
 static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 			       struct agfs_ioc_restore *hdr, u16 gen)
 {
-	struct super_block *sb = file_inode(file)->i_sb;
 	struct dir_frame stack[AGFS_RESTORE_MAX_DEPTH];
 	struct tree_cursor cur;
 	u8 *kbuf;
@@ -517,14 +534,14 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 	if (root_count == 0)
 		goto check_trailing;
 
-	stack[0].dentry = dget(sb->s_root);
+	stack[0].dentry = dget(file_inode(file)->i_sb->s_root);
 	stack[0].remaining = root_count;
 	depth = 0;
 
 	while (depth >= 0) {
 		u16 name_len, child_count;
 		const u8 *name_ptr;
-		struct agfs_dstate dstate;
+		u8 kind;
 
 		if (stack[depth].remaining == 0) {
 			dput(stack[depth].dentry);
@@ -545,54 +562,14 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 		if (err)
 			goto out_unwind;
 
-		/* Read dstate (val == 0 means Passthrough) */
-		err = read_le64(&cur, &dstate.val);
+		/* Read and handle entry kind */
+		err = read_u8(&cur, &kind);
 		if (err)
 			goto out_unwind;
-
-		if (!agfs_dstate_is_passthrough(dstate)) {
-			if (agfs_dstate_is_tombstone(dstate)) {
-				/* Tombstone — use as-is */
-			} else if (agfs_dstate_is_staged_inode(dstate)) {
-				/* Staged inode — stamp gen */
-				dstate.val = (dstate.val & ~0xFFFFULL) | gen;
-			} else {
-				/* Base_path — read trailing src path */
-				unsigned char d_type;
-				bool ib;
-				char *base_copy;
-				const u8 *base_ptr;
-				u16 base_len;
-
-				d_type = agfs_dstate_d_type(dstate);
-				ib = agfs_dstate_in_base(dstate);
-
-				err = read_le16(&cur, &base_len);
-				if (err)
-					goto out_unwind;
-				if (base_len == 0 || base_len >= AGFS_PATH_MAX) {
-					err = -EINVAL;
-					goto out_unwind;
-				}
-				err = read_bytes(&cur, base_len, &base_ptr);
-				if (err)
-					goto out_unwind;
-
-				base_copy = kstrndup((const char *)base_ptr,
-						     base_len, GFP_KERNEL);
-				if (!base_copy) {
-					err = -ENOMEM;
-					goto out_unwind;
-				}
-				dstate = agfs_dstate_base_path(base_copy, d_type, ib);
-			}
-
-			err = agfs_inject_dentry(stack[depth].dentry,
-						 name_ptr, name_len,
-						 sb, sbi, dstate);
-			if (err)
-				goto out_unwind;
-		}
+		err = restore_inject_entry(&cur, sbi, stack[depth].dentry,
+					   name_ptr, name_len, kind, gen);
+		if (err)
+			goto out_unwind;
 
 		/* Read child_count */
 		err = read_le16(&cur, &child_count);
@@ -600,7 +577,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 			goto out_unwind;
 
 		/* Skip empty passthrough nodes. */
-		if (agfs_dstate_is_passthrough(dstate) && child_count == 0)
+		if (kind == AGFS_DKIND_PASSTHROUGH && child_count == 0)
 			continue;
 
 		if (child_count > 0) {

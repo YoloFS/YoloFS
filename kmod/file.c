@@ -59,7 +59,7 @@ static int agfs_check_open_perm(struct agfs_sb_info *sbi,
 }
 
 /*
- * Open a staged inode by ino, incrementing staging_fd_count.
+ * Open a staged inode via lower_path, incrementing staging_fd_count.
  * On error, decrements the count and returns ERR_PTR.
  *
  * dentry_open() does not apply O_TRUNC (that is normally done by the
@@ -67,28 +67,25 @@ static int agfs_check_open_perm(struct agfs_sb_info *sbi,
  * ATTR_SIZE for staged files.  So we must truncate the lower inode
  * ourselves before opening.
  */
-static struct file *agfs_open_staged_ino(struct agfs_sb_info *sbi,
-					 u32 ino, int flags)
+static struct file *agfs_open_staged_lower(struct dentry *dentry,
+					   struct agfs_sb_info *sbi,
+					   int flags)
 {
-	struct path ino_p;
+	struct path lower_path;
 	struct file *f;
 	int err;
 
-	err = agfs_inode_path(sbi, ino, &ino_p);
-	if (err) {
-		atomic_dec(&sbi->staging_fd_count);
-		return ERR_PTR(err);
-	}
-	if ((flags & O_TRUNC) && i_size_read(d_inode(ino_p.dentry))) {
-		err = vfs_truncate(&ino_p, 0);
+	agfs_get_lower_path(dentry, &lower_path);
+	if ((flags & O_TRUNC) && i_size_read(d_inode(lower_path.dentry))) {
+		err = vfs_truncate(&lower_path, 0);
 		if (err) {
-			path_put(&ino_p);
+			agfs_put_lower_path(dentry, &lower_path);
 			atomic_dec(&sbi->staging_fd_count);
 			return ERR_PTR(err);
 		}
 	}
-	f = dentry_open(&ino_p, flags, current_cred());
-	path_put(&ino_p);
+	f = dentry_open(&lower_path, flags, current_cred());
+	agfs_put_lower_path(dentry, &lower_path);
 	if (IS_ERR(f))
 		atomic_dec(&sbi->staging_fd_count);
 	return f;
@@ -103,7 +100,6 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 {
 	struct file *new_file = NULL;
 	bool truncate;
-	struct agfs_dstate dstate;
 	int err;
 
 	if (!(file->f_flags & (O_WRONLY | O_RDWR)))
@@ -112,27 +108,23 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 	/* Fast path: inode is current — open directly.
 	 * staging_sem excludes checkpoint, so gen is stable under the lock. */
 	down_read(&sbi->staging_sem);
-	dstate = AGFS_D(dentry)->dstate;
-	if (agfs_dstate_is_current(dstate, (u16)atomic_read(&sbi->gen))) {
+	if (agfs_dentry_is_current(dentry, sbi)) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_read(&sbi->staging_sem);
-		return agfs_open_staged_ino(sbi, agfs_dstate_ino(dstate),
-					    file->f_flags);
+		return agfs_open_staged_lower(dentry, sbi, file->f_flags);
 	}
 	up_read(&sbi->staging_sem);
 
-	/* Slow path: needs COW (base file, link, or stale inode) */
+	/* Slow path: needs COW (base file, redirect, or stale inode) */
 	truncate = !!(file->f_flags & O_TRUNC);
 
 	down_write(&sbi->staging_sem);
 
 	/* Re-check — a concurrent open may have COW'd */
-	dstate = AGFS_D(dentry)->dstate;
-	if (agfs_dstate_is_current(dstate, (u16)atomic_read(&sbi->gen))) {
+	if (agfs_dentry_is_current(dentry, sbi)) {
 		atomic_inc(&sbi->staging_fd_count);
 		up_write(&sbi->staging_sem);
-		return agfs_open_staged_ino(sbi, agfs_dstate_ino(dstate),
-					    file->f_flags);
+		return agfs_open_staged_lower(dentry, sbi, file->f_flags);
 	}
 
 	atomic_inc(&sbi->staging_fd_count);

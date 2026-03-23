@@ -127,7 +127,6 @@ static int agfs_copy_to_inode(struct dentry *dentry,
 int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 		struct file **new_file, int flags, bool truncate)
 {
-	struct agfs_dentry_info *di = AGFS_D(dentry);
 	struct inode *parent = d_inode(dentry->d_parent);
 	struct path inode_path;
 	u32 ino;
@@ -148,22 +147,12 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	}
 
 	/*
-	 * Set dstate on dentry and pin if needed.
+	 * Set kind on dentry and pin if needed.
 	 * Take inode_lock(parent) to serialize against VFS-driven
 	 * create/unlink/rename on the same directory.
 	 */
 	inode_lock(parent);
-	if (agfs_dstate_is_passthrough(di->dstate)) {
-		agfs_stage_dentry(dentry,
-				  agfs_dstate_staged_inode(ino,
-						(u16)atomic_read(&sbi->gen),
-						DT_REG, true));
-	} else {
-		agfs_dstate_free(di->dstate);
-		di->dstate = agfs_dstate_staged_inode(ino,
-					   (u16)atomic_read(&sbi->gen),
-					   DT_REG, true);
-	}
+	agfs_dentry_stage_inode(dentry, sbi, true);
 	inode_unlock(parent);
 
 	path_get(&inode_path); /* extra ref for reopen below */
@@ -171,7 +160,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	/* Update dentry lower_path to point at the inode (consumes original ref) */
 	agfs_replace_lower_path(dentry, &inode_path);
 
-	/* Append journal record (best-effort — dstate is already set) */
+	/* Append journal record (best-effort — kind is already set) */
 	agfs_journal_modify(sbi, dentry, ino, DT_REG);
 
 	/* Reopen with requested flags */

@@ -48,6 +48,7 @@ static struct inode *agfs_alloc_inode(struct super_block *sb)
 	i->lower_inode = NULL;
 	i->cached_perm = AGFS_PERM_NONE;
 	i->perm_gen = 0;
+	i->staging_gen = 0;
 	return &i->vfs_inode;
 }
 

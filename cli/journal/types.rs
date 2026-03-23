@@ -16,11 +16,6 @@ pub fn dtype_valid(val: u8) -> bool {
     )
 }
 
-/// 3-bit encoding matching the kernel's `agfs_dtype_pack` (libc_dt >> 1).
-pub fn dtype_pack(dt: u8) -> u64 {
-    (dt >> 1) as u64
-}
-
 /// A data mutation applied to the dir tree (A/M/D/R/P).
 #[derive(Debug, Clone)]
 pub enum Action {

@@ -7,12 +7,7 @@
 
 static struct kmem_cache *agfs_dentry_cachep;
 
-static void agfs_free_dentry_private_data(struct dentry *dentry)
-{
-	struct agfs_dentry_info *info = AGFS_D(dentry);
-	kmem_cache_free(agfs_dentry_cachep, info);
-	dentry->d_fsdata = NULL;
-}
+/* ── Dentry lifecycle ──────────────────────────────────────────────── */
 
 /*
  * d_init callback — auto-initialize agfs_dentry_info on every dentry
@@ -29,22 +24,13 @@ static int agfs_d_init(struct dentry *dentry)
 		return -ENOMEM;
 
 	spin_lock_init(&info->lock);
-	info->dstate = (struct agfs_dstate){0}; /* passthrough */
+	/* kind = AGFS_DKIND_PASSTHROUGH (0), in_base = false — from zalloc */
 	info->perm = AGFS_PERM_NONE;
 	INIT_LIST_HEAD(&info->rule_pin);
 	info->rule_dentry = NULL;
 	dentry->d_fsdata = info;
 	return 0;
 }
-
-/*
- * Dentry revalidation.
- *
- * AgFS only supports local lower filesystems (ext4, xfs, …) that never
- * set DCACHE_OP_REVALIDATE.  Mount is rejected for remote filesystems
- * (e.g. NFS) that need revalidation.  Since agfs_dops omits
- * d_revalidate, the VFS keeps lookup_fast in pure RCU-walk mode.
- */
 
 static void agfs_d_release(struct dentry *dentry)
 {
@@ -53,38 +39,75 @@ static void agfs_d_release(struct dentry *dentry)
 	if (!info)
 		return;
 
-	agfs_dstate_free(info->dstate);
 	agfs_put_reset_lower_path(dentry);
-	agfs_free_dentry_private_data(dentry);
+	kmem_cache_free(agfs_dentry_cachep, info);
+	dentry->d_fsdata = NULL;
 }
 
-/* ── Dentry Staging Helpers ────────────────────────────────────────── */
+/* ── Dentry-centric mutations ──────────────────────────────────────── */
 
 /*
- * Stage a VFS-provided dentry.  Sets dstate and takes a dget() pin
- * so the dentry persists in d_children.
- * Caller must hold i_rwsem exclusive on the parent directory.
+ * Revert a staged dentry to passthrough.  No-op if already passthrough
+ * — calling dput on a passthrough dentry would drop a reference that
+ * was never acquired by dget, causing a refcount underflow.
+ * Caller must hold i_rwsem exclusive on the parent.
  */
-void agfs_stage_dentry(struct dentry *dentry, struct agfs_dstate dstate)
-{
-	AGFS_D(dentry)->dstate = dstate;
-	dget(dentry);	/* pin in dcache so it stays in d_children */
-}
-
-/*
- * Remove a dentry from staging: free dstate, clear to passthrough,
- * release pin.  The agfs_dentry_info (and its dentry) may be freed
- * after this call if the dput drops the last reference.
- * Caller must hold i_rwsem exclusive on the parent directory.
- */
-void agfs_unstage_dentry(struct dentry *dentry)
+void agfs_dentry_unstage(struct dentry *dentry)
 {
 	struct agfs_dentry_info *di = AGFS_D(dentry);
 
-	agfs_dstate_free(di->dstate);
-	di->dstate = (struct agfs_dstate){0}; /* passthrough */
+	if (di->kind == AGFS_DKIND_PASSTHROUGH)
+		return;
+
+	di->kind = AGFS_DKIND_PASSTHROUGH;
+	di->in_base = false;
 	dput(dentry);
 }
+
+/*
+ * Set a dentry's overlay state, handling the passthrough → staged
+ * transition (dget pin) and overwrite.
+ * Caller must hold i_rwsem exclusive on the parent directory.
+ */
+void agfs_dentry_stage(struct dentry *dentry, enum agfs_dkind kind,
+		       bool in_base)
+{
+	struct agfs_dentry_info *di = AGFS_D(dentry);
+	bool was_passthrough = (di->kind == AGFS_DKIND_PASSTHROUGH);
+
+	di->kind = kind;
+	di->in_base = in_base;
+
+	if (was_passthrough)
+		dget(dentry);
+}
+
+/*
+ * Stage a dentry as a staged inode with the current generation.
+ * Used by create and COW where new content is being staged.
+ * Rename uses agfs_dentry_stage directly (gen unchanged).
+ */
+void agfs_dentry_stage_inode(struct dentry *dentry, struct agfs_sb_info *sbi,
+			     bool in_base)
+{
+	agfs_dentry_stage(dentry, AGFS_DKIND_STAGED_INODE, in_base);
+	AGFS_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->gen);
+}
+
+/* ── Child dentry allocation ───────────────────────────────────────── */
+
+static struct dentry *agfs_d_alloc(struct dentry *parent,
+				   const char *name, u16 name_len)
+{
+	struct qstr qname;
+
+	qname.name = (const unsigned char *)name;
+	qname.len = name_len;
+	qname.hash = full_name_hash(parent, name, name_len);
+	return d_alloc(parent, &qname);
+}
+
+/* ── Tombstone operations ──────────────────────────────────────────── */
 
 /*
  * Create a negative (tombstone) dentry at @name under @parent and
@@ -94,39 +117,74 @@ void agfs_unstage_dentry(struct dentry *dentry)
  * Returns the tombstone dentry, or NULL on allocation failure.
  * Caller must hold i_rwsem exclusive on dir.
  */
-struct dentry *agfs_add_tombstone(struct dentry *parent,
-				  const char *name, unsigned int len,
-				  unsigned char d_type)
+struct dentry *agfs_dentry_add_tombstone(struct dentry *parent,
+					 const char *name, unsigned int len)
 {
-	struct qstr qname = QSTR_INIT(name, len);
 	struct dentry *tomb;
 
-	qname.hash = full_name_hash(parent, name, len);
-	tomb = d_alloc(parent, &qname);
+	tomb = agfs_d_alloc(parent, name, len);
 	if (!tomb)
 		return NULL;
 
-	AGFS_D(tomb)->dstate = agfs_dstate_tombstone(d_type);
+	AGFS_D(tomb)->kind = AGFS_DKIND_TOMBSTONE;
+	AGFS_D(tomb)->in_base = true;
 	d_add(tomb, NULL);
 	return tomb;
 }
 
 /*
- * Undo agfs_add_tombstone: unhash, clear dstate, and release.
+ * Undo agfs_dentry_add_tombstone: unhash, clear dstate, and release.
  * Used for rollback when a subsequent step (e.g., journal write) fails.
  * Caller must hold i_rwsem exclusive on dir.
  */
-void agfs_remove_tombstone(struct dentry *tomb)
+void agfs_dentry_remove_tombstone(struct dentry *tomb)
 {
 	d_drop(tomb);
-	agfs_unstage_dentry(tomb);
+	agfs_dentry_unstage(tomb);
 }
+
+/* ── Inject helper (restore path) ──────────────────────────────────── */
+
+/*
+ * Create a VFS dentry under @parent, attach the resolved @lower_path,
+ * iget the inode, and add to the dcache.
+ * Takes ownership of @lower_path — released on error via dput → d_release.
+ */
+int agfs_dentry_inject(struct dentry *parent, const u8 *name,
+		       u16 name_len, struct super_block *sb,
+		       struct path *lower_path,
+		       enum agfs_dkind kind, bool in_base, u16 gen)
+{
+	struct dentry *child;
+	struct inode *inode;
+
+	child = agfs_d_alloc(parent, (const char *)name, name_len);
+	if (!child) {
+		path_put(lower_path);
+		return -ENOMEM;
+	}
+
+	agfs_set_lower_path(child, lower_path);
+	AGFS_D(child)->kind = kind;
+	AGFS_D(child)->in_base = in_base;
+	inode = agfs_iget(sb, d_inode(lower_path->dentry));
+	if (IS_ERR(inode)) {
+		dput(child);
+		return PTR_ERR(inode);
+	}
+	if (kind == AGFS_DKIND_STAGED_INODE)
+		AGFS_I(inode)->staging_gen = gen;
+	d_add(child, inode);
+	return 0;
+}
+
+/* ── Bulk unstage ──────────────────────────────────────────────────── */
 
 /*
  * Iteratively unstage all staged child dentries via depth-first walk.
  *
  * The hlist traversal is lockless — holding d_lock across the loop is
- * not possible because agfs_unstage_dentry() calls dput(), which may
+ * not possible because agfs_dentry_unstage() calls dput(), which may
  * re-acquire d_lock and deadlock.  To make the lockless walk safe we
  * call shrink_dcache_sb() first: this evicts every unreferenced
  * (passthrough) dentry, so every entry still in d_children has a
@@ -169,8 +227,8 @@ void agfs_unstage_all(struct super_block *sb)
 			pos[++depth] = cur->d_children.first;
 
 		if (AGFS_D(cur) &&
-		    !agfs_dstate_is_passthrough(AGFS_D(cur)->dstate))
-			agfs_unstage_dentry(cur);
+		    AGFS_D(cur)->kind != AGFS_DKIND_PASSTHROUGH)
+			agfs_dentry_unstage(cur);
 	}
 
 	shrink_dcache_sb(sb);

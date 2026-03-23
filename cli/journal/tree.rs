@@ -178,10 +178,12 @@ impl DirTree {
     ///   DirNode      := name_len:le16  name:u8[name_len]
     ///                   Dstate
     ///                   child_count:le16  DirNode[child_count]   (children of this dir)
-    ///   Dstate       := val:le64                                 (0 = Passthrough)
-    ///                   [base_len:le16  base_path:u8[base_len]  if Redirect]
+    ///   Dstate       := kind:u8                                  (0=Passthrough)
+    ///                   [ino:le32  in_base:u8                    if kind==1 StagedInode]
+    ///                   [base_len:le16  base:u8[base_len]  in_base:u8  if kind==2 Redirect]
+    ///                                                            (kind==3 Tombstone: no extra data)
     ///
-    /// Passthrough dirs emit val=0.  File nodes always have child_count=0.
+    /// Passthrough dirs emit kind=0.  File nodes always have child_count=0.
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         self.serialize_into(&mut buf);
@@ -227,38 +229,25 @@ impl DirTree {
 
     fn serialize_dstate(dstate: &Dstate, buf: &mut Vec<u8>) {
         match dstate {
-            Dstate::Tombstone { dtype } => {
-                // Tombstone: (s64)val > 0, ino=0, in_base=1
-                let val: u64 = (dtype_pack(*dtype) << 60) | (1u64 << 59);
-                buf.extend_from_slice(&val.to_le_bytes());
+            Dstate::Passthrough => {
+                buf.push(0); // PASSTHROUGH
             }
-            Dstate::StagedInode {
-                ino,
-                dtype,
-                in_base,
-            } => {
+            Dstate::StagedInode { ino, in_base, .. } => {
                 assert!(*ino > 0, "inode ino must be non-zero");
-                let val: u64 =
-                    (dtype_pack(*dtype) << 60) | ((*in_base as u64) << 59) | ((*ino as u64) << 16);
-                // gen bits [15:0] zeroed — kernel assigns new_gen
-                buf.extend_from_slice(&val.to_le_bytes());
+                buf.push(1); // STAGED_INODE
+                buf.extend_from_slice(&ino.to_le_bytes());
+                buf.push(*in_base as u8);
             }
-            Dstate::Redirect {
-                src,
-                dtype,
-                in_base,
-            } => {
-                let val: u64 =
-                    (1u64 << 63) | (dtype_pack(*dtype) << 60) | ((*in_base as u64) << 59);
-                // pointer bits [59:0] zeroed — base path travels inline
-                buf.extend_from_slice(&val.to_le_bytes());
+            Dstate::Redirect { src, in_base, .. } => {
+                buf.push(2); // REDIRECT
                 let bp = src.as_bytes();
                 let bp_len: u16 = bp.len().try_into().expect("base_path too long");
                 buf.extend_from_slice(&bp_len.to_le_bytes());
                 buf.extend_from_slice(bp);
+                buf.push(*in_base as u8);
             }
-            Dstate::Passthrough => {
-                buf.extend_from_slice(&0u64.to_le_bytes());
+            Dstate::Tombstone { .. } => {
+                buf.push(3); // TOMBSTONE
             }
         }
     }
@@ -1304,9 +1293,10 @@ mod tests {
         // Node "_f"
         expected.extend_from_slice(&2u16.to_le_bytes()); // name_len = 2
         expected.extend_from_slice(b"_f");
-        // Dstate: dtype=File(4) at [62:60], in_base=false, ino=1, gen=0
-        let val: u64 = (dtype_pack(libc::DT_REG) << 60) | (1u64 << 16);
-        expected.extend_from_slice(&val.to_le_bytes());
+        // Dstate: kind=1(StagedInode), ino=1, in_base=false
+        expected.push(1); // kind
+        expected.extend_from_slice(&1u32.to_le_bytes()); // ino
+        expected.push(0); // in_base=false
         expected.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
         assert_eq!(buf, expected);
     }
@@ -1329,9 +1319,8 @@ mod tests {
         expected.extend_from_slice(&1u16.to_le_bytes()); // child_count = 1
         expected.extend_from_slice(&3u16.to_le_bytes()); // name_len = 3
         expected.extend_from_slice(b"old");
-        // Tombstone: dtype=File(4) at [62:60], in_base=1 at [59], ino=0
-        let val: u64 = (dtype_pack(libc::DT_REG) << 60) | (1u64 << 59);
-        expected.extend_from_slice(&val.to_le_bytes());
+        // Dstate: kind=3(Tombstone)
+        expected.push(3);
         expected.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
         assert_eq!(buf, expected);
     }
@@ -1344,7 +1333,6 @@ mod tests {
             dtype: Some(libc::DT_REG),
         }]);
         let buf = tree.serialize();
-        // Should have 2 children: "a.txt" (tombstone) and "b.txt" (link)
         let mut cursor = 0usize;
         let child_count = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
@@ -1356,28 +1344,26 @@ mod tests {
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + name_len], b"a.txt");
         cursor += name_len;
-        let val = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
-        // Tombstone: dtype=File(4) at [62:60], in_base=1 at [59]
-        assert_eq!(val, (dtype_pack(libc::DT_REG) << 60) | (1u64 << 59));
-        cursor += 8;
+        assert_eq!(buf[cursor], 3); // kind=TOMBSTONE
+        cursor += 1;
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
         assert_eq!(cc, 0);
 
-        // Node 2: "b.txt" — link to /a.txt
+        // Node 2: "b.txt" — redirect to /a.txt
         let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + name_len], b"b.txt");
         cursor += name_len;
-        let val = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
-        // Link: bit 63 set, dtype=File(4) at [62:60], in_base=false (Rename → dest not in base)
-        assert!((val as i64) < 0, "link should have bit 63 set");
-        cursor += 8;
-        // Trailing: base_len + base_path
+        assert_eq!(buf[cursor], 2); // kind=REDIRECT
+        cursor += 1;
+        // Trailing: base_len + base_path + in_base
         let base_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + base_len], b"/a.txt");
         cursor += base_len;
+        assert_eq!(buf[cursor], 0); // in_base=false (Rename → dest not in base)
+        cursor += 1;
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
         assert_eq!(cc, 0);
@@ -1397,30 +1383,36 @@ mod tests {
         cursor += 2;
         assert_eq!(cc, 1);
 
-        // Node "dir": name_len=3, name="dir", dstate(Dir,ino=10), child_count=1
+        // Node "dir": name_len=3, name="dir", dstate(kind=1,ino=10,in_base=false), child_count=1
         let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + name_len], b"dir");
         cursor += name_len;
-        let val = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
-        // Dir inode: dtype=Dir at bits [62:60], in_base=false, ino=10
-        assert_eq!((val >> 60) & 7, dtype_pack(libc::DT_DIR)); // dtype=Dir
-        assert_eq!((val >> 16) & 0xFFFFFFFF, 10); // ino
-        cursor += 8;
+        assert_eq!(buf[cursor], 1); // kind=STAGED_INODE
+        cursor += 1;
+        let ino = u32::from_le_bytes(buf[cursor..cursor + 4].try_into().unwrap());
+        assert_eq!(ino, 10);
+        cursor += 4;
+        assert_eq!(buf[cursor], 0); // in_base=false
+        cursor += 1;
 
         // child_count for "dir" subtree = 1
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
         assert_eq!(cc, 1);
 
-        // Node "file": name_len=4, name="file", dstate(File,ino=20), child_count=0
+        // Node "file": name_len=4, name="file", dstate(kind=1,ino=20,in_base=false), child_count=0
         let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + name_len], b"file");
         cursor += name_len;
-        let val = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
-        assert_eq!((val >> 16) & 0xFFFFFFFF, 20); // ino
-        cursor += 8;
+        assert_eq!(buf[cursor], 1); // kind=STAGED_INODE
+        cursor += 1;
+        let ino = u32::from_le_bytes(buf[cursor..cursor + 4].try_into().unwrap());
+        assert_eq!(ino, 20);
+        cursor += 4;
+        assert_eq!(buf[cursor], 0); // in_base=false
+        cursor += 1;
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
         assert_eq!(cc, 0);
@@ -1440,14 +1432,13 @@ mod tests {
         cursor += 2;
         assert_eq!(cc, 1);
 
-        // Node "dir": val=0 (Passthrough)
+        // Node "dir": kind=0 (Passthrough)
         let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + name_len], b"dir");
         cursor += name_len;
-        let val = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
-        assert_eq!(val, 0); // Passthrough
-        cursor += 8;
+        assert_eq!(buf[cursor], 0); // kind=PASSTHROUGH
+        cursor += 1;
 
         // child_count = 1
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
@@ -1459,7 +1450,10 @@ mod tests {
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + name_len], b"file");
         cursor += name_len;
-        cursor += 8; // dstate val
+        assert_eq!(buf[cursor], 1); // kind=STAGED_INODE
+        cursor += 1;
+        cursor += 4; // ino
+        cursor += 1; // in_base
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
         assert_eq!(cc, 0);
@@ -1473,7 +1467,7 @@ mod tests {
         let buf = tree.serialize();
         let mut cursor = 2usize; // skip root child_count
 
-        // Read names in order
+        // Read names in order — each node: name_len(2) + name + kind(1) + ino(4) + in_base(1) + cc(2)
         let mut names = Vec::new();
         for _ in 0..3 {
             let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
@@ -1484,7 +1478,7 @@ mod tests {
                     .to_string(),
             );
             cursor += name_len;
-            cursor += 8; // dstate val
+            cursor += 1 + 4 + 1; // kind + ino + in_base (StagedInode)
             cursor += 2; // child_count
         }
         assert_eq!(names, vec!["a", "m", "z"]);
@@ -1509,7 +1503,7 @@ mod tests {
         // leaf File node but leaves Dir(Passthrough) intermediates.  The leaf-level
         // empty dir is filtered, but upper intermediates remain in the
         // serialized output.  The kernel tolerates these (skips nodes with
-        // val=0 and child_count=0).
+        // kind=0 and child_count=0).
         let tree = build(&[add("/a/b/c/file", 1), delete("/a/b/c/file")]);
         assert_eq!(tree.len(), 0, "no dstates after cancel");
         // Serialization still succeeds (doesn't panic).
@@ -1539,26 +1533,23 @@ mod tests {
 
     #[test]
     fn serialize_inode_bits_correct() {
-        // Verify the dstate bit layout for an inode dirent
+        // Verify the dstate layout for a StagedInode (Modify → in_base=true)
         let tree = build(&[Action::Modify {
             path: "/f".into(),
             ino: 42,
             dtype: Some(libc::DT_LNK),
         }]);
         let buf = tree.serialize();
-        // Skip: root child_count(2) + name_len(2) + name(1)
-        let val = u64::from_le_bytes(buf[5..13].try_into().unwrap());
-        // [63]=0, [62:60]=5(Link), [59]=1(in_base=true for Modify), [47:16]=42, [15:0]=0
-        assert_eq!((val >> 63) & 1, 0); // not a link pde
-        assert_eq!((val >> 60) & 7, dtype_pack(libc::DT_LNK)); // dtype=Link
-        assert_eq!((val >> 59) & 1, 1); // in_base=true
-        assert_eq!((val >> 16) & 0xFFFFFFFF, 42); // ino
-        assert_eq!(val & 0xFFFF, 0); // gen bits zeroed
+        // Skip: root child_count(2) + name_len(2) + name(1) = offset 5
+        assert_eq!(buf[5], 1); // kind=STAGED_INODE
+        let ino = u32::from_le_bytes(buf[6..10].try_into().unwrap());
+        assert_eq!(ino, 42);
+        assert_eq!(buf[10], 1); // in_base=true (Modify)
     }
 
     #[test]
     fn serialize_link_bits_correct() {
-        // Verify the dstate bit layout for a link dirent
+        // Verify the dstate layout for a Redirect
         let tree = build(&[Action::Rename {
             src: "/src".into(),
             dst: "/dst".into(),
@@ -1571,25 +1562,15 @@ mod tests {
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + name_len], b"dst");
         cursor += name_len;
-        let val = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
-        cursor += 8;
-        // [63]=1, [62:60]=2(Dir), [59]=0(Rename: dest not in base), [58:0]=0
-        assert_eq!((val >> 63) & 1, 1); // link
-        assert_eq!((val >> 60) & 7, dtype_pack(libc::DT_DIR)); // dtype=Dir
-        assert_eq!((val >> 59) & 1, 0); // in_base=false for Rename
-        assert_eq!(val & 0x07FFFFFFFFFFFFFF, 0); // pointer bits zeroed
+        assert_eq!(buf[cursor], 2); // kind=REDIRECT
+        cursor += 1;
 
-        // Trailing base_path
+        // Trailing base_path + in_base
         let base_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + base_len], b"/src");
-    }
-
-    #[test]
-    fn dtype_to_packed() {
-        assert_eq!(dtype_pack(libc::DT_REG), 4);
-        assert_eq!(dtype_pack(libc::DT_DIR), 2);
-        assert_eq!(dtype_pack(libc::DT_LNK), 5);
+        cursor += base_len;
+        assert_eq!(buf[cursor], 0); // in_base=false (Rename: dest not in base)
     }
 
     #[test]
@@ -1604,7 +1585,7 @@ mod tests {
 
     #[test]
     fn serialize_passthrough_dir_val_zero() {
-        // A Passthrough dir with children should serialize val=0
+        // A Passthrough dir with children should serialize kind=0
         // but still emit the subtree.
         let mut tree = DirTree::new();
         let mut sub = DirTree::new();
@@ -1628,39 +1609,31 @@ mod tests {
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + nlen], b"dir");
         cursor += nlen;
-        // val = 0 (Passthrough)
-        let val = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
-        assert_eq!(val, 0, "Passthrough dir should have val=0");
-        cursor += 8;
+        // kind = 0 (Passthrough)
+        assert_eq!(buf[cursor], 0, "Passthrough dir should have kind=0");
+        cursor += 1;
         // subtree child_count = 1 (the child)
         assert_eq!(u16::from_le_bytes([buf[cursor], buf[cursor + 1]]), 1);
     }
 
     #[test]
     fn serialize_tombstone_dir_dtype() {
-        // delete_dir on a base-only dir produces a tombstone with DT_DIR.
+        // delete_dir on a base-only dir produces a tombstone.
         let tree = build(&[delete_dir("/d")]);
         let buf = tree.serialize();
-        // Skip root child_count(2) + name_len(2) + name(1)
-        let val = u64::from_le_bytes(buf[5..13].try_into().unwrap());
-        // Tombstone: dtype=Dir at [62:60], in_base=1 at [59], ino=0
-        assert_eq!((val >> 60) & 7, dtype_pack(libc::DT_DIR));
-        assert_eq!((val >> 59) & 1, 1);
-        assert_eq!((val >> 16) & 0xFFFFFFFF, 0);
+        // Skip root child_count(2) + name_len(2) + name(1) = offset 5
+        assert_eq!(buf[5], 3); // kind=TOMBSTONE
     }
 
     #[test]
     fn serialize_tombstone_symlink_dtype() {
-        // delete on a base-only symlink produces a tombstone with DT_LNK.
+        // delete on a base-only symlink produces a tombstone.
         let tree = build(&[Action::Delete {
             path: "/s".into(),
             dtype: Some(libc::DT_LNK),
         }]);
         let buf = tree.serialize();
-        let val = u64::from_le_bytes(buf[5..13].try_into().unwrap());
-        assert_eq!((val >> 60) & 7, dtype_pack(libc::DT_LNK));
-        assert_eq!((val >> 59) & 1, 1);
-        assert_eq!((val >> 16) & 0xFFFFFFFF, 0);
+        assert_eq!(buf[5], 3); // kind=TOMBSTONE
     }
 
     #[test]
