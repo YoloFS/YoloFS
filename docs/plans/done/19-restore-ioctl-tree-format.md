@@ -36,42 +36,43 @@ All multi-byte integers are **little-endian** (native x86).
 TreeBuf      := NodeList
 NodeList     := child_count:le16  Node[child_count]
 Node         := name_len:le16  name:u8[name_len]
-                has_dirent:u8  [PackedDirent if has_dirent]
+                Dstate
                 child_count:le16  Node[child_count]
-PackedDirent := packed:le64
-                [base_len:le16  base_path:u8[base_len]  NUL:u8  if link]
+Dstate       := val:le64                                    (0 = Passthrough)
+                [base_len:le16  base_path:u8[base_len]  if link]
 ```
 
-Every node has two independent, optional parts: a dirent and a child list.
-No tag switch — the kernel checks `has_dirent` and `child_count` independently.
+Every node has two independent, optional parts: a dstate and a child list.
+No tag switch — the kernel checks `val` and `child_count` independently.
 
 Mapping from `DirNode`:
 
-| Rust type                            | has_dirent | child_count |
-|--------------------------------------|------------|-------------|
-| `DirNode::File(dirent)`              | 1          | 0           |
-| `DirNode::Dir(Passthrough, subtree)` | 0          | N           |
-| `DirNode::Dir(dirent, subtree)`      | 1          | N           |
+| Rust type                            | val      | child_count |
+|--------------------------------------|----------|-------------|
+| `DirNode::File(dirent)`              | non-zero | 0           |
+| `DirNode::Dir(Passthrough, subtree)` | 0        | N           |
+| `DirNode::Dir(dirent, subtree)`      | non-zero | N           |
 
-#### PackedDirent encoding
+#### Packed dstate encoding
 
-The wire `packed` u64 mirrors the kernel's `struct agfs_dstate` bit layout, with gen /
+The wire `val` u64 mirrors the kernel's `struct agfs_dstate` bit layout, with gen /
 pointer bits zeroed:
 
-| State     | packed (le64)                                                     | Trailing data                     |
-|-----------|-------------------------------------------------------------------|-----------------------------------|
-| Tombstone | `(s64)val > 0, ino == 0`: `[62:60]=dtype [59]=1 [58:0]=0`        | —                                 |
-| Inode     | `[63]=0  [62:60]=dtype  [59]=in_base  [58:16]=0  [47:16]=ino  [15:0]=0` | —                                 |
-| Link      | `[63]=1  [62:60]=dtype  [59]=in_base  [58:0]=0`                  | `base_len:le16  base_path:bytes  NUL` |
+| State       | val (le64)                                                       | Trailing data                     |
+|-------------|-------------------------------------------------------------------|-----------------------------------|
+| Passthrough | `0`                                                               | —                                 |
+| Tombstone   | `(s64)val > 0, ino == 0`: `[62:60]=dtype [59]=1 [58:0]=0`        | —                                 |
+| Inode       | `[63]=0  [62:60]=dtype  [59]=in_base  [58:16]=0  [47:16]=ino  [15:0]=0` | —                                 |
+| Link        | `[63]=1  [62:60]=dtype  [59]=in_base  [58:0]=0`                  | `base_len:le16  base_path:bytes`  |
 
-The kernel distinguishes the three states with the same checks as `struct agfs_dstate`:
+The kernel distinguishes the states with the same checks as `struct agfs_dstate`:
 
-* `packed == 0` → passthrough (should not appear in restore stream).
-* `(s64)packed > 0 && ino == 0` → tombstone — use as-is.
-* `(s64)packed > 0 && ino != 0` → inode — stamp gen: `packed = (wire & ~0xFFFF) | new_gen`.
-* `(s64)packed < 0` → link — read trailing `base_len` + `base_path` + NUL,
-  call `agfs_dstate_base_path(buf, dt, ib)`.  The NUL terminator is required because
-  `agfs_add_dirent` → `kstrdup(agfs_dstate_src(packed))` needs a C string.
+* `val == 0` → passthrough — skip dentry creation, proceed to child_count.
+* `(s64)val > 0 && ino == 0` → tombstone — use as-is.
+* `(s64)val > 0 && ino != 0` → inode — stamp gen: `val = (wire & ~0xFFFF) | new_gen`.
+* `(s64)val < 0` → link — read trailing `base_len` + `base_path`,
+  call `agfs_dstate_base_path(buf, dt, ib)`.  The kernel uses `kstrndup` to
+  NUL-terminate the copy.
 
 Gen bits `[15:0]` are zeroed on the wire because the kernel assigns `new_gen`.
 Pointer bits `[58:0]` are zeroed for links because the base path travels inline
@@ -135,11 +136,11 @@ while depth >= 0:
     read name_len, name from cursor
     dir = d_inode(stack[depth].dentry)
 
-    read has_dirent from cursor
-    if has_dirent:
-        parse PackedDirent → packed
+    read dstate val from cursor
+    if val != 0:
+        parse val → dstate
         inode_lock(dir)
-        agfs_add_dirent(dir, name, name_len, packed)
+        agfs_add_dirent(dir, name, name_len, val)
         inode_unlock(dir)
 
     read child_count from cursor
@@ -155,12 +156,11 @@ Max depth capped at `AGFS_RESTORE_MAX_DEPTH` (64).
 
 * Cursor doesn't advance past `buf + tree_len` (return `-EINVAL`).
 * `name_len > 0` and `name_len <= NAME_MAX` (255).
-* `has_dirent` is 0 or 1.
-* `packed` inode: `ino != 0`, and
+* `val` inode: `ino != 0`, and
   dtype bits `[62:60]` are a valid 3-bit packed d_type.
-* `packed` link: dtype bits `[62:60]` are valid, `base_len > 0`,
+* `val` link: dtype bits `[62:60]` are valid, `base_len > 0`,
   `base_len < AGFS_PATH_MAX`, and trailing byte is `'\0'`.
-* Node must have `has_dirent || child_count > 0` (reject empty nodes).
+* Node must have `val != 0 || child_count > 0` (reject empty nodes).
 * `depth < AGFS_RESTORE_MAX_DEPTH` before pushing.
 * `lookup_one_len` succeeds (return its error otherwise).
 
@@ -201,16 +201,16 @@ Abort path (`target_gen=0`) passes an empty buffer (`tree_len=0, tree_ptr=0`).
 2. **cli-serialize** — Add `DirTree::serialize(&self) -> Vec<u8>` in
    `cli/journal/tree.rs`.  Internally use a `serialize_into(&self, buf)` helper
    so the recursive DirTree levels share the same buffer.  Each node writes
-   `name_len + name + has_dirent + [PackedDirent] + child_count + children`.
-   Serialize each `Dirent` as a packed u64 mirroring `struct agfs_dstate` (gen/pointer
-   bits zeroed), with trailing `base_len + base_path + NUL` for links.  Add
+   `name_len + name + val:le64 + [base_len + base_path if link] + child_count + children`.
+   Serialize each `Dirent` as a u64 val mirroring `struct agfs_dstate` (gen/pointer
+   bits zeroed), with trailing `base_len + base_path` for links.  Add
    `DType::to_packed()` in `types.rs` returning the 2-bit encoding (File→0,
    Dir→1, Link→2) matching the kernel's `agfs_dtype_pack`.  Validate
    `ino ≤ 0xFFFFFFFFFFF` (44-bit range) during serialization.  Skip
    `DirNode::Dir(None, empty_subtree)` nodes (they carry no information).
    Add unit tests:
    - Empty tree → `[0x00, 0x00]` (child_count = 0).
-   - Single file (Inode, Link, Tombstone variants) — verify packed bits.
+   - Single file (Inode, Link, Tombstone variants) — verify dstate val bits.
    - Nested directories (passthrough + with dirent).
    - Children are sorted by name.
    - Link has trailing base_path; Inode and Tombstone do not.
@@ -235,7 +235,7 @@ Abort path (`target_gen=0`) passes an empty buffer (`tree_len=0, tree_ptr=0`).
    `vmalloc` + `copy_from_user` the buffer, walk iteratively with a cursor +
    explicit `dir_stack[AGFS_RESTORE_MAX_DEPTH]`.  Add cursor helpers
    (`read_u8`, `read_u16`, `read_u64`, `read_bytes`).  For each node: read
-   `has_dirent` — if set, parse PackedDirent (`== 0` → tombstone, `(s64)>0` →
+   `val` — if non-zero, parse dstate (`(s64)>0` →
    stamp gen, `(s64)<0` → read base_path + `agfs_dstate_link`); read
    `child_count` — if >0, `lookup_one_len` + push.  Remove
    `split_parent_child` (restore-only).
@@ -254,18 +254,18 @@ Abort path (`target_gen=0`) passes an empty buffer (`tree_len=0, tree_ptr=0`).
   addition for no functional benefit.  After this change, `restore.rs` no
   longer calls `to_dirents` — its only remaining callers are tree.rs tests
   and the three integration tests above.
-* `agfs_add_dirent` already `kstrdup`s link base paths from the packed value,
+* `agfs_add_dirent` already `kstrdup`s link base paths from the dstate value,
   so passing pointers into the `vmalloc`'d tree buffer is safe — the buffer can
   be `vfree`'d after injection.
 * `DirNode::Dir(Passthrough, subtree)` (pass-through directory, exists only
-  because children were modified) serializes with `has_dirent=0` — the kernel
+  because children were modified) serializes with `val=0` — the kernel
   looks up the existing base directory without injecting a dirent.
 * `DirNode::Dir(Passthrough, empty_subtree)` is skipped by the serializer
   entirely — it carries no information (no own dirent, no children).
 * `DirNode::Dir(dirent, empty_subtree)` (created directory with no children)
-  serializes with `has_dirent=1, child_count=0` — the dirent is injected but
+  serializes with `val!=0, child_count=0` — the dirent is injected but
   no stack push is needed.
 * `Dstate::Tombstone` serializes with `d_type` and `in_base=1` encoded in the
-  packed value.  `packed == 0` is now passthrough (rejected by the kernel).
+  dstate value.  `val == 0` is now passthrough (accepted by the kernel, no dentry created).
 * Reset mode (`target_gen=0`) skips injection entirely, so `tree_len=0,
   tree_ptr=0` works.
