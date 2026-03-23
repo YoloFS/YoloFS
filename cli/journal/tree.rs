@@ -422,9 +422,7 @@ impl DirTree {
                         .insert(name, DirNode::Dir(Dentry::Unset, subtree));
                 }
                 DirNode::File(_) => {
-                    parent
-                        .nodes
-                        .insert(name, DirNode::File(Dentry::Unset));
+                    parent.nodes.insert(name, DirNode::File(Dentry::Unset));
                 }
             }
         } else {
