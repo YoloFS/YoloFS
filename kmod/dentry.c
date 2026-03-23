@@ -24,7 +24,7 @@ static int agfs_d_init(struct dentry *dentry)
 		return -ENOMEM;
 
 	spin_lock_init(&info->lock);
-	/* kind = AGFS_DKIND_PASSTHROUGH (0), in_base = false — from zalloc */
+	/* kind = AGFS_DKIND_UNSET (0), in_base = false — from zalloc */
 	info->perm = AGFS_PERM_NONE;
 	INIT_LIST_HEAD(&info->rule_pin);
 	info->rule_dentry = NULL;
@@ -47,8 +47,8 @@ static void agfs_d_release(struct dentry *dentry)
 /* ── Dentry-centric mutations ──────────────────────────────────────── */
 
 /*
- * Revert a staged dentry to passthrough.  No-op if already passthrough
- * — calling dput on a passthrough dentry would drop a reference that
+ * Revert a staged dentry to unset.  No-op if already unset
+ * — calling dput on an unset dentry would drop a reference that
  * was never acquired by dget, causing a refcount underflow.
  * Caller must hold i_rwsem exclusive on the parent.
  */
@@ -56,16 +56,16 @@ void agfs_dentry_unstage(struct dentry *dentry)
 {
 	struct agfs_dentry_info *di = AGFS_D(dentry);
 
-	if (di->kind == AGFS_DKIND_PASSTHROUGH)
+	if (di->kind == AGFS_DKIND_UNSET)
 		return;
 
-	di->kind = AGFS_DKIND_PASSTHROUGH;
+	di->kind = AGFS_DKIND_UNSET;
 	di->in_base = false;
 	dput(dentry);
 }
 
 /*
- * Set a dentry's overlay state, handling the passthrough → staged
+ * Set a dentry's overlay state, handling the unset → staged
  * transition (dget pin) and overwrite.
  * Caller must hold i_rwsem exclusive on the parent directory.
  */
@@ -73,12 +73,12 @@ void agfs_dentry_stage(struct dentry *dentry, enum agfs_dkind kind,
 		       bool in_base)
 {
 	struct agfs_dentry_info *di = AGFS_D(dentry);
-	bool was_passthrough = (di->kind == AGFS_DKIND_PASSTHROUGH);
+	bool was_unset = (di->kind == AGFS_DKIND_UNSET);
 
 	di->kind = kind;
 	di->in_base = in_base;
 
-	if (was_passthrough)
+	if (was_unset)
 		dget(dentry);
 }
 
@@ -187,7 +187,7 @@ int agfs_dentry_inject(struct dentry *parent, const u8 *name,
  * not possible because agfs_dentry_unstage() calls dput(), which may
  * re-acquire d_lock and deadlock.  To make the lockless walk safe we
  * call shrink_dcache_sb() first: this evicts every unreferenced
- * (passthrough) dentry, so every entry still in d_children has a
+ * (unset) dentry, so every entry still in d_children has a
  * positive refcount and cannot be freed mid-iteration.  Concurrent
  * lookups only hlist_add_head (at the front) which does not disturb
  * our forward ->next traversal.
@@ -227,7 +227,7 @@ void agfs_unstage_all(struct super_block *sb)
 			pos[++depth] = cur->d_children.first;
 
 		if (AGFS_D(cur) &&
-		    AGFS_D(cur)->kind != AGFS_DKIND_PASSTHROUGH)
+		    AGFS_D(cur)->kind != AGFS_DKIND_UNSET)
 			agfs_dentry_unstage(cur);
 	}
 

@@ -36,12 +36,12 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 
 	/*
 	 * Capture base-presence before overwriting the kind.
-	 * Cannot read in_base here — for new files (passthrough, no base
+	 * Cannot read in_base here — for new files (unset, no base
 	 * content) agfs_interpose above already set d_inode, but in_base
-	 * is still false from zalloc.  Check kind: non-passthrough means
+	 * is still false from zalloc.  Check kind: non-unset means
 	 * a tombstone (base entry was deleted, in_base inherited).
 	 */
-	in_base = AGFS_D(dentry)->kind != AGFS_DKIND_PASSTHROUGH;
+	in_base = AGFS_D(dentry)->kind != AGFS_DKIND_UNSET;
 	agfs_dentry_stage_inode(dentry, sbi, in_base);
 
 	if (in_base)
@@ -163,14 +163,14 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	 * Roundtrip detection: if the effective base source equals the
 	 * destination relpath, the rename chain is a no-op (e.g. a→b→a).
 	 * For staged inodes there is no base redirect needed.
-	 * For passthrough and redirect dentries, derive the base source
+	 * For unset and redirect dentries, derive the base source
 	 * from lower_path — both cases have a lower dentry pointing at
 	 * the original base location.
 	 */
 	if (AGFS_D(old_dentry)->kind == AGFS_DKIND_STAGED_INODE) {
 		base_src = NULL; /* staged inode — no base redirect needed */
 	} else {
-		/* Passthrough or redirect — derive from lower dentry */
+		/* Unset or redirect — derive from lower dentry */
 		p = dentry_path_raw(agfs_lower_dentry(old_dentry), path_buf,
 				    sizeof(path_buf));
 		if (IS_ERR(p)) {

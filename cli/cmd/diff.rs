@@ -103,7 +103,7 @@ fn print_change(agfs: &Path, path: &str, dentry: &Dentry, verbose: bool) {
         Dentry::Redirect { src, .. } => {
             println!("{} → {} {}", src.bold(), path.bold(), "(renamed)".cyan());
         }
-        Dentry::Passthrough => {}
+        Dentry::Unset => {}
     }
 }
 
@@ -251,7 +251,7 @@ mod tests {
                     map.insert(src.as_str(), None);
                     map.insert(path.as_str(), Some(read_base(src)));
                 }
-                Dentry::Passthrough => {}
+                Dentry::Unset => {}
             }
         }
         map

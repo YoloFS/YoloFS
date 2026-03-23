@@ -24,7 +24,7 @@ pub enum Dentry {
     Tombstone {
         dtype: u8,
     },
-    Passthrough,
+    Unset,
 }
 
 impl Dentry {
@@ -33,14 +33,14 @@ impl Dentry {
             Dentry::StagedInode { dtype, .. }
             | Dentry::Redirect { dtype, .. }
             | Dentry::Tombstone { dtype } => *dtype,
-            Dentry::Passthrough => unreachable!("Passthrough has no dtype"),
+            Dentry::Unset => unreachable!("Unset has no dtype"),
         }
     }
 
     pub fn in_base(&self) -> bool {
         match self {
             Dentry::StagedInode { in_base, .. } | Dentry::Redirect { in_base, .. } => *in_base,
-            Dentry::Tombstone { .. } | Dentry::Passthrough => true,
+            Dentry::Tombstone { .. } | Dentry::Unset => true,
         }
     }
 
@@ -55,7 +55,7 @@ impl Dentry {
     /// True if this dentry involves the given path (as source or destination).
     pub fn matches_path(&self, dentry_path: &str, query: &str) -> bool {
         match self {
-            Dentry::StagedInode { .. } | Dentry::Tombstone { .. } | Dentry::Passthrough => {
+            Dentry::StagedInode { .. } | Dentry::Tombstone { .. } | Dentry::Unset => {
                 dentry_path == query
             }
             Dentry::Redirect { src, .. } => dentry_path == query || src == query,
@@ -67,7 +67,7 @@ impl Dentry {
             Dentry::StagedInode { in_base, .. } | Dentry::Redirect { in_base, .. } => {
                 *in_base = val
             }
-            Dentry::Tombstone { .. } | Dentry::Passthrough => {}
+            Dentry::Tombstone { .. } | Dentry::Unset => {}
         }
     }
 }

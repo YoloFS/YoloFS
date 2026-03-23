@@ -84,7 +84,7 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 	qname.hash = full_name_hash(rdd->dentry, name, namelen);
 	child = d_lookup(rdd->dentry, &qname);
 	if (child) {
-		bool overridden = AGFS_D(child)->kind != AGFS_DKIND_PASSTHROUGH;
+		bool overridden = AGFS_D(child)->kind != AGFS_DKIND_UNSET;
 		dput(child);
 		if (overridden)
 			return true; /* skip — overridden */
@@ -113,7 +113,7 @@ static bool agfs_emit_dirents(struct dentry *parent, struct dir_context *ctx,
 
 	spin_lock(&parent->d_lock);
 	hlist_for_each_entry(child, &parent->d_children, d_sib) {
-		if (AGFS_D(child)->kind == AGFS_DKIND_PASSTHROUGH)
+		if (AGFS_D(child)->kind == AGFS_DKIND_UNSET)
 			continue;
 
 		if (AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE)
@@ -156,7 +156,7 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	if (!lower_file)
 		return -EIO;
 
-	/* No staging → passthrough */
+	/* No staging → unset */
 	if (!sbi->staging || !sbi->inodes_dir.dentry) {
 		lower_file->f_pos = ctx->pos;
 		err = iterate_dir(lower_file, ctx);

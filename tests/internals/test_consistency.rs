@@ -109,7 +109,7 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     "tombstone at '/{rel}' should not be visible"
                 );
             }
-            Dentry::Passthrough => {}
+            Dentry::Unset => {}
         }
     });
 }

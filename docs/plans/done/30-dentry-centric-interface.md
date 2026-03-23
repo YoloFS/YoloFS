@@ -13,7 +13,7 @@ problems:
    it.
 
 2. **Manual stage-or-overwrite** — three call sites (create, COW, rename)
-   repeat the same pattern: check if passthrough, if so `agfs_stage_dentry`
+   repeat the same pattern: check if unset, if so `agfs_stage_dentry`
    (which dgets), else `agfs_dstate_free` + direct assign.
 
 3. **Leaked memory management** — callers must remember to call
@@ -40,11 +40,11 @@ Replace two-step access patterns with single-call queries.  These are
 `static inline` in `agfs.h` for zero overhead:
 
 ```c
-bool agfs_dentry_is_passthrough(const struct dentry *d);  /* val == 0 */
+bool agfs_dentry_is_unset(const struct dentry *d);  /* val == 0 */
 bool agfs_dentry_is_tombstone(const struct dentry *d);
 bool agfs_dentry_is_staged_inode(const struct dentry *d);
 bool agfs_dentry_is_base_path(const struct dentry *d);
-bool agfs_dentry_in_base(const struct dentry *d);        /* passthrough: d_inode != NULL; staged: in_base flag */
+bool agfs_dentry_in_base(const struct dentry *d);        /* unset: d_inode != NULL; staged: in_base flag */
 bool agfs_dentry_is_current(const struct dentry *d, u16 gen);
 
 unsigned char agfs_dentry_d_type(const struct dentry *d);
@@ -69,9 +69,9 @@ void agfs_dentry_unstage(struct dentry *d);
 
 Each mutation handles:
 - `agfs_dstate_free()` on the old value if overwriting
-- `dget()` if transitioning from passthrough to staged
-- `dput()` if transitioning from staged to passthrough (reset)
-- No-op safety (reset on passthrough is a no-op)
+- `dget()` if transitioning from unset to staged
+- `dput()` if transitioning from staged to unset (reset)
+- No-op safety (reset on unset is a no-op)
 
 ### 3. Rename tombstone operations
 
@@ -127,7 +127,7 @@ bit layout:
 
 ```c
 enum agfs_dstate_kind {
-    AGFS_DSTATE_PASSTHROUGH,
+    AGFS_DSTATE_UNSET,
     AGFS_DSTATE_TOMBSTONE,
     AGFS_DSTATE_STAGED_INODE,
     AGFS_DSTATE_BASE_PATH,
@@ -180,7 +180,7 @@ else
 
 After:
 ```c
-in_base = !agfs_dentry_is_passthrough(dentry);
+in_base = !agfs_dentry_is_unset(dentry);
 agfs_dentry_set_staged_ino(dentry, ino, gen, dt, in_base);
 ```
 
@@ -217,7 +217,7 @@ After:
 ```c
 need_tombstone = agfs_dentry_in_base(dentry);
 ...
-agfs_dentry_unstage(dentry);   /* no-op if passthrough */
+agfs_dentry_unstage(dentry);   /* no-op if unset */
 ```
 
 ### `agfs_rename` (inode.c)
@@ -253,7 +253,7 @@ if (is_roundtrip) {
 Also simplifies earlier reads:
 ```c
 /* Before: */  src_staged = !agfs_dstate_is_passthrough(old_di->dstate);
-/* After:  */  /* src_staged variable eliminated; use !agfs_dentry_is_passthrough() inline */
+/* After:  */  /* src_staged variable eliminated; use !agfs_dentry_is_unset() inline */
 
 /* Before: */  if (agfs_dstate_is_passthrough(src_dstate) || agfs_dstate_in_base(src_dstate))
 /* After:  */  if (agfs_dentry_in_base(old_dentry))
@@ -273,7 +273,7 @@ dir_emit(..., agfs_dstate_emit_ino(di->dstate), agfs_dstate_d_type(di->dstate));
 
 After:
 ```c
-if (agfs_dentry_is_passthrough(child)) continue;
+if (agfs_dentry_is_unset(child)) continue;
 if (agfs_dentry_is_tombstone(child)) continue;
 dir_emit(..., agfs_dentry_emit_ino(child), agfs_dentry_d_type(child));
 ```
@@ -287,7 +287,7 @@ bool overridden = !agfs_dstate_is_passthrough(AGFS_D(child)->dstate);
 
 After:
 ```c
-bool overridden = !agfs_dentry_is_passthrough(child);
+bool overridden = !agfs_dentry_is_unset(child);
 ```
 
 ### `agfs_open_staged` (file.c)
@@ -315,7 +315,7 @@ if (agfs_dentry_is_current(dentry, gen)) {
 |---|---|
 | `agfs_stage_dentry(dentry, dstate)` | `agfs_dentry_set_staged_ino` / `agfs_dentry_set_base_path` |
 | `agfs_unstage_dentry(dentry)` | `agfs_dentry_unstage` (with no-op safety) |
-| `agfs_dstate_is_passthrough(p)` | `agfs_dentry_is_passthrough(d)` |
+| `agfs_dstate_is_passthrough(p)` | `agfs_dentry_is_unset(d)` |
 | `agfs_dstate_is_tombstone(p)` | `agfs_dentry_is_tombstone(d)` |
 | `agfs_dstate_is_base_path(p)` | `agfs_dentry_is_base_path(d)` |
 | `agfs_dstate_is_staged_inode(p)` | `agfs_dentry_is_staged_inode(d)` |

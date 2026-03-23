@@ -901,7 +901,7 @@ fn restore_deep_tree_near_max_depth() {
 
     // Build a 20-level deep directory tree with a file at each level.
     // The restore ioctl depth limit (AGFS_RESTORE_MAX_DEPTH=32) also
-    // counts intermediate passthrough dirs for the path from / to the
+    // counts intermediate unset dirs for the path from / to the
     // session root, so we stay under the budget.
     let depth = 20;
     let mut path = String::new();

@@ -139,7 +139,7 @@ struct agfs_perm_request {
 /* ── Dentry state ────────────────────────────────────────────── */
 
 enum agfs_dkind {
-	AGFS_DKIND_PASSTHROUGH	= 0,
+	AGFS_DKIND_UNSET	= 0,
 	AGFS_DKIND_STAGED_INODE	= 1,
 	AGFS_DKIND_REDIRECT	= 2,
 	AGFS_DKIND_TOMBSTONE	= 3,

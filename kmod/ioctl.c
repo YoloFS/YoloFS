@@ -427,7 +427,7 @@ struct dir_frame {
 
 /*
  * Parse the kind-specific payload from @cur and inject the corresponding
- * dentry under @parent.  PASSTHROUGH entries have no payload.
+ * dentry under @parent.  UNSET entries have no payload.
  */
 static int restore_inject_entry(struct tree_cursor *cur,
 				struct agfs_sb_info *sbi,
@@ -441,7 +441,7 @@ static int restore_inject_entry(struct tree_cursor *cur,
 	int err;
 
 	switch (kind) {
-	case AGFS_DKIND_PASSTHROUGH:
+	case AGFS_DKIND_UNSET:
 		return 0;
 
 	case AGFS_DKIND_TOMBSTONE:
@@ -576,8 +576,8 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 		if (err)
 			goto out_unwind;
 
-		/* Skip empty passthrough nodes. */
-		if (kind == AGFS_DKIND_PASSTHROUGH && child_count == 0)
+		/* Skip empty unset nodes. */
+		if (kind == AGFS_DKIND_UNSET && child_count == 0)
 			continue;
 
 		if (child_count > 0) {

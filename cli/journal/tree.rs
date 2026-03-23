@@ -25,8 +25,8 @@ use super::types::*;
 ///                                       and a subtree of children
 ///
 /// Every node carries a `Dentry` describing the overlay state at that path.
-/// Passthrough nodes (intermediate dirs with no staged change) carry
-/// `Dentry::Passthrough` and exist only to provide a path to deeper nodes.
+/// Unset nodes (intermediate dirs with no staged change) carry
+/// `Dentry::Unset` and exist only to provide a path to deeper nodes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DirNode {
     File(Dentry),
@@ -104,14 +104,14 @@ impl DirTree {
     }
 
     /// Number of dentries (files, dirs with metadata, tombstones) in the tree.
-    /// Passthrough entries are excluded — they represent no staged change.
+    /// Unset entries are excluded — they represent no staged change.
     pub fn len(&self) -> usize {
         self.nodes
             .values()
             .map(|n| match n {
-                DirNode::File(Dentry::Passthrough) => 0,
+                DirNode::File(Dentry::Unset) => 0,
                 DirNode::File(_) => 1,
-                DirNode::Dir(Dentry::Passthrough, sub) => sub.len(),
+                DirNode::Dir(Dentry::Unset, sub) => sub.len(),
                 DirNode::Dir(_, sub) => 1 + sub.len(),
             })
             .sum()
@@ -138,7 +138,7 @@ impl DirTree {
     }
 
     /// Look up a dentry by its full path (e.g. "/dir/file").
-    /// Returns `None` if the path is not in the tree or is a Passthrough.
+    /// Returns `None` if the path is not in the tree or is Unset.
     pub fn get(&self, path: &str) -> Option<&Dentry> {
         let mut parts = path.split('/').filter(|s| !s.is_empty()).peekable();
         let mut current = self;
@@ -148,7 +148,7 @@ impl DirTree {
                     if parts.peek().is_some() {
                         return None; // path continues past a file node
                     }
-                    return if matches!(d, Dentry::Passthrough) {
+                    return if matches!(d, Dentry::Unset) {
                         None
                     } else {
                         Some(d)
@@ -157,7 +157,7 @@ impl DirTree {
                 Some(DirNode::Dir(d, subtree)) => {
                     if parts.peek().is_none() {
                         // This is the target node
-                        return if matches!(d, Dentry::Passthrough) {
+                        return if matches!(d, Dentry::Unset) {
                             None
                         } else {
                             Some(d)
@@ -178,12 +178,12 @@ impl DirTree {
     ///   DirNode      := name_len:le16  name:u8[name_len]
     ///                   Dentry
     ///                   child_count:le16  DirNode[child_count]   (children of this dir)
-    ///   Dentry       := kind:u8                                  (0=Passthrough)
+    ///   Dentry       := kind:u8                                  (0=Unset)
     ///                   [ino:le32  in_base:u8                    if kind==1 StagedInode]
     ///                   [base_len:le16  base:u8[base_len]  in_base:u8  if kind==2 Redirect]
     ///                                                            (kind==3 Tombstone: no extra data)
     ///
-    /// Passthrough dirs emit kind=0.  File nodes always have child_count=0.
+    /// Unset dirs emit kind=0.  File nodes always have child_count=0.
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         self.serialize_into(&mut buf);
@@ -191,14 +191,14 @@ impl DirTree {
     }
 
     fn serialize_into(&self, buf: &mut Vec<u8>) {
-        // Collect children sorted by name, skipping empty passthrough dirs
-        // and passthrough file nodes.
+        // Collect children sorted by name, skipping empty unset dirs
+        // and unset file nodes.
         let mut children: Vec<(&str, &DirNode)> = self
             .nodes
             .iter()
             .filter(|(_, node)| match node {
-                DirNode::Dir(Dentry::Passthrough, sub) if sub.nodes.is_empty() => false,
-                DirNode::File(Dentry::Passthrough) => false,
+                DirNode::Dir(Dentry::Unset, sub) if sub.nodes.is_empty() => false,
+                DirNode::File(Dentry::Unset) => false,
                 _ => true,
             })
             .map(|(name, node)| (name.as_str(), node))
@@ -229,8 +229,8 @@ impl DirTree {
 
     fn serialize_dentry(dentry: &Dentry, buf: &mut Vec<u8>) {
         match dentry {
-            Dentry::Passthrough => {
-                buf.push(0); // PASSTHROUGH
+            Dentry::Unset => {
+                buf.push(0); // UNSET
             }
             Dentry::StagedInode { ino, in_base, .. } => {
                 assert!(*ino > 0, "inode ino must be non-zero");
@@ -254,7 +254,7 @@ impl DirTree {
 
     // ── Internal helpers ──────────────────────────────────────────────
 
-    /// Walk to a path (owned), creating intermediate Dir(Passthrough, ...) nodes as
+    /// Walk to a path (owned), creating intermediate Dir(Unset, ...) nodes as
     /// needed.  Extracts the leaf name from the path in-place via `drain`,
     /// avoiding allocation for the leaf component.
     fn walk_or_create_parent(&mut self, mut path: String) -> Option<(&mut DirTree, String)> {
@@ -267,7 +267,7 @@ impl DirTree {
             if !current.nodes.contains_key(part) {
                 current.nodes.insert(
                     part.to_string(),
-                    DirNode::Dir(Dentry::Passthrough, DirTree::new()),
+                    DirNode::Dir(Dentry::Unset, DirTree::new()),
                 );
             }
             match current.nodes.get_mut(part).unwrap() {
@@ -318,7 +318,7 @@ impl DirTree {
 
         // Check what to do based on current state.
         let needs_tombstone = match parent.nodes.get(name.as_str()) {
-            None | Some(DirNode::Dir(Dentry::Passthrough, _)) => true,
+            None | Some(DirNode::Dir(Dentry::Unset, _)) => true,
             Some(DirNode::File(d)) | Some(DirNode::Dir(d, _)) => d.in_base(),
         };
 
@@ -374,7 +374,7 @@ impl DirTree {
                 // Source existed — move it, update in_base
                 match &mut node {
                     DirNode::File(d) => d.set_in_base(dst_in_base),
-                    DirNode::Dir(d, _) if matches!(d, Dentry::Passthrough) => {
+                    DirNode::Dir(d, _) if matches!(d, Dentry::Unset) => {
                         // Intermediate dir being explicitly renamed — create Redirect
                         *d = Dentry::Redirect {
                             src: src_path.clone(),
@@ -402,7 +402,7 @@ impl DirTree {
         }
 
         // Roundtrip collapse: if dest ends up as a Redirect pointing to itself,
-        // the rename chain was a no-op (e.g. a→b→a). Replace with Passthrough.
+        // the rename chain was a no-op (e.g. a→b→a). Replace with Unset.
         let is_roundtrip = match &dst_node {
             DirNode::File(Dentry::Redirect { src, .. })
             | DirNode::Dir(Dentry::Redirect { src, .. }, _) => src == &dst_path,
@@ -414,17 +414,17 @@ impl DirTree {
             return;
         };
         if is_roundtrip {
-            // Replace with Passthrough — the rename chain was a no-op.
+            // Replace with Unset — the rename chain was a no-op.
             match dst_node {
                 DirNode::Dir(_, subtree) => {
                     parent
                         .nodes
-                        .insert(name, DirNode::Dir(Dentry::Passthrough, subtree));
+                        .insert(name, DirNode::Dir(Dentry::Unset, subtree));
                 }
                 DirNode::File(_) => {
                     parent
                         .nodes
-                        .insert(name, DirNode::File(Dentry::Passthrough));
+                        .insert(name, DirNode::File(Dentry::Unset));
                 }
             }
         } else {
@@ -448,8 +448,8 @@ impl DirTree {
             match node {
                 DirNode::File(dentry) => f(prefix, dentry),
                 DirNode::Dir(dentry, subtree) => {
-                    // Skip Passthrough dir entries (intermediate dirs).
-                    if !matches!(dentry, Dentry::Passthrough) {
+                    // Skip Unset dir entries (intermediate dirs).
+                    if !matches!(dentry, Dentry::Unset) {
                         f(prefix, dentry);
                     }
                     subtree.visit_dentries(f, prefix);
@@ -948,26 +948,26 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_rename_produces_passthrough() {
-        // a→tmp→a should produce Passthrough at /a (no net staged change).
+    fn roundtrip_rename_produces_unset() {
+        // a→tmp→a should produce Unset at /a (no net staged change).
         let tree = build(&[rename("/tmp", "/a"), rename("/a", "/tmp")]);
         assert_eq!(tree.len(), 0, "no staged changes");
-        // get() returns None for Passthrough, so inspect the tree directly.
+        // get() returns None for Unset, so inspect the tree directly.
         match tree.nodes.get("a").unwrap() {
-            DirNode::File(Dentry::Passthrough) => {}
-            other => panic!("expected File(Passthrough), got {:?}", other),
+            DirNode::File(Dentry::Unset) => {}
+            other => panic!("expected File(Unset), got {:?}", other),
         }
     }
 
     #[test]
-    fn roundtrip_rename_dir_produces_passthrough() {
-        // Dir roundtrip (a→tmp→a) should produce Dir(Passthrough, _).
+    fn roundtrip_rename_dir_produces_unset() {
+        // Dir roundtrip (a→tmp→a) should produce Dir(Unset, _).
         let tree = build(&[rename_dir("/tmp", "/a"), rename_dir("/a", "/tmp")]);
         assert_eq!(tree.len(), 0, "no staged changes");
-        // get() returns None for Passthrough, so inspect the tree directly.
+        // get() returns None for Unset, so inspect the tree directly.
         match tree.nodes.get("a").unwrap() {
-            DirNode::Dir(Dentry::Passthrough, _) => {}
-            other => panic!("expected Dir(Passthrough, _), got {:?}", other),
+            DirNode::Dir(Dentry::Unset, _) => {}
+            other => panic!("expected Dir(Unset, _), got {:?}", other),
         }
     }
 
@@ -994,13 +994,13 @@ mod tests {
     }
 
     #[test]
-    fn three_step_roundtrip_rename_produces_passthrough() {
-        // a→b→c→a should produce Passthrough at /a (no net staged change).
+    fn three_step_roundtrip_rename_produces_unset() {
+        // a→b→c→a should produce Unset at /a (no net staged change).
         let tree = build(&[rename("/b", "/a"), rename("/c", "/b"), rename("/a", "/c")]);
         assert_eq!(tree.len(), 0, "no staged changes after 3-step roundtrip");
         match tree.nodes.get("a").unwrap() {
-            DirNode::File(Dentry::Passthrough) => {}
-            other => panic!("expected File(Passthrough), got {:?}", other),
+            DirNode::File(Dentry::Unset) => {}
+            other => panic!("expected File(Unset), got {:?}", other),
         }
     }
 
@@ -1196,7 +1196,7 @@ mod tests {
     #[test]
     fn rename_into_intermediate_dir_position() {
         // A(/a/b/c/file) creates intermediates /a, /a/b, /a/b/c.
-        // R(/other, /a/b) renames intermediate /a/b (which is a Dir(Passthrough, ...) node).
+        // R(/other, /a/b) renames intermediate /a/b (which is a Dir(Unset, ...) node).
         let tree = build(&[add("/a/b/c/file", 1), rename_dir("/other", "/a/b")]);
         // /a/b was an intermediate dir → source_had_base=true → Tombstone at /a/b.
         assert!(
@@ -1421,7 +1421,7 @@ mod tests {
     }
 
     #[test]
-    fn serialize_passthrough_dir() {
+    fn serialize_unset_dir() {
         // /dir/file where /dir has no own dirent (pass-through)
         let tree = build(&[add("/dir/file", 5)]);
         let buf = tree.serialize();
@@ -1432,12 +1432,12 @@ mod tests {
         cursor += 2;
         assert_eq!(cc, 1);
 
-        // Node "dir": kind=0 (Passthrough)
+        // Node "dir": kind=0 (Unset)
         let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + name_len], b"dir");
         cursor += name_len;
-        assert_eq!(buf[cursor], 0); // kind=PASSTHROUGH
+        assert_eq!(buf[cursor], 0); // kind=UNSET
         cursor += 1;
 
         // child_count = 1
@@ -1485,22 +1485,22 @@ mod tests {
     }
 
     #[test]
-    fn serialize_passthrough_dir_empty_subtree_omitted() {
-        // Create a tree with an passthrough dir that has an empty subtree
+    fn serialize_unset_dir_empty_subtree_omitted() {
+        // Create a tree with an unset dir that has an empty subtree
         let mut tree = DirTree::new();
         tree.nodes.insert(
             "empty".to_string(),
-            DirNode::Dir(Dentry::Passthrough, DirTree::new()),
+            DirNode::Dir(Dentry::Unset, DirTree::new()),
         );
         let buf = tree.serialize();
-        // Should produce just child_count=0 (the empty passthrough dir is skipped)
+        // Should produce just child_count=0 (the empty unset dir is skipped)
         assert_eq!(buf, vec![0x00, 0x00]);
     }
 
     #[test]
     fn serialize_stale_intermediates_after_cancel() {
         // Add a deeply nested file then delete it.  The cancel removes the
-        // leaf File node but leaves Dir(Passthrough) intermediates.  The leaf-level
+        // leaf File node but leaves Dir(Unset) intermediates.  The leaf-level
         // empty dir is filtered, but upper intermediates remain in the
         // serialized output.  The kernel tolerates these (skips nodes with
         // kind=0 and child_count=0).
@@ -1514,7 +1514,7 @@ mod tests {
     fn serialize_partial_stale_intermediates() {
         // /a/b/c/file1 added + deleted (cancel), but /a/x still exists.
         // The stale /a/b branch remains in the tree but is harmless — the
-        // kernel skips empty passthrough nodes.
+        // kernel skips empty unset nodes.
         let tree = build(&[
             add("/a/b/c/file1", 1),
             add("/a/x", 2),
@@ -1574,18 +1574,18 @@ mod tests {
     }
 
     #[test]
-    fn serialize_passthrough_file_omitted() {
-        // An Passthrough file node should be skipped entirely during serialization.
+    fn serialize_unset_file_omitted() {
+        // An Unset file node should be skipped entirely during serialization.
         let mut tree = DirTree::new();
         tree.nodes
-            .insert("ghost".to_string(), DirNode::File(Dentry::Passthrough));
+            .insert("ghost".to_string(), DirNode::File(Dentry::Unset));
         let buf = tree.serialize();
-        assert_eq!(buf, vec![0x00, 0x00], "Passthrough file should be omitted");
+        assert_eq!(buf, vec![0x00, 0x00], "Unset file should be omitted");
     }
 
     #[test]
-    fn serialize_passthrough_dir_val_zero() {
-        // A Passthrough dir with children should serialize kind=0
+    fn serialize_unset_dir_val_zero() {
+        // An Unset dir with children should serialize kind=0
         // but still emit the subtree.
         let mut tree = DirTree::new();
         let mut sub = DirTree::new();
@@ -1598,7 +1598,7 @@ mod tests {
             }),
         );
         tree.nodes
-            .insert("dir".to_string(), DirNode::Dir(Dentry::Passthrough, sub));
+            .insert("dir".to_string(), DirNode::Dir(Dentry::Unset, sub));
         let buf = tree.serialize();
         let mut cursor = 0usize;
         // root child_count = 1
@@ -1609,8 +1609,8 @@ mod tests {
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + nlen], b"dir");
         cursor += nlen;
-        // kind = 0 (Passthrough)
-        assert_eq!(buf[cursor], 0, "Passthrough dir should have kind=0");
+        // kind = 0 (Unset)
+        assert_eq!(buf[cursor], 0, "Unset dir should have kind=0");
         cursor += 1;
         // subtree child_count = 1 (the child)
         assert_eq!(u16::from_le_bytes([buf[cursor], buf[cursor + 1]]), 1);
@@ -1637,20 +1637,20 @@ mod tests {
     }
 
     #[test]
-    fn serialize_after_roundtrip_rename_omits_passthrough() {
-        // Roundtrip rename (a→tmp→a) should produce Passthrough file, which
+    fn serialize_after_roundtrip_rename_omits_unset() {
+        // Roundtrip rename (a→tmp→a) should produce Unset file, which
         // serialize() must omit entirely.
         let tree = build(&[rename("/tmp", "/a"), rename("/a", "/tmp")]);
         assert_eq!(tree.len(), 0);
         let buf = tree.serialize();
-        // Root child_count = 0 — the Passthrough file is filtered out.
+        // Root child_count = 0 — the Unset file is filtered out.
         assert_eq!(buf, vec![0x00, 0x00]);
     }
 
     #[test]
     fn roundtrip_rename_dir_preserves_subtree() {
         // Rename dir with children back to original — children should survive.
-        // get() returns None for Passthrough, so /a won't appear.
+        // get() returns None for Unset, so /a won't appear.
         let tree = build(&[
             add("/a/child", 1),
             rename_dir("/tmp", "/a"),

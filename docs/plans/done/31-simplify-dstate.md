@@ -54,7 +54,7 @@ Replace the packed u64 dstate with a simple enum:
 
 ```c
 enum agfs_dkind {
-    AGFS_DKIND_PASSTHROUGH  = 0,
+    AGFS_DKIND_UNSET  = 0,
     AGFS_DKIND_STAGED_INODE = 1,
     AGFS_DKIND_REDIRECT     = 2,
     AGFS_DKIND_TOMBSTONE    = 3,
@@ -68,7 +68,7 @@ struct agfs_dentry_info {
 };
 ```
 
-This matches the CLI's `Dstate` enum (`Passthrough`, `StagedInode`,
+This matches the CLI's `Dstate` enum (`Unset`, `StagedInode`,
 `BasePath`, `Tombstone`) with `in_base` as a separate field.  The CLI
 should rename the variant `BasePath` → `Redirect`; the variant's
 fields (`src`, `dtype`, `in_base`) stay the same since they are needed
@@ -84,10 +84,10 @@ for journal serialization and the wire format.
 |---------------|--------|--------------|
 | any | Add / Mod | StagedInode |
 | any (in_base) | Delete, Rename/Replace away | Tombstone |
-| any (!in_base) | Delete, Rename/Replace away | Passthrough |
+| any (!in_base) | Delete, Rename/Replace away | Unset |
 | StagedInode | Rename/Replace to | StagedInode |
 | !StagedInode | Rename/Replace to | Redirect |
-| Redirect | Replace roundtrip | Passthrough |
+| Redirect | Replace roundtrip | Unset |
 
 The journal record type (Add vs Mod, Rename vs Replace) is derived
 from in_base — no separate distinction needed in the kind rules.
@@ -116,7 +116,7 @@ Replace `struct agfs_dstate { u64 val; }` with `enum agfs_dkind`.
 Remove all bit-packing, pointer embedding, dtype encoding.
 
 Query functions simplify to trivial field reads.  Remove
-`agfs_dentry_is_passthrough`, `agfs_dentry_is_base_path`,
+`agfs_dentry_is_unset`, `agfs_dentry_is_base_path`,
 `agfs_dentry_is_staged_inode`, `agfs_dentry_is_tombstone`, and
 `agfs_dentry_in_base` — callers read `AGFS_D(d)->kind` and
 `AGFS_D(d)->in_base` directly.  Lookup sets `in_base = true` for
@@ -151,7 +151,7 @@ Replace `agfs_dentry_base_src(old_dentry)` with:
 dentry_path_raw(agfs_lower_dentry(old_dentry), buf, sizeof(buf))
 ```
 
-Unifies redirect and passthrough cases — both derive the redirect source
+Unifies redirect and unset cases — both derive the redirect source
 from the lower dentry.
 
 ### 5. Mutations simplify
@@ -159,7 +159,7 @@ from the lower dentry.
 ```c
 void agfs_dentry_set_staged(struct dentry *d, bool in_base);
 void agfs_dentry_set_redirect(struct dentry *d, bool in_base);
-void agfs_dentry_unstage(struct dentry *d);  /* → passthrough */
+void agfs_dentry_unstage(struct dentry *d);  /* → unset */
 ```
 
 No ino, gen, d_type, or base_copy parameters.  The caller is
@@ -182,7 +182,7 @@ Takes ownership of the base_path string.
 
 Wire format changed from `u64` to a compact `kind:u8` + per-kind
 fields.  Each variant is self-describing:
-- Passthrough (0): no extra data.
+- Unset (0): no extra data.
 - StagedInode (1): `ino:le32` + `in_base:u8`.
 - Redirect (2): `base_len:le16` + `base:u8[base_len]` + `in_base:u8`.
 - Tombstone (3): no extra data.
@@ -207,7 +207,7 @@ read during restore but ignored (not stored in the dstate).
 - `agfs_open_staged_ino` — open via lower_path instead
 - `agfs_dentry_ino`, `agfs_dentry_gen`,
   `agfs_dentry_base_src` — all removed
-- `agfs_dentry_is_passthrough`, `agfs_dentry_is_staged_inode`,
+- `agfs_dentry_is_unset`, `agfs_dentry_is_staged_inode`,
   `agfs_dentry_is_base_path`, `agfs_dentry_is_tombstone`,
   `agfs_dentry_in_base` — callers read fields directly
 - `agfs_dentry_is_current` — replaced by `agfs_dentry_is_current()` inline using inode gen

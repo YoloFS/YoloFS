@@ -37,7 +37,7 @@ the kernel, not merely assumed.
 | --------------------- | ------- |
 | **base**              | Always `/` — the entire root filesystem, read-only from AgFS's perspective until commit. |
 | **inode store**       | `.agfs/inodes/` — a flat store of inodes. Each entry is identified by a numeric ino (`inodes/1`, `inodes/2`, ...). Regular files and symlinks are stored as inodes; directories created by `mkdir` are empty directory inodes (children live in their own entries). No mirrored directory tree. |
-| **staged dentry list** | Per-directory set of pinned staged VFS dentries, identified by `kind != PASSTHROUGH` in the VFS `d_children` list. Each pinned dentry carries overlay state in its `agfs_dentry_info`. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
+| **staged dentry list** | Per-directory set of pinned staged VFS dentries, identified by `kind != UNSET` in the VFS `d_children` list. Each pinned dentry carries overlay state in its `agfs_dentry_info`. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
 | **journal**           | `.agfs/journal` — append-only log of all mutations. Written by the kernel, read by the CLI for commit/abort/status/diff. The kernel never reads it back. |
 | **mount point**       | `.agfs/mnt/` — the agent's view of the filesystem. Shows the merged base + staged changes with permission gating applied. |
 | **commit**            | CLI reads the journal and applies all operations to the base filesystem. |
@@ -72,7 +72,7 @@ All staging state lives in the structures below. Nothing is shared
 across mounts. The two design invariants (no open fds during checkpoint,
 staged child dentries pinned) keep the state minimal: the file struct carries
 zero staging-specific fields; all staging truth lives in the overlay
-state on pinned VFS dentries, identified by `kind != PASSTHROUGH` in the
+state on pinned VFS dentries, identified by `kind != UNSET` in the
 VFS `d_children` list.
 
 **Per-superblock** (`agfs_sb_info`) — one instance, lives for the mount:
@@ -105,8 +105,8 @@ on the dentry.
 | Field | Purpose |
 |-------|---------|
 | `lower_path` | Resolved path to the backing file — either `inodes/<ino>` or the base file. Updated in-place by COW. For redirect entries, `lower_path.dentry` points to the base source. |
-| `kind` | `enum agfs_dkind`: **PASSTHROUGH** (0, default — follows base), **STAGED_INODE** (1 — staged in `inodes/<ino>`), **REDIRECT** (2 — zero-copy rename redirect to base path), **TOMBSTONE** (3 — deleted). A dentry is staged iff `kind != AGFS_DKIND_PASSTHROUGH`. |
-| `in_base` | `bool` — whether the path position had content in the base filesystem before staging. Inherited through deletes and renames. Used to select journal tags (A/M for staged, R/P for renames). Undefined for passthrough. |
+| `kind` | `enum agfs_dkind`: **UNSET** (0, default — follows base), **STAGED_INODE** (1 — staged in `inodes/<ino>`), **REDIRECT** (2 — zero-copy rename redirect to base path), **TOMBSTONE** (3 — deleted). A dentry is staged iff `kind != AGFS_DKIND_UNSET`. |
+| `in_base` | `bool` — whether the path position had content in the base filesystem before staging. Inherited through deletes and renames. Used to select journal tags (A/M for staged, R/P for renames). Undefined for unset. |
 
 **Per-file** (`agfs_file_info`) — one per open file descriptor:
 
@@ -124,20 +124,20 @@ time is valid for the lifetime of the fd.
 
 Four mutually exclusive kinds (`enum agfs_dkind`):
 
-- `AGFS_DKIND_PASSTHROUGH` (0) — **passthrough** (default). Dentry follows the base filesystem.
+- `AGFS_DKIND_UNSET` (0) — **unset** (default). Dentry follows the base filesystem.
   Zero-initialized by `d_init`; also set by `agfs_dentry_unstage`.
 - `AGFS_DKIND_STAGED_INODE` (1) — **staged inode**. Content staged in `inodes/<ino>`.
 - `AGFS_DKIND_REDIRECT` (2) — **redirect**. Zero-copy rename redirect
   to a base path via `lower_path.dentry`.
 - `AGFS_DKIND_TOMBSTONE` (3) — **tombstone** (deleted). Always has `in_base=true`.
-  A delete of an `in_base=false` entry clears the dentry's kind to passthrough
+  A delete of an `in_base=false` entry clears the dentry's kind to unset
   and calls `dput()` (cancelled-entry removal) rather than creating a tombstone.
 
 The `d_type` is not stored in the dentry state — it is derived from
 `d_inode(dentry)->i_mode` via `fs_umode_to_dtype()`.
 
 **Cancelled-entry removal**: When unlinking an `in_base=false` entry
-(staging-only), the dentry's kind is cleared to passthrough
+(staging-only), the dentry's kind is cleared to unset
 and it is released via `dput()`. No tombstone is created. This is
 safe because lookup finds no cached dentry (it was `d_drop()`'d), and
 `->lookup()` falls through to the base filesystem — identical semantics
@@ -151,7 +151,7 @@ operations inherit and propagate the flag through transitions.
 **Wire format**: The restore ioctl serializes dentry state as a `kind`
 byte followed by variant-specific fields (ino + in\_base for staged
 inodes; base\_len + path + in\_base for redirects; nothing for
-tombstones and passthroughs).  See [Restore Wire Format](#restore-wire-format).
+tombstones and unset entries).  See [Restore Wire Format](#restore-wire-format).
 
 **Lookup** (`agfs_lookup`) — called by the VFS when no cached dentry
 exists. All staged entries are pinned in the dcache, so `lookup_fast()`
@@ -171,7 +171,7 @@ agfs_lookup(dir, dentry):
 agfs_readdir(dir):
     # Phase 1: walk d_children with d_lock pin-and-release pattern.
     for child in parent_dentry->d_children (via d_lock):
-        if AGFS_D(child)->kind == AGFS_DKIND_PASSTHROUGH:
+        if AGFS_D(child)->kind == AGFS_DKIND_UNSET:
             continue
         if AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE:
             continue
@@ -181,7 +181,7 @@ agfs_readdir(dir):
     # Phase 2: emit base entries not overridden.
     for entry in base_readdir(dir):
         result = d_lookup(dir_dentry, &entry.name)
-        if result and AGFS_D(result)->kind != AGFS_DKIND_PASSTHROUGH:
+        if result and AGFS_D(result)->kind != AGFS_DKIND_UNSET:
             dput(result)
             continue   # overridden by staged entry
         if result:
@@ -285,7 +285,7 @@ next open-for-write):
 agfs_create(dir, dentry, mode):
     ino = next_ino++
     create file inodes/<ino>
-    in_base = AGFS_D(dentry)->kind != AGFS_DKIND_PASSTHROUGH
+    in_base = AGFS_D(dentry)->kind != AGFS_DKIND_UNSET
     agfs_dentry_stage(dentry, AGFS_DKIND_STAGED_INODE, in_base)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
     if in_base:
@@ -296,7 +296,7 @@ agfs_create(dir, dentry, mode):
 agfs_mkdir(dir, dentry, mode):
     ino = next_ino++
     create dir inodes/<ino>/
-    in_base = AGFS_D(dentry)->kind != AGFS_DKIND_PASSTHROUGH
+    in_base = AGFS_D(dentry)->kind != AGFS_DKIND_UNSET
     agfs_dentry_stage(dentry, AGFS_DKIND_STAGED_INODE, in_base)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
     if in_base:
@@ -307,7 +307,7 @@ agfs_mkdir(dir, dentry, mode):
 agfs_symlink(dir, dentry, target):
     ino = next_ino++
     create symlink inodes/<ino> -> target
-    in_base = AGFS_D(dentry)->kind != AGFS_DKIND_PASSTHROUGH
+    in_base = AGFS_D(dentry)->kind != AGFS_DKIND_UNSET
     agfs_dentry_stage(dentry, AGFS_DKIND_STAGED_INODE, in_base)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
     if in_base:
@@ -327,7 +327,7 @@ Three cases based on current dentry state:
 
 ```
 agfs_unlink(dir, dentry):
-    staged = AGFS_D(dentry)->kind != AGFS_DKIND_PASSTHROUGH
+    staged = AGFS_D(dentry)->kind != AGFS_DKIND_UNSET
     need_tombstone = staged ? AGFS_D(dentry)->in_base : true
 
     # Pre-allocate tombstone before journal so we can fail cleanly.
@@ -360,14 +360,14 @@ record. R if the destination is NOT in base; P if the destination IS in base.
 
 ```
 agfs_rename(old_parent, old_dentry, new_parent, new_dentry):
-    new_staged = AGFS_D(new_dentry)->kind != AGFS_DKIND_PASSTHROUGH
+    new_staged = AGFS_D(new_dentry)->kind != AGFS_DKIND_UNSET
     dst_in_base = new_staged ? AGFS_D(new_dentry)->in_base : file_exists_in_base(new_name)
     dst = join(new_parent, new_name)
     src = join(old_parent, old_name)
 
     # Determine if old name needs a tombstone, pre-allocate before
     # any irreversible changes.
-    src_staged = AGFS_D(old_dentry)->kind != AGFS_DKIND_PASSTHROUGH
+    src_staged = AGFS_D(old_dentry)->kind != AGFS_DKIND_UNSET
     old_was_in_base = src_staged ? AGFS_D(old_dentry)->in_base : true
     if old_was_in_base:
         tomb = agfs_dentry_add_tombstone(old_parent, old_name)  # d_alloc ref is pin
@@ -397,7 +397,7 @@ agfs_rename(old_parent, old_dentry, new_parent, new_dentry):
 
     # Handle roundtrip detection.
     if is_roundtrip:
-        agfs_dentry_unstage(old_dentry)     # cancel — back to passthrough
+        agfs_dentry_unstage(old_dentry)     # cancel — back to unset
 
     d_drop(old_dentry)
     d_drop(new_dentry)
@@ -411,7 +411,7 @@ recorded as a separate journal entry and replayed in order at commit time.
 **Roundtrip renames** (`mv a->tmp`, then `mv tmp->a`) are detected at
 rename time: when the effective base source equals the destination
 relpath, the rename chain is a no-op. The kernel
-leaves the destination dentry as passthrough. The journal still records
+leaves the destination dentry as unset. The journal still records
 the R/P entries (the CLI has its own roundtrip detection). Tombstones at
 intermediate positions (e.g. `/tmp` in a swap via third path) are
 independently correct and unaffected.
@@ -471,10 +471,10 @@ agfs_readdir(dir, ctx):
         return iterate_dir(lower_file, ctx)   # fast path
 
     # Phase 1 (agfs_emit_dirents): walk d_children with d_lock
-    # pin-and-release pattern, filtering by kind != PASSTHROUGH and
+    # pin-and-release pattern, filtering by kind != UNSET and
     # kind != TOMBSTONE.
     for child in parent_dentry->d_children (via d_lock):
-        if AGFS_D(child)->kind == AGFS_DKIND_PASSTHROUGH or AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE:
+        if AGFS_D(child)->kind == AGFS_DKIND_UNSET or AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE:
             continue
         dir_emit(ctx, child->d_name,
                  d_inode(child)->i_ino,
@@ -486,7 +486,7 @@ agfs_readdir(dir, ctx):
     lower_file.f_pos = file_info.base_pos   # resume, not restart
     for entry in base_readdir(dir):
         result = d_lookup(dir_dentry, &entry.name)
-        if result and AGFS_D(result)->kind != AGFS_DKIND_PASSTHROUGH:
+        if result and AGFS_D(result)->kind != AGFS_DKIND_UNSET:
             dput(result)
             continue   # overridden by staged entry
         if result:
