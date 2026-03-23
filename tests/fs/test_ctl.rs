@@ -31,7 +31,11 @@ fn ctl_can_be_opened() {
     let ctl = s.mnt.join(".ctl");
 
     let file = fs::File::open(&ctl);
-    assert!(file.is_ok(), "should be able to open .ctl: {:?}", file.err());
+    assert!(
+        file.is_ok(),
+        "should be able to open .ctl: {:?}",
+        file.err()
+    );
 }
 
 /// The .ctl control file should have zero size.
