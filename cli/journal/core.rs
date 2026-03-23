@@ -1,4 +1,4 @@
-// agfs CLI — journal/journal.rs
+// agfs CLI — journal/core.rs
 //
 // The Journal: segments + markers + precomputed liveness.
 // Borrowing filter methods — no moves, no collects, no intermediate allocations.

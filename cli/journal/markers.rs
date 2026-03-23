@@ -183,7 +183,7 @@ impl IntoIterator for Markers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::journal::Journal;
+    use crate::journal::core::Journal;
 
     // ── Marker lookup tests (migrated from segment.rs) ───────────────
 

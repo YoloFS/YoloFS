@@ -8,16 +8,16 @@
 //   markers   — Markers (K/T skeleton: lookup, range, liveness computation)
 //   journal   — Journal (segments + markers + precomputed liveness, borrowing filters)
 //   tree      — DirTree builder: apply actions → dir tree, walk for display/restore
-
 pub mod dstate;
-pub(crate) mod journal;
+pub(crate) mod core;
+
 pub mod markers;
 mod parse;
 pub mod tree;
 pub mod types;
 
+pub use self::core::Journal;
 pub use dstate::Dstate;
-pub use journal::Journal;
 pub use markers::Markers;
 pub use tree::DirTree;
 pub use types::*;
