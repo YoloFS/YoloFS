@@ -32,7 +32,9 @@ impl Backend for Native {
             workload.prepare_workdir(&dest)?;
         }
         let cold = workload.cache_mode() == CacheMode::DropPageCache;
-        let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
+        let mut cmd =
+            backend::exec_workload_cmd(workload.name(), std::path::Path::new("."), verbose, cold)?;
+        cmd.current_dir(&dest);
         cmd.stderr(if verbose {
             Stdio::inherit()
         } else {

@@ -644,6 +644,8 @@ agfs-bench exec-workload --name <name> --dest <path> [--verbose]
 - `exec-workload`: internal subcommand used by all backends to run a
   workload as a subprocess. Prints a `READY` marker to stdout before the
   workload starts, enabling the parent to split init from staging time.
+  Backends run the subprocess with `cwd=--dest` and workload file operations
+  use relative paths rooted at `.`.
 
 ### Logging and failure handling
 

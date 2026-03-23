@@ -1,7 +1,7 @@
 use crate::backend::{self, Backend};
 use crate::workload::{CacheMode, IterResult, Workload};
 use agfs::config::Config;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -144,6 +144,9 @@ fn run_agfs_iteration(
     if !cold || workload.needs_prepare_workdir() {
         std::fs::create_dir_all(&dest)?;
     }
+    if cold && !workload.needs_prepare_workdir() {
+        std::fs::create_dir_all(session.mnt_path(workload.work_dir()))?;
+    }
     if workload.needs_prepare_workdir() {
         workload.prepare_workdir(&dest)?;
     }
@@ -156,7 +159,9 @@ fn run_agfs_iteration(
     // cold stat through agfs will always be faster than cold stat on native
     // (fewer unpinned path components to read from disk).
     let cold = workload.cache_mode() == CacheMode::DropPageCache;
-    let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
+    let mut cmd =
+        backend::exec_workload_cmd(workload.name(), std::path::Path::new("."), verbose, cold)?;
+    cmd.current_dir(&dest);
     cmd.stderr(if verbose {
         Stdio::inherit()
     } else {
@@ -296,13 +301,18 @@ impl Backend for AgfsRealistic {
         if !cold || workload.needs_prepare_workdir() {
             std::fs::create_dir_all(&dest)?;
         }
+        if cold && !workload.needs_prepare_workdir() {
+            std::fs::create_dir_all(session.mnt_path(workload.work_dir()))?;
+        }
         if workload.needs_prepare_workdir() {
             workload.prepare_workdir(&dest)?;
         }
         if workload.needs_checkpoint() {
             session.checkpoint()?;
         }
-        let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
+        let mut cmd =
+            backend::exec_workload_cmd(workload.name(), std::path::Path::new("."), verbose, cold)?;
+        cmd.current_dir(&dest);
         cmd.stderr(if verbose {
             Stdio::inherit()
         } else {

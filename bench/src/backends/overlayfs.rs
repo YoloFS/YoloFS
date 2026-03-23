@@ -1,6 +1,6 @@
 use crate::backend::{self, Backend};
 use crate::workload::{CacheMode, IterResult, Workload};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -77,7 +77,9 @@ impl Backend for Overlayfs {
         }
 
         let cold = workload.cache_mode() == CacheMode::DropPageCache;
-        let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
+        let mut cmd =
+            backend::exec_workload_cmd(workload.name(), std::path::Path::new("."), verbose, cold)?;
+        cmd.current_dir(&dest);
         cmd.stderr(if verbose {
             Stdio::inherit()
         } else {
