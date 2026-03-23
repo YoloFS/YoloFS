@@ -112,7 +112,10 @@ impl Journal {
 
     fn into_live_segments_at(self, gen_id: u64) -> impl Iterator<Item = Segment> {
         let num_prefix = (gen_id as usize).min(self.segments.len());
-        let alive = self.markers.alive_segments_range(0..num_prefix, num_prefix);
+        // Include one extra marker so that a restore marker at gen_id
+        // participates in the dead-zone scan.
+        let marker_end = (gen_id as usize + 1).min(self.markers.len());
+        let alive = self.markers.alive_segments_range(0..marker_end, num_prefix);
         self.segments
             .into_iter()
             .enumerate()
@@ -821,7 +824,7 @@ mod tests {
             }),
         ];
         let j = Journal::new(records);
-        let (gen_id, _) = j.markers.find_checkpoint("c5").unwrap();
+        let gen_id = j.markers.find_marker("c5").unwrap();
         let live: Vec<_> = j.into_live_segments_at(gen_id).collect();
         let actions: Vec<_> = live.iter().flat_map(|s| &s.records).collect();
         assert_eq!(actions.len(), 1);
@@ -851,6 +854,41 @@ mod tests {
         // gen_id 999 is way beyond segments.len(); should clamp, not panic.
         let live: Vec<_> = j2.into_live_segments_at(999).collect();
         assert!(live.len() <= all_live);
+    }
+
+    #[test]
+    fn into_tree_at_restore_marker() {
+        // [A:/a] K1 [B:/b] K2 R3(→K1)
+        // into_tree_at(3) should give the journal state at position 3.
+        let records = vec![
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(libc::DT_REG),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "c1".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/b".into(),
+                dtype: Some(libc::DT_REG),
+                ino: 2,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 3,
+                target_gen: 1,
+            }),
+        ];
+        let j = Journal::new(records);
+        let tree = j.into_tree_at(3);
+        assert_eq!(tree.len(), 1, "only /a should be in the tree");
+        assert!(tree.get("/a").is_some());
+        assert!(tree.get("/b").is_none());
     }
 
     // ── Original tests ───────────────────────────────────────────────

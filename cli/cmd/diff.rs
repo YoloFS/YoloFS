@@ -2,12 +2,12 @@
 //
 // `agfs status` — one-line summary of staged changes.
 // `agfs diff`   — git-style unified diff of staged vs base.
-// `--at <name>` — show state at a checkpoint (single segment).
-// `--from <name>` — diff changes since a checkpoint.
-// `--to <name>` — diff changes up to a checkpoint.
-// `--from <name> --to <name>` — diff changes between two checkpoints.
+// `--at <name>` — show state at a marker (single segment).
+// `--from <name>` — diff changes since a marker.
+// `--to <name>` — diff changes up to a marker.
+// `--from <name> --to <name>` — diff changes between two markers.
 
-use crate::journal::{Dentry, DirTree, Journal};
+use crate::journal::{Dentry, DirTree, Journal, Marker};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -57,11 +57,11 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
 // ── Segment display helpers ──────────────────────────────────────────
 
 fn print_segment_footer(closing: &Option<(u64, String)>) {
-    if let Some((gen_id, name)) = closing {
+    if let Some((gen_id, label)) = closing {
         println!(
             "{} {}",
-            format!("checkpoint [{}]", gen_id).cyan().bold(),
-            name.dimmed()
+            format!("marker [{}]", gen_id).cyan().bold(),
+            label.dimmed()
         );
     }
 }
@@ -140,14 +140,16 @@ fn run(
     let num = journal.segments.len();
     let (start, end) = journal.markers.segment_range(at, from, to, num)?;
 
-    // Precompute checkpoint labels for live segments before consuming the journal.
+    // Precompute marker labels for live segments before consuming the journal.
     let labels: Vec<Option<(u64, String)>> = (start..end)
         .filter(|i| journal.is_alive(*i))
         .map(|i| {
-            journal
-                .markers
-                .checkpoint_at(i)
-                .map(|(g, n)| (g, n.to_owned()))
+            journal.markers.marker_at(i).map(|m| match m {
+                Marker::Checkpoint { gen_id, name } => (*gen_id, name.clone()),
+                Marker::Restore {
+                    gen_id, target_gen, ..
+                } => (*gen_id, format!("restored to [{target_gen}]")),
+            })
         })
         .collect();
     let has_checkpoints = labels.iter().any(|c| c.is_some());

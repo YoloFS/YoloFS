@@ -849,20 +849,20 @@ output always preserves checkpoint boundaries within the requested range.
 - `--at` conflicts with `--from`/`--to`.
 
 **`agfs restore <name|gen>`**: Restore the mounted view to the state at the
-named checkpoint. The journal is **append-only** — restore appends a T
-record instead of truncating. T records create unreachable records — records
-between the target checkpoint and the T record that no longer reflect
+named marker (checkpoint or restore). The journal is **append-only** —
+restore appends a T record instead of truncating. T records create
+unreachable records — records between the target marker and the T record that no longer reflect
 current state. All CLI consumers (commit, status, diff, restore) build a
 `Journal` to filter unreachable records before resolving.
 
 The reachability algorithm: O(N) single pass to collect T/K positions,
 O(R) backward walk to build reachable ranges, skip unreachable T records.
 
-1. CLI builds a `Journal` and finds the target checkpoint via
-   `Markers::find_checkpoint()` (including unreachable regions, to support undo-restore).
+1. CLI builds a `Journal` and finds the target marker via
+   `Markers::find_marker()` (including unreachable regions, to support undo-restore).
 2. CLI calls `live_segments_at(gen_id)` (or `live_segments_at_name(name)` which
    resolves the name internally) to get an iterator over live segments in the
-   prefix up to the target checkpoint, handling any T records in that
+   prefix up to the target marker, handling any T records in that
    prefix.
 3. CLI builds the dir tree from live records.
 4. CLI serializes the dir tree into a contiguous byte buffer (depth-first,

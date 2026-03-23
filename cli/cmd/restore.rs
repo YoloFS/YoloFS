@@ -1,22 +1,22 @@
 // agfs CLI — restore.rs
 //
-// `agfs restore <name|id>` — restore to a previous checkpoint.
+// `agfs restore <name|id>` — restore to a previous marker (checkpoint or restore).
 
 use crate::ioctl;
-use crate::journal::Journal;
+use crate::journal::{Journal, Marker};
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-pub fn run(checkpoint_name: &str) -> Result<()> {
+pub fn run(marker_name: &str) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
-    // Search all markers (including dead zones) for the target checkpoint,
-    // so that undo-restore (restoring to a dead checkpoint) works.
+    // Search all markers (including dead zones) for the target,
+    // so that undo-restore (restoring to a dead marker) works.
     let journal = Journal::read(&agfs)?;
-    let (target_gen, chk_name) = journal.markers.find_checkpoint(checkpoint_name)?;
-    let chk_label = chk_name.to_owned();
+    let target_gen = journal.markers.find_marker(marker_name)?;
+    let marker = journal.markers.get(target_gen as usize).cloned();
 
-    // Extract live records from the prefix up to the target checkpoint,
+    // Extract live records from the prefix up to the target marker,
     // handling any RST records within that prefix.
     let tree = journal.into_tree_at(target_gen);
     let count = tree.len();
@@ -27,10 +27,22 @@ pub fn run(checkpoint_name: &str) -> Result<()> {
     let ctl_file = ioctl::open(&agfs).context("opening ctl for restore")?;
     let _new_gen = ioctl::restore(&ctl_file, target_gen, &buf).context("ioctl RESTORE")?;
 
+    let label = match &marker {
+        Some(Marker::Checkpoint { name, .. }) => {
+            format!("checkpoint \"{name}\"")
+        }
+        Some(Marker::Restore {
+            gen_id, target_gen, ..
+        }) => {
+            format!("restore [{gen_id}] (restored to [{target_gen}])")
+        }
+        None => format!("marker [{target_gen}]"),
+    };
+
     println!(
         "{}",
         format!(
-            "Restored to checkpoint \"{chk_label}\" ({count} staged change{}).",
+            "Restored to {label} ({count} staged change{}).",
             crate::utils::plural(count)
         )
         .green()

@@ -30,50 +30,58 @@ impl Markers {
         self.0.iter()
     }
 
-    /// Find a checkpoint by numeric gen ID. O(1) via direct indexing.
+    /// Find any marker by numeric gen ID. O(1) via direct indexing.
     ///
     /// This relies on the gen_id invariant: the kernel increments `sbi->gen`
     /// via `atomic64_inc_return()` on every K and T record, so gen_id values
     /// are strictly sequential — marker\[i\] has gen_id = i.
-    fn find_checkpoint_by_gen_id(&self, gen_id: u64) -> Result<(u64, &str)> {
+    fn find_marker_by_gen_id(&self, gen_id: u64) -> Result<u64> {
         if gen_id == 0 {
-            anyhow::bail!("checkpoint not found: {gen_id}");
+            anyhow::bail!("marker not found: {gen_id}");
         }
         let idx = gen_id as usize;
-        if let Some(Marker::Checkpoint { gen_id: g, name }) = self.0.get(idx)
-            && *g == gen_id
-        {
-            return Ok((*g, name));
+        match self.0.get(idx) {
+            Some(Marker::Checkpoint { gen_id: g, .. } | Marker::Restore { gen_id: g, .. })
+                if *g == gen_id =>
+            {
+                Ok(*g)
+            }
+            _ => anyhow::bail!("marker not found: {gen_id}"),
         }
-        anyhow::bail!("checkpoint not found: {gen_id}");
     }
 
     /// Find a checkpoint by name. Returns the last match (names may repeat).
-    fn find_checkpoint_by_name(&self, name: &str) -> Result<(u64, &str)> {
+    fn find_checkpoint_by_name(&self, name: &str) -> Result<u64> {
         let mut last = None;
         for marker in self.0.iter() {
             if let Marker::Checkpoint { gen_id, name: n } = marker
                 && n == name
             {
-                last = Some((*gen_id, n.as_str()));
+                last = Some(*gen_id);
             }
         }
-        last.ok_or_else(|| anyhow::anyhow!("checkpoint not found: {name}"))
+        last.ok_or_else(|| anyhow::anyhow!("marker not found: {name}"))
     }
 
-    /// Find a checkpoint by name or numeric ID (user input).
-    pub fn find_checkpoint(&self, name_or_id: &str) -> Result<(u64, &str)> {
+    /// Find a marker (checkpoint or restore) by name or numeric ID.
+    /// Names only match checkpoints (restore markers have no names).
+    pub fn find_marker(&self, name_or_id: &str) -> Result<u64> {
         if let Ok(id) = name_or_id.parse::<u64>() {
-            return self.find_checkpoint_by_gen_id(id);
+            return self.find_marker_by_gen_id(id);
         }
         self.find_checkpoint_by_name(name_or_id)
     }
 
-    /// Get the checkpoint at this marker index (returns `None` for restore
-    /// markers and for the phantom marker at index 0).
-    pub fn checkpoint_at(&self, marker_idx: usize) -> Option<(u64, &str)> {
-        match self.0.get(marker_idx)? {
-            Marker::Checkpoint { gen_id, name } if *gen_id > 0 => Some((*gen_id, name)),
+    /// Get the marker at this index (returns `None` for the phantom
+    /// marker at index 0).
+    pub fn marker_at(&self, marker_idx: usize) -> Option<&Marker> {
+        let m = self.0.get(marker_idx)?;
+        match m {
+            Marker::Checkpoint { gen_id, .. } | Marker::Restore { gen_id, .. }
+                if *gen_id > 0 =>
+            {
+                Some(m)
+            }
             _ => None,
         }
     }
@@ -88,7 +96,7 @@ impl Markers {
         num_segments: usize,
     ) -> Result<(usize, usize)> {
         if let Some(name) = at {
-            let (gen_id, _) = self.find_checkpoint(name)?;
+            let gen_id = self.find_marker(name)?;
             let m_idx = gen_id as usize;
             // Find the previous checkpoint marker (skip phantom at index 0).
             let prev_k = (1..m_idx)
@@ -99,15 +107,13 @@ impl Markers {
         }
 
         let start = if let Some(from_name) = from {
-            let (gen_id, _) = self.find_checkpoint(from_name)?;
-            gen_id as usize
+            self.find_marker(from_name)? as usize
         } else {
             0
         };
 
         let end = if let Some(to_name) = to {
-            let (gen_id, _) = self.find_checkpoint(to_name)?;
-            gen_id as usize
+            self.find_marker(to_name)? as usize
         } else {
             num_segments
         };
@@ -139,23 +145,24 @@ impl Markers {
             return vec![];
         }
 
-        // Build gen_id → marker index lookup for O(1) checkpoint resolution.
+        // Build gen_id → marker index lookup for O(1) resolution.
         let mut gen_to_idx: std::collections::HashMap<u64, usize> =
             std::collections::HashMap::new();
         for i in range.clone() {
-            if let Marker::Checkpoint { gen_id, .. } = &self.0[i] {
-                gen_to_idx.insert(*gen_id, i);
-            }
+            let id = match &self.0[i] {
+                Marker::Checkpoint { gen_id, .. } | Marker::Restore { gen_id, .. } => *gen_id,
+            };
+            gen_to_idx.insert(id, i);
         }
 
         let mut alive = vec![true; num_segments];
-        let mut alive_end = num_segments;
+        let mut alive_end = range.end;
 
         for m in range.rev() {
             let Marker::Restore { target_gen, .. } = &self.0[m] else {
                 continue;
             };
-            if m >= alive_end {
+            if m > alive_end {
                 continue;
             }
             let Some(&k_idx) = gen_to_idx.get(target_gen) else {
@@ -188,7 +195,7 @@ mod tests {
     // ── Marker lookup tests (migrated from segment.rs) ───────────────
 
     #[test]
-    fn find_checkpoint_by_gen_id() {
+    fn find_marker_by_gen_id() {
         let records = vec![
             Record::Marker(Marker::Checkpoint {
                 gen_id: 1,
@@ -205,7 +212,7 @@ mod tests {
             }),
         ];
         let j = Journal::new(records);
-        let (gen_id, _) = j.markers.find_checkpoint_by_gen_id(1).unwrap();
+        let gen_id = j.markers.find_marker_by_gen_id(1).unwrap();
         assert_eq!(gen_id, 1);
     }
 
@@ -227,7 +234,7 @@ mod tests {
             }),
         ];
         let j = Journal::new(records);
-        let (gen_id, _) = j.markers.find_checkpoint_by_name("second").unwrap();
+        let gen_id = j.markers.find_checkpoint_by_name("second").unwrap();
         assert_eq!(gen_id, 2);
     }
 
@@ -259,12 +266,12 @@ mod tests {
             }),
         ];
         let j = Journal::new(records);
-        let (gen_id, _) = j.markers.find_checkpoint_by_name("dup").unwrap();
+        let gen_id = j.markers.find_checkpoint_by_name("dup").unwrap();
         assert_eq!(gen_id, 2, "should return the last matching checkpoint");
     }
 
     #[test]
-    fn checkpoint_at_on_restore_marker() {
+    fn marker_at_on_restore_marker() {
         let records = vec![
             Record::Marker(Marker::Checkpoint {
                 gen_id: 1,
@@ -286,29 +293,29 @@ mod tests {
         ];
         let j = Journal::new(records);
         assert!(
-            j.markers.checkpoint_at(0).is_none(),
+            j.markers.marker_at(0).is_none(),
             "Phantom marker should return None"
         );
-        assert!(j.markers.checkpoint_at(1).is_some());
-        assert!(j.markers.checkpoint_at(2).is_some());
+        assert!(j.markers.marker_at(1).is_some());
+        assert!(j.markers.marker_at(2).is_some());
         assert!(
-            j.markers.checkpoint_at(3).is_none(),
-            "Restore marker should return None"
+            j.markers.marker_at(3).is_some(),
+            "Restore marker should be returned by marker_at"
         );
     }
 
     #[test]
-    fn find_checkpoint_by_gen_id_rejects_phantom() {
+    fn find_marker_by_gen_id_rejects_phantom() {
         let records = vec![Record::Marker(Marker::Checkpoint {
             gen_id: 1,
             name: "c1".into(),
         })];
         let j = Journal::new(records);
         assert!(
-            j.markers.find_checkpoint_by_gen_id(0).is_err(),
-            "phantom gen_id=0 should not be a valid checkpoint"
+            j.markers.find_marker_by_gen_id(0).is_err(),
+            "phantom gen_id=0 should not be a valid marker"
         );
-        assert!(j.markers.find_checkpoint_by_gen_id(1).is_ok());
+        assert!(j.markers.find_marker_by_gen_id(1).is_ok());
     }
 
     #[test]
@@ -903,5 +910,81 @@ mod tests {
         assert!(!alive[4], "seg4 dead (killed by S6)");
         assert!(!alive[5], "seg5 dead (killed by S6)");
         assert!(alive[6], "seg6 alive (trailing, empty)");
+    }
+
+    // ── find_marker tests for restore markers ───────────────────────
+
+    #[test]
+    fn find_marker_accepts_restore_gen_id() {
+        let records = vec![
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "c1".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(libc::DT_REG),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 3,
+                target_gen: 1,
+            }),
+        ];
+        let j = Journal::new(records);
+        assert_eq!(j.markers.find_marker("3").unwrap(), 3);
+        assert_eq!(j.markers.find_marker("1").unwrap(), 1);
+        assert_eq!(j.markers.find_marker("c1").unwrap(), 1);
+        assert!(j.markers.find_marker("0").is_err());
+    }
+
+    #[test]
+    fn alive_restore_to_restore_marker() {
+        // K1 [A] K2 R3(→K1) [D] K4 R5(→R3)
+        // R5 targets R3, so dead zone is 3..5 (seg_3, seg_4).
+        let records = vec![
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 1,
+                name: "c1".into(),
+            }),
+            Record::Action(Action::Add {
+                path: "/a".into(),
+                dtype: Some(libc::DT_REG),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 3,
+                target_gen: 1,
+            }),
+            Record::Action(Action::Add {
+                path: "/d".into(),
+                dtype: Some(libc::DT_REG),
+                ino: 3,
+            }),
+            Record::Marker(Marker::Checkpoint {
+                gen_id: 4,
+                name: "c4".into(),
+            }),
+            Record::Marker(Marker::Restore {
+                gen_id: 5,
+                target_gen: 3,
+            }),
+        ];
+        let j = Journal::new(records);
+        let alive = j.markers.alive_segments(j.segments.len());
+        assert!(alive[0], "seg0 alive (before K1)");
+        assert!(!alive[1], "seg1 dead (killed by R3)");
+        assert!(!alive[2], "seg2 dead (killed by R3)");
+        assert!(!alive[3], "seg3 dead (killed by R5)");
+        assert!(!alive[4], "seg4 dead (killed by R5)");
+        assert!(alive[5], "seg5 alive (trailing)");
     }
 }

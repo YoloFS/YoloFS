@@ -177,9 +177,9 @@ $ agfs commit
    -> kernel: release staged dentries, invalidate dentry + inode caches
    -> umount .agfs/mnt
 
-# 8. Restore to a previous checkpoint (appends T record, no truncation)
+# 8. Restore to a previous marker (appends T record, no truncation)
 $ agfs restore "after make build"
-   -> CLI: Journal → find_checkpoint → live_segments_at_name → build tree → serialize tree
+   -> CLI: Journal → find_marker → live_segments_at_name → build tree → serialize tree
    -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, tree_buf })
    -> kernel: release staged dentries, inject VFS dentries from tree, increment gen to 4,
       append T record to journal

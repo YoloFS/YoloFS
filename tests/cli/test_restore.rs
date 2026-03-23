@@ -994,3 +994,47 @@ fn restore_then_immediate_unmount() {
     let (ok, _, stderr) = s.cli_output(&["unmount", "--force"]).unwrap();
     assert!(ok, "unmount after restore should succeed: {stderr}");
 }
+
+/// Restore to a restore marker (not a checkpoint) by its numeric gen_id.
+#[test]
+fn restore_to_restore_marker() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // v1 state
+    fs::write(s.mnt_path("a.txt"), "v1\n").expect("write v1");
+    s.cli(&["checkpoint", "c1"]).expect("checkpoint c1");
+
+    // v2 state
+    fs::write(s.mnt_path("a.txt"), "v2\n").expect("write v2");
+    fs::write(s.mnt_path("b.txt"), "new\n").expect("write b");
+    s.cli(&["checkpoint", "c2"]).expect("checkpoint c2");
+
+    // Restore to c1 — creates a restore marker (gen_id = 3).
+    s.cli(&["restore", "c1"]).expect("restore to c1");
+    assert_eq!(fs::read_to_string(s.mnt_path("a.txt")).unwrap(), "v1\n");
+    assert!(!s.mnt_path("b.txt").exists());
+
+    // Build on top of the restored state.
+    fs::write(s.mnt_path("c.txt"), "post-restore\n").expect("write c");
+    s.cli(&["checkpoint", "c3"]).expect("checkpoint c3");
+
+    // Now restore to the restore marker by its numeric gen_id ("3").
+    // This jumps to position 3 in the timeline. Only markers between [3]
+    // and the new restore become unreachable — c1 and c2 are preserved.
+    s.cli(&["restore", "3"]).expect("restore to restore marker");
+
+    let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
+    assert_eq!(content, "v1\n", "should see state at gen 3");
+    assert!(!s.mnt_path("b.txt").exists(), "b.txt should not exist");
+    assert!(
+        !s.mnt_path("c.txt").exists(),
+        "c.txt should not exist (created after gen 3)"
+    );
+
+    // Verify we can still undo to c2 (it should still be reachable since
+    // the unreachable region only starts at marker 3).
+    s.cli(&["restore", "c2"]).expect("undo to c2");
+    let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
+    assert_eq!(content, "v2\n", "should see v2 after undo to c2");
+    assert!(s.mnt_path("b.txt").exists(), "b.txt should reappear");
+}
