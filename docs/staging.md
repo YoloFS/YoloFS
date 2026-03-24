@@ -20,7 +20,7 @@ the kernel, not merely assumed.
 2. **Staged child dentries are pinned.** When the first
    staged entry is added to a directory, the child dentry is pinned with
    `dget()`, keeping it in the dcache. The overlay state
-   (`kind` + `in_base` in `agfs_dentry_info`) lives on the VFS dentry
+   (`target` + `in_base` + `pinned` in `agfs_dentry_info`) lives on the VFS dentry
    (via `d_fsdata`), so it survives dentry cache pressure naturally.
    Pinned child dentries hold a ref on `dentry->d_parent`, which
    transitively keeps the parent inode alive through
@@ -37,7 +37,7 @@ the kernel, not merely assumed.
 | --------------------- | ------- |
 | **base**              | Always `/` — the entire root filesystem, read-only from AgFS's perspective until commit. |
 | **inode store**       | `.agfs/inodes/` — a flat store of inodes. Each entry is identified by a numeric ino (`inodes/1`, `inodes/2`, ...). Regular files and symlinks are stored as inodes; directories created by `mkdir` are empty directory inodes (children live in their own entries). No mirrored directory tree. |
-| **staged dentry list** | Per-directory set of pinned staged VFS dentries, identified by `kind != UNSET` in the VFS `d_children` list. Each pinned dentry carries overlay state in its `agfs_dentry_info`. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
+| **staged dentry list** | Per-directory set of pinned staged VFS dentries, identified by `pinned == true` in the VFS `d_children` list. Each pinned dentry carries overlay state in its `agfs_dentry_info`. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
 | **journal**           | `.agfs/journal` — append-only log of all mutations. Written by the kernel, read by the CLI for commit/abort/status/diff. The kernel never reads it back. |
 | **mount point**       | `.agfs/mnt/` — the agent's view of the filesystem. Shows the merged base + staged changes with permission gating applied. |
 | **commit**            | CLI reads the journal and applies all operations to the base filesystem. |
@@ -72,7 +72,7 @@ All staging state lives in the structures below. Nothing is shared
 across mounts. The two design invariants (no open fds during checkpoint,
 staged child dentries pinned) keep the state minimal: the file struct carries
 zero staging-specific fields; all staging truth lives in the overlay
-state on pinned VFS dentries, identified by `kind != UNSET` in the
+state on pinned VFS dentries, identified by `pinned == true` in the
 VFS `d_children` list.
 
 **Per-superblock** (`agfs_sb_info`) — one instance, lives for the mount:
@@ -105,8 +105,9 @@ on the dentry.
 | Field | Purpose |
 |-------|---------|
 | `lower_path` | Resolved path to the backing file — either `inodes/<ino>` or the base file. Updated in-place by COW. For redirect entries, `lower_path.dentry` points to the base source. |
-| `kind` | `enum agfs_dkind`: **UNSET** (0, default — follows base), **STAGED_INODE** (1 — staged in `inodes/<ino>`), **REDIRECT** (2 — zero-copy rename redirect to base path), **TOMBSTONE** (3 — deleted). A dentry is staged iff `kind != AGFS_DKIND_UNSET`. |
-| `in_base` | `bool` — whether the path position had content in the base filesystem before staging. Inherited through deletes and renames. Used to select journal tags (A/M for staged, R/P for renames). Undefined for unset. |
+| `target` | `enum agfs_target`: **INODE** (1 — staged in `inodes/<ino>`), **PATH** (2 — zero-copy rename redirect to base path), **NONE** (3 — no target). |
+| `in_base` | `bool` — whether the path position had content in the base filesystem before staging. Inherited through deletes and renames. Used to select journal tags (A/M for staged, R/P for renames). Undefined when unpinned. |
+| `pinned` | `bool` — whether this dentry is pinned (staged). A dentry is staged iff `pinned == true`. Ground state: `target=NONE, in_base=false, pinned=false`. |
 
 **Per-file** (`agfs_file_info`) — one per open file descriptor:
 
@@ -122,36 +123,46 @@ time is valid for the lifetime of the fd.
 
 ### Dentry State
 
-Four mutually exclusive kinds (`enum agfs_dkind`):
+Three fields define dentry state (`agfs_dentry_info`):
 
-- `AGFS_DKIND_UNSET` (0) — **unset** (default). Dentry follows the base filesystem.
-  Zero-initialized by `d_init`; also set by `agfs_dentry_unstage`.
-- `AGFS_DKIND_STAGED_INODE` (1) — **staged inode**. Content staged in `inodes/<ino>`.
-- `AGFS_DKIND_REDIRECT` (2) — **redirect**. Zero-copy rename redirect
+- `target` (`enum agfs_target`): **INODE** (1) — content staged in `inodes/<ino>`.
+  **PATH** (2) — zero-copy rename redirect to a base path via `lower_path.dentry`.
+  **NONE** (3) — no target (ground state or negative dentry).
+- `in_base` (`bool`): whether the path position had content in the base filesystem.
+- `pinned` (`bool`): whether the dentry is staged.
+
+A dentry is staged iff `pinned == true`. The ground state is
+`target=NONE, in_base=false, pinned=false` — the dentry follows the base filesystem.
+Zero-initialized by `d_init`; also set by `agfs_dentry_reset`.
+
+- **Staged inode**: `target=INODE, pinned=true`. Content staged in `inodes/<ino>`.
+- **Redirect**: `target=PATH, pinned=true`. Zero-copy rename redirect
   to a base path via `lower_path.dentry`.
-- `AGFS_DKIND_TOMBSTONE` (3) — **tombstone** (deleted). Always has `in_base=true`.
-  A delete of an `in_base=false` entry clears the dentry's kind to unset
-  and calls `dput()` (cancelled-entry removal) rather than creating a tombstone.
+- **Negative dentry** (tombstone): `target=NONE, in_base=true, pinned=true`. Always has `in_base=true`.
+  A delete of an `in_base=false` entry resets the dentry to ground state
+  and calls `dput()` (cancelled-entry removal) rather than creating a negative dentry.
 
 The `d_type` is not stored in the dentry state — it is derived from
 `d_inode(dentry)->i_mode` via `fs_umode_to_dtype()`.
 
 **Cancelled-entry removal**: When unlinking an `in_base=false` entry
-(staging-only), the dentry's kind is cleared to unset
-and it is released via `dput()`. No tombstone is created. This is
+(staging-only), the dentry is reset to ground state
+and it is released via `dput()`. No negative dentry is created. This is
 safe because lookup finds no cached dentry (it was `d_drop()`'d), and
 `->lookup()` falls through to the base filesystem — identical semantics
-to an `in_base=false` tombstone since no base entry exists. Benefits:
+to an `in_base=false` negative dentry since no base entry exists. Benefits:
 less memory and faster readdir.
 
-Callers read `AGFS_D(d)->kind` and `AGFS_D(d)->in_base` directly.
+Callers read `AGFS_D(d)->target`, `AGFS_D(d)->in_base`, and `AGFS_D(d)->pinned` directly.
 Lookup sets `in_base = true` for positive base results; staging
 operations inherit and propagate the flag through transitions.
 
-**Wire format**: The restore ioctl serializes dentry state as a `kind`
-byte followed by variant-specific fields (ino + in\_base for staged
-inodes; base\_len + path + in\_base for redirects; nothing for
-tombstones and unset entries).  See [Restore Wire Format](#restore-wire-format).
+**Wire format**: The restore ioctl serializes dentry state as a `tag:u8`
+followed by `in_base:u8` and variant-specific payload. Tags match
+`agfs_target` values: INODE → `ino:le32`; PATH → `path_len:le16 path:u8[path_len]`;
+NONE → nothing. Passthrough dirs are encoded as PATH with `path_len=0`.
+The full recursive restore tree format is documented in
+`docs/plans/33-dentry-state-redesign.md`.
 
 **Lookup** (`agfs_lookup`) — called by the VFS when no cached dentry
 exists. All staged entries are pinned in the dcache, so `lookup_fast()`
@@ -171,17 +182,17 @@ agfs_lookup(dir, dentry):
 agfs_readdir(dir):
     # Phase 1: walk d_children with d_lock pin-and-release pattern.
     for child in parent_dentry->d_children (via d_lock):
-        if AGFS_D(child)->kind == AGFS_DKIND_UNSET:
+        if !AGFS_D(child)->pinned:
             continue
-        if AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE:
-            continue
+        if AGFS_D(child)->target == AGFS_TARGET_NONE:
+            continue    # negative dentry
         dir_emit(child->d_name,
                  d_inode(child)->i_ino,
                  fs_umode_to_dtype(d_inode(child)->i_mode))
     # Phase 2: emit base entries not overridden.
     for entry in base_readdir(dir):
         result = d_lookup(dir_dentry, &entry.name)
-        if result and AGFS_D(result)->kind != AGFS_DKIND_UNSET:
+        if result and AGFS_D(result)->pinned:
             dput(result)
             continue   # overridden by staged entry
         if result:
@@ -216,7 +227,7 @@ Create/mkdir/symlink/unlink/rmdir/rename are already serialized by the VFS
 ```
 agfs_open(inode, file):
     if file->f_flags & (O_WRONLY | O_RDWR):
-        if AGFS_D(dentry)->kind == AGFS_DKIND_STAGED_INODE && AGFS_I(d_inode(dentry))->staging_gen >= sbi->gen:
+        if AGFS_D(dentry)->target == AGFS_TARGET_INODE && AGFS_I(d_inode(dentry))->staging_gen >= sbi->gen:
             // Inode is current — open it directly (O_TRUNC truncates in place).
             down_read(staging_sem)
             atomic_inc(staging_fd_count)
@@ -277,7 +288,7 @@ agfs_mmap(file, vma):
 ## Create / Mkdir / Symlink Path
 
 All creation operations allocate a new inode and stage the dentry with
-`kind = AGFS_DKIND_STAGED_INODE` and `staging_gen = sbi->gen` so the
+`target = AGFS_TARGET_INODE` and `staging_gen = sbi->gen` so the
 file is recognised as already staged (preventing a spurious re-COW on
 next open-for-write):
 
@@ -285,8 +296,8 @@ next open-for-write):
 agfs_create(dir, dentry, mode):
     ino = next_ino++
     create file inodes/<ino>
-    in_base = AGFS_D(dentry)->kind != AGFS_DKIND_UNSET
-    agfs_dentry_stage(dentry, AGFS_DKIND_STAGED_INODE, in_base)
+    in_base = AGFS_D(dentry)->pinned
+    agfs_dentry_set(dentry, AGFS_TARGET_INODE, in_base)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
     if in_base:
         journal(M, path, dtype, ino)
@@ -296,8 +307,8 @@ agfs_create(dir, dentry, mode):
 agfs_mkdir(dir, dentry, mode):
     ino = next_ino++
     create dir inodes/<ino>/
-    in_base = AGFS_D(dentry)->kind != AGFS_DKIND_UNSET
-    agfs_dentry_stage(dentry, AGFS_DKIND_STAGED_INODE, in_base)
+    in_base = AGFS_D(dentry)->pinned
+    agfs_dentry_set(dentry, AGFS_TARGET_INODE, in_base)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
     if in_base:
         journal(M, path, dtype, ino)
@@ -307,8 +318,8 @@ agfs_mkdir(dir, dentry, mode):
 agfs_symlink(dir, dentry, target):
     ino = next_ino++
     create symlink inodes/<ino> -> target
-    in_base = AGFS_D(dentry)->kind != AGFS_DKIND_UNSET
-    agfs_dentry_stage(dentry, AGFS_DKIND_STAGED_INODE, in_base)
+    in_base = AGFS_D(dentry)->pinned
+    agfs_dentry_set(dentry, AGFS_TARGET_INODE, in_base)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
     if in_base:
         journal(M, path, dtype, ino)
@@ -321,33 +332,34 @@ visible in `agfs status` / `agfs diff` and cleanly discarded by abort.
 
 ## Delete / Rmdir Path
 
-Delete creates a tombstone dentry (or removes the entry entirely for
+Delete creates a negative dentry (or removes the entry entirely for
 `in_base=false` via cancelled-entry removal) and appends to the journal.
 Three cases based on current dentry state:
 
 ```
 agfs_unlink(dir, dentry):
-    staged = AGFS_D(dentry)->kind != AGFS_DKIND_UNSET
-    need_tombstone = staged ? AGFS_D(dentry)->in_base : true
+    staged = AGFS_D(dentry)->pinned
+    need_negative = staged ? AGFS_D(dentry)->in_base : true
 
-    # Pre-allocate tombstone before journal so we can fail cleanly.
-    if need_tombstone:
-        tomb = agfs_dentry_add_tombstone(parent, &name)  # d_alloc ref is pin
+    # Pre-allocate negative dentry before journal so we can fail cleanly.
+    if need_negative:
+        tomb = agfs_dentry_alloc(parent, &name, namelen)  # pre-pinned negative dentry
         if !tomb: return -ENOMEM
+        agfs_dentry_set(tomb, AGFS_TARGET_NONE, true)
 
     journal(D, path, dtype)  # must be before d_drop (uses dentry path)
 
     if staged:
-        agfs_dentry_unstage(dentry)   # clear kind + dput
+        agfs_dentry_reset(dentry)   # reset to ground state + dput
     d_drop(dentry)
-    # If !need_tombstone: staged + !in_base — entry disappears entirely.
+    # If !need_negative: staged + !in_base — entry disappears entirely.
 
 agfs_rmdir(dir, dentry):
     # Same logic as agfs_unlink.
     journal(D, path, dtype)
 ```
 
-Subsequent lookup of the name finds the tombstone dentry in the dcache
+Subsequent lookup of the name finds the negative dentry in the dcache
 and returns it as a negative dentry. The base file is untouched until commit.
 
 ## Rename Handling
@@ -360,29 +372,30 @@ record. R if the destination is NOT in base; P if the destination IS in base.
 
 ```
 agfs_rename(old_parent, old_dentry, new_parent, new_dentry):
-    new_staged = AGFS_D(new_dentry)->kind != AGFS_DKIND_UNSET
+    new_staged = AGFS_D(new_dentry)->pinned
     dst_in_base = new_staged ? AGFS_D(new_dentry)->in_base : file_exists_in_base(new_name)
     dst = join(new_parent, new_name)
     src = join(old_parent, old_name)
 
-    # Determine if old name needs a tombstone, pre-allocate before
+    # Determine if old name needs a negative dentry, pre-allocate before
     # any irreversible changes.
-    src_staged = AGFS_D(old_dentry)->kind != AGFS_DKIND_UNSET
+    src_staged = AGFS_D(old_dentry)->pinned
     old_was_in_base = src_staged ? AGFS_D(old_dentry)->in_base : true
     if old_was_in_base:
-        tomb = agfs_dentry_add_tombstone(old_parent, old_name)  # d_alloc ref is pin
+        tomb = agfs_dentry_alloc(old_parent, old_name, old_namelen)  # pre-pinned negative dentry
         if !tomb: return -ENOMEM
+        agfs_dentry_set(tomb, AGFS_TARGET_NONE, true)
 
     # Build destination state.
-    if AGFS_D(old_dentry)->kind == AGFS_DKIND_STAGED_INODE:
+    if AGFS_D(old_dentry)->target == AGFS_TARGET_INODE:
         # Carry forward the staged inode.
-        agfs_dentry_stage(old_dentry, AGFS_DKIND_STAGED_INODE, dst_in_base)
-    elif AGFS_D(old_dentry)->kind == AGFS_DKIND_REDIRECT:
+        agfs_dentry_set(old_dentry, AGFS_TARGET_INODE, dst_in_base)
+    elif AGFS_D(old_dentry)->target == AGFS_TARGET_PATH:
         # Carry forward the redirect — base source is already in lower_path.
-        agfs_dentry_stage(old_dentry, AGFS_DKIND_REDIRECT, dst_in_base)
+        agfs_dentry_set(old_dentry, AGFS_TARGET_PATH, dst_in_base)
     else:
         # Base file being renamed — becomes a redirect via lower_path.
-        agfs_dentry_stage(old_dentry, AGFS_DKIND_REDIRECT, dst_in_base)
+        agfs_dentry_set(old_dentry, AGFS_TARGET_PATH, dst_in_base)
 
     # Journal BEFORE d_move (uses dentry paths).
     # All renames emit a single R or P record.
@@ -393,11 +406,11 @@ agfs_rename(old_parent, old_dentry, new_parent, new_dentry):
 
     # Clean up new_dentry if it was staged.
     if new_staged:
-        agfs_dentry_unstage(new_dentry)
+        agfs_dentry_reset(new_dentry)
 
     # Handle roundtrip detection.
     if is_roundtrip:
-        agfs_dentry_unstage(old_dentry)     # cancel — back to unset
+        agfs_dentry_reset(old_dentry)     # cancel — back to ground state
 
     d_drop(old_dentry)
     d_drop(new_dentry)
@@ -411,13 +424,13 @@ recorded as a separate journal entry and replayed in order at commit time.
 **Roundtrip renames** (`mv a->tmp`, then `mv tmp->a`) are detected at
 rename time: when the effective base source equals the destination
 relpath, the rename chain is a no-op. The kernel
-leaves the destination dentry as unset. The journal still records
-the R/P entries (the CLI has its own roundtrip detection). Tombstones at
+leaves the destination dentry as unpinned. The journal still records
+the R/P entries (the CLI has its own roundtrip detection). Negative dentries at
 intermediate positions (e.g. `/tmp` in a swap via third path) are
 independently correct and unaffected.
 
 **Rename + recreate** (`mv a->b`, then `touch a`) works because the new
-`touch a` sees the tombstone dentry (with `in_base` inherited from the
+`touch a` sees the negative dentry (with `in_base` inherited from the
 rename) pinned in the dcache and creates a new staged inode that
 supersedes it. The rename emits `R(b, a)` (or `P(b, a)` if `b` was in
 base), so the journal sees `R(b, a)` for the rename, then `A(a)` or
@@ -425,12 +438,12 @@ base), so the journal sees `R(b, a)` for the rename, then `A(a)` or
 
 **Read after rename**: lookup of the new name finds the pinned dentry
 in the dcache -> opens the base file via `lower_path` (or the
-staged inode). Lookup of the old name finds the tombstone dentry ->
+staged inode). Lookup of the old name finds the negative dentry ->
 returns `-ENOENT` (or falls through to base if cancelled).
 
 **Write after rename**: opening for write triggers COW at open time. The
-base file is copied into a new inode; the dentry's kind changes
-from `AGFS_DKIND_REDIRECT` to `AGFS_DKIND_STAGED_INODE`.
+base file is copied into a new inode; the dentry's target changes
+from `AGFS_TARGET_PATH` to `AGFS_TARGET_INODE`.
 
 Commit and abort handling for renames is covered in
 [Staging Operations](#staging-operations-userspace).
@@ -474,7 +487,7 @@ agfs_readdir(dir, ctx):
     # d_children and resume from cursor successor on repeated calls.
     # This is robust against sibling-list mutations.
     for child in staged_children_from(cursor_or_head):
-        if AGFS_D(child)->kind == AGFS_DKIND_UNSET or AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE:
+        if !AGFS_D(child)->pinned or AGFS_D(child)->target == AGFS_TARGET_NONE:
             continue
         dir_emit(ctx, child->d_name,
                  d_inode(child)->i_ino,
@@ -486,7 +499,7 @@ agfs_readdir(dir, ctx):
     lower_file.f_pos = file_info.base_pos   # resume, not restart
     for entry in base_readdir(dir):
         result = d_lookup(dir_dentry, &entry.name)
-        if result and AGFS_D(result)->kind != AGFS_DKIND_UNSET:
+        if result and AGFS_D(result)->pinned:
             dput(result)
             continue   # overridden by staged entry
         if result:
@@ -497,7 +510,7 @@ agfs_readdir(dir, ctx):
 
 Staged entries are emitted with the correct `d_type` (DT_REG, DT_DIR,
 DT_LNK) derived from `d_inode->i_mode`. The `ino` passed to `dir_emit`
-is `d_inode(child)->i_ino` for all non-tombstone staged entries.
+is `d_inode(child)->i_ino` for all non-negative staged entries.
 
 The merged list is built fresh on every `readdir` call — no caching.
 This ensures creates, deletes, and renames between `getdents64` calls
@@ -527,7 +540,7 @@ triggered by setattr itself.
 **`getattr`** (e.g., `stat`): Stats from the resolved path — the staged
 inode if the file has been modified, otherwise the base file.
 
-**`fsync`**: If the file is staged (`AGFS_D(dentry)->kind == AGFS_DKIND_STAGED_INODE`),
+**`fsync`**: If the file is staged (`AGFS_D(dentry)->target == AGFS_TARGET_INODE`),
 returns 0 immediately — staged inodes are ephemeral and will be committed or
 discarded as a batch. For base files opened read-only, fsync is delegated to
 the lower filesystem as usual.
@@ -592,32 +605,32 @@ deletes:
 | Operation | `in_base` | Rationale |
 |-----------|:---------:|-----------|
 | `agfs_create_staged` (touch/mkdir/symlink) | `false` | New path, no prior content |
-| `agfs_create_staged` (re-create after delete) | inherited | Inherits from tombstone dentry's `in_base` |
+| `agfs_create_staged` (re-create after delete) | inherited | Inherits from negative dentry's `in_base` |
 | `agfs_do_cow` (write to existing) | `true` | Path had content (base or staged) |
 | Rename (any source) | `dst_in_base` | Whether destination had content |
-| Delete (staged + in_base=true) | inherited | Tombstone dentry preserves origin info |
-| Delete (staged + in_base=false) | — | Dentry kind cleared + `dput()` (cancelled) |
+| Delete (staged + in_base=true) | inherited | Negative dentry preserves origin info |
+| Delete (staged + in_base=false) | — | Dentry reset to ground state + `dput()` (cancelled) |
 | Delete (not staged, base-only) | `true` | Path had content (base only) |
 
 The redirect's base source is derived from `lower_path.dentry`. It is
 not used as an `in_base` indicator.
 
-When `agfs_create_staged` is called and a tombstone dentry already exists
-for that name (re-create after delete, dentry is staged with a tombstone), the
-tombstone's `in_base` determines the journal tag: M if true, A if false.
-(Tombstones always have `in_base=true` after cancelled-entry removal,
+When `agfs_create_staged` is called and a negative dentry already exists
+for that name (re-create after delete, dentry is pinned as a negative dentry), the
+negative dentry's `in_base` determines the journal tag: M if true, A if false.
+(Negative dentries always have `in_base=true` after cancelled-entry removal,
 so re-creates after a base file delete always emit M.)
 
 **Edge cases:**
 
 - **Delete + re-create of a base file** (`rm x && touch x`): Delete
   inherits `in_base=true` (file was in base). Re-create sees the
-  tombstone dentry with `in_base=true` → emits M. The tree builder
+  negative dentry with `in_base=true` → emits M. The tree builder
   correctly processes the `Modify` action.
 
 - **Delete + re-create of a staged-only file** (`touch x && rm x && touch x`
   within a session): The first create sets `in_base=false`. Delete triggers
-  cancelled-entry removal (dentry kind cleared + `dput()`).
+  cancelled-entry removal (dentry reset to ground state + `dput()`).
   Re-create finds no staged dentry, defaults `in_base=false` → emits A.
   The tree builder correctly processes the `Add` action.
 
@@ -627,7 +640,7 @@ so re-creates after a base file delete always emit M.)
 
 - **Rename + delete + re-create at source** (`mv a b && touch a`):
   The rename emits `R(b, a)` (or `P(b, a)` if `b` was in base). `touch a` sees the
-  tombstone dentry with inherited `in_base=true` (base file existed) →
+  negative dentry with inherited `in_base=true` (base file existed) →
   emits M. If `a` had been staged-only, delete triggers cancelled-entry
   removal, so `touch a` finds no staged dentry, defaults `in_base=false` → emits A.
 
@@ -768,18 +781,18 @@ records the `sbi->gen` at which the current inode was staged or COW'd.
 `sbi->gen` starts at 1. Newly created files set
 `staging_gen = sbi->gen` at creation time, so they are already
 up-to-date and skip the COW check. Base files that have no staged
-dentry (or are tombstoned) naturally trigger COW on the first
+dentry (or have negative dentries) naturally trigger COW on the first
 open-for-write.
 
 At open time, the COW check in `agfs_open` (see [Open / Read / Write
 Path](#open--read--write-path)) handles both base→staged COW and
-staged→staged re-COW: if the kind is not `STAGED_INODE`, or has a
+staged→staged re-COW: if the target is not `INODE`, or has a
 stale `staging_gen`, a fresh inode is created.
 
 `agfs_do_cow` copies from the dentry's current `lower_path` — which is
 the base file before any COW, or the current staged inode after one.
 The same function handles both cases; no separate re-COW path.
-`agfs_do_cow` also sets kind/in_base on the dentry and `staging_gen`
+`agfs_do_cow` also sets target/in_base on the dentry and `staging_gen`
 on the inode after a successful COW, and pins the dentry with `dget()`
 if not already staged.
 
@@ -872,7 +885,7 @@ O(R) backward walk to build reachable ranges, skip unreachable T records.
    tree walk from `sb->s_root`, `dput()` each), shrinks dcache,
    `vmalloc`s + `copy_from_user`s the tree buffer, walks it iteratively
    with a directory stack to inject VFS dentries with new gen (via
-   `d_alloc()`, set kind/in_base, `d_add()`, `dget()` to pin), appends
+   `d_alloc()`, set target/in_base/pinned, `d_add()`, `dget()` to pin), appends
    `T\0<new_gen>\0<target_gen>\n`, returns new_gen.  The
    `AGFS_IOC_RESTORE` ioctl **increments** gen (monotonically) instead
    of setting it to the target value — this avoids gen collisions.

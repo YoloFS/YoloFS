@@ -9,9 +9,10 @@
 //!   2. Reads the journal and reconstructs a DirTree (CLI replay logic)
 //!   3. Asserts the two views agree on visibility and readdir contents
 
-use super::helpers::{ino_for, inode_path, tree};
+use super::helpers::{inode_path, tree};
 use crate::helpers::AgfsSession;
-use agfs::journal::{Dentry, DirTree};
+use agfs::journal::tree::DirNode;
+use agfs::journal::{Dentry, DirTree, Target};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
@@ -40,13 +41,49 @@ fn root_prefix(s: &AgfsSession) -> String {
     s.root.to_str().unwrap().to_string()
 }
 
+fn expected_backing_metadata(s: &AgfsSession, dentry: &Dentry) -> std::fs::Metadata {
+    match &dentry.target {
+        Target::Inode(ino) => inode_path(s, *ino)
+            .symlink_metadata()
+            .unwrap_or_else(|e| panic!("staged inode {ino} should exist: {e}")),
+        Target::Path(Some(src)) => Path::new(src)
+            .symlink_metadata()
+            .unwrap_or_else(|e| panic!("redirect source '{src}' should exist: {e}")),
+        Target::Path(None) => panic!("passthrough dentry should not be visible"),
+        Target::None => panic!("negative dentry has no backing metadata"),
+    }
+}
+
+fn assert_same_file_type(rel: &str, actual: &std::fs::Metadata, expected: &std::fs::Metadata) {
+    assert_eq!(
+        actual.is_file(),
+        expected.is_file(),
+        "file-type mismatch at '/{rel}': expected file={}, got file={}",
+        expected.is_file(),
+        actual.is_file()
+    );
+    assert_eq!(
+        actual.is_dir(),
+        expected.is_dir(),
+        "file-type mismatch at '/{rel}': expected dir={}, got dir={}",
+        expected.is_dir(),
+        actual.is_dir()
+    );
+    assert_eq!(
+        actual.is_symlink(),
+        expected.is_symlink(),
+        "file-type mismatch at '/{rel}': expected symlink={}, got symlink={}",
+        expected.is_symlink(),
+        actual.is_symlink()
+    );
+}
+
 /// Assert that every CLI overlay entry has the correct mount visibility:
-///   - Inode/Link entries must be visible through the mount
+///   - Inode/redirect entries must be visible through the mount
 ///   - Tombstone entries must NOT be visible through the mount
 ///
-/// For Inode entries, also verifies:
-///   - The file type (d_type) from the kernel matches the CLI dtype
-///   - The inode content matches what the mount shows (for regular files)
+/// For visible entries, also verifies the kernel-exposed file type matches
+/// the actual backing inode or redirect source.
 fn assert_overlay_visible(s: &AgfsSession) {
     let prefix = root_prefix(s);
     let t = tree(s);
@@ -54,26 +91,14 @@ fn assert_overlay_visible(s: &AgfsSession) {
         let rel = path.strip_prefix(&prefix).unwrap();
         let rel = rel.strip_prefix('/').unwrap_or(rel);
         let mnt = s.mnt_path(rel);
-        match dentry {
-            Dentry::StagedInode { ino, dtype, .. } => {
+        match &dentry.target {
+            Target::Inode(ino) => {
                 let meta = mnt
                     .symlink_metadata()
                     .unwrap_or_else(|e| panic!("overlay inode at '/{rel}' should be visible: {e}"));
-                let expected_dir = *dtype == libc::DT_DIR;
-                let expected_link = *dtype == libc::DT_LNK;
-                let expected_file = *dtype == libc::DT_REG;
-                assert!(
-                    (expected_dir && meta.is_dir())
-                        || (expected_link && meta.is_symlink())
-                        || (expected_file && meta.is_file()),
-                    "dtype mismatch at '/{rel}': CLI={dtype:?}, \
-                     kernel is_file={} is_dir={} is_symlink={}",
-                    meta.is_file(),
-                    meta.is_dir(),
-                    meta.is_symlink(),
-                );
-                // For regular files, verify inode content matches mount content
-                if *dtype == libc::DT_REG {
+                let expected = expected_backing_metadata(s, dentry);
+                assert_same_file_type(rel, &meta, &expected);
+                if expected.is_file() {
                     let ipath = inode_path(s, *ino);
                     let ino_content = fs::read(&ipath).unwrap_or_else(|e| {
                         panic!("inode {ino} at '/{rel}' should be readable: {e}")
@@ -85,31 +110,20 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     );
                 }
             }
-            Dentry::Redirect { dtype, .. } => {
-                let meta = mnt
-                    .symlink_metadata()
-                    .unwrap_or_else(|e| panic!("overlay link at '/{rel}' should be visible: {e}"));
-                let expected_dir = *dtype == libc::DT_DIR;
-                let expected_link = *dtype == libc::DT_LNK;
-                let expected_file = *dtype == libc::DT_REG;
-                assert!(
-                    (expected_dir && meta.is_dir())
-                        || (expected_link && meta.is_symlink())
-                        || (expected_file && meta.is_file()),
-                    "dtype mismatch at '/{rel}' (link): CLI={dtype:?}, \
-                     kernel is_file={} is_dir={} is_symlink={}",
-                    meta.is_file(),
-                    meta.is_dir(),
-                    meta.is_symlink(),
-                );
+            Target::Path(Some(_)) => {
+                let meta = mnt.symlink_metadata().unwrap_or_else(|e| {
+                    panic!("overlay redirect at '/{rel}' should be visible: {e}")
+                });
+                let expected = expected_backing_metadata(s, dentry);
+                assert_same_file_type(rel, &meta, &expected);
             }
-            Dentry::Tombstone { .. } => {
+            Target::Path(None) => unreachable!("passthrough dentries are skipped by for_each"),
+            Target::None => {
                 assert!(
                     !path_visible(&mnt),
-                    "tombstone at '/{rel}' should not be visible"
+                    "negative dentry at '/{rel}' should not be visible"
                 );
             }
-            Dentry::Unset => {}
         }
     });
 }
@@ -126,14 +140,13 @@ fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
 
     for component in rel_dir.split('/') {
         tree_path = format!("{tree_path}/{component}");
-        let link_target = cli.get(&tree_path).and_then(|d| {
-            if let Dentry::Redirect {
-                src,
-                dtype: libc::DT_DIR,
-                ..
-            } = d
-            {
-                Some(src.as_str())
+        let link_target = cli.get_node(&tree_path).and_then(|node| {
+            if let DirNode::Dir(d, _) = node {
+                if let Target::Path(Some(src)) = &d.target {
+                    Some(src.as_str())
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -190,7 +203,7 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
         }
     }
     for (name, dentry) in &staged {
-        if !matches!(dentry, Dentry::Tombstone { .. }) {
+        if !matches!(dentry.target, Target::None) {
             expected.insert(name.clone());
         }
     }
@@ -282,8 +295,8 @@ fn delete_base_file_tombstones() {
 
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Dentry::Tombstone { .. })),
-        "D on base file should produce tombstone: {t:?}"
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e.target, Target::None)),
+        "D on base file should produce negative dentry: {t:?}"
     );
 }
 
@@ -471,8 +484,8 @@ fn modify_then_delete_base() {
 
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Dentry::Tombstone { .. })),
-        "M+D on base should produce tombstone: {t:?}"
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e.target, Target::None)),
+        "M+D on base should produce negative dentry: {t:?}"
     );
 }
 
@@ -591,7 +604,14 @@ fn create_over_tombstone() {
     let t = tree(&s);
     assert!(
         t.any(|p, e| p.ends_with("/hello.txt")
-            && matches!(e, Dentry::StagedInode { in_base: true, .. })),
+            && matches!(
+                e,
+                Dentry {
+                    target: Target::Inode(_),
+                    in_base: true,
+                    ..
+                }
+            )),
         "recreated file over tombstone should have in_base=true: {t:?}"
     );
     assert_eq!(
@@ -631,34 +651,25 @@ fn readdir_dtype_matches_cli() {
         let entry = entry.expect("entry");
         let name = entry.file_name().to_string_lossy().to_string();
 
-        // Find matching CLI entry
+        // Find matching CLI entry via DirNode to determine expected type
         let tree_path = format!("{prefix}/{name}");
-        let Some(dentry) = t.get(&tree_path) else {
+        let Some(node) = t.get_node(&tree_path) else {
             continue; // base-only entry, no CLI overlay
         };
 
         let ft = entry.file_type().expect("file_type");
-        let cli_dtype = dentry.dtype();
-        match cli_dtype {
-            libc::DT_REG => assert!(
-                ft.is_file(),
-                "readdir d_type for '{name}': CLI=File but kernel reports dir={} sym={}",
-                ft.is_dir(),
-                ft.is_symlink()
-            ),
-            libc::DT_DIR => assert!(
+        match node {
+            DirNode::Dir(_, _) => assert!(
                 ft.is_dir(),
                 "readdir d_type for '{name}': CLI=Dir but kernel reports file={} sym={}",
                 ft.is_file(),
                 ft.is_symlink()
             ),
-            libc::DT_LNK => assert!(
-                ft.is_symlink(),
-                "readdir d_type for '{name}': CLI=Link but kernel reports file={} dir={}",
-                ft.is_file(),
+            DirNode::File(_) => assert!(
+                ft.is_file() || ft.is_symlink(),
+                "readdir d_type for '{name}': CLI=File but kernel reports dir={}",
                 ft.is_dir()
             ),
-            _ => panic!("unexpected d_type {cli_dtype} for '{name}'"),
         }
     }
 }

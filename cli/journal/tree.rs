@@ -3,16 +3,19 @@
 // Dir tree builder. Applies journal records sequentially to build a tree
 // representing the overlay state (the in-kernel dirent table).
 //
-// Three rules govern in_base and Tombstones:
+// Three rules govern in_base and negative dentries (Target::None + in_base=true):
 //   1. in_base is set by the record tag: A/R → false, M/P → true.
-//   2. Tombstone on vacate: when R/P moves a node away from a base path,
-//      place a Tombstone at the vacated position.
+//   2. Negative dentry on vacate: when R/P moves a node away from a base
+//      path, place a negative dentry at the vacated position.
 //   3. Cancellation: D on a node with in_base=false → remove (cancel).
-//      D on a node with in_base=true → Tombstone.
+//      D on a node with in_base=true → negative dentry.
+//
+// Passthrough (scaffold) dirs that exist only to provide a path to deeper
+// nodes carry a passthrough dentry (`Target::Path(None)`) in `Dir(Dentry, DirTree)`.
 
 use std::collections::HashMap;
 
-use super::dentry::Dentry;
+use super::dentry::{Dentry, Target};
 use super::types::*;
 
 /// A node in the dir tree.
@@ -20,28 +23,17 @@ use super::types::*;
 /// The tree has the following shape:
 ///
 ///   DirTree { nodes: { name → DirNode, ... } }
-///     DirNode::File(Dentry)           — leaf: a file/symlink with its overlay state
-///     DirNode::Dir(Dentry, DirTree)   — branch: a directory with its own overlay state
-///                                       and a subtree of children
+///     DirNode::File(Dentry)          — leaf: a file/symlink with its overlay state
+///     DirNode::Dir(Dentry, DirTree)  — branch: a directory with its overlay state
+///                                      and a subtree of children
 ///
 /// Every node carries a `Dentry` describing the overlay state at that path.
-/// Unset nodes (intermediate dirs with no staged change) carry
-/// `Dentry::Unset` and exist only to provide a path to deeper nodes.
+/// Passthrough dirs (scaffolds with no staged change) carry
+/// `Dentry::passthrough()` and exist only to provide a path to deeper nodes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DirNode {
     File(Dentry),
     Dir(Dentry, DirTree),
-}
-
-impl DirNode {
-    /// Wrap a dentry in the appropriate node type (File or Dir).
-    fn leaf(dentry: Dentry) -> Self {
-        if dentry.dtype() == libc::DT_DIR {
-            DirNode::Dir(dentry, DirTree::new())
-        } else {
-            DirNode::File(dentry)
-        }
-    }
 }
 
 /// A directory tree mapping child names to nodes.
@@ -61,33 +53,32 @@ impl DirTree {
     fn apply(&mut self, action: Action) {
         match action {
             Action::Add { path, dtype, ino } => {
-                let dtype = dtype.unwrap_or(libc::DT_REG);
-                let dentry = Dentry::StagedInode {
-                    ino,
-                    dtype,
+                let is_dir = dtype.unwrap_or(libc::DT_REG) == libc::DT_DIR;
+                let dentry = Dentry {
+                    target: Target::Inode(ino),
                     in_base: false,
                 };
-                self.set_dentry(path, dentry);
+                self.set_dentry(path, dentry, is_dir);
             }
             Action::Modify { path, dtype, ino } => {
-                let dtype = dtype.unwrap_or(libc::DT_REG);
-                let dentry = Dentry::StagedInode {
-                    ino,
-                    dtype,
+                let is_dir = dtype.unwrap_or(libc::DT_REG) == libc::DT_DIR;
+                let dentry = Dentry {
+                    target: Target::Inode(ino),
                     in_base: true,
                 };
-                self.set_dentry(path, dentry);
+                self.set_dentry(path, dentry, is_dir);
             }
             Action::Delete { path, dtype } => {
-                self.apply_delete(path, dtype);
+                let is_dir = dtype.unwrap_or(libc::DT_REG) == libc::DT_DIR;
+                self.apply_delete(path, is_dir);
             }
             Action::Rename { dst, src, dtype } => {
-                let dtype = dtype.unwrap_or(libc::DT_REG);
-                self.apply_rename(dst, src, dtype, false);
+                let is_dir = dtype.unwrap_or(libc::DT_REG) == libc::DT_DIR;
+                self.apply_rename(dst, src, is_dir, false);
             }
             Action::Replace { dst, src, dtype } => {
-                let dtype = dtype.unwrap_or(libc::DT_REG);
-                self.apply_rename(dst, src, dtype, true);
+                let is_dir = dtype.unwrap_or(libc::DT_REG) == libc::DT_DIR;
+                self.apply_rename(dst, src, is_dir, true);
             }
         }
     }
@@ -103,15 +94,15 @@ impl DirTree {
         tree
     }
 
-    /// Number of dentries (files, dirs with metadata, tombstones) in the tree.
-    /// Unset entries are excluded — they represent no staged change.
+    /// Number of dentries (files, dirs with metadata, negative dentries) in the tree.
+    /// Passthrough entries are excluded — they represent no staged change.
     pub fn len(&self) -> usize {
         self.nodes
             .values()
             .map(|n| match n {
-                DirNode::File(Dentry::Unset) => 0,
+                DirNode::File(d) if d.is_passthrough() => 0,
                 DirNode::File(_) => 1,
-                DirNode::Dir(Dentry::Unset, sub) => sub.len(),
+                DirNode::Dir(d, sub) if d.is_passthrough() => sub.len(),
                 DirNode::Dir(_, sub) => 1 + sub.len(),
             })
             .sum()
@@ -138,30 +129,31 @@ impl DirTree {
     }
 
     /// Look up a dentry by its full path (e.g. "/dir/file").
-    /// Returns `None` if the path is not in the tree or is Unset.
+    /// Returns `None` if the path is not in the tree or is a passthrough.
     pub fn get(&self, path: &str) -> Option<&Dentry> {
+        self.get_node(path)
+            .map(|n| match n {
+                DirNode::File(d) | DirNode::Dir(d, _) => d,
+            })
+            .filter(|d| !d.is_passthrough())
+    }
+
+    /// Look up a node by its full path (e.g. "/dir/file").
+    /// Returns `None` if the path is not in the tree.
+    pub fn get_node(&self, path: &str) -> Option<&DirNode> {
         let mut parts = path.split('/').filter(|s| !s.is_empty()).peekable();
         let mut current = self;
         while let Some(part) = parts.next() {
             match current.nodes.get(part) {
-                Some(DirNode::File(d)) => {
+                Some(node @ DirNode::File(_)) => {
                     if parts.peek().is_some() {
                         return None; // path continues past a file node
                     }
-                    return if matches!(d, Dentry::Unset) {
-                        None
-                    } else {
-                        Some(d)
-                    };
+                    return Some(node);
                 }
-                Some(DirNode::Dir(d, subtree)) => {
+                Some(node @ DirNode::Dir(_, subtree)) => {
                     if parts.peek().is_none() {
-                        // This is the target node
-                        return if matches!(d, Dentry::Unset) {
-                            None
-                        } else {
-                            Some(d)
-                        };
+                        return Some(node);
                     }
                     current = subtree;
                 }
@@ -178,12 +170,13 @@ impl DirTree {
     ///   DirNode      := name_len:le16  name:u8[name_len]
     ///                   Dentry
     ///                   child_count:le16  DirNode[child_count]   (children of this dir)
-    ///   Dentry       := kind:u8                                  (0=Unset)
-    ///                   [ino:le32  in_base:u8                    if kind==1 StagedInode]
-    ///                   [base_len:le16  base:u8[base_len]  in_base:u8  if kind==2 Redirect]
-    ///                                                            (kind==3 Tombstone: no extra data)
+    ///   Dentry       := tag:u8  in_base:u8  [payload]
+    ///                   tag=1 Inode:  ino:le32
+    ///                   tag=2 Path:   path_len:le16  path:u8[path_len]
+    ///                   tag=3 None:   (no payload)
     ///
-    /// Unset dirs emit kind=0.  File nodes always have child_count=0.
+    /// Passthrough dirs use tag=2, in_base=1, path_len=0.
+    /// File nodes always have child_count=0.
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         self.serialize_into(&mut buf);
@@ -191,14 +184,12 @@ impl DirTree {
     }
 
     fn serialize_into(&self, buf: &mut Vec<u8>) {
-        // Collect children sorted by name, skipping empty unset dirs
-        // and unset file nodes.
+        // Collect children sorted by name, skipping empty passthrough dirs.
         let mut children: Vec<(&str, &DirNode)> = self
             .nodes
             .iter()
             .filter(|(_, node)| match node {
-                DirNode::Dir(Dentry::Unset, sub) if sub.nodes.is_empty() => false,
-                DirNode::File(Dentry::Unset) => false,
+                DirNode::Dir(d, sub) if d.is_passthrough() && sub.nodes.is_empty() => false,
                 _ => true,
             })
             .map(|(name, node)| (name.as_str(), node))
@@ -229,32 +220,51 @@ impl DirTree {
 
     fn serialize_dentry(dentry: &Dentry, buf: &mut Vec<u8>) {
         match dentry {
-            Dentry::Unset => {
-                buf.push(0); // UNSET
+            Dentry {
+                target: Target::Path(None),
+                ..
+            } => {
+                // Passthrough: tag=2 (Path), in_base=1, path_len=0
+                buf.push(2);
+                buf.push(1); // in_base = true
+                buf.extend_from_slice(&0u16.to_le_bytes()); // path_len = 0
             }
-            Dentry::StagedInode { ino, in_base, .. } => {
+            Dentry {
+                target: Target::Inode(ino),
+                in_base,
+                ..
+            } => {
                 assert!(*ino > 0, "inode ino must be non-zero");
-                buf.push(1); // STAGED_INODE
-                buf.extend_from_slice(&ino.to_le_bytes());
+                buf.push(1);
                 buf.push(*in_base as u8);
+                buf.extend_from_slice(&ino.to_le_bytes());
             }
-            Dentry::Redirect { src, in_base, .. } => {
-                buf.push(2); // REDIRECT
+            Dentry {
+                target: Target::Path(Some(src)),
+                in_base,
+                ..
+            } => {
+                buf.push(2);
+                buf.push(*in_base as u8);
                 let bp = src.as_bytes();
                 let bp_len: u16 = bp.len().try_into().expect("base_path too long");
                 buf.extend_from_slice(&bp_len.to_le_bytes());
                 buf.extend_from_slice(bp);
-                buf.push(*in_base as u8);
             }
-            Dentry::Tombstone { .. } => {
-                buf.push(3); // TOMBSTONE
+            Dentry {
+                target: Target::None,
+                in_base,
+                ..
+            } => {
+                buf.push(3);
+                buf.push(*in_base as u8);
             }
         }
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
 
-    /// Walk to a path (owned), creating intermediate Dir(Unset, ...) nodes as
+    /// Walk to a path (owned), creating intermediate passthrough Dir nodes as
     /// needed.  Extracts the leaf name from the path in-place via `drain`,
     /// avoiding allocation for the leaf component.
     fn walk_or_create_parent(&mut self, mut path: String) -> Option<(&mut DirTree, String)> {
@@ -267,7 +277,7 @@ impl DirTree {
             if !current.nodes.contains_key(part) {
                 current.nodes.insert(
                     part.to_string(),
-                    DirNode::Dir(Dentry::Unset, DirTree::new()),
+                    DirNode::Dir(Dentry::passthrough(), DirTree::new()),
                 );
             }
             match current.nodes.get_mut(part).unwrap() {
@@ -297,56 +307,70 @@ impl DirTree {
     }
 
     /// Set a dentry at the given path (owned).
-    fn set_dentry(&mut self, path: String, dentry: Dentry) {
+    fn set_dentry(&mut self, path: String, dentry: Dentry, is_dir: bool) {
         let Some((parent, name)) = self.walk_or_create_parent(path) else {
             return;
         };
-        if dentry.dtype() == libc::DT_DIR
-            && let Some(DirNode::Dir(existing_dentry, _)) = parent.nodes.get_mut(name.as_str())
-        {
-            *existing_dentry = dentry;
-            return;
+        if is_dir {
+            if let Some(DirNode::Dir(existing_dentry, _)) = parent.nodes.get_mut(name.as_str()) {
+                *existing_dentry = dentry;
+                return;
+            }
+            parent
+                .nodes
+                .insert(name, DirNode::Dir(dentry, DirTree::new()));
+        } else {
+            parent.nodes.insert(name, DirNode::File(dentry));
         }
-        parent.nodes.insert(name, DirNode::leaf(dentry));
     }
 
     /// Apply a D record (owned path).
-    fn apply_delete(&mut self, path: String, dtype: Option<u8>) {
+    fn apply_delete(&mut self, path: String, is_dir: bool) {
         let Some((parent, name)) = self.walk_or_create_parent(path) else {
             return;
         };
 
         // Check what to do based on current state.
         let needs_tombstone = match parent.nodes.get(name.as_str()) {
-            None | Some(DirNode::Dir(Dentry::Unset, _)) => true,
-            Some(DirNode::File(d)) | Some(DirNode::Dir(d, _)) => d.in_base(),
+            None => true,
+            Some(DirNode::File(d) | DirNode::Dir(d, _)) => {
+                if d.is_passthrough() {
+                    true
+                } else {
+                    d.in_base
+                }
+            }
         };
 
         if needs_tombstone {
-            Self::place_tombstone_at(parent, name, dtype.unwrap_or(libc::DT_REG));
+            Self::place_tombstone_at(parent, name, is_dir);
         } else {
             // in_base=false → cancel (remove)
             parent.nodes.remove(name.as_str());
         }
     }
 
-    /// Place a Tombstone at a path, preserving any existing Dir subtree.
-    fn place_tombstone(&mut self, path: String, dtype: u8) {
+    /// Place a negative dentry at a path, preserving any existing Dir subtree.
+    fn place_tombstone(&mut self, path: String, is_dir: bool) {
         if let Some((parent, name)) = self.walk_or_create_parent(path) {
-            Self::place_tombstone_at(parent, name, dtype);
+            Self::place_tombstone_at(parent, name, is_dir);
         }
     }
 
-    /// Place a Tombstone in a parent's node map, preserving any existing Dir subtree.
-    fn place_tombstone_at(parent: &mut DirTree, name: String, dtype: u8) {
+    /// Place a negative dentry in a parent's node map, preserving any existing Dir subtree.
+    fn place_tombstone_at(parent: &mut DirTree, name: String, is_dir: bool) {
+        let tombstone = Dentry {
+            target: Target::None,
+            in_base: true,
+        };
         match parent.nodes.get_mut(name.as_str()) {
-            Some(DirNode::File(d)) => *d = Dentry::Tombstone { dtype },
-            Some(DirNode::Dir(d, _)) => *d = Dentry::Tombstone { dtype },
+            Some(DirNode::File(d)) => *d = tombstone,
+            Some(DirNode::Dir(d, _)) => *d = tombstone,
             None => {
-                let node = if dtype == libc::DT_DIR {
-                    DirNode::Dir(Dentry::Tombstone { dtype }, DirTree::new())
+                let node = if is_dir {
+                    DirNode::Dir(tombstone, DirTree::new())
                 } else {
-                    DirNode::File(Dentry::Tombstone { dtype })
+                    DirNode::File(tombstone)
                 };
                 parent.nodes.insert(name, node);
             }
@@ -354,7 +378,13 @@ impl DirTree {
     }
 
     /// Apply R/P rename (owned paths).
-    fn apply_rename(&mut self, dst_path: String, src_path: String, dtype: u8, dst_in_base: bool) {
+    fn apply_rename(
+        &mut self,
+        dst_path: String,
+        src_path: String,
+        is_dir: bool,
+        dst_in_base: bool,
+    ) {
         if dst_path == src_path {
             return;
         }
@@ -364,7 +394,13 @@ impl DirTree {
 
         // Determine if source position had base content (for tombstone)
         let source_had_base = match &src_node {
-            Some(DirNode::File(d)) | Some(DirNode::Dir(d, _)) => d.in_base(),
+            Some(DirNode::File(d) | DirNode::Dir(d, _)) => {
+                if d.is_passthrough() {
+                    true
+                } else {
+                    d.in_base
+                }
+            }
             None => true, // no node = base-only
         };
 
@@ -373,39 +409,51 @@ impl DirTree {
             Some(mut node) => {
                 // Source existed — move it, update in_base
                 match &mut node {
-                    DirNode::File(d) => d.set_in_base(dst_in_base),
-                    DirNode::Dir(d, _) if matches!(d, Dentry::Unset) => {
-                        // Intermediate dir being explicitly renamed — create Redirect
-                        *d = Dentry::Redirect {
-                            src: src_path.clone(),
-                            dtype,
+                    DirNode::File(d) => d.in_base = dst_in_base,
+                    DirNode::Dir(d, _) if d.is_passthrough() => {
+                        // Passthrough dir being explicitly renamed — create redirect
+                        *d = Dentry {
+                            target: Target::Path(Some(src_path.clone())),
                             in_base: dst_in_base,
                         };
                     }
-                    DirNode::Dir(d, _) => d.set_in_base(dst_in_base),
+                    DirNode::Dir(d, _) => d.in_base = dst_in_base,
                 }
                 node
             }
             None => {
-                // No source node — base-only file. Create Redirect.
-                DirNode::leaf(Dentry::Redirect {
-                    src: src_path.clone(),
-                    dtype,
+                // No source node — base-only file. Create redirect.
+                let dentry = Dentry {
+                    target: Target::Path(Some(src_path.clone())),
                     in_base: dst_in_base,
-                })
+                };
+                if is_dir {
+                    DirNode::Dir(dentry, DirTree::new())
+                } else {
+                    DirNode::File(dentry)
+                }
             }
         };
 
         // Place tombstone at source if it had base content
         if source_had_base {
-            self.place_tombstone(src_path, dtype);
+            self.place_tombstone(src_path, is_dir);
         }
 
-        // Roundtrip collapse: if dest ends up as a Redirect pointing to itself,
-        // the rename chain was a no-op (e.g. a→b→a). Replace with Unset.
+        // Roundtrip collapse: if dest ends up as a redirect pointing to itself,
+        // the rename chain was a no-op (e.g. a→b→a). Replace with passthrough.
         let is_roundtrip = match &dst_node {
-            DirNode::File(Dentry::Redirect { src, .. })
-            | DirNode::Dir(Dentry::Redirect { src, .. }, _) => src == &dst_path,
+            DirNode::File(Dentry {
+                target: Target::Path(Some(src)),
+                ..
+            })
+            | DirNode::Dir(
+                Dentry {
+                    target: Target::Path(Some(src)),
+                    ..
+                },
+                _,
+            ) => src == &dst_path,
             _ => false,
         };
 
@@ -414,15 +462,16 @@ impl DirTree {
             return;
         };
         if is_roundtrip {
-            // Replace with Unset — the rename chain was a no-op.
+            // Roundtrip — the rename chain was a no-op.
             match dst_node {
                 DirNode::Dir(_, subtree) => {
                     parent
                         .nodes
-                        .insert(name, DirNode::Dir(Dentry::Unset, subtree));
+                        .insert(name, DirNode::Dir(Dentry::passthrough(), subtree));
                 }
                 DirNode::File(_) => {
-                    parent.nodes.insert(name, DirNode::File(Dentry::Unset));
+                    // no-op file — remove entirely (clears any tombstone placed earlier)
+                    parent.nodes.remove(name.as_str());
                 }
             }
         } else {
@@ -444,12 +493,13 @@ impl DirTree {
             prefix.push_str(name);
 
             match node {
-                DirNode::File(dentry) => f(prefix, dentry),
-                DirNode::Dir(dentry, subtree) => {
-                    // Skip Unset dir entries (intermediate dirs).
-                    if !matches!(dentry, Dentry::Unset) {
-                        f(prefix, dentry);
-                    }
+                DirNode::File(dentry) if !dentry.is_passthrough() => f(prefix, dentry),
+                DirNode::File(_) => {} // skip passthrough file
+                DirNode::Dir(dentry, subtree) if !dentry.is_passthrough() => {
+                    f(prefix, dentry);
+                    subtree.visit_dentries(f, prefix);
+                }
+                DirNode::Dir(_, subtree) => {
                     subtree.visit_dentries(f, prefix);
                 }
             }
@@ -564,8 +614,8 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/a"),
-            Some(Dentry::StagedInode {
-                ino: 1,
+            Some(Dentry {
+                target: Target::Inode(1),
                 in_base: false,
                 ..
             })
@@ -578,8 +628,8 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/a"),
-            Some(Dentry::StagedInode {
-                ino: 1,
+            Some(Dentry {
+                target: Target::Inode(1),
                 in_base: true,
                 ..
             })
@@ -592,8 +642,8 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/dir/sub/file"),
-            Some(Dentry::StagedInode {
-                ino: 1,
+            Some(Dentry {
+                target: Target::Inode(1),
                 in_base: false,
                 ..
             })
@@ -621,14 +671,26 @@ mod tests {
     fn modify_then_delete_tombstone() {
         let tree = build(&[modify("/a", 1), delete("/a")]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/a"), Some(Dentry::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/a"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
     }
 
     #[test]
     fn delete_base_only_tombstone() {
         let tree = build(&[delete("/a")]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/a"), Some(Dentry::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/a"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
     }
 
     // ── Rename (R) ────────────────────────────────────────────────────
@@ -641,8 +703,8 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/b"),
-            Some(Dentry::StagedInode {
-                ino: 1,
+            Some(Dentry {
+                target: Target::Inode(1),
                 in_base: false,
                 ..
             })
@@ -654,8 +716,16 @@ mod tests {
         let tree = build(&[rename("/b", "/a")]);
         // Base-only: Link at /b, Tombstone at /a
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Dentry::Tombstone { .. })));
-        assert!(matches!(tree.get("/b"), Some(Dentry::Redirect { src: from, .. }) if from == "/a"));
+        assert!(matches!(
+            tree.get("/a"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
+        assert!(
+            matches!(tree.get("/b"), Some(Dentry { target: Target::Path(Some(from)), .. }) if from == "/a")
+        );
     }
 
     // ── Replace (P) ──────────────────────────────────────────────────
@@ -665,8 +735,16 @@ mod tests {
         let tree = build(&[replace("/b", "/a")]);
         // P: dest in_base=true, source had base content → Tombstone at /a, Link at /b
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Dentry::Tombstone { .. })));
-        assert!(matches!(tree.get("/b"), Some(Dentry::Redirect { src: from, .. }) if from == "/a"));
+        assert!(matches!(
+            tree.get("/a"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
+        assert!(
+            matches!(tree.get("/b"), Some(Dentry { target: Target::Path(Some(from)), .. }) if from == "/a")
+        );
     }
 
     // ── Rename chain ──────────────────────────────────────────────────
@@ -676,8 +754,16 @@ mod tests {
         let tree = build(&[rename("/b", "/a"), rename("/c", "/b")]);
         // a→b→c: Tombstone at /a, nothing at /b (not in base), Link at /c
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Dentry::Tombstone { .. })));
-        assert!(matches!(tree.get("/c"), Some(Dentry::Redirect { src: from, .. }) if from == "/a"));
+        assert!(matches!(
+            tree.get("/a"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
+        assert!(
+            matches!(tree.get("/c"), Some(Dentry { target: Target::Path(Some(from)), .. }) if from == "/a")
+        );
     }
 
     // ── Rename then delete ────────────────────────────────────────────
@@ -689,7 +775,13 @@ mod tests {
         // D(/b): in_base=false → cancel
         // Result: just Tombstone at /a
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/a"), Some(Dentry::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/a"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
     }
 
     // ── Directory rename ──────────────────────────────────────────────
@@ -717,8 +809,8 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/a"),
-            Some(Dentry::StagedInode {
-                ino: 3,
+            Some(Dentry {
+                target: Target::Inode(3),
                 in_base: true,
                 ..
             })
@@ -733,11 +825,17 @@ mod tests {
         // Tree: Link at /b replaced by Inode(ino=5, in_base=true), Tombstone at /a.
         let tree = build(&[rename("/b", "/a"), modify("/b", 5)]);
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Dentry::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/a"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
         assert!(matches!(
             tree.get("/b"),
-            Some(Dentry::StagedInode {
-                ino: 5,
+            Some(Dentry {
+                target: Target::Inode(5),
                 in_base: true,
                 ..
             })
@@ -749,11 +847,17 @@ mod tests {
         // P(/b, /a) then M(/b, ino=5): overwrites base /b with renamed /a, then modified.
         let tree = build(&[replace("/b", "/a"), modify("/b", 5)]);
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Dentry::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/a"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
         assert!(matches!(
             tree.get("/b"),
-            Some(Dentry::StagedInode {
-                ino: 5,
+            Some(Dentry {
+                target: Target::Inode(5),
                 in_base: true,
                 ..
             })
@@ -768,8 +872,16 @@ mod tests {
         // The rename replaces the tombstone with a Link.
         let tree = build(&[delete("/b"), rename("/b", "/a")]);
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Dentry::Tombstone { .. })));
-        assert!(matches!(tree.get("/b"), Some(Dentry::Redirect { src: from, .. }) if from == "/a"));
+        assert!(matches!(
+            tree.get("/a"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
+        assert!(
+            matches!(tree.get("/b"), Some(Dentry { target: Target::Path(Some(from)), .. }) if from == "/a")
+        );
     }
 
     // ── Add then rename (staged rename) ───────────────────────────────
@@ -783,8 +895,8 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/b"),
-            Some(Dentry::StagedInode {
-                ino: 1,
+            Some(Dentry {
+                target: Target::Inode(1),
                 in_base: false,
                 ..
             })
@@ -800,8 +912,8 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/a"),
-            Some(Dentry::StagedInode {
-                ino: 2,
+            Some(Dentry {
+                target: Target::Inode(2),
                 in_base: false,
                 ..
             })
@@ -816,8 +928,8 @@ mod tests {
         // A over Tombstone: the new inode replaces the tombstone.
         assert!(matches!(
             tree.get("/a"),
-            Some(Dentry::StagedInode {
-                ino: 2,
+            Some(Dentry {
+                target: Target::Inode(2),
                 in_base: false,
                 ..
             })
@@ -830,7 +942,13 @@ mod tests {
     fn delete_dir_base_only_tombstone() {
         let tree = build(&[delete_dir("/d")]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/d"), Some(Dentry::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/d"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -856,15 +974,38 @@ mod tests {
     }
 
     #[test]
+    fn delete_dir_with_missing_dtype_uses_existing_dir_shape() {
+        let tree = build(&[
+            add_dir("/d", 1),
+            add("/d/f", 2),
+            Action::Delete {
+                path: "/d".into(),
+                dtype: None,
+            },
+        ]);
+        assert!(
+            tree.is_empty(),
+            "existing staged dir should still cancel even when dtype is missing: {:?}",
+            tree
+        );
+    }
+
+    #[test]
     fn delete_base_dir_then_add_child() {
         // Delete a base directory, then add a file under it.
         // The tombstone should be a Dir node so walk_to_parent succeeds.
         let tree = build(&[delete_dir("/d"), add("/d/f1", 1)]);
-        assert!(matches!(tree.get("/d"), Some(Dentry::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/d"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
         assert!(matches!(
             tree.get("/d/f1"),
-            Some(Dentry::StagedInode {
-                ino: 1,
+            Some(Dentry {
+                target: Target::Inode(1),
                 in_base: false,
                 ..
             })
@@ -878,9 +1019,15 @@ mod tests {
         // Add /a/b/c/file — creates intermediate /a, /a/b, /a/b/c.
         // Delete /a/b → should create Tombstone for the intermediate dir.
         let tree = build(&[add("/a/b/c/file", 1), delete_dir("/a/b")]);
-        // /a/b was intermediate (Dir(None,..)) → treated as base → Tombstone.
+        // /a/b was intermediate (Dir(passthrough,..)) → treated as base → negative dentry.
         assert!(
-            matches!(tree.get("/a/b"), Some(Dentry::Tombstone { .. })),
+            matches!(
+                tree.get("/a/b"),
+                Some(Dentry {
+                    target: Target::None,
+                    ..
+                })
+            ),
             "intermediate dir should get Tombstone: {:?}",
             tree
         );
@@ -901,8 +1048,8 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/x"),
-            Some(Dentry::StagedInode {
-                ino: 2,
+            Some(Dentry {
+                target: Target::Inode(2),
                 in_base: true,
                 ..
             })
@@ -915,16 +1062,16 @@ mod tests {
         assert_eq!(tree.len(), 2);
         assert!(matches!(
             tree.get("/a"),
-            Some(Dentry::StagedInode {
-                ino: 1,
+            Some(Dentry {
+                target: Target::Inode(1),
                 in_base: false,
                 ..
             })
         ));
         assert!(matches!(
             tree.get("/b"),
-            Some(Dentry::StagedInode {
-                ino: 2,
+            Some(Dentry {
+                target: Target::Inode(2),
                 in_base: false,
                 ..
             })
@@ -946,26 +1093,26 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_rename_produces_unset() {
-        // a→tmp→a should produce Unset at /a (no net staged change).
+    fn roundtrip_rename_produces_passthrough() {
+        // a→tmp→a: file roundtrip removes the node from the tree.
         let tree = build(&[rename("/tmp", "/a"), rename("/a", "/tmp")]);
         assert_eq!(tree.len(), 0, "no staged changes");
-        // get() returns None for Unset, so inspect the tree directly.
-        match tree.nodes.get("a").unwrap() {
-            DirNode::File(Dentry::Unset) => {}
-            other => panic!("expected File(Unset), got {:?}", other),
-        }
+        // File roundtrip — node removed entirely from tree.
+        assert!(
+            tree.nodes.get("a").is_none(),
+            "expected file roundtrip to remove node, got {:?}",
+            tree.nodes.get("a")
+        );
     }
 
     #[test]
-    fn roundtrip_rename_dir_produces_unset() {
-        // Dir roundtrip (a→tmp→a) should produce Dir(Unset, _).
+    fn roundtrip_rename_dir_produces_passthrough() {
+        // Dir roundtrip (a→tmp→a) should produce a passthrough Dir.
         let tree = build(&[rename_dir("/tmp", "/a"), rename_dir("/a", "/tmp")]);
         assert_eq!(tree.len(), 0, "no staged changes");
-        // get() returns None for Unset, so inspect the tree directly.
-        match tree.nodes.get("a").unwrap() {
-            DirNode::Dir(Dentry::Unset, _) => {}
-            other => panic!("expected Dir(Unset, _), got {:?}", other),
+        match tree.nodes.get("a") {
+            Some(DirNode::Dir(d, _)) if d.is_passthrough() => {}
+            other => panic!("expected passthrough Dir, got {:?}", other),
         }
     }
 
@@ -980,26 +1127,27 @@ mod tests {
         assert!(!tree.is_empty(), "swap should produce dentries: {:?}", tree);
         // /a should be a Renamed from /b, /b should be a Renamed from /a
         assert!(
-            matches!(tree.get("/a"), Some(Dentry::Redirect { src: from, .. }) if from == "/b"),
+            matches!(tree.get("/a"), Some(Dentry { target: Target::Path(Some(from)), .. }) if from == "/b"),
             "a should come from b: {:?}",
             tree
         );
         assert!(
-            matches!(tree.get("/b"), Some(Dentry::Redirect { src: from, .. }) if from == "/a"),
+            matches!(tree.get("/b"), Some(Dentry { target: Target::Path(Some(from)), .. }) if from == "/a"),
             "b should come from a: {:?}",
             tree
         );
     }
 
     #[test]
-    fn three_step_roundtrip_rename_produces_unset() {
-        // a→b→c→a should produce Unset at /a (no net staged change).
+    fn three_step_roundtrip_rename_produces_passthrough() {
+        // a→b→c→a: file roundtrip removes the node from the tree.
         let tree = build(&[rename("/b", "/a"), rename("/c", "/b"), rename("/a", "/c")]);
         assert_eq!(tree.len(), 0, "no staged changes after 3-step roundtrip");
-        match tree.nodes.get("a").unwrap() {
-            DirNode::File(Dentry::Unset) => {}
-            other => panic!("expected File(Unset), got {:?}", other),
-        }
+        assert!(
+            tree.nodes.get("a").is_none(),
+            "expected file roundtrip to remove node, got {:?}",
+            tree.nodes.get("a")
+        );
     }
 
     // ── Empty tree ────────────────────────────────────────────────────
@@ -1018,9 +1166,8 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/link"),
-            Some(Dentry::StagedInode {
-                ino: 1,
-                dtype: libc::DT_LNK,
+            Some(Dentry {
+                target: Target::Inode(1),
                 in_base: false
             })
         ));
@@ -1030,11 +1177,17 @@ mod tests {
     fn rename_symlink_dtype() {
         let tree = build(&[rename_symlink("/new", "/old")]);
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/old"), Some(Dentry::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/old"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
         assert!(matches!(
             tree.get("/new"),
-            Some(Dentry::Redirect {
-                dtype: libc::DT_LNK,
+            Some(Dentry {
+                target: Target::Path(Some(_)),
                 ..
             })
         ));
@@ -1062,9 +1215,15 @@ mod tests {
     fn replace_dir_base_only() {
         let tree = build(&[replace_dir("/dst", "/src")]);
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/src"), Some(Dentry::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/src"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
         assert!(
-            matches!(tree.get("/dst"), Some(Dentry::Redirect { src: from, dtype: libc::DT_DIR, .. }) if from == "/src")
+            matches!(tree.get("/dst"), Some(Dentry { target: Target::Path(Some(from)), .. }) if from == "/src")
         );
     }
 
@@ -1082,7 +1241,11 @@ mod tests {
         // Destination should have in_base=true (from P tag)
         assert!(matches!(
             tree.get("/dst"),
-            Some(Dentry::StagedInode { in_base: true, .. })
+            Some(Dentry {
+                target: Target::Inode(_),
+                in_base: true,
+                ..
+            })
         ));
     }
 
@@ -1092,9 +1255,38 @@ mod tests {
     fn rename_base_only_dir() {
         let tree = build(&[rename_dir("/new", "/old")]);
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/old"), Some(Dentry::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/old"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
         assert!(
-            matches!(tree.get("/new"), Some(Dentry::Redirect { src: from, dtype: libc::DT_DIR, .. }) if from == "/old")
+            matches!(tree.get("/new"), Some(Dentry { target: Target::Path(Some(from)), .. }) if from == "/old")
+        );
+    }
+
+    #[test]
+    fn rename_dir_with_missing_dtype_moves_existing_subtree() {
+        let tree = build(&[
+            add_dir("/old", 1),
+            add("/old/file", 2),
+            Action::Rename {
+                src: "/old".into(),
+                dst: "/new".into(),
+                dtype: None,
+            },
+        ]);
+        assert!(tree.get("/old").is_none(), "old dir should be gone");
+        assert!(
+            tree.get("/old/file").is_none(),
+            "old subtree should be gone"
+        );
+        assert!(tree.get("/new").is_some(), "new dir should exist");
+        assert!(
+            tree.get("/new/file").is_some(),
+            "subtree should move with dir"
         );
     }
 
@@ -1109,17 +1301,29 @@ mod tests {
         // /c gets Link(src=/a, in_base=true).
         assert_eq!(tree.len(), 3, "expected 3 entries: {:?}", tree);
         assert!(
-            matches!(tree.get("/a"), Some(Dentry::Tombstone { .. })),
+            matches!(
+                tree.get("/a"),
+                Some(Dentry {
+                    target: Target::None,
+                    ..
+                })
+            ),
             "missing tombstone at /a: {:?}",
             tree
         );
         assert!(
-            matches!(tree.get("/b"), Some(Dentry::Tombstone { .. })),
+            matches!(
+                tree.get("/b"),
+                Some(Dentry {
+                    target: Target::None,
+                    ..
+                })
+            ),
             "missing tombstone at /b: {:?}",
             tree
         );
         assert!(
-            matches!(tree.get("/c"), Some(Dentry::Redirect { src: from, .. }) if from == "/a"),
+            matches!(tree.get("/c"), Some(Dentry { target: Target::Path(Some(from)), .. }) if from == "/a"),
             "/c should be Link from /a: {:?}",
             tree
         );
@@ -1133,12 +1337,18 @@ mod tests {
         // P(/c, /b): move /b to /c, in_base=true. /b was in_base=false → no tombstone at /b.
         assert_eq!(tree.len(), 2, "expected 2 entries: {:?}", tree);
         assert!(
-            matches!(tree.get("/a"), Some(Dentry::Tombstone { .. })),
+            matches!(
+                tree.get("/a"),
+                Some(Dentry {
+                    target: Target::None,
+                    ..
+                })
+            ),
             "missing tombstone at /a: {:?}",
             tree
         );
         assert!(
-            matches!(tree.get("/c"), Some(Dentry::Redirect { src: from, .. }) if from == "/a"),
+            matches!(tree.get("/c"), Some(Dentry { target: Target::Path(Some(from)), .. }) if from == "/a"),
             "/c should be Link from /a: {:?}",
             tree
         );
@@ -1161,8 +1371,8 @@ mod tests {
         assert!(
             matches!(
                 tree.get("/new/child.txt"),
-                Some(Dentry::StagedInode {
-                    ino: 2,
+                Some(Dentry {
+                    target: Target::Inode(2),
                     in_base: false,
                     ..
                 })
@@ -1194,12 +1404,18 @@ mod tests {
     #[test]
     fn rename_into_intermediate_dir_position() {
         // A(/a/b/c/file) creates intermediates /a, /a/b, /a/b/c.
-        // R(/other, /a/b) renames intermediate /a/b (which is a Dir(Unset, ...) node).
+        // R(/other, /a/b) renames intermediate /a/b (which is a Dir(passthrough, ...) node).
         let tree = build(&[add("/a/b/c/file", 1), rename_dir("/other", "/a/b")]);
-        // /a/b was an intermediate dir → source_had_base=true → Tombstone at /a/b.
+        // /a/b was an intermediate dir → source_had_base=true → negative dentry at /a/b.
         assert!(
-            matches!(tree.get("/a/b"), Some(Dentry::Tombstone { .. })),
-            "/a/b should be Tombstone: {:?}",
+            matches!(
+                tree.get("/a/b"),
+                Some(Dentry {
+                    target: Target::None,
+                    ..
+                })
+            ),
+            "/a/b should be negative dentry: {:?}",
             tree
         );
         // /other gets the subtree with /other/c/file.
@@ -1207,41 +1423,19 @@ mod tests {
         assert!(
             matches!(
                 tree.get("/other/c/file"),
-                Some(Dentry::StagedInode { ino: 1, .. })
+                Some(Dentry {
+                    target: Target::Inode(1),
+                    ..
+                })
             ),
             "/other/c/file should be Inode(ino=1): {:?}",
             tree
         );
-        // /other should have a Link dentry (from intermediate dir rename)
+        // /other should have a redirect dentry (from intermediate dir rename)
         assert!(
-            matches!(tree.get("/other"), Some(Dentry::Redirect { src: from, .. }) if from == "/a/b"),
-            "/other should be Link from /a/b: {:?}",
+            matches!(tree.get("/other"), Some(Dentry { target: Target::Path(Some(from)), .. }) if from == "/a/b"),
+            "/other should be redirect from /a/b: {:?}",
             tree
-        );
-    }
-
-    #[test]
-    fn tombstone_dtype_returns_stored_value() {
-        assert_eq!(
-            Dentry::Tombstone {
-                dtype: libc::DT_REG
-            }
-            .dtype(),
-            libc::DT_REG
-        );
-        assert_eq!(
-            Dentry::Tombstone {
-                dtype: libc::DT_DIR
-            }
-            .dtype(),
-            libc::DT_DIR
-        );
-        assert_eq!(
-            Dentry::Tombstone {
-                dtype: libc::DT_LNK
-            }
-            .dtype(),
-            libc::DT_LNK
         );
     }
 
@@ -1263,12 +1457,24 @@ mod tests {
         ]);
         // Both /a and /b should be tombstoned.
         assert!(
-            matches!(cs.get("/a"), Some(Dentry::Tombstone { .. })),
+            matches!(
+                cs.get("/a"),
+                Some(Dentry {
+                    target: Target::None,
+                    ..
+                })
+            ),
             "/a should be Tombstone: {:?}",
             cs
         );
         assert!(
-            matches!(cs.get("/b"), Some(Dentry::Tombstone { .. })),
+            matches!(
+                cs.get("/b"),
+                Some(Dentry {
+                    target: Target::None,
+                    ..
+                })
+            ),
             "/b should be Tombstone (base content): {:?}",
             cs
         );
@@ -1291,10 +1497,10 @@ mod tests {
         // Node "_f"
         expected.extend_from_slice(&2u16.to_le_bytes()); // name_len = 2
         expected.extend_from_slice(b"_f");
-        // Dentry: kind=1(StagedInode), ino=1, in_base=false
+        // Dentry: kind=1(StagedInode), in_base=false, ino=1
         expected.push(1); // kind
-        expected.extend_from_slice(&1u32.to_le_bytes()); // ino
         expected.push(0); // in_base=false
+        expected.extend_from_slice(&1u32.to_le_bytes()); // ino
         expected.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
         assert_eq!(buf, expected);
     }
@@ -1317,8 +1523,9 @@ mod tests {
         expected.extend_from_slice(&1u16.to_le_bytes()); // child_count = 1
         expected.extend_from_slice(&3u16.to_le_bytes()); // name_len = 3
         expected.extend_from_slice(b"old");
-        // Dentry: kind=3(Tombstone)
+        // Dentry: kind=3(None/negative), in_base=true
         expected.push(3);
+        expected.push(1); // in_base=true
         expected.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
         assert_eq!(buf, expected);
     }
@@ -1337,12 +1544,14 @@ mod tests {
         assert_eq!(child_count, 2);
 
         // Children are sorted: "a.txt" before "b.txt"
-        // Node 1: "a.txt" — tombstone
+        // Node 1: "a.txt" — negative dentry
         let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + name_len], b"a.txt");
         cursor += name_len;
-        assert_eq!(buf[cursor], 3); // kind=TOMBSTONE
+        assert_eq!(buf[cursor], 3); // kind=None/negative
+        cursor += 1;
+        assert_eq!(buf[cursor], 1); // in_base=true
         cursor += 1;
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
@@ -1355,13 +1564,13 @@ mod tests {
         cursor += name_len;
         assert_eq!(buf[cursor], 2); // kind=REDIRECT
         cursor += 1;
-        // Trailing: base_len + base_path + in_base
+        // Trailing: in_base + base_len + base_path
+        assert_eq!(buf[cursor], 0); // in_base=false (Rename → dest not in base)
+        cursor += 1;
         let base_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + base_len], b"/a.txt");
         cursor += base_len;
-        assert_eq!(buf[cursor], 0); // in_base=false (Rename → dest not in base)
-        cursor += 1;
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
         assert_eq!(cc, 0);
@@ -1388,11 +1597,11 @@ mod tests {
         cursor += name_len;
         assert_eq!(buf[cursor], 1); // kind=STAGED_INODE
         cursor += 1;
+        assert_eq!(buf[cursor], 0); // in_base=false
+        cursor += 1;
         let ino = u32::from_le_bytes(buf[cursor..cursor + 4].try_into().unwrap());
         assert_eq!(ino, 10);
         cursor += 4;
-        assert_eq!(buf[cursor], 0); // in_base=false
-        cursor += 1;
 
         // child_count for "dir" subtree = 1
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
@@ -1406,11 +1615,11 @@ mod tests {
         cursor += name_len;
         assert_eq!(buf[cursor], 1); // kind=STAGED_INODE
         cursor += 1;
+        assert_eq!(buf[cursor], 0); // in_base=false
+        cursor += 1;
         let ino = u32::from_le_bytes(buf[cursor..cursor + 4].try_into().unwrap());
         assert_eq!(ino, 20);
         cursor += 4;
-        assert_eq!(buf[cursor], 0); // in_base=false
-        cursor += 1;
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
         assert_eq!(cc, 0);
@@ -1419,7 +1628,7 @@ mod tests {
     }
 
     #[test]
-    fn serialize_unset_dir() {
+    fn serialize_passthrough_dir() {
         // /dir/file where /dir has no own dirent (pass-through)
         let tree = build(&[add("/dir/file", 5)]);
         let buf = tree.serialize();
@@ -1430,13 +1639,18 @@ mod tests {
         cursor += 2;
         assert_eq!(cc, 1);
 
-        // Node "dir": kind=0 (Unset)
+        // Node "dir": kind=2 in_base=1 path_len=0 (passthrough scaffold)
         let name_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + name_len], b"dir");
         cursor += name_len;
-        assert_eq!(buf[cursor], 0); // kind=UNSET
+        assert_eq!(buf[cursor], 2); // kind=REDIRECT (passthrough scaffold)
         cursor += 1;
+        assert_eq!(buf[cursor], 1); // in_base=true
+        cursor += 1;
+        let path_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
+        assert_eq!(path_len, 0); // empty path
+        cursor += 2;
 
         // child_count = 1
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
@@ -1450,8 +1664,8 @@ mod tests {
         cursor += name_len;
         assert_eq!(buf[cursor], 1); // kind=STAGED_INODE
         cursor += 1;
-        cursor += 4; // ino
         cursor += 1; // in_base
+        cursor += 4; // ino
         let cc = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
         assert_eq!(cc, 0);
@@ -1483,22 +1697,22 @@ mod tests {
     }
 
     #[test]
-    fn serialize_unset_dir_empty_subtree_omitted() {
-        // Create a tree with an unset dir that has an empty subtree
+    fn serialize_passthrough_dir_empty_subtree_omitted() {
+        // Create a tree with a passthrough dir that has an empty subtree
         let mut tree = DirTree::new();
         tree.nodes.insert(
             "empty".to_string(),
-            DirNode::Dir(Dentry::Unset, DirTree::new()),
+            DirNode::Dir(Dentry::passthrough(), DirTree::new()),
         );
         let buf = tree.serialize();
-        // Should produce just child_count=0 (the empty unset dir is skipped)
+        // Should produce just child_count=0 (the empty passthrough dir is skipped)
         assert_eq!(buf, vec![0x00, 0x00]);
     }
 
     #[test]
     fn serialize_stale_intermediates_after_cancel() {
         // Add a deeply nested file then delete it.  The cancel removes the
-        // leaf File node but leaves Dir(Unset) intermediates.  The leaf-level
+        // leaf File node but leaves passthrough Dir intermediates.  The leaf-level
         // empty dir is filtered, but upper intermediates remain in the
         // serialized output.  The kernel tolerates these (skips nodes with
         // kind=0 and child_count=0).
@@ -1512,7 +1726,7 @@ mod tests {
     fn serialize_partial_stale_intermediates() {
         // /a/b/c/file1 added + deleted (cancel), but /a/x still exists.
         // The stale /a/b branch remains in the tree but is harmless — the
-        // kernel skips empty unset nodes.
+        // kernel skips empty passthrough nodes.
         let tree = build(&[
             add("/a/b/c/file1", 1),
             add("/a/x", 2),
@@ -1540,9 +1754,9 @@ mod tests {
         let buf = tree.serialize();
         // Skip: root child_count(2) + name_len(2) + name(1) = offset 5
         assert_eq!(buf[5], 1); // kind=STAGED_INODE
-        let ino = u32::from_le_bytes(buf[6..10].try_into().unwrap());
+        assert_eq!(buf[6], 1); // in_base=true (Modify)
+        let ino = u32::from_le_bytes(buf[7..11].try_into().unwrap());
         assert_eq!(ino, 42);
-        assert_eq!(buf[10], 1); // in_base=true (Modify)
     }
 
     #[test]
@@ -1562,41 +1776,33 @@ mod tests {
         cursor += name_len;
         assert_eq!(buf[cursor], 2); // kind=REDIRECT
         cursor += 1;
+        assert_eq!(buf[cursor], 0); // in_base=false (Rename: dest not in base)
+        cursor += 1;
 
-        // Trailing base_path + in_base
+        // Trailing base_path
         let base_len = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + base_len], b"/src");
-        cursor += base_len;
-        assert_eq!(buf[cursor], 0); // in_base=false (Rename: dest not in base)
     }
 
-    #[test]
-    fn serialize_unset_file_omitted() {
-        // An Unset file node should be skipped entirely during serialization.
-        let mut tree = DirTree::new();
-        tree.nodes
-            .insert("ghost".to_string(), DirNode::File(Dentry::Unset));
-        let buf = tree.serialize();
-        assert_eq!(buf, vec![0x00, 0x00], "Unset file should be omitted");
-    }
+    // serialize_unset_file_omitted test removed — File(Dentry::Unset) no longer
+    // exists.  File roundtrips remove the node entirely from the tree.
 
     #[test]
-    fn serialize_unset_dir_val_zero() {
-        // An Unset dir with children should serialize kind=0
+    fn serialize_passthrough_dir_val_zero() {
+        // A passthrough dir with children should serialize kind=0
         // but still emit the subtree.
         let mut tree = DirTree::new();
         let mut sub = DirTree::new();
         sub.nodes.insert(
             "child".to_string(),
-            DirNode::File(Dentry::StagedInode {
-                ino: 1,
-                dtype: libc::DT_REG,
+            DirNode::File(Dentry {
+                target: Target::Inode(1),
                 in_base: false,
             }),
         );
         tree.nodes
-            .insert("dir".to_string(), DirNode::Dir(Dentry::Unset, sub));
+            .insert("dir".to_string(), DirNode::Dir(Dentry::passthrough(), sub));
         let buf = tree.serialize();
         let mut cursor = 0usize;
         // root child_count = 1
@@ -1607,48 +1813,61 @@ mod tests {
         cursor += 2;
         assert_eq!(&buf[cursor..cursor + nlen], b"dir");
         cursor += nlen;
-        // kind = 0 (Unset)
-        assert_eq!(buf[cursor], 0, "Unset dir should have kind=0");
+        // kind = 2, in_base=1, path_len=0 (passthrough scaffold)
+        assert_eq!(
+            buf[cursor], 2,
+            "passthrough dir should have kind=2 (redirect scaffold)"
+        );
         cursor += 1;
+        assert_eq!(buf[cursor], 1, "passthrough dir should have in_base=1");
+        cursor += 1;
+        assert_eq!(
+            u16::from_le_bytes([buf[cursor], buf[cursor + 1]]),
+            0,
+            "passthrough dir should have path_len=0"
+        );
+        cursor += 2;
         // subtree child_count = 1 (the child)
         assert_eq!(u16::from_le_bytes([buf[cursor], buf[cursor + 1]]), 1);
     }
 
     #[test]
-    fn serialize_tombstone_dir_dtype() {
-        // delete_dir on a base-only dir produces a tombstone.
+    fn serialize_negative_dentry_dir_dtype() {
+        // delete_dir on a base-only dir produces a negative dentry.
         let tree = build(&[delete_dir("/d")]);
         let buf = tree.serialize();
         // Skip root child_count(2) + name_len(2) + name(1) = offset 5
-        assert_eq!(buf[5], 3); // kind=TOMBSTONE
+        assert_eq!(buf[5], 3); // kind=None/negative
+        assert_eq!(buf[6], 1); // in_base=true
     }
 
     #[test]
-    fn serialize_tombstone_symlink_dtype() {
-        // delete on a base-only symlink produces a tombstone.
+    fn serialize_negative_dentry_symlink_dtype() {
+        // delete on a base-only symlink produces a negative dentry.
         let tree = build(&[Action::Delete {
             path: "/s".into(),
             dtype: Some(libc::DT_LNK),
         }]);
         let buf = tree.serialize();
-        assert_eq!(buf[5], 3); // kind=TOMBSTONE
+        assert_eq!(buf[5], 3); // kind=None/negative
+        assert_eq!(buf[6], 1); // in_base=true
     }
 
     #[test]
-    fn serialize_after_roundtrip_rename_omits_unset() {
-        // Roundtrip rename (a→tmp→a) should produce Unset file, which
-        // serialize() must omit entirely.
+    fn serialize_after_roundtrip_rename_omits_passthrough() {
+        // Roundtrip rename (a→tmp→a) removes the file node entirely,
+        // so serialize() produces an empty tree.
         let tree = build(&[rename("/tmp", "/a"), rename("/a", "/tmp")]);
         assert_eq!(tree.len(), 0);
         let buf = tree.serialize();
-        // Root child_count = 0 — the Unset file is filtered out.
+        // Root child_count = 0 — the roundtrip file is removed from tree.
         assert_eq!(buf, vec![0x00, 0x00]);
     }
 
     #[test]
     fn roundtrip_rename_dir_preserves_subtree() {
         // Rename dir with children back to original — children should survive.
-        // get() returns None for Unset, so /a won't appear.
+        // get() returns None for passthrough, so /a won't appear.
         let tree = build(&[
             add("/a/child", 1),
             rename_dir("/tmp", "/a"),
@@ -1658,11 +1877,104 @@ mod tests {
         assert!(
             matches!(
                 tree.get("/a/child"),
-                Some(Dentry::StagedInode { ino: 1, .. })
+                Some(Dentry {
+                    target: Target::Inode(1),
+                    ..
+                })
             ),
             "/a/child should survive roundtrip: {:?}",
             tree
         );
+    }
+
+    #[test]
+    fn serialize_deeply_nested_passthrough_dirs() {
+        // /a/b/c/file — three levels of passthrough scaffolds.
+        // Each intermediate dir must serialize as tag=2, in_base=1, path_len=0
+        // so the kernel's restore_inject_entry skips them correctly.
+        let tree = build(&[add("/a/b/c/file", 42)]);
+        let buf = tree.serialize();
+        let mut cursor = 0usize;
+
+        // Root child_count = 1
+        assert_eq!(u16::from_le_bytes([buf[cursor], buf[cursor + 1]]), 1);
+        cursor += 2;
+
+        // For each passthrough dir (a, b, c): name + tag=2 + in_base=1 + path_len=0 + child_count=1
+        for name in &["a", "b", "c"] {
+            let nlen = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+            cursor += 2;
+            assert_eq!(&buf[cursor..cursor + nlen], name.as_bytes());
+            cursor += nlen;
+            assert_eq!(buf[cursor], 2, "{name}: tag should be 2 (PATH/passthrough)");
+            cursor += 1;
+            assert_eq!(buf[cursor], 1, "{name}: in_base should be 1");
+            cursor += 1;
+            assert_eq!(
+                u16::from_le_bytes([buf[cursor], buf[cursor + 1]]),
+                0,
+                "{name}: path_len should be 0"
+            );
+            cursor += 2;
+            assert_eq!(
+                u16::from_le_bytes([buf[cursor], buf[cursor + 1]]),
+                1,
+                "{name}: child_count should be 1"
+            );
+            cursor += 2;
+        }
+
+        // Leaf file: name + tag=1 (INODE) + in_base=0 + ino=42 + child_count=0
+        let nlen = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+        cursor += 2;
+        assert_eq!(&buf[cursor..cursor + nlen], b"file");
+        cursor += nlen;
+        assert_eq!(buf[cursor], 1); // tag=INODE
+        cursor += 1;
+        assert_eq!(buf[cursor], 0); // in_base=false
+        cursor += 1;
+        assert_eq!(
+            u32::from_le_bytes(buf[cursor..cursor + 4].try_into().unwrap()),
+            42
+        );
+        cursor += 4;
+        assert_eq!(u16::from_le_bytes([buf[cursor], buf[cursor + 1]]), 0);
+        cursor += 2;
+
+        assert_eq!(cursor, buf.len());
+    }
+
+    #[test]
+    fn roundtrip_rename_with_sibling_changes() {
+        // Roundtrip rename (a→tmp→a) should remove the roundtripped file
+        // but leave other staged changes intact.
+        let tree = build(&[add("/other", 1), rename("/tmp", "/a"), rename("/a", "/tmp")]);
+        // "a" removed (roundtrip), "other" survives
+        assert!(
+            tree.nodes.get("a").is_none(),
+            "roundtrip file should be removed"
+        );
+        assert!(
+            matches!(
+                tree.get("/other"),
+                Some(Dentry {
+                    target: Target::Inode(1),
+                    in_base: false,
+                    ..
+                })
+            ),
+            "sibling should survive: {:?}",
+            tree
+        );
+
+        let buf = tree.serialize();
+        let mut cursor = 0usize;
+        // Root child_count = 1 (only "other")
+        assert_eq!(u16::from_le_bytes([buf[cursor], buf[cursor + 1]]), 1);
+        cursor += 2;
+        let nlen = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]) as usize;
+        cursor += 2;
+        assert_eq!(&buf[cursor..cursor + nlen], b"other");
     }
 
     #[test]
@@ -1671,9 +1983,8 @@ mod tests {
         let mut tree = DirTree::new();
         tree.nodes.insert(
             "link".to_string(),
-            DirNode::File(Dentry::Redirect {
-                src: "a".repeat(u16::MAX as usize + 1),
-                dtype: libc::DT_REG,
+            DirNode::File(Dentry {
+                target: Target::Path(Some("a".repeat(u16::MAX as usize + 1))),
                 in_base: false,
             }),
         );

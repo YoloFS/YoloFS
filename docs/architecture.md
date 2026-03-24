@@ -76,7 +76,7 @@ AgFS uses a fundamentally different staging model from OverlayFS.
 layer *is* the persistent state. There is no commit or abort. A renamed
 file is copied up to upper with `RENAME_WHITEOUT` and stays there forever.
 AgFS treats staging as a flat inode store with in-memory staging state
-(packed values on pinned VFS dentries) that is explicitly committed or
+(staging state fields (`target`, `in_base`, `pinned`) on pinned VFS dentries) that is explicitly committed or
 discarded via the journal.
 
 **Copy-up**: OverlayFS always does a full copy-up on first write, even for
@@ -86,7 +86,7 @@ directly — zero copy for the most common agent write pattern.
 
 **Rename**: OverlayFS does a real `vfs_rename()` in the upper directory,
 which requires copy-up. AgFS does zero-copy renames by setting packed state
-on VFS dentries (tombstone dentry on old parent, link dentry on new parent).
+on VFS dentries (negative dentry on old parent, redirect dentry on new parent).
 Rename chains resolve naturally through the dcache.
 
 **Lookup**: OverlayFS does two lookups per component (upper + lower) and
@@ -194,9 +194,8 @@ agfs/
 ├── README.md
 ├── docs/                      # Design documentation
 │   ├── architecture.md        # This file
-│   ├── staging.md             # Staging-commit mechanism
+│   ├── staging.md             # Staging, restore, and VFS/ioctl behavior
 │   ├── permissions.md         # Permission gating layer
-│   ├── internals.md           # VFS ops, ioctl behavior & concurrency
 │   └── cli.md                 # CLI reference
 ├── kmod/                      # Kernel module
 │   ├── Kbuild
@@ -234,7 +233,8 @@ agfs/
 │   │   ├── parse.rs           # parse()  (pub(super))
 │   │   ├── markers.rs         # Markers (lookup + range + alive_segments + checkpoint_at)
 │   │   ├── journal.rs         # Journal (struct + new + read + live_segments_*)
-│   │   └── tree.rs            # DirTree, Dentry, DirNode
+│   │   ├── tree.rs            # DirTree, DirNode
+│   │   └── dentry.rs          # Dentry, Target — dentry state types
 │   ├── ioctl.rs               # binary protocol structs + ioctl helpers
 │   ├── kmsg.rs                # kernel log reading via /dev/kmsg
 │   └── utils.rs               # shared helpers (session_dir, plural)

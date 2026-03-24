@@ -91,24 +91,33 @@ struct agfs_readdir_data {
 	loff_t			*off;
 };
 
+static bool agfs_base_entry_overridden(struct dentry *parent,
+				       const char *name, int namelen)
+{
+	struct qstr qname = QSTR_INIT(name, namelen);
+	struct dentry *child;
+	bool overridden;
+
+	qname.hash = full_name_hash(parent, name, namelen);
+	child = d_lookup(parent, &qname);
+	if (!child)
+		return false;
+
+	overridden = AGFS_D(child)->pinned;
+	dput(child);
+	return overridden;
+}
+
 static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 			   int namelen, loff_t offset, u64 ino,
 			   unsigned int d_type)
 {
 	struct agfs_readdir_data *rdd =
 		container_of(ctx, struct agfs_readdir_data, ctx);
-	struct qstr qname = QSTR_INIT(name, namelen);
-	struct dentry *child;
 
-	/* Check if this base entry is overridden by a staged entry */
-	qname.hash = full_name_hash(rdd->dentry, name, namelen);
-	child = d_lookup(rdd->dentry, &qname);
-	if (child) {
-		bool overridden = AGFS_D(child)->kind != AGFS_DKIND_UNSET;
-		dput(child);
-		if (overridden)
-			return true; /* skip — overridden */
-	}
+	/* Check if this base entry is overridden by a pinned entry */
+	if (agfs_base_entry_overridden(rdd->dentry, name, namelen))
+		return true; /* skip — overridden */
 
 	if (*rdd->off < rdd->caller_ctx->pos) {
 		(*rdd->off)++;
@@ -126,25 +135,49 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
  * Caller holds inode_lock_shared(dir) via VFS iterate_shared.
  * Returns true if the dir_emit buffer filled up.
  */
+static bool agfs_should_emit_staged_child(const struct dentry *child)
+{
+	/*
+	 * Tombstones (NONE, true) stay pinned in dcache so lookup/readdir can
+	 * hide the base name, but phase 1 must not emit them as dirents.
+	 */
+	return AGFS_D(child)->pinned &&
+	       !(AGFS_D(child)->target == AGFS_TARGET_NONE &&
+		 AGFS_D(child)->in_base);
+}
+
 static struct dentry *agfs_next_staged_child(struct dentry *parent,
 					     struct hlist_node **p,
 					     struct dentry *last)
 {
 	struct dentry *child;
 
+	/*
+	 * inode_lock_shared(dir) keeps ordinary directory mutations serialized
+	 * against iterate_shared, but d_children traversal and cursor links are
+	 * still dcache state and must be protected by parent->d_lock.
+	 */
 	spin_lock(&parent->d_lock);
 	while (*p) {
 		child = hlist_entry(*p, struct dentry, d_sib);
 		*p = child->d_sib.next;
 		if (child->d_flags & DCACHE_DENTRY_CURSOR)
 			continue;
-		if (AGFS_D(child)->kind == AGFS_DKIND_UNSET)
+		/*
+		 * Fast pre-check without child->d_lock: skip children that do
+		 * not contribute a visible phase-1 dirent. Re-checked below
+		 * under d_lock to close the TOCTOU window.
+		 */
+		if (!agfs_should_emit_staged_child(child))
 			continue;
-		if (AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE)
-			continue;
+		/*
+		 * Take a stable ref before dropping parent->d_lock.  child->d_lock
+		 * is needed for dget_dlock(), and the staged-state check is
+		 * repeated while we hold it so out-of-band resets cannot hand back
+		 * a child that stopped being visible between the pre-check and ref.
+		 */
 		spin_lock_nested(&child->d_lock, DENTRY_D_LOCK_NESTED);
-		if (AGFS_D(child)->kind == AGFS_DKIND_UNSET ||
-		    AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE) {
+		if (!agfs_should_emit_staged_child(child)) {
 			spin_unlock(&child->d_lock);
 			continue;
 		}
@@ -157,6 +190,17 @@ static struct dentry *agfs_next_staged_child(struct dentry *parent,
 	spin_unlock(&parent->d_lock);
 	dput(last);
 	return NULL;
+}
+
+static void agfs_readdir_update_cursor(struct dentry *parent,
+				       struct dentry *cursor,
+				       struct dentry *next)
+{
+	spin_lock(&parent->d_lock);
+	hlist_del_init(&cursor->d_sib);
+	if (next)
+		hlist_add_before(&cursor->d_sib, &next->d_sib);
+	spin_unlock(&parent->d_lock);
 }
 
 static bool agfs_emit_dirents(struct dentry *parent, struct dir_context *ctx,
@@ -186,11 +230,8 @@ static bool agfs_emit_dirents(struct dentry *parent, struct dir_context *ctx,
 		p = next->d_sib.next;
 	}
 
-	spin_lock(&parent->d_lock);
-	hlist_del_init(&cursor->d_sib);
-	if (next)
-		hlist_add_before(&cursor->d_sib, &next->d_sib);
-	spin_unlock(&parent->d_lock);
+	/* parent->d_lock protects the saved cursor's position in d_children. */
+	agfs_readdir_update_cursor(parent, cursor, next);
 
 	dput(next);
 
@@ -211,7 +252,7 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	if (!lower_file)
 		return -EIO;
 
-	/* No staging → unset */
+	/* No staging → passthrough */
 	if (!sbi->staging || !sbi->inodes_dir.dentry) {
 		lower_file->f_pos = ctx->pos;
 		err = iterate_dir(lower_file, ctx);

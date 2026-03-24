@@ -7,7 +7,7 @@
 // `--to <name>` — diff changes up to a marker.
 // `--from <name> --to <name>` — diff changes between two markers.
 
-use crate::journal::{Dentry, DirTree, Journal, Marker};
+use crate::journal::{Dentry, DirTree, Journal, Marker, Target};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -69,20 +69,14 @@ fn print_segment_footer(closing: &Option<(u64, String)>) {
 // ── Per-change printing (summary vs verbose) ─────────────────────────
 
 fn print_change(agfs: &Path, path: &str, dentry: &Dentry, verbose: bool) {
-    match dentry {
-        Dentry::StagedInode {
-            ino,
-            in_base: false,
-            ..
-        } => {
+    match (&dentry.target, dentry.in_base) {
+        (Target::Inode(ino), false) => {
             println!("{} {}", path.bold(), "(added)".green());
             if verbose {
                 print_unified_diff("", &read_inode(agfs, *ino));
             }
         }
-        Dentry::StagedInode {
-            ino, in_base: true, ..
-        } => {
+        (Target::Inode(ino), true) => {
             if verbose {
                 let old_text = read_base(path);
                 let new_text = read_inode(agfs, *ino);
@@ -94,16 +88,16 @@ fn print_change(agfs: &Path, path: &str, dentry: &Dentry, verbose: bool) {
                 println!("{} {}", path.bold(), "(modified)".yellow());
             }
         }
-        Dentry::Tombstone { .. } => {
+        (Target::None, _) => {
             println!("{} {}", path.bold(), "(deleted)".red());
             if verbose {
                 print_unified_diff(&read_base(path), "");
             }
         }
-        Dentry::Redirect { src, .. } => {
+        (Target::Path(Some(src)), _) => {
             println!("{} → {} {}", src.bold(), path.bold(), "(renamed)".cyan());
         }
-        Dentry::Unset => {}
+        (Target::Path(None), _) => {} // passthrough — should not appear in iteration
     }
 }
 
@@ -231,7 +225,7 @@ fn range_label(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::Dentry;
+    use crate::journal::{Dentry, Target};
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::TempDir;
@@ -242,18 +236,18 @@ mod tests {
     ) -> BTreeMap<&'a str, Option<String>> {
         let mut map = BTreeMap::new();
         for (path, dentry) in dentries {
-            match dentry {
-                Dentry::StagedInode { ino, .. } => {
+            match &dentry.target {
+                Target::Inode(ino) => {
                     map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
                 }
-                Dentry::Tombstone { .. } => {
+                Target::None => {
                     map.insert(path.as_str(), None);
                 }
-                Dentry::Redirect { src, .. } => {
+                Target::Path(Some(src)) => {
                     map.insert(src.as_str(), None);
                     map.insert(path.as_str(), Some(read_base(src)));
                 }
-                Dentry::Unset => {}
+                Target::Path(None) => {} // passthrough
             }
         }
         map
@@ -283,9 +277,8 @@ mod tests {
         let tmp = make_agfs(&[(1, "hello\n")]);
         let dentries = vec![(
             "/src/main.rs".into(),
-            Dentry::StagedInode {
-                ino: 1,
-                dtype: libc::DT_REG,
+            Dentry {
+                target: Target::Inode(1),
                 in_base: false,
             },
         )];
@@ -299,9 +292,8 @@ mod tests {
         let tmp = make_agfs(&[(5, "new content")]);
         let dentries = vec![(
             "/etc/config".into(),
-            Dentry::StagedInode {
-                ino: 5,
-                dtype: libc::DT_REG,
+            Dentry {
+                target: Target::Inode(5),
                 in_base: true,
             },
         )];
@@ -315,8 +307,9 @@ mod tests {
         let tmp = make_agfs(&[]);
         let dentries = vec![(
             "/old/file.txt".into(),
-            Dentry::Tombstone {
-                dtype: libc::DT_REG,
+            Dentry {
+                target: Target::None,
+                in_base: true,
             },
         )];
         let map = state_map(tmp.path(), &dentries);
@@ -331,9 +324,8 @@ mod tests {
         let tmp = make_agfs(&[]);
         let dentries = vec![(
             "/nonexistent/new.rs".into(),
-            Dentry::Redirect {
-                src: "/nonexistent/old.rs".into(),
-                dtype: libc::DT_REG,
+            Dentry {
+                target: Target::Path(Some("/nonexistent/old.rs".into())),
                 in_base: false,
             },
         )];
@@ -350,17 +342,15 @@ mod tests {
         let dentries = vec![
             (
                 "/nonexistent/new.rs".into(),
-                Dentry::Redirect {
-                    src: "/nonexistent/old.rs".into(),
-                    dtype: libc::DT_REG,
+                Dentry {
+                    target: Target::Path(Some("/nonexistent/old.rs".into())),
                     in_base: false,
                 },
             ),
             (
                 "/nonexistent/new.rs".into(),
-                Dentry::StagedInode {
-                    ino: 7,
-                    dtype: libc::DT_REG,
+                Dentry {
+                    target: Target::Inode(7),
                     in_base: true,
                 },
             ),
@@ -377,24 +367,23 @@ mod tests {
         let dentries = vec![
             (
                 "/a.txt".into(),
-                Dentry::StagedInode {
-                    ino: 1,
-                    dtype: libc::DT_REG,
+                Dentry {
+                    target: Target::Inode(1),
                     in_base: false,
                 },
             ),
             (
                 "/b.txt".into(),
-                Dentry::StagedInode {
-                    ino: 2,
-                    dtype: libc::DT_REG,
+                Dentry {
+                    target: Target::Inode(2),
                     in_base: true,
                 },
             ),
             (
                 "/c.txt".into(),
-                Dentry::Tombstone {
-                    dtype: libc::DT_REG,
+                Dentry {
+                    target: Target::None,
+                    in_base: true,
                 },
             ),
         ];

@@ -424,49 +424,85 @@ struct dir_frame {
 };
 
 /*
- * Parse the kind-specific payload from @cur and inject the corresponding
- * dentry under @parent.  UNSET entries have no payload.
+ * Allocate a child dentry under @parent, wire up the lower path,
+ * create an agfs inode, and splice the result into the dcache.
+ * On success the caller loses ownership of @lower_path.
+ */
+static int restore_add_dentry(struct dentry *parent,
+			      const u8 *name_ptr, u16 name_len,
+			      struct path *lower_path,
+			      enum agfs_target target, bool in_base, u16 gen)
+{
+	struct dentry *child;
+	struct inode *inode;
+
+	child = agfs_dentry_alloc(parent, (const char *)name_ptr, name_len);
+	if (!child) {
+		path_put(lower_path);
+		return -ENOMEM;
+	}
+	agfs_set_lower_path(child, lower_path);
+	agfs_dentry_set(child, target, in_base);
+	inode = agfs_iget(parent->d_sb, d_inode(lower_path->dentry));
+	if (IS_ERR(inode)) {
+		dput(child);
+		return PTR_ERR(inode);
+	}
+	if (target == AGFS_TARGET_INODE)
+		AGFS_I(inode)->staging_gen = gen;
+	d_add(child, inode);
+	return 0;
+}
+
+/*
+ * Parse the target-specific payload from @cur and inject the corresponding
+ * dentry under @parent.  Scaffold (tag 0) entries have no payload.
  */
 static int restore_inject_entry(struct tree_cursor *cur,
 				struct agfs_sb_info *sbi,
 				struct dentry *parent,
 				const u8 *name_ptr, u16 name_len,
-				u8 kind, u16 gen)
+				u8 target, u16 gen)
 {
-	struct super_block *sb = parent->d_sb;
 	struct path lower_path;
 	u8 in_base_byte;
+	bool in_base;
 	int err;
 
-	switch (kind) {
-	case AGFS_DKIND_UNSET:
-		return 0;
+	/* in_base always follows the target byte */
+	err = read_u8(cur, &in_base_byte);
+	if (err || in_base_byte > 1)
+		return err ?: -EINVAL;
+	in_base = in_base_byte;
 
-	case AGFS_DKIND_TOMBSTONE:
-		if (!agfs_dentry_add_tombstone(parent,
-					       (const char *)name_ptr,
-					       name_len))
+	switch (target) {
+	case AGFS_TARGET_NONE: { /* negative dentry */
+		struct dentry *d;
+
+		d = agfs_dentry_alloc(parent, (const char *)name_ptr,
+				      name_len);
+		if (!d)
 			return -ENOMEM;
+		agfs_dentry_set(d, AGFS_TARGET_NONE, in_base);
+		d_add(d, NULL);
 		return 0;
+	}
 
-	case AGFS_DKIND_STAGED_INODE: {
+	case AGFS_TARGET_INODE: { /* staged inode */
 		u32 ino;
 
 		err = read_le32(cur, &ino);
 		if (err)
 			return err;
-		err = read_u8(cur, &in_base_byte);
-		if (err || in_base_byte > 1)
-			return err ?: -EINVAL;
 		err = agfs_inode_path(sbi, ino, &lower_path);
 		if (err)
 			return err;
-		return agfs_dentry_inject(parent, name_ptr, name_len, sb,
-					  &lower_path, AGFS_DKIND_STAGED_INODE,
-					  in_base_byte, gen);
+		return restore_add_dentry(parent, name_ptr, name_len,
+					  &lower_path, AGFS_TARGET_INODE,
+					  in_base, gen);
 	}
 
-	case AGFS_DKIND_REDIRECT: {
+	case AGFS_TARGET_PATH: { /* redirect, or passthrough if path_len == 0 */
 		char path_buf[AGFS_PATH_MAX];
 		const u8 *base_ptr;
 		u16 base_len;
@@ -474,23 +510,24 @@ static int restore_inject_entry(struct tree_cursor *cur,
 		err = read_le16(cur, &base_len);
 		if (err)
 			return err;
-		if (base_len == 0 || base_len >= AGFS_PATH_MAX)
+
+		if (base_len == 0) /* passthrough — no state to set */
+			return 0;
+
+		if (base_len >= AGFS_PATH_MAX)
 			return -EINVAL;
 		err = read_bytes(cur, base_len, &base_ptr);
 		if (err)
 			return err;
-		err = read_u8(cur, &in_base_byte);
-		if (err || in_base_byte > 1)
-			return err ?: -EINVAL;
 
 		memcpy(path_buf, base_ptr, base_len);
 		path_buf[base_len] = '\0';
 		err = kern_path(path_buf, LOOKUP_FOLLOW, &lower_path);
 		if (err)
 			return err;
-		return agfs_dentry_inject(parent, name_ptr, name_len, sb,
-					  &lower_path, AGFS_DKIND_REDIRECT,
-					  in_base_byte, gen);
+		return restore_add_dentry(parent, name_ptr, name_len,
+					  &lower_path, AGFS_TARGET_PATH,
+					  in_base, gen);
 	}
 
 	default:
@@ -539,7 +576,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 	while (depth >= 0) {
 		u16 name_len, child_count;
 		const u8 *name_ptr;
-		u8 kind;
+		u8 target;
 
 		if (stack[depth].remaining == 0) {
 			dput(stack[depth].dentry);
@@ -560,12 +597,12 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 		if (err)
 			goto out_unwind;
 
-		/* Read and handle entry kind */
-		err = read_u8(&cur, &kind);
+		/* Read and handle entry target */
+		err = read_u8(&cur, &target);
 		if (err)
 			goto out_unwind;
 		err = restore_inject_entry(&cur, sbi, stack[depth].dentry,
-					   name_ptr, name_len, kind, gen);
+					   name_ptr, name_len, target, gen);
 		if (err)
 			goto out_unwind;
 
@@ -574,11 +611,11 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 		if (err)
 			goto out_unwind;
 
-		/* Skip empty unset nodes. */
-		if (kind == AGFS_DKIND_UNSET && child_count == 0)
+		/* Skip nodes with no children to descend into. */
+		if (child_count == 0)
 			continue;
 
-		if (child_count > 0) {
+		{
 			struct dentry *child;
 
 			if (depth + 1 >= AGFS_RESTORE_MAX_DEPTH) {
@@ -637,9 +674,9 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 		return -EBUSY;
 	}
 
-	/* Wipe perm caches, staged dentries, dentry cache */
+	/* Wipe perm caches, pinned dentries, dentry cache */
 	atomic64_inc(&sbi->perm_gen);
-	agfs_unstage_all(sb);
+	agfs_dentry_reset_all(sb);
 
 	if (hdr.target_gen == 0) {
 		/* Reset mode (commit/abort): no entries, no journal write */

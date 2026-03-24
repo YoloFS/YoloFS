@@ -54,7 +54,7 @@ pub fn run(marker_name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::journal::{Action, Dentry, DirTree, Segment};
+    use crate::journal::{Action, Dentry, DirNode, DirTree, Segment, Target};
 
     fn build(actions: &[Action]) -> DirTree {
         DirTree::build(std::iter::once(Segment {
@@ -73,8 +73,8 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/src/main.rs"),
-            Some(Dentry::StagedInode {
-                ino: 1,
+            Some(Dentry {
+                target: Target::Inode(1),
                 in_base: false,
                 ..
             })
@@ -97,7 +97,10 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/old.txt"),
-            Some(Dentry::Tombstone { .. })
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
         ));
     }
 
@@ -109,9 +112,15 @@ mod tests {
             dtype: Some(libc::DT_REG),
         }]);
 
-        assert!(matches!(tree.get("/a.txt"), Some(Dentry::Tombstone { .. })));
+        assert!(matches!(
+            tree.get("/a.txt"),
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
+        ));
         assert!(
-            matches!(tree.get("/b.txt"), Some(Dentry::Redirect { src, .. }) if src == "/a.txt")
+            matches!(tree.get("/b.txt"), Some(Dentry { target: Target::Path(Some(src)), .. }) if src == "/a.txt")
         );
     }
 
@@ -132,32 +141,39 @@ mod tests {
 
         assert!(matches!(
             tree.get("/new.rs"),
-            Some(Dentry::StagedInode { ino: 5, .. })
+            Some(Dentry {
+                target: Target::Inode(5),
+                ..
+            })
         ));
         assert!(matches!(
             tree.get("/old.rs"),
-            Some(Dentry::Tombstone { .. })
+            Some(Dentry {
+                target: Target::None,
+                ..
+            })
         ));
     }
 
     #[test]
-    fn directory_inode_gets_dir_dtype() {
+    fn directory_inode_gets_dir_node() {
         let tree = build(&[Action::Add {
             path: "/newdir".into(),
             ino: 1,
             dtype: Some(libc::DT_DIR),
         }]);
-        assert_eq!(tree.get("/newdir").unwrap().dtype(), libc::DT_DIR);
+        assert!(matches!(tree.get_node("/newdir"), Some(DirNode::Dir(_, _))));
     }
 
     #[test]
-    fn symlink_inode_gets_link_dtype() {
+    fn symlink_inode_gets_file_node() {
         let tree = build(&[Action::Add {
             path: "/link".into(),
             ino: 1,
             dtype: Some(libc::DT_LNK),
         }]);
-        assert_eq!(tree.get("/link").unwrap().dtype(), libc::DT_LNK);
+        // Symlinks are stored as File nodes (leaf)
+        assert!(matches!(tree.get_node("/link"), Some(DirNode::File(_))));
     }
 
     #[test]
@@ -167,22 +183,23 @@ mod tests {
     }
 
     #[test]
-    fn renamed_directory_gets_dir_dtype() {
+    fn renamed_directory_gets_dir_node() {
         let tree = build(&[Action::Rename {
             src: "/mydir".into(),
             dst: "/newdir".into(),
             dtype: Some(libc::DT_DIR),
         }]);
-        assert_eq!(tree.get("/newdir").unwrap().dtype(), libc::DT_DIR);
+        assert!(matches!(tree.get_node("/newdir"), Some(DirNode::Dir(_, _))));
     }
 
     #[test]
-    fn renamed_symlink_gets_link_dtype() {
+    fn renamed_symlink_gets_file_node() {
         let tree = build(&[Action::Rename {
             src: "/mylink".into(),
             dst: "/newlink".into(),
             dtype: Some(libc::DT_LNK),
         }]);
-        assert_eq!(tree.get("/newlink").unwrap().dtype(), libc::DT_LNK);
+        // Symlinks are stored as File nodes (leaf)
+        assert!(matches!(tree.get_node("/newlink"), Some(DirNode::File(_))));
     }
 }

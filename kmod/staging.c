@@ -147,12 +147,13 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	}
 
 	/*
-	 * Set kind on dentry and pin if needed.
+	 * Set target on dentry and pin if needed.
 	 * Take inode_lock(parent) to serialize against VFS-driven
 	 * create/unlink/rename on the same directory.
 	 */
 	inode_lock(parent);
-	agfs_dentry_stage_inode(dentry, sbi, true);
+	agfs_dentry_set(dentry, AGFS_TARGET_INODE, true);
+	AGFS_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->gen);
 	inode_unlock(parent);
 
 	path_get(&inode_path); /* extra ref for reopen below */
@@ -160,7 +161,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	/* Update dentry lower_path to point at the inode (consumes original ref) */
 	agfs_replace_lower_path(dentry, &inode_path);
 
-	/* Append journal record (best-effort — kind is already set) */
+	/* Append journal record (best-effort — target is already set) */
 	agfs_journal_modify(sbi, dentry, ino, DT_REG);
 
 	/* Reopen with requested flags */

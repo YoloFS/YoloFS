@@ -503,6 +503,49 @@ fn readdir_small_buf_mixed() {
     assert_eq!(got, expected, "mixed small-buf readdir mismatch");
 }
 
+/// Rename + delete + create in one directory: readdir should emit only the
+/// live staged names and skip the old base names hidden by tombstones.
+#[test]
+fn readdir_small_buf_rename_delete_create() {
+    let s = AgfsSession::new().expect("session setup");
+
+    let host_dir = s.base_path("renmix");
+    fs::create_dir(&host_dir).expect("mkdir host");
+    let mut expected = BTreeSet::new();
+    for i in 0..20 {
+        let name = format!("base-{i:03}.txt");
+        fs::write(host_dir.join(&name), "x").expect("write base");
+        expected.insert(name);
+    }
+
+    let dir = s.mnt_path("renmix");
+
+    fs::rename(dir.join("base-000.txt"), dir.join("renamed.txt")).expect("rename");
+    expected.remove("base-000.txt");
+    expected.insert("renamed.txt".to_string());
+
+    fs::remove_file(dir.join("base-001.txt")).expect("unlink");
+    expected.remove("base-001.txt");
+
+    fs::write(dir.join("new.txt"), "y").expect("write staged");
+    expected.insert("new.txt".to_string());
+
+    let (names, calls) = readdir_small_buf(&dir);
+    assert!(calls > 1, "expected multiple getdents64 calls, got {calls}");
+    assert_eq!(
+        names.len(),
+        expected.len(),
+        "rename/delete/create: duplicate or missing entries (got {} names for {} expected)",
+        names.len(),
+        expected.len()
+    );
+    let got: BTreeSet<String> = names.into_iter().collect();
+    assert_eq!(
+        got, expected,
+        "rename/delete/create small-buf readdir mismatch"
+    );
+}
+
 /// Staged-only directory: no base entries, all dirents.
 /// Exercises the merge path where phase 2 has nothing to emit.
 #[test]

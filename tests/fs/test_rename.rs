@@ -581,7 +581,7 @@ fn complex_multi_operation_commit() {
 
     // ── Verify resolved dirents ──
     use agfs::journal;
-    use agfs::journal::Dentry;
+    use agfs::journal::{Dentry, Target};
 
     let agfs_dir = s.root.join(".agfs");
     let journal_obj = journal::Journal::read(&agfs_dir).expect("read journal");
@@ -598,19 +598,31 @@ fn complex_multi_operation_commit() {
     ) = (false, false, false, false, false, false, false);
 
     t.for_each(|path, dentry| {
-        if matches!(dentry, Dentry::StagedInode { in_base: true, .. })
-            && path.ends_with("/hello.txt")
+        if matches!(
+            dentry,
+            Dentry {
+                target: Target::Inode(_),
+                in_base: true,
+                ..
+            }
+        ) && path.ends_with("/hello.txt")
         {
             has_modified_hello = true;
         }
-        if matches!(dentry, Dentry::StagedInode { in_base: true, .. })
-            && path.ends_with("/multi.txt")
+        if matches!(
+            dentry,
+            Dentry {
+                target: Target::Inode(_),
+                in_base: true,
+                ..
+            }
+        ) && path.ends_with("/multi.txt")
         {
             has_modified_multi = true;
         }
         // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
         // Tree builder preserves original base path through rename chains.
-        if let Dentry::Redirect { src, .. } = dentry {
+        if let Target::Path(Some(src)) = &dentry.target {
             if src.ends_with("/subdir/deep.txt") && path.ends_with("/top.txt") {
                 has_renamed_deep_to_top = true;
             }
@@ -621,11 +633,17 @@ fn complex_multi_operation_commit() {
                 has_brand_new = true;
             }
         }
-        if matches!(dentry, Dentry::Tombstone { .. }) && path.ends_with("/deep.txt") {
+        if matches!(dentry.target, Target::None) && path.ends_with("/deep.txt") {
             has_deleted_deep = true;
         }
-        if matches!(dentry, Dentry::StagedInode { in_base: false, .. })
-            && path.ends_with("/link.txt")
+        if matches!(
+            dentry,
+            Dentry {
+                target: Target::Inode(_),
+                in_base: false,
+                ..
+            }
+        ) && path.ends_with("/link.txt")
         {
             has_added_link = true;
         }
