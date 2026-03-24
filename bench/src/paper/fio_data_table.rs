@@ -80,7 +80,7 @@ fn build_tex(results: &BenchResults) -> Result<String> {
 
     // Column spec: no vertical rules in the spec itself — we add them
     // per-row via \multicolumn so booktabs rules stay clean.
-    let ncols = 3 + columns.len();
+    let _ncols = 3 + columns.len();
     let mut col_spec = String::from("l@{\\,}l@{\\,}l");
     for _ in &columns {
         col_spec.push('c');
@@ -120,8 +120,7 @@ fn build_tex(results: &BenchResults) -> Result<String> {
                 op_end += 1;
             }
 
-            for k in j..op_end {
-                let (dims, vals) = &structured[k];
+            for (k, (dims, vals)) in (j..op_end).zip(&structured[j..op_end]) {
                 let Some(native_kbps) = vals.get("native").copied() else {
                     continue;
                 };
@@ -205,13 +204,10 @@ struct Column {
     display: &'static str,
 }
 
-fn collect_data(
-    results: &BenchResults,
-) -> (
-    Vec<Column>,
-    Vec<(String, std::collections::BTreeMap<String, u64>)>,
-) {
-    let mut op_rows: Vec<(String, std::collections::BTreeMap<String, u64>)> = Vec::new();
+type OpRow = (String, std::collections::BTreeMap<String, u64>);
+
+fn collect_data(results: &BenchResults) -> (Vec<Column>, Vec<OpRow>) {
+    let mut op_rows: Vec<OpRow> = Vec::new();
 
     for wl in &results.workloads {
         let canonical = crate::report::normalize_legacy_workload_name(&wl.workload);

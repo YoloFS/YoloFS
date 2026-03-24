@@ -1507,7 +1507,7 @@ fn cleanup_stale_tempdirs() {
                 mnt.starts_with(cache_str.as_ref()).then_some(mnt)
             })
             .collect();
-        mount_points.sort_by(|a, b| b.len().cmp(&a.len()));
+        mount_points.sort_by_key(|m| std::cmp::Reverse(m.len()));
 
         for mnt in &mount_points {
             let _ = Command::new("sudo")
@@ -1573,7 +1573,7 @@ fn diff_pdf(path: &Path, old_ref: &str, new_ref: &str, output: Option<&Path>) ->
                 .ok()
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_else(|| r.replace('/', "_").replace('~', "_"))
+                .unwrap_or_else(|| r.replace(['/', '~'], "_"))
         };
         diff_dir.join(format!("{stem}_{}_{}.png", short(old_ref), short(new_ref)))
     };

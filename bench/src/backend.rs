@@ -64,6 +64,7 @@ pub trait Backend: Send + Sync {
 pub struct SubprocessResult {
     /// Wall time from spawn to READY marker (process startup + any
     /// namespace/overlay setup that wraps the subprocess).
+    #[allow(dead_code)]
     pub startup_ms: u64,
     /// Wall time from READY marker to process exit (the workload itself).
     pub staging_ms: u64,

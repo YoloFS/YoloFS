@@ -4,7 +4,7 @@ pub mod fio_data_table;
 pub mod meta_ops_figure;
 mod util;
 
-pub use util::{backend_display_name, latex_escape, run_pdflatex_cropped};
+pub use util::run_pdflatex_cropped;
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -30,7 +30,7 @@ pub fn render(results: &crate::BenchResults, out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-struct Artifact {
+pub(crate) struct Artifact {
     /// Group name for variants of the same figure (e.g. "Metadata operation latency").
     /// Artifacts with the same group are shown under a shared heading.
     /// `None` means standalone (gets its own heading from `title`).
@@ -55,7 +55,7 @@ struct Artifact {
 /// everything to `<paper_dir>/generated/`.
 ///
 /// Run `agfs-bench rerender` first if artifacts are stale.
-pub fn install(results: &crate::BenchResults, out_dir: &Path, paper_dir: &Path) -> Result<()> {
+pub fn install(_results: &crate::BenchResults, out_dir: &Path, paper_dir: &Path) -> Result<()> {
     if !paper_dir.join("main.tex").exists() {
         anyhow::bail!(
             "{} does not look like a paper repo (no main.tex)",
@@ -150,8 +150,8 @@ fn rewrite_includegraphics(fragment: &str, prefix: &str) -> String {
     fragment
         .lines()
         .map(|line| {
-            if let Some(idx) = line.find("\\includegraphics") {
-                if let Some(brace_start) = line[idx..].find('{') {
+            if let Some(idx) = line.find("\\includegraphics")
+                && let Some(brace_start) = line[idx..].find('{') {
                     let abs_start = idx + brace_start + 1;
                     if let Some(brace_end) = line[abs_start..].find('}') {
                         let filename = &line[abs_start..abs_start + brace_end];
@@ -165,7 +165,6 @@ fn rewrite_includegraphics(fragment: &str, prefix: &str) -> String {
                         }
                     }
                 }
-            }
             line.to_string()
         })
         .collect::<Vec<_>>()

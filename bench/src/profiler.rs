@@ -168,7 +168,7 @@ impl Profiler {
         }
         self.perf.wait().context("waiting for perf")?;
 
-        if let Some(mut ps) = self.perf_stat.take() {
+        if let Some(ps) = self.perf_stat.take() {
             let output = ps.wait_with_output().context("waiting for perf stat")?;
             let stderr = String::from_utf8_lossy(&output.stderr);
             if !stderr.is_empty() {
@@ -855,11 +855,10 @@ pub fn generate_comparison(prof_workload_dir: &Path) -> Result<()> {
             continue;
         }
         let json_path = entry.path().join("breakdown.json");
-        if let Ok(raw) = fs::read_to_string(&json_path) {
-            if let Ok(meta) = serde_json::from_str::<BreakdownMeta>(&raw) {
+        if let Ok(raw) = fs::read_to_string(&json_path)
+            && let Ok(meta) = serde_json::from_str::<BreakdownMeta>(&raw) {
                 metas.push(meta);
             }
-        }
     }
     metas.sort_by(|a, b| a.backend.cmp(&b.backend));
     if metas.len() < 2 {
@@ -875,6 +874,7 @@ pub fn generate_comparison(prof_workload_dir: &Path) -> Result<()> {
         /// µs/op inclusive, one per backend (0.0 if absent).
         inclusive: Vec<f64>,
         /// µs/op self, one per backend.
+        #[allow(dead_code)]
         self_us: Vec<f64>,
         children: Vec<MergedNode>,
     }
