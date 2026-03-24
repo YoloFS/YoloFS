@@ -1279,9 +1279,15 @@ mod tests {
             },
         ]);
         assert!(tree.get("/old").is_none(), "old dir should be gone");
-        assert!(tree.get("/old/file").is_none(), "old subtree should be gone");
+        assert!(
+            tree.get("/old/file").is_none(),
+            "old subtree should be gone"
+        );
         assert!(tree.get("/new").is_some(), "new dir should exist");
-        assert!(tree.get("/new/file").is_some(), "subtree should move with dir");
+        assert!(
+            tree.get("/new/file").is_some(),
+            "subtree should move with dir"
+        );
     }
 
     // ── Replace chain ─────────────────────────────────────────────────
