@@ -389,11 +389,11 @@ when compiled with debug assertions so benchmark numbers do not come from an
 unoptimized runner.
 
 Each recorded backend result also stores the repository commit plus whether
-`cli/` and `kmod/` were dirty at run time. The HTML report compares those
+`user/` and `kmod/` were dirty at run time. The HTML report compares those
 recorded states against the current checkout and marks each workload as fresh
 or stale. A plain `HEAD` change does not make a result stale by itself: the
-report asks git whether `cli/` or `kmod/` actually differ between the recorded
-commit and the current one, and also tracks `cli/` / `kmod/` dirty/clean
+report asks git whether `user/` or `kmod/` actually differ between the recorded
+commit and the current one, and also tracks `user/` / `kmod/` dirty/clean
 transitions.
 
 ---

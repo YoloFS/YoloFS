@@ -19,7 +19,7 @@ gen_id, which is narrower than jumping to the original checkpoint.
 
 ## Changes
 
-### 1. `cli/journal/markers.rs` — Rename and generalize lookup
+### 1. `user/journal/markers.rs` — Rename and generalize lookup
 
 - **`find_checkpoint` → `find_marker`**: accept both Checkpoint and
   Restore markers when looked up by numeric gen_id. Name-based lookup
@@ -39,7 +39,7 @@ gen_id, which is narrower than jumping to the original checkpoint.
 - **`segment_range`**: update calls from `find_checkpoint` to
   `find_marker`.
 
-### 2. `cli/journal/markers.rs` — Liveness: index all markers
+### 2. `user/journal/markers.rs` — Liveness: index all markers
 
 In `alive_segments_range`, add restore markers to `gen_to_idx` alongside
 checkpoints. This lets a restore that targets another restore marker
@@ -56,7 +56,7 @@ let gen = match &self.0[i] {
 gen_to_idx.insert(gen, i);
 ```
 
-### 3. `cli/journal/core.rs` — `into_tree_at` includes target marker
+### 3. `user/journal/core.rs` — `into_tree_at` includes target marker
 
 Change `into_live_segments_at` so the marker range includes the marker at
 `gen_id` itself (extend to `gen_id + 1`). This ensures a restore marker's
@@ -75,14 +75,14 @@ fn into_live_segments_at(self, gen_id: u64) -> impl Iterator<Item = Segment> {
 }
 ```
 
-### 4. `cli/cmd/restore.rs` — Use `find_marker`
+### 4. `user/cmd/restore.rs` — Use `find_marker`
 
 - Call `find_marker` instead of `find_checkpoint`.
 - For the success message: pattern-match the marker to show either
   `Restored to checkpoint "name"` or `Restored to marker [gen_id]`.
 - The ioctl target_gen is always the marker's own gen_id.
 
-### 5. `cli/cmd/diff.rs` — Update `checkpoint_at` → `marker_at`
+### 5. `user/cmd/diff.rs` — Update `checkpoint_at` → `marker_at`
 
 Adapt the label computation. Pattern-match the returned `&Marker` to
 extract `(gen_id, name)` for checkpoints or `(gen_id, "restored to [N]")`

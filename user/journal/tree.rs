@@ -188,9 +188,8 @@ impl DirTree {
         let mut children: Vec<(&str, &DirNode)> = self
             .nodes
             .iter()
-            .filter(|(_, node)| match node {
-                DirNode::Dir(d, sub) if d.is_passthrough() && sub.nodes.is_empty() => false,
-                _ => true,
+            .filter(|(_, node)| {
+                !matches!(node, DirNode::Dir(d, sub) if d.is_passthrough() && sub.nodes.is_empty())
             })
             .map(|(name, node)| (name.as_str(), node))
             .collect();

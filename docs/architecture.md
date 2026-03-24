@@ -212,7 +212,7 @@ agfs/
 │   └── ioctl.c
 ├── Cargo.toml
 ├── Cargo.lock
-├── cli/                       # Userspace CLI source (Rust)
+├── user/                      # Userspace CLI source (Rust)
 │   ├── main.rs
 │   ├── lib.rs
 │   ├── config.rs              # agfs.toml management (init, rules, mount options)
