@@ -1,6 +1,6 @@
 use crate::backend::{self, Backend, CheckpointController, CheckpointOutcome};
 use crate::workload::{CacheMode, IterResult, Workload, WorkloadKind};
-use agfs::config::Config;
+use agfs::config::{Config, Perm};
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -327,6 +327,22 @@ impl Backend for AgfsRealistic {
         let mut rules = BTreeMap::new();
         for (path, perm) in workload.realistic_rules(root.path()) {
             rules.insert(path, perm);
+        }
+        // Macro workloads run via `agfs exec` which chroots into the mount.
+        // The subprocess needs read access to the bench binary, system
+        // libraries, and common tool paths.
+        if workload.kind() == WorkloadKind::Macro {
+            // agfs exec chroots into the mount; the subprocess needs
+            // read+execute access to the bench binary, system libraries,
+            // linker, and tools (tar, xz, etc.).
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    rules.insert(dir.to_string_lossy().into_owned(), Perm::AllowRx);
+                }
+            }
+            for dir in ["/usr", "/lib", "/lib64", "/bin", "/sbin"] {
+                rules.insert(dir.to_string(), Perm::AllowRx);
+            }
         }
         let config = Config {
             permission: true,
