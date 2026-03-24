@@ -36,13 +36,14 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 
 	/*
 	 * Capture base-presence before overwriting the kind.
-	 * Cannot read in_base here — for new files (unset, no base
+	 * Cannot read in_base here — for new files (unpinned, no base
 	 * content) agfs_interpose above already set d_inode, but in_base
-	 * is still false from zalloc.  Check kind: non-unset means
-	 * a tombstone (base entry was deleted, in_base inherited).
+	 * is still false from zalloc.  Check pinned: pinned means
+	 * a negative entry (base entry was deleted, in_base inherited).
 	 */
-	in_base = AGFS_D(dentry)->kind != AGFS_DKIND_UNSET;
-	agfs_dentry_stage_inode(dentry, sbi, in_base);
+	in_base = AGFS_D(dentry)->pinned;
+	agfs_dentry_set(dentry, AGFS_TARGET_INODE, in_base);
+	AGFS_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->gen);
 
 	if (in_base)
 		agfs_journal_modify(sbi, dentry, ino, dt);
@@ -64,7 +65,7 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	return agfs_create_staged(dir, dentry, S_IFDIR | mode, NULL);
 }
 
-/* ── unlink/rmdir — tombstone or remove entry ────────────────────── */
+/* ── unlink/rmdir — negative entry or remove entry ───────────────── */
 
 static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 {
@@ -76,25 +77,27 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 	d_type = d_inode(dentry) ?
 		 fs_umode_to_dtype(d_inode(dentry)->i_mode) : DT_UNKNOWN;
 
-	/* Pre-allocate tombstone if dentry has base content */
+	/* Pre-allocate negative dentry if dentry has base content */
 	if (AGFS_D(dentry)->in_base) {
-		tomb = agfs_dentry_add_tombstone(dentry->d_parent,
-						 dentry->d_name.name,
-						 dentry->d_name.len);
+		tomb = agfs_dentry_alloc(dentry->d_parent,
+				       dentry->d_name.name,
+				       dentry->d_name.len);
 		if (!tomb)
 			return -ENOMEM;
+		agfs_dentry_set(tomb, AGFS_TARGET_NONE, true);
+		d_add(tomb, NULL);
 	}
 
 	/* Journal (uses dentry path, must be before d_drop) */
 	err = agfs_journal_delete(sbi, dentry, d_type);
 	if (err) {
 		if (tomb)
-			agfs_dentry_remove_tombstone(tomb);
+			agfs_dentry_reset(tomb);
 		return err;
 	}
 
-	/* Release staging state (if any) on the original dentry before eviction */
-	agfs_dentry_unstage(dentry);
+	/* Release pinned state (if any) on the original dentry before eviction */
+	agfs_dentry_reset(dentry);
 	d_drop(dentry);
 	return 0;
 }
@@ -125,14 +128,12 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		       unsigned int flags)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
-	char path_buf[AGFS_PATH_MAX];
 	char saved_name[NAME_MAX + 1];
 	unsigned int saved_name_len;
 	struct dentry *saved_parent;
 	struct dentry *tomb = NULL;
 	unsigned char d_type = DT_UNKNOWN;
-	const char *base_src, *p;
-	bool dst_in_base, is_roundtrip;
+	bool dst_in_base;
 	int err;
 
 	if (flags)
@@ -144,53 +145,21 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	saved_name[saved_name_len] = '\0';
 	saved_parent = old_dentry->d_parent;
 
-	/* Read source type from inode (always present — can't rename a tombstone) */
+	/* Read source type from inode (always present — can't rename a negative entry) */
 	if (d_inode(old_dentry))
 		d_type = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
 
 	/* Check if destination has existing base content (for R vs P tag) */
 	dst_in_base = AGFS_D(new_dentry)->in_base;
 
-	/* Pre-allocate tombstone if old name has base content */
+	/* Pre-allocate negative dentry if old name has base content */
 	if (AGFS_D(old_dentry)->in_base) {
-		tomb = agfs_dentry_add_tombstone(saved_parent, saved_name,
-						 saved_name_len);
+		tomb = agfs_dentry_alloc(saved_parent, saved_name,
+				       saved_name_len);
 		if (!tomb)
 			return -ENOMEM;
-	}
-
-	/*
-	 * Roundtrip detection: if the effective base source equals the
-	 * destination relpath, the rename chain is a no-op (e.g. a→b→a).
-	 * For staged inodes there is no base redirect needed.
-	 * For unset and redirect dentries, derive the base source
-	 * from lower_path — both cases have a lower dentry pointing at
-	 * the original base location.
-	 */
-	if (AGFS_D(old_dentry)->kind == AGFS_DKIND_STAGED_INODE) {
-		base_src = NULL; /* staged inode — no base redirect needed */
-	} else {
-		/* Unset or redirect — derive from lower dentry */
-		p = dentry_path_raw(agfs_lower_dentry(old_dentry), path_buf,
-				    sizeof(path_buf));
-		if (IS_ERR(p)) {
-			err = PTR_ERR(p);
-			goto out_tomb;
-		}
-		base_src = p;
-	}
-
-	is_roundtrip = false;
-	if (base_src) {
-		char dst_buf[AGFS_PATH_MAX];
-
-		p = dentry_path_raw(new_dentry, dst_buf,
-				    sizeof(dst_buf));
-		if (IS_ERR(p)) {
-			err = PTR_ERR(p);
-			goto out_tomb;
-		}
-		is_roundtrip = strcmp(base_src, p) == 0;
+		agfs_dentry_set(tomb, AGFS_TARGET_NONE, true);
+		d_add(tomb, NULL);
 	}
 
 	/* Journal BEFORE d_move (uses dentry paths) */
@@ -201,23 +170,18 @@ static int agfs_rename(struct mnt_idmap *idmap,
 	if (err)
 		goto out_tomb;
 
-	/* Clean up new_dentry if it was staged */
-	agfs_dentry_unstage(new_dentry);
+	/* Clean up new_dentry if it was pinned */
+	agfs_dentry_reset(new_dentry);
 
-	/* Update old_dentry staging state */
-	if (is_roundtrip) {
-		agfs_dentry_unstage(old_dentry);
-	} else if (AGFS_D(old_dentry)->kind == AGFS_DKIND_STAGED_INODE) {
-		agfs_dentry_stage(old_dentry, AGFS_DKIND_STAGED_INODE,
-				  dst_in_base);
-	} else {
-		agfs_dentry_stage(old_dentry, AGFS_DKIND_REDIRECT,
-				  dst_in_base);
-	}
+	/* Update old_dentry: preserve target kind, update in_base for new position */
+	if (AGFS_D(old_dentry)->target == AGFS_TARGET_INODE)
+		agfs_dentry_set(old_dentry, AGFS_TARGET_INODE, dst_in_base);
+	else
+		agfs_dentry_set(old_dentry, AGFS_TARGET_PATH, dst_in_base);
 
 	/*
 	 * d_drop old_dentry so d_move does not conflict with the
-	 * tombstone dentry we may create at the old name.
+	 * tombstone (negative) dentry we may create at the old name.
 	 */
 	d_drop(old_dentry);
 
@@ -229,7 +193,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 
 out_tomb:
 	if (tomb)
-		agfs_dentry_remove_tombstone(tomb);
+		agfs_dentry_reset(tomb);
 	return err;
 }
 

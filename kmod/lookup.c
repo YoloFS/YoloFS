@@ -88,9 +88,9 @@ int agfs_interpose(struct dentry *dentry, struct super_block *sb,
 /* ── Lookup ────────────────────────────────────────────────────────── */
 
 /*
- * All staged entries are pinned in the dcache via dget(), so
+ * All pinned entries are held in the dcache via dget(), so
  * lookup_fast() finds them directly — this callback is only invoked
- * for unstaged names.  Fall through to the base filesystem.
+ * for unpinned names.  Fall through to the base filesystem.
  */
 struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 			   unsigned int flags)

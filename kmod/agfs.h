@@ -138,11 +138,10 @@ struct agfs_perm_request {
 
 /* ── Dentry state ────────────────────────────────────────────── */
 
-enum agfs_dkind {
-	AGFS_DKIND_UNSET	= 0,
-	AGFS_DKIND_STAGED_INODE	= 1,
-	AGFS_DKIND_REDIRECT	= 2,
-	AGFS_DKIND_TOMBSTONE	= 3,
+enum agfs_target {
+	AGFS_TARGET_INODE	= 1,	/* staged inode in flat file store */
+	AGFS_TARGET_PATH	= 2,	/* redirect to different base path */
+	AGFS_TARGET_NONE	= 3,	/* content absent (negative dentry) */
 };
 
 /* ── Ask Protocol Engine ───────────────────────────────────────────── */
@@ -207,8 +206,9 @@ struct agfs_inode_info {
 struct agfs_dentry_info {
 	spinlock_t		lock;
 	struct path		lower_path;	/* resolved lower path (inode entry or base) */
-	enum agfs_dkind		kind;		/* overlay state tag */
+	enum agfs_target	target;		/* where content lives */
 	bool			in_base;	/* path has content in base filesystem */
+	bool			pinned;		/* held via dget by staging */
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
 	struct list_head	rule_pin;	/* node in sbi->pinned_rules */
 	struct dentry		*rule_dentry;	/* back-pointer for dput on release */
@@ -250,7 +250,7 @@ static inline struct agfs_dentry_info *AGFS_D(const struct dentry *dentry)
 static inline bool agfs_dentry_is_current(const struct dentry *d,
 					   struct agfs_sb_info *sbi)
 {
-	return AGFS_D(d)->kind == AGFS_DKIND_STAGED_INODE &&
+	return AGFS_D(d)->target == AGFS_TARGET_INODE &&
 	       AGFS_I(d_inode(d))->staging_gen >= (u16)atomic_read(&sbi->gen);
 }
 
@@ -364,19 +364,12 @@ extern const struct file_operations agfs_dir_fops;
 extern const struct dentry_operations agfs_dops;
 int agfs_init_dentry_cache(void);
 void agfs_destroy_dentry_cache(void);
-void agfs_dentry_stage(struct dentry *dentry, enum agfs_dkind kind,
-		       bool in_base);
-void agfs_dentry_stage_inode(struct dentry *dentry, struct agfs_sb_info *sbi,
-			     bool in_base);
-void agfs_dentry_unstage(struct dentry *dentry);
-struct dentry *agfs_dentry_add_tombstone(struct dentry *parent,
-					 const char *name, unsigned int len);
-void agfs_dentry_remove_tombstone(struct dentry *tomb);
-int agfs_dentry_inject(struct dentry *parent, const u8 *name,
-		       u16 name_len, struct super_block *sb,
-		       struct path *lower_path,
-		       enum agfs_dkind kind, bool in_base, u16 gen);
-void agfs_unstage_all(struct super_block *sb);
+void agfs_dentry_set(struct dentry *dentry, enum agfs_target target,
+		     bool in_base);
+void agfs_dentry_reset(struct dentry *dentry);
+struct dentry *agfs_dentry_alloc(struct dentry *parent,
+			       const char *name, unsigned int len);
+void agfs_dentry_reset_all(struct super_block *sb);
 
 /* lookup.c */
 struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,

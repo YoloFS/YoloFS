@@ -265,6 +265,64 @@ fn restore_with_nested_directory() {
     );
 }
 
+/// Restore preserves deep files whose parent directories are passthrough
+/// scaffolds rather than explicit staged dir nodes.
+#[test]
+fn restore_keeps_deep_file_through_passthrough_dirs() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::create_dir_all(s.mnt_path("base/a/b/c")).expect("mkdir base dirs");
+    fs::write(s.mnt_path("base/a/b/c/anchor.txt"), "anchor\n").expect("write anchor");
+    s.cli(&["commit"]).expect("commit base dirs");
+
+    fs::write(s.mnt_path("base/a/b/c/deep.txt"), "deep\n").expect("write deep");
+    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+
+    fs::remove_file(s.mnt_path("base/a/b/c/deep.txt")).expect("remove deep");
+    fs::write(s.mnt_path("base/a/b/c/post.txt"), "post\n").expect("write post");
+
+    s.cli(&["restore", "chk1"]).expect("restore");
+
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("base/a/b/c/deep.txt")).unwrap(),
+        "deep\n"
+    );
+    assert!(
+        !s.mnt_path("base/a/b/c/post.txt").exists(),
+        "post-checkpoint file should not survive restore"
+    );
+
+    let root_entries: Vec<String> = fs::read_dir(s.mnt_path("base"))
+        .expect("readdir base")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(root_entries.contains(&"a".to_string()), "missing /base/a");
+
+    let a_entries: Vec<String> = fs::read_dir(s.mnt_path("base/a"))
+        .expect("readdir base/a")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(a_entries.contains(&"b".to_string()), "missing /base/a/b");
+
+    let b_entries: Vec<String> = fs::read_dir(s.mnt_path("base/a/b"))
+        .expect("readdir base/a/b")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(b_entries.contains(&"c".to_string()), "missing /base/a/b/c");
+
+    let c_entries: Vec<String> = fs::read_dir(s.mnt_path("base/a/b/c"))
+        .expect("readdir base/a/b/c")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(c_entries.contains(&"anchor.txt".to_string()));
+    assert!(c_entries.contains(&"deep.txt".to_string()));
+    assert!(!c_entries.contains(&"post.txt".to_string()));
+}
+
 /// Restore with rename chain: mv a→b, mv b→c, checkpoint, then restore.
 #[test]
 fn restore_rename_chain() {

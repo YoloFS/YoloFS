@@ -17,7 +17,7 @@ pub mod tree;
 pub mod types;
 
 pub use self::core::Journal;
-pub use dentry::Dentry;
+pub use dentry::{Dentry, Target};
 pub use markers::Markers;
-pub use tree::DirTree;
+pub use tree::{DirNode, DirTree};
 pub use types::*;

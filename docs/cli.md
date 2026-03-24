@@ -1,8 +1,8 @@
 # CLI Reference
 
 The CLI communicates with the kernel module via ioctls on `.agfs/mnt/.ctl`.
-See [Kernel Reference — Control Interface](internals.md#control-interface-ioctl)
-for the protocol details.
+For protocol and restore/checkpoint details, see `docs/architecture.md` and
+`docs/staging.md`.
 
 ## Commands
 

@@ -100,11 +100,11 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 	struct qstr qname = QSTR_INIT(name, namelen);
 	struct dentry *child;
 
-	/* Check if this base entry is overridden by a staged entry */
+	/* Check if this base entry is overridden by a pinned entry */
 	qname.hash = full_name_hash(rdd->dentry, name, namelen);
 	child = d_lookup(rdd->dentry, &qname);
 	if (child) {
-		bool overridden = AGFS_D(child)->kind != AGFS_DKIND_UNSET;
+		bool overridden = AGFS_D(child)->pinned;
 		dput(child);
 		if (overridden)
 			return true; /* skip — overridden */
@@ -138,13 +138,20 @@ static struct dentry *agfs_next_staged_child(struct dentry *parent,
 		*p = child->d_sib.next;
 		if (child->d_flags & DCACHE_DENTRY_CURSOR)
 			continue;
-		if (AGFS_D(child)->kind == AGFS_DKIND_UNSET)
+		/*
+		 * Fast pre-check without child->d_lock: skip unpinned and
+		 * negative (tombstone) dentries.  Re-checked below under
+		 * d_lock to close the TOCTOU window.
+		 */
+		if (!AGFS_D(child)->pinned)
 			continue;
-		if (AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE)
+		if (AGFS_D(child)->target == AGFS_TARGET_NONE &&
+		    AGFS_D(child)->in_base)
 			continue;
 		spin_lock_nested(&child->d_lock, DENTRY_D_LOCK_NESTED);
-		if (AGFS_D(child)->kind == AGFS_DKIND_UNSET ||
-		    AGFS_D(child)->kind == AGFS_DKIND_TOMBSTONE) {
+		if (!AGFS_D(child)->pinned ||
+		    (AGFS_D(child)->target == AGFS_TARGET_NONE &&
+		     AGFS_D(child)->in_base)) {
 			spin_unlock(&child->d_lock);
 			continue;
 		}
@@ -211,7 +218,7 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	if (!lower_file)
 		return -EIO;
 
-	/* No staging → unset */
+	/* No staging → passthrough */
 	if (!sbi->staging || !sbi->inodes_dir.dentry) {
 		lower_file->f_pos = ctx->pos;
 		err = iterate_dir(lower_file, ctx);
