@@ -1,5 +1,14 @@
 # AGENTS.md — Coding Guidelines for AgFS
 
+## Scope
+
+- This file applies to the AgFS implementation work: `kmod/`, `cli/`, `tests/`,
+  `docs/`, and related implementation and benchmark code.
+- It does **not** apply to the paper-related directories (`paper/`,
+  `paper-plan/`, `paper-study/`) or the evaluation/result directories
+  (`eval/`, `results-eval/`, `results-bench/`).
+- If one of those directories has its own `AGENTS.md`, follow that file instead.
+
 ## Principles
 
 - Keep code simple: short functions, no duplication, extract shared logic, remove deprecated code.
