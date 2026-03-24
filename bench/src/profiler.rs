@@ -856,9 +856,10 @@ pub fn generate_comparison(prof_workload_dir: &Path) -> Result<()> {
         }
         let json_path = entry.path().join("breakdown.json");
         if let Ok(raw) = fs::read_to_string(&json_path)
-            && let Ok(meta) = serde_json::from_str::<BreakdownMeta>(&raw) {
-                metas.push(meta);
-            }
+            && let Ok(meta) = serde_json::from_str::<BreakdownMeta>(&raw)
+        {
+            metas.push(meta);
+        }
     }
     metas.sort_by(|a, b| a.backend.cmp(&b.backend));
     if metas.len() < 2 {

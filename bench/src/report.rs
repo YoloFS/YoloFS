@@ -4,7 +4,7 @@ use crate::backends;
 use crate::workload::WorkloadKind;
 use crate::workloads;
 use crate::{BenchResults, RepoState, WorkloadResult};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use plotly::common::{
     ErrorData, ErrorType, Font, HoverInfo, Mode, Pattern, PatternFillMode, PatternShape,
     TextPosition, Title,

@@ -151,20 +151,21 @@ fn rewrite_includegraphics(fragment: &str, prefix: &str) -> String {
         .lines()
         .map(|line| {
             if let Some(idx) = line.find("\\includegraphics")
-                && let Some(brace_start) = line[idx..].find('{') {
-                    let abs_start = idx + brace_start + 1;
-                    if let Some(brace_end) = line[abs_start..].find('}') {
-                        let filename = &line[abs_start..abs_start + brace_end];
-                        // Only rewrite if it's a bare filename (no path separators).
-                        if !filename.contains('/') {
-                            return format!(
-                                "{}{{{prefix}/{filename}}}{}",
-                                &line[..abs_start - 1],
-                                &line[abs_start + brace_end + 1..]
-                            );
-                        }
+                && let Some(brace_start) = line[idx..].find('{')
+            {
+                let abs_start = idx + brace_start + 1;
+                if let Some(brace_end) = line[abs_start..].find('}') {
+                    let filename = &line[abs_start..abs_start + brace_end];
+                    // Only rewrite if it's a bare filename (no path separators).
+                    if !filename.contains('/') {
+                        return format!(
+                            "{}{{{prefix}/{filename}}}{}",
+                            &line[..abs_start - 1],
+                            &line[abs_start + brace_end + 1..]
+                        );
                     }
                 }
+            }
             line.to_string()
         })
         .collect::<Vec<_>>()
