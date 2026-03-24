@@ -172,10 +172,14 @@ struct agfs_sb_info {
 	struct dentry		*ctl_dentry;	/* pinned .ctl dentry */
 
 	/* Staging */
-	struct path		inodes_dir;	/* ./agfs/inodes/ (flat inode store) */
+	struct path		inodes_dir;	/* ./agfs/inodes/ (sharded inode store) */
 	struct file		*journal_file;	/* ./agfs/journal (append-only, opened lazily) */
 	struct rw_semaphore	staging_sem;	/* protects staging + journal writes */
 	atomic_t		next_ino;	/* counter for inode store IDs */
+
+	/* Inode store shard cache (avoids repeated lookups) */
+	struct dentry		*shard_dentry;	/* cached current shard dir dentry */
+	u32			shard_id;	/* which shard shard_dentry belongs to */
 	atomic_t		gen;		/* bumped on each checkpoint; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
 	bool			dirty;		/* data records written since last CKP/RST */

@@ -2,7 +2,7 @@
 /*
  * agfs — staging layer helpers.
  *
- * Flat inode store, directory pinning, COW.
+ * Sharded inode store, directory pinning, COW.
  */
 
 #include "agfs.h"
@@ -10,26 +10,81 @@
 #include <linux/file.h>
 #include <linux/namei.h>
 
+#define AGFS_SHARD_SIZE	100
+
+/* ── Shard Helpers ─────────────────────────────────────────────────── */
+
+/*
+ * Get the shard directory for a given ino, creating it if needed.
+ * Returns the shard dentry with an extra dget() ref, or ERR_PTR.
+ * Caller must dput() when done.
+ *
+ * The last shard dentry is cached in sbi to avoid repeated lookups
+ * (sequential inos hit the same shard ~1000 times in a row).
+ */
+static struct dentry *get_shard_dir(struct agfs_sb_info *sbi, u32 ino)
+{
+	u32 shard = ino / AGFS_SHARD_SIZE;
+	char shard_name[11];
+	struct dentry *shard_dentry;
+	struct inode *dir;
+	int err, len;
+
+	/* Fast path: cached shard matches. */
+	if (sbi->shard_dentry && sbi->shard_id == shard)
+		return dget(sbi->shard_dentry);
+
+	len = snprintf(shard_name, sizeof(shard_name), "%u", shard);
+	dir = d_inode(sbi->inodes_dir.dentry);
+
+	inode_lock(dir);
+	shard_dentry = lookup_one_len(shard_name, sbi->inodes_dir.dentry, len);
+	if (IS_ERR(shard_dentry)) {
+		inode_unlock(dir);
+		return shard_dentry;
+	}
+
+	if (!d_inode(shard_dentry)) {
+		/* Shard dir doesn't exist yet — create it. */
+		err = vfs_mkdir(mnt_idmap(sbi->inodes_dir.mnt),
+				dir, shard_dentry, 0755);
+		if (err) {
+			inode_unlock(dir);
+			dput(shard_dentry);
+			return ERR_PTR(err);
+		}
+	}
+	inode_unlock(dir);
+
+	/* Update cache. */
+	if (sbi->shard_dentry)
+		dput(sbi->shard_dentry);
+	sbi->shard_dentry = dget(shard_dentry);
+	sbi->shard_id = shard;
+
+	return shard_dentry;
+}
+
 /* ── Public Helpers ────────────────────────────────────────────────── */
 
 int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,
 		    struct path *result)
 {
-	char name[11];
+	char rel[24]; /* "<shard>/<ino>" */
 
 	if (!sbi->inodes_dir.dentry)
 		return -ENOENT;
 
-	snprintf(name, sizeof(name), "%u", ino);
+	snprintf(rel, sizeof(rel), "%u/%u", ino / AGFS_SHARD_SIZE, ino);
 	/* No LOOKUP_FOLLOW — symlink inodes must not be dereferenced */
 	return vfs_path_lookup(sbi->inodes_dir.dentry, sbi->inodes_dir.mnt,
-			       name, 0, result);
+			       rel, 0, result);
 }
 
 /* ── Inode Store Allocation ────────────────────────────────────────── */
 
 /*
- * Allocate a new inode ID, create the inode in the store.
+ * Allocate a new inode ID, create the inode in the sharded store.
  * Regular files get vfs_create; dirs get vfs_mkdir; symlinks get vfs_symlink.
  */
 int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,
@@ -37,8 +92,9 @@ int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,
 		     const char *symname)
 {
 	char name[11];
+	struct dentry *shard_dentry;
 	struct dentry *ino_dentry;
-	struct inode *dir;
+	struct inode *shard_inode;
 	u32 ino;
 	int err, len;
 
@@ -48,27 +104,35 @@ int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,
 	ino = (u32)atomic_inc_return(&sbi->next_ino);
 	if (unlikely(ino == 0))
 		return -ENOSPC;
-	len = snprintf(name, sizeof(name), "%u", ino);
 
-	dir = d_inode(sbi->inodes_dir.dentry);
-	inode_lock(dir);
-	ino_dentry = lookup_one_len(name, sbi->inodes_dir.dentry, len);
+	shard_dentry = get_shard_dir(sbi, ino);
+	if (IS_ERR(shard_dentry))
+		return PTR_ERR(shard_dentry);
+
+	len = snprintf(name, sizeof(name), "%u", ino);
+	shard_inode = d_inode(shard_dentry);
+
+	inode_lock(shard_inode);
+	ino_dentry = lookup_one_len(name, shard_dentry, len);
 	if (IS_ERR(ino_dentry)) {
-		inode_unlock(dir);
+		inode_unlock(shard_inode);
+		dput(shard_dentry);
 		return PTR_ERR(ino_dentry);
 	}
 
 	if (S_ISDIR(mode))
 		err = vfs_mkdir(mnt_idmap(sbi->inodes_dir.mnt),
-				dir, ino_dentry, mode);
+				shard_inode, ino_dentry, mode);
 	else if (S_ISLNK(mode))
 		err = vfs_symlink(mnt_idmap(sbi->inodes_dir.mnt),
-				  dir, ino_dentry, symname);
+				  shard_inode, ino_dentry, symname);
 	else
 		err = vfs_create(mnt_idmap(sbi->inodes_dir.mnt),
-				 dir, ino_dentry, mode, true);
+				 shard_inode, ino_dentry, mode, true);
 
-	inode_unlock(dir);
+	inode_unlock(shard_inode);
+	dput(shard_dentry);
+
 	if (err) {
 		dput(ino_dentry);
 		return err;

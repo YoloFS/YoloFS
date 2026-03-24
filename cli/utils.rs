@@ -1,9 +1,17 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+/// Shard size must match AGFS_SHARD_SIZE in kmod/staging.c.
+/// Must match AGFS_SHARD_SIZE in kmod/staging.c.
+const SHARD_SIZE: u32 = 100;
+
 /// Get the staged inode path for a given ino.
+/// Layout: `inodes/<shard>/<ino>` where shard = ino / SHARD_SIZE.
 pub fn inode_path(agfs_dir: &Path, ino: u32) -> PathBuf {
-    agfs_dir.join("inodes").join(ino.to_string())
+    agfs_dir
+        .join("inodes")
+        .join((ino / SHARD_SIZE).to_string())
+        .join(ino.to_string())
 }
 
 /// Returns "s" when count != 1, "" otherwise.

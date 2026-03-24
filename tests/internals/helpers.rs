@@ -41,18 +41,30 @@ pub fn tree(s: &AgfsSession) -> DirTree {
 
 /// List numeric inode entries in the inode store.
 pub fn inos(s: &AgfsSession) -> Vec<u32> {
-    let mut ids: Vec<u32> = fs::read_dir(s.inodes_dir())
-        .expect("read inode dir")
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().to_string_lossy().parse::<u32>().ok())
-        .collect();
+    // Walk shard directories: inodes/<shard>/<ino>
+    let mut ids: Vec<u32> = Vec::new();
+    if let Ok(shards) = fs::read_dir(s.inodes_dir()) {
+        for shard in shards.filter_map(|e| e.ok()) {
+            if shard.file_type().map_or(false, |t| t.is_dir()) {
+                if let Ok(entries) = fs::read_dir(shard.path()) {
+                    for entry in entries.filter_map(|e| e.ok()) {
+                        if let Ok(ino) = entry.file_name().to_string_lossy().parse::<u32>() {
+                            ids.push(ino);
+                        }
+                    }
+                }
+            }
+        }
+    }
     ids.sort();
     ids
 }
 
-/// Get the inode path for a given ino.
+/// Get the inode path for a given ino (sharded: inodes/<shard>/<ino>).
 pub fn inode_path(s: &AgfsSession, ino: u32) -> PathBuf {
-    s.inodes_dir().join(ino.to_string())
+    s.inodes_dir()
+        .join((ino / 100).to_string())
+        .join(ino.to_string())
 }
 
 /// Find the ino for a dentry matching a path suffix.

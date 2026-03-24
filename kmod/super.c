@@ -80,6 +80,8 @@ static void agfs_put_super(struct super_block *sb)
 
 	if (sbi->ctl_inode)
 		iput(sbi->ctl_inode);
+	if (sbi->shard_dentry)
+		dput(sbi->shard_dentry);
 	if (sbi->inodes_dir.dentry)
 		path_put(&sbi->inodes_dir);
 	if (sbi->journal_file)

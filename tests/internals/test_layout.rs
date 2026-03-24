@@ -78,10 +78,13 @@ fn inode_path_matches_library_api() {
 
     let agfs_dir = s.root.join(".agfs");
     let lib_path = utils::inode_path(&agfs_dir, ino);
-    let manual_path = s.inodes_dir().join(ino.to_string());
+    let manual_path = s
+        .inodes_dir()
+        .join((ino / 100).to_string())
+        .join(ino.to_string());
     assert_eq!(
         lib_path, manual_path,
-        "inode_path() should match manual construction"
+        "inode_path() should match sharded construction"
     );
     assert!(
         lib_path.exists(),

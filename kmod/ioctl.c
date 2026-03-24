@@ -682,8 +682,19 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 		/* Reset mode (commit/abort): no entries, no journal write */
 		atomic_set(&sbi->gen, 0);
 		WRITE_ONCE(sbi->dirty, false);
+		/* Invalidate shard cache — CLI is about to delete shard dirs. */
+		if (sbi->shard_dentry) {
+			dput(sbi->shard_dentry);
+			sbi->shard_dentry = NULL;
+		}
 		up_write(&sbi->staging_sem);
 		return 0;
+	}
+
+	/* Invalidate shard cache before restore — CLI may reorganize inodes. */
+	if (sbi->shard_dentry) {
+		dput(sbi->shard_dentry);
+		sbi->shard_dentry = NULL;
 	}
 
 	/* Restore mode: increment gen, inject entries, write RST record */
