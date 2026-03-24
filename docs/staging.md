@@ -161,7 +161,8 @@ operations inherit and propagate the flag through transitions.
 followed by `in_base:u8` and variant-specific payload. Tags match
 `agfs_target` values: INODE → `ino:le32`; PATH → `path_len:le16 path:u8[path_len]`;
 NONE → nothing. Passthrough dirs are encoded as PATH with `path_len=0`.
-See [Restore Wire Format](#restore-wire-format).
+The full recursive restore tree format is documented in
+`docs/plans/33-dentry-state-redesign.md`.
 
 **Lookup** (`agfs_lookup`) — called by the VFS when no cached dentry
 exists. All staged entries are pinned in the dcache, so `lookup_fast()`

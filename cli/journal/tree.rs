@@ -824,6 +824,23 @@ mod tests {
     }
 
     #[test]
+    fn delete_dir_with_missing_dtype_uses_existing_dir_shape() {
+        let tree = build(&[
+            add_dir("/d", 1),
+            add("/d/f", 2),
+            Action::Delete {
+                path: "/d".into(),
+                dtype: None,
+            },
+        ]);
+        assert!(
+            tree.is_empty(),
+            "existing staged dir should still cancel even when dtype is missing: {:?}",
+            tree
+        );
+    }
+
+    #[test]
     fn delete_base_dir_then_add_child() {
         // Delete a base directory, then add a file under it.
         // The tombstone should be a Dir node so walk_to_parent succeeds.
@@ -1044,6 +1061,23 @@ mod tests {
         assert!(
             matches!(tree.get("/new"), Some(Dentry { target: Target::Path(Some(from)), .. }) if from == "/old")
         );
+    }
+
+    #[test]
+    fn rename_dir_with_missing_dtype_moves_existing_subtree() {
+        let tree = build(&[
+            add_dir("/old", 1),
+            add("/old/file", 2),
+            Action::Rename {
+                src: "/old".into(),
+                dst: "/new".into(),
+                dtype: None,
+            },
+        ]);
+        assert!(tree.get("/old").is_none(), "old dir should be gone");
+        assert!(tree.get("/old/file").is_none(), "old subtree should be gone");
+        assert!(tree.get("/new").is_some(), "new dir should exist");
+        assert!(tree.get("/new/file").is_some(), "subtree should move with dir");
     }
 
     // ── Replace chain ─────────────────────────────────────────────────

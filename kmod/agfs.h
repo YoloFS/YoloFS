@@ -364,11 +364,11 @@ extern const struct file_operations agfs_dir_fops;
 extern const struct dentry_operations agfs_dops;
 int agfs_init_dentry_cache(void);
 void agfs_destroy_dentry_cache(void);
+struct dentry *agfs_dentry_alloc(struct dentry *parent,
+				 const char *name, unsigned int len);
 void agfs_dentry_set(struct dentry *dentry, enum agfs_target target,
 		     bool in_base);
 void agfs_dentry_reset(struct dentry *dentry);
-struct dentry *agfs_dentry_alloc(struct dentry *parent,
-			       const char *name, unsigned int len);
 void agfs_dentry_reset_all(struct super_block *sb);
 
 /* lookup.c */

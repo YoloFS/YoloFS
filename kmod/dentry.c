@@ -44,7 +44,32 @@ static void agfs_d_release(struct dentry *dentry)
 	dentry->d_fsdata = NULL;
 }
 
-/* ── Dentry-centric mutations ──────────────────────────────────────── */
+/* ── Dentry state API ──────────────────────────────────────────────── */
+
+/*
+ * Allocate a child dentry under @parent and pre-pin it.
+ * The d_alloc() reference serves as the pin — no extra dget().
+ * Caller must call d_add() after configuring the dentry.
+ *
+ * Returns the pre-pinned dentry, or NULL on allocation failure.
+ * Caller must hold i_rwsem exclusive on dir.
+ */
+struct dentry *agfs_dentry_alloc(struct dentry *parent,
+				 const char *name, unsigned int len)
+{
+	struct qstr qname;
+	struct dentry *d;
+
+	qname.name = (const unsigned char *)name;
+	qname.len = len;
+	qname.hash = full_name_hash(parent, name, len);
+	d = d_alloc(parent, &qname);
+	if (!d)
+		return NULL;
+
+	AGFS_D(d)->pinned = true;	/* d_alloc ref counts as pin */
+	return d;
+}
 
 /*
  * Set a dentry's overlay state.  Handles pin/unpin transitions
@@ -91,42 +116,6 @@ void agfs_dentry_set(struct dentry *dentry, enum agfs_target target,
 void agfs_dentry_reset(struct dentry *dentry)
 {
 	agfs_dentry_set(dentry, AGFS_TARGET_NONE, false);
-}
-
-/* ── Child dentry allocation ───────────────────────────────────────── */
-
-static struct dentry *agfs_d_alloc(struct dentry *parent,
-				   const char *name, u16 name_len)
-{
-	struct qstr qname;
-
-	qname.name = (const unsigned char *)name;
-	qname.len = name_len;
-	qname.hash = full_name_hash(parent, name, name_len);
-	return d_alloc(parent, &qname);
-}
-
-/* ── Dentry allocation ──────────────────────────────────────────────── */
-
-/*
- * Allocate a child dentry under @parent and pre-pin it.
- * The d_alloc() reference serves as the pin — no extra dget().
- * Caller must call d_add() after configuring the dentry.
- *
- * Returns the pre-pinned dentry, or NULL on allocation failure.
- * Caller must hold i_rwsem exclusive on dir.
- */
-struct dentry *agfs_dentry_alloc(struct dentry *parent,
-			       const char *name, unsigned int len)
-{
-	struct dentry *d;
-
-	d = agfs_d_alloc(parent, name, len);
-	if (!d)
-		return NULL;
-
-	AGFS_D(d)->pinned = true;	/* d_alloc ref counts as pin */
-	return d;
 }
 
 /* ── Bulk reset ─────────────────────────────────────────────────────── */
