@@ -311,7 +311,6 @@ static int agfs_setattr(struct mnt_idmap *idmap,
 	}
 
 	/* If nothing left to propagate, we're done */
-	ia->ia_valid &= ~ATTR_MODE;
 	if (!ia->ia_valid)
 		return 0;
 

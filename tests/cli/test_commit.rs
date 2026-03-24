@@ -333,6 +333,186 @@ fn commit_modified_symlink() {
     );
 }
 
+/// chmod a new file through the mount, commit — mode should be preserved in base.
+#[test]
+fn commit_new_file_with_chmod() {
+    use std::os::unix::fs::MetadataExt;
+
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("script.sh"), "#!/bin/sh\necho hi\n").expect("write");
+    fs::set_permissions(
+        s.mnt_path("script.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("chmod");
+
+    // Verify mode is visible through the mount.
+    let mnt_meta = fs::metadata(s.mnt_path("script.sh")).unwrap();
+    assert_eq!(
+        mnt_meta.mode() & 0o777,
+        0o755,
+        "mount should show 0755, got {:o}",
+        mnt_meta.mode() & 0o777
+    );
+
+    s.cli(&["commit"]).expect("commit");
+
+    let base_meta = fs::metadata(s.base_path("script.sh")).unwrap();
+    assert_eq!(
+        base_meta.mode() & 0o777,
+        0o755,
+        "committed file should have mode 0755, got {:o}",
+        base_meta.mode() & 0o777
+    );
+}
+
+/// chmod a new file to restrictive mode, commit — mode should be preserved.
+#[test]
+fn commit_new_file_with_restrictive_chmod() {
+    use std::os::unix::fs::MetadataExt;
+
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("secret.txt"), "secret\n").expect("write");
+    fs::set_permissions(
+        s.mnt_path("secret.txt"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .expect("chmod");
+
+    s.cli(&["commit"]).expect("commit");
+
+    let base_meta = fs::metadata(s.base_path("secret.txt")).unwrap();
+    assert_eq!(
+        base_meta.mode() & 0o777,
+        0o600,
+        "committed file should have mode 0600, got {:o}",
+        base_meta.mode() & 0o777
+    );
+}
+
+/// chmod an existing base file through the mount (COW), commit — new mode in base.
+#[test]
+fn commit_chmod_existing_file() {
+    use std::os::unix::fs::MetadataExt;
+
+    let s = AgfsSession::new().expect("session setup");
+
+    // hello.txt exists in base with default mode.
+    // Modify content (triggers COW) and change mode.
+    fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
+    fs::set_permissions(
+        s.mnt_path("hello.txt"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .expect("chmod");
+
+    let mnt_meta = fs::metadata(s.mnt_path("hello.txt")).unwrap();
+    assert_eq!(
+        mnt_meta.mode() & 0o777,
+        0o700,
+        "mount should show 0700 after chmod"
+    );
+
+    s.cli(&["commit"]).expect("commit");
+
+    let base_meta = fs::metadata(s.base_path("hello.txt")).unwrap();
+    assert_eq!(
+        base_meta.mode() & 0o777,
+        0o700,
+        "committed file should have new mode 0700, got {:o}",
+        base_meta.mode() & 0o777
+    );
+}
+
+/// Ownership of a new file should be preserved through commit.
+#[test]
+fn commit_new_file_preserves_ownership() {
+    use std::os::unix::fs::MetadataExt;
+
+    let s = AgfsSession::new().expect("session setup");
+    let uid = nix::unistd::getuid().as_raw();
+    let gid = nix::unistd::getgid().as_raw();
+
+    fs::write(s.mnt_path("owned.txt"), "mine\n").expect("write");
+    s.cli(&["commit"]).expect("commit");
+
+    let base_meta = fs::metadata(s.base_path("owned.txt")).unwrap();
+    assert_eq!(
+        base_meta.uid(),
+        uid,
+        "committed file should be owned by uid {uid}, got {}",
+        base_meta.uid()
+    );
+    assert_eq!(
+        base_meta.gid(),
+        gid,
+        "committed file should have gid {gid}, got {}",
+        base_meta.gid()
+    );
+}
+
+/// Ownership of a COW file should be preserved through commit.
+#[test]
+fn commit_cow_file_preserves_ownership() {
+    use std::os::unix::fs::MetadataExt;
+
+    let s = AgfsSession::new().expect("session setup");
+    let uid = nix::unistd::getuid().as_raw();
+    let gid = nix::unistd::getgid().as_raw();
+
+    // hello.txt exists in base; writing triggers COW.
+    fs::write(s.mnt_path("hello.txt"), "cow\n").expect("write");
+    s.cli(&["commit"]).expect("commit");
+
+    let base_meta = fs::metadata(s.base_path("hello.txt")).unwrap();
+    assert_eq!(
+        base_meta.uid(),
+        uid,
+        "committed COW file should be owned by uid {uid}, got {}",
+        base_meta.uid()
+    );
+    assert_eq!(
+        base_meta.gid(),
+        gid,
+        "committed COW file should have gid {gid}, got {}",
+        base_meta.gid()
+    );
+}
+
+/// mkdir with specific mode through the mount, commit — mode preserved.
+#[test]
+fn commit_new_dir_with_chmod() {
+    use std::os::unix::fs::MetadataExt;
+
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::create_dir(s.mnt_path("restricted")).expect("mkdir");
+    fs::set_permissions(
+        s.mnt_path("restricted"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .expect("chmod dir");
+
+    let mnt_meta = fs::metadata(s.mnt_path("restricted")).unwrap();
+    assert_eq!(
+        mnt_meta.mode() & 0o777,
+        0o700,
+        "mount should show 0700 for dir"
+    );
+
+    s.cli(&["commit"]).expect("commit");
+
+    let base_meta = fs::metadata(s.base_path("restricted")).unwrap();
+    assert_eq!(
+        base_meta.mode() & 0o777,
+        0o700,
+        "committed dir should have mode 0700, got {:o}",
+        base_meta.mode() & 0o777
+    );
+}
+
 /// Create a new file, rename it, commit — the renamed file should appear in base.
 #[test]
 fn commit_rename_staged_only_file() {
