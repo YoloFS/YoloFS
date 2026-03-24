@@ -17,8 +17,8 @@ fn run_create(dest: &Path, count: usize) -> Result<()> {
 
     for i in 0..count {
         let t0 = Instant::now();
-        File::create(dest.join(format!("f-{i:05}.dat")))
-            .with_context(|| format!("creating f-{i:05}.dat"))?;
+        File::create(dest.join(format!("f-{i:06}.dat")))
+            .with_context(|| format!("creating f-{i:06}.dat"))?;
         latencies.push(t0.elapsed());
     }
 
@@ -35,7 +35,7 @@ fn meta_create_execution() -> String {
     workloads::rust_execution(
         "for i in 0..count {\n\
          \x20   let t0 = Instant::now();\n\
-         \x20   File::create(dest.join(format!(\"f-{i:05}.dat\")))?;\n\
+         \x20   File::create(dest.join(format!(\"f-{i:06}.dat\")))?;\n\
          \x20   latencies.push(t0.elapsed());\n\
          }",
     )
@@ -55,7 +55,7 @@ impl Workload for MetaCreate {
     fn name(&self) -> &'static str {
         match self.count {
             100 => "meta-create-100",
-            10000 => "meta-create",
+            100_000 => "meta-create-100k",
             _ => "meta-create",
         }
     }
@@ -67,6 +67,7 @@ impl Workload for MetaCreate {
     fn description(&self) -> &'static str {
         match self.count {
             100 => "Create 100 empty files (small directory)",
+            100_000 => "Create 100,000 empty files (stress directory)",
             _ => "Create 10,000 empty files (large directory)",
         }
     }

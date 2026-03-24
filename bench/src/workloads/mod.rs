@@ -104,6 +104,7 @@ pub fn all() -> Vec<Box<dyn Workload>> {
         Box::new(meta_create::MetaCreate {
             count: meta_shared::SMALL_DIR,
         }),
+        Box::new(meta_create::MetaCreate { count: 100_000 }),
     ];
     for w in meta_append::MetaAppend::all() {
         v.push(Box::new(w));
@@ -188,7 +189,7 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
         "checkpoint-scalability" => checkpoint_scalability::details(),
         "worktree" => worktree::details(),
         "linux-untar" => linux_untar::details(),
-        "meta-create" | "meta-create-100" => meta_create::details(),
+        "meta-create" | "meta-create-100" | "meta-create-100k" => meta_create::details(),
         "meta-append" | "meta-append-100" => meta_append::details(),
         "meta-open-cold" => meta_open_cold::details(),
         "meta-open" | "meta-open-100" => meta_open_warm::details(),
