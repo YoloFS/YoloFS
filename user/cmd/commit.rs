@@ -45,17 +45,9 @@ fn apply_inode(
 
     ensure_parent(base_path, ensured)?;
 
-    // Save existing file's permissions before removal so we can restore
-    // them after moving the staged inode (preserves base file modes).
-    let existing_meta = base_path.symlink_metadata().ok();
-    let original_perms = existing_meta
-        .as_ref()
-        .filter(|m| m.is_file())
-        .map(|m| m.permissions());
-
-    // Remove whatever exists at the target path
-    if let Some(existing) = &existing_meta {
-        remove_existing(base_path, existing)?;
+    // Remove whatever exists at the target path.
+    if let Ok(existing) = base_path.symlink_metadata() {
+        remove_existing(base_path, &existing)?;
     }
 
     let is_symlink = meta.file_type().is_symlink();
@@ -65,23 +57,19 @@ fn apply_inode(
             .with_context(|| format!("creating symlink at {}", base_path.display()))?;
     } else if meta.is_dir() {
         fs::create_dir_all(base_path).with_context(|| format!("mkdir {}", base_path.display()))?;
+        // Apply the directory's mode from the staged inode.
+        fs::set_permissions(base_path, meta.permissions())
+            .with_context(|| format!("setting dir permissions on {}", base_path.display()))?;
     } else {
         fs::rename(&staged, base_path)
             .or_else(|_| {
                 fs::copy(&staged, base_path)?;
                 fs::remove_file(&staged)?;
+                // copy may not preserve mode; set it explicitly.
+                fs::set_permissions(base_path, meta.permissions())?;
                 Ok::<_, std::io::Error>(())
             })
             .with_context(|| format!("moving inode to {}", base_path.display()))?;
-    }
-
-    // Restore original permissions for modified regular files.
-    if let Some(perms) = original_perms
-        && meta.is_file()
-        && !is_symlink
-    {
-        fs::set_permissions(base_path, perms)
-            .with_context(|| format!("restoring permissions on {}", base_path.display()))?;
     }
 
     Ok(())
