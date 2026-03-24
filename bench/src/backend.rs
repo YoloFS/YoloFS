@@ -1,7 +1,7 @@
 // Backend trait — abstraction over staging/commit mechanisms.
 
 use crate::workload::{CheckpointLatencySeries, IterResult, OpResult, Workload};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::BufRead;
 use std::io::Write;
 use std::path::Path;
@@ -90,7 +90,10 @@ pub struct NoopCheckpointController;
 
 impl CheckpointController for NoopCheckpointController {
     fn checkpoint(&mut self, _step: usize) -> Result<CheckpointOutcome> {
-        Ok(CheckpointOutcome::Continue { checkpoint_ms: 0, next_dest: None })
+        Ok(CheckpointOutcome::Continue {
+            checkpoint_ms: 0,
+            next_dest: None,
+        })
     }
 }
 
@@ -224,7 +227,10 @@ impl PausedSubprocess {
                 writeln!(self.stdin, "{}", RESULTS_MARKER)
                     .context("writing checkpoint response marker")?;
                 match response {
-                    CheckpointOutcome::Continue { checkpoint_ms, next_dest } => {
+                    CheckpointOutcome::Continue {
+                        checkpoint_ms,
+                        next_dest,
+                    } => {
                         let dest_json = match &next_dest {
                             Some(p) => format!("\"{}\"", p.display()),
                             None => "null".to_string(),

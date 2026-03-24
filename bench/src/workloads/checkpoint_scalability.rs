@@ -1,6 +1,6 @@
 use crate::workload::{CheckpointLatencyPoint, CheckpointLatencySeries, Workload, WorkloadKind};
 use agfs::config::Perm;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -57,8 +57,7 @@ impl Workload for CheckpointScalability {
         let checkpoint_steps = checkpoint_steps()?;
         let dest = normalize_dest(dest);
         std::fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
-        std::env::set_current_dir(&dest)
-            .with_context(|| format!("chdir to {}", dest.display()))?;
+        std::env::set_current_dir(&dest).with_context(|| format!("chdir to {}", dest.display()))?;
 
         // From here, all paths are relative to dest (cwd).
         let root = Path::new(".");

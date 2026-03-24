@@ -116,8 +116,7 @@ impl Workload for LinuxUntar {
 
     fn run(&self, dest: &Path, verbose: bool) -> Result<()> {
         std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
-        std::env::set_current_dir(dest)
-            .with_context(|| format!("chdir to {}", dest.display()))?;
+        std::env::set_current_dir(dest).with_context(|| format!("chdir to {}", dest.display()))?;
 
         // Use a relative path to the tarball so it resolves correctly
         // inside an agfs exec chroot.

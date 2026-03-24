@@ -1,6 +1,6 @@
 //! Shared helpers for paper artifact generation.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 

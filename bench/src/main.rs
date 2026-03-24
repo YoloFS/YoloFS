@@ -1487,11 +1487,7 @@ fn cleanup_stale_tempdirs() {
     let entries: Vec<_> = match fs::read_dir(&cache) {
         Ok(rd) => rd
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("agfs-bench-")
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with("agfs-bench-"))
             .collect(),
         Err(_) => return,
     };
