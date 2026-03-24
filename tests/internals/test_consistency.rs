@@ -11,8 +11,8 @@
 
 use super::helpers::{inode_path, tree};
 use crate::helpers::AgfsSession;
-use agfs::journal::{Dentry, Target, DirTree};
 use agfs::journal::tree::DirNode;
+use agfs::journal::{Dentry, DirTree, Target};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
@@ -54,11 +54,7 @@ fn expected_backing_metadata(s: &AgfsSession, dentry: &Dentry) -> std::fs::Metad
     }
 }
 
-fn assert_same_file_type(
-    rel: &str,
-    actual: &std::fs::Metadata,
-    expected: &std::fs::Metadata,
-) {
+fn assert_same_file_type(rel: &str, actual: &std::fs::Metadata, expected: &std::fs::Metadata) {
     assert_eq!(
         actual.is_file(),
         expected.is_file(),
@@ -115,9 +111,9 @@ fn assert_overlay_visible(s: &AgfsSession) {
                 }
             }
             Target::Path(Some(_)) => {
-                let meta = mnt
-                    .symlink_metadata()
-                    .unwrap_or_else(|e| panic!("overlay redirect at '/{rel}' should be visible: {e}"));
+                let meta = mnt.symlink_metadata().unwrap_or_else(|e| {
+                    panic!("overlay redirect at '/{rel}' should be visible: {e}")
+                });
                 let expected = expected_backing_metadata(s, dentry);
                 assert_same_file_type(rel, &meta, &expected);
             }
@@ -608,7 +604,14 @@ fn create_over_tombstone() {
     let t = tree(&s);
     assert!(
         t.any(|p, e| p.ends_with("/hello.txt")
-            && matches!(e, Dentry { target: Target::Inode(_), in_base: true, .. })),
+            && matches!(
+                e,
+                Dentry {
+                    target: Target::Inode(_),
+                    in_base: true,
+                    ..
+                }
+            )),
         "recreated file over tombstone should have in_base=true: {t:?}"
     );
     assert_eq!(

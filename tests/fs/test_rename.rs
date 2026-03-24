@@ -598,13 +598,25 @@ fn complex_multi_operation_commit() {
     ) = (false, false, false, false, false, false, false);
 
     t.for_each(|path, dentry| {
-        if matches!(dentry, Dentry { target: Target::Inode(_), in_base: true, .. })
-            && path.ends_with("/hello.txt")
+        if matches!(
+            dentry,
+            Dentry {
+                target: Target::Inode(_),
+                in_base: true,
+                ..
+            }
+        ) && path.ends_with("/hello.txt")
         {
             has_modified_hello = true;
         }
-        if matches!(dentry, Dentry { target: Target::Inode(_), in_base: true, .. })
-            && path.ends_with("/multi.txt")
+        if matches!(
+            dentry,
+            Dentry {
+                target: Target::Inode(_),
+                in_base: true,
+                ..
+            }
+        ) && path.ends_with("/multi.txt")
         {
             has_modified_multi = true;
         }
@@ -624,8 +636,14 @@ fn complex_multi_operation_commit() {
         if matches!(dentry.target, Target::None) && path.ends_with("/deep.txt") {
             has_deleted_deep = true;
         }
-        if matches!(dentry, Dentry { target: Target::Inode(_), in_base: false, .. })
-            && path.ends_with("/link.txt")
+        if matches!(
+            dentry,
+            Dentry {
+                target: Target::Inode(_),
+                in_base: false,
+                ..
+            }
+        ) && path.ends_with("/link.txt")
         {
             has_added_link = true;
         }
