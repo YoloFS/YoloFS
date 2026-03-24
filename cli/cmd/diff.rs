@@ -7,7 +7,7 @@
 // `--to <name>` — diff changes up to a marker.
 // `--from <name> --to <name>` — diff changes between two markers.
 
-use crate::journal::{Dentry, Target, DirTree, Journal, Marker};
+use crate::journal::{Dentry, DirTree, Journal, Marker, Target};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -343,16 +343,16 @@ mod tests {
             (
                 "/nonexistent/new.rs".into(),
                 Dentry {
-                target: Target::Path(Some("/nonexistent/old.rs".into())),
-                in_base: false,
-            },
+                    target: Target::Path(Some("/nonexistent/old.rs".into())),
+                    in_base: false,
+                },
             ),
             (
                 "/nonexistent/new.rs".into(),
                 Dentry {
-                target: Target::Inode(7),
-                in_base: true,
-            },
+                    target: Target::Inode(7),
+                    in_base: true,
+                },
             ),
         ];
         let map = state_map(tmp.path(), &dentries);
@@ -368,23 +368,23 @@ mod tests {
             (
                 "/a.txt".into(),
                 Dentry {
-                target: Target::Inode(1),
-                in_base: false,
-            },
+                    target: Target::Inode(1),
+                    in_base: false,
+                },
             ),
             (
                 "/b.txt".into(),
                 Dentry {
-                target: Target::Inode(2),
-                in_base: true,
-            },
+                    target: Target::Inode(2),
+                    in_base: true,
+                },
             ),
             (
                 "/c.txt".into(),
                 Dentry {
-                target: Target::None,
-                in_base: true,
-            },
+                    target: Target::None,
+                    in_base: true,
+                },
             ),
         ];
         let map = state_map(tmp.path(), &dentries);
