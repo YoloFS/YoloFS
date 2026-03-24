@@ -504,8 +504,11 @@ fn generate_flamegraph(out_dir: &Path) -> Result<()> {
         .and_then(|p| p.file_name())
         .and_then(|s| s.to_str())
         .unwrap_or("");
+    // Include the bench process plus any child processes that do real work.
     let comms = if workload_name.starts_with("fio-") {
         "agfs-bench,fio"
+    } else if workload_name == "linux-untar" {
+        "agfs-bench,tar,xz"
     } else {
         "agfs-bench"
     };

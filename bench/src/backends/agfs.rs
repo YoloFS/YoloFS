@@ -1,5 +1,5 @@
-use crate::backend::{self, Backend};
-use crate::workload::{CacheMode, IterResult, Workload};
+use crate::backend::{self, Backend, CheckpointController, CheckpointOutcome};
+use crate::workload::{CacheMode, IterResult, Workload, WorkloadKind};
 use agfs::config::Config;
 use anyhow::{bail, Context, Result};
 use std::collections::BTreeMap;
@@ -62,10 +62,10 @@ impl Session {
             .join(rel)
     }
 
-    fn checkpoint(&self) -> Result<()> {
+    fn checkpoint_named(&self, name: &str) -> Result<()> {
         let out = Command::new("agfs")
             .arg("checkpoint")
-            .arg("bench-checkpoint")
+            .arg(name)
             .current_dir(self.root.path())
             .env("NO_COLOR", "1")
             .output()
@@ -116,6 +116,17 @@ impl Session {
     }
 }
 
+impl CheckpointController for Session {
+    fn checkpoint(&mut self, step: usize) -> Result<CheckpointOutcome> {
+        let t = Instant::now();
+        self.checkpoint_named(&format!("bench-step-{step:03}"))?;
+        Ok(CheckpointOutcome::Continue {
+            checkpoint_ms: t.elapsed().as_millis() as u64,
+            next_dest: None,
+        })
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = Command::new("agfs")
@@ -128,12 +139,48 @@ impl Drop for Session {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/// Build an exec-workload command wrapped in `agfs exec --` so the subprocess
+/// runs inside the agfs sandbox (proper process tracking, permission gating).
+/// Build an exec-workload command wrapped in `agfs exec --` so the subprocess
+/// runs inside the agfs sandbox (proper process tracking, permission gating).
+///
+/// `agfs exec` needs cwd = session root to find `.agfs/`. The inner
+/// `exec-workload` receives an absolute `--dest` path so it doesn't
+/// depend on cwd.
+fn agfs_exec_workload_cmd(
+    session: &Session,
+    workload_name: &str,
+    dest: &std::path::Path,
+    verbose: bool,
+    wait_after_ready: bool,
+) -> Result<Command> {
+    let self_exe = std::env::current_exe().context("resolving current executable")?;
+    let mut cmd = Command::new("agfs");
+    cmd.arg("exec")
+        .arg("--")
+        .arg(self_exe)
+        .arg("exec-workload")
+        .arg("--name")
+        .arg(workload_name)
+        .arg("--dest")
+        .arg(dest);
+    if verbose {
+        cmd.arg("--verbose");
+    }
+    if wait_after_ready {
+        cmd.arg("--wait-after-ready");
+    }
+    // agfs exec finds the session from cwd.
+    cmd.current_dir(session.root.path());
+    Ok(cmd)
+}
+
 fn run_agfs_iteration(
     config: Config,
     workload: &dyn Workload,
     verbose: bool,
 ) -> Result<(IterResult, Vec<String>)> {
-    let (session, init_ms) = Session::setup(config, workload)?;
+    let (mut session, init_ms) = Session::setup(config, workload)?;
 
     let dest = session.mnt_path(workload.work_dir());
     // For cold+base workloads, skip create_dir_all on the mounted path —
@@ -151,7 +198,7 @@ fn run_agfs_iteration(
         workload.prepare_workdir(&dest)?;
     }
     if workload.needs_checkpoint() {
-        session.checkpoint()?;
+        session.checkpoint_named("bench-checkpoint")?;
     }
     // For cold workloads, page caches are dropped after READY (inside
     // run_workload_subprocess). The mount-point dentry chain stays pinned
@@ -159,16 +206,30 @@ fn run_agfs_iteration(
     // cold stat through agfs will always be faster than cold stat on native
     // (fewer unpinned path components to read from disk).
     let cold = workload.cache_mode() == CacheMode::DropPageCache;
-    let mut cmd =
-        backend::exec_workload_cmd(workload.name(), std::path::Path::new("."), verbose, cold)?;
-    cmd.current_dir(&dest);
+    let mut cmd = if workload.kind() == WorkloadKind::Macro {
+        // Inside the agfs exec chroot, the root is .agfs/mnt which mirrors /.
+        // Use the session root path (not the mount path) so we don't
+        // double-traverse the mount.
+        let chroot_dest = session.root.path().join(workload.work_dir());
+        agfs_exec_workload_cmd(&session, workload.name(), &chroot_dest, verbose, cold)?
+    } else {
+        let mut c = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
+        c.current_dir(&dest);
+        c
+    };
     cmd.stderr(if verbose {
         Stdio::inherit()
     } else {
         Stdio::piped()
     });
-    let result = match backend::run_workload_subprocess(&mut cmd, cold) {
-        Ok(r) => r,
+    let result = match backend::spawn_and_await_ready(&mut cmd, cold) {
+        Ok(sp) => {
+            if cold {
+                crate::workloads::drop_page_cache()
+                    .context("dropping page cache after subprocess READY")?;
+            }
+            sp.go_with_checkpoint(&mut session)
+        }
         Err(e) => {
             let journal = session.journal_debug();
             if !journal.is_empty() {
@@ -177,6 +238,7 @@ fn run_agfs_iteration(
             return Err(e);
         }
     };
+    let result = result?;
 
     let commit_ms = match session.commit(verbose) {
         Ok(ms) => ms,
@@ -295,7 +357,7 @@ impl Backend for AgfsRealistic {
             );
         }
 
-        let session = Session { root };
+        let mut session = Session { root };
         let dest = session.mnt_path(workload.work_dir());
         let cold = workload.cache_mode() == CacheMode::DropPageCache;
         if !cold || workload.needs_prepare_workdir() {
@@ -308,18 +370,29 @@ impl Backend for AgfsRealistic {
             workload.prepare_workdir(&dest)?;
         }
         if workload.needs_checkpoint() {
-            session.checkpoint()?;
+            session.checkpoint_named("bench-checkpoint")?;
         }
-        let mut cmd =
-            backend::exec_workload_cmd(workload.name(), std::path::Path::new("."), verbose, cold)?;
-        cmd.current_dir(&dest);
+        let mut cmd = if workload.kind() == WorkloadKind::Macro {
+            let chroot_dest = session.root.path().join(workload.work_dir());
+            agfs_exec_workload_cmd(&session, workload.name(), &chroot_dest, verbose, cold)?
+        } else {
+            let mut c = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
+            c.current_dir(&dest);
+            c
+        };
         cmd.stderr(if verbose {
             Stdio::inherit()
         } else {
             Stdio::piped()
         });
-        let result = match backend::run_workload_subprocess(&mut cmd, cold) {
-            Ok(r) => r,
+        let result = match backend::spawn_and_await_ready(&mut cmd, cold) {
+            Ok(sp) => {
+                if cold {
+                    crate::workloads::drop_page_cache()
+                        .context("dropping page cache after subprocess READY")?;
+                }
+                sp.go_with_checkpoint(&mut session)
+            }
             Err(e) => {
                 let journal = session.journal_debug();
                 if !journal.is_empty() {
@@ -328,6 +401,7 @@ impl Backend for AgfsRealistic {
                 return Err(e);
             }
         };
+        let result = result?;
 
         let commit_ms = match session.commit(verbose) {
             Ok(ms) => ms,

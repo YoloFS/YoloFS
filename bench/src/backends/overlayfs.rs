@@ -1,4 +1,4 @@
-use crate::backend::{self, Backend};
+use crate::backend::{self, Backend, CheckpointController, CheckpointOutcome};
 use crate::workload::{CacheMode, IterResult, Workload};
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
@@ -6,6 +6,57 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 pub struct Overlayfs;
+
+struct OverlayCheckpointController {
+    root: PathBuf,
+    lower: PathBuf,
+    merged: PathBuf,
+    work_dir: String,
+    layer_idx: usize,
+}
+
+/// Maximum stacked lower layers before we stop checkpointing.
+/// Overlayfs mount options string length is bounded by the kernel page size;
+/// deep long-path stacking hits this limit around 60–80 layers.
+const MAX_OVERLAY_LAYERS: usize = 50;
+
+impl CheckpointController for OverlayCheckpointController {
+    fn checkpoint(&mut self, _step: usize) -> Result<CheckpointOutcome> {
+        let next = self.layer_idx + 1;
+        if next > MAX_OVERLAY_LAYERS {
+            return Ok(CheckpointOutcome::Stop);
+        }
+
+        let t = Instant::now();
+        let next_upper = self.root.join(format!("upper-{next}"));
+        let next_work = self.root.join(format!("work-{next}"));
+        std::fs::create_dir_all(&next_upper)?;
+        std::fs::create_dir_all(&next_work)?;
+
+        sudo_umount(&self.merged)
+            .with_context(|| format!("overlayfs checkpoint unmount at layer {next}"))?;
+
+        let completed_layers = (0..=self.layer_idx)
+            .map(|i| self.root.join(format!("upper-{i}")))
+            .collect::<Vec<_>>();
+        sudo_mount_overlay_layers(
+            &self.lower,
+            &completed_layers,
+            &next_upper,
+            &next_work,
+            &self.merged,
+        )
+        .with_context(|| format!("overlayfs checkpoint remount at layer {next}"))?;
+
+        self.layer_idx = next;
+        // After unmount+remount, the subprocess's cwd is stale. Redirect.
+        let new_dest = self.merged.join(&self.work_dir);
+        Ok(CheckpointOutcome::Continue {
+            checkpoint_ms: t.elapsed().as_millis() as u64,
+            next_dest: Some(new_dest),
+        })
+    }
+}
 
 impl Backend for Overlayfs {
     fn name(&self) -> &'static str {
@@ -37,10 +88,10 @@ impl Backend for Overlayfs {
             .context("creating overlayfs session tempdir")?;
 
         let lower = root.path().join("lower");
-        let upper = root.path().join("upper");
-        let work = root.path().join("work");
+        let upper0 = root.path().join("upper-0");
+        let work0 = root.path().join("work-0");
         let merged = root.path().join("merged");
-        for d in [&lower, &upper, &work, &merged] {
+        for d in [&lower, &upper0, &work0, &merged] {
             std::fs::create_dir_all(d)?;
         }
 
@@ -54,7 +105,16 @@ impl Backend for Overlayfs {
 
         // Mount overlay with sudo (no user namespace).
         let t_init = Instant::now();
-        sudo_mount_overlay(&lower, &upper, &work, &merged)?;
+        let mut completed_layers: Vec<PathBuf> = Vec::new();
+        let mut current_upper = upper0;
+        let mut current_work = work0;
+        sudo_mount_overlay_layers(
+            &lower,
+            &completed_layers,
+            &current_upper,
+            &current_work,
+            &merged,
+        )?;
         let init_ms = t_init.elapsed().as_millis() as u64;
 
         let dest = merged.join(workload.work_dir());
@@ -64,16 +124,24 @@ impl Backend for Overlayfs {
             workload.prepare_workdir(&dest)?;
         }
         if needs_chkpt {
-            // Checkpoint: unmount, commit upper to lower (demoting files
-            // to a lower layer), remount with fresh upper.
-            sudo_umount(&merged);
-            commit_upper_to_lower(&upper, &lower)?;
-            // Fresh upper/work for the new mount.
-            std::fs::remove_dir_all(&upper).ok();
-            std::fs::remove_dir_all(&work).ok();
-            std::fs::create_dir_all(&upper)?;
-            std::fs::create_dir_all(&work)?;
-            sudo_mount_overlay(&lower, &upper, &work, &merged)?;
+            // Checkpoint: unmount and remount with a new upper/work pair while
+            // turning the previous upper into an additional lower layer.
+            sudo_umount(&merged).context("unmount for initial checkpoint")?;
+            completed_layers.push(current_upper.clone());
+
+            let next_idx = completed_layers.len();
+            current_upper = root.path().join(format!("upper-{next_idx}"));
+            current_work = root.path().join(format!("work-{next_idx}"));
+            std::fs::create_dir_all(&current_upper)?;
+            std::fs::create_dir_all(&current_work)?;
+
+            sudo_mount_overlay_layers(
+                &lower,
+                &completed_layers,
+                &current_upper,
+                &current_work,
+                &merged,
+            )?;
         }
 
         let cold = workload.cache_mode() == CacheMode::DropPageCache;
@@ -90,20 +158,58 @@ impl Backend for Overlayfs {
             // For cold: unmount overlay so kernel state is flushed, drop
             // caches, then remount. The subprocess waits for GO after READY.
             let sp = backend::spawn_and_await_ready(&mut cmd, true)?;
-            sudo_umount(&merged);
+            sudo_umount(&merged).context("unmount for cold cache flush")?;
             crate::workloads::drop_page_cache()?;
-            sudo_mount_overlay(&lower, &upper, &work, &merged)?;
-            sp.go()?
+            sudo_mount_overlay_layers(
+                &lower,
+                &completed_layers,
+                &current_upper,
+                &current_work,
+                &merged,
+            )?;
+            let mut cp = OverlayCheckpointController {
+                root: root.path().to_path_buf(),
+                lower: lower.clone(),
+                merged: merged.clone(),
+                work_dir: workload.work_dir().to_string(),
+                layer_idx: completed_layers.len(),
+            };
+            let r = sp.go_with_checkpoint(&mut cp)?;
+            current_upper = root.path().join(format!("upper-{}", cp.layer_idx));
+            r
         } else {
-            backend::run_workload_subprocess(&mut cmd, false)?
+            let sp = backend::spawn_and_await_ready(&mut cmd, false)?;
+            let mut cp = OverlayCheckpointController {
+                root: root.path().to_path_buf(),
+                lower: lower.clone(),
+                merged: merged.clone(),
+                work_dir: workload.work_dir().to_string(),
+                layer_idx: completed_layers.len(),
+            };
+            let r = sp.go_with_checkpoint(&mut cp)?;
+            current_upper = root.path().join(format!("upper-{}", cp.layer_idx));
+            r
         };
 
         // Unmount before commit.
-        sudo_umount(&merged);
+        sudo_umount_best_effort(&merged);
 
-        // Commit: replay upper layer onto lower.
+        // Commit: replay staged layers oldest→newest into lower.
         let t_commit = Instant::now();
-        commit_upper_to_lower(&upper, &lower)?;
+        let final_idx = current_upper
+            .file_name()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.strip_prefix("upper-"))
+            .and_then(|s| s.parse::<usize>().ok())
+            .context("deriving final overlay layer index")?;
+        completed_layers = (0..final_idx)
+            .map(|i| root.path().join(format!("upper-{i}")))
+            .collect();
+        current_upper = root.path().join(format!("upper-{final_idx}"));
+        for layer in &completed_layers {
+            commit_upper_to_lower(layer, &lower)?;
+        }
+        commit_upper_to_lower(&current_upper, &lower)?;
         let commit_ms = t_commit.elapsed().as_millis() as u64;
 
         let total_ms = init_ms + result.staging_ms + commit_ms;
@@ -122,20 +228,28 @@ impl Backend for Overlayfs {
     }
 }
 
-fn sudo_mount_overlay(
-    lower: &std::path::Path,
+fn sudo_mount_overlay_layers(
+    lower_base: &std::path::Path,
+    completed_layers: &[PathBuf],
     upper: &std::path::Path,
     work: &std::path::Path,
     merged: &std::path::Path,
 ) -> Result<()> {
+    let mut lowers = completed_layers
+        .iter()
+        .rev()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>();
+    lowers.push(lower_base.display().to_string());
+
     let opts = format!(
         "lowerdir={},upperdir={},workdir={}",
-        lower.display(),
+        lowers.join(":"),
         upper.display(),
         work.display()
     );
     let out = Command::new("sudo")
-        .args(["mount", "-t", "overlay", "overlay", "-o"])
+        .args(["-n", "mount", "-t", "overlay", "overlay", "-o"])
         .arg(&opts)
         .arg(merged)
         .output()
@@ -149,9 +263,25 @@ fn sudo_mount_overlay(
     Ok(())
 }
 
-fn sudo_umount(merged: &std::path::Path) {
+fn sudo_umount(merged: &std::path::Path) -> Result<()> {
+    let out = Command::new("sudo")
+        .args(["-n", "umount"])
+        .arg(merged)
+        .output()
+        .context("unmount overlayfs")?;
+    if !out.status.success() {
+        bail!(
+            "umount overlayfs failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// Best-effort unmount for cleanup paths (ignores errors).
+fn sudo_umount_best_effort(merged: &std::path::Path) {
     let _ = Command::new("sudo")
-        .args(["umount"])
+        .args(["-n", "umount"])
         .arg(merged)
         .stdout(Stdio::null())
         .stderr(Stdio::null())

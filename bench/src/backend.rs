@@ -3,8 +3,9 @@
 use crate::workload::{CheckpointLatencySeries, IterResult, OpResult, Workload};
 use anyhow::{bail, Context, Result};
 use std::io::BufRead;
+use std::io::Write;
 use std::path::Path;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::Instant;
 
 /// Marker printed by `exec-workload` to stdout right before the workload runs.
@@ -13,6 +14,15 @@ pub const READY_MARKER: &str = "AGFS_BENCH_READY";
 /// Marker printed by Op workloads to stdout after the workload finishes,
 /// followed by a JSON line containing the `OpResult`.
 pub const RESULTS_MARKER: &str = "AGFS_BENCH_RESULTS";
+
+/// Marker printed by workloads that need a backend-managed checkpoint.
+/// The next line is a JSON object with `step`.
+pub const CHECKPOINT_MARKER: &str = "AGFS_BENCH_CHECKPOINT";
+
+#[derive(serde::Deserialize)]
+struct CheckpointRequest {
+    step: usize,
+}
 
 /// A backend defines how writes are staged and committed.
 ///
@@ -63,6 +73,27 @@ pub struct SubprocessResult {
     pub checkpoint_series: Option<CheckpointLatencySeries>,
 }
 
+pub trait CheckpointController {
+    fn checkpoint(&mut self, step: usize) -> Result<CheckpointOutcome>;
+}
+
+pub enum CheckpointOutcome {
+    Continue {
+        checkpoint_ms: u64,
+        /// If set, the workload subprocess should chdir to this path.
+        next_dest: Option<std::path::PathBuf>,
+    },
+    Stop,
+}
+
+pub struct NoopCheckpointController;
+
+impl CheckpointController for NoopCheckpointController {
+    fn checkpoint(&mut self, _step: usize) -> Result<CheckpointOutcome> {
+        Ok(CheckpointOutcome::Continue { checkpoint_ms: 0, next_dest: None })
+    }
+}
+
 /// Build the base `Command` for `exec-workload`. Backends that run the
 /// workload directly (native, agfs, overlayfs, branchfs) use this as-is.
 pub fn exec_workload_cmd(
@@ -98,9 +129,11 @@ pub fn exec_workload_cmd(
 /// parent to send GO on stdin.
 pub struct PausedSubprocess {
     child: Child,
+    stdin: ChildStdin,
     reader: std::io::BufReader<ChildStdout>,
     pub startup_ms: u64,
     t0: Instant,
+    wait_after_ready: bool,
 }
 
 /// Spawn a workload subprocess and wait for it to print the READY marker.
@@ -109,14 +142,16 @@ pub struct PausedSubprocess {
 /// (cache drops, unmount/remount) before calling [`PausedSubprocess::go`].
 pub fn spawn_and_await_ready(cmd: &mut Command, needs_signal: bool) -> Result<PausedSubprocess> {
     cmd.stdout(Stdio::piped());
-    if needs_signal {
-        cmd.stdin(Stdio::piped());
-    }
+    cmd.stdin(Stdio::piped());
 
     let t0 = Instant::now();
     let mut child = cmd.spawn().context("spawning workload subprocess")?;
 
     let stdout = child.stdout.take().unwrap();
+    let stdin = child
+        .stdin
+        .take()
+        .context("capturing workload subprocess stdin")?;
     let mut reader = std::io::BufReader::new(stdout);
 
     let mut got_ready = false;
@@ -144,23 +179,33 @@ pub fn spawn_and_await_ready(cmd: &mut Command, needs_signal: bool) -> Result<Pa
     let startup_ms = t0.elapsed().as_millis() as u64;
     Ok(PausedSubprocess {
         child,
+        stdin,
         reader,
         startup_ms,
         t0,
+        wait_after_ready: needs_signal,
     })
 }
 
 impl PausedSubprocess {
     /// Signal the subprocess to proceed, then wait for exit and parse results.
-    pub fn go(mut self) -> Result<SubprocessResult> {
-        if let Some(mut stdin) = self.child.stdin.take() {
-            use std::io::Write;
-            writeln!(stdin, "GO").context("signalling subprocess to proceed")?;
+    pub fn go(self) -> Result<SubprocessResult> {
+        let mut noop = NoopCheckpointController;
+        self.go_with_checkpoint(&mut noop)
+    }
+
+    pub fn go_with_checkpoint(
+        mut self,
+        cp: &mut dyn CheckpointController,
+    ) -> Result<SubprocessResult> {
+        if self.wait_after_ready {
+            writeln!(self.stdin, "GO").context("signalling subprocess to proceed")?;
         }
 
         let mut op_result = None;
         let mut checkpoint_series = None;
         let mut found_results = false;
+        let mut expect_checkpoint_json = false;
         let mut line_buf = String::new();
         loop {
             line_buf.clear();
@@ -172,6 +217,36 @@ impl PausedSubprocess {
                 break;
             }
             let trimmed = line_buf.trim();
+            if expect_checkpoint_json {
+                let req: CheckpointRequest = serde_json::from_str(trimmed)
+                    .with_context(|| format!("parsing checkpoint request JSON: {trimmed}"))?;
+                let response = cp.checkpoint(req.step)?;
+                writeln!(self.stdin, "{}", RESULTS_MARKER)
+                    .context("writing checkpoint response marker")?;
+                match response {
+                    CheckpointOutcome::Continue { checkpoint_ms, next_dest } => {
+                        let dest_json = match &next_dest {
+                            Some(p) => format!("\"{}\"", p.display()),
+                            None => "null".to_string(),
+                        };
+                        writeln!(
+                            self.stdin,
+                            "{{\"checkpoint_ms\":{checkpoint_ms},\"stop\":false,\"next_dest\":{dest_json}}}"
+                        )
+                        .context("writing checkpoint response json")?;
+                    }
+                    CheckpointOutcome::Stop => {
+                        writeln!(self.stdin, "{{\"checkpoint_ms\":0,\"stop\":true}}")
+                            .context("writing checkpoint response json")?;
+                    }
+                }
+                expect_checkpoint_json = false;
+                continue;
+            }
+            if trimmed == CHECKPOINT_MARKER {
+                expect_checkpoint_json = true;
+                continue;
+            }
             if trimmed == RESULTS_MARKER {
                 found_results = true;
                 continue;

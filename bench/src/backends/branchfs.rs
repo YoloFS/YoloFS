@@ -1,4 +1,4 @@
-use crate::backend::{self, Backend};
+use crate::backend::{self, Backend, CheckpointController, CheckpointOutcome};
 use crate::workload::{CacheMode, IterResult, Workload};
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
@@ -6,6 +6,48 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 pub struct BranchFs;
+
+struct BranchFsCheckpointController {
+    mnt_dir: PathBuf,
+    storage_dir: PathBuf,
+    current_branch: String,
+    work_dir: String,
+}
+
+impl CheckpointController for BranchFsCheckpointController {
+    fn checkpoint(&mut self, step: usize) -> Result<CheckpointOutcome> {
+        let t = Instant::now();
+        let next = format!("bench-step-{step:03}");
+        let out = Command::new("branchfs")
+            .arg("create")
+            .arg(&next)
+            .arg(&self.mnt_dir)
+            .arg("--parent")
+            .arg(&self.current_branch)
+            .arg("--storage")
+            .arg(&self.storage_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .context("running branchfs create for checkpoint")?;
+        if !out.status.success() {
+            bail!(
+                "branchfs checkpoint create failed at step {step}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        self.current_branch = next;
+        // After creating a new branch, the subprocess's cwd becomes stale
+        // (FUSE switches the active branch). Redirect to the same work_dir
+        // under the mount so the subprocess re-enters the live branch.
+        let new_dest = self.mnt_dir.join(&self.work_dir);
+        Ok(CheckpointOutcome::Continue {
+            checkpoint_ms: t.elapsed().as_millis() as u64,
+            next_dest: Some(new_dest),
+        })
+    }
+}
 
 impl Backend for BranchFs {
     fn name(&self) -> &'static str {
@@ -155,7 +197,30 @@ impl Backend for BranchFs {
         } else {
             Stdio::piped()
         });
-        let sub = match backend::run_workload_subprocess(&mut cmd, cold) {
+        let sub = match backend::spawn_and_await_ready(&mut cmd, cold) {
+            Ok(sp) => {
+                if cold {
+                    crate::workloads::drop_page_cache()
+                        .context("dropping page cache after subprocess READY")?;
+                }
+                let mut cp = BranchFsCheckpointController {
+                    mnt_dir: mnt_dir.clone(),
+                    storage_dir: storage_dir.clone(),
+                    current_branch: if workload.needs_checkpoint() {
+                        "bench-chkpt".to_string()
+                    } else {
+                        "bench".to_string()
+                    },
+                    work_dir: workload.work_dir().to_string(),
+                };
+                sp.go_with_checkpoint(&mut cp)
+            }
+            Err(e) => {
+                unmount(&mnt_dir, &storage_dir);
+                return Err(e.context("workload failed under branchfs"));
+            }
+        };
+        let sub = match sub {
             Ok(r) => r,
             Err(e) => {
                 unmount(&mnt_dir, &storage_dir);

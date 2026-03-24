@@ -441,14 +441,25 @@ is incremented.
 The `overlayfs` backend uses Linux overlayfs directly, without any wrapper
 tool. Each iteration:
 
-1. Creates a fresh tempdir with `lower/`, `upper/`, `work/`, `merged/`.
-2. Enters a user + mount namespace via `unshare(1)`.
-3. Mounts overlayfs (`mount -t overlay … -o userxattr`).
-4. Runs the workload inside the merged directory.
-5. Commits by replaying the upper dir onto lower: regular files are renamed
+1. Creates a fresh tempdir with `lower/`, `upper-0/`, `work-0/`, `merged/`.
+2. Mounts overlayfs via `sudo mount -t overlay`.
+3. Runs the workload inside the merged directory.
+4. Commits by replaying the upper dir onto lower: regular files are renamed
    (O(1) on the same filesystem), whiteout devices (char 0,0) trigger
    deletions, opaque directories (`user.overlay.opaque` xattr) replace their
    lower counterparts, and symlinks are recreated.
+
+For checkpoint workloads, the backend does not flatten staged changes into
+base at checkpoint creation. Instead it remounts with multiple lower layers:
+the current upper is turned into an additional read-only lower layer and a
+fresh upper/work pair is mounted on top. Final commit flattens layers in
+creation order (oldest checkpoint layer first, newest layer last) so later
+layers correctly override earlier ones.
+
+For `checkpoint-scalability`, overlayfs runs in best-effort mode: if remounting
+with additional lower layers fails (for example due to mount option/lowerdir
+limits), the workload stops adding points and emits the partial series
+collected so far.
 
 This gives a clean measurement of overlayfs overhead without shell noise.
 

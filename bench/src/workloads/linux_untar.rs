@@ -4,6 +4,35 @@ use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// Compute a relative path from `from` (a directory) to `to`.
+fn relative_path(from: &Path, to: &Path) -> PathBuf {
+    // Canonicalize both to get absolute paths.
+    let from = std::fs::canonicalize(from).unwrap_or_else(|_| from.to_path_buf());
+    let to = std::fs::canonicalize(to).unwrap_or_else(|_| to.to_path_buf());
+
+    let mut from_parts = from.components().peekable();
+    let mut to_parts = to.components().peekable();
+
+    // Skip common prefix.
+    while let (Some(a), Some(b)) = (from_parts.peek(), to_parts.peek()) {
+        if a != b {
+            break;
+        }
+        from_parts.next();
+        to_parts.next();
+    }
+
+    // Go up for remaining `from` components, then down for remaining `to` components.
+    let mut rel = PathBuf::new();
+    for _ in from_parts {
+        rel.push("..");
+    }
+    for part in to_parts {
+        rel.push(part);
+    }
+    rel
+}
+
 const LINUX_TARBALL_URL: &str = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.1.tar.xz";
 const LINUX_TARBALL_FILE: &str = "linux-6.12.1.tar.xz";
 
@@ -87,11 +116,16 @@ impl Workload for LinuxUntar {
 
     fn run(&self, dest: &Path, verbose: bool) -> Result<()> {
         std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
+        std::env::set_current_dir(dest)
+            .with_context(|| format!("chdir to {}", dest.display()))?;
+
+        // Use a relative path to the tarball so it resolves correctly
+        // inside an agfs exec chroot.
+        let tarball_rel = relative_path(dest, &self.tarball_path);
+
         let status = Command::new("tar")
             .arg("-xJf")
-            .arg(&self.tarball_path)
-            .arg("-C")
-            .arg(dest)
+            .arg(&tarball_rel)
             .arg("--strip-components=1")
             .stdout(if verbose {
                 Stdio::inherit()
@@ -104,7 +138,7 @@ impl Workload for LinuxUntar {
                 Stdio::null()
             })
             .status()
-            .with_context(|| format!("running tar extract from {}", self.tarball_path.display()))?;
+            .with_context(|| format!("running tar extract from {}", tarball_rel.display()))?;
         if !status.success() {
             bail!("linux tar extraction failed")
         }

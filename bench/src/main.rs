@@ -1382,6 +1382,9 @@ fn main() -> Result<()> {
     let out_dir = results_dir(&env, cli.timestamped_results);
     let json_path = out_dir.join("results.json");
 
+    // Clean up leftover temp directories from previous crashed runs.
+    cleanup_stale_tempdirs();
+
     for workload in &selected_workloads {
         eprintln!("Running workload: {}", workload.name());
         workload.ensure_fixture()?;
@@ -1467,6 +1470,71 @@ fn ensure_release_build() -> Result<()> {
         bail!("agfs-bench must be built with --release; debug builds are refused");
     }
     Ok(())
+}
+
+// ── cleanup ─────────────────────────────────────────────────────────────────
+
+/// Remove leftover temp directories from crashed benchmark runs.
+/// Reads /proc/mounts to find and unmount stale mounts first.
+fn cleanup_stale_tempdirs() {
+    let cache = dirs_next::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("agfs-bench");
+    if !cache.is_dir() {
+        return;
+    }
+    // Only clean up temp session dirs (agfs-bench-*), not fixture dirs (e.g. linux-tar).
+    let entries: Vec<_> = match fs::read_dir(&cache) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("agfs-bench-")
+            })
+            .collect(),
+        Err(_) => return,
+    };
+    if entries.is_empty() {
+        return;
+    }
+    eprintln!("Cleaning up {} leftover temp dir(s)…", entries.len());
+
+    // First pass: unmount all mount points under the cache dir.
+    let cache_str = cache.to_string_lossy();
+    if let Ok(mounts) = fs::read_to_string("/proc/mounts") {
+        // Collect and sort by path length descending (unmount deepest first).
+        let mut mount_points: Vec<&str> = mounts
+            .lines()
+            .filter_map(|line| {
+                let mnt = line.split_whitespace().nth(1)?;
+                mnt.starts_with(cache_str.as_ref()).then_some(mnt)
+            })
+            .collect();
+        mount_points.sort_by(|a, b| b.len().cmp(&a.len()));
+
+        for mnt in &mount_points {
+            let _ = Command::new("sudo")
+                .args(["-n", "umount"])
+                .arg(mnt)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+
+    // Second pass: remove directories.
+    for entry in &entries {
+        let path = entry.path();
+        if fs::remove_dir_all(&path).is_err() {
+            let _ = Command::new("sudo")
+                .args(["-n", "rm", "-rf"])
+                .arg(&path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
 }
 
 // ── diff-pdf ────────────────────────────────────────────────────────────────

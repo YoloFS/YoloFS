@@ -1,14 +1,13 @@
 use crate::workload::{CheckpointLatencyPoint, CheckpointLatencySeries, Workload, WorkloadKind};
 use agfs::config::Perm;
-use anyhow::{Context, Result, bail};
-use std::path::Path;
-use std::process::Command;
+use anyhow::{bail, Context, Result};
+use std::io::{BufRead as _, Write as _};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const DEFAULT_CHECKPOINT_STEPS: usize = 100;
 const OPS_PER_STEP: usize = 10;
 const READDIR_PER_STEP: usize = 1;
-const NET_GROWTH_PER_STEP: usize = 12;
 const INITIAL_FILE_COUNT: usize = 128;
 const OVERWRITE_BYTES: usize = 1024;
 
@@ -17,9 +16,12 @@ pub struct CheckpointScalability;
 pub fn details() -> crate::workloads::WorkloadDetails {
     crate::workloads::workload_details(
         "Session microbenchmark for checkpoint scalability across growing checkpoint depth.",
-        "Starts with 128 files and, per checkpoint, runs stat/readdir/unlink/read/create/overwrite batches with net-positive file growth.",
+        "Starts with 128 files in a fixed-size directory (no growth).",
         Some(
-            "At each checkpoint index k: run operation batches (readdir=1 op, others=10 ops), record per-op avg latency, then create a checkpoint. Set AGFS_BENCH_CHECKPOINT_STEPS to override checkpoint depth (default: 100).",
+            "Per checkpoint step: stat 10, readdir 1, read 10, overwrite 10, \
+             unlink 10, create 10 (replacing the unlinked files). \
+             Directory stays at 128 files throughout. \
+             Set AGFS_BENCH_CHECKPOINT_STEPS to override depth (default: 100).",
         ),
         "Runs checkpoint-scalability loop and emits per-checkpoint latency series for multiline plotting.",
         file!(),
@@ -36,7 +38,7 @@ impl Workload for CheckpointScalability {
     }
 
     fn description(&self) -> &'static str {
-        "checkpoint-depth scalability (multiline per-op latency vs checkpoint)"
+        "Checkpoint-depth scalability: per-op latency vs checkpoint count (fixed 128-file directory)"
     }
 
     fn work_dir(&self) -> &'static str {
@@ -53,18 +55,24 @@ impl Workload for CheckpointScalability {
 
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
         let checkpoint_steps = checkpoint_steps()?;
-        std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
+        let dest = normalize_dest(dest);
+        std::fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
+        std::env::set_current_dir(&dest)
+            .with_context(|| format!("chdir to {}", dest.display()))?;
+
+        // From here, all paths are relative to dest (cwd).
+        let root = Path::new(".");
 
         let mut file_ids: Vec<usize> = Vec::new();
         for i in 0..INITIAL_FILE_COUNT {
-            let p = file_path(dest, i);
+            let p = file_path(root, i);
             std::fs::write(&p, seed_bytes(i))
                 .with_context(|| format!("creating initial fixture {}", p.display()))?;
             file_ids.push(i);
         }
         let mut next_id = INITIAL_FILE_COUNT;
 
-        let sub = dest.join("sub");
+        let sub = root.join("sub");
         std::fs::create_dir_all(&sub).with_context(|| format!("creating {}", sub.display()))?;
         for i in 0..16 {
             let p = sub.join(format!("d{i:03}.dat"));
@@ -73,23 +81,40 @@ impl Workload for CheckpointScalability {
         }
 
         let mut points = Vec::with_capacity(checkpoint_steps);
+        eprintln!(
+            "  checkpoint-scalability: {INITIAL_FILE_COUNT} files, \
+             {OPS_PER_STEP} ops/step, {checkpoint_steps} steps"
+        );
+
         for step in 1..=checkpoint_steps {
             if file_ids.len() < OPS_PER_STEP {
-                bail!("not enough files for checkpoint step {step}");
+                bail!(
+                    "not enough files ({}) for checkpoint step {step}",
+                    file_ids.len()
+                );
             }
 
-            let stat_ids = pick_ids(&file_ids, step * 31, OPS_PER_STEP);
-            let read_ids = pick_ids(&file_ids, step * 37, OPS_PER_STEP);
-            let overwrite_ids = pick_ids(&file_ids, step * 41, OPS_PER_STEP);
+            // Pick non-overlapping subsets for unlink vs other ops.
             let unlink_ids = pick_ids(&file_ids, step * 43, OPS_PER_STEP);
+            let remaining: Vec<usize> = file_ids
+                .iter()
+                .copied()
+                .filter(|id| !unlink_ids.contains(id))
+                .collect();
+            let stat_ids = pick_ids(&remaining, step * 31, OPS_PER_STEP);
+            let read_ids = pick_ids(&remaining, step * 37, OPS_PER_STEP);
+            let overwrite_ids = pick_ids(&remaining, step * 41, OPS_PER_STEP);
 
+            // stat
             let stat_avg = avg_us(OPS_PER_STEP, |i| {
-                let p = file_path(dest, stat_ids[i]);
+                let p = file_path(root, stat_ids[i]);
                 let _ = std::fs::metadata(&p).with_context(|| format!("stat {}", p.display()))?;
                 Ok(())
             })?;
 
+            // readdir
             let readdir_avg = avg_us(READDIR_PER_STEP, |_| {
+                let sub = root.join("sub");
                 let mut n = 0usize;
                 for ent in
                     std::fs::read_dir(&sub).with_context(|| format!("readdir {}", sub.display()))?
@@ -103,34 +128,37 @@ impl Workload for CheckpointScalability {
                 Ok(())
             })?;
 
+            // read
             let read_avg = avg_us(OPS_PER_STEP, |i| {
-                let p = file_path(dest, read_ids[i]);
+                let p = file_path(root, read_ids[i]);
                 let _ = std::fs::read(&p).with_context(|| format!("read {}", p.display()))?;
                 Ok(())
             })?;
 
+            // overwrite
             let overwrite_avg = avg_us(OPS_PER_STEP, |i| {
-                let p = file_path(dest, overwrite_ids[i]);
+                let p = file_path(root, overwrite_ids[i]);
                 let mut data = vec![0u8; OVERWRITE_BYTES];
                 data[0] = (step as u8).wrapping_add(i as u8);
                 std::fs::write(&p, &data).with_context(|| format!("overwrite {}", p.display()))?;
                 Ok(())
             })?;
 
+            // unlink
             let unlink_avg = avg_us(OPS_PER_STEP, |i| {
                 let id = unlink_ids[i];
-                let p = file_path(dest, id);
+                let p = file_path(root, id);
                 std::fs::remove_file(&p).with_context(|| format!("unlink {}", p.display()))?;
                 Ok(())
             })?;
             file_ids.retain(|id| !unlink_ids.contains(id));
 
-            let create_count = OPS_PER_STEP + NET_GROWTH_PER_STEP;
-            let mut created = Vec::with_capacity(create_count);
-            let create_avg = avg_us(create_count, |_| {
+            // create (replace the unlinked files — keeps directory size constant)
+            let mut created = Vec::with_capacity(OPS_PER_STEP);
+            let create_avg = avg_us(OPS_PER_STEP, |_| {
                 let id = next_id;
                 next_id += 1;
-                let p = file_path(dest, id);
+                let p = file_path(root, id);
                 std::fs::write(&p, seed_bytes(id))
                     .with_context(|| format!("create {}", p.display()))?;
                 created.push(id);
@@ -138,7 +166,25 @@ impl Workload for CheckpointScalability {
             })?;
             file_ids.extend(created);
 
-            let checkpoint_ms = run_checkpoint_if_available(dest, step)?;
+            // checkpoint
+            let checkpoint_ms = match emit_checkpoint_request(step)? {
+                Some(ms) => ms,
+                None => {
+                    eprintln!("  step {step}/{checkpoint_steps}: backend stopped");
+                    break;
+                }
+            };
+
+            if step % 10 == 0 || step == 1 {
+                eprintln!(
+                    "  step {step}/{checkpoint_steps}: \
+                     files={} chkpt={checkpoint_ms}ms \
+                     stat={stat_avg:.0}µs read={read_avg:.0}µs \
+                     create={create_avg:.0}µs overwrite={overwrite_avg:.0}µs \
+                     unlink={unlink_avg:.0}µs",
+                    file_ids.len(),
+                );
+            }
 
             points.push(CheckpointLatencyPoint {
                 checkpoint: step as u32,
@@ -153,11 +199,16 @@ impl Workload for CheckpointScalability {
             });
         }
 
+        eprintln!(
+            "  done: {} checkpoints recorded, {} files",
+            points.len(),
+            file_ids.len()
+        );
+
         let series = CheckpointLatencySeries { points };
         let json = serde_json::to_string(&series).context("serializing checkpoint series")?;
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
-        use std::io::Write as _;
         writeln!(out, "{}", crate::backend::RESULTS_MARKER)?;
         writeln!(out, "{json}")?;
         out.flush()?;
@@ -214,36 +265,67 @@ fn pick_ids(ids: &[usize], seed: usize, count: usize) -> Vec<usize> {
     out
 }
 
-fn run_checkpoint_if_available(dest: &Path, step: usize) -> Result<u64> {
-    let Some(session_dir) = infer_agfs_session_dir(dest) else {
-        return Ok(0);
-    };
+fn emit_checkpoint_request(step: usize) -> Result<Option<u64>> {
+    // Save cwd and move to / so the backend can unmount+remount freely.
+    let saved_cwd = std::env::current_dir().context("getting cwd before checkpoint")?;
+    std::env::set_current_dir("/").context("chdir to / before checkpoint")?;
 
-    let t_chk = Instant::now();
-    let chk = Command::new("agfs")
-        .arg("checkpoint")
-        .arg(format!("bench-step-{step:03}"))
-        .env("AGFS_SESSION", &session_dir)
-        .current_dir(dest)
-        .output()
-        .context("running agfs checkpoint")?;
-    if !chk.status.success() {
+    println!("{}", crate::backend::CHECKPOINT_MARKER);
+    println!("{{\"step\":{step}}}");
+    std::io::stdout()
+        .flush()
+        .context("flushing checkpoint request")?;
+
+    let stdin = std::io::stdin();
+    let mut lock = stdin.lock();
+    let mut line = String::new();
+
+    line.clear();
+    let n = lock
+        .read_line(&mut line)
+        .context("reading checkpoint response marker")?;
+    if n == 0 || line.trim() != crate::backend::RESULTS_MARKER {
         bail!(
-            "agfs checkpoint failed at step {step}: {}",
-            String::from_utf8_lossy(&chk.stderr)
+            "expected {} after checkpoint request",
+            crate::backend::RESULTS_MARKER
         );
     }
-    Ok(t_chk.elapsed().as_millis() as u64)
+
+    line.clear();
+    let n = lock
+        .read_line(&mut line)
+        .context("reading checkpoint response json")?;
+    if n == 0 {
+        bail!("missing checkpoint response JSON");
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Resp {
+        checkpoint_ms: u64,
+        stop: bool,
+        #[serde(default)]
+        next_dest: Option<String>,
+    }
+    let resp: Resp = serde_json::from_str(line.trim())
+        .with_context(|| format!("parsing checkpoint response: {}", line.trim()))?;
+    if resp.stop {
+        return Ok(None);
+    }
+    // chdir to the backend-provided path, or back to the saved cwd.
+    let target = resp
+        .next_dest
+        .as_deref()
+        .map(Path::new)
+        .unwrap_or(&saved_cwd);
+    std::env::set_current_dir(target)
+        .with_context(|| format!("chdir to {} after checkpoint", target.display()))?;
+    Ok(Some(resp.checkpoint_ms))
 }
 
-fn infer_agfs_session_dir(dest: &Path) -> Option<std::path::PathBuf> {
-    let s = dest.to_string_lossy();
-    let marker = "/.agfs/mnt/";
-    let pos = s.find(marker)?;
-    let root = &s[..pos];
-    if root.is_empty() {
-        return None;
+fn normalize_dest(path: &Path) -> PathBuf {
+    if path.file_name().is_some_and(|n| n == ".") {
+        path.parent().unwrap_or(path).to_path_buf()
+    } else {
+        path.to_path_buf()
     }
-    let session = std::path::PathBuf::from(root).join(".agfs");
-    session.exists().then_some(session)
 }
