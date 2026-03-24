@@ -1,8 +1,9 @@
 # Staging-Commit Layer
 
-The staging layer intercepts all writes and redirects them to a flat inode
-store (`.agfs/inodes/`). Changes are invisible to the lower filesystem
-until an explicit `commit`. An `abort` discards them instantly.
+The staging layer intercepts all writes and redirects them to a sharded
+inode store (`.agfs/inodes/<shard>/<ino>`). Changes are invisible to the
+lower filesystem until an explicit `commit`. An `abort` discards them
+instantly.
 
 ## Design Invariants
 
@@ -36,7 +37,7 @@ the kernel, not merely assumed.
 | Term                  | Meaning |
 | --------------------- | ------- |
 | **base**              | Always `/` — the entire root filesystem, read-only from AgFS's perspective until commit. |
-| **inode store**       | `.agfs/inodes/` — a flat store of inodes. Each entry is identified by a numeric ino (`inodes/1`, `inodes/2`, ...). Regular files and symlinks are stored as inodes; directories created by `mkdir` are empty directory inodes (children live in their own entries). No mirrored directory tree. |
+| **inode store**       | `.agfs/inodes/` — a sharded store of inodes. Each entry lives under a shard directory: `inodes/<ino/1000>/<ino>` (e.g., `inodes/0/1`, `inodes/0/2`, ..., `inodes/1/1000`). Shards keep each directory small (~1000 entries) for fast ext4 htree lookups. Regular files and symlinks are stored as inodes; directories created by `mkdir` are empty directory inodes (children live in their own entries). No mirrored directory tree. |
 | **staged dentry list** | Per-directory set of pinned staged VFS dentries, identified by `pinned == true` in the VFS `d_children` list. Each pinned dentry carries overlay state in its `agfs_dentry_info`. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
 | **journal**           | `.agfs/journal` — append-only log of all mutations. Written by the kernel, read by the CLI for commit/abort/status/diff. The kernel never reads it back. |
 | **mount point**       | `.agfs/mnt/` — the agent's view of the filesystem. Shows the merged base + staged changes with permission gating applied. |
@@ -58,9 +59,13 @@ point separately (see [permissions.md](permissions.md)).
 agfs.toml                       # config file in CWD (mount options + rules)
 .agfs/                          # created by `agfs` in CWD
 ├── journal                      # append-only journal (all ops)
-├── inodes/                      # flat inode store (inodes/1, inodes/2, ...)
-│   ├── 1                        # inode: content of some file
-│   ├── 2                        # inode: content of another file
+├── inodes/                      # sharded inode store
+│   ├── 0/                       # shard 0 (inodes 0–999)
+│   │   ├── 1                    # inode: content of some file
+│   │   ├── 2                    # inode: content of another file
+│   │   └── ...
+│   ├── 1/                       # shard 1 (inodes 1000–1999)
+│   │   └── ...
 │   └── ...
 └── mnt/                         # mount point -- agent works here
     └── .ctl                     #   synthetic control file for ioctls
