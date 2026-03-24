@@ -540,7 +540,10 @@ fn readdir_small_buf_rename_delete_create() {
         expected.len()
     );
     let got: BTreeSet<String> = names.into_iter().collect();
-    assert_eq!(got, expected, "rename/delete/create small-buf readdir mismatch");
+    assert_eq!(
+        got, expected,
+        "rename/delete/create small-buf readdir mismatch"
+    );
 }
 
 /// Staged-only directory: no base entries, all dirents.
