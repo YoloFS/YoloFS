@@ -341,11 +341,7 @@ fn commit_new_file_with_chmod() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("script.sh"), "#!/bin/sh\necho hi\n").expect("write");
-    fs::set_permissions(
-        s.mnt_path("script.sh"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .expect("chmod");
+    fs::set_permissions(s.mnt_path("script.sh"), fs::Permissions::from_mode(0o755)).expect("chmod");
 
     // Verify mode is visible through the mount.
     let mnt_meta = fs::metadata(s.mnt_path("script.sh")).unwrap();
@@ -375,11 +371,8 @@ fn commit_new_file_with_restrictive_chmod() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("secret.txt"), "secret\n").expect("write");
-    fs::set_permissions(
-        s.mnt_path("secret.txt"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .expect("chmod");
+    fs::set_permissions(s.mnt_path("secret.txt"), fs::Permissions::from_mode(0o600))
+        .expect("chmod");
 
     s.cli(&["commit"]).expect("commit");
 
@@ -402,11 +395,7 @@ fn commit_chmod_existing_file() {
     // hello.txt exists in base with default mode.
     // Modify content (triggers COW) and change mode.
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    fs::set_permissions(
-        s.mnt_path("hello.txt"),
-        fs::Permissions::from_mode(0o700),
-    )
-    .expect("chmod");
+    fs::set_permissions(s.mnt_path("hello.txt"), fs::Permissions::from_mode(0o700)).expect("chmod");
 
     let mnt_meta = fs::metadata(s.mnt_path("hello.txt")).unwrap();
     assert_eq!(
@@ -489,11 +478,8 @@ fn commit_new_dir_with_chmod() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("restricted")).expect("mkdir");
-    fs::set_permissions(
-        s.mnt_path("restricted"),
-        fs::Permissions::from_mode(0o700),
-    )
-    .expect("chmod dir");
+    fs::set_permissions(s.mnt_path("restricted"), fs::Permissions::from_mode(0o700))
+        .expect("chmod dir");
 
     let mnt_meta = fs::metadata(s.mnt_path("restricted")).unwrap();
     assert_eq!(
