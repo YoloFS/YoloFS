@@ -292,6 +292,12 @@ static loff_t agfs_llseek(struct file *file, loff_t offset, int whence)
 	if (!lower_file)
 		return -EIO;
 
+	/* Sync lower file position before seeking — write_iter updates
+	 * iocb->ki_pos (which the VFS copies to file->f_pos) but does
+	 * not update lower_file->f_pos directly.  Without this,
+	 * SEEK_CUR after a write uses a stale lower position. */
+	lower_file->f_pos = file->f_pos;
+
 	ret = vfs_llseek(lower_file, offset, whence);
 	if (ret >= 0)
 		file->f_pos = lower_file->f_pos;

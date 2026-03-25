@@ -11,5 +11,6 @@ mod test_read;
 mod test_readdir;
 mod test_rename;
 mod test_rmdir;
+mod test_seek;
 mod test_symlink;
 mod test_write;
