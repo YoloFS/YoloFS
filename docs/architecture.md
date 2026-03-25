@@ -100,7 +100,7 @@ for interactive approval.
 **On-disk format**: OverlayFS requires filesystem support for whiteouts
 (`RENAME_WHITEOUT`, ext4/xfs). AgFS uses a flat inode store + append-only
 journal, working on any lower FS. The journal uses typed record tags
-(`A`/`D`/`R` for mutations, `M`/`J` for marks/jumps) so
+(`S`/`D`/`R` for mutations, `M`/`J` for marks/jumps) so
 each record is self-describing. All renames — staged or redirect — emit a
 single R record carrying both source and destination paths.
 

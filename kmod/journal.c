@@ -6,7 +6,7 @@
  * commit/abort/status/diff. The kernel never reads it back.
  *
  * Record format (NUL-separated fields, newline-terminated):
- *   A\0<path>\0<dtype>\0<ino>\n       — Add (staged content at path)
+ *   S\0<path>\0<dtype>\0<ino>\n       — Stage (staged content at path)
  *   D\0<path>\0<dtype>\n              — Delete
  *   R\0<dst>\0<src>\0<dtype>\n         — Rename
  *   M\0<gen>\0<name>\n                — Mark
@@ -79,8 +79,8 @@ static int journal_write(struct agfs_sb_info *sbi, char tag,
 
 /* ── Public: typed journal record writers ──────────────────────────── */
 
-int agfs_journal_add(struct agfs_sb_info *sbi, struct dentry *dentry,
-		     u32 ino, unsigned char d_type)
+int agfs_journal_stage(struct agfs_sb_info *sbi, struct dentry *dentry,
+		      u32 ino, unsigned char d_type)
 {
 	char path_buf[AGFS_PATH_MAX];
 	char ino_str[11];
@@ -92,7 +92,7 @@ int agfs_journal_add(struct agfs_sb_info *sbi, struct dentry *dentry,
 	snprintf(ino_str, sizeof(ino_str), "%u", ino);
 	snprintf(dtype_str, sizeof(dtype_str), "%u", (unsigned)d_type);
 
-	return journal_write(sbi, 'A',
+	return journal_write(sbi, 'S',
 			     (const char *[]){ path,
 					       dtype_str, ino_str,
 					       NULL });

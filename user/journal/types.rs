@@ -57,10 +57,10 @@ impl Target {
     }
 }
 
-/// A data mutation applied to the dir tree (A/D/R).
+/// A data mutation applied to the dir tree (S/D/R).
 #[derive(Debug, Clone)]
 pub enum Action {
-    Add {
+    Stage {
         path: String,
         dtype: Option<u8>,
         ino: u32,
@@ -90,12 +90,12 @@ pub enum Record {
     Meta(Meta),
 }
 
-/// A group of data records (A/D/R) between consecutive M/J boundaries.
+/// A group of data records (S/D/R) between consecutive M/J boundaries.
 #[derive(Debug)]
 pub struct Segment {
     /// The gen_id of the mark this segment builds on.
     /// 0 for the 0-th segment (records before the first mark).
     pub from: u64,
-    /// The A/D/R records in this segment (no M/J records).
+    /// The S/D/R records in this segment (no M/J records).
     pub records: Vec<Action>,
 }

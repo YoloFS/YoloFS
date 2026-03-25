@@ -32,7 +32,7 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	agfs_dentry_pin(dentry, AGFS_TARGET_INODE);
 	AGFS_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->gen);
 
-	agfs_journal_add(sbi, dentry, ino, dt);
+	agfs_journal_stage(sbi, dentry, ino, dt);
 
 	return 0;
 }

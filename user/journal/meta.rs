@@ -195,7 +195,7 @@ mod tests {
                 gen_id: 1,
                 name: "first".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -217,7 +217,7 @@ mod tests {
                 gen_id: 1,
                 name: "first".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -249,7 +249,7 @@ mod tests {
                 gen_id: 1,
                 name: "dup".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -271,7 +271,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -321,7 +321,7 @@ mod tests {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -330,7 +330,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -373,7 +373,7 @@ mod tests {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -382,7 +382,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -406,7 +406,7 @@ mod tests {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -432,7 +432,7 @@ mod tests {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -441,7 +441,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -469,7 +469,7 @@ mod tests {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -478,7 +478,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -491,7 +491,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -520,7 +520,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -529,7 +529,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -542,7 +542,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -569,7 +569,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -578,7 +578,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -605,7 +605,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -614,7 +614,7 @@ mod tests {
                 gen_id: 2,
                 target_gen: 99,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -637,7 +637,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -668,7 +668,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -677,7 +677,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -690,7 +690,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -723,7 +723,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -732,7 +732,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -764,7 +764,7 @@ mod tests {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -794,7 +794,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -803,7 +803,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -816,7 +816,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 1,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -825,7 +825,7 @@ mod tests {
                 gen_id: 5,
                 name: "c5".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/e".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 4,
@@ -859,7 +859,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -868,7 +868,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -881,7 +881,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 1,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -915,7 +915,7 @@ mod tests {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -945,7 +945,7 @@ mod tests {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -958,7 +958,7 @@ mod tests {
                 gen_id: 3,
                 target_gen: 1,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,

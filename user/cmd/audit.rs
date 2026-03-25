@@ -53,7 +53,7 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
 
 fn action_matches_path(action: &journal::Action, filter: &str) -> bool {
     match action {
-        journal::Action::Add { path, .. } | journal::Action::Delete { path, .. } => path == filter,
+        journal::Action::Stage { path, .. } | journal::Action::Delete { path, .. } => path == filter,
         journal::Action::Rename { dst, src, .. } => src == filter || dst == filter,
     }
 }
@@ -77,8 +77,8 @@ fn format_meta(meta: &journal::Meta) -> String {
 
 fn format_action(action: &journal::Action) -> String {
     match action {
-        journal::Action::Add { path, ino, .. } => {
-            format!("{:10} {}  (ino {})", "added".green(), path, ino)
+        journal::Action::Stage { path, ino, .. } => {
+            format!("{:10} {}  (ino {})", "staged".green(), path, ino)
         }
         journal::Action::Delete { path, .. } => {
             format!("{:10} {}", "deleted".red(), path)
@@ -138,14 +138,14 @@ mod tests {
     }
 
     #[test]
-    fn format_added() {
-        let action = Action::Add {
+    fn format_staged() {
+        let action = Action::Stage {
             path: "/src/main.rs".into(),
             dtype: Some(libc::DT_REG),
             ino: 42,
         };
         let s = strip_ansi(&format_action(&action));
-        assert!(s.contains("added"), "should say added: {s}");
+        assert!(s.contains("staged"), "should say staged: {s}");
         assert!(s.contains("/src/main.rs"), "should contain path: {s}");
         assert!(s.contains("42"), "should contain ino: {s}");
     }

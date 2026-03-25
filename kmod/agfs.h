@@ -392,7 +392,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 
 /* journal.c */
 int agfs_journal_open(struct agfs_sb_info *sbi);
-int agfs_journal_add(struct agfs_sb_info *sbi, struct dentry *dentry,
+int agfs_journal_stage(struct agfs_sb_info *sbi, struct dentry *dentry,
 		       u32 ino, unsigned char d_type);
 int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry,
 			 unsigned char d_type);

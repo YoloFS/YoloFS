@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn added_produces_single_entry() {
-        let tree = build(&[Action::Add {
+        let tree = build(&[Action::Stage {
             path: "/src/main.rs".into(),
             ino: 1,
             dtype: Some(libc::DT_REG),
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn deleted_produces_tombstone_entry() {
         let tree = build(&[
-            Action::Add {
+            Action::Stage {
                 path: "/old.txt".into(),
                 ino: 1,
                 dtype: Some(libc::DT_REG),
@@ -111,7 +111,7 @@ mod tests {
                 dst: "/new.rs".into(),
                 dtype: Some(libc::DT_REG),
             },
-            Action::Add {
+            Action::Stage {
                 path: "/new.rs".into(),
                 ino: 5,
                 dtype: Some(libc::DT_REG),
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn directory_inode_gets_dir_node() {
-        let tree = build(&[Action::Add {
+        let tree = build(&[Action::Stage {
             path: "/newdir".into(),
             ino: 1,
             dtype: Some(libc::DT_DIR),
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn symlink_inode_gets_file_node() {
-        let tree = build(&[Action::Add {
+        let tree = build(&[Action::Stage {
             path: "/link".into(),
             ino: 1,
             dtype: Some(libc::DT_LNK),

@@ -25,8 +25,8 @@ fn operations_produce_ordered_records() {
     // Verify each type is present
     assert!(
         recs.iter()
-            .any(|r| matches!(r, Record::Action(Action::Add { .. }))),
-        "missing A record: {recs:?}"
+            .any(|r| matches!(r, Record::Action(Action::Stage { .. }))),
+        "missing S record: {recs:?}"
     );
     assert!(
         recs.iter()
@@ -51,7 +51,7 @@ fn operations_produce_ordered_records() {
         .unwrap();
     let add_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/hello.txt")))
+        .position(|r| matches!(r, Record::Action(Action::Stage { path, .. }) if path.ends_with("/hello.txt")))
         .unwrap();
     let del_pos = recs
         .iter()
@@ -80,8 +80,8 @@ fn write_after_rename() {
     assert!(
         recs
             .iter()
-            .any(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/moved.txt"))),
-        "should have A record at new path: {recs:?}"
+            .any(|r| matches!(r, Record::Action(Action::Stage { path, .. }) if path.ends_with("/moved.txt"))),
+        "should have S record at new path: {recs:?}"
     );
 
     // The rename should precede the write
@@ -91,7 +91,7 @@ fn write_after_rename() {
         .unwrap();
     let a_pos = recs
         .iter()
-        .rposition(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/moved.txt")))
+        .rposition(|r| matches!(r, Record::Action(Action::Stage { path, .. }) if path.ends_with("/moved.txt")))
         .unwrap();
     assert!(r_pos < a_pos, "Rename should precede the Add at new path");
 }
@@ -109,8 +109,8 @@ fn create_then_rename() {
     let acts = actions(&j);
     assert!(
         acts.iter()
-            .any(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/temp.txt"))),
-        "should have ADD record for original path: {acts:?}"
+            .any(|a| matches!(a, Action::Stage { path, .. } if path.ends_with("/temp.txt"))),
+        "should have Stage record for original path: {acts:?}"
     );
     assert!(
         acts.iter()
@@ -120,7 +120,7 @@ fn create_then_rename() {
     );
 }
 
-/// Create a file, then delete it — both ADD and DEL records should be present.
+/// Create a file, then delete it — both Stage and DEL records should be present.
 #[test]
 fn create_then_delete() {
     let s = AgfsSession::new().expect("session setup");
@@ -132,8 +132,8 @@ fn create_then_delete() {
     let acts = actions(&j);
     assert!(
         acts.iter()
-            .any(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/ephemeral.txt"))),
-        "should have ADD record: {acts:?}"
+            .any(|a| matches!(a, Action::Stage { path, .. } if path.ends_with("/ephemeral.txt"))),
+        "should have Stage record: {acts:?}"
     );
     assert!(
         acts.iter()
@@ -153,8 +153,8 @@ fn modify_then_delete() {
     let recs = records(&journal(&s));
     let a_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/hello.txt")))
-        .expect("missing A record");
+        .position(|r| matches!(r, Record::Action(Action::Stage { path, .. }) if path.ends_with("/hello.txt")))
+        .expect("missing S record");
     let d_pos = recs
         .iter()
         .position(|r| matches!(r, Record::Action(Action::Delete { path, .. }) if path.ends_with("/hello.txt")))

@@ -498,21 +498,21 @@ fn rename_staged_file_overwrite_base_commit() {
 /// Base files: hello.txt, multi.txt, subdir/deep.txt, test.sh
 ///
 /// Operations (grouped by the edge case they exercise):
-///   1. Modify hello.txt (COW → A record)
+///   1. Modify hello.txt (COW → S record)
 ///   2. Create brand_new.txt then rename it to multi.txt
 ///      (staged rename to base path; overwrites base file)
 ///   3. Create temp.txt then delete it (ADD + DEL → cancel)
 ///   4. Rename subdir/deep.txt → subdir/shallow.txt (base rename → tombstone + redirect)
 ///   5. Rename subdir/shallow.txt → top.txt (second rename → tombstone + redirect)
 ///   6. Create link.txt as symlink (A with dtype=Link)
-///   7. Modify hello.txt again (second COW → A; multiple COWs keep final ino)
+///   7. Modify hello.txt again (second COW → S; multiple COWs keep final ino)
 ///
 /// Expected resolved state before commit:
 ///   - Inode(hello.txt)               — double COW, final ino wins
 ///   - Inode(multi.txt)               — staged file overwrote base via rename
 ///   - Renamed(subdir/shallow.txt → top.txt) — second rename
 ///   - Deleted(subdir/deep.txt)       — first rename source
-///   - Added(link.txt)                — new symlink
+///   - Staged(link.txt)                — new symlink
 ///   - Tombstone(temp.txt)            — spurious (never in base), harmless
 ///   - Tombstone(brand_new.txt)       — spurious (staged-only rename source)
 ///   - Tombstone(subdir/shallow.txt)  — spurious (intermediate rename)
@@ -546,7 +546,7 @@ fn complex_multi_operation_commit() {
     // ── 6. Create a symlink (ADD record, dtype=Link) ──
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
 
-    // ── 7. Second COW on hello.txt (multiple A records → final ino wins) ──
+    // ── 7. Second COW on hello.txt (multiple S records → final ino wins) ──
     fs::write(s.mnt_path("hello.txt"), "second edit\n").expect("write hello v2");
 
     // ── Verify mount view before commit ──
@@ -636,7 +636,7 @@ fn complex_multi_operation_commit() {
         "expected Renamed(subdir/deep.txt → top.txt): {t:?}"
     );
     assert!(has_deleted_deep, "expected Deleted(deep.txt): {t:?}");
-    assert!(has_added_link, "expected Added(link.txt): {t:?}");
+    assert!(has_added_link, "expected Staged(link.txt): {t:?}");
     assert!(
         !has_temp,
         "temp.txt should only appear as a tombstone (if at all): {t:?}"

@@ -81,7 +81,7 @@ fn apply_records(agfs: &Path, segments: &[journal::Segment]) -> Result<()> {
 
     for action in segments.iter().flat_map(|s| &s.records) {
         match action {
-            journal::Action::Add { path, ino, .. } => {
+            journal::Action::Stage { path, ino, .. } => {
                 let base_path = crate::utils::to_base_path(path);
                 apply_inode(agfs, *ino, &base_path, &mut ensured)?;
             }

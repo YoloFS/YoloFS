@@ -138,7 +138,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -147,7 +147,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -176,7 +176,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -185,7 +185,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -198,7 +198,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -212,13 +212,13 @@ mod tests {
         assert_eq!(j.segments.len(), 6);
         assert_eq!(j.segments[4].from, 2);
         assert_eq!(j.segments[4].records.len(), 1);
-        assert!(matches!(&j.segments[4].records[0], Action::Add { path, .. } if path == "/d"));
+        assert!(matches!(&j.segments[4].records[0], Action::Stage { path, .. } if path == "/d"));
     }
 
     #[test]
     fn records_before_first_mark_in_segment_zero() {
         let records = vec![
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/orphan".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 999,
@@ -227,7 +227,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -241,9 +241,9 @@ mod tests {
         assert_eq!(j.segments.len(), 3);
         assert_eq!(j.segments[0].from, 0);
         assert_eq!(j.segments[0].records.len(), 1);
-        assert!(matches!(&j.segments[0].records[0], Action::Add { path, .. } if path == "/orphan"));
+        assert!(matches!(&j.segments[0].records[0], Action::Stage { path, .. } if path == "/orphan"));
         assert_eq!(j.segments[1].records.len(), 1);
-        assert!(matches!(&j.segments[1].records[0], Action::Add { path, .. } if path == "/a"));
+        assert!(matches!(&j.segments[1].records[0], Action::Stage { path, .. } if path == "/a"));
     }
 
     #[test]
@@ -277,7 +277,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -286,7 +286,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -299,7 +299,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -322,7 +322,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -331,7 +331,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -344,7 +344,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 1,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -359,7 +359,7 @@ mod tests {
         let live: Vec<_> = j.into_live_segments_at(2).collect();
         let actions: Vec<_> = live.iter().flat_map(|s| &s.records).collect();
         assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::Add { path, .. } if path == "/a"));
+        assert!(matches!(actions[0], Action::Stage { path, .. } if path == "/a"));
     }
 
     // ── Reachability tests (via live_segments, migrated from liveness.rs) ──
@@ -369,7 +369,7 @@ mod tests {
         j.into_live_segments_range(0, usize::MAX)
             .flat_map(|s| s.records)
             .map(|a| match a {
-                Action::Add { path, .. } => path,
+                Action::Stage { path, .. } => path,
                 Action::Delete { path, .. } => path,
                 Action::Rename { dst, .. } => dst,
             })
@@ -383,7 +383,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -406,7 +406,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -415,7 +415,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -428,7 +428,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -457,7 +457,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -466,7 +466,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -479,7 +479,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 1,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -488,7 +488,7 @@ mod tests {
                 gen_id: 5,
                 name: "c5".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/e".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 4,
@@ -514,7 +514,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -523,7 +523,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -536,7 +536,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 1,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -561,7 +561,7 @@ mod tests {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -590,7 +590,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -599,7 +599,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -629,7 +629,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -638,7 +638,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -651,7 +651,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -680,7 +680,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -689,7 +689,7 @@ mod tests {
                 gen_id: 2,
                 target_gen: 99,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -708,7 +708,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -717,7 +717,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -726,7 +726,7 @@ mod tests {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/c".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -750,7 +750,7 @@ mod tests {
             .collect();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].from, 2);
-        assert!(matches!(&live[0].records[0], Action::Add { path, .. } if path == "/b"));
+        assert!(matches!(&live[0].records[0], Action::Stage { path, .. } if path == "/b"));
     }
 
     #[test]
@@ -777,7 +777,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -786,7 +786,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -799,7 +799,7 @@ mod tests {
                 gen_id: 4,
                 target_gen: 1,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/c".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 3,
@@ -808,7 +808,7 @@ mod tests {
                 gen_id: 5,
                 name: "c5".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 4,
@@ -823,7 +823,7 @@ mod tests {
         let live: Vec<_> = j.into_live_segments_at(gen_id).collect();
         let actions: Vec<_> = live.iter().flat_map(|s| &s.records).collect();
         assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::Add { path, .. } if path == "/c"));
+        assert!(matches!(actions[0], Action::Stage { path, .. } if path == "/c"));
     }
 
     #[test]
@@ -833,7 +833,7 @@ mod tests {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -856,7 +856,7 @@ mod tests {
         // [A:/a] M1 [B:/b] M2 J3(→M1)
         // into_tree_at(3) should give the journal state at position 3.
         let records = vec![
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -865,7 +865,7 @@ mod tests {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -895,7 +895,7 @@ mod tests {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 1,
@@ -904,7 +904,7 @@ mod tests {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,

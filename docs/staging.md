@@ -90,7 +90,7 @@ VFS `d_children` list.
 | `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
 | `gen` | Atomic counter, starts at 1, bumped by each checkpoint and restore ioctl. Compared against `staging_gen` on the inode at open time to decide COW / re-COW. |
 | `staging_fd_count` | Atomic counter of open staging fds (opened for write). Checkpoint ioctl rejects with `-EBUSY` when > 0. |
-| `dirty` | Boolean flag set on every data journal write (A/D/R), cleared on checkpoint or restore. Used by `AGFS_MARK_IF_CHANGED` to skip empty auto-checkpoints. |
+| `dirty` | Boolean flag set on every data journal write (S/D/R), cleared on checkpoint or restore. Used by `AGFS_MARK_IF_CHANGED` to skip empty auto-checkpoints. |
 
 **Per-inode** (`agfs_inode_info`) — one per cached inode:
 
@@ -303,21 +303,21 @@ agfs_create(dir, dentry, mode):
     create file inodes/<ino>
     agfs_dentry_pin(dentry, AGFS_TARGET_INODE)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
-    journal(A, path, dtype, ino)
+    journal(S, path, dtype, ino)
 
 agfs_mkdir(dir, dentry, mode):
     ino = next_ino++
     create dir inodes/<ino>/
     agfs_dentry_pin(dentry, AGFS_TARGET_INODE)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
-    journal(A, path, dtype, ino)
+    journal(S, path, dtype, ino)
 
 agfs_symlink(dir, dentry, target):
     ino = next_ino++
     create symlink inodes/<ino> -> target
     agfs_dentry_pin(dentry, AGFS_TARGET_INODE)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
-    journal(A, path, dtype, ino)
+    journal(S, path, dtype, ino)
 ```
 
 `touch` (create + close, no write) produces an empty inode in the store —
@@ -411,7 +411,7 @@ independently correct and unaffected.
 **Rename + recreate** (`mv a->b`, then `touch a`) works because the new
 `touch a` sees the tombstone pinned in the dcache and creates a new
 staged inode that supersedes it. The rename emits `R(b, a)`, so the
-journal sees `R(b, a)` for the rename, then `A(a)` for the recreate.
+journal sees `R(b, a)` for the rename, then `S(a)` for the recreate.
 
 **Read after rename**: lookup of the new name finds the pinned dentry
 in the dcache -> opens the base file via `lower_path` (or the
@@ -512,7 +512,7 @@ The journal is an append-only file at `.agfs/journal`. Each record is a
 sequence of NUL-separated fields terminated by a newline.
 
 ```
-A\0<path>\0<dtype>\0<ino>\n       — Add (staged content at path)
+S\0<path>\0<dtype>\0<ino>\n       — Stage (staged content at path)
 D\0<path>\0<dtype>\n              — Delete
 R\0<dst>\0<src>\0<dtype>\n             — Rename
 M\0<gen>\0<name>\n                — Mark
@@ -520,17 +520,17 @@ J\0<gen>\0<target_gen>\n          — Jump
 ```
 
 Each mutation type has its own record tag and carries exactly the fields
-it needs. The kernel always uses `A` for creates/COW and `R` for renames:
+it needs. The kernel always uses `S` for creates/COW and `R` for renames:
 
 | Tag | Fields | Meaning |
 |-----|--------|---------|
-| `A` | `<path>`, `<dtype>`, `<ino>` | Staged content at path (create or COW) |
+| `S` | `<path>`, `<dtype>`, `<ino>` | Staged content at path (create or COW) |
 | `D` | `<path>`, `<dtype>` | Entry deleted |
 | `R` | `<dst>`, `<src>`, `<dtype>` | Rename |
 | `M` | `<gen>`, `<name>` | Mark meta |
 | `J` | `<gen>`, `<target_gen>` | Jump meta |
 
-Userspace derives the add/modify distinction by checking the base
+Userspace derives the stage/modify distinction by checking the base
 filesystem — it does not need the kernel to encode it in the tag.
 
 **Gen_id invariant.** The kernel increments `sbi->gen` via
@@ -581,7 +581,7 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
    only reachable segments (filtering out dead branches from jumps).
 2. Replay live records in journal order directly on the base filesystem.
    Each record is applied one by one:
-   - **A**: copy `inodes/<ino>` to `base/path` (create parents as needed;
+   - **S**: copy `inodes/<ino>` to `base/path` (create parents as needed;
      directories → `mkdir`). If `base/path` already exists, overwrite.
    - **D**: remove `base/path` if it exists (unlink for files/symlinks, rmdir for directories).
    - **R**: `rename(base/src, base/dst)`.
@@ -654,7 +654,7 @@ looking up by name, `--at` and `--from` match the latest one.
 
 Auto-checkpointing after `agfs exec` is skipped when the command produced no
 staged changes. The kernel tracks a `dirty` flag on `agfs_sb_info` that is set
-on every data journal write (A/D/R) and cleared on checkpoint or restore.
+on every data journal write (S/D/R) and cleared on checkpoint or restore.
 When the CLI passes the `AGFS_MARK_IF_CHANGED` flag in the checkpoint ioctl, the
 kernel returns `gen = 0` (skipped) if the flag is clear, avoiding empty
 checkpoints from read-only or no-op commands.
@@ -691,14 +691,14 @@ The generation counter collapses consecutive checkpoints.
 ### Example Journal with Checkpoints
 
 ```
-A\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
-A\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
+S\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
+S\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
 M\01\0after make build\n                          # checkpoint 1
-A\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
+S\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
 D\0/src/lib.rs\0f\n                               # delete lib.rs
-A\0/src/new.rs\0f\04\n                           # create new.rs
+S\0/src/new.rs\0f\04\n                           # create new.rs
 M\02\0after make test\n                           # checkpoint 2
-A\0/src/new.rs\0f\05\n                           # re-COW: new.rs -> ino 5
+S\0/src/new.rs\0f\05\n                           # re-COW: new.rs -> ino 5
 ```
 
 State at each point:
@@ -712,19 +712,19 @@ State at each point:
 ### Example Journal with Restore
 
 ```
-A\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
-A\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
+S\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
+S\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
 M\01\0after make build\n                          # checkpoint 1
-A\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
+S\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
 D\0/src/lib.rs\0f\n                               # delete lib.rs
 M\02\0after make test\n                           # checkpoint 2
 J\03\01\n                                         # restore to checkpoint 1 (gen bumped to 3)
-A\0/src/util.rs\0f\04\n                          # create util.rs -> ino 4
+S\0/src/util.rs\0f\04\n                          # create util.rs -> ino 4
 M\04\0after make fix\n                            # checkpoint 4
 ```
 
-Reachable records (after `reachable`): A(main.rs→1), A(lib.rs→2), M1, A(util.rs→4), M4
-Unreachable region: A(main.rs→3), D(lib.rs), M2, J3
+Reachable records (after `reachable`): S(main.rs→1), S(lib.rs→2), M1, S(util.rs→4), M4
+Unreachable region: S(main.rs→3), D(lib.rs), M2, J3
 
 State at current:
 

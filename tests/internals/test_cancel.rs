@@ -26,7 +26,7 @@ fn staged_only_delete_recreate_emits_add() {
 
     let adds: Vec<_> = acts
         .iter()
-        .filter(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/ephemeral.txt")))
+        .filter(|a| matches!(a, Action::Stage { path, .. } if path.ends_with("/ephemeral.txt")))
         .collect();
     assert_eq!(
         adds.len(),
@@ -50,7 +50,7 @@ fn staged_only_rename_recreate_emits_add() {
 
     let adds: Vec<_> = acts
         .iter()
-        .filter(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/orig.txt")))
+        .filter(|a| matches!(a, Action::Stage { path, .. } if path.ends_with("/orig.txt")))
         .collect();
     assert_eq!(
         adds.len(),

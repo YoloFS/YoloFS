@@ -49,7 +49,7 @@ impl DirTree {
     /// Apply a single journal action to the tree (consumes the action).
     fn apply(&mut self, action: Action) {
         match action {
-            Action::Add { path, dtype, ino } => {
+            Action::Stage { path, dtype, ino } => {
                 let is_dir = dtype.unwrap_or(libc::DT_REG) == libc::DT_DIR;
                 let target = Target::Inode(ino);
                 self.set_target(path, target, is_dir);
@@ -428,7 +428,7 @@ mod tests {
     }
 
     fn add(path: &str, ino: u32) -> Action {
-        Action::Add {
+        Action::Stage {
             path: path.into(),
             dtype: Some(libc::DT_REG),
             ino,
@@ -436,7 +436,7 @@ mod tests {
     }
 
     fn add_dir(path: &str, ino: u32) -> Action {
-        Action::Add {
+        Action::Stage {
             path: path.into(),
             dtype: Some(libc::DT_DIR),
             ino,
@@ -474,7 +474,7 @@ mod tests {
     }
 
     fn add_symlink(path: &str, ino: u32) -> Action {
-        Action::Add {
+        Action::Stage {
             path: path.into(),
             dtype: Some(libc::DT_LNK),
             ino,
@@ -753,7 +753,7 @@ mod tests {
     fn mark_records_ignored_in_stream() {
         let tree = build(&[
             add("/x", 1),
-            Action::Add {
+            Action::Stage {
                 path: "/x".into(),
                 dtype: Some(libc::DT_REG),
                 ino: 2,
@@ -1059,7 +1059,7 @@ mod tests {
     #[test]
     fn serialize_single_tombstone() {
         let tree = build(&[
-            Action::Add {
+            Action::Stage {
                 path: "/old".into(),
                 ino: 1,
                 dtype: Some(libc::DT_REG),
@@ -1280,7 +1280,7 @@ mod tests {
     #[test]
     fn serialize_inode_bits_correct() {
         // Verify the dentry layout for a StagedInode
-        let tree = build(&[Action::Add {
+        let tree = build(&[Action::Stage {
             path: "/f".into(),
             ino: 42,
             dtype: Some(libc::DT_LNK),
