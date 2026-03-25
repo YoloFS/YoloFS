@@ -30,7 +30,6 @@ pub fn render(results: &BenchResults, out_dir: &Path) -> Result<()> {
         }
     }
     crate::paper::render(results, out_dir)?;
-    render_commit_scaling_report(out_dir)?;
     render_index(results, out_dir, current_repo_state.as_ref())?;
     Ok(())
 }

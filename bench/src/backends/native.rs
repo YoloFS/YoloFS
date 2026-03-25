@@ -47,6 +47,7 @@ impl Backend for Native {
             IterResult {
                 init_ms: None,
                 staging_ms: None,
+                status_ms: None,
                 commit_ms: None,
                 total_ms: result.staging_ms,
                 op_result: result.op_result,

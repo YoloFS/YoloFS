@@ -1,5 +1,4 @@
 pub mod checkpoint_scalability;
-pub mod commit_scaling;
 pub mod fio_rand_read_cold;
 pub mod fio_rand_read_warm;
 pub mod fio_rand_write;

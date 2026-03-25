@@ -16,6 +16,17 @@ use std::path::Path;
 
 // ── File reading helpers ─────────────────────────────────────────────
 
+/// Read a file as text, or None if it's binary (contains null bytes).
+fn read_file_text(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    // Check first 8000 bytes for null bytes (same heuristic as git).
+    let check_len = bytes.len().min(8000);
+    if bytes[..check_len].contains(&0) {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 fn read_file_lossy(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
@@ -26,6 +37,14 @@ fn read_inode(agfs: &Path, ino: u32) -> String {
 
 fn read_base(rel_path: &str) -> String {
     read_file_lossy(&crate::utils::to_base_path(rel_path))
+}
+
+fn is_binary_inode(agfs: &Path, ino: u32) -> bool {
+    read_file_text(&crate::utils::inode_path(agfs, ino)).is_none()
+}
+
+fn is_binary_base(rel_path: &str) -> bool {
+    read_file_text(&crate::utils::to_base_path(rel_path)).is_none()
 }
 
 // ── Unified diff printing ────────────────────────────────────────────
@@ -73,12 +92,18 @@ fn print_change(agfs: &Path, path: &str, target: &Target, verbose: bool) {
     match target {
         Target::Inode(ino) if !base_exists => {
             println!("{} {}", path.bold(), "(added)".green());
-            if verbose {
+            if is_binary_inode(agfs, *ino) {
+                println!("  {}", "Binary file (not shown)".dimmed());
+            } else if verbose {
                 print_unified_diff("", &read_inode(agfs, *ino));
             }
         }
         Target::Inode(ino) => {
-            if verbose {
+            let binary = is_binary_inode(agfs, *ino) || is_binary_base(path);
+            if binary {
+                println!("{} {}", path.bold(), "(modified)".yellow());
+                println!("  {}", "Binary files differ".dimmed());
+            } else if verbose {
                 let old_text = read_base(path);
                 let new_text = read_inode(agfs, *ino);
                 if old_text != new_text {

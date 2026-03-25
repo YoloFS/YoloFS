@@ -17,6 +17,9 @@ use std::path::Path;
 pub struct IterResult {
     pub init_ms: Option<u64>,
     pub staging_ms: Option<u64>,
+    /// Time to query staged changes (agfs status, overlayfs upper walk, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_ms: Option<u64>,
     pub commit_ms: Option<u64>,
     pub total_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]

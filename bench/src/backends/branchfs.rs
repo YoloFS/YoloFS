@@ -260,6 +260,7 @@ impl Backend for BranchFs {
             IterResult {
                 init_ms: Some(init_ms),
                 staging_ms: Some(staging_ms),
+                status_ms: None, // branchfs has no status query
                 commit_ms: Some(commit_ms),
                 total_ms: init_ms + staging_ms + commit_ms,
                 op_result: sub.op_result,

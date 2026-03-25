@@ -191,6 +191,17 @@ impl Backend for Overlayfs {
             r
         };
 
+        // Measure status time: walk upper dir and classify changes,
+        // printing each one to emulate agfs status output overhead.
+        let status_ms = {
+            let t = Instant::now();
+            let mut sink = std::io::sink();
+            if current_upper.exists() {
+                report_upper_changes(&current_upper, &lower, "", &mut sink);
+            }
+            t.elapsed().as_millis() as u64
+        };
+
         // Unmount before commit.
         sudo_umount_best_effort(&merged);
 
@@ -218,6 +229,7 @@ impl Backend for Overlayfs {
             IterResult {
                 init_ms: Some(init_ms),
                 staging_ms: Some(result.staging_ms),
+                status_ms: Some(status_ms),
                 commit_ms: Some(commit_ms),
                 total_ms,
                 op_result: result.op_result,
@@ -286,6 +298,53 @@ fn sudo_umount_best_effort(merged: &std::path::Path) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+}
+
+/// Walk the upper dir and classify each entry as added, modified, or deleted
+/// by checking against the lower dir. Returns total change count.
+/// Walk the upper dir, classify each entry (added/modified/deleted) by checking
+/// against the lower dir, and print each change — emulating the output overhead
+/// of `agfs status` for a fair timing comparison.
+fn report_upper_changes(
+    upper: &std::path::Path,
+    lower: &std::path::Path,
+    prefix: &str,
+    sink: &mut dyn std::io::Write,
+) -> usize {
+    use std::os::unix::fs::FileTypeExt;
+    let mut count = 0;
+    let entries = match std::fs::read_dir(upper) {
+        Ok(rd) => rd,
+        Err(_) => return 0,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let upper_path = entry.path();
+        let lower_path = lower.join(&name);
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        let rel = if prefix.is_empty() {
+            name_str.to_string()
+        } else {
+            format!("{prefix}/{name_str}")
+        };
+        if ft.is_char_device() {
+            let _ = writeln!(sink, "  deleted  {rel}");
+            count += 1;
+        } else if ft.is_dir() {
+            count += report_upper_changes(&upper_path, &lower_path, &rel, sink);
+        } else if lower_path.exists() {
+            let _ = writeln!(sink, "  modified {rel}");
+            count += 1;
+        } else {
+            let _ = writeln!(sink, "  added    {rel}");
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Replay the overlayfs upper dir onto the lower dir.

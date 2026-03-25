@@ -3,6 +3,7 @@ use crate::workload::{CacheMode, IterResult, Workload, WorkloadKind};
 use agfs::config::{Config, Perm};
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
+use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -100,6 +101,31 @@ impl Session {
             );
         }
         Ok(ms)
+    }
+
+    fn status_time(&self) -> Result<u64> {
+        // Run the same logic as `agfs status` in-process:
+        // read journal → resolve segments → build tree → classify + print each entry.
+        // Output goes to /dev/null to avoid I/O noise.
+        let t = Instant::now();
+        // Temporarily redirect stdout to suppress output.
+        let devnull = std::fs::File::create("/dev/null")?;
+        let saved_stdout = nix::unistd::dup(1)?;
+        nix::unistd::dup2(devnull.as_raw_fd(), 1)?;
+        drop(devnull);
+
+        // Set cwd so session_dir() finds .agfs/.
+        let saved_cwd = std::env::current_dir()?;
+        std::env::set_current_dir(self.root.path())?;
+        let result = agfs::cmd::diff::run_status(None, None, None);
+        std::env::set_current_dir(saved_cwd)?;
+
+        // Restore stdout.
+        nix::unistd::dup2(saved_stdout, 1)?;
+        nix::unistd::close(saved_stdout)?;
+
+        result.context("in-process agfs status")?;
+        Ok(t.elapsed().as_millis() as u64)
     }
 
     fn journal_debug(&self) -> String {
@@ -241,6 +267,9 @@ fn run_agfs_iteration(
     };
     let result = result?;
 
+    // Measure status query time (agfs status).
+    let status_ms = session.status_time()?;
+
     let commit_ms = match session.commit(verbose) {
         Ok(ms) => ms,
         Err(e) => {
@@ -256,6 +285,7 @@ fn run_agfs_iteration(
         IterResult {
             init_ms: Some(init_ms),
             staging_ms: Some(result.staging_ms),
+            status_ms: Some(status_ms),
             commit_ms: Some(commit_ms),
             total_ms: init_ms + result.staging_ms + commit_ms,
             op_result: result.op_result,
@@ -424,6 +454,7 @@ impl Backend for AgfsRealistic {
             }
         };
         let result = result?;
+        let status_ms = session.status_time()?;
 
         let commit_ms = match session.commit(verbose) {
             Ok(ms) => ms,
@@ -440,6 +471,7 @@ impl Backend for AgfsRealistic {
             IterResult {
                 init_ms: Some(init_ms),
                 staging_ms: Some(result.staging_ms),
+                status_ms: Some(status_ms),
                 commit_ms: Some(commit_ms),
                 total_ms: init_ms + result.staging_ms + commit_ms,
                 op_result: result.op_result,

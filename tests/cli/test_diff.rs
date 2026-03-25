@@ -172,6 +172,46 @@ fn diff_after_restore_excludes_dead_zone() {
     );
 }
 
+/// Diff should indicate binary files instead of showing garbled content.
+#[test]
+fn diff_new_binary_file() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // Write a file with non-UTF-8 content (null bytes, high bytes).
+    let binary_data: Vec<u8> = (0..256).map(|i| i as u8).collect();
+    fs::write(s.mnt_path("image.bin"), &binary_data).unwrap();
+
+    let output = s.cli(&["diff"]).expect("diff");
+    assert!(
+        output.contains("image.bin"),
+        "binary file should appear in diff: {output}"
+    );
+    assert!(
+        output.contains("Binary") || output.contains("binary"),
+        "diff should indicate binary file: {output}"
+    );
+}
+
+/// Diff of a modified binary base file should indicate binary change.
+#[test]
+fn diff_modified_binary_file() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // test.sh exists in base. Overwrite with binary content.
+    let binary_data = vec![0u8, 1, 2, 0xFF, 0xFE, 0, 0, 3];
+    fs::write(s.mnt_path("test.sh"), &binary_data).unwrap();
+
+    let output = s.cli(&["diff"]).expect("diff");
+    assert!(
+        output.contains("test.sh"),
+        "modified binary file should appear: {output}"
+    );
+    assert!(
+        output.contains("Binary") || output.contains("binary"),
+        "diff should indicate binary content: {output}"
+    );
+}
+
 /// Diff between two checkpoints that span a restore should still work.
 #[test]
 fn diff_between_checkpoints_spanning_restore() {
