@@ -3,7 +3,7 @@
 // The Journal: segments + metas + precomputed liveness.
 // Borrowing filter methods — no moves, no collects, no intermediate allocations.
 
-use super::metas::Metas;
+use super::meta::MetaIndex;
 use super::parse;
 use super::tree::DirTree;
 use super::types::*;
@@ -13,7 +13,7 @@ use std::path::Path;
 /// All segments + M/J skeleton + precomputed alive mask.
 pub struct Journal {
     pub segments: Vec<Segment>,
-    pub metas: Metas,
+    pub metas: MetaIndex,
     alive: Vec<bool>,
 }
 
@@ -58,7 +58,7 @@ impl Journal {
             records: current_records,
         });
 
-        let metas = Metas::new(metas_vec);
+        let metas = MetaIndex::new(metas_vec);
         let alive = metas.alive_segments(segments.len());
 
         Journal {

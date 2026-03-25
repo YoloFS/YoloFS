@@ -5,17 +5,17 @@
 // Submodules:
 //   types     — Action, Meta, Record, Segment
 //   parse     — read(), parse()  (pub(super) only)
-//   metas     — Metas (M/J skeleton: lookup, range, liveness computation)
+//   meta      — MetaIndex (M/J skeleton: lookup, range, liveness computation)
 //   journal   — Journal (segments + metas + precomputed liveness, borrowing filters)
 //   tree      — DirTree builder: apply actions → dir tree, walk for display/jump
 pub(crate) mod core;
 
-pub mod metas;
+pub mod meta;
 mod parse;
 pub mod tree;
 pub mod types;
 
 pub use self::core::Journal;
-pub use metas::Metas;
+pub use meta::MetaIndex;
 pub use tree::{DirNode, DirTree};
 pub use types::*;

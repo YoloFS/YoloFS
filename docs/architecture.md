@@ -231,7 +231,7 @@ agfs/
 │   ├── journal/               # journal parsing, timeline, and resolution
 │   │   ├── types.rs           # Action, Meta, Record, Segment, dtype_valid, dtype_pack
 │   │   ├── parse.rs           # parse()  (pub(super))
-│   │   ├── metas.rs           # Metas (lookup + range + alive_segments + meta_at)
+│   │   ├── meta.rs            # MetaIndex (lookup + range + alive_segments + meta_at)
 │   │   ├── journal.rs         # Journal (struct + new + read + live_segments_*)
 │   │   ├── tree.rs            # DirTree, DirNode
 │   │   └── dentry.rs          # Dentry, Target — dentry state types

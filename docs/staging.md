@@ -537,7 +537,7 @@ filesystem — it does not need the kernel to encode it in the tag.
 `atomic_inc_return()` on every M and J record. Gen_id values are
 strictly sequential: meta\[i\] has gen_id = i (meta\[0\] is a phantom
 `Mark { gen_id: 0, name: "(initial)" }` inserted by the CLI). The
-`Metas` type relies on this for O(1) mark lookup by gen_id.
+`MetaIndex` type relies on this for O(1) mark lookup by gen_id.
 
 `<path>` is the full overlay path (e.g. `/dir/file`).
 `<src>` is the overlay path before the rename (R only).
@@ -757,7 +757,7 @@ The reachability algorithm: O(N) single pass to collect J/M positions,
 O(R) backward walk to build reachable ranges, skip unreachable J records.
 
 1. CLI builds a `Journal` and finds the target meta via
-   `Metas::find_meta()` (including unreachable regions, to support undo-restore).
+   `MetaIndex::find_meta()` (including unreachable regions, to support undo-restore).
 2. CLI calls `live_segments_at(gen_id)` (or `live_segments_at_name(name)` which
    resolves the name internally) to get an iterator over live segments in the
    prefix up to the target meta, handling any J records in that

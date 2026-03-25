@@ -7,11 +7,11 @@ use super::types::*;
 use anyhow::Result;
 
 /// The M/J skeleton of the journal.
-pub struct Metas(pub(super) Vec<Meta>);
+pub struct MetaIndex(pub(super) Vec<Meta>);
 
-impl Metas {
+impl MetaIndex {
     pub(super) fn new(metas: Vec<Meta>) -> Self {
-        Metas(metas)
+        MetaIndex(metas)
     }
 
     pub fn len(&self) -> usize {
@@ -176,7 +176,7 @@ impl Metas {
     }
 }
 
-impl IntoIterator for Metas {
+impl IntoIterator for MetaIndex {
     type Item = Meta;
     type IntoIter = std::vec::IntoIter<Meta>;
 
