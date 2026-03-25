@@ -4,15 +4,15 @@ use agfs::journal::Action;
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
 
-// ── Cancelled-entry removal ─────────────────────────────────────────────────
+// ── Always-tombstone on delete ────────────────────────────────────────────────
 //
-// When a staged-only entry (in_base=false) is deleted, the kernel removes
-// the dirent entirely rather than keeping a tombstone. These tests verify
-// the behavioral consequences of that optimisation.
+// When a staged-only entry is deleted, the kernel always creates a
+// tombstone (negative dentry). The spurious tombstone is harmless and
+// cleaned up on commit/reset. These tests verify the behavioral
+// consequences.
 
 /// Create a staged-only file, delete it, then recreate it.
-/// Both creates should produce Add records (not Modify), because the file
-/// never existed in the base layer.
+/// Both creates should produce Add records.
 #[test]
 fn staged_only_delete_recreate_emits_add() {
     let s = AgfsSession::new().expect("session setup");
@@ -33,20 +33,10 @@ fn staged_only_delete_recreate_emits_add() {
         2,
         "both creates of a staged-only file should produce Add records: {acts:?}"
     );
-
-    let modifies: Vec<_> = acts
-        .iter()
-        .filter(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/ephemeral.txt")))
-        .collect();
-    assert!(
-        modifies.is_empty(),
-        "staged-only file should never produce Modify records: {acts:?}"
-    );
 }
 
 /// Create a staged-only file, rename it, then recreate at the original name.
-/// The recreate should produce Add (not Modify) because the original name
-/// was never in base.
+/// The recreate should produce Add.
 #[test]
 fn staged_only_rename_recreate_emits_add() {
     let s = AgfsSession::new().expect("session setup");
@@ -101,41 +91,6 @@ fn staged_only_delete_returns_enoent() {
         err.kind(),
         std::io::ErrorKind::NotFound,
         "stat on deleted staged-only file should return ENOENT"
-    );
-}
-
-// ── Contrast: base file delete + recreate produces Modify ───────────────────
-
-/// Deleting a base file and recreating it should produce Modify (not Add)
-/// because the file existed in the base layer.
-#[test]
-fn base_delete_recreate_emits_modify() {
-    let s = AgfsSession::new().expect("session setup");
-
-    // hello.txt is a base seed file
-    fs::remove_file(s.mnt_path("hello.txt")).expect("delete base file");
-    fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
-
-    let j = journal(&s);
-    let acts = actions(&j);
-
-    let modifies: Vec<_> = acts
-        .iter()
-        .filter(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt")))
-        .collect();
-    assert_eq!(
-        modifies.len(),
-        1,
-        "recreate of base file should produce Modify record: {acts:?}"
-    );
-
-    let adds: Vec<_> = acts
-        .iter()
-        .filter(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/hello.txt")))
-        .collect();
-    assert!(
-        adds.is_empty(),
-        "recreate of base file should not produce Add record: {acts:?}"
     );
 }
 

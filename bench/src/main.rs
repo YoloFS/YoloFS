@@ -73,7 +73,7 @@ struct Cli {
     skip_complete: bool,
 
     /// Skip (workload, backend) pairs whose recorded repo state matches the
-    /// current checkout (cli/ and kmod/ unchanged). Useful for rerunning only
+    /// current checkout (user/ and kmod/ unchanged). Useful for rerunning only
     /// workloads affected by code changes.
     #[arg(long)]
     skip_fresh: bool,
@@ -189,7 +189,8 @@ enum Cmd {
 #[derive(Serialize, Deserialize, Clone)]
 struct RepoState {
     commit: String,
-    cli_dirty: bool,
+    #[serde(alias = "cli_dirty")]
+    user_dirty: bool,
     kmod_dirty: bool,
 }
 
@@ -482,7 +483,7 @@ fn read_repo_state() -> Result<RepoState> {
     let commit = git_stdout(&root, &["rev-parse", "HEAD"]).context("reading git HEAD")?;
     Ok(RepoState {
         commit,
-        cli_dirty: git_path_dirty(&root, "cli")?,
+        user_dirty: git_path_dirty(&root, "user")?,
         kmod_dirty: git_path_dirty(&root, "kmod")?,
     })
 }
@@ -527,13 +528,13 @@ pub(crate) fn repo_paths_changed_between(from_commit: &str, to_commit: &str) -> 
             from_commit,
             to_commit,
             "--",
-            "cli",
+            "user",
             "kmod",
         ])
         .current_dir(&root)
         .status()
         .with_context(|| {
-            format!("checking git diff between {from_commit} and {to_commit} for cli/ and kmod/")
+            format!("checking git diff between {from_commit} and {to_commit} for user/ and kmod/")
         })?;
 
     match status.code() {
@@ -994,7 +995,7 @@ fn merge_results(existing: BenchResults, incoming: &BenchResults) -> BenchResult
 }
 
 /// Check if a (workload, backend) result is fresh — its recorded repo state
-/// matches the current one (no cli/ or kmod/ changes).
+/// matches the current one (no user/ or kmod/ changes).
 fn is_result_fresh(
     results: &BenchResults,
     workload_name: &str,
@@ -1014,17 +1015,17 @@ fn is_result_fresh(
         return false;
     };
     if recorded.commit == current.commit
-        && recorded.cli_dirty == current.cli_dirty
+        && recorded.user_dirty == current.user_dirty
         && recorded.kmod_dirty == current.kmod_dirty
     {
         return true;
     }
-    // Different commit but maybe cli/ and kmod/ are unchanged.
+    // Different commit but maybe user/ and kmod/ are unchanged.
     if recorded.commit != current.commit {
         match repo_paths_changed_between(&recorded.commit, &current.commit) {
             Ok(false) => {
-                // Same cli/kmod content despite different commit.
-                return recorded.cli_dirty == current.cli_dirty
+                // Same user/kmod content despite different commit.
+                return recorded.user_dirty == current.user_dirty
                     && recorded.kmod_dirty == current.kmod_dirty;
             }
             _ => return false,
@@ -1853,4 +1854,20 @@ fn find_pdftoppm_output(prefix: &Path) -> Result<PathBuf> {
         }
     }
     bail!("pdftoppm output not found for {}", prefix.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RepoState;
+
+    #[test]
+    fn repo_state_deserializes_legacy_cli_dirty_field() {
+        let state: RepoState =
+            serde_json::from_str(r#"{"commit":"deadbeef","cli_dirty":true,"kmod_dirty":false}"#)
+                .expect("legacy repo state should deserialize");
+
+        assert_eq!(state.commit, "deadbeef");
+        assert!(state.user_dirty);
+        assert!(!state.kmod_dirty);
+    }
 }

@@ -7,9 +7,9 @@ TARGET_DIR       := $(CURDIR)-target
 
 # ── Build ─────────────────────────────────────────────────────────────
 
-.PHONY: build cli kmod clean
+.PHONY: build user kmod clean
 
-build: cli kmod
+build: user kmod
 
 $(TARGET_DIR):
 	mkdir -p $@
@@ -17,7 +17,7 @@ $(TARGET_DIR):
 clean:
 	rm -rf $(TARGET_DIR)
 
-cli: | $(TARGET_DIR)
+user: | $(TARGET_DIR)
 	cargo build --release -p agfs
 
 kmod: $(KMOD_OUT)
@@ -32,7 +32,7 @@ $(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(TARGET_DIR)
 
 .PHONY: install uninstall
 
-install: cli kmod
+install: user kmod
 	sudo install -m 4755 -o root target/release/agfs /usr/local/bin/agfs
 	sudo install -d $(KMOD_INSTALL_DIR)
 	sudo install -m 644 $(KMOD_OUT) $(KMOD_INSTALL_DIR)/agfs.ko

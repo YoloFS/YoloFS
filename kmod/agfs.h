@@ -140,8 +140,8 @@ struct agfs_perm_request {
 
 enum agfs_target {
 	AGFS_TARGET_INODE	= 1,	/* staged inode in flat file store */
-	AGFS_TARGET_PATH	= 2,	/* redirect to different base path */
-	AGFS_TARGET_NONE	= 3,	/* content absent (negative dentry) */
+	AGFS_TARGET_PATH	= 2,	/* redirect to base path (also ground state) */
+	AGFS_TARGET_NONE	= 3,	/* tombstone (pinned negative dentry) */
 };
 
 /* ── Ask Protocol Engine ───────────────────────────────────────────── */
@@ -211,7 +211,6 @@ struct agfs_dentry_info {
 	spinlock_t		lock;
 	struct path		lower_path;	/* resolved lower path (inode entry or base) */
 	enum agfs_target	target;		/* where content lives */
-	bool			in_base;	/* path has content in base filesystem */
 	bool			pinned;		/* held via dget by staging */
 	enum agfs_perm		perm;		/* NONE unless explicit rule */
 	struct list_head	rule_pin;	/* node in sbi->pinned_rules */
@@ -368,19 +367,19 @@ extern const struct file_operations agfs_dir_fops;
 extern const struct dentry_operations agfs_dops;
 int agfs_init_dentry_cache(void);
 void agfs_destroy_dentry_cache(void);
-struct dentry *agfs_dentry_alloc(struct dentry *parent,
-				 const char *name, unsigned int len);
-void agfs_dentry_set(struct dentry *dentry, enum agfs_target target,
-		     bool in_base);
-void agfs_dentry_reset(struct dentry *dentry);
-void agfs_dentry_reset_all(struct super_block *sb);
+int agfs_dentry_interpose(struct dentry *dentry, struct path *lower_path);
+struct dentry *agfs_dentry_create(struct dentry *parent,
+				  const char *name, unsigned int len,
+				  enum agfs_target target,
+				  struct path *lower_path);
+void agfs_dentry_pin(struct dentry *dentry, enum agfs_target target);
+void agfs_dentry_unpin(struct dentry *dentry);
+void agfs_dentry_unpin_all(struct super_block *sb);
 
 /* lookup.c */
 struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 			   unsigned int flags);
 struct inode *agfs_iget(struct super_block *sb, struct inode *lower_inode);
-int agfs_interpose(struct dentry *dentry, struct super_block *sb,
-		   struct path *lower_path);
 
 /* staging.c */
 int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,
@@ -395,14 +394,10 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 int agfs_journal_open(struct agfs_sb_info *sbi);
 int agfs_journal_add(struct agfs_sb_info *sbi, struct dentry *dentry,
 		       u32 ino, unsigned char d_type);
-int agfs_journal_modify(struct agfs_sb_info *sbi, struct dentry *dentry,
-			  u32 ino, unsigned char d_type);
 int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry,
 			 unsigned char d_type);
 int agfs_journal_rename(struct agfs_sb_info *sbi, struct dentry *old_dentry,
 			  struct dentry *new_dentry, unsigned char d_type);
-int agfs_journal_replace(struct agfs_sb_info *sbi, struct dentry *old_dentry,
-			   struct dentry *new_dentry, unsigned char d_type);
 int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u16 id, const char *name);
 int agfs_journal_restore(struct agfs_sb_info *sbi, u16 gen, u16 target_gen);
 

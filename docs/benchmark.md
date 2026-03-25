@@ -389,11 +389,11 @@ when compiled with debug assertions so benchmark numbers do not come from an
 unoptimized runner.
 
 Each recorded backend result also stores the repository commit plus whether
-`cli/` and `kmod/` were dirty at run time. The HTML report compares those
+`user/` and `kmod/` were dirty at run time. The HTML report compares those
 recorded states against the current checkout and marks each workload as fresh
 or stale. A plain `HEAD` change does not make a result stale by itself: the
-report asks git whether `cli/` or `kmod/` actually differ between the recorded
-commit and the current one, and also tracks `cli/` / `kmod/` dirty/clean
+report asks git whether `user/` or `kmod/` actually differ between the recorded
+commit and the current one, and also tracks `user/` / `kmod/` dirty/clean
 transitions.
 
 ---
@@ -730,11 +730,9 @@ kfunctions via BTF (`kfunc`/`kretfunc` probes):
 | `agfs_do_cow` | Copy-on-write execution (at open time) |
 | `agfs_staging_alloc` | Inode allocation in inode store |
 | `agfs_readdir` | Directory listing merged from base + staging |
-| `agfs_journal_add` | Journal A record for new entry (create/mkdir/symlink) |
-| `agfs_journal_modify` | Journal M record for modified entry (COW) |
+| `agfs_journal_add` | Journal A record for staged entry (create/mkdir/symlink/COW) |
 | `agfs_journal_delete` | Journal D record for deletion |
-| `agfs_journal_rename` | Journal R record for rename (destination is new) |
-| `agfs_journal_replace` | Journal P record for replace (destination existed in base) |
+| `agfs_journal_rename` | Journal R record for rename |
 | `agfs_journal_checkpoint` | Journal K record for checkpoint |
 | `agfs_release` | File release |
 | `agfs_fill_base` | Readdir phase-2 base-entry dedup |

@@ -121,14 +121,14 @@ Important details:
 
 ## Changes by area
 
-### CLI — `cli/journal/dentry.rs`
+### CLI — `user/journal/dentry.rs`
 
 - Replace the old 4-variant dentry enum with `struct Dentry` plus `enum Target`.
 - Drop `dtype` from resolved dentries.
 - Add `Dentry::passthrough()` and `is_passthrough()`.
 - Keep `ino()` and `matches_path()` as target-based helpers.
 
-### CLI — `cli/journal/tree.rs`
+### CLI — `user/journal/tree.rs`
 
 - Keep `DirNode::Dir(Dentry, DirTree)`; passthrough is represented by the
   dentry value, not by `Option<Dentry>`.
@@ -147,7 +147,7 @@ Important details:
 - Serialize passthrough scaffolds as `Target::Path(None)` with empty path.
 - Do not serialize empty passthrough dirs.
 
-### CLI — `cli/cmd/diff.rs`, `cli/cmd/restore.rs`, tests
+### CLI — `user/cmd/diff.rs`, `user/cmd/restore.rs`, tests
 
 - Match on `target` and `in_base`, not legacy enum variants.
 - Use `DirNode` shape when tests need to distinguish directories from leaves.

@@ -2,7 +2,7 @@
 
 ## Scope
 
-- This file applies to the AgFS implementation work: `kmod/`, `cli/`, `tests/`,
+- This file applies to the AgFS implementation work: `kmod/`, `user/`, `tests/`,
   `docs/`, and related implementation and benchmark code.
 - It does **not** apply to the paper-related directories (`paper/`,
   `paper-plan/`, `paper-study/`) or the evaluation/result directories
@@ -31,7 +31,7 @@
 ## Project Structure
 
 - **kmod/** — Linux kernel module (C). Build with `make kmod`.
-- **cli/** — Userspace CLI (Rust). Build with `make cli`.
+- **user/** — Userspace CLI (Rust). Build with `make user`.
   Unit tests live inline via `#[cfg(test)]` in each module.
 - **tests/** — E2E / integration tests.
   - `tests/fs/` — black-box filesystem behavior through the mount via `std::fs`.
@@ -43,7 +43,7 @@
 ## Build & Test
 
 ```bash
-make vm-build     # build cli + kmod
+make vm-build     # build user + kmod
 make vm-test      # unit + e2e tests (auto-starts VM if needed)
 make vm-test-unit # unit tests only
 make vm-test-e2e  # e2e tests only

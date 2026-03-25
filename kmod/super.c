@@ -384,7 +384,7 @@ static void agfs_kill_super(struct super_block *sb)
 			dput(sbi->ctl_dentry);
 			sbi->ctl_dentry = NULL;
 		}
-		agfs_dentry_reset_all(sb);
+		agfs_dentry_unpin_all(sb);
 	}
 
 	kill_anon_super(sb);

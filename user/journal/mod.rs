@@ -9,7 +9,6 @@
 //   journal   — Journal (segments + markers + precomputed liveness, borrowing filters)
 //   tree      — DirTree builder: apply actions → dir tree, walk for display/restore
 pub(crate) mod core;
-pub mod dentry;
 
 pub mod markers;
 mod parse;
@@ -17,7 +16,6 @@ pub mod tree;
 pub mod types;
 
 pub use self::core::Journal;
-pub use dentry::{Dentry, Target};
 pub use markers::Markers;
 pub use tree::{DirNode, DirTree};
 pub use types::*;

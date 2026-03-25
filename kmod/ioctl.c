@@ -424,37 +424,6 @@ struct dir_frame {
 };
 
 /*
- * Allocate a child dentry under @parent, wire up the lower path,
- * create an agfs inode, and splice the result into the dcache.
- * On success the caller loses ownership of @lower_path.
- */
-static int restore_add_dentry(struct dentry *parent,
-			      const u8 *name_ptr, u16 name_len,
-			      struct path *lower_path,
-			      enum agfs_target target, bool in_base, u16 gen)
-{
-	struct dentry *child;
-	struct inode *inode;
-
-	child = agfs_dentry_alloc(parent, (const char *)name_ptr, name_len);
-	if (!child) {
-		path_put(lower_path);
-		return -ENOMEM;
-	}
-	agfs_set_lower_path(child, lower_path);
-	agfs_dentry_set(child, target, in_base);
-	inode = agfs_iget(parent->d_sb, d_inode(lower_path->dentry));
-	if (IS_ERR(inode)) {
-		dput(child);
-		return PTR_ERR(inode);
-	}
-	if (target == AGFS_TARGET_INODE)
-		AGFS_I(inode)->staging_gen = gen;
-	d_add(child, inode);
-	return 0;
-}
-
-/*
  * Parse the target-specific payload from @cur and inject the corresponding
  * dentry under @parent.  Scaffold (tag 0) entries have no payload.
  */
@@ -465,27 +434,14 @@ static int restore_inject_entry(struct tree_cursor *cur,
 				u8 target, u16 gen)
 {
 	struct path lower_path;
-	u8 in_base_byte;
-	bool in_base;
+	struct dentry *child;
 	int err;
 
-	/* in_base always follows the target byte */
-	err = read_u8(cur, &in_base_byte);
-	if (err || in_base_byte > 1)
-		return err ?: -EINVAL;
-	in_base = in_base_byte;
-
 	switch (target) {
-	case AGFS_TARGET_NONE: { /* negative dentry */
-		struct dentry *d;
-
-		d = agfs_dentry_alloc(parent, (const char *)name_ptr,
-				      name_len);
-		if (!d)
-			return -ENOMEM;
-		agfs_dentry_set(d, AGFS_TARGET_NONE, in_base);
-		d_add(d, NULL);
-		return 0;
+	case AGFS_TARGET_NONE: { /* tombstone */
+		child = agfs_dentry_create(parent, (const char *)name_ptr,
+					   name_len, AGFS_TARGET_NONE, NULL);
+		return IS_ERR(child) ? PTR_ERR(child) : 0;
 	}
 
 	case AGFS_TARGET_INODE: { /* staged inode */
@@ -497,9 +453,13 @@ static int restore_inject_entry(struct tree_cursor *cur,
 		err = agfs_inode_path(sbi, ino, &lower_path);
 		if (err)
 			return err;
-		return restore_add_dentry(parent, name_ptr, name_len,
-					  &lower_path, AGFS_TARGET_INODE,
-					  in_base, gen);
+		child = agfs_dentry_create(parent, (const char *)name_ptr,
+					   name_len, AGFS_TARGET_INODE,
+					   &lower_path);
+		if (IS_ERR(child))
+			return PTR_ERR(child);
+		AGFS_I(d_inode(child))->staging_gen = gen;
+		return 0;
 	}
 
 	case AGFS_TARGET_PATH: { /* redirect, or passthrough if path_len == 0 */
@@ -525,9 +485,10 @@ static int restore_inject_entry(struct tree_cursor *cur,
 		err = kern_path(path_buf, LOOKUP_FOLLOW, &lower_path);
 		if (err)
 			return err;
-		return restore_add_dentry(parent, name_ptr, name_len,
-					  &lower_path, AGFS_TARGET_PATH,
-					  in_base, gen);
+		child = agfs_dentry_create(parent, (const char *)name_ptr,
+					   name_len, AGFS_TARGET_PATH,
+					   &lower_path);
+		return IS_ERR(child) ? PTR_ERR(child) : 0;
 	}
 
 	default:
@@ -676,7 +637,7 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 
 	/* Wipe perm caches, pinned dentries, dentry cache */
 	atomic64_inc(&sbi->perm_gen);
-	agfs_dentry_reset_all(sb);
+	agfs_dentry_unpin_all(sb);
 
 	if (hdr.target_gen == 0) {
 		/* Reset mode (commit/abort): no entries, no journal write */

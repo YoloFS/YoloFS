@@ -7,7 +7,7 @@
 // `--to <name>` — diff changes up to a marker.
 // `--from <name> --to <name>` — diff changes between two markers.
 
-use crate::journal::{Dentry, DirTree, Journal, Marker, Target};
+use crate::journal::{DirTree, Journal, Marker, Target};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -68,15 +68,16 @@ fn print_segment_footer(closing: &Option<(u64, String)>) {
 
 // ── Per-change printing (summary vs verbose) ─────────────────────────
 
-fn print_change(agfs: &Path, path: &str, dentry: &Dentry, verbose: bool) {
-    match (&dentry.target, dentry.in_base) {
-        (Target::Inode(ino), false) => {
+fn print_change(agfs: &Path, path: &str, target: &Target, verbose: bool) {
+    let base_exists = crate::utils::to_base_path(path).exists();
+    match target {
+        Target::Inode(ino) if !base_exists => {
             println!("{} {}", path.bold(), "(added)".green());
             if verbose {
                 print_unified_diff("", &read_inode(agfs, *ino));
             }
         }
-        (Target::Inode(ino), true) => {
+        Target::Inode(ino) => {
             if verbose {
                 let old_text = read_base(path);
                 let new_text = read_inode(agfs, *ino);
@@ -88,16 +89,17 @@ fn print_change(agfs: &Path, path: &str, dentry: &Dentry, verbose: bool) {
                 println!("{} {}", path.bold(), "(modified)".yellow());
             }
         }
-        (Target::None, _) => {
+        Target::None if base_exists => {
             println!("{} {}", path.bold(), "(deleted)".red());
             if verbose {
                 print_unified_diff(&read_base(path), "");
             }
         }
-        (Target::Path(Some(src)), _) => {
+        Target::None => {} // spurious tombstone — staged-only file deleted; skip
+        Target::Path(Some(src)) => {
             println!("{} → {} {}", src.bold(), path.bold(), "(renamed)".cyan());
         }
-        (Target::Path(None), _) => {} // passthrough — should not appear in iteration
+        Target::Path(None) => {} // passthrough — should not appear in iteration
     }
 }
 
@@ -157,8 +159,8 @@ fn run(
         let count = match path {
             Some(target) => {
                 let mut n = 0usize;
-                tree.for_each(|p, d| {
-                    if d.matches_path(p, target) {
+                tree.for_each(|p, t| {
+                    if t.matches_path(p, target) {
                         n += 1;
                     }
                 });
@@ -177,9 +179,9 @@ fn run(
             }
         }
 
-        tree.for_each(|p, dentry| {
-            if path.is_none() || dentry.matches_path(p, path.unwrap()) {
-                print_change(&agfs, p, dentry, verbose);
+        tree.for_each(|p, target| {
+            if path.is_none() || target.matches_path(p, path.unwrap()) {
+                print_change(&agfs, p, target, verbose);
             }
         });
         total += count;
@@ -225,18 +227,18 @@ fn range_label(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{Dentry, Target};
+    use crate::journal::Target;
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::TempDir;
 
     fn state_map<'a>(
         agfs: &Path,
-        dentries: &'a [(String, Dentry)],
+        entries: &'a [(String, Target)],
     ) -> BTreeMap<&'a str, Option<String>> {
         let mut map = BTreeMap::new();
-        for (path, dentry) in dentries {
-            match &dentry.target {
+        for (path, target) in entries {
+            match target {
                 Target::Inode(ino) => {
                     map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
                 }
@@ -275,13 +277,7 @@ mod tests {
     #[test]
     fn state_map_added() {
         let tmp = make_agfs(&[(1, "hello\n")]);
-        let dentries = vec![(
-            "/src/main.rs".into(),
-            Dentry {
-                target: Target::Inode(1),
-                in_base: false,
-            },
-        )];
+        let dentries = vec![("/src/main.rs".into(), Target::Inode(1))];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/src/main.rs"], Some("hello\n".into()));
@@ -290,13 +286,7 @@ mod tests {
     #[test]
     fn state_map_modified() {
         let tmp = make_agfs(&[(5, "new content")]);
-        let dentries = vec![(
-            "/etc/config".into(),
-            Dentry {
-                target: Target::Inode(5),
-                in_base: true,
-            },
-        )];
+        let dentries = vec![("/etc/config".into(), Target::Inode(5))];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/etc/config"], Some("new content".into()));
@@ -305,13 +295,7 @@ mod tests {
     #[test]
     fn state_map_deleted() {
         let tmp = make_agfs(&[]);
-        let dentries = vec![(
-            "/old/file.txt".into(),
-            Dentry {
-                target: Target::None,
-                in_base: true,
-            },
-        )];
+        let dentries = vec![("/old/file.txt".into(), Target::None)];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/old/file.txt"], None);
@@ -322,14 +306,11 @@ mod tests {
         // Renamed reads base content via read_base(from). Since the `from` path
         // won't exist on the real filesystem, read_file_lossy returns "".
         let tmp = make_agfs(&[]);
-        let dentries = vec![(
+        let entries = vec![(
             "/nonexistent/new.rs".into(),
-            Dentry {
-                target: Target::Path(Some("/nonexistent/old.rs".into())),
-                in_base: false,
-            },
+            Target::Path(Some("/nonexistent/old.rs".into())),
         )];
-        let map = state_map(tmp.path(), &dentries);
+        let map = state_map(tmp.path(), &entries);
         assert_eq!(map.len(), 2);
         assert_eq!(map["/nonexistent/old.rs"], None);
         // read_base on a missing path returns ""
@@ -339,23 +320,14 @@ mod tests {
     #[test]
     fn state_map_renamed_modified() {
         let tmp = make_agfs(&[(7, "modified content")]);
-        let dentries = vec![
+        let entries = vec![
             (
                 "/nonexistent/new.rs".into(),
-                Dentry {
-                    target: Target::Path(Some("/nonexistent/old.rs".into())),
-                    in_base: false,
-                },
+                Target::Path(Some("/nonexistent/old.rs".into())),
             ),
-            (
-                "/nonexistent/new.rs".into(),
-                Dentry {
-                    target: Target::Inode(7),
-                    in_base: true,
-                },
-            ),
+            ("/nonexistent/new.rs".into(), Target::Inode(7)),
         ];
-        let map = state_map(tmp.path(), &dentries);
+        let map = state_map(tmp.path(), &entries);
         assert_eq!(map.len(), 2);
         assert_eq!(map["/nonexistent/old.rs"], None);
         assert_eq!(map["/nonexistent/new.rs"], Some("modified content".into()));
@@ -365,27 +337,9 @@ mod tests {
     fn state_map_multiple_changes() {
         let tmp = make_agfs(&[(1, "aaa"), (2, "bbb")]);
         let dentries = vec![
-            (
-                "/a.txt".into(),
-                Dentry {
-                    target: Target::Inode(1),
-                    in_base: false,
-                },
-            ),
-            (
-                "/b.txt".into(),
-                Dentry {
-                    target: Target::Inode(2),
-                    in_base: true,
-                },
-            ),
-            (
-                "/c.txt".into(),
-                Dentry {
-                    target: Target::None,
-                    in_base: true,
-                },
-            ),
+            ("/a.txt".into(), Target::Inode(1)),
+            ("/b.txt".into(), Target::Inode(2)),
+            ("/c.txt".into(), Target::None),
         ];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 3);

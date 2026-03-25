@@ -3,11 +3,9 @@
 // Parse the append-only journal file.
 //
 // Record format (NUL-separated fields, newline-terminated):
-//   A\0<path>\0<dtype>\0<ino>\n       — Add (new path)
-//   M\0<path>\0<dtype>\0<ino>\n       — Modify (existing path)
+//   A\0<path>\0<dtype>\0<ino>\n       — Add (staged content at path)
 //   D\0<path>\0<dtype>\n              — Delete
-//   R\0<dst>\0<src>\0<dtype>\n         — Rename (destination is new)
-//   P\0<dst>\0<src>\0<dtype>\n         — Replace (destination existed in base)
+//   R\0<dst>\0<src>\0<dtype>\n         — Rename
 //   K\0<gen>\0<name>\n                — Checkpoint
 //   T\0<gen>\0<target_gen>\n          — Restore
 
@@ -56,11 +54,7 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
                 let ino_str = String::from_utf8_lossy(fields[3]);
 
                 if let Ok(ino) = ino_str.parse::<u32>() {
-                    if tag == b"A" {
-                        records.push(Record::Action(Action::Add { path, dtype, ino }));
-                    } else {
-                        records.push(Record::Action(Action::Modify { path, dtype, ino }));
-                    }
+                    records.push(Record::Action(Action::Add { path, dtype, ino }));
                 }
             }
             b"D" if fields.len() >= 3 => {
@@ -73,11 +67,7 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
                 let src = field_str(fields[2]);
                 let dtype = parse_dtype(fields[3]);
 
-                if tag == b"R" {
-                    records.push(Record::Action(Action::Rename { src, dst, dtype }));
-                } else {
-                    records.push(Record::Action(Action::Replace { src, dst, dtype }));
-                }
+                records.push(Record::Action(Action::Rename { src, dst, dtype }));
             }
             b"K" if fields.len() >= 3 => {
                 let gen_str = String::from_utf8_lossy(fields[1]);
@@ -129,11 +119,12 @@ mod tests {
 
     #[test]
     fn parse_modified_record() {
+        // M records are parsed as Add (M/A merged)
         let records = parse(b"M\0/src/main.rs\08\03\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
-            matches!(&records[0], Record::Action(Action::Modify { path, ino: 3, dtype: Some(libc::DT_REG) }) if path == "/src/main.rs"),
-            "M record should parse as Modify, got: {:?}",
+            matches!(&records[0], Record::Action(Action::Add { path, ino: 3, dtype: Some(libc::DT_REG) }) if path == "/src/main.rs"),
+            "M record should parse as Add, got: {:?}",
             records[0]
         );
     }
@@ -269,15 +260,16 @@ mod tests {
 
     #[test]
     fn parse_replace_record() {
+        // P records are parsed as Rename (P/R merged)
         let records = parse(b"P\0/dir/newfile\0/dir/oldfile\08\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
             matches!(
                 &records[0],
-                Record::Action(Action::Replace { dst, src, dtype: Some(libc::DT_REG) })
+                Record::Action(Action::Rename { dst, src, dtype: Some(libc::DT_REG) })
                     if dst == "/dir/newfile" && src == "/dir/oldfile"
             ),
-            "P record should parse as Replace, got: {:?}",
+            "P record should parse as Rename, got: {:?}",
             records[0]
         );
     }

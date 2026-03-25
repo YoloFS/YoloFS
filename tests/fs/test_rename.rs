@@ -466,7 +466,7 @@ fn rename_staged_file_to_new_path_commit() {
 }
 
 /// Create a staged file and rename it to overwrite a base file, then commit.
-/// Tests the DEL + MOD path: the base file is replaced with staged content.
+/// The base file is replaced with staged content.
 #[test]
 fn rename_staged_file_overwrite_base_commit() {
     let s = AgfsSession::new().expect("session setup");
@@ -492,28 +492,30 @@ fn rename_staged_file_overwrite_base_commit() {
     );
 }
 
-/// Complex multi-operation scenario exercising the ADD/MOD/DEL/RDR journal format,
+/// Complex multi-operation scenario exercising the ADD/DEL/RNM journal format,
 /// resolver edge cases, and commit correctness in a single session.
 ///
 /// Base files: hello.txt, multi.txt, subdir/deep.txt, test.sh
 ///
 /// Operations (grouped by the edge case they exercise):
-///   1. Modify hello.txt (COW → MOD record)
+///   1. Modify hello.txt (COW → A record)
 ///   2. Create brand_new.txt then rename it to multi.txt
-///      (staged rename to base path → DEL + MOD; overwrites base file)
-///   3. Create temp.txt then delete it (ADD + DEL cancel out)
-///   4. Rename subdir/deep.txt → subdir/shallow.txt (base rename → DEL + RDR)
-///   5. Rename subdir/shallow.txt → top.txt (second rename → DEL + RDR)
+///      (staged rename to base path; overwrites base file)
+///   3. Create temp.txt then delete it (ADD + DEL → cancel)
+///   4. Rename subdir/deep.txt → subdir/shallow.txt (base rename → tombstone + redirect)
+///   5. Rename subdir/shallow.txt → top.txt (second rename → tombstone + redirect)
 ///   6. Create link.txt as symlink (A with dtype=Link)
-///   7. Modify hello.txt again (second COW → M; multiple modifies keep final ino)
+///   7. Modify hello.txt again (second COW → A; multiple COWs keep final ino)
 ///
 /// Expected resolved state before commit:
-///   - Modified(hello.txt)           — double COW, final ino wins
-///   - Modified(multi.txt)           — staged file overwrote base via rename
+///   - Inode(hello.txt)               — double COW, final ino wins
+///   - Inode(multi.txt)               — staged file overwrote base via rename
 ///   - Renamed(subdir/shallow.txt → top.txt) — second rename
-///   - Deleted(subdir/deep.txt)      — first rename source
-///   - Added(link.txt)               — new symlink
-///   - (temp.txt absent)             — ADD + DEL cancelled
+///   - Deleted(subdir/deep.txt)       — first rename source
+///   - Added(link.txt)                — new symlink
+///   - Tombstone(temp.txt)            — spurious (never in base), harmless
+///   - Tombstone(brand_new.txt)       — spurious (staged-only rename source)
+///   - Tombstone(subdir/shallow.txt)  — spurious (intermediate rename)
 ///
 /// After commit all dirents are applied to base.
 #[test]
@@ -523,7 +525,7 @@ fn complex_multi_operation_commit() {
     // ── 1. COW modify hello.txt ──
     fs::write(s.mnt_path("hello.txt"), "first edit\n").expect("write hello v1");
 
-    // ── 2. Create staged file, rename onto base file (DEL + MOD path) ──
+    // ── 2. Create staged file, rename onto base file ──
     fs::write(s.mnt_path("brand_new.txt"), "replacement\n").expect("create brand_new");
     fs::rename(s.mnt_path("brand_new.txt"), s.mnt_path("multi.txt"))
         .expect("rename brand_new → multi");
@@ -544,7 +546,7 @@ fn complex_multi_operation_commit() {
     // ── 6. Create a symlink (ADD record, dtype=Link) ──
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
 
-    // ── 7. Second COW on hello.txt (multiple MOD records → final ino wins) ──
+    // ── 7. Second COW on hello.txt (multiple A records → final ino wins) ──
     fs::write(s.mnt_path("hello.txt"), "second edit\n").expect("write hello v2");
 
     // ── Verify mount view before commit ──
@@ -581,7 +583,7 @@ fn complex_multi_operation_commit() {
 
     // ── Verify resolved dirents ──
     use agfs::journal;
-    use agfs::journal::{Dentry, Target};
+    use agfs::journal::Target;
 
     let agfs_dir = s.root.join(".agfs");
     let journal_obj = journal::Journal::read(&agfs_dir).expect("read journal");
@@ -597,60 +599,32 @@ fn complex_multi_operation_commit() {
         mut has_brand_new,
     ) = (false, false, false, false, false, false, false);
 
-    t.for_each(|path, dentry| {
-        if matches!(
-            dentry,
-            Dentry {
-                target: Target::Inode(_),
-                in_base: true,
-                ..
-            }
-        ) && path.ends_with("/hello.txt")
-        {
+    t.for_each(|path, target| {
+        if matches!(target, Target::Inode(_)) && path.ends_with("/hello.txt") {
             has_modified_hello = true;
         }
-        if matches!(
-            dentry,
-            Dentry {
-                target: Target::Inode(_),
-                in_base: true,
-                ..
-            }
-        ) && path.ends_with("/multi.txt")
-        {
+        if matches!(target, Target::Inode(_)) && path.ends_with("/multi.txt") {
             has_modified_multi = true;
         }
         // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
         // Tree builder preserves original base path through rename chains.
-        if let Target::Path(Some(src)) = &dentry.target {
+        if let Target::Path(Some(src)) = target {
             if src.ends_with("/subdir/deep.txt") && path.ends_with("/top.txt") {
                 has_renamed_deep_to_top = true;
             }
-            if src.ends_with("/temp.txt") {
-                has_temp = true;
-            }
-            if src.ends_with("/brand_new.txt") {
-                has_brand_new = true;
-            }
         }
-        if matches!(dentry.target, Target::None) && path.ends_with("/deep.txt") {
+        if matches!(target, Target::None) && path.ends_with("/deep.txt") {
             has_deleted_deep = true;
         }
-        if matches!(
-            dentry,
-            Dentry {
-                target: Target::Inode(_),
-                in_base: false,
-                ..
-            }
-        ) && path.ends_with("/link.txt")
-        {
+        if matches!(target, Target::Inode(_)) && path.ends_with("/link.txt") {
             has_added_link = true;
         }
-        if path.ends_with("/temp.txt") {
+        // Check temp.txt/brand_new.txt: only as tombstones (spurious), not as
+        // redirects or inodes.
+        if path.ends_with("/temp.txt") && !matches!(target, Target::None) {
             has_temp = true;
         }
-        if path.ends_with("/brand_new.txt") {
+        if path.ends_with("/brand_new.txt") && !matches!(target, Target::None) {
             has_brand_new = true;
         }
     });
@@ -663,10 +637,13 @@ fn complex_multi_operation_commit() {
     );
     assert!(has_deleted_deep, "expected Deleted(deep.txt): {t:?}");
     assert!(has_added_link, "expected Added(link.txt): {t:?}");
-    assert!(!has_temp, "temp.txt should have cancelled out (A+D): {t:?}");
+    assert!(
+        !has_temp,
+        "temp.txt should only appear as a tombstone (if at all): {t:?}"
+    );
     assert!(
         !has_brand_new,
-        "brand_new.txt should not appear (staged rename absorbed): {t:?}"
+        "brand_new.txt should only appear as a tombstone (if at all): {t:?}"
     );
 
     // ── Commit and verify base ──
@@ -826,7 +803,7 @@ fn rename_chain_follows_link_base_path() {
     );
 }
 
-/// Replace /a → /b (overwrite) then delete /b. Both /a and /b had base
+/// Rename /a → /b (overwrite) then delete /b. Both /a and /b had base
 /// content, so both must have tombstones. Without the tombstone at /b,
 /// the base content would reappear after restore.
 #[test]
@@ -859,5 +836,99 @@ fn replace_then_delete_tombstones_both() {
     assert!(
         !s.mnt_path("multi.txt").exists(),
         "multi.txt should be hidden after restore (tombstone must survive)"
+    );
+}
+
+/// Rename a base directory, then delete a child file inside it.
+/// This is the motivating case for dropping `in_base`: the kernel cannot
+/// efficiently update cached children when a directory moves, so
+/// always-tombstone ensures the child delete is correct regardless.
+#[test]
+fn rename_dir_then_delete_child() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // subdir/deep.txt exists in base
+    assert!(s.mnt_path("subdir/deep.txt").exists());
+
+    // Rename the directory
+    fs::rename(s.mnt_path("subdir"), s.mnt_path("newdir")).expect("rename dir");
+
+    // Delete the child through the new path
+    fs::remove_file(s.mnt_path("newdir/deep.txt")).expect("delete child");
+
+    // Child should be gone
+    assert!(
+        !s.mnt_path("newdir/deep.txt").exists(),
+        "deleted child should not be visible"
+    );
+
+    // Original path should also be gone (tombstone at subdir)
+    assert!(
+        !s.mnt_path("subdir").exists(),
+        "old directory name should not exist"
+    );
+
+    // Commit and verify base state
+    s.cli(&["commit"]).expect("commit");
+    assert!(
+        !s.base_path("subdir").exists(),
+        "old dir should be removed from base"
+    );
+    assert!(
+        s.base_path("newdir").exists(),
+        "new dir should exist in base"
+    );
+    assert!(
+        !s.base_path("newdir/deep.txt").exists(),
+        "deleted child should not exist in base"
+    );
+}
+
+/// Deep nesting: create a multi-level directory tree, rename the top-level
+/// directory, then perform mixed operations on children at various depths.
+#[test]
+fn rename_deep_dir_then_mixed_child_ops() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // Build a deep tree: a/b/c/d.txt, a/b/e.txt
+    fs::create_dir_all(s.mnt_path("a/b/c")).expect("mkdir -p a/b/c");
+    fs::write(s.mnt_path("a/b/c/d.txt"), "deep leaf\n").expect("create d.txt");
+    fs::write(s.mnt_path("a/b/e.txt"), "mid leaf\n").expect("create e.txt");
+
+    // Commit so these become base files
+    s.cli(&["commit"]).expect("commit initial tree");
+
+    // Rename top-level directory
+    fs::rename(s.mnt_path("a"), s.mnt_path("moved")).expect("rename a → moved");
+
+    // Delete the deep child
+    fs::remove_file(s.mnt_path("moved/b/c/d.txt")).expect("delete deep child");
+
+    // Modify the mid-level child
+    fs::write(s.mnt_path("moved/b/e.txt"), "modified mid leaf\n").expect("modify mid child");
+
+    // Verify through mount
+    assert!(
+        !s.mnt_path("moved/b/c/d.txt").exists(),
+        "deleted deep child should not be visible"
+    );
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("moved/b/e.txt")).unwrap(),
+        "modified mid leaf\n"
+    );
+    assert!(!s.mnt_path("a").exists(), "old directory should not exist");
+
+    // Commit and verify base state
+    s.cli(&["commit"]).expect("commit");
+    assert!(!s.base_path("a").exists(), "old dir removed from base");
+    assert!(s.base_path("moved/b/c").exists(), "nested dir preserved");
+    assert!(
+        !s.base_path("moved/b/c/d.txt").exists(),
+        "deep child deleted in base"
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("moved/b/e.txt")).unwrap(),
+        "modified mid leaf\n",
+        "mid child modified in base"
     );
 }

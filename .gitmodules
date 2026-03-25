@@ -1,9 +1,3 @@
-[submodule "third_party/codex"]
-	path = eval/third_party/codex
-	url = https://github.com/openai/codex
-[submodule "third_party/opencode"]
-	path = eval/third_party/opencode
-	url = https://github.com/anomalyco/opencode
 [submodule "results-bench"]
 	path = results-bench
 	url = git@github.com:ShawnZhong/Agfs-Bench-Results.git

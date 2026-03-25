@@ -691,23 +691,23 @@ fn repo_state_drift(recorded: &RepoState, current: &RepoState) -> Vec<String> {
     if recorded.commit != current.commit {
         match crate::repo_paths_changed_between(&recorded.commit, &current.commit) {
             Ok(true) => reasons.push(format!(
-                "cli/ or kmod/ changed between {} and {}",
+                "user/ or kmod/ changed between {} and {}",
                 short_commit(&recorded.commit),
                 short_commit(&current.commit)
             )),
             Ok(false) => {}
             Err(_) => reasons.push(format!(
-                "could not compare cli/ and kmod/ between {} and {}",
+                "could not compare user/ and kmod/ between {} and {}",
                 short_commit(&recorded.commit),
                 short_commit(&current.commit)
             )),
         }
     }
-    if recorded.cli_dirty != current.cli_dirty {
+    if recorded.user_dirty != current.user_dirty {
         reasons.push(format!(
-            "cli/ was {} and is now {}",
-            dirty_label(recorded.cli_dirty),
-            dirty_label(current.cli_dirty)
+            "user/ was {} and is now {}",
+            dirty_label(recorded.user_dirty),
+            dirty_label(current.user_dirty)
         ));
     }
     if recorded.kmod_dirty != current.kmod_dirty {
@@ -1525,9 +1525,9 @@ pub fn render_index(
     html.push_str(&format!("<tr><td>distro</td><td>{}</td></tr>\n", e.distro));
     if let Some(repo) = current_repo_state {
         html.push_str(&format!(
-            "<tr><td>repo</td><td>{} (cli: {}, kmod: {})</td></tr>\n",
+            "<tr><td>repo</td><td>{} (user: {}, kmod: {})</td></tr>\n",
             short_commit(&repo.commit),
-            dirty_label(repo.cli_dirty),
+            dirty_label(repo.user_dirty),
             dirty_label(repo.kmod_dirty)
         ));
     }
