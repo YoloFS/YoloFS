@@ -241,7 +241,9 @@ mod tests {
         assert_eq!(j.segments.len(), 3);
         assert_eq!(j.segments[0].from, 0);
         assert_eq!(j.segments[0].records.len(), 1);
-        assert!(matches!(&j.segments[0].records[0], Action::Stage { path, .. } if path == "/orphan"));
+        assert!(
+            matches!(&j.segments[0].records[0], Action::Stage { path, .. } if path == "/orphan")
+        );
         assert_eq!(j.segments[1].records.len(), 1);
         assert!(matches!(&j.segments[1].records[0], Action::Stage { path, .. } if path == "/a"));
     }

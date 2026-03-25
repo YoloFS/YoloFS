@@ -53,7 +53,9 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
 
 fn action_matches_path(action: &journal::Action, filter: &str) -> bool {
     match action {
-        journal::Action::Stage { path, .. } | journal::Action::Delete { path, .. } => path == filter,
+        journal::Action::Stage { path, .. } | journal::Action::Delete { path, .. } => {
+            path == filter
+        }
         journal::Action::Rename { dst, src, .. } => src == filter || dst == filter,
     }
 }

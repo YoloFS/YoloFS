@@ -177,7 +177,10 @@ mod tests {
         let records = parse(b"S\0/file\0\01\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
-            matches!(&records[0], Record::Action(Action::Stage { dtype: None, .. })),
+            matches!(
+                &records[0],
+                Record::Action(Action::Stage { dtype: None, .. })
+            ),
             "empty dtype field should parse as None, got: {:?}",
             records[0]
         );
@@ -188,7 +191,10 @@ mod tests {
         let records = parse(b"S\0/file\0x\01\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
-            matches!(&records[0], Record::Action(Action::Stage { dtype: None, .. })),
+            matches!(
+                &records[0],
+                Record::Action(Action::Stage { dtype: None, .. })
+            ),
             "invalid dtype char should parse as None, got: {:?}",
             records[0]
         );
@@ -252,5 +258,4 @@ mod tests {
             matches!(&records[0], Record::Action(Action::Delete { path, dtype: Some(libc::DT_REG) }) if path == "/foo")
         );
     }
-
 }
