@@ -41,9 +41,7 @@ impl MetaIndex {
         }
         let idx = gen_id as usize;
         match self.0.get(idx) {
-            Some(Meta::Mark { gen_id: g, .. } | Meta::Jump { gen_id: g, .. })
-                if *g == gen_id =>
-            {
+            Some(Meta::Mark { gen_id: g, .. } | Meta::Jump { gen_id: g, .. }) if *g == gen_id => {
                 Ok(*g)
             }
             _ => anyhow::bail!("meta not found: {gen_id}"),
@@ -77,9 +75,7 @@ impl MetaIndex {
     pub fn meta_at(&self, meta_idx: usize) -> Option<&Meta> {
         let m = self.0.get(meta_idx)?;
         match m {
-            Meta::Mark { gen_id, .. } | Meta::Jump { gen_id, .. } if *gen_id > 0 => {
-                Some(m)
-            }
+            Meta::Mark { gen_id, .. } | Meta::Jump { gen_id, .. } if *gen_id > 0 => Some(m),
             _ => None,
         }
     }
