@@ -54,7 +54,7 @@ pub fn run(marker_name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::journal::{Action, Dentry, DirNode, DirTree, Segment, Target};
+    use crate::journal::{Action, DirNode, DirTree, Segment, Target};
 
     fn build(actions: &[Action]) -> DirTree {
         DirTree::build(std::iter::once(Segment {
@@ -73,18 +73,14 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/src/main.rs"),
-            Some(Dentry {
-                target: Target::Inode(1),
-                in_base: false,
-                ..
-            })
+            Some(Target::Inode(1))
         ));
     }
 
     #[test]
     fn deleted_produces_tombstone_entry() {
         let tree = build(&[
-            Action::Modify {
+            Action::Add {
                 path: "/old.txt".into(),
                 ino: 1,
                 dtype: Some(libc::DT_REG),
@@ -97,10 +93,7 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/old.txt"),
-            Some(Dentry {
-                target: Target::None,
-                ..
-            })
+            Some(Target::None)
         ));
     }
 
@@ -114,13 +107,10 @@ mod tests {
 
         assert!(matches!(
             tree.get("/a.txt"),
-            Some(Dentry {
-                target: Target::None,
-                ..
-            })
+            Some(Target::None)
         ));
         assert!(
-            matches!(tree.get("/b.txt"), Some(Dentry { target: Target::Path(Some(src)), .. }) if src == "/a.txt")
+            matches!(tree.get("/b.txt"), Some(Target::Path(Some(src))) if src == "/a.txt")
         );
     }
 
@@ -132,7 +122,7 @@ mod tests {
                 dst: "/new.rs".into(),
                 dtype: Some(libc::DT_REG),
             },
-            Action::Modify {
+            Action::Add {
                 path: "/new.rs".into(),
                 ino: 5,
                 dtype: Some(libc::DT_REG),
@@ -141,17 +131,11 @@ mod tests {
 
         assert!(matches!(
             tree.get("/new.rs"),
-            Some(Dentry {
-                target: Target::Inode(5),
-                ..
-            })
+            Some(Target::Inode(5))
         ));
         assert!(matches!(
             tree.get("/old.rs"),
-            Some(Dentry {
-                target: Target::None,
-                ..
-            })
+            Some(Target::None)
         ));
     }
 

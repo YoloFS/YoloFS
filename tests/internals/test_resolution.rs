@@ -25,8 +25,8 @@ fn operations_produce_ordered_records() {
     // Verify each type is present
     assert!(
         recs.iter()
-            .any(|r| matches!(r, Record::Action(Action::Modify { .. }))),
-        "missing MOD: {recs:?}"
+            .any(|r| matches!(r, Record::Action(Action::Add { .. }))),
+        "missing A record: {recs:?}"
     );
     assert!(
         recs.iter()
@@ -51,7 +51,7 @@ fn operations_produce_ordered_records() {
         .unwrap();
     let add_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
+        .position(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/hello.txt")))
         .unwrap();
     let del_pos = recs
         .iter()
@@ -61,7 +61,7 @@ fn operations_produce_ordered_records() {
     assert!(chk_pos < del_pos, "Checkpoint s1 should precede Delete");
 }
 
-/// Writing to a renamed file: rename produces RDR, then write produces MOD at new path.
+/// Writing to a renamed file: rename produces R, then write produces A at new path.
 #[test]
 fn write_after_rename() {
     let s = AgfsSession::new().expect("session setup");
@@ -80,8 +80,8 @@ fn write_after_rename() {
     assert!(
         recs
             .iter()
-            .any(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/moved.txt"))),
-        "should have MOD record at new path: {recs:?}"
+            .any(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/moved.txt"))),
+        "should have A record at new path: {recs:?}"
     );
 
     // The rename should precede the write
@@ -91,11 +91,11 @@ fn write_after_rename() {
         .unwrap();
     let a_pos = recs
         .iter()
-        .rposition(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/moved.txt")))
+        .rposition(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/moved.txt")))
         .unwrap();
     assert!(
         r_pos < a_pos,
-        "Rename should precede the Modify at new path"
+        "Rename should precede the Add at new path"
     );
 }
 
@@ -145,7 +145,7 @@ fn create_then_delete() {
     );
 }
 
-/// Modify a base file, then delete it — produces ADD then DEL.
+/// Write to a base file, then delete it — produces A then DEL.
 #[test]
 fn modify_then_delete() {
     let s = AgfsSession::new().expect("session setup");
@@ -156,8 +156,8 @@ fn modify_then_delete() {
     let recs = records(&journal(&s));
     let a_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
-        .expect("missing MOD");
+        .position(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/hello.txt")))
+        .expect("missing A record");
     let d_pos = recs
         .iter()
         .position(|r| matches!(r, Record::Action(Action::Delete { path, .. }) if path.ends_with("/hello.txt")))
@@ -236,9 +236,9 @@ fn rename_emits_fused_redirect_record() {
     );
 }
 
-/// Overwrite rename (mv onto existing file) emits fused REP record.
+/// Overwrite rename (mv onto existing file) emits fused Rename record.
 #[test]
-fn rename_overwrite_emits_fused_replace_record() {
+fn rename_overwrite_emits_fused_rename_record() {
     let s = AgfsSession::new().expect("session setup");
 
     // hello.txt and multi.txt both exist in base
@@ -249,17 +249,17 @@ fn rename_overwrite_emits_fused_replace_record() {
 
     let replaces: Vec<_> = acts
         .iter()
-        .filter(|a| matches!(a, Action::Replace { .. }))
+        .filter(|a| matches!(a, Action::Rename { .. }))
         .collect();
     assert_eq!(
         replaces.len(),
         1,
-        "expected exactly 1 Replace record, got: {replaces:?}"
+        "expected exactly 1 Rename record, got: {replaces:?}"
     );
     assert!(
-        matches!(replaces[0], Action::Replace { src, dst, .. }
+        matches!(replaces[0], Action::Rename { src, dst, .. }
             if src.ends_with("/hello.txt") && dst.ends_with("/multi.txt")),
-        "Replace should carry both old and new paths: {:?}",
+        "Rename should carry both old and new paths: {:?}",
         replaces[0]
     );
 }

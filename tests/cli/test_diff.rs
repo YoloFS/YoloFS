@@ -108,6 +108,45 @@ fn diff_single_file_with_absolute_path() {
     );
 }
 
+/// Creating a staged-only file, then deleting it, should produce no diff
+/// output (the tombstone is spurious — nothing in base to hide).
+#[test]
+fn diff_spurious_tombstone_skipped() {
+    let s = AgfsSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("ephemeral.txt"), "temporary\n").unwrap();
+    fs::remove_file(s.mnt_path("ephemeral.txt")).unwrap();
+
+    let output = s.cli(&["diff"]).expect("diff");
+    assert!(
+        !output.contains("ephemeral.txt"),
+        "spurious tombstone should not appear in diff: {output}"
+    );
+}
+
+/// Verify that diff correctly derives "added" vs "modified" from the base
+/// filesystem: a new file shows as added, an overwritten base file shows
+/// as modified.
+#[test]
+fn diff_add_vs_modify_classification() {
+    let s = AgfsSession::new().expect("session setup");
+
+    // hello.txt exists in base → overwrite is a modification
+    fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
+    // brand_new.txt does not exist in base → creation is an addition
+    fs::write(s.mnt_path("brand_new.txt"), "fresh\n").unwrap();
+
+    let output = s.cli(&["diff"]).expect("diff");
+    assert!(
+        output.contains("hello.txt") && output.contains("modified"),
+        "base file overwrite should show as modified: {output}"
+    );
+    assert!(
+        output.contains("brand_new.txt") && output.contains("added"),
+        "new file should show as added: {output}"
+    );
+}
+
 /// After restore, diff should only show checkpoint-state changes,
 /// not post-checkpoint mutations (which are in the dead zone).
 #[test]

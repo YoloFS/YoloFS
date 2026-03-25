@@ -8,7 +8,6 @@ mod test_create;
 mod test_delete;
 mod test_layout;
 mod test_mkdir;
-mod test_overwrites;
 mod test_ownership;
 mod test_rename;
 mod test_resolution;

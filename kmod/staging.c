@@ -152,7 +152,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	 * create/unlink/rename on the same directory.
 	 */
 	inode_lock(parent);
-	agfs_dentry_set(dentry, AGFS_TARGET_INODE, true);
+	agfs_dentry_pin(dentry, AGFS_TARGET_INODE);
 	AGFS_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->gen);
 	inode_unlock(parent);
 
@@ -162,7 +162,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	agfs_replace_lower_path(dentry, &inode_path);
 
 	/* Append journal record (best-effort — target is already set) */
-	agfs_journal_modify(sbi, dentry, ino, DT_REG);
+	agfs_journal_add(sbi, dentry, ino, DT_REG);
 
 	/* Reopen with requested flags */
 	err = 0;

@@ -370,10 +370,8 @@ mod tests {
             .flat_map(|s| s.records)
             .map(|a| match a {
                 Action::Add { path, .. } => path,
-                Action::Modify { path, .. } => path,
                 Action::Delete { path, .. } => path,
                 Action::Rename { dst, .. } => dst,
-                Action::Replace { dst, .. } => dst,
             })
             .collect()
     }

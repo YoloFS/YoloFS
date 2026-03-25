@@ -18,7 +18,7 @@ fn modify_produces_add_record() {
     let acts = actions(&j);
     assert!(
         acts.iter()
-            .any(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt"))),
+            .any(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/hello.txt"))),
         "journal should have a Modified record for hello.txt: {acts:?}"
     );
 }
@@ -37,7 +37,7 @@ fn multiple_writes_produce_multiple_adds() {
     let acts = actions(&j);
     let add_count = acts
         .iter()
-        .filter(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt")))
+        .filter(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/hello.txt")))
         .count();
     // At least 1 ADD record; the kernel may coalesce O_TRUNC reopens on the
     // same inode, but the first COW always produces one.
@@ -200,36 +200,6 @@ fn truncate_only_produces_empty_inode() {
         meta.len(),
         0,
         "inode should be 0 bytes after O_TRUNC with no write"
-    );
-}
-
-/// Opening a base file with O_TRUNC produces a Modified (MOD) journal record,
-/// not an Added (ADD) — the file already exists in the base layer.
-#[test]
-fn truncate_open_base_file_produces_modify_record() {
-    let s = AgfsSession::new().expect("session setup");
-
-    // hello.txt exists in base; open with O_WRONLY | O_TRUNC and write new content.
-    let mut f = OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(s.mnt_path("hello.txt"))
-        .expect("open O_TRUNC");
-    f.write_all(b"truncated\n").expect("write");
-    drop(f);
-
-    let j = journal(&s);
-    let acts = actions(&j);
-    assert!(
-        acts.iter()
-            .any(|a| matches!(a, Action::Modify { path, .. } if path.ends_with("/hello.txt"))),
-        "O_TRUNC on a base file should produce a Modified record, got: {acts:?}"
-    );
-    assert!(
-        !acts
-            .iter()
-            .any(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/hello.txt"))),
-        "O_TRUNC on a base file should NOT produce an Added record, got: {acts:?}"
     );
 }
 

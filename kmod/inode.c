@@ -17,7 +17,6 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
 	struct path inode_path;
 	unsigned char dt;
-	bool in_base;
 	u32 ino;
 	int err;
 
@@ -34,21 +33,10 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	agfs_replace_lower_path(dentry, &inode_path);
 	dt = S_ISDIR(mode) ? DT_DIR : S_ISLNK(mode) ? DT_LNK : DT_REG;
 
-	/*
-	 * Capture base-presence before overwriting the kind.
-	 * Cannot read in_base here — for new files (unpinned, no base
-	 * content) agfs_interpose above already set d_inode, but in_base
-	 * is still false from zalloc.  Check pinned: pinned means
-	 * a negative entry (base entry was deleted, in_base inherited).
-	 */
-	in_base = AGFS_D(dentry)->pinned;
-	agfs_dentry_set(dentry, AGFS_TARGET_INODE, in_base);
+	agfs_dentry_pin(dentry, AGFS_TARGET_INODE);
 	AGFS_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->gen);
 
-	if (in_base)
-		agfs_journal_modify(sbi, dentry, ino, dt);
-	else
-		agfs_journal_add(sbi, dentry, ino, dt);
+	agfs_journal_add(sbi, dentry, ino, dt);
 
 	return 0;
 }
@@ -77,27 +65,23 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 	d_type = d_inode(dentry) ?
 		 fs_umode_to_dtype(d_inode(dentry)->i_mode) : DT_UNKNOWN;
 
-	/* Pre-allocate negative dentry if dentry has base content */
-	if (AGFS_D(dentry)->in_base) {
-		tomb = agfs_dentry_alloc(dentry->d_parent,
-				       dentry->d_name.name,
-				       dentry->d_name.len);
-		if (!tomb)
-			return -ENOMEM;
-		agfs_dentry_set(tomb, AGFS_TARGET_NONE, true);
-		d_add(tomb, NULL);
-	}
+	/* Pre-allocate negative dentry (tombstone) */
+	tomb = agfs_dentry_create(dentry->d_parent,
+				  dentry->d_name.name,
+				  dentry->d_name.len,
+				  AGFS_TARGET_NONE, NULL);
+	if (IS_ERR(tomb))
+		return PTR_ERR(tomb);
 
 	/* Journal (uses dentry path, must be before d_drop) */
 	err = agfs_journal_delete(sbi, dentry, d_type);
 	if (err) {
-		if (tomb)
-			agfs_dentry_reset(tomb);
+		agfs_dentry_unpin(tomb);
 		return err;
 	}
 
 	/* Release pinned state (if any) on the original dentry before eviction */
-	agfs_dentry_reset(dentry);
+	agfs_dentry_unpin(dentry);
 	d_drop(dentry);
 	return 0;
 }
@@ -128,72 +112,53 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		       unsigned int flags)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
-	char saved_name[NAME_MAX + 1];
-	unsigned int saved_name_len;
-	struct dentry *saved_parent;
 	struct dentry *tomb = NULL;
 	unsigned char d_type = DT_UNKNOWN;
-	bool dst_in_base;
 	int err;
 
 	if (flags)
 		return -EINVAL;
 
-	/* Save old name before d_move changes it */
-	saved_name_len = old_dentry->d_name.len;
-	memcpy(saved_name, old_dentry->d_name.name, saved_name_len);
-	saved_name[saved_name_len] = '\0';
-	saved_parent = old_dentry->d_parent;
-
 	/* Read source type from inode (always present — can't rename a negative entry) */
 	if (d_inode(old_dentry))
 		d_type = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
 
-	/* Check if destination has existing base content (for R vs P tag) */
-	dst_in_base = AGFS_D(new_dentry)->in_base;
-
-	/* Pre-allocate negative dentry if old name has base content */
-	if (AGFS_D(old_dentry)->in_base) {
-		tomb = agfs_dentry_alloc(saved_parent, saved_name,
-				       saved_name_len);
-		if (!tomb)
-			return -ENOMEM;
-		agfs_dentry_set(tomb, AGFS_TARGET_NONE, true);
-		d_add(tomb, NULL);
-	}
+	/*
+	 * Always tombstone at old name, even if the source had no base
+	 * content.  A spurious tombstone (hiding nothing in base) is
+	 * harmless — lookup returns ENOENT, readdir skips it, and commit
+	 * silently ignores a D for a non-existent base path.
+	 */
+	tomb = agfs_dentry_create(old_dentry->d_parent,
+				  old_dentry->d_name.name,
+				  old_dentry->d_name.len,
+				  AGFS_TARGET_NONE, NULL);
+	if (IS_ERR(tomb))
+		return PTR_ERR(tomb);
 
 	/* Journal BEFORE d_move (uses dentry paths) */
-	if (dst_in_base)
-		err = agfs_journal_replace(sbi, old_dentry, new_dentry, d_type);
-	else
-		err = agfs_journal_rename(sbi, old_dentry, new_dentry, d_type);
+	err = agfs_journal_rename(sbi, old_dentry, new_dentry, d_type);
 	if (err)
 		goto out_tomb;
 
-	/* Clean up new_dentry if it was pinned */
-	agfs_dentry_reset(new_dentry);
-
-	/* Update old_dentry: preserve target kind, update in_base for new position */
-	if (AGFS_D(old_dentry)->target == AGFS_TARGET_INODE)
-		agfs_dentry_set(old_dentry, AGFS_TARGET_INODE, dst_in_base);
-	else
-		agfs_dentry_set(old_dentry, AGFS_TARGET_PATH, dst_in_base);
-
 	/*
-	 * d_drop old_dentry so d_move does not conflict with the
-	 * tombstone (negative) dentry we may create at the old name.
+	 * Unhash both dentries before modifying pin state.
+	 * VFS will call d_move(old_dentry, new_dentry) after we return,
+	 * rehashing old_dentry at the new position.
 	 */
 	d_drop(old_dentry);
-
-	/* d_drop new_dentry — VFS will call d_move(old_dentry, new_dentry)
-	 * after we return, placing old_dentry at the new position. */
 	d_drop(new_dentry);
+
+	/* Release staging state on new_dentry (being replaced) */
+	agfs_dentry_unpin(new_dentry);
+
+	/* Pin old_dentry at its new position so it survives dcache pressure */
+	agfs_dentry_pin(old_dentry, AGFS_D(old_dentry)->target);
 
 	return 0;
 
 out_tomb:
-	if (tomb)
-		agfs_dentry_reset(tomb);
+	agfs_dentry_unpin(tomb);
 	return err;
 }
 

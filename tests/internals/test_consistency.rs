@@ -12,7 +12,7 @@
 use super::helpers::{inode_path, tree};
 use crate::helpers::AgfsSession;
 use agfs::journal::tree::DirNode;
-use agfs::journal::{Dentry, DirTree, Target};
+use agfs::journal::{DirTree, Target};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
@@ -41,8 +41,8 @@ fn root_prefix(s: &AgfsSession) -> String {
     s.root.to_str().unwrap().to_string()
 }
 
-fn expected_backing_metadata(s: &AgfsSession, dentry: &Dentry) -> std::fs::Metadata {
-    match &dentry.target {
+fn expected_backing_metadata(s: &AgfsSession, target: &Target) -> std::fs::Metadata {
+    match target {
         Target::Inode(ino) => inode_path(s, *ino)
             .symlink_metadata()
             .unwrap_or_else(|e| panic!("staged inode {ino} should exist: {e}")),
@@ -87,16 +87,16 @@ fn assert_same_file_type(rel: &str, actual: &std::fs::Metadata, expected: &std::
 fn assert_overlay_visible(s: &AgfsSession) {
     let prefix = root_prefix(s);
     let t = tree(s);
-    t.for_each(|path, dentry| {
+    t.for_each(|path, target| {
         let rel = path.strip_prefix(&prefix).unwrap();
         let rel = rel.strip_prefix('/').unwrap_or(rel);
         let mnt = s.mnt_path(rel);
-        match &dentry.target {
+        match target {
             Target::Inode(ino) => {
                 let meta = mnt
                     .symlink_metadata()
                     .unwrap_or_else(|e| panic!("overlay inode at '/{rel}' should be visible: {e}"));
-                let expected = expected_backing_metadata(s, dentry);
+                let expected = expected_backing_metadata(s, target);
                 assert_same_file_type(rel, &meta, &expected);
                 if expected.is_file() {
                     let ipath = inode_path(s, *ino);
@@ -114,7 +114,7 @@ fn assert_overlay_visible(s: &AgfsSession) {
                 let meta = mnt.symlink_metadata().unwrap_or_else(|e| {
                     panic!("overlay redirect at '/{rel}' should be visible: {e}")
                 });
-                let expected = expected_backing_metadata(s, dentry);
+                let expected = expected_backing_metadata(s, target);
                 assert_same_file_type(rel, &meta, &expected);
             }
             Target::Path(None) => unreachable!("passthrough dentries are skipped by for_each"),
@@ -142,7 +142,7 @@ fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
         tree_path = format!("{tree_path}/{component}");
         let link_target = cli.get_node(&tree_path).and_then(|node| {
             if let DirNode::Dir(d, _) = node {
-                if let Target::Path(Some(src)) = &d.target {
+                if let Target::Path(Some(src)) = d {
                     Some(src.as_str())
                 } else {
                     None
@@ -185,12 +185,12 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
     let base_names = entry_names(&effective_base, skip);
 
     // Overlay entries that are direct children of this directory
-    let mut staged: BTreeMap<String, Dentry> = BTreeMap::new();
-    t.for_each(|path, dentry| {
+    let mut staged: BTreeMap<String, Target> = BTreeMap::new();
+    t.for_each(|path, target| {
         if let Some(rest) = path.strip_prefix(&dir_prefix) {
             let rest = rest.strip_prefix('/').unwrap_or(rest);
             if !rest.is_empty() && !rest.contains('/') {
-                staged.insert(rest.to_string(), dentry.clone());
+                staged.insert(rest.to_string(), target.clone());
             }
         }
     });
@@ -202,8 +202,8 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
             expected.insert(name.clone());
         }
     }
-    for (name, dentry) in &staged {
-        if !matches!(dentry.target, Target::None) {
+    for (name, target) in &staged {
+        if !matches!(target, Target::None) {
             expected.insert(name.clone());
         }
     }
@@ -259,7 +259,7 @@ fn add_multiple_files() {
     assert_consistent(&s);
 }
 
-// ── Modify (M) ───────────────────────────────────────────────────────
+// ── COW (A) ──────────────────────────────────────────────────────────
 
 #[test]
 fn modify_base_file() {
@@ -270,19 +270,19 @@ fn modify_base_file() {
 
 // ── Delete (D) ───────────────────────────────────────────────────────
 
-/// A+D on a staged-only file cancels — no tombstone, no entry.
+/// A+D on a staged-only file produces a tombstone (always-tombstone rule).
 #[test]
-fn delete_staged_file_cancels() {
+fn delete_staged_file_tombstones() {
     let s = AgfsSession::new().expect("session setup");
     fs::write(s.mnt_path("temp.txt"), "temp\n").expect("create");
     fs::remove_file(s.mnt_path("temp.txt")).expect("delete");
     assert_consistent(&s);
 
-    // CLI should have no entry (cancelled)
+    // CLI should have a tombstone (Target::None)
     let t = tree(&s);
     assert!(
-        !t.any(|p, _| p.ends_with("/temp.txt")),
-        "A+D on staged-only should cancel: {t:?}"
+        t.any(|p, e| p.ends_with("/temp.txt") && matches!(e, Target::None)),
+        "A+D on staged-only should produce tombstone: {t:?}"
     );
 }
 
@@ -295,7 +295,7 @@ fn delete_base_file_tombstones() {
 
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e.target, Target::None)),
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::None)),
         "D on base file should produce negative dentry: {t:?}"
     );
 }
@@ -327,7 +327,7 @@ fn rename_base_file() {
     );
 }
 
-/// Rename a staged file: inode reference moves, no tombstone at source.
+/// Rename a staged file: inode reference moves, tombstone at source.
 #[test]
 fn rename_staged_file() {
     let s = AgfsSession::new().expect("session setup");
@@ -394,9 +394,9 @@ fn rename_base_into_new_dir() {
     );
 }
 
-// ── Replace (P) ──────────────────────────────────────────────────────
+// ── Rename overwrite (R) ─────────────────────────────────────────────
 
-/// Rename a staged file onto an existing base file (Replace).
+/// Rename a staged file onto an existing base file (overwrite).
 #[test]
 fn replace_base_file() {
     let s = AgfsSession::new().expect("session setup");
@@ -474,7 +474,7 @@ fn create_delete_recreate() {
     assert_eq!(fs::read_to_string(s.mnt_path("cycle.txt")).unwrap(), "v2\n");
 }
 
-/// Modify a base file then delete it (M+D → tombstone).
+/// Modify a base file then delete it (A+D → tombstone).
 #[test]
 fn modify_then_delete_base() {
     let s = AgfsSession::new().expect("session setup");
@@ -484,8 +484,8 @@ fn modify_then_delete_base() {
 
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e.target, Target::None)),
-        "M+D on base should produce negative dentry: {t:?}"
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::None)),
+        "A+D on base should produce negative dentry: {t:?}"
     );
 }
 
@@ -591,8 +591,8 @@ fn restore_with_renames() {
 // ── Create over tombstone ────────────────────────────────────────────
 
 /// Delete a base file then create a new file at the same path.
-/// Kernel inherits in_base from the tombstone → writes M (Modify) record.
-/// CLI replays M → Inode { in_base: true }.
+/// Kernel always uses A tag; the add/modify distinction is derived by
+/// userspace checking the base filesystem.
 #[test]
 fn create_over_tombstone() {
     let s = AgfsSession::new().expect("session setup");
@@ -600,19 +600,11 @@ fn create_over_tombstone() {
     fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
     assert_consistent(&s);
 
-    // CLI should have in_base=true (inherited from tombstone)
     let t = tree(&s);
     assert!(
         t.any(|p, e| p.ends_with("/hello.txt")
-            && matches!(
-                e,
-                Dentry {
-                    target: Target::Inode(_),
-                    in_base: true,
-                    ..
-                }
-            )),
-        "recreated file over tombstone should have in_base=true: {t:?}"
+            && matches!(e, Target::Inode(_))),
+        "recreated file over tombstone should have Target::Inode: {t:?}"
     );
     assert_eq!(
         fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),

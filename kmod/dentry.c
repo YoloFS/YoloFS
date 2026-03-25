@@ -24,7 +24,8 @@ static int agfs_d_init(struct dentry *dentry)
 		return -ENOMEM;
 
 	spin_lock_init(&info->lock);
-	/* pinned = false, in_base = false — from zalloc; target is don't-care when !pinned */
+	/* Ground state: unpinned, following base filesystem */
+	info->target = AGFS_TARGET_PATH;
 	info->perm = AGFS_PERM_NONE;
 	INIT_LIST_HEAD(&info->rule_pin);
 	info->rule_dentry = NULL;
@@ -47,84 +48,93 @@ static void agfs_d_release(struct dentry *dentry)
 /* ── Dentry state API ──────────────────────────────────────────────── */
 
 /*
- * Allocate a child dentry under @parent and pre-pin it.
- * The d_alloc() reference serves as the pin — no extra dget().
- * Caller must call d_add() after configuring the dentry.
- *
- * Returns the pre-pinned dentry, or NULL on allocation failure.
- * Caller must hold i_rwsem exclusive on dir.
+ * Allocate a child dentry under @parent, set its target, and splice
+ * into the dcache.  When @lower_path is non-NULL, wire up the lower
+ * path and create an agfs inode (positive dentry); when NULL, create
+ * a negative dentry (tombstone).
+ * On success the caller loses ownership of @lower_path (if non-NULL).
+ * Caller must hold i_rwsem exclusive on the parent directory.
  */
-struct dentry *agfs_dentry_alloc(struct dentry *parent,
-				 const char *name, unsigned int len)
+struct dentry *agfs_dentry_create(struct dentry *parent,
+				  const char *name, unsigned int len,
+				  enum agfs_target target,
+				  struct path *lower_path)
 {
 	struct qstr qname;
-	struct dentry *d;
+	struct dentry *child;
+	struct inode *inode = NULL;
 
 	qname.name = (const unsigned char *)name;
 	qname.len = len;
 	qname.hash = full_name_hash(parent, name, len);
-	d = d_alloc(parent, &qname);
-	if (!d)
-		return NULL;
+	child = d_alloc(parent, &qname);
+	if (!child) {
+		if (lower_path)
+			path_put(lower_path);
+		return ERR_PTR(-ENOMEM);
+	}
 
-	AGFS_D(d)->pinned = true;	/* d_alloc ref counts as pin */
-	return d;
+	AGFS_D(child)->pinned = true;	/* d_alloc ref counts as pin */
+	AGFS_D(child)->target = target;
+
+	if (lower_path) {
+		agfs_set_lower_path(child, lower_path);
+		inode = agfs_iget(parent->d_sb, d_inode(lower_path->dentry));
+		if (IS_ERR(inode)) {
+			dput(child);
+			return ERR_CAST(inode);
+		}
+	}
+
+	d_add(child, inode);
+	return child;
 }
 
 /*
- * Set a dentry's overlay state.  Handles pin/unpin transitions
- * internally: the only unpinned state is (NONE, false); all others
- * are pinned so the VFS cannot evict them.
+ * Set a dentry's overlay target and pin it.  The only unpinned state
+ * is ground state, reached via agfs_dentry_unpin().
  * Caller must hold i_rwsem exclusive on the parent directory.
  */
-void agfs_dentry_set(struct dentry *dentry, enum agfs_target target,
-		     bool in_base)
+void agfs_dentry_pin(struct dentry *dentry, enum agfs_target target)
 {
 	struct agfs_dentry_info *di = AGFS_D(dentry);
-
-	/*
-	 * Pin any dentry that represents a staged change — the VFS must
-	 * not evict it or lookups would fall through to base incorrectly.
-	 *
-	 *   (INODE, *)    — staged content, must stay visible
-	 *   (PATH,  *)    — redirect, must intercept lookups
-	 *   (NONE,  true) — tombstone hiding a base entry
-	 *   (NONE,  false) — ground state, nothing to preserve → unpin
-	 */
-	bool should_pin = target != AGFS_TARGET_NONE || in_base;
 	bool was_pinned = di->pinned;
 
 	di->target = target;
-	di->in_base = in_base;
-	di->pinned = should_pin;
+	di->pinned = true;
 
-	if (should_pin && !was_pinned)
+	if (!was_pinned)
 		dget(dentry);
-	if (!should_pin && was_pinned) {
+}
+
+/*
+ * Return a dentry to ground state — staging no longer has interest
+ * in it.  The target field becomes don't-care; lookups fall
+ * through to base as if staging never touched this entry.
+ * Caller must hold i_rwsem exclusive on the parent directory.
+ */
+void agfs_dentry_unpin(struct dentry *dentry)
+{
+	struct agfs_dentry_info *di = AGFS_D(dentry);
+	bool was_pinned = di->pinned;
+
+	di->target = AGFS_TARGET_PATH;
+	di->pinned = false;
+
+	if (was_pinned) {
 		if (d_is_negative(dentry))
 			d_drop(dentry);
 		dput(dentry);
 	}
 }
 
-/*
- * Return a dentry to ground state — staging no longer has interest
- * in it.  The target/in_base fields become don't-care; lookups fall
- * through to base as if staging never touched this entry.
- * Caller must hold i_rwsem exclusive on the parent directory.
- */
-void agfs_dentry_reset(struct dentry *dentry)
-{
-	agfs_dentry_set(dentry, AGFS_TARGET_NONE, false);
-}
-
-/* ── Bulk reset ─────────────────────────────────────────────────────── */
+/* ── Bulk unpin ─────────────────────────────────────────────────────── */
 
 /*
- * Iteratively reset all pinned child dentries via depth-first walk.
+ * Iteratively unpin all pinned child dentries via depth-first walk.
  *
  * The hlist traversal is lockless — holding d_lock across the loop is
- * not possible because agfs_dentry_reset() calls dput(), which may
+ * not possible because agfs_dentry_unpin() calls dput(), which may
  * re-acquire d_lock and deadlock.  To make the lockless walk safe we call
  * shrink_dcache_sb() first: this evicts every unreferenced (unpinned)
  * dentry, so every entry still in d_children has a positive refcount
@@ -136,7 +146,7 @@ void agfs_dentry_reset(struct dentry *dentry)
  * were just unpinned (dput drops their refcount but leaves them cached
  * on the LRU), so subsequent VFS lookups go through the module again.
  */
-void agfs_dentry_reset_all(struct super_block *sb)
+void agfs_dentry_unpin_all(struct super_block *sb)
 {
 	struct hlist_node *pos[AGFS_RESTORE_MAX_DEPTH];
 	struct dentry *cur;
@@ -161,13 +171,13 @@ void agfs_dentry_reset_all(struct super_block *sb)
 		cur = hlist_entry(pos[depth], struct dentry, d_sib);
 		pos[depth] = pos[depth]->next;
 
-		/* Descend into children before resetting this entry */
+		/* Descend into children before unpinning this entry */
 		if (!hlist_empty(&cur->d_children) &&
 		    depth + 1 < AGFS_RESTORE_MAX_DEPTH)
 			pos[++depth] = cur->d_children.first;
 
 		if (AGFS_D(cur) && AGFS_D(cur)->pinned)
-			agfs_dentry_reset(cur);
+			agfs_dentry_unpin(cur);
 	}
 
 	shrink_dcache_sb(sb);

@@ -225,10 +225,10 @@ fn commit_new_file_has_default_mode() {
     );
 }
 
-/// Rename a file onto another existing file (Replace record).
+/// Rename a file onto another existing file (overwrite rename).
 /// The destination should be overwritten with the source content.
 #[test]
-fn commit_rename_replace() {
+fn commit_rename_overwrite() {
     let s = AgfsSession::new().expect("session setup");
 
     // hello.txt and multi.txt both exist in base

@@ -76,7 +76,7 @@ AgFS uses a fundamentally different staging model from OverlayFS.
 layer *is* the persistent state. There is no commit or abort. A renamed
 file is copied up to upper with `RENAME_WHITEOUT` and stays there forever.
 AgFS treats staging as a flat inode store with in-memory staging state
-(staging state fields (`target`, `in_base`, `pinned`) on pinned VFS dentries) that is explicitly committed or
+(staging state fields (`target`, `pinned`) on pinned VFS dentries) that is explicitly committed or
 discarded via the journal.
 
 **Copy-up**: OverlayFS always does a full copy-up on first write, even for
@@ -100,9 +100,9 @@ for interactive approval.
 **On-disk format**: OverlayFS requires filesystem support for whiteouts
 (`RENAME_WHITEOUT`, ext4/xfs). AgFS uses a flat inode store + append-only
 journal, working on any lower FS. The journal uses typed record tags
-(`A`/`M`/`D`/`R`/`P` for mutations, `K`/`T` for checkpoints/restores) so
+(`A`/`D`/`R` for mutations, `K`/`T` for checkpoints/restores) so
 each record is self-describing. All renames — staged or redirect — emit a
-single R or P record carrying both source and destination paths.
+single R record carrying both source and destination paths.
 
 ## Lifecycle Example
 

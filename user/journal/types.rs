@@ -16,15 +16,51 @@ pub fn dtype_valid(val: u8) -> bool {
     )
 }
 
-/// A data mutation applied to the dir tree (A/M/D/R/P).
+/// The target of a dentry — where content lives.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Target {
+    /// Content staged in flat file store at this inode ID.
+    Inode(u32),
+    /// Redirect: content lives at a different base filesystem path.
+    /// `None` = passthrough (identity / no staged change).
+    /// `Some(src)` = redirect to `src`.
+    Path(Option<String>),
+    /// Content absent (tombstone).
+    None,
+}
+
+impl Target {
+    /// A passthrough target — represents no staged change.
+    pub fn passthrough() -> Self {
+        Target::Path(None)
+    }
+
+    /// True if this target is a passthrough (no staged change).
+    pub fn is_passthrough(&self) -> bool {
+        matches!(self, Target::Path(None))
+    }
+
+    /// Return the staged inode ID if this target carries one.
+    pub fn ino(&self) -> Option<u32> {
+        match self {
+            Target::Inode(ino) => Some(*ino),
+            _ => None,
+        }
+    }
+
+    /// True if this target involves the given path (as source or destination).
+    pub fn matches_path(&self, dentry_path: &str, query: &str) -> bool {
+        match self {
+            Target::Path(Some(src)) => dentry_path == query || src == query,
+            _ => dentry_path == query,
+        }
+    }
+}
+
+/// A data mutation applied to the dir tree (A/D/R).
 #[derive(Debug, Clone)]
 pub enum Action {
     Add {
-        path: String,
-        dtype: Option<u8>,
-        ino: u32,
-    },
-    Modify {
         path: String,
         dtype: Option<u8>,
         ino: u32,
@@ -34,11 +70,6 @@ pub enum Action {
         dtype: Option<u8>,
     },
     Rename {
-        src: String,
-        dst: String,
-        dtype: Option<u8>,
-    },
-    Replace {
         src: String,
         dst: String,
         dtype: Option<u8>,
@@ -59,12 +90,12 @@ pub enum Record {
     Marker(Marker),
 }
 
-/// A group of data records (A/M/D/R/P) between consecutive K/T boundaries.
+/// A group of data records (A/D/R) between consecutive K/T boundaries.
 #[derive(Debug)]
 pub struct Segment {
     /// The gen_id of the checkpoint this segment builds on.
     /// 0 for the 0-th segment (records before the first checkpoint).
     pub from: u64,
-    /// The A/M/D/R/P records in this segment (no K/T records).
+    /// The A/D/R records in this segment (no K/T records).
     pub records: Vec<Action>,
 }

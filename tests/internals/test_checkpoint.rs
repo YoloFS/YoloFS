@@ -34,7 +34,7 @@ fn recow_after_checkpoint_produces_new_add() {
     let recs = records(&journal(&s));
     let adds: Vec<_> = recs
         .iter()
-        .filter(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
+        .filter(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/hello.txt")))
         .collect();
     assert!(
         adds.len() >= 2,
@@ -43,8 +43,8 @@ fn recow_after_checkpoint_produces_new_add() {
 
     // The two adds should have different ino values (re-COW allocates a new inode)
     if let (
-        Record::Action(Action::Modify { ino: ino1, .. }),
-        Record::Action(Action::Modify { ino: ino2, .. }),
+        Record::Action(Action::Add { ino: ino1, .. }),
+        Record::Action(Action::Add { ino: ino2, .. }),
     ) = (adds[0], adds[1])
     {
         assert_ne!(ino1, ino2, "re-COW ino values should differ: {recs:?}");
@@ -57,11 +57,11 @@ fn recow_after_checkpoint_produces_new_add() {
         .unwrap();
     let first_add = recs
         .iter()
-        .position(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
+        .position(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/hello.txt")))
         .unwrap();
     let last_add = recs
         .iter()
-        .rposition(|r| matches!(r, Record::Action(Action::Modify { path, .. }) if path.ends_with("/hello.txt")))
+        .rposition(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/hello.txt")))
         .unwrap();
     assert!(
         first_add < chk_pos,

@@ -5,6 +5,7 @@ mod test_delete;
 mod test_fallocate;
 mod test_inode;
 mod test_mkdir;
+mod test_mixed_state;
 mod test_read;
 mod test_readdir;
 mod test_rename;

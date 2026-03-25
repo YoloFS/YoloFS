@@ -81,7 +81,7 @@ fn apply_records(agfs: &Path, segments: &[journal::Segment]) -> Result<()> {
 
     for action in segments.iter().flat_map(|s| &s.records) {
         match action {
-            journal::Action::Add { path, ino, .. } | journal::Action::Modify { path, ino, .. } => {
+            journal::Action::Add { path, ino, .. } => {
                 let base_path = crate::utils::to_base_path(path);
                 apply_inode(agfs, *ino, &base_path, &mut ensured)?;
             }
@@ -91,8 +91,7 @@ fn apply_records(agfs: &Path, segments: &[journal::Segment]) -> Result<()> {
                     remove_existing(&base_path, &meta)?;
                 }
             }
-            journal::Action::Rename { dst, src, .. }
-            | journal::Action::Replace { dst, src, .. } => {
+            journal::Action::Rename { dst, src, .. } => {
                 let base_src = crate::utils::to_base_path(src);
                 let base_dst = crate::utils::to_base_path(dst);
                 ensure_parent(&base_dst, &mut ensured)?;

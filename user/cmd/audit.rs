@@ -54,9 +54,8 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
 fn action_matches_path(action: &journal::Action, filter: &str) -> bool {
     match action {
         journal::Action::Add { path, .. }
-        | journal::Action::Modify { path, .. }
         | journal::Action::Delete { path, .. } => path == filter,
-        journal::Action::Rename { dst, src, .. } | journal::Action::Replace { dst, src, .. } => {
+        journal::Action::Rename { dst, src, .. } => {
             src == filter || dst == filter
         }
     }
@@ -84,17 +83,11 @@ fn format_action(action: &journal::Action) -> String {
         journal::Action::Add { path, ino, .. } => {
             format!("{:10} {}  (ino {})", "added".green(), path, ino)
         }
-        journal::Action::Modify { path, ino, .. } => {
-            format!("{:10} {}  (ino {})", "modified".blue(), path, ino)
-        }
         journal::Action::Delete { path, .. } => {
             format!("{:10} {}", "deleted".red(), path)
         }
         journal::Action::Rename { src, dst, .. } => {
             format!("{:10} {} → {}", "renamed".magenta(), src, dst)
-        }
-        journal::Action::Replace { src, dst, .. } => {
-            format!("{:10} {} → {}", "replaced".magenta(), src, dst)
         }
     }
 }
@@ -161,14 +154,14 @@ mod tests {
     }
 
     #[test]
-    fn format_replace() {
-        let action = Action::Replace {
+    fn format_rename() {
+        let action = Action::Rename {
             src: "/a".into(),
             dst: "/b".into(),
             dtype: Some(libc::DT_REG),
         };
         let s = strip_ansi(&format_action(&action));
-        assert!(s.contains("replaced"), "should say replaced: {s}");
+        assert!(s.contains("renamed"), "should say renamed: {s}");
         assert!(s.contains("/a"), "should contain old: {s}");
         assert!(s.contains("/b"), "should contain new: {s}");
     }

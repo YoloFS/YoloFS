@@ -138,12 +138,11 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 static bool agfs_should_emit_staged_child(const struct dentry *child)
 {
 	/*
-	 * Tombstones (NONE, true) stay pinned in dcache so lookup/readdir can
-	 * hide the base name, but phase 1 must not emit them as dirents.
+	 * Tombstones (NONE + pinned) stay pinned in dcache so lookup/readdir
+	 * can hide the base name, but phase 1 must not emit them as dirents.
 	 */
 	return AGFS_D(child)->pinned &&
-	       !(AGFS_D(child)->target == AGFS_TARGET_NONE &&
-		 AGFS_D(child)->in_base);
+	       !(AGFS_D(child)->target == AGFS_TARGET_NONE);
 }
 
 static struct dentry *agfs_next_staged_child(struct dentry *parent,
