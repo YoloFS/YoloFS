@@ -1,13 +1,12 @@
 //! Publication figure: commit + status time per operation (session microbenchmarks).
 
 use super::Artifact;
-use crate::report;
 use crate::BenchResults;
+use crate::report;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const CAPTION: &str =
-    "Commit and status cost per file operation (\\textmu s/op) for 10\\,000 files. \
+const CAPTION: &str = "Commit and status cost per file operation (\\textmu s/op) for 10\\,000 files. \
      TODO.";
 const LABEL: &str = "fig:commit-time";
 
@@ -61,15 +60,21 @@ pub fn render(results: &BenchResults, paper_dir: &Path) -> Result<Artifact> {
                 }
                 let n = runs.len() as f64;
 
-                let avg_commit: f64 =
-                    runs.iter().map(|r| r.commit_ms.unwrap_or(0) as f64).sum::<f64>() / n;
+                let avg_commit: f64 = runs
+                    .iter()
+                    .map(|r| r.commit_ms.unwrap_or(0) as f64)
+                    .sum::<f64>()
+                    / n;
                 data_lines.push(format!(
                     "{op_label},{backend_label},commit,{:.2}",
                     avg_commit / FILE_COUNT * 1000.0
                 ));
 
-                let avg_status: f64 =
-                    runs.iter().map(|r| r.status_ms.unwrap_or(0) as f64).sum::<f64>() / n;
+                let avg_status: f64 = runs
+                    .iter()
+                    .map(|r| r.status_ms.unwrap_or(0) as f64)
+                    .sum::<f64>()
+                    / n;
                 if avg_status > 0.0 {
                     data_lines.push(format!(
                         "{op_label},{backend_label},status,{:.2}",
@@ -206,8 +211,7 @@ plt.close(fig)
     );
 
     super::util::ensure_plot_style(paper_dir)?;
-    std::fs::write(&py_path, &script)
-        .with_context(|| format!("writing {}", py_path.display()))?;
+    std::fs::write(&py_path, &script).with_context(|| format!("writing {}", py_path.display()))?;
 
     let out = std::process::Command::new("python3")
         .arg(&py_path)
@@ -239,11 +243,13 @@ plt.close(fig)
          % --- END figure fragment ---\n\
          \\end{{document}}\n",
     );
-    std::fs::write(&tex_path, &tex)
-        .with_context(|| format!("writing {}", tex_path.display()))?;
+    std::fs::write(&tex_path, &tex).with_context(|| format!("writing {}", tex_path.display()))?;
 
     let preview_pdf = match super::run_pdflatex_cropped(&tex_path, paper_dir) {
-        Ok(p) => Some(format!("paper/{}", p.file_name().unwrap().to_string_lossy())),
+        Ok(p) => Some(format!(
+            "paper/{}",
+            p.file_name().unwrap().to_string_lossy()
+        )),
         Err(e) => {
             eprintln!("  warning: commit-time-figure: {e:#}");
             Some(format!("paper/{plot_pdf_name}"))
