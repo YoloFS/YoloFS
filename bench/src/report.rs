@@ -73,9 +73,18 @@ pub fn render_commit_scaling_report(out_dir: &Path) -> Result<()> {
         html.push_str(&format!("Plotly.newPlot('{div_id}', [\n"));
         for res in &data {
             let xs: Vec<String> = res.points.iter().map(|p| p.count.to_string()).collect();
-            let ys: Vec<String> = res.points.iter().map(|p| {
-                if field == "commit" { p.commit_ms } else { p.staging_ms }.to_string()
-            }).collect();
+            let ys: Vec<String> = res
+                .points
+                .iter()
+                .map(|p| {
+                    if field == "commit" {
+                        p.commit_ms
+                    } else {
+                        p.staging_ms
+                    }
+                    .to_string()
+                })
+                .collect();
             let trace_name = if res.backend.is_empty() {
                 res.op.clone()
             } else {
@@ -83,10 +92,16 @@ pub fn render_commit_scaling_report(out_dir: &Path) -> Result<()> {
             };
             html.push_str(&format!(
                 "  {{x: [{}], y: [{}], mode: 'lines+markers', name: '{}'}},\n",
-                xs.join(","), ys.join(","), trace_name
+                xs.join(","),
+                ys.join(","),
+                trace_name
             ));
         }
-        let ylabel = if field == "commit" { "Commit time (ms)" } else { "Staging time (ms)" };
+        let ylabel = if field == "commit" {
+            "Commit time (ms)"
+        } else {
+            "Staging time (ms)"
+        };
         html.push_str(&format!(
             "], {{xaxis: {{title: 'File count'}}, yaxis: {{title: '{ylabel}'}}}});\n"
         ));

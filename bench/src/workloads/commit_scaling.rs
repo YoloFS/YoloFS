@@ -53,8 +53,7 @@ impl Workload for CommitScaling {
     }
 
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        let op = std::env::var("COMMIT_SCALING_OP")
-            .context("COMMIT_SCALING_OP not set")?;
+        let op = std::env::var("COMMIT_SCALING_OP").context("COMMIT_SCALING_OP not set")?;
         let count: usize = std::env::var("COMMIT_SCALING_COUNT")
             .context("COMMIT_SCALING_COUNT not set")?
             .parse()

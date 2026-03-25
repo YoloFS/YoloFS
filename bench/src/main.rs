@@ -1285,7 +1285,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(Cmd::CommitScaling { backend: backend_filter }) = cli.cmd {
+    if let Some(Cmd::CommitScaling {
+        backend: backend_filter,
+    }) = cli.cmd
+    {
         let env = collect_env();
         let out_dir = results_dir(&env, false);
         run_commit_scaling(&out_dir, backend_filter.as_deref())?;
@@ -1323,10 +1326,18 @@ fn main() -> Result<()> {
             let paper_dir = out_dir.join("paper");
             std::fs::create_dir_all(&paper_dir)?;
             match name.as_str() {
-                "commit-time" => { paper::commit_time_figure::render(&results, &paper_dir)?; }
-                "meta-ops" => { paper::meta_ops_figure::render(&results, &paper_dir)?; }
-                "fio-table" => { paper::fio_data_table::render(&results, &paper_dir)?; }
-                _ => bail!("unknown paper artifact: {name}. Available: commit-time, meta-ops, fio-table"),
+                "commit-time" => {
+                    paper::commit_time_figure::render(&results, &paper_dir)?;
+                }
+                "meta-ops" => {
+                    paper::meta_ops_figure::render(&results, &paper_dir)?;
+                }
+                "fio-table" => {
+                    paper::fio_data_table::render(&results, &paper_dir)?;
+                }
+                _ => bail!(
+                    "unknown paper artifact: {name}. Available: commit-time, meta-ops, fio-table"
+                ),
             }
         } else if paper_only {
             report::render_paper_only(&results, &out_dir)?;
@@ -1493,14 +1504,9 @@ fn main() -> Result<()> {
 
 // ── commit-scaling ──────────────────────────────────────────────────────────
 
-const COMMIT_SCALING_COUNTS: &[usize] = &[
-    1_000, 10_000, 20_000, 30_000, 40_000, 50_000,
-];
+const COMMIT_SCALING_COUNTS: &[usize] = &[1_000, 10_000, 20_000, 30_000, 40_000, 50_000];
 
-fn run_commit_scaling(
-    out_dir: &Path,
-    backend_filter: Option<&str>,
-) -> Result<()> {
+fn run_commit_scaling(out_dir: &Path, backend_filter: Option<&str>) -> Result<()> {
     let all_backends = backends::all();
     let backends: Vec<&dyn backend::Backend> = all_backends
         .iter()
@@ -1577,10 +1583,8 @@ fn run_commit_scaling(
         Vec::new()
     };
     // Remove entries for backends we just ran, then append new data.
-    let ran_backends: std::collections::HashSet<String> = all_results
-        .iter()
-        .map(|r| r.backend.clone())
-        .collect();
+    let ran_backends: std::collections::HashSet<String> =
+        all_results.iter().map(|r| r.backend.clone()).collect();
     merged.retain(|r| !ran_backends.contains(&r.backend));
     merged.extend(all_results);
     let json = serde_json::to_string_pretty(&merged)?;

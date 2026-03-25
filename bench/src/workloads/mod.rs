@@ -1,6 +1,5 @@
 pub mod checkpoint_scalability;
 pub mod commit_scaling;
-pub mod unlink_files;
 pub mod fio_rand_read_cold;
 pub mod fio_rand_read_warm;
 pub mod fio_rand_write;
@@ -25,6 +24,7 @@ pub mod overwrite_files;
 pub mod read_files;
 pub mod rename_files;
 pub mod stat_files;
+pub mod unlink_files;
 pub mod worktree;
 pub mod write_files;
 
@@ -99,8 +99,12 @@ pub fn all() -> Vec<Box<dyn Workload>> {
     v.push(Box::new(fio_rand_write::FioRandWrite));
     v.push(Box::new(fio_randrw_cold::FioRandRwCold));
     v.push(Box::new(fio_randrw_warm::FioRandRwWarm));
-    v.push(Box::new(meta_create::MetaCreate { count: meta_shared::LARGE_DIR }));
-    v.push(Box::new(meta_create::MetaCreate { count: meta_shared::SMALL_DIR }));
+    v.push(Box::new(meta_create::MetaCreate {
+        count: meta_shared::LARGE_DIR,
+    }));
+    v.push(Box::new(meta_create::MetaCreate {
+        count: meta_shared::SMALL_DIR,
+    }));
     v.push(Box::new(meta_create::MetaCreate { count: 100_000 }));
     for w in meta_append::MetaAppend::all() {
         v.push(Box::new(w));
