@@ -1,5 +1,6 @@
 //! Publication-ready artifacts: LaTeX tables, figures, and HTML index.
 
+pub mod checkpoint_scaling_figure;
 pub mod commit_time_figure;
 pub mod fio_data_table;
 pub mod meta_ops_figure;
@@ -29,6 +30,12 @@ pub fn render(results: &crate::BenchResults, out_dir: &Path) -> Result<()> {
     match commit_time_figure::render(results, &paper_dir) {
         Ok(art) => artifacts.push(art),
         Err(e) => eprintln!("  warning: commit-time-figure: {e:#}"),
+    }
+
+    // ── checkpoint scaling figure ──
+    match checkpoint_scaling_figure::render(out_dir, &paper_dir) {
+        Ok(art) => artifacts.push(art),
+        Err(e) => eprintln!("  warning: checkpoint-scaling-figure: {e:#}"),
     }
 
     // ── paper-report.html ──
@@ -83,6 +90,7 @@ pub fn install(_results: &crate::BenchResults, out_dir: &Path, paper_dir: &Path)
     artifacts.push(fio_data_table::artifact_meta(&bench_paper_dir));
     artifacts.extend(meta_ops_figure::artifact_metas(&bench_paper_dir));
     artifacts.push(commit_time_figure::artifact_meta(&bench_paper_dir));
+    artifacts.push(checkpoint_scaling_figure::artifact_meta(&bench_paper_dir));
 
     let gen_dir = paper_dir.join("generated");
     std::fs::create_dir_all(&gen_dir).with_context(|| format!("creating {}", gen_dir.display()))?;

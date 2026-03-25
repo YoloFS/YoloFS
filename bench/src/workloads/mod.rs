@@ -1,4 +1,5 @@
 pub mod checkpoint_scalability;
+pub mod checkpoint_scaling;
 pub mod fio_rand_read_cold;
 pub mod fio_rand_read_warm;
 pub mod fio_rand_write;
@@ -86,6 +87,8 @@ pub fn all() -> Vec<Box<dyn Workload>> {
         Box::new(rename_files::RenameFiles { count: 10_000 }),
         Box::new(unlink_files::UnlinkFiles { count: 10_000 }),
     ];
+    // hidden (used by subcommands only)
+    v.push(Box::new(checkpoint_scaling::CheckpointScaling));
     // macro
     v.push(Box::new(worktree::Worktree::new()));
     v.push(Box::new(linux_untar::LinuxUntar::new()));
@@ -185,6 +188,7 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
         "rename-files" => rename_files::details(),
         "unlink-files" => unlink_files::details(),
         "checkpoint-scalability" => checkpoint_scalability::details(),
+        "checkpoint-scaling" => checkpoint_scaling::details(),
         "worktree" => worktree::details(),
         "linux-untar" => linux_untar::details(),
         "meta-create" | "meta-create-100" | "meta-create-100k" => meta_create::details(),
@@ -299,9 +303,12 @@ pub fn summarize_latencies(
         latencies[idx.min(len.saturating_sub(1))].as_secs_f64() * 1_000_000.0
     };
 
+    let mean_us = latencies.iter().map(|d| d.as_secs_f64()).sum::<f64>() / len as f64 * 1_000_000.0;
+
     OpResult {
         iops: len as f64 / total.as_secs_f64(),
         throughput_kbps,
+        lat_us_mean: mean_us,
         lat_us_p50: percentile_us(50, 100),
         lat_us_p99: percentile_us(99, 100),
         lat_us_p999: percentile_us(999, 1000),
@@ -460,6 +467,7 @@ fn parse_fio_result(fio_json: &Value) -> Result<OpResult> {
     Ok(OpResult {
         iops: total_iops,
         throughput_kbps: Some(throughput_kbps),
+        lat_us_mean: 1_000_000.0 / total_iops,
         lat_us_p50: latencies.0,
         lat_us_p99: latencies.1,
         lat_us_p999: latencies.2,

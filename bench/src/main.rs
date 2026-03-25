@@ -110,6 +110,12 @@ enum Cmd {
         #[arg(long)]
         bpftrace: bool,
     },
+    /// Measure op latency vs checkpoint depth
+    CheckpointScaling {
+        /// Backend to test (default: agfs-realistic)
+        #[arg(long, default_value = "agfs-realistic")]
+        backend: String,
+    },
     /// Visual diff of a PDF between two git commits
     DiffPdf {
         /// Path to the PDF file (relative to repo root)
@@ -1279,6 +1285,15 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(Cmd::CheckpointScaling {
+        backend: backend_name,
+    }) = cli.cmd
+    {
+        let out_dir = results_dir(&env, false);
+        run_checkpoint_scaling(&out_dir, &backend_name)?;
+        return Ok(());
+    }
+
     if let Some(Cmd::DiffPdf {
         path,
         old,
@@ -1319,8 +1334,11 @@ fn main() -> Result<()> {
                 "fio-table" => {
                     paper::fio_data_table::render(&results, &paper_dir)?;
                 }
+                "checkpoint-scaling" => {
+                    paper::checkpoint_scaling_figure::render(&out_dir, &paper_dir)?;
+                }
                 _ => bail!(
-                    "unknown paper artifact: {name}. Available: commit-time, meta-ops, fio-table"
+                    "unknown paper artifact: {name}. Available: commit-time, meta-ops, fio-table, checkpoint-scaling"
                 ),
             }
         } else if paper_only {
@@ -1350,6 +1368,9 @@ fn main() -> Result<()> {
         selected
     } else if cli.micro {
         workloads::by_kind(workload::WorkloadKind::Micro)
+            .into_iter()
+            .filter(|w| !w.hidden())
+            .collect()
     } else if cli.r#macro {
         workloads::by_kind(workload::WorkloadKind::Macro)
     } else if cli.op {
@@ -1482,6 +1503,126 @@ fn main() -> Result<()> {
             report::render_one(&merged, workload.name(), &out_dir)?;
         }
     }
+
+    Ok(())
+}
+
+// ── checkpoint-scaling ───────────────────────────────────────────────────────
+
+const CHECKPOINT_DEPTHS: &[usize] = &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+
+fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
+    let all_backends = backends::all();
+    let b = all_backends
+        .iter()
+        .find(|b| b.name() == backend_name)
+        .with_context(|| format!("unknown backend: {backend_name}"))?;
+
+    let wl = workloads::checkpoint_scaling::CheckpointScaling;
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct CheckpointScalingResult {
+        backend: String,
+        mode: String,
+        points: Vec<CheckpointScalingPoint>,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct CheckpointScalingPoint {
+        depth: usize,
+        mean_us: f64,
+        p50_us: f64,
+        p99_us: f64,
+    }
+
+    let mut results = Vec::new();
+
+    for mode in ["create", "read"] {
+        let mut points = Vec::new();
+        eprintln!("checkpoint-scaling: {backend_name} / {mode}");
+
+        for &depth in CHECKPOINT_DEPTHS {
+            unsafe {
+                std::env::set_var("CHECKPOINT_SCALING_MODE", mode);
+                std::env::set_var("CHECKPOINT_SCALING_DEPTH", depth.to_string());
+            }
+            match b.run_one(&wl, false) {
+                Ok((result, _)) => {
+                    if let Some(ref op) = result.op_result {
+                        // mean from p50 approximation for now; IOPS→mean
+                        // loses precision for small sample counts.
+                        let mean_us = op.lat_us_mean;
+                        eprintln!(
+                            "  depth={depth}: {mean_us:.1}µs mean, {:.1}µs p50, {:.1}µs p99",
+                            op.lat_us_p50, op.lat_us_p99
+                        );
+                        points.push(CheckpointScalingPoint {
+                            depth,
+                            mean_us,
+                            p50_us: op.lat_us_p50,
+                            p99_us: op.lat_us_p99,
+                        });
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  depth={depth}: FAILED: {e:#}");
+                    break;
+                }
+            }
+        }
+
+        results.push(CheckpointScalingResult {
+            backend: backend_name.to_string(),
+            mode: mode.to_string(),
+            points,
+        });
+    }
+
+    let json_path = out_dir.join("checkpoint-scaling.json");
+    let mut merged: Vec<CheckpointScalingResult> = if json_path.exists() {
+        serde_json::from_str(&fs::read_to_string(&json_path)?).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    merged.retain(|r| r.backend != backend_name);
+    merged.extend(results);
+    std::fs::write(&json_path, serde_json::to_string_pretty(&merged)?)?;
+    eprintln!("Results written to {}", json_path.display());
+
+    // Generate Plotly HTML.
+    let mut html = String::new();
+    html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\">\n");
+    html.push_str("<title>Checkpoint Scaling</title>\n");
+    html.push_str("<script src=\"https://cdn.plot.ly/plotly-2.35.2.min.js\"></script>\n");
+    html.push_str("</head><body>\n");
+    html.push_str("<h2>Latency vs checkpoint depth</h2>\n");
+    html.push_str("<div id=\"plot\" style=\"width:800px;height:400px\"></div>\n");
+    html.push_str("<script>\nPlotly.newPlot('plot', [\n");
+
+    for res in &merged {
+        let xs: Vec<String> = res.points.iter().map(|p| p.depth.to_string()).collect();
+        let ys: Vec<String> = res
+            .points
+            .iter()
+            .map(|p| format!("{:.1}", p.mean_us))
+            .collect();
+        let name = format!("{} ({})", res.mode, res.backend);
+        html.push_str(&format!(
+            "  {{x: [{}], y: [{}], mode: 'lines+markers', name: '{}'}},\n",
+            xs.join(","),
+            ys.join(","),
+            name
+        ));
+    }
+
+    html.push_str(
+        "], {xaxis: {title: 'Checkpoint depth'}, yaxis: {title: 'Mean latency (µs/op)'}});\n",
+    );
+    html.push_str("</script></body></html>\n");
+
+    let html_path = out_dir.join("report-checkpoint-scaling.html");
+    std::fs::write(&html_path, &html)?;
+    eprintln!("Report written to {}", html_path.display());
 
     Ok(())
 }
