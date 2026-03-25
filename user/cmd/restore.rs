@@ -71,10 +71,7 @@ mod tests {
             dtype: Some(libc::DT_REG),
         }]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(
-            tree.get("/src/main.rs"),
-            Some(Target::Inode(1))
-        ));
+        assert!(matches!(tree.get("/src/main.rs"), Some(Target::Inode(1))));
     }
 
     #[test]
@@ -91,10 +88,7 @@ mod tests {
             },
         ]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(
-            tree.get("/old.txt"),
-            Some(Target::None)
-        ));
+        assert!(matches!(tree.get("/old.txt"), Some(Target::None)));
     }
 
     #[test]
@@ -105,13 +99,8 @@ mod tests {
             dtype: Some(libc::DT_REG),
         }]);
 
-        assert!(matches!(
-            tree.get("/a.txt"),
-            Some(Target::None)
-        ));
-        assert!(
-            matches!(tree.get("/b.txt"), Some(Target::Path(Some(src))) if src == "/a.txt")
-        );
+        assert!(matches!(tree.get("/a.txt"), Some(Target::None)));
+        assert!(matches!(tree.get("/b.txt"), Some(Target::Path(Some(src))) if src == "/a.txt"));
     }
 
     #[test]
@@ -129,14 +118,8 @@ mod tests {
             },
         ]);
 
-        assert!(matches!(
-            tree.get("/new.rs"),
-            Some(Target::Inode(5))
-        ));
-        assert!(matches!(
-            tree.get("/old.rs"),
-            Some(Target::None)
-        ));
+        assert!(matches!(tree.get("/new.rs"), Some(Target::Inode(5))));
+        assert!(matches!(tree.get("/old.rs"), Some(Target::None)));
     }
 
     #[test]

@@ -277,10 +277,7 @@ mod tests {
     #[test]
     fn state_map_added() {
         let tmp = make_agfs(&[(1, "hello\n")]);
-        let dentries = vec![(
-            "/src/main.rs".into(),
-            Target::Inode(1),
-        )];
+        let dentries = vec![("/src/main.rs".into(), Target::Inode(1))];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/src/main.rs"], Some("hello\n".into()));
@@ -289,10 +286,7 @@ mod tests {
     #[test]
     fn state_map_modified() {
         let tmp = make_agfs(&[(5, "new content")]);
-        let dentries = vec![(
-            "/etc/config".into(),
-            Target::Inode(5),
-        )];
+        let dentries = vec![("/etc/config".into(), Target::Inode(5))];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/etc/config"], Some("new content".into()));
@@ -301,10 +295,7 @@ mod tests {
     #[test]
     fn state_map_deleted() {
         let tmp = make_agfs(&[]);
-        let dentries = vec![(
-            "/old/file.txt".into(),
-            Target::None,
-        )];
+        let dentries = vec![("/old/file.txt".into(), Target::None)];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/old/file.txt"], None);
@@ -334,10 +325,7 @@ mod tests {
                 "/nonexistent/new.rs".into(),
                 Target::Path(Some("/nonexistent/old.rs".into())),
             ),
-            (
-                "/nonexistent/new.rs".into(),
-                Target::Inode(7),
-            ),
+            ("/nonexistent/new.rs".into(), Target::Inode(7)),
         ];
         let map = state_map(tmp.path(), &entries);
         assert_eq!(map.len(), 2);
@@ -349,18 +337,9 @@ mod tests {
     fn state_map_multiple_changes() {
         let tmp = make_agfs(&[(1, "aaa"), (2, "bbb")]);
         let dentries = vec![
-            (
-                "/a.txt".into(),
-                Target::Inode(1),
-            ),
-            (
-                "/b.txt".into(),
-                Target::Inode(2),
-            ),
-            (
-                "/c.txt".into(),
-                Target::None,
-            ),
+            ("/a.txt".into(), Target::Inode(1)),
+            ("/b.txt".into(), Target::Inode(2)),
+            ("/c.txt".into(), Target::None),
         ];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 3);

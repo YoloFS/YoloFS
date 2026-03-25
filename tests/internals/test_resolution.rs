@@ -93,10 +93,7 @@ fn write_after_rename() {
         .iter()
         .rposition(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/moved.txt")))
         .unwrap();
-    assert!(
-        r_pos < a_pos,
-        "Rename should precede the Add at new path"
-    );
+    assert!(r_pos < a_pos, "Rename should precede the Add at new path");
 }
 
 /// Create a new file, then rename it.

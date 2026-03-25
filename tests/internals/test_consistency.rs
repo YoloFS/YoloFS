@@ -602,8 +602,7 @@ fn create_over_tombstone() {
 
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/hello.txt")
-            && matches!(e, Target::Inode(_))),
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::Inode(_))),
         "recreated file over tombstone should have Target::Inode: {t:?}"
     );
     assert_eq!(

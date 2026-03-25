@@ -916,10 +916,7 @@ fn rename_deep_dir_then_mixed_child_ops() {
         fs::read_to_string(s.mnt_path("moved/b/e.txt")).unwrap(),
         "modified mid leaf\n"
     );
-    assert!(
-        !s.mnt_path("a").exists(),
-        "old directory should not exist"
-    );
+    assert!(!s.mnt_path("a").exists(), "old directory should not exist");
 
     // Commit and verify base state
     s.cli(&["commit"]).expect("commit");

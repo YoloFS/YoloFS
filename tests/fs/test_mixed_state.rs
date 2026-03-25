@@ -187,14 +187,32 @@ fn readdir_mixed_base_and_staged() {
         .collect();
 
     // Should see: renamed.txt, brand_new.txt, subdir, test.sh
-    assert!(entries.contains(&"renamed.txt".to_string()), "missing renamed.txt: {entries:?}");
-    assert!(entries.contains(&"brand_new.txt".to_string()), "missing brand_new.txt: {entries:?}");
-    assert!(entries.contains(&"subdir".to_string()), "missing subdir: {entries:?}");
-    assert!(entries.contains(&"test.sh".to_string()), "missing test.sh: {entries:?}");
+    assert!(
+        entries.contains(&"renamed.txt".to_string()),
+        "missing renamed.txt: {entries:?}"
+    );
+    assert!(
+        entries.contains(&"brand_new.txt".to_string()),
+        "missing brand_new.txt: {entries:?}"
+    );
+    assert!(
+        entries.contains(&"subdir".to_string()),
+        "missing subdir: {entries:?}"
+    );
+    assert!(
+        entries.contains(&"test.sh".to_string()),
+        "missing test.sh: {entries:?}"
+    );
 
     // Should NOT see: hello.txt (renamed), multi.txt (deleted)
-    assert!(!entries.contains(&"hello.txt".to_string()), "hello.txt should be gone: {entries:?}");
-    assert!(!entries.contains(&"multi.txt".to_string()), "multi.txt should be gone: {entries:?}");
+    assert!(
+        !entries.contains(&"hello.txt".to_string()),
+        "hello.txt should be gone: {entries:?}"
+    );
+    assert!(
+        !entries.contains(&"multi.txt".to_string()),
+        "multi.txt should be gone: {entries:?}"
+    );
 }
 
 // ── Abort after mixed operations ────────────────────────────────────
@@ -258,11 +276,8 @@ fn rename_staged_into_subdir() {
 fn rename_base_out_of_subdir() {
     let s = AgfsSession::new().expect("session setup");
 
-    fs::rename(
-        s.mnt_path("subdir/deep.txt"),
-        s.mnt_path("promoted.txt"),
-    )
-    .expect("rename out of subdir");
+    fs::rename(s.mnt_path("subdir/deep.txt"), s.mnt_path("promoted.txt"))
+        .expect("rename out of subdir");
 
     assert!(fs::read_to_string(s.mnt_path("subdir/deep.txt")).is_err());
     assert_eq!(
