@@ -92,6 +92,9 @@ enum Cmd {
         /// Only regenerate paper artifacts (no Plotly HTML workload/index pages)
         #[arg(long)]
         paper_only: bool,
+        /// Regenerate a single paper artifact by name (e.g. "commit-time", "meta-ops", "fio-table")
+        #[arg(long)]
+        paper: Option<String>,
     },
     /// List available workloads and backends
     List,
@@ -1309,13 +1312,22 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(Cmd::Rerender { paper_only }) = cli.cmd {
+    if let Some(Cmd::Rerender { paper_only, paper }) = cli.cmd {
         let out_dir = results_dir(&env, false);
         let results_path = out_dir.join("results.json");
         let json = fs::read_to_string(&results_path)
             .with_context(|| format!("reading {}", results_path.display()))?;
         let results: BenchResults = serde_json::from_str(&json).context("parsing results.json")?;
-        if paper_only {
+        if let Some(ref name) = paper {
+            let paper_dir = out_dir.join("paper");
+            std::fs::create_dir_all(&paper_dir)?;
+            match name.as_str() {
+                "commit-time" => { paper::commit_time_figure::render(&results, &paper_dir)?; }
+                "meta-ops" => { paper::meta_ops_figure::render(&results, &paper_dir)?; }
+                "fio-table" => { paper::fio_data_table::render(&results, &paper_dir)?; }
+                _ => bail!("unknown paper artifact: {name}. Available: commit-time, meta-ops, fio-table"),
+            }
+        } else if paper_only {
             report::render_paper_only(&results, &out_dir)?;
         } else {
             report::render(&results, &out_dir)?;
@@ -1481,7 +1493,7 @@ fn main() -> Result<()> {
 // ── commit-scaling ──────────────────────────────────────────────────────────
 
 const COMMIT_SCALING_COUNTS: &[usize] = &[
-    1_000, 10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000, 80_000, 90_000, 100_000,
+    1_000, 10_000, 20_000, 30_000, 40_000, 50_000,
 ];
 
 fn run_commit_scaling(

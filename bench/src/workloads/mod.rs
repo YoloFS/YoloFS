@@ -1,5 +1,6 @@
 pub mod checkpoint_scalability;
 pub mod commit_scaling;
+pub mod unlink_files;
 pub mod fio_rand_read_cold;
 pub mod fio_rand_read_warm;
 pub mod fio_rand_write;
@@ -80,18 +81,12 @@ pub(crate) use define_rust_execution;
 /// All registered workloads: microbenchmarks first, then macrobenchmarks.
 pub fn all() -> Vec<Box<dyn Workload>> {
     let mut v: Vec<Box<dyn Workload>> = vec![
-        // micro
-        Box::new(read_files::ReadFiles),
-        Box::new(stat_files::StatFiles),
+        // micro (write-related, 10K files each)
+        Box::new(write_files::WriteFiles { count: 10_000 }),
+        Box::new(overwrite_files::OverwriteFiles { count: 10_000 }),
+        Box::new(rename_files::RenameFiles { count: 10_000 }),
+        Box::new(unlink_files::UnlinkFiles { count: 10_000 }),
     ];
-    for count in [100, 1000, 10_000, 100_000] {
-        v.push(Box::new(write_files::WriteFiles { count }));
-        v.push(Box::new(overwrite_files::OverwriteFiles { count }));
-        v.push(Box::new(rename_files::RenameFiles { count }));
-    }
-    // micro (cont.)
-    v.push(Box::new(checkpoint_scalability::CheckpointScalability));
-    v.push(Box::new(commit_scaling::CommitScaling));
     // macro
     v.push(Box::new(worktree::Worktree::new()));
     v.push(Box::new(linux_untar::LinuxUntar::new()));
@@ -182,11 +177,10 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
     // Strip source suffix to get the group name for meta workloads.
     let group = meta_shared::source_group_name(name).unwrap_or(name);
     Some(match group {
-        "write-files" | "write-files-100" | "write-files-10k" | "write-files-100k" => write_files::details(),
-        "read-files" => read_files::details(),
-        "stat-files" => stat_files::details(),
-        "overwrite-files" | "overwrite-files-100" | "overwrite-files-10k" | "overwrite-files-100k" => overwrite_files::details(),
-        "rename-files" | "rename-files-100" | "rename-files-10k" | "rename-files-100k" => rename_files::details(),
+        "write-files" => write_files::details(),
+        "overwrite-files" => overwrite_files::details(),
+        "rename-files" => rename_files::details(),
+        "unlink-files" => unlink_files::details(),
         "checkpoint-scalability" => checkpoint_scalability::details(),
         "worktree" => worktree::details(),
         "linux-untar" => linux_untar::details(),

@@ -43,13 +43,7 @@ pub fn details() -> crate::workloads::WorkloadDetails {
 
 impl Workload for OverwriteFiles {
     fn name(&self) -> &'static str {
-        match self.count {
-            100 => "overwrite-files-100",
-            1000 => "overwrite-files",
-            10_000 => "overwrite-files-10k",
-            100_000 => "overwrite-files-100k",
-            _ => "overwrite-files",
-        }
+        "overwrite-files"
     }
 
     fn kind(&self) -> WorkloadKind {
@@ -57,13 +51,7 @@ impl Workload for OverwriteFiles {
     }
 
     fn description(&self) -> &'static str {
-        match self.count {
-            100 => "Overwrite 100 pre-existing 4 KiB files (COW path)",
-            1000 => "Overwrite 1,000 pre-existing 4 KiB files (COW path)",
-            10_000 => "Overwrite 10,000 pre-existing 4 KiB files (COW path)",
-            100_000 => "Overwrite 100,000 pre-existing 4 KiB files (COW path)",
-            _ => "Overwrite N pre-existing 4 KiB files (COW path)",
-        }
+        "Overwrite 10,000 pre-existing 4 KiB files (COW path)"
     }
 
     fn work_dir(&self) -> &'static str {

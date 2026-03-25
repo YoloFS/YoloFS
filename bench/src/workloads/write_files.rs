@@ -45,13 +45,7 @@ pub fn details() -> crate::workloads::WorkloadDetails {
 
 impl Workload for WriteFiles {
     fn name(&self) -> &'static str {
-        match self.count {
-            100 => "write-files-100",
-            1000 => "write-files",
-            10_000 => "write-files-10k",
-            100_000 => "write-files-100k",
-            _ => "write-files",
-        }
+        "write-files"
     }
 
     fn kind(&self) -> WorkloadKind {
@@ -59,13 +53,7 @@ impl Workload for WriteFiles {
     }
 
     fn description(&self) -> &'static str {
-        match self.count {
-            100 => "Create 100 new 4 KiB files",
-            1000 => "Create 1,000 new 4 KiB files",
-            10_000 => "Create 10,000 new 4 KiB files",
-            100_000 => "Create 100,000 new 4 KiB files",
-            _ => "Create N new 4 KiB files",
-        }
+        "Create 10,000 new 4 KiB files"
     }
 
     fn work_dir(&self) -> &'static str {

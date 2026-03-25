@@ -318,7 +318,12 @@ fn commit_upper_to_lower(upper: &std::path::Path, lower: &std::path::Path) -> Re
             std::fs::create_dir_all(&lower_path)?;
             commit_upper_to_lower(&upper_path, &lower_path)?;
         } else {
-            remove_any(&lower_path);
+            // rename() atomically replaces the destination if it exists
+            // (for regular files). Only need remove_any if the destination
+            // is a different type (e.g. dir being replaced by file).
+            if lower_path.exists() && lower_path.is_dir() {
+                remove_any(&lower_path);
+            }
             std::fs::rename(&upper_path, &lower_path)
                 .or_else(|_| {
                     std::fs::copy(&upper_path, &lower_path)?;

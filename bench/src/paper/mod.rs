@@ -1,5 +1,6 @@
 //! Publication-ready artifacts: LaTeX tables, figures, and HTML index.
 
+pub mod commit_time_figure;
 pub mod fio_data_table;
 pub mod meta_ops_figure;
 mod util;
@@ -23,6 +24,12 @@ pub fn render(results: &crate::BenchResults, out_dir: &Path) -> Result<()> {
 
     // ── metadata ops figure (multiple variants) ──
     artifacts.extend(meta_ops_figure::render(results, &paper_dir)?);
+
+    // ── commit time figure ──
+    match commit_time_figure::render(results, &paper_dir) {
+        Ok(art) => artifacts.push(art),
+        Err(e) => eprintln!("  warning: commit-time-figure: {e:#}"),
+    }
 
     // ── paper-report.html ──
     render_index(&artifacts, out_dir)?;
@@ -75,6 +82,7 @@ pub fn install(_results: &crate::BenchResults, out_dir: &Path, paper_dir: &Path)
     let mut artifacts: Vec<Artifact> = Vec::new();
     artifacts.push(fio_data_table::artifact_meta(&bench_paper_dir));
     artifacts.extend(meta_ops_figure::artifact_metas(&bench_paper_dir));
+    artifacts.push(commit_time_figure::artifact_meta(&bench_paper_dir));
 
     let gen_dir = paper_dir.join("generated");
     std::fs::create_dir_all(&gen_dir).with_context(|| format!("creating {}", gen_dir.display()))?;
