@@ -492,7 +492,7 @@ fn rename_staged_file_overwrite_base_commit() {
     );
 }
 
-/// Complex multi-operation scenario exercising the ADD/DEL/RNM journal format,
+/// Complex multi-operation scenario exercising the Stage/DEL/RNM journal format,
 /// resolver edge cases, and commit correctness in a single session.
 ///
 /// Base files: hello.txt, multi.txt, subdir/deep.txt, test.sh
@@ -501,7 +501,7 @@ fn rename_staged_file_overwrite_base_commit() {
 ///   1. Modify hello.txt (COW → S record)
 ///   2. Create brand_new.txt then rename it to multi.txt
 ///      (staged rename to base path; overwrites base file)
-///   3. Create temp.txt then delete it (ADD + DEL → cancel)
+///   3. Create temp.txt then delete it (Stage + DEL → cancel)
 ///   4. Rename subdir/deep.txt → subdir/shallow.txt (base rename → tombstone + redirect)
 ///   5. Rename subdir/shallow.txt → top.txt (second rename → tombstone + redirect)
 ///   6. Create link.txt as symlink (A with dtype=Link)
@@ -530,7 +530,7 @@ fn complex_multi_operation_commit() {
     fs::rename(s.mnt_path("brand_new.txt"), s.mnt_path("multi.txt"))
         .expect("rename brand_new → multi");
 
-    // ── 3. Create then immediately delete (ADD + DEL cancel) ──
+    // ── 3. Create then immediately delete (Stage + DEL cancel) ──
     fs::write(s.mnt_path("temp.txt"), "ephemeral\n").expect("create temp");
     fs::remove_file(s.mnt_path("temp.txt")).expect("delete temp");
 
@@ -543,7 +543,7 @@ fn complex_multi_operation_commit() {
     fs::rename(s.mnt_path("subdir/shallow.txt"), s.mnt_path("top.txt"))
         .expect("rename shallow → top");
 
-    // ── 6. Create a symlink (ADD record, dtype=Link) ──
+    // ── 6. Create a symlink (Stage record, dtype=Link) ──
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
 
     // ── 7. Second COW on hello.txt (multiple S records → final ino wins) ──

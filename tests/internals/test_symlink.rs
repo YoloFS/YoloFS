@@ -17,7 +17,7 @@ fn symlink_produces_add_record() {
     assert!(
         acts.iter()
             .any(|a| matches!(a, Action::Stage { path, dtype: Some(libc::DT_LNK), .. } if path.ends_with("/link.txt"))),
-        "journal should have an Stage(dtype=Link) record for link.txt: {acts:?}"
+        "journal should have a Stage(dtype=Link) record for link.txt: {acts:?}"
     );
 }
 

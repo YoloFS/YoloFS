@@ -17,7 +17,7 @@ fn mkdir_produces_add_record() {
     assert!(
         acts.iter()
             .any(|a| matches!(a, Action::Stage { path, dtype: Some(libc::DT_DIR), .. } if path.ends_with("/newdir"))),
-        "journal should have an Stage(dtype=Dir) record for newdir: {acts:?}"
+        "journal should have a Stage(dtype=Dir) record for newdir: {acts:?}"
     );
 }
 

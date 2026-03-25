@@ -66,7 +66,7 @@ fn lookup_miss_then_create_produces_single_add() {
     assert_eq!(
         adds.len(),
         1,
-        "create after miss should append exactly one Add record: {acts:?}"
+        "create after miss should append exactly one Stage record: {acts:?}"
     );
 }
 

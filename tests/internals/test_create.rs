@@ -17,7 +17,7 @@ fn create_produces_add_record() {
     assert!(
         acts.iter()
             .any(|a| matches!(a, Action::Stage { path, dtype: Some(libc::DT_REG), .. } if path.ends_with("/brandnew.txt"))),
-        "journal should have an Stage(dtype=File) record for brandnew.txt: {acts:?}"
+        "journal should have a Stage(dtype=File) record for brandnew.txt: {acts:?}"
     );
 }
 

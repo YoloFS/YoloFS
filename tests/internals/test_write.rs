@@ -7,7 +7,7 @@ use std::io::Write;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Modifying an existing file produces an Add record.
+/// Modifying an existing file produces a Stage record.
 #[test]
 fn modify_produces_add_record() {
     let s = AgfsSession::new().expect("session setup");
@@ -23,7 +23,7 @@ fn modify_produces_add_record() {
     );
 }
 
-/// Overwrite an existing file multiple times — each write produces an Stage record
+/// Overwrite an existing file multiple times — each write produces a Stage record
 /// (the kernel doesn't coalesce; the CLI resolver handles that).
 #[test]
 fn multiple_writes_produce_multiple_adds() {
