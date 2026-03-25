@@ -262,7 +262,9 @@ mod tests {
         let inodes_dir = tmp.path().join("inodes");
         fs::create_dir_all(&inodes_dir).unwrap();
         for (ino, content) in inodes {
-            fs::write(inodes_dir.join(ino.to_string()), content).unwrap();
+            let path = crate::utils::inode_path(tmp.path(), *ino);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, content).unwrap();
         }
         tmp
     }
