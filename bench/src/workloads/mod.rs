@@ -1,4 +1,5 @@
 pub mod checkpoint_scalability;
+pub mod checkpoint_scaling;
 pub mod fio_rand_read_cold;
 pub mod fio_rand_read_warm;
 pub mod fio_rand_write;
@@ -86,6 +87,8 @@ pub fn all() -> Vec<Box<dyn Workload>> {
         Box::new(rename_files::RenameFiles { count: 10_000 }),
         Box::new(unlink_files::UnlinkFiles { count: 10_000 }),
     ];
+    // hidden (used by subcommands only)
+    v.push(Box::new(checkpoint_scaling::CheckpointScaling));
     // macro
     v.push(Box::new(worktree::Worktree::new()));
     v.push(Box::new(linux_untar::LinuxUntar::new()));

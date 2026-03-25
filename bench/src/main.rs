@@ -110,6 +110,12 @@ enum Cmd {
         #[arg(long)]
         bpftrace: bool,
     },
+    /// Measure op latency vs checkpoint depth
+    CheckpointScaling {
+        /// Backend to test (default: agfs-no-perm)
+        #[arg(long, default_value = "agfs-no-perm")]
+        backend: String,
+    },
     /// Visual diff of a PDF between two git commits
     DiffPdf {
         /// Path to the PDF file (relative to repo root)
@@ -1279,6 +1285,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(Cmd::CheckpointScaling { backend: backend_name }) = cli.cmd {
+        let out_dir = results_dir(&env, false);
+        run_checkpoint_scaling(&out_dir, &backend_name)?;
+        return Ok(());
+    }
+
     if let Some(Cmd::DiffPdf {
         path,
         old,
@@ -1482,6 +1494,106 @@ fn main() -> Result<()> {
             report::render_one(&merged, workload.name(), &out_dir)?;
         }
     }
+
+    Ok(())
+}
+
+// ── checkpoint-scaling ───────────────────────────────────────────────────────
+
+const CHECKPOINT_DEPTHS: &[usize] = &[1, 5, 10, 20, 50, 100];
+
+fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
+    let all_backends = backends::all();
+    let b = all_backends
+        .iter()
+        .find(|b| b.name() == backend_name)
+        .with_context(|| format!("unknown backend: {backend_name}"))?;
+
+    let wl = workloads::checkpoint_scaling::CheckpointScaling;
+
+    #[derive(serde::Serialize)]
+    struct CheckpointScalingResult {
+        mode: String,
+        points: Vec<CheckpointScalingPoint>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct CheckpointScalingPoint {
+        depth: usize,
+        mean_lat_us: f64,
+        p50_us: f64,
+        p99_us: f64,
+    }
+
+    let mut results = Vec::new();
+
+    for mode in ["create", "read"] {
+        let mut points = Vec::new();
+        eprintln!("checkpoint-scaling: {backend_name} / {mode}");
+
+        for &depth in CHECKPOINT_DEPTHS {
+            unsafe {
+                std::env::set_var("CHECKPOINT_SCALING_MODE", mode);
+                std::env::set_var("CHECKPOINT_SCALING_DEPTH", depth.to_string());
+            }
+            match b.run_one(&wl, false) {
+                Ok((result, _)) => {
+                    if let Some(ref op) = result.op_result {
+                        let mean_us = 1_000_000.0 / op.iops;
+                        eprintln!(
+                            "  depth={depth}: {mean_us:.1}µs mean, {:.1}µs p50, {:.1}µs p99",
+                            op.lat_us_p50, op.lat_us_p99
+                        );
+                        points.push(CheckpointScalingPoint {
+                            depth,
+                            mean_lat_us: mean_us,
+                            p50_us: op.lat_us_p50,
+                            p99_us: op.lat_us_p99,
+                        });
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  depth={depth}: FAILED: {e:#}");
+                    break;
+                }
+            }
+        }
+
+        results.push(CheckpointScalingResult {
+            mode: mode.to_string(),
+            points,
+        });
+    }
+
+    let json_path = out_dir.join("checkpoint-scaling.json");
+    std::fs::write(&json_path, serde_json::to_string_pretty(&results)?)?;
+    eprintln!("Results written to {}", json_path.display());
+
+    // Generate Plotly HTML.
+    let mut html = String::new();
+    html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\">\n");
+    html.push_str("<title>Checkpoint Scaling</title>\n");
+    html.push_str("<script src=\"https://cdn.plot.ly/plotly-2.35.2.min.js\"></script>\n");
+    html.push_str("</head><body>\n");
+    html.push_str("<h2>Latency vs checkpoint depth</h2>\n");
+    html.push_str("<div id=\"plot\" style=\"width:800px;height:400px\"></div>\n");
+    html.push_str("<script>\nPlotly.newPlot('plot', [\n");
+
+    for res in &results {
+        let xs: Vec<String> = res.points.iter().map(|p| p.depth.to_string()).collect();
+        let ys: Vec<String> = res.points.iter().map(|p| format!("{:.1}", p.p50_us)).collect();
+        html.push_str(&format!(
+            "  {{x: [{}], y: [{}], mode: 'lines+markers', name: '{}'}},\n",
+            xs.join(","), ys.join(","), res.mode
+        ));
+    }
+
+    html.push_str("], {xaxis: {title: 'Checkpoint depth'}, yaxis: {title: 'p50 latency (µs/op)'}});\n");
+    html.push_str("</script></body></html>\n");
+
+    let html_path = out_dir.join("report-checkpoint-scaling.html");
+    std::fs::write(&html_path, &html)?;
+    eprintln!("Report written to {}", html_path.display());
 
     Ok(())
 }
