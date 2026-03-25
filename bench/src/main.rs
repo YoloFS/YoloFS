@@ -112,8 +112,8 @@ enum Cmd {
     },
     /// Measure op latency vs checkpoint depth
     CheckpointScaling {
-        /// Backend to test (default: agfs-no-perm)
-        #[arg(long, default_value = "agfs-no-perm")]
+        /// Backend to test (default: agfs-realistic)
+        #[arg(long, default_value = "agfs-realistic")]
         backend: String,
     },
     /// Visual diff of a PDF between two git commits
@@ -1365,6 +1365,9 @@ fn main() -> Result<()> {
         selected
     } else if cli.micro {
         workloads::by_kind(workload::WorkloadKind::Micro)
+            .into_iter()
+            .filter(|w| !w.hidden())
+            .collect()
     } else if cli.r#macro {
         workloads::by_kind(workload::WorkloadKind::Macro)
     } else if cli.op {
@@ -1503,7 +1506,7 @@ fn main() -> Result<()> {
 
 // ── checkpoint-scaling ───────────────────────────────────────────────────────
 
-const CHECKPOINT_DEPTHS: &[usize] = &[1, 5, 10, 20, 50, 100];
+const CHECKPOINT_DEPTHS: &[usize] = &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
 fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
     let all_backends = backends::all();

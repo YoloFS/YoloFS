@@ -188,6 +188,7 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
         "rename-files" => rename_files::details(),
         "unlink-files" => unlink_files::details(),
         "checkpoint-scalability" => checkpoint_scalability::details(),
+        "checkpoint-scaling" => checkpoint_scaling::details(),
         "worktree" => worktree::details(),
         "linux-untar" => linux_untar::details(),
         "meta-create" | "meta-create-100" | "meta-create-100k" => meta_create::details(),

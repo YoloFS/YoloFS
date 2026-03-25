@@ -17,6 +17,18 @@ const FILES_PER_CHECKPOINT: usize = 100;
 
 pub struct CheckpointScaling;
 
+pub fn details() -> crate::workloads::WorkloadDetails {
+    crate::workloads::workload_details(
+        "Checkpoint-depth scaling workload (fixed-size create/read probes).",
+        "Creates synthetic files under a single workload directory; no external fixture required.",
+        Some(
+            "Uses backend checkpoint protocol between setup phases. Configure with CHECKPOINT_SCALING_MODE={create|read} and CHECKPOINT_SCALING_DEPTH=<N>.",
+        ),
+        "Builds a checkpoint chain, then measures 100 create or 100 read operations and emits OpResult.",
+        file!(),
+    )
+}
+
 impl Workload for CheckpointScaling {
     fn name(&self) -> &'static str {
         "checkpoint-scaling"
@@ -52,8 +64,8 @@ impl Workload for CheckpointScaling {
     }
 
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        let mode = std::env::var("CHECKPOINT_SCALING_MODE")
-            .unwrap_or_else(|_| "create".to_string());
+        let mode =
+            std::env::var("CHECKPOINT_SCALING_MODE").unwrap_or_else(|_| "create".to_string());
         let depth: usize = std::env::var("CHECKPOINT_SCALING_DEPTH")
             .unwrap_or_else(|_| "1".to_string())
             .parse()
@@ -69,58 +81,56 @@ impl Workload for CheckpointScaling {
             "create" => {
                 // Setup: create K checkpoints, each with 100 files (untimed).
                 let mut file_id = 0usize;
-                for _chk in 0..depth {
+                let mut built_depth = 0usize;
+                for chk in 0..depth {
                     for _ in 0..FILES_PER_CHECKPOINT {
-                        std::fs::write(
-                            root.join(format!("setup-{file_id:06}.dat")),
-                            &buf,
-                        )?;
+                        std::fs::write(root.join(format!("setup-{file_id:06}.dat")), &buf)?;
                         file_id += 1;
                     }
-                    emit_checkpoint()?;
+                    if !emit_checkpoint(chk + 1)? {
+                        break;
+                    }
+                    built_depth += 1;
                 }
+                eprintln!("  checkpoint-scaling(create): built depth {built_depth}/{depth}");
 
                 // Measure: create 100 new files.
                 let mut latencies = Vec::with_capacity(FILES_PER_CHECKPOINT);
                 for i in 0..FILES_PER_CHECKPOINT {
                     let t = Instant::now();
-                    std::fs::write(
-                        root.join(format!("measure-{i:06}.dat")),
-                        &buf,
-                    )?;
+                    std::fs::write(root.join(format!("measure-{i:06}.dat")), &buf)?;
                     latencies.push(t.elapsed());
                 }
 
-                crate::workloads::emit_op_result(
-                    &crate::workloads::summarize_latencies(
-                        latencies,
-                        Instant::now().elapsed(), // not used meaningfully
-                        None,
-                    ),
-                )?;
+                crate::workloads::emit_op_result(&crate::workloads::summarize_latencies(
+                    latencies,
+                    Instant::now().elapsed(), // not used meaningfully
+                    None,
+                ))?;
             }
             "read" => {
                 // Setup: first checkpoint has the target files.
                 for i in 0..FILES_PER_CHECKPOINT {
-                    std::fs::write(
-                        root.join(format!("target-{i:06}.dat")),
-                        &buf,
-                    )?;
+                    std::fs::write(root.join(format!("target-{i:06}.dat")), &buf)?;
                 }
-                emit_checkpoint()?;
+                if !emit_checkpoint(1)? {
+                    anyhow::bail!("backend stopped at first checkpoint");
+                }
 
                 // Remaining K-1 checkpoints with filler files.
                 let mut file_id = 0usize;
-                for _chk in 1..depth {
+                let mut built_depth = 1usize;
+                for chk in 1..depth {
                     for _ in 0..FILES_PER_CHECKPOINT {
-                        std::fs::write(
-                            root.join(format!("filler-{file_id:06}.dat")),
-                            &buf,
-                        )?;
+                        std::fs::write(root.join(format!("filler-{file_id:06}.dat")), &buf)?;
                         file_id += 1;
                     }
-                    emit_checkpoint()?;
+                    if !emit_checkpoint(chk + 1)? {
+                        break;
+                    }
+                    built_depth += 1;
                 }
+                eprintln!("  checkpoint-scaling(read): built depth {built_depth}/{depth}");
 
                 // Measure: read the 100 target files from checkpoint 1.
                 let mut latencies = Vec::with_capacity(FILES_PER_CHECKPOINT);
@@ -131,13 +141,11 @@ impl Workload for CheckpointScaling {
                     latencies.push(t.elapsed());
                 }
 
-                crate::workloads::emit_op_result(
-                    &crate::workloads::summarize_latencies(
-                        latencies,
-                        Instant::now().elapsed(),
-                        None,
-                    ),
-                )?;
+                crate::workloads::emit_op_result(&crate::workloads::summarize_latencies(
+                    latencies,
+                    Instant::now().elapsed(),
+                    None,
+                ))?;
             }
             _ => anyhow::bail!("unknown CHECKPOINT_SCALING_MODE: {mode}"),
         }
@@ -146,7 +154,7 @@ impl Workload for CheckpointScaling {
     }
 }
 
-fn emit_checkpoint() -> Result<()> {
+fn emit_checkpoint(step: usize) -> Result<bool> {
     use std::io::{BufRead, Write};
 
     // Release cwd so the backend can unmount+remount (overlayfs).
@@ -154,7 +162,7 @@ fn emit_checkpoint() -> Result<()> {
     std::env::set_current_dir("/")?;
 
     println!("{}", crate::backend::CHECKPOINT_MARKER);
-    println!("{{\"step\":0}}");
+    println!("{{\"step\":{step}}}");
     std::io::stdout().flush()?;
 
     let stdin = std::io::stdin();
@@ -163,7 +171,10 @@ fn emit_checkpoint() -> Result<()> {
 
     lock.read_line(&mut line)?;
     if line.trim() != crate::backend::RESULTS_MARKER {
-        anyhow::bail!("expected {} after checkpoint", crate::backend::RESULTS_MARKER);
+        anyhow::bail!(
+            "expected {} after checkpoint",
+            crate::backend::RESULTS_MARKER
+        );
     }
     line.clear();
     lock.read_line(&mut line)?;
@@ -179,7 +190,7 @@ fn emit_checkpoint() -> Result<()> {
     }
     let resp: Resp = serde_json::from_str(line.trim())?;
     if resp.stop {
-        anyhow::bail!("backend stopped");
+        return Ok(false);
     }
     let target = resp
         .next_dest
@@ -188,5 +199,5 @@ fn emit_checkpoint() -> Result<()> {
         .unwrap_or(&saved_cwd);
     std::env::set_current_dir(target)?;
 
-    Ok(())
+    Ok(true)
 }
