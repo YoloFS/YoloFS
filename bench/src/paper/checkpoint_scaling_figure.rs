@@ -41,6 +41,8 @@ pub fn render(out_dir: &Path, paper_dir: &Path) -> Result<Artifact> {
     #[derive(serde::Deserialize)]
     struct CheckpointScalingPoint {
         depth: usize,
+        mean_us: f64,
+        #[allow(dead_code)]
         p50_us: f64,
     }
 
@@ -56,7 +58,7 @@ pub fn render(out_dir: &Path, paper_dir: &Path) -> Result<Artifact> {
             format!("{} ({})", res.mode, res.backend)
         };
         for p in &res.points {
-            data_lines.push(format!("{},{},{:.2}", label, p.depth, p.p50_us));
+            data_lines.push(format!("{},{},{:.2}", label, p.depth, p.mean_us));
         }
     }
 
@@ -67,7 +69,7 @@ pub fn render(out_dir: &Path, paper_dir: &Path) -> Result<Artifact> {
         r#"{preamble}
 
 DATA = """\
-mode,depth,p50_us
+mode,depth,mean_us
 {data}
 """
 
@@ -84,7 +86,7 @@ series = sorted(set(r['mode'] for r in rows))
 colors = list(S.TABLEAU10.values())
 
 for i, name in enumerate(series):
-    pts = [(int(r['depth']), float(r['p50_us'])) for r in rows if r['mode'] == name]
+    pts = [(int(r['depth']), float(r['mean_us'])) for r in rows if r['mode'] == name]
     pts.sort()
     xs = [p[0] for p in pts]
     ys = [p[1] for p in pts]
@@ -92,7 +94,7 @@ for i, name in enumerate(series):
             color=colors[i % len(colors)], label=name)
 
 ax.set_xlabel('checkpoint depth', fontweight='bold')
-ax.set_ylabel('p50 latency (\u00b5s/file)')
+ax.set_ylabel('mean latency (\u00b5s/file)')
 ax.set_ylim(bottom=0)
 ax.legend(loc='upper right', handlelength=1.5)
 

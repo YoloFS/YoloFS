@@ -53,6 +53,8 @@ pub struct OpResult {
     pub iops: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub throughput_kbps: Option<u64>,
+    #[serde(default)]
+    pub lat_us_mean: f64,
     pub lat_us_p50: f64,
     pub lat_us_p99: f64,
     pub lat_us_p999: f64,

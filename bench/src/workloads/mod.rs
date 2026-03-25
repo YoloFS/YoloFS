@@ -302,9 +302,14 @@ pub fn summarize_latencies(
         latencies[idx.min(len.saturating_sub(1))].as_secs_f64() * 1_000_000.0
     };
 
+    let mean_us = latencies.iter().map(|d| d.as_secs_f64()).sum::<f64>()
+        / len as f64
+        * 1_000_000.0;
+
     OpResult {
         iops: len as f64 / total.as_secs_f64(),
         throughput_kbps,
+        lat_us_mean: mean_us,
         lat_us_p50: percentile_us(50, 100),
         lat_us_p99: percentile_us(99, 100),
         lat_us_p999: percentile_us(999, 1000),
@@ -463,6 +468,7 @@ fn parse_fio_result(fio_json: &Value) -> Result<OpResult> {
     Ok(OpResult {
         iops: total_iops,
         throughput_kbps: Some(throughput_kbps),
+        lat_us_mean: 1_000_000.0 / total_iops,
         lat_us_p50: latencies.0,
         lat_us_p99: latencies.1,
         lat_us_p999: latencies.2,

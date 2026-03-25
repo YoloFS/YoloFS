@@ -1524,7 +1524,7 @@ fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
     #[derive(serde::Serialize, serde::Deserialize)]
     struct CheckpointScalingPoint {
         depth: usize,
-        mean_lat_us: f64,
+        mean_us: f64,
         p50_us: f64,
         p99_us: f64,
     }
@@ -1543,14 +1543,16 @@ fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
             match b.run_one(&wl, false) {
                 Ok((result, _)) => {
                     if let Some(ref op) = result.op_result {
-                        let mean_us = 1_000_000.0 / op.iops;
+                        // mean from p50 approximation for now; IOPS→mean
+                        // loses precision for small sample counts.
+                        let mean_us = op.lat_us_mean;
                         eprintln!(
                             "  depth={depth}: {mean_us:.1}µs mean, {:.1}µs p50, {:.1}µs p99",
                             op.lat_us_p50, op.lat_us_p99
                         );
                         points.push(CheckpointScalingPoint {
                             depth,
-                            mean_lat_us: mean_us,
+                            mean_us,
                             p50_us: op.lat_us_p50,
                             p99_us: op.lat_us_p99,
                         });
@@ -1593,7 +1595,7 @@ fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
 
     for res in &merged {
         let xs: Vec<String> = res.points.iter().map(|p| p.depth.to_string()).collect();
-        let ys: Vec<String> = res.points.iter().map(|p| format!("{:.1}", p.p50_us)).collect();
+        let ys: Vec<String> = res.points.iter().map(|p| format!("{:.1}", p.mean_us)).collect();
         let name = format!("{} ({})", res.mode, res.backend);
         html.push_str(&format!(
             "  {{x: [{}], y: [{}], mode: 'lines+markers', name: '{}'}},\n",
@@ -1601,7 +1603,7 @@ fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
         ));
     }
 
-    html.push_str("], {xaxis: {title: 'Checkpoint depth'}, yaxis: {title: 'p50 latency (µs/op)'}});\n");
+    html.push_str("], {xaxis: {title: 'Checkpoint depth'}, yaxis: {title: 'Mean latency (µs/op)'}});\n");
     html.push_str("</script></body></html>\n");
 
     let html_path = out_dir.join("report-checkpoint-scaling.html");
