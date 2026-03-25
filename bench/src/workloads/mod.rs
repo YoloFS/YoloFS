@@ -303,9 +303,7 @@ pub fn summarize_latencies(
         latencies[idx.min(len.saturating_sub(1))].as_secs_f64() * 1_000_000.0
     };
 
-    let mean_us = latencies.iter().map(|d| d.as_secs_f64()).sum::<f64>()
-        / len as f64
-        * 1_000_000.0;
+    let mean_us = latencies.iter().map(|d| d.as_secs_f64()).sum::<f64>() / len as f64 * 1_000_000.0;
 
     OpResult {
         iops: len as f64 / total.as_secs_f64(),
