@@ -13,8 +13,8 @@ pub struct StatFiles;
 crate::workloads::define_rust_execution!(
     fn run_stat_files(dest: &Path) -> Result<()> {
         for i in 0..1000 {
-            let meta = std::fs::metadata(dest.join(format!("file-{i:04}.dat")))
-                .with_context(|| format!("stat file-{i:04}.dat"))?;
+            let meta = std::fs::metadata(dest.join(format!("file-{i:06}.dat")))
+                .with_context(|| format!("stat file-{i:06}.dat"))?;
             std::hint::black_box(&meta);
         }
         Ok(())

@@ -107,6 +107,12 @@ enum Cmd {
         #[arg(long)]
         bpftrace: bool,
     },
+    /// Measure commit time vs file count for create/overwrite/rename/unlink
+    CommitScaling {
+        /// Backend to test (default: all)
+        #[arg(long)]
+        backend: Option<String>,
+    },
     /// Visual diff of a PDF between two git commits
     DiffPdf {
         /// Path to the PDF file (relative to repo root)
@@ -1275,6 +1281,13 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(Cmd::CommitScaling { backend: backend_filter }) = cli.cmd {
+        let env = collect_env();
+        let out_dir = results_dir(&env, false);
+        run_commit_scaling(&out_dir, backend_filter.as_deref())?;
+        return Ok(());
+    }
+
     if let Some(Cmd::DiffPdf {
         path,
         old,
@@ -1461,6 +1474,108 @@ fn main() -> Result<()> {
             report::render_one(&merged, workload.name(), &out_dir)?;
         }
     }
+
+    Ok(())
+}
+
+// ── commit-scaling ──────────────────────────────────────────────────────────
+
+const COMMIT_SCALING_COUNTS: &[usize] = &[
+    1_000, 10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000, 80_000, 90_000, 100_000,
+];
+
+fn run_commit_scaling(
+    out_dir: &Path,
+    backend_filter: Option<&str>,
+) -> Result<()> {
+    let all_backends = backends::all();
+    let backends: Vec<&dyn backend::Backend> = all_backends
+        .iter()
+        .map(|b| b.as_ref())
+        .filter(|b| b.available())
+        .filter(|b| backend_filter.is_none() || backend_filter == Some(b.name()))
+        .collect();
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct CommitScalingResult {
+        backend: String,
+        op: String,
+        points: Vec<CommitScalingPoint>,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct CommitScalingPoint {
+        count: usize,
+        staging_ms: u64,
+        commit_ms: u64,
+    }
+
+    let wl = workloads::commit_scaling::CommitScaling;
+
+    let ops: &[&str] = &["create", "overwrite", "rename", "unlink"];
+
+    let mut all_results: Vec<CommitScalingResult> = Vec::new();
+
+    for b in &backends {
+        for &op in ops {
+            let mut points = Vec::new();
+            eprintln!("commit-scaling: {} / {}", b.name(), op);
+
+            for &count in COMMIT_SCALING_COUNTS {
+                // Set env vars for the subprocess workload.
+                unsafe {
+                    std::env::set_var("COMMIT_SCALING_OP", op);
+                    std::env::set_var("COMMIT_SCALING_COUNT", count.to_string());
+                }
+                match b.run_one(&wl, false) {
+                    Ok((result, _)) => {
+                        let staging_ms = result.staging_ms.unwrap_or(result.total_ms);
+                        let commit_ms = result.commit_ms.unwrap_or(0);
+                        eprintln!(
+                            "  {op} count={count}: staging={staging_ms}ms commit={commit_ms}ms"
+                        );
+                        points.push(CommitScalingPoint {
+                            count,
+                            staging_ms,
+                            commit_ms,
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("  {op} count={count}: FAILED: {e:#}");
+                        // Stop this op on this backend if it fails
+                        break;
+                    }
+                }
+            }
+
+            all_results.push(CommitScalingResult {
+                backend: b.name().to_string(),
+                op: op.to_string(),
+                points,
+            });
+        }
+    }
+
+    // Merge with existing results (preserve other backends' data).
+    let json_path = out_dir.join("commit-scaling.json");
+    let mut merged: Vec<CommitScalingResult> = if json_path.exists() {
+        serde_json::from_str(&fs::read_to_string(&json_path)?).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    // Remove entries for backends we just ran, then append new data.
+    let ran_backends: std::collections::HashSet<String> = all_results
+        .iter()
+        .map(|r| r.backend.clone())
+        .collect();
+    merged.retain(|r| !ran_backends.contains(&r.backend));
+    merged.extend(all_results);
+    let json = serde_json::to_string_pretty(&merged)?;
+    std::fs::write(&json_path, &json)?;
+    eprintln!("Results written to {}", json_path.display());
+
+    // Generate Plotly HTML via the report module.
+    report::render_commit_scaling_report(out_dir)?;
 
     Ok(())
 }

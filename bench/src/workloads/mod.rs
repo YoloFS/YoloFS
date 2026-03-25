@@ -1,4 +1,5 @@
 pub mod checkpoint_scalability;
+pub mod commit_scaling;
 pub mod fio_rand_read_cold;
 pub mod fio_rand_read_warm;
 pub mod fio_rand_write;
@@ -80,32 +81,32 @@ pub(crate) use define_rust_execution;
 pub fn all() -> Vec<Box<dyn Workload>> {
     let mut v: Vec<Box<dyn Workload>> = vec![
         // micro
-        Box::new(write_files::WriteFiles::new()),
         Box::new(read_files::ReadFiles),
         Box::new(stat_files::StatFiles),
-        Box::new(overwrite_files::OverwriteFiles),
-        Box::new(rename_files::RenameFiles),
-        Box::new(checkpoint_scalability::CheckpointScalability),
-        // macro
-        Box::new(worktree::Worktree::new()),
-        Box::new(linux_untar::LinuxUntar::new()),
-        // op
-        Box::new(fio_seq_read_cold::FioSeqReadCold),
-        Box::new(fio_seq_read_warm::FioSeqReadWarm),
-        Box::new(fio_seq_write::FioSeqWrite),
-        Box::new(fio_rand_read_cold::FioRandReadCold),
-        Box::new(fio_rand_read_warm::FioRandReadWarm),
-        Box::new(fio_rand_write::FioRandWrite),
-        Box::new(fio_randrw_cold::FioRandRwCold),
-        Box::new(fio_randrw_warm::FioRandRwWarm),
-        Box::new(meta_create::MetaCreate {
-            count: meta_shared::LARGE_DIR,
-        }),
-        Box::new(meta_create::MetaCreate {
-            count: meta_shared::SMALL_DIR,
-        }),
-        Box::new(meta_create::MetaCreate { count: 100_000 }),
     ];
+    for count in [100, 1000, 10_000, 100_000] {
+        v.push(Box::new(write_files::WriteFiles { count }));
+        v.push(Box::new(overwrite_files::OverwriteFiles { count }));
+        v.push(Box::new(rename_files::RenameFiles { count }));
+    }
+    // micro (cont.)
+    v.push(Box::new(checkpoint_scalability::CheckpointScalability));
+    v.push(Box::new(commit_scaling::CommitScaling));
+    // macro
+    v.push(Box::new(worktree::Worktree::new()));
+    v.push(Box::new(linux_untar::LinuxUntar::new()));
+    // op
+    v.push(Box::new(fio_seq_read_cold::FioSeqReadCold));
+    v.push(Box::new(fio_seq_read_warm::FioSeqReadWarm));
+    v.push(Box::new(fio_seq_write::FioSeqWrite));
+    v.push(Box::new(fio_rand_read_cold::FioRandReadCold));
+    v.push(Box::new(fio_rand_read_warm::FioRandReadWarm));
+    v.push(Box::new(fio_rand_write::FioRandWrite));
+    v.push(Box::new(fio_randrw_cold::FioRandRwCold));
+    v.push(Box::new(fio_randrw_warm::FioRandRwWarm));
+    v.push(Box::new(meta_create::MetaCreate { count: meta_shared::LARGE_DIR }));
+    v.push(Box::new(meta_create::MetaCreate { count: meta_shared::SMALL_DIR }));
+    v.push(Box::new(meta_create::MetaCreate { count: 100_000 }));
     for w in meta_append::MetaAppend::all() {
         v.push(Box::new(w));
     }
@@ -181,11 +182,11 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
     // Strip source suffix to get the group name for meta workloads.
     let group = meta_shared::source_group_name(name).unwrap_or(name);
     Some(match group {
-        "write-files" => write_files::details(),
+        "write-files" | "write-files-100" | "write-files-10k" | "write-files-100k" => write_files::details(),
         "read-files" => read_files::details(),
         "stat-files" => stat_files::details(),
-        "overwrite-files" => overwrite_files::details(),
-        "rename-files" => rename_files::details(),
+        "overwrite-files" | "overwrite-files-100" | "overwrite-files-10k" | "overwrite-files-100k" => overwrite_files::details(),
+        "rename-files" | "rename-files-100" | "rename-files-10k" | "rename-files-100k" => rename_files::details(),
         "checkpoint-scalability" => checkpoint_scalability::details(),
         "worktree" => worktree::details(),
         "linux-untar" => linux_untar::details(),
@@ -269,8 +270,8 @@ pub fn populate_files(dir: &Path, count: usize, size: usize) -> Result<()> {
     std::fs::create_dir_all(dir).context("creating base work dir")?;
     let buf = vec![0u8; size];
     for i in 0..count {
-        std::fs::write(dir.join(format!("file-{i:04}.dat")), &buf)
-            .with_context(|| format!("populating file-{i:04}.dat"))?;
+        std::fs::write(dir.join(format!("file-{i:06}.dat")), &buf)
+            .with_context(|| format!("populating file-{i:06}.dat"))?;
     }
     Ok(())
 }
@@ -514,7 +515,7 @@ pub fn populate_readdir_dir(dir: &Path, count: usize) -> Result<()> {
 
 pub fn warm_metadata(dest: &Path, count: usize) -> Result<()> {
     for i in 0..count {
-        let path = dest.join(format!("file-{i:04}.dat"));
+        let path = dest.join(format!("file-{i:06}.dat"));
         let meta = std::fs::metadata(&path).with_context(|| format!("stat {}", path.display()))?;
         std::hint::black_box(meta);
     }

@@ -1,4 +1,4 @@
-// overwrite-files workload: overwrite 1,000 pre-existing small (4 KiB) files.
+// overwrite-files workload: overwrite N pre-existing small (4 KiB) files.
 //
 // Exercises the copy-on-write / copy-up path: for agfs this triggers
 // agfs_do_cow on the first write to each file; for overlayfs the kernel
@@ -9,23 +9,32 @@ use agfs::config::Perm;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-pub struct OverwriteFiles;
+pub struct OverwriteFiles {
+    pub count: usize,
+}
 
-crate::workloads::define_rust_execution!(
-    fn run_overwrite_files(dest: &Path) -> Result<()> {
-        let buf = vec![0xFFu8; 4096];
-        for i in 0..1000 {
-            std::fs::write(dest.join(format!("file-{i:04}.dat")), &buf)
-                .with_context(|| format!("overwriting file-{i:04}.dat"))?;
-        }
-        Ok(())
-    } => overwrite_files_execution
-);
+fn run_overwrite(dest: &Path, count: usize) -> Result<()> {
+    let buf = vec![0xFFu8; 4096];
+    for i in 0..count {
+        std::fs::write(dest.join(format!("file-{i:06}.dat")), &buf)
+            .with_context(|| format!("overwriting file-{i:06}.dat"))?;
+    }
+    Ok(())
+}
+
+fn overwrite_files_execution() -> String {
+    crate::workloads::rust_execution(
+        "let buf = vec![0xFFu8; 4096];\n\
+         for i in 0..count {\n\
+         \x20   fs::write(dest.join(format!(\"file-{i:06}.dat\")), &buf)?;\n\
+         }",
+    )
+}
 
 pub fn details() -> crate::workloads::WorkloadDetails {
     crate::workloads::workload_details(
         "Session microbenchmark for copy-on-write / copy-up behavior on existing files.",
-        "Populates the backend base layer with 1,000 4 KiB files before timing so each write targets an existing file.",
+        "Populates the backend base layer with N 4 KiB files before timing so each write targets an existing file.",
         None,
         &overwrite_files_execution(),
         file!(),
@@ -34,7 +43,13 @@ pub fn details() -> crate::workloads::WorkloadDetails {
 
 impl Workload for OverwriteFiles {
     fn name(&self) -> &'static str {
-        "overwrite-files"
+        match self.count {
+            100 => "overwrite-files-100",
+            1000 => "overwrite-files",
+            10_000 => "overwrite-files-10k",
+            100_000 => "overwrite-files-100k",
+            _ => "overwrite-files",
+        }
     }
 
     fn kind(&self) -> WorkloadKind {
@@ -42,11 +57,17 @@ impl Workload for OverwriteFiles {
     }
 
     fn description(&self) -> &'static str {
-        "Overwrite 1,000 pre-existing 4 KiB files (copy-on-write / copy-up path)"
+        match self.count {
+            100 => "Overwrite 100 pre-existing 4 KiB files (COW path)",
+            1000 => "Overwrite 1,000 pre-existing 4 KiB files (COW path)",
+            10_000 => "Overwrite 10,000 pre-existing 4 KiB files (COW path)",
+            100_000 => "Overwrite 100,000 pre-existing 4 KiB files (COW path)",
+            _ => "Overwrite N pre-existing 4 KiB files (COW path)",
+        }
     }
 
     fn work_dir(&self) -> &'static str {
-        "overwrite-dest"
+        self.name()
     }
 
     fn ensure_fixture(&self) -> Result<()> {
@@ -58,10 +79,10 @@ impl Workload for OverwriteFiles {
     }
 
     fn populate_base(&self, base: &Path) -> Result<()> {
-        super::populate_files(base, 1000, 4096)
+        super::populate_files(base, self.count, 4096)
     }
 
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        run_overwrite_files(dest)
+        run_overwrite(dest, self.count)
     }
 }

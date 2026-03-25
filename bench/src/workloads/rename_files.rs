@@ -1,4 +1,4 @@
-// rename-files workload: rename 1,000 pre-existing files.
+// rename-files workload: rename N pre-existing files.
 //
 // Exercises the directory-operation path: for agfs this goes through
 // agfs_rename and appends a journal rename record; for overlayfs the
@@ -10,25 +10,36 @@ use agfs::config::Perm;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-pub struct RenameFiles;
+pub struct RenameFiles {
+    pub count: usize,
+}
 
-crate::workloads::define_rust_execution!(
-    fn run_rename_files(dest: &Path) -> Result<()> {
-        for i in 0..1000 {
-            std::fs::rename(
-                dest.join(format!("file-{i:04}.dat")),
-                dest.join(format!("renamed-{i:04}.dat")),
-            )
-            .with_context(|| format!("renaming file-{i:04}.dat"))?;
-        }
-        Ok(())
-    } => rename_files_execution
-);
+fn run_rename(dest: &Path, count: usize) -> Result<()> {
+    for i in 0..count {
+        std::fs::rename(
+            dest.join(format!("file-{i:06}.dat")),
+            dest.join(format!("renamed-{i:06}.dat")),
+        )
+        .with_context(|| format!("renaming file-{i:06}.dat"))?;
+    }
+    Ok(())
+}
+
+fn rename_files_execution() -> String {
+    crate::workloads::rust_execution(
+        "for i in 0..count {\n\
+         \x20   fs::rename(\n\
+         \x20       dest.join(format!(\"file-{i:06}.dat\")),\n\
+         \x20       dest.join(format!(\"renamed-{i:06}.dat\")),\n\
+         \x20   )?;\n\
+         }",
+    )
+}
 
 pub fn details() -> crate::workloads::WorkloadDetails {
     crate::workloads::workload_details(
         "Session microbenchmark for rename-heavy directory operations on existing files.",
-        "Populates the backend base layer with 1,000 4 KiB files before timing.",
+        "Populates the backend base layer with N 4 KiB files before timing.",
         None,
         &rename_files_execution(),
         file!(),
@@ -37,7 +48,13 @@ pub fn details() -> crate::workloads::WorkloadDetails {
 
 impl Workload for RenameFiles {
     fn name(&self) -> &'static str {
-        "rename-files"
+        match self.count {
+            100 => "rename-files-100",
+            1000 => "rename-files",
+            10_000 => "rename-files-10k",
+            100_000 => "rename-files-100k",
+            _ => "rename-files",
+        }
     }
 
     fn kind(&self) -> WorkloadKind {
@@ -45,11 +62,17 @@ impl Workload for RenameFiles {
     }
 
     fn description(&self) -> &'static str {
-        "Rename 1,000 pre-existing files (directory ops + journal / copy-up)"
+        match self.count {
+            100 => "Rename 100 pre-existing files",
+            1000 => "Rename 1,000 pre-existing files",
+            10_000 => "Rename 10,000 pre-existing files",
+            100_000 => "Rename 100,000 pre-existing files",
+            _ => "Rename N pre-existing files",
+        }
     }
 
     fn work_dir(&self) -> &'static str {
-        "rename-dest"
+        self.name()
     }
 
     fn ensure_fixture(&self) -> Result<()> {
@@ -61,10 +84,10 @@ impl Workload for RenameFiles {
     }
 
     fn populate_base(&self, base: &Path) -> Result<()> {
-        super::populate_files(base, 1000, 4096)
+        super::populate_files(base, self.count, 4096)
     }
 
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
-        run_rename_files(dest)
+        run_rename(dest, self.count)
     }
 }
