@@ -618,10 +618,7 @@ mod tests {
             }),
         ];
         let actions = live_actions(records);
-        assert!(
-            actions.is_empty(),
-            "consecutive jumps: last one (M1) wins"
-        );
+        assert!(actions.is_empty(), "consecutive jumps: last one (M1) wins");
     }
 
     #[test]

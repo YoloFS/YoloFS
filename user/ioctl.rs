@@ -213,10 +213,7 @@ pub fn jump(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
 /// skipped due to `AGFS_MARK_IF_CHANGED` with no pending changes.
 pub fn mark(fd: &File, name: &str, flags: u8) -> Result<u64> {
     let name_bytes = name.as_bytes();
-    let name_len: u16 = name_bytes
-        .len()
-        .try_into()
-        .context("mark name too long")?;
+    let name_len: u16 = name_bytes.len().try_into().context("mark name too long")?;
     let mut mrk = AgfsIocMark {
         gen_id: 0,
         name_ptr: name_bytes.as_ptr() as u64,

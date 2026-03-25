@@ -63,14 +63,8 @@ fn recow_after_checkpoint_produces_new_add() {
         .iter()
         .rposition(|r| matches!(r, Record::Action(Action::Add { path, .. }) if path.ends_with("/hello.txt")))
         .unwrap();
-    assert!(
-        first_add < chk_pos,
-        "first Add should precede Mark s1"
-    );
-    assert!(
-        chk_pos < last_add,
-        "Mark s1 should precede re-COW Add"
-    );
+    assert!(first_add < chk_pos, "first Add should precede Mark s1");
+    assert!(chk_pos < last_add, "Mark s1 should precede re-COW Add");
 }
 
 /// Multiple checkpoints interleaved with writes: each mark gets a unique id.
@@ -123,10 +117,7 @@ fn rename_after_checkpoint() {
         .iter()
         .position(|r| matches!(r, Record::Action(Action::Rename { dst, .. }) if dst.ends_with("/moved.txt")))
         .expect("should have Redirect for moved.txt");
-    assert!(
-        chk_pos < rename_pos,
-        "Mark should precede Rename: {recs:?}"
-    );
+    assert!(chk_pos < rename_pos, "Mark should precede Rename: {recs:?}");
 }
 
 /// Delete after checkpoint: the DEL record appears after the Mark record.
@@ -147,10 +138,7 @@ fn delete_after_checkpoint() {
         .iter()
         .position(|r| matches!(r, Record::Action(Action::Delete { .. })))
         .unwrap();
-    assert!(
-        chk_pos < del_pos,
-        "Mark should precede Delete: {recs:?}"
-    );
+    assert!(chk_pos < del_pos, "Mark should precede Delete: {recs:?}");
 }
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────

@@ -213,8 +213,7 @@ fn write_after_jump_and_checkpoint_triggers_recow() {
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2");
 
     s.cli(&["restore", "chk1"]).expect("restore");
-    s.cli(&["checkpoint", "post-jump"])
-        .expect("new checkpoint");
+    s.cli(&["checkpoint", "post-jump"]).expect("new checkpoint");
 
     let inos_before = inos(&s);
     fs::write(s.mnt_path("file.txt"), "v3\n").expect("write triggers re-COW");
@@ -240,8 +239,7 @@ fn recow_after_jump_preserves_old_inode() {
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2 (re-COW)");
 
     s.cli(&["restore", "chk1"]).expect("restore");
-    s.cli(&["checkpoint", "post-jump"])
-        .expect("new checkpoint");
+    s.cli(&["checkpoint", "post-jump"]).expect("new checkpoint");
 
     fs::write(s.mnt_path("file.txt"), "v3\n").expect("write v3 (re-COW)");
 
