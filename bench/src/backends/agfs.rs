@@ -213,7 +213,7 @@ fn run_agfs_iteration(
         let chroot_dest = session.root.path().join(workload.work_dir());
         agfs_exec_workload_cmd(&session, workload.name(), &chroot_dest, verbose, cold)?
     } else {
-        let mut c = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
+        let mut c = backend::exec_workload_cmd(workload.name(), std::path::Path::new("."), verbose, cold)?;
         c.current_dir(&dest);
         c
     };
@@ -392,7 +392,7 @@ impl Backend for AgfsRealistic {
             let chroot_dest = session.root.path().join(workload.work_dir());
             agfs_exec_workload_cmd(&session, workload.name(), &chroot_dest, verbose, cold)?
         } else {
-            let mut c = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
+            let mut c = backend::exec_workload_cmd(workload.name(), std::path::Path::new("."), verbose, cold)?;
             c.current_dir(&dest);
             c
         };
