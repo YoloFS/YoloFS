@@ -1,6 +1,6 @@
 use super::helpers::{actions, journal, records};
 use crate::helpers::AgfsSession;
-use agfs::journal::{Action, Marker, Record};
+use agfs::journal::{Action, Meta, Record};
 use std::fs;
 
 // ── Compound journal operations ──────────────────────────────────────────────
@@ -30,8 +30,8 @@ fn operations_produce_ordered_records() {
     );
     assert!(
         recs.iter()
-            .any(|r| matches!(r, Record::Marker(Marker::Checkpoint { .. }))),
-        "missing CKP: {recs:?}"
+            .any(|r| matches!(r, Record::Meta(Meta::Mark { .. }))),
+        "missing M record: {recs:?}"
     );
     assert!(
         recs.iter()
@@ -47,7 +47,7 @@ fn operations_produce_ordered_records() {
     // Checkpoint "s1" should appear after the Add (write) and before the Delete.
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1"))
+        .position(|r| matches!(r, Record::Meta(Meta::Mark { name, .. }) if name == "s1"))
         .unwrap();
     let add_pos = recs
         .iter()

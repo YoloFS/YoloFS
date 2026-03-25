@@ -245,7 +245,7 @@ const INTERESTING: &[&str] = &[
     "agfs_journal_delete",
     "agfs_journal_rename",
     "agfs_journal_replace",
-    "agfs_journal_checkpoint",
+    "agfs_journal_mark",
     "agfs_release",
     "agfs_find_dirent",
 ];

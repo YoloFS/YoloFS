@@ -1,11 +1,11 @@
-use super::helpers::{ino_for, inode_path, journal, markers, records, tree};
+use super::helpers::{ino_for, inode_path, journal, metas, records, tree};
 use crate::helpers::AgfsSession;
-use agfs::journal::{Action, Marker, Record};
+use agfs::journal::{Action, Meta, Record};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Creating a checkpoint produces a Checkpoint record with the given name.
+/// Creating a checkpoint produces a Mark record with the given name.
 #[test]
 fn checkpoint_produces_checkpoint_record() {
     let s = AgfsSession::new().expect("session setup");
@@ -14,11 +14,11 @@ fn checkpoint_produces_checkpoint_record() {
     s.cli(&["checkpoint", "build"]).expect("checkpoint");
 
     let j = journal(&s);
-    let mkrs = markers(&j);
+    let mkrs = metas(&j);
     assert!(
         mkrs.iter()
-            .any(|m| matches!(m, Marker::Checkpoint { name, .. } if name == "build")),
-        "journal should have a CKP record named 'build': {mkrs:?}"
+            .any(|m| matches!(m, Meta::Mark { name, .. } if name == "build")),
+        "journal should have a Mark record named 'build': {mkrs:?}"
     );
 }
 
@@ -50,10 +50,10 @@ fn recow_after_checkpoint_produces_new_add() {
         assert_ne!(ino1, ino2, "re-COW ino values should differ: {recs:?}");
     }
 
-    // Checkpoint "s1" should sit between the two adds.
+    // Mark "s1" should sit between the two adds.
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1"))
+        .position(|r| matches!(r, Record::Meta(Meta::Mark { name, .. }) if name == "s1"))
         .unwrap();
     let first_add = recs
         .iter()
@@ -65,15 +65,15 @@ fn recow_after_checkpoint_produces_new_add() {
         .unwrap();
     assert!(
         first_add < chk_pos,
-        "first Add should precede Checkpoint s1"
+        "first Add should precede Mark s1"
     );
     assert!(
         chk_pos < last_add,
-        "Checkpoint s1 should precede re-COW Add"
+        "Mark s1 should precede re-COW Add"
     );
 }
 
-/// Multiple checkpoints interleaved with writes: each checkpoint gets a unique id.
+/// Multiple checkpoints interleaved with writes: each mark gets a unique id.
 #[test]
 fn multiple_checkpoints_have_distinct_ids() {
     let s = AgfsSession::new().expect("session setup");
@@ -84,26 +84,26 @@ fn multiple_checkpoints_have_distinct_ids() {
     s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
 
     let j = journal(&s);
-    let mkrs = markers(&j);
+    let mkrs = metas(&j);
     let snaps: Vec<_> = mkrs
         .iter()
         .filter_map(|m| match m {
-            Marker::Checkpoint { gen_id, name } => Some((gen_id, name)),
+            Meta::Mark { gen_id, name } => Some((gen_id, name)),
             _ => None,
         })
         .collect();
     assert_eq!(
         snaps.len(),
         3,
-        "should have phantom + 2 user checkpoint records: {mkrs:?}"
+        "should have phantom + 2 user mark records: {mkrs:?}"
     );
     assert_eq!(snaps[0].1, "(initial)");
     assert_eq!(snaps[1].1, "s1");
     assert_eq!(snaps[2].1, "s2");
-    assert_ne!(snaps[1].0, snaps[2].0, "user checkpoint ids should differ");
+    assert_ne!(snaps[1].0, snaps[2].0, "user mark ids should differ");
 }
 
-/// Rename after checkpoint: the R record appears after the CKP record.
+/// Rename after checkpoint: the R record appears after the Mark record.
 /// Writing to a base file triggers COW (staged inode), then renaming emits R.
 #[test]
 fn rename_after_checkpoint() {
@@ -116,7 +116,7 @@ fn rename_after_checkpoint() {
     let recs = records(&journal(&s));
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1"))
+        .position(|r| matches!(r, Record::Meta(Meta::Mark { name, .. }) if name == "s1"))
         .unwrap();
     // After COW, hello.txt has a staged ino — rename emits single R record
     let rename_pos = recs
@@ -125,11 +125,11 @@ fn rename_after_checkpoint() {
         .expect("should have Redirect for moved.txt");
     assert!(
         chk_pos < rename_pos,
-        "Checkpoint should precede Rename: {recs:?}"
+        "Mark should precede Rename: {recs:?}"
     );
 }
 
-/// Delete after checkpoint: the DEL record appears after the CKP record.
+/// Delete after checkpoint: the DEL record appears after the Mark record.
 #[test]
 fn delete_after_checkpoint() {
     let s = AgfsSession::new().expect("session setup");
@@ -141,7 +141,7 @@ fn delete_after_checkpoint() {
     let recs = records(&journal(&s));
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1"))
+        .position(|r| matches!(r, Record::Meta(Meta::Mark { name, .. }) if name == "s1"))
         .unwrap();
     let del_pos = recs
         .iter()
@@ -149,7 +149,7 @@ fn delete_after_checkpoint() {
         .unwrap();
     assert!(
         chk_pos < del_pos,
-        "Checkpoint should precede Delete: {recs:?}"
+        "Mark should precede Delete: {recs:?}"
     );
 }
 

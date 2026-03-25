@@ -733,7 +733,7 @@ kfunctions via BTF (`kfunc`/`kretfunc` probes):
 | `agfs_journal_add` | Journal A record for staged entry (create/mkdir/symlink/COW) |
 | `agfs_journal_delete` | Journal D record for deletion |
 | `agfs_journal_rename` | Journal R record for rename |
-| `agfs_journal_checkpoint` | Journal K record for checkpoint |
+| `agfs_journal_mark` | Journal M record for checkpoint |
 | `agfs_release` | File release |
 | `agfs_fill_base` | Readdir phase-2 base-entry dedup |
 

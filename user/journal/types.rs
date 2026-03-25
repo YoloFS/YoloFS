@@ -76,26 +76,26 @@ pub enum Action {
     },
 }
 
-/// A control marker (K/T).
+/// A control meta (M/J).
 #[derive(Debug, Clone)]
-pub enum Marker {
-    Checkpoint { gen_id: u64, name: String },
-    Restore { gen_id: u64, target_gen: u64 },
+pub enum Meta {
+    Mark { gen_id: u64, name: String },
+    Jump { gen_id: u64, target_gen: u64 },
 }
 
-/// A parsed journal record (interleaved actions and markers).
+/// A parsed journal record (interleaved actions and metas).
 #[derive(Debug, Clone)]
 pub enum Record {
     Action(Action),
-    Marker(Marker),
+    Meta(Meta),
 }
 
-/// A group of data records (A/D/R) between consecutive K/T boundaries.
+/// A group of data records (A/D/R) between consecutive M/J boundaries.
 #[derive(Debug)]
 pub struct Segment {
-    /// The gen_id of the checkpoint this segment builds on.
-    /// 0 for the 0-th segment (records before the first checkpoint).
+    /// The gen_id of the mark this segment builds on.
+    /// 0 for the 0-th segment (records before the first mark).
     pub from: u64,
-    /// The A/D/R records in this segment (no K/T records).
+    /// The A/D/R records in this segment (no M/J records).
     pub records: Vec<Action>,
 }

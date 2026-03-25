@@ -30,9 +30,9 @@
 #define AGFS_SUPER_MAGIC	0xA6F5
 #define AGFS_PATH_MAX		256
 
-/* Restore tree buffer limits */
-#define AGFS_RESTORE_MAX_DEPTH		32
-#define AGFS_RESTORE_MAX_TREE_LEN	(16 * 1024 * 1024)
+/* Jump tree buffer limits */
+#define AGFS_JUMP_MAX_DEPTH		32
+#define AGFS_JUMP_MAX_TREE_LEN		(16 * 1024 * 1024)
 
 /* Operations passed in ask requests */
 enum agfs_op {
@@ -68,22 +68,22 @@ struct agfs_ioc_rule {
 	__u8	_pad[5];
 };
 
-/* Checkpoint flags */
-#define AGFS_CHK_IF_CHANGED	(1 << 0)	/* skip if no data records since last CKP/RST */
+/* Mark flags */
+#define AGFS_MARK_IF_CHANGED	(1 << 0)	/* skip if no data records since last M/J */
 
-/* userspace ↔ kernel: AGFS_IOC_CHECKPOINT (name in, gen out) */
-struct agfs_ioc_checkpoint {
+/* userspace ↔ kernel: AGFS_IOC_MARK (name in, gen out) */
+struct agfs_ioc_mark {
 	__u64	gen;			/* out: assigned gen (0 if skipped) */
 	__u64	name_ptr;		/* in: userspace pointer to name string */
 	__u16	name_len;		/* in: length excluding NUL */
-	__u8	flags;			/* in: AGFS_CHK_IF_CHANGED, etc. */
+	__u8	flags;			/* in: AGFS_MARK_IF_CHANGED, etc. */
 	__u8	_pad[5];
 };
 
-/* userspace ↔ kernel: AGFS_IOC_RESTORE */
-struct agfs_ioc_restore {
-	__u64	target_gen;		/* in: checkpoint gen to restore to (0 = reset) */
-	__u64	new_gen;		/* out: new generation assigned (restore mode only) */
+/* userspace ↔ kernel: AGFS_IOC_JUMP */
+struct agfs_ioc_jump {
+	__u64	target_gen;		/* in: mark gen to jump to (0 = reset) */
+	__u64	new_gen;		/* out: new generation assigned (jump mode only) */
 	__u64	tree_len;		/* in: byte length of serialized tree */
 	__u64	tree_ptr;		/* in: userspace pointer to tree buffer */
 };
@@ -92,8 +92,8 @@ struct agfs_ioc_restore {
 #define AGFS_IOC_RULE_REMOVE	_IOW('A', 11, struct agfs_ioc_rule)
 #define AGFS_IOC_GET_REQUEST	_IOWR('A', 30, struct agfs_ctl_request)
 #define AGFS_IOC_PUT_RESPONSE	_IOW('A', 31, struct agfs_ctl_response)
-#define AGFS_IOC_CHECKPOINT	_IOWR('A', 40, struct agfs_ioc_checkpoint)
-#define AGFS_IOC_RESTORE	_IOWR('A', 41, struct agfs_ioc_restore)
+#define AGFS_IOC_MARK		_IOWR('A', 40, struct agfs_ioc_mark)
+#define AGFS_IOC_JUMP		_IOWR('A', 41, struct agfs_ioc_jump)
 
 /* ── Control-File Protocol (binary) ───────────────────────────────── */
 
@@ -182,7 +182,7 @@ struct agfs_sb_info {
 	u32			shard_id;	/* which shard shard_dentry belongs to */
 	atomic_t		gen;		/* bumped on each checkpoint; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
-	bool			dirty;		/* data records written since last CKP/RST */
+	bool			dirty;		/* data records written since last M/J */
 
 	/* Permission gating */
 	bool			permission;	/* enable/disable toggle */
@@ -398,8 +398,8 @@ int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry,
 			 unsigned char d_type);
 int agfs_journal_rename(struct agfs_sb_info *sbi, struct dentry *old_dentry,
 			  struct dentry *new_dentry, unsigned char d_type);
-int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u16 id, const char *name);
-int agfs_journal_restore(struct agfs_sb_info *sbi, u16 gen, u16 target_gen);
+int agfs_journal_mark(struct agfs_sb_info *sbi, u16 id, const char *name);
+int agfs_journal_jump(struct agfs_sb_info *sbi, u16 gen, u16 target_gen);
 
 /* perm.c */
 static inline void agfs_perm_request_release(struct kref *kref)

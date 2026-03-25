@@ -33,8 +33,8 @@ pub fn reset_staging(agfs: &Path) -> Result<()> {
             .open(&journal_path)
             .context("truncating journal")?;
     }
-    let ctl_file = crate::ioctl::open(agfs).context("opening ctl for restore")?;
-    crate::ioctl::restore(&ctl_file, 0, &[]).context("ioctl RESTORE")?;
+    let ctl_file = crate::ioctl::open(agfs).context("opening ctl for jump")?;
+    crate::ioctl::jump(&ctl_file, 0, &[]).context("ioctl JUMP")?;
     Ok(())
 }
 

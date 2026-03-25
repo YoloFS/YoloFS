@@ -14,7 +14,7 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
 
     let journal = Journal::read(&agfs)?;
 
-    if journal.segments.iter().all(|s| s.records.is_empty()) && journal.markers.len() <= 1 {
+    if journal.segments.iter().all(|s| s.records.is_empty()) && journal.metas.len() <= 1 {
         println!("{}", "No journal records.".yellow());
         return Ok(());
     }
@@ -37,9 +37,9 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
             }
         }
 
-        // Print the marker after this segment (if any).
-        if let Some(marker) = journal.markers.get(seg_idx + 1) {
-            let line = format_marker(marker);
+        // Print the meta after this segment (if any).
+        if let Some(meta) = journal.metas.get(seg_idx + 1) {
+            let line = format_meta(meta);
             if reachable {
                 println!("  {line}");
             } else {
@@ -58,12 +58,12 @@ fn action_matches_path(action: &journal::Action, filter: &str) -> bool {
     }
 }
 
-fn format_marker(marker: &journal::Marker) -> String {
-    match marker {
-        journal::Marker::Checkpoint { gen_id, name } => {
+fn format_meta(meta: &journal::Meta) -> String {
+    match meta {
+        journal::Meta::Mark { gen_id, name } => {
             format!("{} {}", format!("[{}]", gen_id).cyan().bold(), name)
         }
-        journal::Marker::Restore {
+        journal::Meta::Jump {
             gen_id, target_gen, ..
         } => {
             format!(
@@ -92,7 +92,7 @@ fn format_action(action: &journal::Action) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{Action, Marker};
+    use crate::journal::{Action, Meta};
 
     /// Strip ANSI escape codes for assertion matching.
     fn strip_ansi(s: &str) -> String {
@@ -114,22 +114,22 @@ mod tests {
 
     #[test]
     fn format_checkpoint() {
-        let marker = Marker::Checkpoint {
+        let meta = Meta::Mark {
             gen_id: 3,
             name: "build".into(),
         };
-        let s = strip_ansi(&format_marker(&marker));
+        let s = strip_ansi(&format_meta(&meta));
         assert!(s.contains("[3]"), "should contain gen_id: {s}");
         assert!(s.contains("build"), "should contain name: {s}");
     }
 
     #[test]
     fn format_restore() {
-        let marker = Marker::Restore {
+        let meta = Meta::Jump {
             gen_id: 5,
             target_gen: 2,
         };
-        let s = strip_ansi(&format_marker(&marker));
+        let s = strip_ansi(&format_meta(&meta));
         assert!(s.contains("[5]"), "should contain gen_id: {s}");
         assert!(
             s.contains("restored to [2]"),

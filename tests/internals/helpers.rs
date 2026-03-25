@@ -1,5 +1,5 @@
 use crate::helpers::AgfsSession;
-use agfs::journal::{self, Action, DirTree, Marker, Record};
+use agfs::journal::{self, Action, DirTree, Meta, Record};
 use std::fs;
 use std::path::PathBuf;
 
@@ -13,18 +13,18 @@ pub fn actions(j: &journal::Journal) -> Vec<&Action> {
     j.segments.iter().flat_map(|s| &s.records).collect()
 }
 
-/// Collect all markers from the journal in order (including the phantom marker).
-pub fn markers(j: &journal::Journal) -> Vec<&Marker> {
-    j.markers.iter().collect()
+/// Collect all metas from the journal in order (including the phantom meta).
+pub fn metas(j: &journal::Journal) -> Vec<&Meta> {
+    j.metas.iter().collect()
 }
 
 /// Reconstruct the flat interleaved record stream (for positional assertions).
-/// Each marker precedes its corresponding segment's records, reflecting the
-/// phantom-marker model where marker[i] opens segment[i].
+/// Each meta precedes its corresponding segment's records, reflecting the
+/// phantom-meta model where meta[i] opens segment[i].
 pub fn records(j: &journal::Journal) -> Vec<Record> {
     let mut out = Vec::new();
-    for (seg, marker) in j.segments.iter().zip(j.markers.iter()) {
-        out.push(Record::Marker(marker.clone()));
+    for (seg, meta) in j.segments.iter().zip(j.metas.iter()) {
+        out.push(Record::Meta(meta.clone()));
         for action in &seg.records {
             out.push(Record::Action(action.clone()));
         }
@@ -33,7 +33,7 @@ pub fn records(j: &journal::Journal) -> Vec<Record> {
 }
 
 /// Resolve the journal into a DirTree.
-/// Uses `Journal` to filter out dead records (e.g. after restore).
+/// Uses `Journal` to filter out dead records (e.g. after jump).
 pub fn tree(s: &AgfsSession) -> DirTree {
     let j = journal(s);
     j.into_tree()

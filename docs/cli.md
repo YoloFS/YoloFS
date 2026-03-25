@@ -51,14 +51,14 @@ $ agfs remount           # unmount then remount (prompts if staged changes exist
 ```bash
 $ agfs checkpoint              # checkpoint with timestamp as name
 $ agfs checkpoint "my label"   # checkpoint with explicit name
-$ agfs restore <name|gen>       # restore to a previous marker (checkpoint or restore)
+$ agfs restore <name|gen>      # restore to a previous checkpoint or restore point
 $ agfs timeline                # show checkpoint/restore DAG (unreachable dimmed)
 $ agfs audit                 # show every raw journal record (unreachable dimmed)
 $ agfs audit --path /src/main.rs  # trace operations on a specific file
 ```
 
 The `--at`, `--from`, and `--to` flags accept a checkpoint name or
-generation number (of any marker type) and only address live markers
+generation number (of any type) and only address live checkpoints and restores
 (not unreachable ones created by restores).
 
 `agfs timeline` shows the checkpoint/restore DAG with unreachable branches
@@ -71,8 +71,8 @@ restore    [3] restored to [1]
 checkpoint [4] after make fix
 ```
 
-Restoring to a restore marker (`agfs restore 3` above) is valid — any
-marker gen_id is a valid jump target. Only markers between [3] and the
+Restoring to a restore point (`agfs restore 3` above) is valid — any
+gen_id is a valid restore target. Only entries between [3] and the
 new restore become unreachable, preserving earlier history.
 
 **Permission rules and diagnostics:**

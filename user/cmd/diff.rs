@@ -2,12 +2,12 @@
 //
 // `agfs status` — one-line summary of staged changes.
 // `agfs diff`   — git-style unified diff of staged vs base.
-// `--at <name>` — show state at a marker (single segment).
-// `--from <name>` — diff changes since a marker.
-// `--to <name>` — diff changes up to a marker.
-// `--from <name> --to <name>` — diff changes between two markers.
+// `--at <name>` — show state at a meta (single segment).
+// `--from <name>` — diff changes since a meta.
+// `--to <name>` — diff changes up to a meta.
+// `--from <name> --to <name>` — diff changes between two metas.
 
-use crate::journal::{DirTree, Journal, Marker, Target};
+use crate::journal::{DirTree, Journal, Meta, Target};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -159,15 +159,15 @@ fn run(
     let agfs = crate::utils::session_dir()?;
     let journal = Journal::read(&agfs)?;
     let num = journal.segments.len();
-    let (start, end) = journal.markers.segment_range(at, from, to, num)?;
+    let (start, end) = journal.metas.segment_range(at, from, to, num)?;
 
-    // Precompute marker labels for live segments before consuming the journal.
+    // Precompute meta labels for live segments before consuming the journal.
     let labels: Vec<Option<(u64, String)>> = (start..end)
         .filter(|i| journal.is_alive(*i))
         .map(|i| {
-            journal.markers.marker_at(i).map(|m| match m {
-                Marker::Checkpoint { gen_id, name } => (*gen_id, name.clone()),
-                Marker::Restore {
+            journal.metas.meta_at(i).map(|m| match m {
+                Meta::Mark { gen_id, name } => (*gen_id, name.clone()),
+                Meta::Jump {
                     gen_id, target_gen, ..
                 } => (*gen_id, format!("restored to [{target_gen}]")),
             })

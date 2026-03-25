@@ -14,8 +14,8 @@ pub fn create(name: Option<&str>) -> Result<()> {
         _ => default_name(),
     };
 
-    let ctl_file = ioctl::open(&agfs).context("opening ctl for checkpoint")?;
-    let gen_id = ioctl::create_checkpoint(&ctl_file, &chk_name, 0)?;
+    let ctl_file = ioctl::open(&agfs).context("opening ctl for mark")?;
+    let gen_id = ioctl::mark(&ctl_file, &chk_name, 0)?;
 
     eprintln!(
         "{} {}",

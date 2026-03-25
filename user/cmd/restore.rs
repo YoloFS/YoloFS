@@ -1,42 +1,42 @@
 // agfs CLI — restore.rs
 //
-// `agfs restore <name|id>` — restore to a previous marker (checkpoint or restore).
+// `agfs restore <name|id>` — restore to a previous meta.
 
 use crate::ioctl;
-use crate::journal::{Journal, Marker};
+use crate::journal::{Journal, Meta};
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-pub fn run(marker_name: &str) -> Result<()> {
+pub fn run(meta_name: &str) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
-    // Search all markers (including dead zones) for the target,
-    // so that undo-restore (restoring to a dead marker) works.
+    // Search all metas (including dead zones) for the target,
+    // so that undo-restore (restoring to a dead meta) works.
     let journal = Journal::read(&agfs)?;
-    let target_gen = journal.markers.find_marker(marker_name)?;
-    let marker = journal.markers.get(target_gen as usize).cloned();
+    let target_gen = journal.metas.find_meta(meta_name)?;
+    let meta = journal.metas.get(target_gen as usize).cloned();
 
-    // Extract live records from the prefix up to the target marker,
-    // handling any RST records within that prefix.
+    // Extract live records from the prefix up to the target meta,
+    // handling any J records within that prefix.
     let tree = journal.into_tree_at(target_gen);
     let count = tree.len();
     let buf = tree.serialize();
 
-    // Restore kernel state — if this fails (e.g. EBUSY), the journal is
+    // Jump kernel state — if this fails (e.g. EBUSY), the journal is
     // still intact (append-only) and the operation can be retried.
-    let ctl_file = ioctl::open(&agfs).context("opening ctl for restore")?;
-    let _new_gen = ioctl::restore(&ctl_file, target_gen, &buf).context("ioctl RESTORE")?;
+    let ctl_file = ioctl::open(&agfs).context("opening ctl for jump")?;
+    let _new_gen = ioctl::jump(&ctl_file, target_gen, &buf).context("ioctl JUMP")?;
 
-    let label = match &marker {
-        Some(Marker::Checkpoint { name, .. }) => {
+    let label = match &meta {
+        Some(Meta::Mark { name, .. }) => {
             format!("checkpoint \"{name}\"")
         }
-        Some(Marker::Restore {
+        Some(Meta::Jump {
             gen_id, target_gen, ..
         }) => {
             format!("restore [{gen_id}] (restored to [{target_gen}])")
         }
-        None => format!("marker [{target_gen}]"),
+        None => format!("meta [{target_gen}]"),
     };
 
     println!(

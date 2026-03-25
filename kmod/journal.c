@@ -9,8 +9,8 @@
  *   A\0<path>\0<dtype>\0<ino>\n       — Add (staged content at path)
  *   D\0<path>\0<dtype>\n              — Delete
  *   R\0<dst>\0<src>\0<dtype>\n         — Rename
- *   K\0<gen>\0<name>\n                — Checkpoint
- *   T\0<gen>\0<target_gen>\n          — Restore
+ *   M\0<gen>\0<name>\n                — Mark
+ *   J\0<gen>\0<target_gen>\n          — Jump
  */
 
 #include "agfs.h"
@@ -70,7 +70,7 @@ static int journal_write(struct agfs_sb_info *sbi, char tag,
 
 	pos = f->f_pos;
 	err = kernel_write(f, buf, off, &pos);
-	if (err >= 0 && tag != 'K' && tag != 'T')
+	if (err >= 0 && tag != 'M' && tag != 'J')
 		WRITE_ONCE(sbi->dirty, true);
 	return err < 0 ? err : 0;
 }
@@ -140,24 +140,24 @@ int agfs_journal_rename(struct agfs_sb_info *sbi, struct dentry *old_dentry,
 					       NULL });
 }
 
-int agfs_journal_checkpoint(struct agfs_sb_info *sbi, u16 id, const char *name)
+int agfs_journal_mark(struct agfs_sb_info *sbi, u16 id, const char *name)
 {
 	char id_str[6];
 
 	snprintf(id_str, sizeof(id_str), "%u", (unsigned)id);
-	return journal_write(sbi, 'K',
+	return journal_write(sbi, 'M',
 			     (const char *[]){ id_str, name, NULL });
 }
 
 /**
- * agfs_journal_restore - Append a restore record to the journal.
+ * agfs_journal_jump - Append a jump record to the journal.
  * @sbi: superblock info (has journal_file)
- * @gen: new generation assigned to this restore
- * @target_gen: the checkpoint gen being restored to
+ * @gen: new generation assigned to this jump
+ * @target_gen: the mark gen being jumped to
  *
- * Format: T\0<gen>\0<target_gen>\n
+ * Format: J\0<gen>\0<target_gen>\n
  */
-int agfs_journal_restore(struct agfs_sb_info *sbi, u16 gen, u16 target_gen)
+int agfs_journal_jump(struct agfs_sb_info *sbi, u16 gen, u16 target_gen)
 {
 	char gen_str[6];
 	char target_str[6];
@@ -165,6 +165,6 @@ int agfs_journal_restore(struct agfs_sb_info *sbi, u16 gen, u16 target_gen)
 	snprintf(gen_str, sizeof(gen_str), "%u", (unsigned)gen);
 	snprintf(target_str, sizeof(target_str), "%u",
 		 (unsigned)target_gen);
-	return journal_write(sbi, 'T',
+	return journal_write(sbi, 'J',
 			     (const char *[]){ gen_str, target_str, NULL });
 }

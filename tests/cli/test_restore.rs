@@ -75,7 +75,7 @@ fn cow_works_after_restore() {
     s.cli(&["restore", "chk1"]).expect("restore to chk1");
 
     // Take a new checkpoint so writes trigger re-COW
-    s.cli(&["checkpoint", "post-restore"])
+    s.cli(&["checkpoint", "post-jump"])
         .expect("checkpoint after restore");
 
     // Write should work (triggers re-COW from the restored inode)
@@ -132,7 +132,7 @@ fn restore_by_numeric_id() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
-    // Checkpoint gets id=1 (first user checkpoint)
+    // Mark gets id=1 (first user checkpoint)
     s.cli(&["checkpoint", "chk"]).expect("checkpoint");
 
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
@@ -226,8 +226,8 @@ fn restore_edit_checkpoint_restore_cycle() {
     );
 
     // Make new edits and checkpoint
-    s.cli(&["checkpoint", "post-restore"])
-        .expect("checkpoint post-restore");
+    s.cli(&["checkpoint", "post-jump"])
+        .expect("checkpoint post-jump");
     fs::write(s.mnt_path("file.txt"), "new version\n").expect("write new");
     s.cli(&["checkpoint", "chk3"]).expect("checkpoint 3");
 
@@ -534,7 +534,7 @@ fn journal_appends_after_restore() {
     );
     assert!(
         status.contains("new.txt"),
-        "post-restore file in status: {status}"
+        "post-jump file in status: {status}"
     );
     assert!(
         !status.contains("gone.txt"),
@@ -788,7 +788,7 @@ fn kernel_appends_to_journal_after_restore() {
     );
 }
 
-// ── Append-only journal / RST-record tests ─────────────────────────────
+// ── Append-only journal / J-record tests ─────────────────────────────
 
 /// After restore, the journal is append-only (not truncated).
 /// Verify that `agfs timeline` shows the restore event.
@@ -950,7 +950,7 @@ fn restore_created_file_after_recow_then_abort() {
 
 // ── Depth-limit and cleanup tests ────────────────────────────────────
 
-/// Create a directory tree near the AGFS_RESTORE_MAX_DEPTH limit (32)
+/// Create a directory tree near the AGFS_JUMP_MAX_DEPTH limit (32)
 /// with staged files at every level, checkpoint, modify, restore.
 /// Exercises the iterative depth-first `agfs_unstage_all` walk at depth.
 #[test]
@@ -958,7 +958,7 @@ fn restore_deep_tree_near_max_depth() {
     let s = AgfsSession::new().expect("session setup");
 
     // Build a 20-level deep directory tree with a file at each level.
-    // The restore ioctl depth limit (AGFS_RESTORE_MAX_DEPTH=32) also
+    // The restore ioctl depth limit (AGFS_JUMP_MAX_DEPTH=32) also
     // counts intermediate unset dirs for the path from / to the
     // session root, so we stay under the budget.
     let depth = 20;
@@ -1053,9 +1053,9 @@ fn restore_then_immediate_unmount() {
     assert!(ok, "unmount after restore should succeed: {stderr}");
 }
 
-/// Restore to a restore marker (not a checkpoint) by its numeric gen_id.
+/// Restore to a jump meta (not a checkpoint) by its numeric gen_id.
 #[test]
-fn restore_to_restore_marker() {
+fn restore_to_restore_meta() {
     let s = AgfsSession::new().expect("session setup");
 
     // v1 state
@@ -1067,19 +1067,19 @@ fn restore_to_restore_marker() {
     fs::write(s.mnt_path("b.txt"), "new\n").expect("write b");
     s.cli(&["checkpoint", "c2"]).expect("checkpoint c2");
 
-    // Restore to c1 — creates a restore marker (gen_id = 3).
+    // Restore to c1 — creates a jump meta (gen_id = 3).
     s.cli(&["restore", "c1"]).expect("restore to c1");
     assert_eq!(fs::read_to_string(s.mnt_path("a.txt")).unwrap(), "v1\n");
     assert!(!s.mnt_path("b.txt").exists());
 
     // Build on top of the restored state.
-    fs::write(s.mnt_path("c.txt"), "post-restore\n").expect("write c");
+    fs::write(s.mnt_path("c.txt"), "post-jump\n").expect("write c");
     s.cli(&["checkpoint", "c3"]).expect("checkpoint c3");
 
-    // Now restore to the restore marker by its numeric gen_id ("3").
-    // This jumps to position 3 in the timeline. Only markers between [3]
+    // Now jump to the jump meta by its numeric gen_id ("3").
+    // This restores to position 3 in the timeline. Only metas between [3]
     // and the new restore become unreachable — c1 and c2 are preserved.
-    s.cli(&["restore", "3"]).expect("restore to restore marker");
+    s.cli(&["restore", "3"]).expect("restore to jump meta");
 
     let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
     assert_eq!(content, "v1\n", "should see state at gen 3");
@@ -1090,7 +1090,7 @@ fn restore_to_restore_marker() {
     );
 
     // Verify we can still undo to c2 (it should still be reachable since
-    // the unreachable region only starts at marker 3).
+    // the unreachable region only starts at meta 3).
     s.cli(&["restore", "c2"]).expect("undo to c2");
     let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
     assert_eq!(content, "v2\n", "should see v2 after undo to c2");

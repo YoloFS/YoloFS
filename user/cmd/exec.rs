@@ -107,8 +107,8 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
 /// Create a checkpoint only if there are staged changes (kernel-side check).
 fn auto_checkpoint(name: &str) -> Result<bool> {
     let agfs = crate::utils::session_dir()?;
-    let ctl_file = ioctl::open(&agfs).context("opening ctl for checkpoint")?;
-    let gen_id = ioctl::create_checkpoint(&ctl_file, name, ioctl::AGFS_CHK_IF_CHANGED)?;
+    let ctl_file = ioctl::open(&agfs).context("opening ctl for mark")?;
+    let gen_id = ioctl::mark(&ctl_file, name, ioctl::AGFS_MARK_IF_CHANGED)?;
     if gen_id == 0 {
         return Ok(false);
     }
