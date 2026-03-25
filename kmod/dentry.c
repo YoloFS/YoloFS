@@ -48,10 +48,84 @@ static void agfs_d_release(struct dentry *dentry)
 /* ── Dentry state API ──────────────────────────────────────────────── */
 
 /*
- * Allocate a child dentry under @parent, set its target, and splice
- * into the dcache.  When @lower_path is non-NULL, wire up the lower
- * path and create an agfs inode (positive dentry); when NULL, create
- * a negative dentry (tombstone).
+ * Interpose the agfs layer on @dentry: wrap the lower inode with an agfs
+ * inode, store the lower path, and splice into dcache.
+ *
+ * Three entry scenarios:
+ *   NULL @lower_path     — tombstone: leave/add negative, no lower path.
+ *   Negative @lower_path — lookup miss: release ref, leave/add negative.
+ *   Positive @lower_path — lookup hit / create: wrap lower inode, store
+ *                          lower path, add to dcache.
+ *
+ * Adapts to both unhashed dentries (lookup — d_add) and VFS-hashed
+ * dentries (create — d_instantiate).
+ *
+ * Caller must pass either a fresh negative dentry or a VFS-hashed negative
+ * dentry.  Re-instantiating an already-positive dentry is a bug.
+ *
+ * Consumes @lower_path in all cases (puts on negative/error, stores on
+ * success).  Today the negative/tombstone outcomes only come from
+ * agfs_lookup() lookup misses and agfs_dentry_create(..., NULL), both of
+ * which start from fresh negative dentries, so those branches do not need to
+ * rewrite lower_path.
+ */
+int agfs_dentry_interpose(struct dentry *dentry, struct path *lower_path)
+{
+	struct inode *inode = NULL;
+	bool unhashed = d_unhashed(dentry);
+
+	if (WARN_ON_ONCE(d_really_is_positive(dentry))) {
+		if (lower_path)
+			path_put(lower_path);
+		return -EEXIST;
+	}
+
+	if (!lower_path) {
+		/*
+		 * Tombstone — overlay state says this name must stay absent.
+		 * Delete, rename, and restore create these intentionally, so
+		 * there is no lower backing path to keep on the dentry.
+		 */
+	} else if (d_is_negative(lower_path->dentry)) {
+		/*
+		 * Negative lower — base lookup missed.  This is not a staged
+		 * tombstone, just "nothing in base right now".  Drop the
+		 * temporary lower ref; no caller reads lower_path from a
+		 * negative lookup dentry.
+		 */
+		path_put(lower_path);
+	} else {
+		/*
+		 * Positive lower — either a base lookup hit or a newly created
+		 * staged inode.  Wrap the lower inode in an agfs inode, then
+		 * transfer the owned lower_path ref onto this dentry so later
+		 * opens/attrs resolve through the chosen backing object.
+		 */
+		inode = agfs_iget(dentry->d_sb, d_inode(lower_path->dentry));
+		if (IS_ERR(inode)) {
+			path_put(lower_path);
+			return PTR_ERR(inode);
+		}
+
+		agfs_replace_lower_path(dentry, lower_path);
+	}
+
+	/*
+	 * Fresh lookup/d_alloc dentries need d_add().  For VFS-hashed dentries
+	 * the positive case uses d_instantiate(); negative/tombstone outcomes
+	 * are already represented by the existing negative dentry in cache.
+	 */
+	if (unhashed)
+		d_add(dentry, inode);
+	else if (inode)
+		d_instantiate(dentry, inode);
+	return 0;
+}
+
+/*
+ * Allocate a child dentry under @parent, pin it with @target, and
+ * interpose into the dcache.  The child comes from d_alloc(), so the
+ * interpose step always starts from a fresh negative dentry.
  * On success the caller loses ownership of @lower_path (if non-NULL).
  * Caller must hold i_rwsem exclusive on the parent directory.
  */
@@ -62,7 +136,7 @@ struct dentry *agfs_dentry_create(struct dentry *parent,
 {
 	struct qstr qname;
 	struct dentry *child;
-	struct inode *inode = NULL;
+	int err;
 
 	qname.name = (const unsigned char *)name;
 	qname.len = len;
@@ -77,16 +151,12 @@ struct dentry *agfs_dentry_create(struct dentry *parent,
 	AGFS_D(child)->pinned = true;	/* d_alloc ref counts as pin */
 	AGFS_D(child)->target = target;
 
-	if (lower_path) {
-		agfs_set_lower_path(child, lower_path);
-		inode = agfs_iget(parent->d_sb, d_inode(lower_path->dentry));
-		if (IS_ERR(inode)) {
-			dput(child);
-			return ERR_CAST(inode);
-		}
+	err = agfs_dentry_interpose(child, lower_path);
+	if (err) {
+		dput(child);
+		return ERR_PTR(err);
 	}
 
-	d_add(child, inode);
 	return child;
 }
 

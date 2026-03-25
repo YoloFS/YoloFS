@@ -363,6 +363,7 @@ extern const struct file_operations agfs_dir_fops;
 extern const struct dentry_operations agfs_dops;
 int agfs_init_dentry_cache(void);
 void agfs_destroy_dentry_cache(void);
+int agfs_dentry_interpose(struct dentry *dentry, struct path *lower_path);
 struct dentry *agfs_dentry_create(struct dentry *parent,
 				  const char *name, unsigned int len,
 				  enum agfs_target target,
@@ -375,8 +376,6 @@ void agfs_dentry_unpin_all(struct super_block *sb);
 struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 			   unsigned int flags);
 struct inode *agfs_iget(struct super_block *sb, struct inode *lower_inode);
-int agfs_interpose(struct dentry *dentry, struct super_block *sb,
-		   struct path *lower_path);
 
 /* staging.c */
 int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,

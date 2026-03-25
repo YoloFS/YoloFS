@@ -104,7 +104,7 @@ on the dentry.
 
 | Field | Purpose |
 |-------|---------|
-| `lower_path` | Resolved path to the backing file — either `inodes/<ino>` or the base file. Updated in-place by COW. For redirect entries, `lower_path.dentry` points to the base source. |
+| `lower_path` | Resolved path to the backing file for positive dentries — either `inodes/<ino>` or the base file. Updated in-place by COW. Redirect entries point at the base source. Lookup-miss negatives and tombstones keep `lower_path` empty. |
 | `target` | `enum agfs_target`: **INODE** (1 — staged in `inodes/<ino>`), **PATH** (2 — zero-copy rename redirect to base path), **NONE** (3 — no target). |
 | `pinned` | `bool` — whether this dentry is pinned (staged). A dentry is staged iff `pinned == true`. Ground state: `target=PATH, pinned=false`. |
 
@@ -139,6 +139,11 @@ Set by `d_init` and `agfs_dentry_unpin`.
 - **Tombstone**: `target=NONE, pinned=true`. Hides any base entry at this
   path. `NONE` exclusively means tombstone — ground state uses `PATH`.
 
+Only positive staged dentries carry a populated `lower_path`. Ground-state
+lookups that miss in base and pinned tombstones both remain negative dentries
+with an empty `lower_path`; later VFS operations must not assume a negative
+dentry can be reopened through `lower_path`.
+
 The `d_type` is not stored in the dentry state — it is derived from
 `d_inode(dentry)->i_mode` via `fs_umode_to_dtype()`.
 
@@ -156,12 +161,19 @@ The full recursive restore tree format is documented in
 exists. All staged entries are pinned in the dcache, so `lookup_fast()`
 finds them before `->lookup()` is ever called. When `->lookup()` runs,
 the name is guaranteed to be unstaged — it falls through directly to
-the base filesystem:
+the base filesystem. A base hit stores the resolved backing path on the
+positive dentry; a base miss adds a negative dentry and drops the temporary
+lower lookup ref immediately:
 
 ```
 agfs_lookup(dir, dentry):
     # d_init already set up d_fsdata — no manual allocation needed.
-    return base_lookup(dir, dentry->d_name)   # base-only lookup
+    lower = base_lookup(dir, dentry->d_name)   # returns a positive or negative dentry
+    lower_path = { dentry: lower, mnt: lower_mnt }
+    interpose(dentry, lower_path)
+    if dentry is positive:
+        cache_perm(dentry)
+    return NULL
 ```
 
 **Readdir** merges the staged dentries with the base directory:

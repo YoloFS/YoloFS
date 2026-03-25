@@ -2,6 +2,7 @@ mod test_concurrent;
 mod test_create;
 mod test_ctl;
 mod test_delete;
+mod test_dentry_interpose;
 mod test_fallocate;
 mod test_inode;
 mod test_mixed_state;

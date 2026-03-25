@@ -24,13 +24,9 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	if (err)
 		return err;
 
-	err = agfs_interpose(dentry, dir->i_sb, &inode_path);
-	if (err) {
-		path_put(&inode_path);
+	err = agfs_dentry_interpose(dentry, &inode_path);
+	if (err)
 		return err;
-	}
-
-	agfs_replace_lower_path(dentry, &inode_path);
 	dt = S_ISDIR(mode) ? DT_DIR : S_ISLNK(mode) ? DT_LNK : DT_REG;
 
 	agfs_dentry_pin(dentry, AGFS_TARGET_INODE);

@@ -69,22 +69,6 @@ struct inode *agfs_iget(struct super_block *sb, struct inode *lower_inode)
 	return inode;
 }
 
-/* ── Interposition ─────────────────────────────────────────────────── */
-
-int agfs_interpose(struct dentry *dentry, struct super_block *sb,
-		   struct path *lower_path)
-{
-	struct inode *inode;
-	struct inode *lower_inode = d_inode(lower_path->dentry);
-
-	inode = agfs_iget(sb, lower_inode);
-	if (IS_ERR(inode))
-		return PTR_ERR(inode);
-
-	d_instantiate(dentry, inode);
-	return 0;
-}
-
 /* ── Lookup ────────────────────────────────────────────────────────── */
 
 /*
@@ -99,7 +83,6 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 	struct dentry *lower_dentry;
 	struct vfsmount *lower_mnt;
 	struct path lower_path;
-	struct inode *inode;
 	int err;
 
 	/* d_init already allocated d_fsdata */
@@ -107,42 +90,25 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 	/* Base (lower) filesystem lookup */
 	lower_dir_dentry = agfs_lower_dentry(dentry->d_parent);
 	lower_mnt = agfs_lower_mnt(dentry->d_parent);
-	if (!lower_dir_dentry || !lower_mnt) {
-		err = -ENOENT;
-		goto out;
-	}
+	if (!lower_dir_dentry || !lower_mnt)
+		return ERR_PTR(-ENOENT);
 
 	inode_lock_shared(d_inode(lower_dir_dentry));
 	lower_dentry = lookup_one_len(dentry->d_name.name,
 				      lower_dir_dentry,
 				      dentry->d_name.len);
 	inode_unlock_shared(d_inode(lower_dir_dentry));
-	if (IS_ERR(lower_dentry)) {
-		err = PTR_ERR(lower_dentry);
-		goto out;
-	}
+	if (IS_ERR(lower_dentry))
+		return ERR_CAST(lower_dentry);
 
 	lower_path.dentry = lower_dentry;
 	lower_path.mnt = mntget(lower_mnt);
-	agfs_set_lower_path(dentry, &lower_path);
 
-	if (d_is_negative(lower_dentry)) {
-		d_add(dentry, NULL);
-		return NULL;
-	}
+	err = agfs_dentry_interpose(dentry, &lower_path);
+	if (err)
+		return ERR_PTR(err);
 
-	inode = agfs_iget(dentry->d_sb, d_inode(lower_dentry));
-	if (IS_ERR(inode)) {
-		err = PTR_ERR(inode);
-		goto out_put;
-	}
-
-	agfs_cache_perm(inode, dentry);
-	d_add(dentry, inode);
+	if (d_inode(dentry))
+		agfs_cache_perm(d_inode(dentry), dentry);
 	return NULL;
-
-out_put:
-	path_put(&lower_path);
-out:
-	return ERR_PTR(err);
 }
