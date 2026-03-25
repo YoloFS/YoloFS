@@ -1331,8 +1331,11 @@ fn main() -> Result<()> {
                 "fio-table" => {
                     paper::fio_data_table::render(&results, &paper_dir)?;
                 }
+                "checkpoint-scaling" => {
+                    paper::checkpoint_scaling_figure::render(&out_dir, &paper_dir)?;
+                }
                 _ => bail!(
-                    "unknown paper artifact: {name}. Available: commit-time, meta-ops, fio-table"
+                    "unknown paper artifact: {name}. Available: commit-time, meta-ops, fio-table, checkpoint-scaling"
                 ),
             }
         } else if paper_only {
@@ -1511,13 +1514,14 @@ fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
 
     let wl = workloads::checkpoint_scaling::CheckpointScaling;
 
-    #[derive(serde::Serialize)]
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct CheckpointScalingResult {
+        backend: String,
         mode: String,
         points: Vec<CheckpointScalingPoint>,
     }
 
-    #[derive(serde::Serialize)]
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct CheckpointScalingPoint {
         depth: usize,
         mean_lat_us: f64,
@@ -1560,13 +1564,21 @@ fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
         }
 
         results.push(CheckpointScalingResult {
+            backend: backend_name.to_string(),
             mode: mode.to_string(),
             points,
         });
     }
 
     let json_path = out_dir.join("checkpoint-scaling.json");
-    std::fs::write(&json_path, serde_json::to_string_pretty(&results)?)?;
+    let mut merged: Vec<CheckpointScalingResult> = if json_path.exists() {
+        serde_json::from_str(&fs::read_to_string(&json_path)?).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    merged.retain(|r| r.backend != backend_name);
+    merged.extend(results);
+    std::fs::write(&json_path, serde_json::to_string_pretty(&merged)?)?;
     eprintln!("Results written to {}", json_path.display());
 
     // Generate Plotly HTML.
@@ -1579,12 +1591,13 @@ fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
     html.push_str("<div id=\"plot\" style=\"width:800px;height:400px\"></div>\n");
     html.push_str("<script>\nPlotly.newPlot('plot', [\n");
 
-    for res in &results {
+    for res in &merged {
         let xs: Vec<String> = res.points.iter().map(|p| p.depth.to_string()).collect();
         let ys: Vec<String> = res.points.iter().map(|p| format!("{:.1}", p.p50_us)).collect();
+        let name = format!("{} ({})", res.mode, res.backend);
         html.push_str(&format!(
             "  {{x: [{}], y: [{}], mode: 'lines+markers', name: '{}'}},\n",
-            xs.join(","), ys.join(","), res.mode
+            xs.join(","), ys.join(","), name
         ));
     }
 

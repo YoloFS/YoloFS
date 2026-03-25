@@ -149,6 +149,10 @@ impl Workload for CheckpointScaling {
 fn emit_checkpoint() -> Result<()> {
     use std::io::{BufRead, Write};
 
+    // Release cwd so the backend can unmount+remount (overlayfs).
+    let saved_cwd = std::env::current_dir()?;
+    std::env::set_current_dir("/")?;
+
     println!("{}", crate::backend::CHECKPOINT_MARKER);
     println!("{{\"step\":0}}");
     std::io::stdout().flush()?;
@@ -163,6 +167,26 @@ fn emit_checkpoint() -> Result<()> {
     }
     line.clear();
     lock.read_line(&mut line)?;
-    // Just consume the response; we don't need checkpoint_ms here.
+
+    // Restore cwd (or use next_dest if provided).
+    #[derive(serde::Deserialize)]
+    struct Resp {
+        #[allow(dead_code)]
+        checkpoint_ms: u64,
+        stop: bool,
+        #[serde(default)]
+        next_dest: Option<String>,
+    }
+    let resp: Resp = serde_json::from_str(line.trim())?;
+    if resp.stop {
+        anyhow::bail!("backend stopped");
+    }
+    let target = resp
+        .next_dest
+        .as_deref()
+        .map(std::path::Path::new)
+        .unwrap_or(&saved_cwd);
+    std::env::set_current_dir(target)?;
+
     Ok(())
 }
