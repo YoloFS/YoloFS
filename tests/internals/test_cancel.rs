@@ -12,7 +12,7 @@ use std::os::unix::fs::DirEntryExt;
 // consequences.
 
 /// Create a staged-only file, delete it, then recreate it.
-/// Both creates should produce Add records.
+/// Both creates should produce Stage records.
 #[test]
 fn staged_only_delete_recreate_emits_add() {
     let s = AgfsSession::new().expect("session setup");
@@ -26,12 +26,12 @@ fn staged_only_delete_recreate_emits_add() {
 
     let adds: Vec<_> = acts
         .iter()
-        .filter(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/ephemeral.txt")))
+        .filter(|a| matches!(a, Action::Stage { path, .. } if path.ends_with("/ephemeral.txt")))
         .collect();
     assert_eq!(
         adds.len(),
         2,
-        "both creates of a staged-only file should produce Add records: {acts:?}"
+        "both creates of a staged-only file should produce Stage records: {acts:?}"
     );
 }
 
@@ -50,12 +50,12 @@ fn staged_only_rename_recreate_emits_add() {
 
     let adds: Vec<_> = acts
         .iter()
-        .filter(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/orig.txt")))
+        .filter(|a| matches!(a, Action::Stage { path, .. } if path.ends_with("/orig.txt")))
         .collect();
     assert_eq!(
         adds.len(),
         2,
-        "both creates at staged-only name should produce Add records: {acts:?}"
+        "both creates at staged-only name should produce Stage records: {acts:?}"
     );
 }
 

@@ -26,7 +26,7 @@ the kernel, not merely assumed.
    Pinned child dentries hold a ref on `dentry->d_parent`, which
    transitively keeps the parent inode alive through
    VFS refcounting — no `igrab()` is needed. Pins are released in bulk by
-   `AGFS_IOC_RESTORE` (called by commit/abort/restore) and during
+   `AGFS_IOC_JUMP` (called by commit/abort/restore) and during
    `kill_sb` (unmount) via a recursive dentry tree walk from
    `sb->s_root`. Directories are never COW'd, so their inode
    identity (keyed by `lower_inode` in `iget5_locked`) is stable for
@@ -90,7 +90,7 @@ VFS `d_children` list.
 | `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
 | `gen` | Atomic counter, starts at 1, bumped by each checkpoint and restore ioctl. Compared against `staging_gen` on the inode at open time to decide COW / re-COW. |
 | `staging_fd_count` | Atomic counter of open staging fds (opened for write). Checkpoint ioctl rejects with `-EBUSY` when > 0. |
-| `dirty` | Boolean flag set on every data journal write (A/D/R), cleared on checkpoint or restore. Used by `AGFS_CHK_IF_CHANGED` to skip empty auto-checkpoints. |
+| `dirty` | Boolean flag set on every data journal write (S/D/R), cleared on checkpoint or restore. Used by `AGFS_MARK_IF_CHANGED` to skip empty auto-checkpoints. |
 
 **Per-inode** (`agfs_inode_info`) — one per cached inode:
 
@@ -149,8 +149,9 @@ lookups that miss in base and pinned tombstones both remain negative dentries
 with an empty `lower_path`; later VFS operations must not assume a negative
 dentry can be reopened through `lower_path`.
 
-The `d_type` is not stored in the dentry state — it is derived from
-`d_inode(dentry)->i_mode` via `fs_umode_to_dtype()`.
+The `d_type` is derived on-the-fly from `d_inode(dentry)->i_mode` via
+`fs_umode_to_dtype()` for readdir only. It is not stored in the dentry
+state or the journal.
 
 Callers read `AGFS_D(d)->target` and `AGFS_D(d)->pinned` directly.
 
@@ -303,21 +304,21 @@ agfs_create(dir, dentry, mode):
     create file inodes/<ino>
     agfs_dentry_pin(dentry, AGFS_TARGET_INODE)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
-    journal(A, path, dtype, ino)
+    journal(S, path, ino)
 
 agfs_mkdir(dir, dentry, mode):
     ino = next_ino++
     create dir inodes/<ino>/
     agfs_dentry_pin(dentry, AGFS_TARGET_INODE)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
-    journal(A, path, dtype, ino)
+    journal(S, path, ino)
 
 agfs_symlink(dir, dentry, target):
     ino = next_ino++
     create symlink inodes/<ino> -> target
     agfs_dentry_pin(dentry, AGFS_TARGET_INODE)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
-    journal(A, path, dtype, ino)
+    journal(S, path, ino)
 ```
 
 `touch` (create + close, no write) produces an empty inode in the store —
@@ -337,7 +338,7 @@ agfs_unlink(dir, dentry):
     tomb = agfs_dentry_create(parent, name, namelen, AGFS_TARGET_NONE, NULL)
     if IS_ERR(tomb): return PTR_ERR(tomb)
 
-    journal(D, path, dtype)  # must be before d_drop (uses dentry path)
+    journal(D, path)  # must be before d_drop (uses dentry path)
 
     if staged:
         agfs_dentry_unpin(dentry)   # reset to ground state + dput
@@ -345,7 +346,7 @@ agfs_unlink(dir, dentry):
 
 agfs_rmdir(dir, dentry):
     # Same logic as agfs_unlink.
-    journal(D, path, dtype)
+    journal(D, path)
 ```
 
 Subsequent lookup of the name finds the negative dentry in the dcache
@@ -380,7 +381,7 @@ agfs_rename(old_parent, old_dentry, new_parent, new_dentry):
         # Base file being renamed — becomes a redirect via lower_path.
         agfs_dentry_pin(old_dentry, AGFS_TARGET_PATH)
 
-    journal(R, dst, src, dtype)
+    journal(R, dst, src)
 
     # Clean up new_dentry if it was staged.
     new_staged = AGFS_D(new_dentry)->pinned
@@ -399,7 +400,8 @@ agfs_rename(old_parent, old_dentry, new_parent, new_dentry):
 rename finds the redirect state on `b`'s dentry, uses its dentry path as the
 old path, and sets a new redirect on `c`'s dentry. The base source is
 derived from `lower_path.dentry` — each rename is
-recorded as a separate journal entry and replayed in order at commit time.
+recorded as a separate journal entry (the DirTree collapses chains into
+minimal redirects at commit time).
 **Roundtrip renames** (`mv a->tmp`, then `mv tmp->a`) are detected at
 rename time: when the effective base source equals the destination
 relpath, the rename chain is a no-op. The kernel
@@ -411,7 +413,7 @@ independently correct and unaffected.
 **Rename + recreate** (`mv a->b`, then `touch a`) works because the new
 `touch a` sees the tombstone pinned in the dcache and creates a new
 staged inode that supersedes it. The rename emits `R(b, a)`, so the
-journal sees `R(b, a)` for the rename, then `A(a)` for the recreate.
+journal sees `R(b, a)` for the rename, then `S(a)` for the recreate.
 
 **Read after rename**: lookup of the new name finds the pinned dentry
 in the dcache -> opens the base file via `lower_path` (or the
@@ -512,36 +514,35 @@ The journal is an append-only file at `.agfs/journal`. Each record is a
 sequence of NUL-separated fields terminated by a newline.
 
 ```
-A\0<path>\0<dtype>\0<ino>\n       — Add (staged content at path)
-D\0<path>\0<dtype>\n              — Delete
-R\0<dst>\0<src>\0<dtype>\n             — Rename
-K\0<gen>\0<name>\n                — Checkpoint
-T\0<gen>\0<target_gen>\n          — Restore
+S\0<path>\0<ino>\n                — Stage (staged content at path)
+D\0<path>\n                      — Delete
+R\0<dst>\0<src>\n                 — Rename
+M\0<gen>\0<name>\n                — Mark
+J\0<gen>\0<target_gen>\n          — Jump
 ```
 
 Each mutation type has its own record tag and carries exactly the fields
-it needs. The kernel always uses `A` for creates/COW and `R` for renames:
+it needs. The kernel always uses `S` for creates/COW and `R` for renames:
 
 | Tag | Fields | Meaning |
 |-----|--------|---------|
-| `A` | `<path>`, `<dtype>`, `<ino>` | Staged content at path (create or COW) |
-| `D` | `<path>`, `<dtype>` | Entry deleted |
-| `R` | `<dst>`, `<src>`, `<dtype>` | Rename |
-| `K` | `<gen>`, `<name>` | Checkpoint marker |
-| `T` | `<gen>`, `<target_gen>` | Restore marker |
+| `S` | `<path>`, `<ino>` | Staged content at path (create or COW) |
+| `D` | `<path>` | Entry deleted |
+| `R` | `<dst>`, `<src>` | Rename |
+| `M` | `<gen>`, `<name>` | Mark meta |
+| `J` | `<gen>`, `<target_gen>` | Jump meta |
 
-Userspace derives the add/modify distinction by checking the base
+Userspace derives the stage/modify distinction by checking the base
 filesystem — it does not need the kernel to encode it in the tag.
 
 **Gen_id invariant.** The kernel increments `sbi->gen` via
-`atomic_inc_return()` on every K and T record. Gen_id values are
-strictly sequential: marker\[i\] has gen_id = i (marker\[0\] is a phantom
-`Checkpoint { gen_id: 0, name: "(initial)" }` inserted by the CLI). The
-`Markers` type relies on this for O(1) checkpoint lookup by gen_id.
+`atomic_inc_return()` on every M and J record. Gen_id values are
+strictly sequential: meta\[i\] has gen_id = i (meta\[0\] is a phantom
+`Mark { gen_id: 0, name: "(initial)" }` inserted by the CLI). The
+`MetaIndex` type relies on this for O(1) mark lookup by gen_id.
 
 `<path>` is the full overlay path (e.g. `/dir/file`).
 `<src>` is the overlay path before the rename (R only).
-`<dtype>` is `f` (regular file), `d` (directory), or `l` (symlink).
 `<ino>` is the staged inode ID (decimal).
 
 All renames — staged or redirect, file or directory — emit a single R
@@ -551,18 +552,18 @@ record. The tree builder always tombstones at the source path.
 
 The CLI resolves per-checkpoint deltas by iterating over segments from the
 `Journal` pipeline. Each segment is resolved independently by
-building a dir tree from its records. Marker\[i\] opens segment\[i\]:
-segment\[i\] contains the records from marker\[i\] up to (but not
-including) marker\[i+1\]. The phantom marker at index 0 opens segment 0
+building a dir tree from its records. Meta\[i\] opens segment\[i\]:
+segment\[i\] contains the records from meta\[i\] up to (but not
+including) meta\[i+1\]. The phantom meta at index 0 opens segment 0
 (pre-first-checkpoint records). This is O(N) total.
 
-K records a checkpoint. The CLI can slice segments with
+An M record marks a checkpoint. The CLI can slice segments with
 `Journal::live_segments_slice(at, from, to)`, so that only the requested
 range of segments is resolved and displayed.
 
 Slicing semantics:
 - `--at <name>` — isolate the single segment opened by that checkpoint
-  (records from that checkpoint marker up to the next marker).
+  (records from that checkpoint meta up to the next meta).
 - `--from <name>` — records from that checkpoint to end.
 - `--to <name>` — records from start up to and including that checkpoint's segment.
 - `--from <A> --to <B>` — records between the two checkpoints.
@@ -577,25 +578,29 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 
 **Commit** (`agfs commit`):
 
-1. Build a `Journal` from the journal records, then call `live_segments()` to get
-   only reachable segments (filtering out dead branches from restores).
-2. Replay live records in journal order directly on the base filesystem.
-   Each record is applied one by one:
-   - **A**: copy `inodes/<ino>` to `base/path` (create parents as needed;
-     directories → `mkdir`). If `base/path` already exists, overwrite.
-   - **D**: remove `base/path` if it exists (unlink for files/symlinks, rmdir for directories).
-   - **R**: `rename(base/src, base/dst)`.
-   No temp files, no sorting, no conflict detection — the temporal order
-   from the journal is the correct replay order.
-3. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
-4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `tree_len=0` — reset mode, no T record written).
+1. Build a `Journal` from the journal records, then build a `DirTree` from all
+   live segments. The tree collapses redundant operations (e.g. create-then-delete,
+   overwrite chains, rename chains) into a minimal set of final-state entries.
+2. Walk the `DirTree` and collect commit ops into three ordered buckets:
+   - **Renames**: `BasePath(src)` redirects &rarr; `rename(base/src, base/dst)`.
+     Independent renames (no path overlap) execute as a single syscall.
+     Conflicted renames (nested sources/destinations, or destination =
+     another's source) use a two-phase save/place strategy; rotation cycles
+     (e.g. swap) are handled automatically.
+   - **Deletes**: `Tombstone` entries &rarr; `remove(base/path)`.
+   - **Stages**: `StagedFile(ino)` entries &rarr; copy `inodes/<ino>` to `base/path`.
+3. Apply in order: save-renames &rarr; direct-renames &rarr; place-renames
+   &rarr; deletes &rarr; stages.
+4. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
+5. Signal kernel to reset staging state (`AGFS_IOC_JUMP` with `target_gen=0`,
+   `tree_len=0` &mdash; reset mode, no J record written).
 
 **Abort** (`agfs abort`):
 
 1. Count staged changes; if none, print "nothing to discard" and exit.
 2. Prompt for confirmation: `Discard N staged changes? [y/N]`.
 3. Remove all files under `.agfs/inodes/` and truncate `.agfs/journal`.
-4. Signal kernel to reset staging state (`AGFS_IOC_RESTORE` with `target_gen=0`, `tree_len=0` — reset mode, no T record written).
+4. Signal kernel to reset staging state (`AGFS_IOC_JUMP` with `target_gen=0`, `tree_len=0` — reset mode, no J record written).
 
 **Status** (`agfs status`):
 
@@ -623,7 +628,7 @@ diffing, and committing staged changes at specific points in time.
 states — old inodes are never deleted (only commit/abort removes the
 entire inode store). The journal records which ino was associated
 with each path at each mutation. Replaying the journal up to a checkpoint
-marker reconstructs the staged state at that point.
+meta reconstructs the staged state at that point.
 
 The only kernel-side change is ensuring that writes after a checkpoint create
 a **new** inode instead of overwriting the current one in place.
@@ -631,13 +636,13 @@ This is the re-COW mechanism.
 
 ### Creating a Checkpoint
 
-`agfs checkpoint [name]` calls `ioctl(AGFS_IOC_CHECKPOINT)`. The kernel:
+`agfs checkpoint [name]` calls `ioctl(AGFS_IOC_MARK)`. The kernel:
 
 1. Returns `-ENOTSUP` if `staging` is disabled (checkpoints require staging).
 2. Takes `staging_sem` write lock.
 3. If `staging_fd_count > 0`, releases sem and returns `-EBUSY`.
 4. Increments `sbi->gen` (atomic counter).
-5. Appends `K\0<gen>\0<name>\n` to the journal.
+5. Appends `M\0<gen>\0<name>\n` to the journal.
 6. Releases `staging_sem`.
 7. Returns the gen to userspace.
 
@@ -654,8 +659,8 @@ looking up by name, `--at` and `--from` match the latest one.
 
 Auto-checkpointing after `agfs exec` is skipped when the command produced no
 staged changes. The kernel tracks a `dirty` flag on `agfs_sb_info` that is set
-on every data journal write (A/D/R) and cleared on checkpoint or restore.
-When the CLI passes the `AGFS_CHK_IF_CHANGED` flag in the checkpoint ioctl, the
+on every data journal write (S/D/R) and cleared on checkpoint or restore.
+When the CLI passes the `AGFS_MARK_IF_CHANGED` flag in the checkpoint ioctl, the
 kernel returns `gen = 0` (skipped) if the flag is clear, avoiding empty
 checkpoints from read-only or no-op commands.
 
@@ -691,14 +696,14 @@ The generation counter collapses consecutive checkpoints.
 ### Example Journal with Checkpoints
 
 ```
-A\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
-A\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
-K\01\0after make build\n                          # checkpoint 1
-A\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
+S\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
+S\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
+M\01\0after make build\n                          # checkpoint 1
+S\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
 D\0/src/lib.rs\0f\n                               # delete lib.rs
-A\0/src/new.rs\0f\04\n                           # create new.rs
-K\02\0after make test\n                           # checkpoint 2
-A\0/src/new.rs\0f\05\n                           # re-COW: new.rs -> ino 5
+S\0/src/new.rs\0f\04\n                           # create new.rs
+M\02\0after make test\n                           # checkpoint 2
+S\0/src/new.rs\0f\05\n                           # re-COW: new.rs -> ino 5
 ```
 
 State at each point:
@@ -712,19 +717,19 @@ State at each point:
 ### Example Journal with Restore
 
 ```
-A\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
-A\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
-K\01\0after make build\n                          # checkpoint 1
-A\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
+S\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
+S\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
+M\01\0after make build\n                          # checkpoint 1
+S\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
 D\0/src/lib.rs\0f\n                               # delete lib.rs
-K\02\0after make test\n                           # checkpoint 2
-T\03\01\n                                         # restore to checkpoint 1 (gen bumped to 3)
-A\0/src/util.rs\0f\04\n                          # create util.rs -> ino 4
-K\04\0after make fix\n                            # checkpoint 4
+M\02\0after make test\n                           # checkpoint 2
+J\03\01\n                                         # restore to checkpoint 1 (gen bumped to 3)
+S\0/src/util.rs\0f\04\n                          # create util.rs -> ino 4
+M\04\0after make fix\n                            # checkpoint 4
 ```
 
-Reachable records (after `reachable`): A(main.rs→1), A(lib.rs→2), K1, A(util.rs→4), K4
-Unreachable region: A(main.rs→3), D(lib.rs), K2, T3
+Reachable records (after `reachable`): S(main.rs→1), S(lib.rs→2), M1, S(util.rs→4), M4
+Unreachable region: S(main.rs→3), D(lib.rs), M2, J3
 
 State at current:
 
@@ -747,32 +752,32 @@ output always preserves checkpoint boundaries within the requested range.
 - `--at` conflicts with `--from`/`--to`.
 
 **`agfs restore <name|gen>`**: Restore the mounted view to the state at the
-named marker (checkpoint or restore). The journal is **append-only** —
-restore appends a T record instead of truncating. T records create
-unreachable records — records between the target marker and the T record that no longer reflect
+named meta (checkpoint or restore). The journal is **append-only** —
+restore appends a J record instead of truncating. J records create
+unreachable records — records between the target meta and the J record that no longer reflect
 current state. All CLI consumers (commit, status, diff, restore) build a
 `Journal` to filter unreachable records before resolving.
 
-The reachability algorithm: O(N) single pass to collect T/K positions,
-O(R) backward walk to build reachable ranges, skip unreachable T records.
+The reachability algorithm: O(N) single pass to collect J/M positions,
+O(R) backward walk to build reachable ranges, skip unreachable J records.
 
-1. CLI builds a `Journal` and finds the target marker via
-   `Markers::find_marker()` (including unreachable regions, to support undo-restore).
+1. CLI builds a `Journal` and finds the target meta via
+   `MetaIndex::find_meta()` (including unreachable regions, to support undo-restore).
 2. CLI calls `live_segments_at(gen_id)` (or `live_segments_at_name(name)` which
    resolves the name internally) to get an iterator over live segments in the
-   prefix up to the target marker, handling any T records in that
+   prefix up to the target meta, handling any J records in that
    prefix.
 3. CLI builds the dir tree from live records.
 4. CLI serializes the dir tree into a contiguous byte buffer (depth-first,
    children sorted by name).
-5. `ioctl(AGFS_IOC_RESTORE, { target_gen=N, tree_buf })`:
+5. `ioctl(AGFS_IOC_JUMP, { target_gen=N, tree_buf })`:
    kernel releases all pinned staged dentries (recursive `d_children`
    tree walk from `sb->s_root`, `dput()` each), shrinks dcache,
    `vmalloc`s + `copy_from_user`s the tree buffer, walks it iteratively
    with a directory stack to inject VFS dentries with new gen (via
    `d_alloc()`, set target/pinned, `d_add()`, `dget()` to pin), appends
-   `T\0<new_gen>\0<target_gen>\n`, returns new_gen.  The
-   `AGFS_IOC_RESTORE` ioctl **increments** gen (monotonically) instead
+   `J\0<new_gen>\0<target_gen>\n`, returns new_gen.  The
+   `AGFS_IOC_JUMP` ioctl **increments** gen (monotonically) instead
    of setting it to the target value — this avoids gen collisions.
    Injected inodes receive the new gen value in `staging_gen`.
 6. No journal truncation.

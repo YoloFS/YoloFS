@@ -1,14 +1,14 @@
-use super::helpers::{ino_for, inode_path, inos, journal, markers, tree};
+use super::helpers::{ino_for, inode_path, inos, journal, metas, tree};
 use crate::helpers::AgfsSession;
-use agfs::journal::Marker;
+use agfs::journal::Meta;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
 // ── Journal state after restore ──────────────────────────────────────────
 
-/// Restore keeps journal records up to and including the checkpoint marker.
+/// Restore keeps journal records up to and including the mark meta.
 #[test]
-fn restore_journal_contains_checkpoint_marker() {
+fn restore_journal_contains_checkpoint_meta() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
@@ -18,15 +18,15 @@ fn restore_journal_contains_checkpoint_marker() {
     s.cli(&["restore", "chk1"]).expect("restore");
 
     let j = journal(&s);
-    let mkrs = markers(&j);
+    let mkrs = metas(&j);
     assert!(
         mkrs.iter()
-            .any(|m| matches!(m, Marker::Checkpoint { name, .. } if name == "chk1")),
-        "chk1 marker should be in journal: {mkrs:?}"
+            .any(|m| matches!(m, Meta::Mark { name, .. } if name == "chk1")),
+        "chk1 meta should be in journal: {mkrs:?}"
     );
 }
 
-/// Restore appends an RST record; reachable + resolve excludes post-checkpoint mutations.
+/// Restore appends a J record; reachable + resolve excludes post-checkpoint mutations.
 #[test]
 fn restore_journal_has_no_post_checkpoint_records() {
     let s = AgfsSession::new().expect("session setup");
@@ -39,12 +39,12 @@ fn restore_journal_has_no_post_checkpoint_records() {
     s.cli(&["restore", "chk1"]).expect("restore");
 
     let j = journal(&s);
-    let mkrs = markers(&j);
+    let mkrs = metas(&j);
 
-    // RST (Restore) record should be present in the raw journal.
+    // J (Jump) record should be present in the raw journal.
     assert!(
-        mkrs.iter().any(|m| matches!(m, Marker::Restore { .. })),
-        "Restore record should be in journal: {mkrs:?}"
+        mkrs.iter().any(|m| matches!(m, Meta::Jump { .. })),
+        "Jump record should be in journal: {mkrs:?}"
     );
 
     // reachable + resolve should match the checkpoint state (only a.txt).
@@ -114,7 +114,7 @@ fn restore_orphans_post_checkpoint_inodes() {
 
 /// Abort after restore cleans up all inodes including orphans.
 #[test]
-fn abort_after_restore_cleans_orphans() {
+fn abort_after_jump_cleans_orphans() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
@@ -180,7 +180,7 @@ fn restore_new_files_get_fresh_inodes() {
 
 /// Writing to a restored file without a new checkpoint reuses the inode.
 #[test]
-fn write_after_restore_without_checkpoint_reuses_inode() {
+fn write_after_jump_without_checkpoint_reuses_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
@@ -205,7 +205,7 @@ fn write_after_restore_without_checkpoint_reuses_inode() {
 
 /// Writing after restore + new checkpoint triggers re-COW (new inode).
 #[test]
-fn write_after_restore_and_checkpoint_triggers_recow() {
+fn write_after_jump_and_checkpoint_triggers_recow() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
@@ -213,8 +213,7 @@ fn write_after_restore_and_checkpoint_triggers_recow() {
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2");
 
     s.cli(&["restore", "chk1"]).expect("restore");
-    s.cli(&["checkpoint", "post-restore"])
-        .expect("new checkpoint");
+    s.cli(&["checkpoint", "post-jump"]).expect("new checkpoint");
 
     let inos_before = inos(&s);
     fs::write(s.mnt_path("file.txt"), "v3\n").expect("write triggers re-COW");
@@ -230,7 +229,7 @@ fn write_after_restore_and_checkpoint_triggers_recow() {
 
 /// Re-COW after restore preserves the pre-checkpoint inode content.
 #[test]
-fn recow_after_restore_preserves_old_inode() {
+fn recow_after_jump_preserves_old_inode() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
@@ -240,8 +239,7 @@ fn recow_after_restore_preserves_old_inode() {
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2 (re-COW)");
 
     s.cli(&["restore", "chk1"]).expect("restore");
-    s.cli(&["checkpoint", "post-restore"])
-        .expect("new checkpoint");
+    s.cli(&["checkpoint", "post-jump"]).expect("new checkpoint");
 
     fs::write(s.mnt_path("file.txt"), "v3\n").expect("write v3 (re-COW)");
 
@@ -365,12 +363,12 @@ fn restore_renamed_symlink_in_resolved_changes() {
         "new_link should be a symlink after restore"
     );
 
-    // Journal should have the checkpoint marker and records up to it
+    // Journal should have the mark meta and records up to it
     let j = journal(&s);
-    let mkrs = markers(&j);
+    let mkrs = metas(&j);
     assert!(
         mkrs.iter()
-            .any(|m| matches!(m, Marker::Checkpoint { name, .. } if name == "chk1")),
+            .any(|m| matches!(m, Meta::Mark { name, .. } if name == "chk1")),
         "chk1 should be in journal: {mkrs:?}"
     );
 }
@@ -399,7 +397,7 @@ fn restore_preserves_journal_inode() {
     );
 }
 
-/// After restore, the journal grows (RST record appended) and original bytes are preserved.
+/// After restore, the journal grows (J record appended) and original bytes are preserved.
 #[test]
 fn restore_journal_is_byte_prefix() {
     let s = AgfsSession::new().expect("session setup");
@@ -417,7 +415,7 @@ fn restore_journal_is_byte_prefix() {
     let bytes_after = fs::read(&journal_path).expect("read after");
     assert!(
         bytes_after.len() > bytes_before.len(),
-        "journal should grow after restore (RST record appended): before={} after={}",
+        "journal should grow after restore (J record appended): before={} after={}",
         bytes_before.len(),
         bytes_after.len()
     );
@@ -427,19 +425,19 @@ fn restore_journal_is_byte_prefix() {
         "original journal bytes must be preserved as a prefix"
     );
 
-    // Verify the RST record is present.
+    // Verify the J record is present.
     let j = journal(&s);
-    let mkrs = markers(&j);
+    let mkrs = metas(&j);
     assert!(
-        mkrs.iter().any(|m| matches!(m, Marker::Restore { .. })),
-        "Restore record should be in journal: {mkrs:?}"
+        mkrs.iter().any(|m| matches!(m, Meta::Jump { .. })),
+        "Jump record should be in journal: {mkrs:?}"
     );
 }
 
-/// The RST record written by restore should have a gen_id higher than the
+/// The J record written by restore should have a gen_id higher than the
 /// target checkpoint's gen_id (monotonically increasing).
 #[test]
-fn restore_s_record_has_correct_gen() {
+fn restore_j_record_has_correct_gen() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
@@ -451,13 +449,13 @@ fn restore_s_record_has_correct_gen() {
     s.cli(&["restore", "chk1"]).expect("restore");
 
     let j = journal(&s);
-    let mkrs = markers(&j);
+    let mkrs = metas(&j);
 
-    // Find the checkpoint gen_ids and the restore record.
+    // Find the mark gen_ids and the jump record.
     let chk1_gen = mkrs
         .iter()
         .find_map(|m| match m {
-            Marker::Checkpoint { gen_id, name } if name == "chk1" => Some(*gen_id),
+            Meta::Mark { gen_id, name } if name == "chk1" => Some(*gen_id),
             _ => None,
         })
         .expect("chk1 should exist");
@@ -465,7 +463,7 @@ fn restore_s_record_has_correct_gen() {
     let chk2_gen = mkrs
         .iter()
         .find_map(|m| match m {
-            Marker::Checkpoint { gen_id, name } if name == "chk2" => Some(*gen_id),
+            Meta::Mark { gen_id, name } if name == "chk2" => Some(*gen_id),
             _ => None,
         })
         .expect("chk2 should exist");
@@ -473,14 +471,14 @@ fn restore_s_record_has_correct_gen() {
     let (s_gen, s_target) = mkrs
         .iter()
         .find_map(|m| match m {
-            Marker::Restore { gen_id, target_gen } => Some((*gen_id, *target_gen)),
+            Meta::Jump { gen_id, target_gen } => Some((*gen_id, *target_gen)),
             _ => None,
         })
         .expect("restore record should exist");
 
-    assert_eq!(s_target, chk1_gen, "RST record should target chk1");
+    assert_eq!(s_target, chk1_gen, "J record should target chk1");
     assert!(
         s_gen > chk2_gen,
-        "RST record gen ({s_gen}) should be greater than chk2 gen ({chk2_gen})"
+        "J record gen ({s_gen}) should be greater than chk2 gen ({chk2_gen})"
     );
 }

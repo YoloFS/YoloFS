@@ -31,8 +31,8 @@ nix::ioctl_write_ptr!(ioctl_rule_add, b'A', 10, AgfsIocRule);
 nix::ioctl_write_ptr!(ioctl_rule_remove, b'A', 11, AgfsIocRule);
 nix::ioctl_readwrite!(ioctl_get_request, b'A', 30, AgfsCtlRequest);
 nix::ioctl_write_ptr!(ioctl_put_response, b'A', 31, AgfsCtlResponse);
-nix::ioctl_readwrite!(ioctl_checkpoint, b'A', 40, AgfsIocCheckpoint);
-nix::ioctl_readwrite!(ioctl_restore, b'A', 41, AgfsIocRestore);
+nix::ioctl_readwrite!(ioctl_mark, b'A', 40, AgfsIocMark);
+nix::ioctl_readwrite!(ioctl_jump, b'A', 41, AgfsIocJump);
 
 /// Matches `struct agfs_ioc_rule` in the kernel.
 #[repr(C)]
@@ -66,12 +66,12 @@ pub struct AgfsCtlResponse {
     pub _pad: [u8; 7],
 }
 
-/// Checkpoint ioctl flag: skip if no data records since last checkpoint.
-pub const AGFS_CHK_IF_CHANGED: u8 = 1;
+/// Mark ioctl flag: skip if no data records since last mark.
+pub const AGFS_MARK_IF_CHANGED: u8 = 1;
 
-/// Matches `struct agfs_ioc_checkpoint` in the kernel.
+/// Matches `struct agfs_ioc_mark` in the kernel.
 #[repr(C)]
-pub struct AgfsIocCheckpoint {
+pub struct AgfsIocMark {
     pub gen_id: u64,
     pub name_ptr: u64,
     pub name_len: u16,
@@ -79,9 +79,9 @@ pub struct AgfsIocCheckpoint {
     pub _pad: [u8; 5],
 }
 
-/// Matches `struct agfs_ioc_restore` in the kernel.
+/// Matches `struct agfs_ioc_jump` in the kernel.
 #[repr(C)]
-pub struct AgfsIocRestore {
+pub struct AgfsIocJump {
     pub target_gen: u64,
     pub new_gen: u64,
     pub tree_len: u64,
@@ -191,11 +191,11 @@ pub fn remove_rule(fd: &File, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Send AGFS_IOC_RESTORE ioctl. Resets staging state and optionally injects
+/// Send AGFS_IOC_JUMP ioctl. Resets staging state and optionally injects
 /// a serialized DirTree. For commit/abort, pass an empty buffer with target_gen=0.
-/// For restore, pass target_gen > 0; returns the new generation assigned.
-pub fn restore(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
-    let mut hdr = AgfsIocRestore {
+/// For jump, pass target_gen > 0; returns the new generation assigned.
+pub fn jump(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
+    let mut hdr = AgfsIocJump {
         target_gen,
         new_gen: 0,
         tree_len: tree_buf.len() as u64,
@@ -205,27 +205,24 @@ pub fn restore(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
             tree_buf.as_ptr() as u64
         },
     };
-    unsafe { ioctl_restore(fd.as_raw_fd(), &mut hdr) }.context("ioctl RESTORE")?;
+    unsafe { ioctl_jump(fd.as_raw_fd(), &mut hdr) }.context("ioctl JUMP")?;
     Ok(hdr.new_gen)
 }
 
-/// Send AGFS_IOC_CHECKPOINT ioctl. Returns the assigned gen, or 0 if
-/// skipped due to `AGFS_CHK_IF_CHANGED` with no pending changes.
-pub fn create_checkpoint(fd: &File, name: &str, flags: u8) -> Result<u64> {
+/// Send AGFS_IOC_MARK ioctl. Returns the assigned gen, or 0 if
+/// skipped due to `AGFS_MARK_IF_CHANGED` with no pending changes.
+pub fn mark(fd: &File, name: &str, flags: u8) -> Result<u64> {
     let name_bytes = name.as_bytes();
-    let name_len: u16 = name_bytes
-        .len()
-        .try_into()
-        .context("checkpoint name too long")?;
-    let mut chk = AgfsIocCheckpoint {
+    let name_len: u16 = name_bytes.len().try_into().context("mark name too long")?;
+    let mut mrk = AgfsIocMark {
         gen_id: 0,
         name_ptr: name_bytes.as_ptr() as u64,
         name_len,
         flags,
         _pad: [0u8; 5],
     };
-    unsafe { ioctl_checkpoint(fd.as_raw_fd(), &mut chk) }.context("ioctl CHECKPOINT")?;
-    Ok(chk.gen_id)
+    unsafe { ioctl_mark(fd.as_raw_fd(), &mut mrk) }.context("ioctl MARK")?;
+    Ok(mrk.gen_id)
 }
 
 #[cfg(test)]
@@ -238,8 +235,8 @@ mod tests {
         assert_eq!(size_of::<AgfsCtlRequest>(), 48);
         assert_eq!(size_of::<AgfsCtlResponse>(), 16);
         assert_eq!(size_of::<AgfsIocRule>(), 16);
-        assert_eq!(size_of::<AgfsIocCheckpoint>(), 24);
-        assert_eq!(size_of::<AgfsIocRestore>(), 32);
+        assert_eq!(size_of::<AgfsIocMark>(), 24);
+        assert_eq!(size_of::<AgfsIocJump>(), 32);
     }
 
     #[test]

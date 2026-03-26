@@ -1,19 +1,19 @@
 // agfs CLI — journal/core.rs
 //
-// The Journal: segments + markers + precomputed liveness.
+// The Journal: segments + metas + precomputed liveness.
 // Borrowing filter methods — no moves, no collects, no intermediate allocations.
 
-use super::markers::Markers;
+use super::meta::MetaIndex;
 use super::parse;
 use super::tree::DirTree;
 use super::types::*;
 use anyhow::Result;
 use std::path::Path;
 
-/// All segments + K/T skeleton + precomputed alive mask.
+/// All segments + M/J skeleton + precomputed alive mask.
 pub struct Journal {
     pub segments: Vec<Segment>,
-    pub markers: Markers,
+    pub metas: MetaIndex,
     alive: Vec<bool>,
 }
 
@@ -21,7 +21,7 @@ impl Journal {
     /// Build from parsed journal records.
     pub fn new(records: Vec<Record>) -> Self {
         let mut segments = Vec::new();
-        let mut markers_vec: Vec<Marker> = vec![Marker::Checkpoint {
+        let mut metas_vec: Vec<Meta> = vec![Meta::Mark {
             gen_id: 0,
             name: "(initial)".into(),
         }];
@@ -30,20 +30,20 @@ impl Journal {
 
         for record in records.into_iter() {
             match record {
-                Record::Marker(marker @ Marker::Checkpoint { gen_id, .. }) => {
+                Record::Meta(meta @ Meta::Mark { gen_id, .. }) => {
                     segments.push(Segment {
                         from: current_from,
                         records: std::mem::take(&mut current_records),
                     });
                     current_from = gen_id;
-                    markers_vec.push(marker);
+                    metas_vec.push(meta);
                 }
-                Record::Marker(marker @ Marker::Restore { target_gen, .. }) => {
+                Record::Meta(meta @ Meta::Jump { target_gen, .. }) => {
                     segments.push(Segment {
                         from: current_from,
                         records: std::mem::take(&mut current_records),
                     });
-                    markers_vec.push(marker);
+                    metas_vec.push(meta);
                     current_from = target_gen;
                 }
                 Record::Action(action) => {
@@ -58,12 +58,12 @@ impl Journal {
             records: current_records,
         });
 
-        let markers = Markers::new(markers_vec);
-        let alive = markers.alive_segments(segments.len());
+        let metas = MetaIndex::new(metas_vec);
+        let alive = metas.alive_segments(segments.len());
 
         Journal {
             segments,
-            markers,
+            metas,
             alive,
         }
     }
@@ -83,7 +83,7 @@ impl Journal {
         DirTree::build(self.into_live_segments())
     }
 
-    /// Consume the journal and build a DirTree from live segments up to a checkpoint.
+    /// Consume the journal and build a DirTree from live segments up to a mark.
     pub fn into_tree_at(self, gen_id: u64) -> DirTree {
         DirTree::build(self.into_live_segments_at(gen_id))
     }
@@ -112,10 +112,10 @@ impl Journal {
 
     fn into_live_segments_at(self, gen_id: u64) -> impl Iterator<Item = Segment> {
         let num_prefix = (gen_id as usize).min(self.segments.len());
-        // Include one extra marker so that a restore marker at gen_id
+        // Include one extra meta so that a jump meta at gen_id
         // participates in the dead-zone scan.
-        let marker_end = (gen_id as usize + 1).min(self.markers.len());
-        let alive = self.markers.alive_segments_range(0..marker_end, num_prefix);
+        let meta_end = (gen_id as usize + 1).min(self.metas.len());
+        let alive = self.metas.alive_segments_range(0..meta_end, num_prefix);
         self.segments
             .into_iter()
             .enumerate()
@@ -134,25 +134,23 @@ mod tests {
     #[test]
     fn segmentation_basic() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 3,
                 name: "c3".into(),
             }),
@@ -170,40 +168,37 @@ mod tests {
     }
 
     #[test]
-    fn segmentation_splits_at_s_boundary() {
+    fn segmentation_splits_at_j_boundary() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -212,27 +207,25 @@ mod tests {
         assert_eq!(j.segments.len(), 6);
         assert_eq!(j.segments[4].from, 2);
         assert_eq!(j.segments[4].records.len(), 1);
-        assert!(matches!(&j.segments[4].records[0], Action::Add { path, .. } if path == "/d"));
+        assert!(matches!(&j.segments[4].records[0], Action::Stage { path, .. } if path == "/d"));
     }
 
     #[test]
-    fn records_before_first_checkpoint_in_segment_zero() {
+    fn records_before_first_mark_in_segment_zero() {
         let records = vec![
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/orphan".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 999,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -241,9 +234,11 @@ mod tests {
         assert_eq!(j.segments.len(), 3);
         assert_eq!(j.segments[0].from, 0);
         assert_eq!(j.segments[0].records.len(), 1);
-        assert!(matches!(&j.segments[0].records[0], Action::Add { path, .. } if path == "/orphan"));
+        assert!(
+            matches!(&j.segments[0].records[0], Action::Stage { path, .. } if path == "/orphan")
+        );
         assert_eq!(j.segments[1].records.len(), 1);
-        assert!(matches!(&j.segments[1].records[0], Action::Add { path, .. } if path == "/a"));
+        assert!(matches!(&j.segments[1].records[0], Action::Stage { path, .. } if path == "/a"));
     }
 
     #[test]
@@ -252,12 +247,12 @@ mod tests {
         assert_eq!(j.segments.len(), 1);
         assert_eq!(j.segments[0].from, 0);
         assert!(j.segments[0].records.is_empty());
-        assert_eq!(j.markers.len(), 1, "phantom marker only");
+        assert_eq!(j.metas.len(), 1, "phantom meta only");
     }
 
     #[test]
-    fn segmentation_only_s_records() {
-        let records = vec![Record::Marker(Marker::Restore {
+    fn segmentation_only_j_records() {
+        let records = vec![Record::Meta(Meta::Jump {
             gen_id: 1,
             target_gen: 99,
         })];
@@ -265,7 +260,7 @@ mod tests {
         assert_eq!(j.segments.len(), 2);
         assert_eq!(j.segments[0].from, 0);
         assert_eq!(j.segments[1].from, 99);
-        assert_eq!(j.markers.len(), 2);
+        assert_eq!(j.metas.len(), 2);
     }
 
     // ── Live segments tests (migrated from liveness.rs) ──────────────
@@ -273,38 +268,35 @@ mod tests {
     #[test]
     fn live_segments_basic() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -318,48 +310,45 @@ mod tests {
     #[test]
     fn live_segments_at_basic() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 4,
                 target_gen: 1,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 5,
                 name: "c5".into(),
             }),
         ];
         let j = Journal::new(records);
-        // Live prefix up to K2: seg0 (empty) + seg1 ([A])
+        // Live prefix up to M2: seg0 (empty) + seg1 ([A])
         let live: Vec<_> = j.into_live_segments_at(2).collect();
         let actions: Vec<_> = live.iter().flat_map(|s| &s.records).collect();
         assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::Add { path, .. } if path == "/a"));
+        assert!(matches!(actions[0], Action::Stage { path, .. } if path == "/a"));
     }
 
     // ── Reachability tests (via live_segments, migrated from liveness.rs) ──
@@ -369,7 +358,7 @@ mod tests {
         j.into_live_segments_range(0, usize::MAX)
             .flat_map(|s| s.records)
             .map(|a| match a {
-                Action::Add { path, .. } => path,
+                Action::Stage { path, .. } => path,
                 Action::Delete { path, .. } => path,
                 Action::Rename { dst, .. } => dst,
             })
@@ -377,18 +366,17 @@ mod tests {
     }
 
     #[test]
-    fn reachable_no_restores() {
+    fn reachable_no_jumps() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -399,45 +387,42 @@ mod tests {
     }
 
     #[test]
-    fn reachable_multiple_restores_last_wins() {
-        // K1 [A] K2 [B] K3 S4(K2) [D] K5 S6(K1)
+    fn reachable_multiple_jumps_last_wins() {
+        // M1 [A] M2 [B] M3 J4(M2) [D] M5 J6(M1)
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 5,
                 name: "c5".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 6,
                 target_gen: 1,
             }),
@@ -445,59 +430,55 @@ mod tests {
         let actions = live_actions(records);
         assert!(
             actions.is_empty(),
-            "last restore to K1 kills everything after K1"
+            "last jump to M1 kills everything after M1"
         );
     }
 
     #[test]
-    fn reachable_nested_s_in_dead_zone() {
-        // K1 [A] K2 [B] K3 S4(K1) [D] K5 [E] K6 S7(K5)
+    fn reachable_nested_j_in_dead_zone() {
+        // M1 [A] M2 [B] M3 J4(M1) [D] M5 [E] M6 J7(M5)
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 4,
                 target_gen: 1,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 5,
                 name: "c5".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/e".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 4,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 6,
                 name: "c6".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 7,
                 target_gen: 5,
             }),
@@ -507,45 +488,42 @@ mod tests {
     }
 
     #[test]
-    fn reachable_undo_restore() {
-        // K1 [A] K2 [B] K3 S4(K1) [D] K5 S6(K3)
+    fn reachable_undo_jump() {
+        // M1 [A] M2 [B] M3 J4(M1) [D] M5 J6(M3)
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 4,
                 target_gen: 1,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 5,
                 name: "c5".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 6,
                 target_gen: 3,
             }),
@@ -555,22 +533,21 @@ mod tests {
     }
 
     #[test]
-    fn reachable_restore_to_first_checkpoint() {
+    fn reachable_jump_to_first_mark() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 3,
                 target_gen: 1,
             }),
@@ -578,88 +555,80 @@ mod tests {
         let actions = live_actions(records);
         assert!(
             actions.is_empty(),
-            "restore to first checkpoint discards all actions"
+            "jump to first mark discards all actions"
         );
     }
 
     #[test]
-    fn reachable_consecutive_s_records() {
-        // K1 [A] K2 [B] K3 S4(K2) S5(K1)
+    fn reachable_consecutive_j_records() {
+        // M1 [A] M2 [B] M3 J4(M2) J5(M1)
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 5,
                 target_gen: 1,
             }),
         ];
         let actions = live_actions(records);
-        assert!(
-            actions.is_empty(),
-            "consecutive restores: last one (K1) wins"
-        );
+        assert!(actions.is_empty(), "consecutive jumps: last one (M1) wins");
     }
 
     #[test]
-    fn reachable_single_restore() {
-        // K1 [A] K2 [B] K3 S4(K2) [D] K5
+    fn reachable_single_jump() {
+        // M1 [A] M2 [B] M3 J4(M2) [D] M5
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -675,26 +644,24 @@ mod tests {
     }
 
     #[test]
-    fn reachable_corrupt_s_record_skipped() {
-        // K1 [A] S2(K99) [B]
-        // S targets nonexistent K99 — skipped, all segments alive.
+    fn reachable_corrupt_j_record_skipped() {
+        // M1 [A] J2(M99) [B]
+        // J targets nonexistent M99 — skipped, all segments alive.
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 2,
                 target_gen: 99,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
         ];
@@ -707,34 +674,31 @@ mod tests {
     #[test]
     fn live_segments_slice_from_to() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/c".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 4,
                 name: "c4".into(),
             }),
@@ -742,7 +706,7 @@ mod tests {
         let j = Journal::new(records);
         let num = j.segments.len();
         let (start, end) = j
-            .markers
+            .metas
             .segment_range(None, Some("c2"), Some("c3"), num)
             .unwrap();
         let live: Vec<_> = j.segments[start..end]
@@ -753,95 +717,90 @@ mod tests {
             .collect();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].from, 2);
-        assert!(matches!(&live[0].records[0], Action::Add { path, .. } if path == "/b"));
+        assert!(matches!(&live[0].records[0], Action::Stage { path, .. } if path == "/b"));
     }
 
     #[test]
     fn live_segments_slice_not_found() {
-        let records = vec![Record::Marker(Marker::Checkpoint {
+        let records = vec![Record::Meta(Meta::Mark {
             gen_id: 1,
             name: "init".into(),
         })];
         let j = Journal::new(records);
         assert!(
-            j.markers
+            j.metas
                 .segment_range(Some("nonexistent"), None, None, j.segments.len())
                 .is_err()
         );
     }
 
     #[test]
-    fn live_segments_at_with_nested_restores() {
-        // K1 [A] K2 [B] K3 S4(K1) [C] K5 [D] K6
-        // live_segments_at(K5): prefix markers K1,K2,K3,S4.
-        // S4(K1) kills seg1,seg2,seg3 → live: seg0 (empty) + seg4 ([C])
+    fn live_segments_at_with_nested_jumps() {
+        // M1 [A] M2 [B] M3 J4(M1) [C] M5 [D] M6
+        // live_segments_at(M5): prefix metas M1,M2,M3,J4.
+        // J4(M1) kills seg1,seg2,seg3 → live: seg0 (empty) + seg4 ([C])
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 4,
                 target_gen: 1,
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/c".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 5,
                 name: "c5".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 4,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 6,
                 name: "c6".into(),
             }),
         ];
         let j = Journal::new(records);
-        let gen_id = j.markers.find_marker("c5").unwrap();
+        let gen_id = j.metas.find_meta("c5").unwrap();
         let live: Vec<_> = j.into_live_segments_at(gen_id).collect();
         let actions: Vec<_> = live.iter().flat_map(|s| &s.records).collect();
         assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::Add { path, .. } if path == "/c"));
+        assert!(matches!(actions[0], Action::Stage { path, .. } if path == "/c"));
     }
 
     #[test]
     fn live_segments_at_clamps_invalid_gen_id() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -855,29 +814,27 @@ mod tests {
     }
 
     #[test]
-    fn into_tree_at_restore_marker() {
-        // [A:/a] K1 [B:/b] K2 R3(→K1)
+    fn into_tree_at_jump_meta() {
+        // [A:/a] M1 [B:/b] M2 J3(→M1)
         // into_tree_at(3) should give the journal state at position 3.
         let records = vec![
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "c1".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 3,
                 target_gen: 1,
             }),
@@ -894,29 +851,27 @@ mod tests {
     #[test]
     fn is_alive_basic() {
         let records = vec![
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 1,
                 name: "init".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Action(Action::Add {
+            Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
-            Record::Marker(Marker::Checkpoint {
+            Record::Meta(Meta::Mark {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Marker(Marker::Restore {
+            Record::Meta(Meta::Jump {
                 gen_id: 4,
                 target_gen: 2,
             }),

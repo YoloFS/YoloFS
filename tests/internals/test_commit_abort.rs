@@ -1,14 +1,14 @@
 use super::helpers::{ino_for, inode_path, inos, journal, records, tree};
 use crate::helpers::AgfsSession;
-use agfs::journal::{Marker, Record};
+use agfs::journal::{Meta, Record};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Restore to a checkpoint appends an RST record (append-only journal).
+/// Restore to a checkpoint appends a J record (append-only journal).
 #[test]
-fn restore_to_checkpoint_appends_s_record() {
+fn restore_to_checkpoint_appends_jmp_record() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
@@ -21,20 +21,20 @@ fn restore_to_checkpoint_appends_s_record() {
 
     let recs = records(&journal(&s));
 
-    // Restore appends exactly one RST record.
+    // Restore appends exactly one J record.
     assert_eq!(
         recs.len(),
         count_before + 1,
         "restore should append exactly one record: {recs:?}"
     );
     assert!(
-        matches!(recs.last(), Some(Record::Marker(Marker::Restore { .. }))),
-        "last record should be Restore: {recs:?}"
+        matches!(recs.last(), Some(Record::Meta(Meta::Jump { .. }))),
+        "last record should be Jump: {recs:?}"
     );
-    // The s1 checkpoint itself should still be present
+    // The s1 mark itself should still be present
     assert!(
         recs.iter()
-            .any(|r| matches!(r, Record::Marker(Marker::Checkpoint { name, .. }) if name == "s1")),
+            .any(|r| matches!(r, Record::Meta(Meta::Mark { name, .. }) if name == "s1")),
         "s1 checkpoint should be preserved: {recs:?}"
     );
 }
@@ -56,7 +56,7 @@ fn commit_clears_journal() {
     assert_eq!(
         recs.len(),
         1,
-        "journal should contain only the phantom marker after commit: {recs:?}"
+        "journal should contain only the phantom meta after commit: {recs:?}"
     );
 }
 
@@ -77,7 +77,7 @@ fn abort_clears_journal() {
     assert_eq!(
         recs.len(),
         1,
-        "journal should contain only the phantom marker after abort: {recs:?}"
+        "journal should contain only the phantom meta after abort: {recs:?}"
     );
 }
 

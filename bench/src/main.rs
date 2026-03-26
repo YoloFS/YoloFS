@@ -1285,7 +1285,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(Cmd::CheckpointScaling { backend: backend_name }) = cli.cmd {
+    if let Some(Cmd::CheckpointScaling {
+        backend: backend_name,
+    }) = cli.cmd
+    {
         let out_dir = results_dir(&env, false);
         run_checkpoint_scaling(&out_dir, &backend_name)?;
         return Ok(());
@@ -1598,15 +1601,23 @@ fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
 
     for res in &merged {
         let xs: Vec<String> = res.points.iter().map(|p| p.depth.to_string()).collect();
-        let ys: Vec<String> = res.points.iter().map(|p| format!("{:.1}", p.mean_us)).collect();
+        let ys: Vec<String> = res
+            .points
+            .iter()
+            .map(|p| format!("{:.1}", p.mean_us))
+            .collect();
         let name = format!("{} ({})", res.mode, res.backend);
         html.push_str(&format!(
             "  {{x: [{}], y: [{}], mode: 'lines+markers', name: '{}'}},\n",
-            xs.join(","), ys.join(","), name
+            xs.join(","),
+            ys.join(","),
+            name
         ));
     }
 
-    html.push_str("], {xaxis: {title: 'Checkpoint depth'}, yaxis: {title: 'Mean latency (µs/op)'}});\n");
+    html.push_str(
+        "], {xaxis: {title: 'Checkpoint depth'}, yaxis: {title: 'Mean latency (µs/op)'}});\n",
+    );
     html.push_str("</script></body></html>\n");
 
     let html_path = out_dir.join("report-checkpoint-scaling.html");

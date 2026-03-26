@@ -41,8 +41,8 @@ interposition. It adds two orthogonal capabilities:
  │    ← AGFS_IOC_GET_REQUEST:  dequeue perm request │
  │    → AGFS_IOC_PUT_RESPONSE: post decision        │
  │    → AGFS_IOC_RULE_ADD/REMOVE: manage rules      │
- │    → AGFS_IOC_RESTORE: reset/restore             │
- │    → AGFS_IOC_CHECKPOINT: create checkpoint      │
+ │    → AGFS_IOC_JUMP: reset/jump                   │
+ │    → AGFS_IOC_MARK: create mark                  │
  └──────────────────────────────────────────────────┘
 ```
 
@@ -100,7 +100,7 @@ for interactive approval.
 **On-disk format**: OverlayFS requires filesystem support for whiteouts
 (`RENAME_WHITEOUT`, ext4/xfs). AgFS uses a flat inode store + append-only
 journal, working on any lower FS. The journal uses typed record tags
-(`A`/`D`/`R` for mutations, `K`/`T` for checkpoints/restores) so
+(`S`/`D`/`R` for mutations, `M`/`J` for marks/jumps) so
 each record is self-describing. All renames — staged or redirect — emit a
 single R record carrying both source and destination paths.
 
@@ -173,16 +173,16 @@ $ echo x >> /etc/hosts
 # 7. Commit all staged changes to the real filesystem (userspace)
 $ agfs commit
    -> userspace: replay journal -- apply renames, deletes, move inodes to base
-   -> userspace: ioctl(AGFS_IOC_RESTORE) with tree_len=0 on .agfs/mnt
+   -> userspace: ioctl(AGFS_IOC_JUMP) with tree_len=0 on .agfs/mnt
    -> kernel: release staged dentries, invalidate dentry + inode caches
    -> umount .agfs/mnt
 
-# 8. Restore to a previous marker (appends T record, no truncation)
+# 8. Restore to a previous meta (appends J record, no truncation)
 $ agfs restore "after make build"
-   -> CLI: Journal → find_marker → live_segments_at_name → build tree → serialize tree
-   -> CLI: ioctl(AGFS_IOC_RESTORE, { target_gen=2, tree_buf })
+   -> CLI: Journal → find_meta → live_segments_at_name → build tree → serialize tree
+   -> CLI: ioctl(AGFS_IOC_JUMP, { target_gen=2, tree_buf })
    -> kernel: release staged dentries, inject VFS dentries from tree, increment gen to 4,
-      append T record to journal
+      append J record to journal
    -> journal is append-only — dead records remain but are filtered
       by Journal reachability on subsequent operations
 ```
@@ -229,9 +229,9 @@ agfs/
 │   │   ├── timeline.rs        # `agfs timeline` command (checkpoint/restore DAG)
 │   │   └── watch.rs           # permission prompt daemon (handles TTY ownership)
 │   ├── journal/               # journal parsing, timeline, and resolution
-│   │   ├── types.rs           # Action, Marker, Record, Segment, dtype_valid, dtype_pack
+│   │   ├── types.rs           # Action, Meta, Record, Segment
 │   │   ├── parse.rs           # parse()  (pub(super))
-│   │   ├── markers.rs         # Markers (lookup + range + alive_segments + checkpoint_at)
+│   │   ├── meta.rs            # MetaIndex (lookup + range + alive_segments + meta_at)
 │   │   ├── journal.rs         # Journal (struct + new + read + live_segments_*)
 │   │   ├── tree.rs            # DirTree, DirNode
 │   │   └── dentry.rs          # Dentry, Target — dentry state types

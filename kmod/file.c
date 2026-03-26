@@ -106,7 +106,7 @@ static struct file *agfs_open_staged(struct agfs_sb_info *sbi,
 		return agfs_open_lower(dentry, file->f_flags);
 
 	/* Fast path: inode is current — open directly.
-	 * staging_sem excludes checkpoint, so gen is stable under the lock. */
+	 * staging_sem excludes mark, so gen is stable under the lock. */
 	down_read(&sbi->staging_sem);
 	if (agfs_dentry_is_current(dentry, sbi)) {
 		atomic_inc(&sbi->staging_fd_count);

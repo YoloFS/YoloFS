@@ -492,27 +492,27 @@ fn rename_staged_file_overwrite_base_commit() {
     );
 }
 
-/// Complex multi-operation scenario exercising the ADD/DEL/RNM journal format,
+/// Complex multi-operation scenario exercising the Stage/DEL/RNM journal format,
 /// resolver edge cases, and commit correctness in a single session.
 ///
 /// Base files: hello.txt, multi.txt, subdir/deep.txt, test.sh
 ///
 /// Operations (grouped by the edge case they exercise):
-///   1. Modify hello.txt (COW → A record)
+///   1. Modify hello.txt (COW → S record)
 ///   2. Create brand_new.txt then rename it to multi.txt
 ///      (staged rename to base path; overwrites base file)
-///   3. Create temp.txt then delete it (ADD + DEL → cancel)
+///   3. Create temp.txt then delete it (Stage + DEL → cancel)
 ///   4. Rename subdir/deep.txt → subdir/shallow.txt (base rename → tombstone + redirect)
 ///   5. Rename subdir/shallow.txt → top.txt (second rename → tombstone + redirect)
 ///   6. Create link.txt as symlink (A with dtype=Link)
-///   7. Modify hello.txt again (second COW → A; multiple COWs keep final ino)
+///   7. Modify hello.txt again (second COW → S; multiple COWs keep final ino)
 ///
 /// Expected resolved state before commit:
 ///   - Inode(hello.txt)               — double COW, final ino wins
 ///   - Inode(multi.txt)               — staged file overwrote base via rename
 ///   - Renamed(subdir/shallow.txt → top.txt) — second rename
 ///   - Deleted(subdir/deep.txt)       — first rename source
-///   - Added(link.txt)                — new symlink
+///   - Staged(link.txt)                — new symlink
 ///   - Tombstone(temp.txt)            — spurious (never in base), harmless
 ///   - Tombstone(brand_new.txt)       — spurious (staged-only rename source)
 ///   - Tombstone(subdir/shallow.txt)  — spurious (intermediate rename)
@@ -530,7 +530,7 @@ fn complex_multi_operation_commit() {
     fs::rename(s.mnt_path("brand_new.txt"), s.mnt_path("multi.txt"))
         .expect("rename brand_new → multi");
 
-    // ── 3. Create then immediately delete (ADD + DEL cancel) ──
+    // ── 3. Create then immediately delete (Stage + DEL cancel) ──
     fs::write(s.mnt_path("temp.txt"), "ephemeral\n").expect("create temp");
     fs::remove_file(s.mnt_path("temp.txt")).expect("delete temp");
 
@@ -543,10 +543,10 @@ fn complex_multi_operation_commit() {
     fs::rename(s.mnt_path("subdir/shallow.txt"), s.mnt_path("top.txt"))
         .expect("rename shallow → top");
 
-    // ── 6. Create a symlink (ADD record, dtype=Link) ──
+    // ── 6. Create a symlink (Stage record, dtype=Link) ──
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
 
-    // ── 7. Second COW on hello.txt (multiple A records → final ino wins) ──
+    // ── 7. Second COW on hello.txt (multiple S records → final ino wins) ──
     fs::write(s.mnt_path("hello.txt"), "second edit\n").expect("write hello v2");
 
     // ── Verify mount view before commit ──
@@ -600,31 +600,31 @@ fn complex_multi_operation_commit() {
     ) = (false, false, false, false, false, false, false);
 
     t.for_each(|path, target| {
-        if matches!(target, Target::Inode(_)) && path.ends_with("/hello.txt") {
+        if matches!(target, Target::StagedFile(_)) && path.ends_with("/hello.txt") {
             has_modified_hello = true;
         }
-        if matches!(target, Target::Inode(_)) && path.ends_with("/multi.txt") {
+        if matches!(target, Target::StagedFile(_)) && path.ends_with("/multi.txt") {
             has_modified_multi = true;
         }
         // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
         // Tree builder preserves original base path through rename chains.
-        if let Target::Path(Some(src)) = target {
+        if let Target::BasePath(src) = target {
             if src.ends_with("/subdir/deep.txt") && path.ends_with("/top.txt") {
                 has_renamed_deep_to_top = true;
             }
         }
-        if matches!(target, Target::None) && path.ends_with("/deep.txt") {
+        if matches!(target, Target::Tombstone) && path.ends_with("/deep.txt") {
             has_deleted_deep = true;
         }
-        if matches!(target, Target::Inode(_)) && path.ends_with("/link.txt") {
+        if matches!(target, Target::StagedFile(_)) && path.ends_with("/link.txt") {
             has_added_link = true;
         }
         // Check temp.txt/brand_new.txt: only as tombstones (spurious), not as
         // redirects or inodes.
-        if path.ends_with("/temp.txt") && !matches!(target, Target::None) {
+        if path.ends_with("/temp.txt") && !matches!(target, Target::Tombstone) {
             has_temp = true;
         }
-        if path.ends_with("/brand_new.txt") && !matches!(target, Target::None) {
+        if path.ends_with("/brand_new.txt") && !matches!(target, Target::Tombstone) {
             has_brand_new = true;
         }
     });
@@ -636,7 +636,7 @@ fn complex_multi_operation_commit() {
         "expected Renamed(subdir/deep.txt → top.txt): {t:?}"
     );
     assert!(has_deleted_deep, "expected Deleted(deep.txt): {t:?}");
-    assert!(has_added_link, "expected Added(link.txt): {t:?}");
+    assert!(has_added_link, "expected Staged(link.txt): {t:?}");
     assert!(
         !has_temp,
         "temp.txt should only appear as a tombstone (if at all): {t:?}"

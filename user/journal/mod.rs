@@ -3,19 +3,22 @@
 // Structured access to the append-only journal.
 //
 // Submodules:
-//   types     — Action, Marker, Record, Segment
+//   types     — Action, Meta, Record, Segment
 //   parse     — read(), parse()  (pub(super) only)
-//   markers   — Markers (K/T skeleton: lookup, range, liveness computation)
-//   journal   — Journal (segments + markers + precomputed liveness, borrowing filters)
-//   tree      — DirTree builder: apply actions → dir tree, walk for display/restore
+//   meta      — MetaIndex (M/J skeleton: lookup, range, liveness computation)
+//   journal   — Journal (segments + metas + precomputed liveness, borrowing filters)
+//   tree      — DirTree builder: apply actions → dir tree, walk for display/jump
+//   plan      — DirTree → Actions: commit plan (inverse of tree)
 pub(crate) mod core;
 
-pub mod markers;
+pub mod meta;
 mod parse;
+mod plan;
 pub mod tree;
 pub mod types;
 
 pub use self::core::Journal;
-pub use markers::Markers;
+pub use meta::MetaIndex;
+pub use plan::CommitPlan;
 pub use tree::{DirNode, DirTree};
 pub use types::*;

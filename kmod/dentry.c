@@ -83,7 +83,7 @@ int agfs_dentry_interpose(struct dentry *dentry, struct path *lower_path)
 	if (!lower_path) {
 		/*
 		 * Tombstone — overlay state says this name must stay absent.
-		 * Delete, rename, and restore create these intentionally, so
+		 * Delete, rename, and jump create these intentionally, so
 		 * there is no lower backing path to keep on the dentry.
 		 */
 	} else if (d_is_negative(lower_path->dentry)) {
@@ -218,7 +218,7 @@ void agfs_dentry_unpin(struct dentry *dentry)
  */
 void agfs_dentry_unpin_all(struct super_block *sb)
 {
-	struct hlist_node *pos[AGFS_RESTORE_MAX_DEPTH];
+	struct hlist_node *pos[AGFS_JUMP_MAX_DEPTH];
 	struct dentry *cur;
 	int depth = 0;
 
@@ -243,7 +243,7 @@ void agfs_dentry_unpin_all(struct super_block *sb)
 
 		/* Descend into children before unpinning this entry */
 		if (!hlist_empty(&cur->d_children) &&
-		    depth + 1 < AGFS_RESTORE_MAX_DEPTH)
+		    depth + 1 < AGFS_JUMP_MAX_DEPTH)
 			pos[++depth] = cur->d_children.first;
 
 		if (AGFS_D(cur) && AGFS_D(cur)->pinned)

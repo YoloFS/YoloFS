@@ -730,10 +730,10 @@ kfunctions via BTF (`kfunc`/`kretfunc` probes):
 | `agfs_do_cow` | Copy-on-write execution (at open time) |
 | `agfs_staging_alloc` | Inode allocation in inode store |
 | `agfs_readdir` | Directory listing merged from base + staging |
-| `agfs_journal_add` | Journal A record for staged entry (create/mkdir/symlink/COW) |
+| `agfs_journal_stage` | Journal S record for staged entry (create/mkdir/symlink/COW) |
 | `agfs_journal_delete` | Journal D record for deletion |
 | `agfs_journal_rename` | Journal R record for rename |
-| `agfs_journal_checkpoint` | Journal K record for checkpoint |
+| `agfs_journal_mark` | Journal M record for checkpoint |
 | `agfs_release` | File release |
 | `agfs_fill_base` | Readdir phase-2 base-entry dedup |
 
@@ -783,7 +783,7 @@ Profile: write-files / agfs-no-perm  (wall: 167 ms)
   lookup                            1000          8      32        15.2
   write_iter                        1000          4      32         7.4
   open                              1000          2       8         2.5
-  journal_add                       1000          1       8         1.6
+  journal_stage                     1000          1       8         1.6
 ```
 
 The `total ms` column ranks optimization targets by contribution to wall time.

@@ -2,12 +2,12 @@
 //
 // `agfs status` — one-line summary of staged changes.
 // `agfs diff`   — git-style unified diff of staged vs base.
-// `--at <name>` — show state at a marker (single segment).
-// `--from <name>` — diff changes since a marker.
-// `--to <name>` — diff changes up to a marker.
-// `--from <name> --to <name>` — diff changes between two markers.
+// `--at <name>` — show state at a meta (single segment).
+// `--from <name>` — diff changes since a meta.
+// `--to <name>` — diff changes up to a meta.
+// `--from <name> --to <name>` — diff changes between two metas.
 
-use crate::journal::{DirTree, Journal, Marker, Target};
+use crate::journal::{DirTree, Journal, Meta, Target};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -90,7 +90,7 @@ fn print_segment_footer(closing: &Option<(u64, String)>) {
 fn print_change(agfs: &Path, path: &str, target: &Target, verbose: bool) {
     let base_exists = crate::utils::to_base_path(path).exists();
     match target {
-        Target::Inode(ino) if !base_exists => {
+        Target::StagedFile(ino) if !base_exists => {
             println!("{} {}", path.bold(), "(added)".green());
             if is_binary_inode(agfs, *ino) {
                 println!("  {}", "Binary file (not shown)".dimmed());
@@ -98,7 +98,7 @@ fn print_change(agfs: &Path, path: &str, target: &Target, verbose: bool) {
                 print_unified_diff("", &read_inode(agfs, *ino));
             }
         }
-        Target::Inode(ino) => {
+        Target::StagedFile(ino) => {
             let binary = is_binary_inode(agfs, *ino) || is_binary_base(path);
             if binary {
                 println!("{} {}", path.bold(), "(modified)".yellow());
@@ -114,17 +114,17 @@ fn print_change(agfs: &Path, path: &str, target: &Target, verbose: bool) {
                 println!("{} {}", path.bold(), "(modified)".yellow());
             }
         }
-        Target::None if base_exists => {
+        Target::Tombstone if base_exists => {
             println!("{} {}", path.bold(), "(deleted)".red());
             if verbose {
                 print_unified_diff(&read_base(path), "");
             }
         }
-        Target::None => {} // spurious tombstone — staged-only file deleted; skip
-        Target::Path(Some(src)) => {
+        Target::Tombstone => {} // spurious tombstone — staged-only file deleted; skip
+        Target::BasePath(src) => {
             println!("{} → {} {}", src.bold(), path.bold(), "(renamed)".cyan());
         }
-        Target::Path(None) => {} // passthrough — should not appear in iteration
+        Target::Passthrough => {} // passthrough — should not appear in iteration
     }
 }
 
@@ -159,15 +159,15 @@ fn run(
     let agfs = crate::utils::session_dir()?;
     let journal = Journal::read(&agfs)?;
     let num = journal.segments.len();
-    let (start, end) = journal.markers.segment_range(at, from, to, num)?;
+    let (start, end) = journal.metas.segment_range(at, from, to, num)?;
 
-    // Precompute marker labels for live segments before consuming the journal.
+    // Precompute meta labels for live segments before consuming the journal.
     let labels: Vec<Option<(u64, String)>> = (start..end)
         .filter(|i| journal.is_alive(*i))
         .map(|i| {
-            journal.markers.marker_at(i).map(|m| match m {
-                Marker::Checkpoint { gen_id, name } => (*gen_id, name.clone()),
-                Marker::Restore {
+            journal.metas.meta_at(i).map(|m| match m {
+                Meta::Mark { gen_id, name } => (*gen_id, name.clone()),
+                Meta::Jump {
                     gen_id, target_gen, ..
                 } => (*gen_id, format!("restored to [{target_gen}]")),
             })
@@ -264,17 +264,17 @@ mod tests {
         let mut map = BTreeMap::new();
         for (path, target) in entries {
             match target {
-                Target::Inode(ino) => {
+                Target::StagedFile(ino) => {
                     map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
                 }
-                Target::None => {
+                Target::Tombstone => {
                     map.insert(path.as_str(), None);
                 }
-                Target::Path(Some(src)) => {
+                Target::BasePath(src) => {
                     map.insert(src.as_str(), None);
                     map.insert(path.as_str(), Some(read_base(src)));
                 }
-                Target::Path(None) => {} // passthrough
+                Target::Passthrough => {} // passthrough
             }
         }
         map
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn state_map_added() {
         let tmp = make_agfs(&[(1, "hello\n")]);
-        let dentries = vec![("/src/main.rs".into(), Target::Inode(1))];
+        let dentries = vec![("/src/main.rs".into(), Target::StagedFile(1))];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/src/main.rs"], Some("hello\n".into()));
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn state_map_modified() {
         let tmp = make_agfs(&[(5, "new content")]);
-        let dentries = vec![("/etc/config".into(), Target::Inode(5))];
+        let dentries = vec![("/etc/config".into(), Target::StagedFile(5))];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/etc/config"], Some("new content".into()));
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn state_map_deleted() {
         let tmp = make_agfs(&[]);
-        let dentries = vec![("/old/file.txt".into(), Target::None)];
+        let dentries = vec![("/old/file.txt".into(), Target::Tombstone)];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
         assert_eq!(map["/old/file.txt"], None);
@@ -335,7 +335,7 @@ mod tests {
         let tmp = make_agfs(&[]);
         let entries = vec![(
             "/nonexistent/new.rs".into(),
-            Target::Path(Some("/nonexistent/old.rs".into())),
+            Target::BasePath("/nonexistent/old.rs".into()),
         )];
         let map = state_map(tmp.path(), &entries);
         assert_eq!(map.len(), 2);
@@ -350,9 +350,9 @@ mod tests {
         let entries = vec![
             (
                 "/nonexistent/new.rs".into(),
-                Target::Path(Some("/nonexistent/old.rs".into())),
+                Target::BasePath("/nonexistent/old.rs".into()),
             ),
-            ("/nonexistent/new.rs".into(), Target::Inode(7)),
+            ("/nonexistent/new.rs".into(), Target::StagedFile(7)),
         ];
         let map = state_map(tmp.path(), &entries);
         assert_eq!(map.len(), 2);
@@ -364,9 +364,9 @@ mod tests {
     fn state_map_multiple_changes() {
         let tmp = make_agfs(&[(1, "aaa"), (2, "bbb")]);
         let dentries = vec![
-            ("/a.txt".into(), Target::Inode(1)),
-            ("/b.txt".into(), Target::Inode(2)),
-            ("/c.txt".into(), Target::None),
+            ("/a.txt".into(), Target::StagedFile(1)),
+            ("/b.txt".into(), Target::StagedFile(2)),
+            ("/c.txt".into(), Target::Tombstone),
         ];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 3);

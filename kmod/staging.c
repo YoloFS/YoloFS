@@ -226,7 +226,7 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	agfs_replace_lower_path(dentry, &inode_path);
 
 	/* Append journal record (best-effort — target is already set) */
-	agfs_journal_add(sbi, dentry, ino, DT_REG);
+	agfs_journal_stage(sbi, dentry, ino);
 
 	/* Reopen with requested flags */
 	err = 0;

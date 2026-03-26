@@ -251,7 +251,7 @@ static int agfs_resolve_rule(struct file *file, unsigned long arg,
 	return 0;
 }
 
-/* ── Rule / checkpoint ioctl handlers ─────────────────────────────────── */
+/* ── Rule / mark ioctl handlers ─────────────────────────────────── */
 
 static long agfs_rule_add_ioctl(struct file *file, unsigned long arg)
 {
@@ -326,10 +326,10 @@ static long agfs_rule_remove_ioctl(struct file *file, unsigned long arg)
 	return 0;
 }
 
-static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
+static long agfs_mark_ioctl(struct file *file, unsigned long arg)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
-	struct agfs_ioc_checkpoint chk;
+	struct agfs_ioc_mark mrk;
 	char name_buf[AGFS_PATH_MAX];
 	u16 gen;
 	int err;
@@ -337,10 +337,10 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 	if (!sbi->staging)
 		return -EOPNOTSUPP;
 
-	if (copy_from_user(&chk, (void __user *)arg, sizeof(chk)))
+	if (copy_from_user(&mrk, (void __user *)arg, sizeof(mrk)))
 		return -EFAULT;
 
-	err = agfs_copy_user_path(chk.name_ptr, chk.name_len, name_buf);
+	err = agfs_copy_user_path(mrk.name_ptr, mrk.name_len, name_buf);
 	if (err)
 		return err;
 
@@ -349,10 +349,10 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 		up_write(&sbi->staging_sem);
 		return -EBUSY;
 	}
-	if ((chk.flags & AGFS_CHK_IF_CHANGED) && !READ_ONCE(sbi->dirty)) {
+	if ((mrk.flags & AGFS_MARK_IF_CHANGED) && !READ_ONCE(sbi->dirty)) {
 		up_write(&sbi->staging_sem);
-		chk.gen = 0;
-		if (copy_to_user((void __user *)arg, &chk, sizeof(chk)))
+		mrk.gen = 0;
+		if (copy_to_user((void __user *)arg, &mrk, sizeof(mrk)))
 			return -EFAULT;
 		return 0;
 	}
@@ -361,20 +361,20 @@ static long agfs_checkpoint_ioctl(struct file *file, unsigned long arg)
 		return -EOVERFLOW;
 	}
 	gen = (u16)atomic_inc_return(&sbi->gen);
-	agfs_journal_checkpoint(sbi, gen, name_buf);
+	agfs_journal_mark(sbi, gen, name_buf);
 	WRITE_ONCE(sbi->dirty, false);
 	up_write(&sbi->staging_sem);
 
-	/* Best-effort: checkpoint is already committed to the journal,
+	/* Best-effort: mark is already committed to the journal,
 	 * so return success even if copy_to_user fails. */
-	chk.gen = gen;
-	if (copy_to_user((void __user *)arg, &chk, sizeof(chk)))
+	mrk.gen = gen;
+	if (copy_to_user((void __user *)arg, &mrk, sizeof(mrk)))
 		/* gen already in journal — userspace can read it back */;
 
 	return 0;
 }
 
-/* ── Restore ioctl handler ─────────────────────────────────────────── */
+/* ── Jump ioctl handler ────────────────────────────────────────────── */
 
 /* ── Cursor helpers for reading the serialized DirTree buffer ──────── */
 
@@ -427,7 +427,7 @@ struct dir_frame {
  * Parse the target-specific payload from @cur and inject the corresponding
  * dentry under @parent.  Scaffold (tag 0) entries have no payload.
  */
-static int restore_inject_entry(struct tree_cursor *cur,
+static int jump_inject_entry(struct tree_cursor *cur,
 				struct agfs_sb_info *sbi,
 				struct dentry *parent,
 				const u8 *name_ptr, u16 name_len,
@@ -496,17 +496,17 @@ static int restore_inject_entry(struct tree_cursor *cur,
 	}
 }
 
-static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
-			       struct agfs_ioc_restore *hdr, u16 gen)
+static int agfs_jump_inject(struct file *file, struct agfs_sb_info *sbi,
+			    struct agfs_ioc_jump *hdr, u16 gen)
 {
-	struct dir_frame stack[AGFS_RESTORE_MAX_DEPTH];
+	struct dir_frame stack[AGFS_JUMP_MAX_DEPTH];
 	struct tree_cursor cur;
 	u8 *kbuf;
 	int depth;
 	int err = 0;
 	u16 root_count;
 
-	if (hdr->tree_len > AGFS_RESTORE_MAX_TREE_LEN)
+	if (hdr->tree_len > AGFS_JUMP_MAX_TREE_LEN)
 		return -EINVAL;
 
 	kbuf = vmalloc(hdr->tree_len);
@@ -562,7 +562,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 		err = read_u8(&cur, &target);
 		if (err)
 			goto out_unwind;
-		err = restore_inject_entry(&cur, sbi, stack[depth].dentry,
+		err = jump_inject_entry(&cur, sbi, stack[depth].dentry,
 					   name_ptr, name_len, target, gen);
 		if (err)
 			goto out_unwind;
@@ -579,7 +579,7 @@ static int agfs_restore_inject(struct file *file, struct agfs_sb_info *sbi,
 		{
 			struct dentry *child;
 
-			if (depth + 1 >= AGFS_RESTORE_MAX_DEPTH) {
+			if (depth + 1 >= AGFS_JUMP_MAX_DEPTH) {
 				err = -EINVAL;
 				goto out_unwind;
 			}
@@ -612,11 +612,11 @@ out_free:
 	return err;
 }
 
-static long agfs_restore_ioctl(struct file *file, unsigned long arg)
+static long agfs_jump_ioctl(struct file *file, unsigned long arg)
 {
 	struct super_block *sb = file_inode(file)->i_sb;
 	struct agfs_sb_info *sbi = AGFS_SB(sb);
-	struct agfs_ioc_restore hdr;
+	struct agfs_ioc_jump hdr;
 	u16 new_gen;
 	int err = 0;
 
@@ -652,22 +652,22 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 		return 0;
 	}
 
-	/* Invalidate shard cache before restore — CLI may reorganize inodes. */
+	/* Invalidate shard cache before jump — CLI may reorganize inodes. */
 	if (sbi->shard_dentry) {
 		dput(sbi->shard_dentry);
 		sbi->shard_dentry = NULL;
 	}
 
-	/* Restore mode: increment gen, inject entries, write RST record */
+	/* Jump mode: increment gen, inject entries, write J record */
 	if (atomic_read(&sbi->gen) >= U16_MAX) {
 		up_write(&sbi->staging_sem);
 		return -EOVERFLOW;
 	}
 	new_gen = (u16)atomic_inc_return(&sbi->gen);
 
-	err = agfs_restore_inject(file, sbi, &hdr, new_gen);
+	err = agfs_jump_inject(file, sbi, &hdr, new_gen);
 	if (!err)
-		err = agfs_journal_restore(sbi, new_gen, hdr.target_gen);
+		err = agfs_journal_jump(sbi, new_gen, hdr.target_gen);
 	/* Don't rollback gen on failure — dirents may already be injected
 	 * with new_gen.  Rolling back would leave those dirents with a gen
 	 * higher than sbi->gen, breaking COW checks.  The CLI can retry
@@ -678,7 +678,7 @@ static long agfs_restore_ioctl(struct file *file, unsigned long arg)
 	up_write(&sbi->staging_sem);
 
 	if (!err) {
-		/* Best-effort: restore is already committed to the journal,
+		/* Best-effort: jump is already committed to the journal,
 		 * so return success even if copy_to_user fails. */
 		hdr.new_gen = new_gen;
 		if (copy_to_user((void __user *)arg, &hdr, sizeof(hdr)))
@@ -706,11 +706,11 @@ static long agfs_ctl_ioctl(struct file *file, unsigned int cmd,
 	case AGFS_IOC_RULE_REMOVE:
 		return agfs_rule_remove_ioctl(file, arg);
 
-	case AGFS_IOC_CHECKPOINT:
-		return agfs_checkpoint_ioctl(file, arg);
+	case AGFS_IOC_MARK:
+		return agfs_mark_ioctl(file, arg);
 
-	case AGFS_IOC_RESTORE:
-		return agfs_restore_ioctl(file, arg);
+	case AGFS_IOC_JUMP:
+		return agfs_jump_ioctl(file, arg);
 
 	default:
 		return -ENOTTY;

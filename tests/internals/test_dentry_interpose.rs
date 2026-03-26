@@ -50,7 +50,7 @@ fn lookup_miss_then_create_produces_single_add() {
     let acts = actions(&j);
     let adds: Vec<_> = acts
         .iter()
-        .filter(|a| matches!(a, Action::Add { path, .. } if path.ends_with("/after-miss.txt")))
+        .filter(|a| matches!(a, Action::Stage { path, .. } if path.ends_with("/after-miss.txt")))
         .collect();
 
     assert_eq!(
@@ -66,7 +66,7 @@ fn lookup_miss_then_create_produces_single_add() {
     assert_eq!(
         adds.len(),
         1,
-        "create after miss should append exactly one Add record: {acts:?}"
+        "create after miss should append exactly one Stage record: {acts:?}"
     );
 }
 
