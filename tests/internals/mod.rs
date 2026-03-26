@@ -7,6 +7,7 @@ mod test_consistency;
 mod test_create;
 mod test_delete;
 mod test_dentry_interpose;
+mod test_journal_format;
 mod test_layout;
 mod test_mkdir;
 mod test_ownership;

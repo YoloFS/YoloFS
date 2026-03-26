@@ -1,14 +1,21 @@
 // agfs CLI — commit.rs
 //
 // `agfs commit` — apply staged changes to base.
-// Journal records are replayed sequentially on the base filesystem.
+//
+// Builds a DirTree from live journal segments, converts it to a commit
+// plan (see journal/plan.rs), then applies in three phases:
+//   Phase 1: Renames — rename base paths (topo-sorted, cycles broken via temp)
+//   Phase 2: Deletes — remove from base (deepest-first)
+//   Phase 3: Stages  — copy staged inodes to base (shallowest-first)
 
-use crate::journal::{self, Journal};
+use crate::journal::Journal;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+// ── Apply helpers ─────────────────────────────────────────────────────
 
 /// Create parent directories for a path, skipping if already ensured.
 fn ensure_parent(path: &Path, cache: &mut HashSet<PathBuf>) -> Result<()> {
@@ -32,8 +39,8 @@ fn remove_existing(path: &Path, meta: &fs::Metadata) -> Result<()> {
     .with_context(|| format!("removing {}", path.display()))
 }
 
-/// Apply a staged inode to base. Stats the inode to determine type.
-fn apply_inode(
+/// Apply a staged inode to base.
+fn apply_stage(
     agfs_dir: &Path,
     ino: u32,
     base_path: &Path,
@@ -45,9 +52,15 @@ fn apply_inode(
 
     ensure_parent(base_path, ensured)?;
 
-    // Remove whatever exists at the target path.
+    // Remove whatever exists at the target, unless we're staging a dir
+    // over an existing dir (children may have been placed by renames).
     if let Ok(existing) = base_path.symlink_metadata() {
-        remove_existing(base_path, &existing)?;
+        let both_dirs = meta.is_dir()
+            && existing.is_dir()
+            && !existing.file_type().is_symlink();
+        if !both_dirs {
+            remove_existing(base_path, &existing)?;
+        }
     }
 
     let is_symlink = meta.file_type().is_symlink();
@@ -57,7 +70,6 @@ fn apply_inode(
             .with_context(|| format!("creating symlink at {}", base_path.display()))?;
     } else if meta.is_dir() {
         fs::create_dir_all(base_path).with_context(|| format!("mkdir {}", base_path.display()))?;
-        // Apply the directory's mode from the staged inode.
         fs::set_permissions(base_path, meta.permissions())
             .with_context(|| format!("setting dir permissions on {}", base_path.display()))?;
     } else {
@@ -65,7 +77,6 @@ fn apply_inode(
             .or_else(|_| {
                 fs::copy(&staged, base_path)?;
                 fs::remove_file(&staged)?;
-                // copy may not preserve mode; set it explicitly.
                 fs::set_permissions(base_path, meta.permissions())?;
                 Ok::<_, std::io::Error>(())
             })
@@ -75,48 +86,78 @@ fn apply_inode(
     Ok(())
 }
 
-/// Replay live actions sequentially on the base filesystem.
-fn apply_records(agfs: &Path, segments: &[journal::Segment]) -> Result<()> {
-    let mut ensured: HashSet<PathBuf> = HashSet::new();
+/// Rename a base path, removing anything at the destination first.
+fn apply_rename(src: &Path, dst: &Path, ensured: &mut HashSet<PathBuf>) -> Result<()> {
+    ensure_parent(dst, ensured)?;
+    if let Ok(existing) = dst.symlink_metadata() {
+        remove_existing(dst, &existing)?;
+    }
+    fs::rename(src, dst)
+        .with_context(|| format!("renaming {} → {}", src.display(), dst.display()))
+}
 
-    for action in segments.iter().flat_map(|s| &s.records) {
-        match action {
-            journal::Action::Stage { path, ino, .. } => {
-                let base_path = crate::utils::to_base_path(path);
-                apply_inode(agfs, *ino, &base_path, &mut ensured)?;
-            }
-            journal::Action::Delete { path, .. } => {
-                let base_path = crate::utils::to_base_path(path);
-                if let Ok(meta) = base_path.symlink_metadata() {
-                    remove_existing(&base_path, &meta)?;
-                }
-            }
-            journal::Action::Rename { dst, src, .. } => {
-                let base_src = crate::utils::to_base_path(src);
-                let base_dst = crate::utils::to_base_path(dst);
-                ensure_parent(&base_dst, &mut ensured)?;
-                fs::rename(&base_src, &base_dst).with_context(|| {
-                    format!("renaming {} → {}", base_src.display(), base_dst.display())
-                })?;
-            }
-        }
+fn apply_delete(path: &Path) -> Result<()> {
+    if let Ok(meta) = path.symlink_metadata() {
+        remove_existing(path, &meta)?;
     }
     Ok(())
 }
+
+// ── Apply ─────────────────────────────────────────────────────────────
+
+fn apply_plan(agfs: &Path, plan: &crate::journal::CommitPlan) -> Result<usize> {
+    use crate::journal::types::Action;
+    let mut ensured: HashSet<PathBuf> = HashSet::new();
+
+    // Phase 1: save all rename sources to temp paths (deepest first).
+    for action in &plan.saves {
+        let Action::Rename { dst, src } = action else { unreachable!() };
+        apply_rename(
+            &crate::utils::to_base_path(src),
+            &crate::utils::to_base_path(dst),
+            &mut ensured,
+        )?;
+    }
+
+    // Phase 2: place temps at destinations (DFS order, parent first).
+    for action in &plan.places {
+        let Action::Rename { dst, src } = action else { unreachable!() };
+        apply_rename(
+            &crate::utils::to_base_path(src),
+            &crate::utils::to_base_path(dst),
+            &mut ensured,
+        )?;
+    }
+
+    // Phase 3: deletes.
+    for action in &plan.deletes {
+        let Action::Delete { path } = action else { unreachable!() };
+        apply_delete(&crate::utils::to_base_path(path))?;
+    }
+
+    // Phase 4: stages.
+    for action in &plan.stages {
+        let Action::Stage { path, ino } = action else { unreachable!() };
+        apply_stage(agfs, *ino, &crate::utils::to_base_path(path), &mut ensured)?;
+    }
+
+    Ok(plan.len())
+}
+
+// ── Entry point ───────────────────────────────────────────────────────
 
 pub fn run() -> Result<()> {
     let agfs = crate::utils::session_dir()?;
 
     let journal = Journal::read(&agfs)?;
-    let live: Vec<_> = journal.into_live_segments_range(0, usize::MAX).collect();
-    let committed: usize = live.iter().map(|s| s.records.len()).sum();
+    let plan = journal.into_tree().into_plan();
 
-    if committed == 0 {
+    if plan.is_empty() {
         println!("{}", "Nothing to commit.".yellow());
         return Ok(());
     }
 
-    apply_records(&agfs, &live)?;
+    let committed = apply_plan(&agfs, &plan)?;
 
     super::abort::reset_staging(&agfs)?;
 
@@ -159,13 +200,10 @@ mod tests {
         ensure_parent(&file_path, &mut cache).unwrap();
         assert!(cache.contains(file_path.parent().unwrap()));
 
-        // Remove the directory so we can detect if it would be recreated
         fs::remove_dir_all(file_path.parent().unwrap()).unwrap();
 
-        // Second call should skip creation because parent is cached
         ensure_parent(&file_path, &mut cache).unwrap();
 
-        // Directory should still be gone — ensure_parent skipped it
         assert!(!file_path.parent().unwrap().exists());
     }
 
@@ -174,7 +212,6 @@ mod tests {
         let root = Path::new("/");
         let mut cache = HashSet::new();
 
-        // Root has no parent that needs creating; should succeed without error
         ensure_parent(root, &mut cache).unwrap();
         assert!(cache.is_empty());
     }

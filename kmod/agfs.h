@@ -393,11 +393,10 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 /* journal.c */
 int agfs_journal_open(struct agfs_sb_info *sbi);
 int agfs_journal_stage(struct agfs_sb_info *sbi, struct dentry *dentry,
-		       u32 ino, unsigned char d_type);
-int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry,
-			 unsigned char d_type);
+		       u32 ino);
+int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry);
 int agfs_journal_rename(struct agfs_sb_info *sbi, struct dentry *old_dentry,
-			  struct dentry *new_dentry, unsigned char d_type);
+			  struct dentry *new_dentry);
 int agfs_journal_mark(struct agfs_sb_info *sbi, u16 id, const char *name);
 int agfs_journal_jump(struct agfs_sb_info *sbi, u16 gen, u16 target_gen);
 

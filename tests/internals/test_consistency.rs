@@ -43,14 +43,14 @@ fn root_prefix(s: &AgfsSession) -> String {
 
 fn expected_backing_metadata(s: &AgfsSession, target: &Target) -> std::fs::Metadata {
     match target {
-        Target::Inode(ino) => inode_path(s, *ino)
+        Target::StagedFile(ino) => inode_path(s, *ino)
             .symlink_metadata()
             .unwrap_or_else(|e| panic!("staged inode {ino} should exist: {e}")),
-        Target::Path(Some(src)) => Path::new(src)
+        Target::BasePath(src) => Path::new(src)
             .symlink_metadata()
             .unwrap_or_else(|e| panic!("redirect source '{src}' should exist: {e}")),
-        Target::Path(None) => panic!("passthrough dentry should not be visible"),
-        Target::None => panic!("negative dentry has no backing metadata"),
+        Target::Passthrough => panic!("passthrough dentry should not be visible"),
+        Target::Tombstone => panic!("negative dentry has no backing metadata"),
     }
 }
 
@@ -92,7 +92,7 @@ fn assert_overlay_visible(s: &AgfsSession) {
         let rel = rel.strip_prefix('/').unwrap_or(rel);
         let mnt = s.mnt_path(rel);
         match target {
-            Target::Inode(ino) => {
+            Target::StagedFile(ino) => {
                 let meta = mnt
                     .symlink_metadata()
                     .unwrap_or_else(|e| panic!("overlay inode at '/{rel}' should be visible: {e}"));
@@ -110,15 +110,15 @@ fn assert_overlay_visible(s: &AgfsSession) {
                     );
                 }
             }
-            Target::Path(Some(_)) => {
+            Target::BasePath(_) => {
                 let meta = mnt.symlink_metadata().unwrap_or_else(|e| {
                     panic!("overlay redirect at '/{rel}' should be visible: {e}")
                 });
                 let expected = expected_backing_metadata(s, target);
                 assert_same_file_type(rel, &meta, &expected);
             }
-            Target::Path(None) => unreachable!("passthrough dentries are skipped by for_each"),
-            Target::None => {
+            Target::Passthrough => unreachable!("passthrough dentries are skipped by for_each"),
+            Target::Tombstone => {
                 assert!(
                     !path_visible(&mnt),
                     "negative dentry at '/{rel}' should not be visible"
@@ -141,12 +141,8 @@ fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
     for component in rel_dir.split('/') {
         tree_path = format!("{tree_path}/{component}");
         let link_target = cli.get_node(&tree_path).and_then(|node| {
-            if let DirNode::Dir(d, _) = node {
-                if let Target::Path(Some(src)) = d {
-                    Some(src.as_str())
-                } else {
-                    None
-                }
+            if let Target::BasePath(src) = &node.target {
+                Some(src.as_str())
             } else {
                 None
             }
@@ -203,7 +199,7 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
         }
     }
     for (name, target) in &staged {
-        if !matches!(target, Target::None) {
+        if !matches!(target, Target::Tombstone) {
             expected.insert(name.clone());
         }
     }
@@ -278,10 +274,10 @@ fn delete_staged_file_tombstones() {
     fs::remove_file(s.mnt_path("temp.txt")).expect("delete");
     assert_consistent(&s);
 
-    // CLI should have a tombstone (Target::None)
+    // CLI should have a tombstone (Target::Tombstone)
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/temp.txt") && matches!(e, Target::None)),
+        t.any(|p, e| p.ends_with("/temp.txt") && matches!(e, Target::Tombstone)),
         "A+D on staged-only should produce tombstone: {t:?}"
     );
 }
@@ -295,7 +291,7 @@ fn delete_base_file_tombstones() {
 
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::None)),
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::Tombstone)),
         "D on base file should produce negative dentry: {t:?}"
     );
 }
@@ -484,7 +480,7 @@ fn modify_then_delete_base() {
 
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::None)),
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::Tombstone)),
         "A+D on base should produce negative dentry: {t:?}"
     );
 }
@@ -602,8 +598,8 @@ fn create_over_tombstone() {
 
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::Inode(_))),
-        "recreated file over tombstone should have Target::Inode: {t:?}"
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::StagedFile(_))),
+        "recreated file over tombstone should have Target::StagedFile: {t:?}"
     );
     assert_eq!(
         fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
@@ -649,19 +645,23 @@ fn readdir_dtype_matches_cli() {
         };
 
         let ft = entry.file_type().expect("file_type");
-        match node {
-            DirNode::Dir(_, _) => assert!(
-                ft.is_dir(),
-                "readdir d_type for '{name}': CLI=Dir but kernel reports file={} sym={}",
-                ft.is_file(),
-                ft.is_symlink()
-            ),
-            DirNode::File(_) => assert!(
-                ft.is_file() || ft.is_symlink(),
-                "readdir d_type for '{name}': CLI=File but kernel reports dir={}",
-                ft.is_dir()
-            ),
-        }
+        // The kernel knows the true type via the inode; just verify
+        // consistency with the entry's own file_type (readdir d_type
+        // should match stat). No need to cross-check against CLI tree
+        // since DirNode no longer distinguishes File from Dir.
+        let stat_ft = fs::symlink_metadata(entry.path())
+            .expect("stat entry")
+            .file_type();
+        assert_eq!(
+            ft.is_dir(),
+            stat_ft.is_dir(),
+            "readdir d_type for '{name}' should match stat"
+        );
+        assert_eq!(
+            ft.is_symlink(),
+            stat_ft.is_symlink(),
+            "readdir d_type for '{name}' should match stat"
+        );
     }
 }
 

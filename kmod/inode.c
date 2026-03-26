@@ -16,7 +16,6 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dir->i_sb);
 	struct path inode_path;
-	unsigned char dt;
 	u32 ino;
 	int err;
 
@@ -27,12 +26,11 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 	err = agfs_dentry_interpose(dentry, &inode_path);
 	if (err)
 		return err;
-	dt = S_ISDIR(mode) ? DT_DIR : S_ISLNK(mode) ? DT_LNK : DT_REG;
 
 	agfs_dentry_pin(dentry, AGFS_TARGET_INODE);
 	AGFS_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->gen);
 
-	agfs_journal_stage(sbi, dentry, ino, dt);
+	agfs_journal_stage(sbi, dentry, ino);
 
 	return 0;
 }
@@ -54,12 +52,8 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
-	unsigned char d_type;
 	struct dentry *tomb = NULL;
 	int err;
-
-	d_type = d_inode(dentry) ?
-		 fs_umode_to_dtype(d_inode(dentry)->i_mode) : DT_UNKNOWN;
 
 	/* Pre-allocate negative dentry (tombstone) */
 	tomb = agfs_dentry_create(dentry->d_parent,
@@ -70,7 +64,7 @@ static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 		return PTR_ERR(tomb);
 
 	/* Journal (uses dentry path, must be before d_drop) */
-	err = agfs_journal_delete(sbi, dentry, d_type);
+	err = agfs_journal_delete(sbi, dentry);
 	if (err) {
 		agfs_dentry_unpin(tomb);
 		return err;
@@ -109,15 +103,10 @@ static int agfs_rename(struct mnt_idmap *idmap,
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
 	struct dentry *tomb = NULL;
-	unsigned char d_type = DT_UNKNOWN;
 	int err;
 
 	if (flags)
 		return -EINVAL;
-
-	/* Read source type from inode (always present — can't rename a negative entry) */
-	if (d_inode(old_dentry))
-		d_type = fs_umode_to_dtype(d_inode(old_dentry)->i_mode);
 
 	/*
 	 * Always tombstone at old name, even if the source had no base
@@ -133,7 +122,7 @@ static int agfs_rename(struct mnt_idmap *idmap,
 		return PTR_ERR(tomb);
 
 	/* Journal BEFORE d_move (uses dentry paths) */
-	err = agfs_journal_rename(sbi, old_dentry, new_dentry, d_type);
+	err = agfs_journal_rename(sbi, old_dentry, new_dentry);
 	if (err)
 		goto out_tomb;
 

@@ -140,7 +140,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -149,7 +148,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {
@@ -178,7 +176,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -187,7 +184,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {
@@ -200,7 +196,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Meta(Meta::Mark {
@@ -220,7 +215,6 @@ mod tests {
         let records = vec![
             Record::Action(Action::Stage {
                 path: "/orphan".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 999,
             }),
             Record::Meta(Meta::Mark {
@@ -229,7 +223,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -281,7 +274,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -290,7 +282,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {
@@ -303,7 +294,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Meta(Meta::Mark {
@@ -326,7 +316,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -335,7 +324,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {
@@ -348,7 +336,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Meta(Meta::Mark {
@@ -387,7 +374,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -410,7 +396,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -419,7 +404,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {
@@ -432,7 +416,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Meta(Meta::Mark {
@@ -461,7 +444,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -470,7 +452,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {
@@ -483,7 +464,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Meta(Meta::Mark {
@@ -492,7 +472,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/e".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 4,
             }),
             Record::Meta(Meta::Mark {
@@ -518,7 +497,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -527,7 +505,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {
@@ -540,7 +517,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Meta(Meta::Mark {
@@ -565,7 +541,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -594,7 +569,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -603,7 +577,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {
@@ -633,7 +606,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -642,7 +614,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {
@@ -655,7 +626,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Meta(Meta::Mark {
@@ -684,7 +654,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Jump {
@@ -693,7 +662,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
         ];
@@ -712,7 +680,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -721,7 +688,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {
@@ -730,7 +696,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/c".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Meta(Meta::Mark {
@@ -781,7 +746,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -790,7 +754,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {
@@ -803,7 +766,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/c".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 3,
             }),
             Record::Meta(Meta::Mark {
@@ -812,7 +774,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 4,
             }),
             Record::Meta(Meta::Mark {
@@ -837,7 +798,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -860,7 +820,6 @@ mod tests {
         let records = vec![
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -869,7 +828,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {
@@ -899,7 +857,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 1,
             }),
             Record::Meta(Meta::Mark {
@@ -908,7 +865,6 @@ mod tests {
             }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
-                dtype: Some(libc::DT_REG),
                 ino: 2,
             }),
             Record::Meta(Meta::Mark {

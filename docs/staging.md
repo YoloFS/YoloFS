@@ -149,8 +149,9 @@ lookups that miss in base and pinned tombstones both remain negative dentries
 with an empty `lower_path`; later VFS operations must not assume a negative
 dentry can be reopened through `lower_path`.
 
-The `d_type` is not stored in the dentry state — it is derived from
-`d_inode(dentry)->i_mode` via `fs_umode_to_dtype()`.
+The `d_type` is derived on-the-fly from `d_inode(dentry)->i_mode` via
+`fs_umode_to_dtype()` for readdir only. It is not stored in the dentry
+state or the journal.
 
 Callers read `AGFS_D(d)->target` and `AGFS_D(d)->pinned` directly.
 
@@ -303,21 +304,21 @@ agfs_create(dir, dentry, mode):
     create file inodes/<ino>
     agfs_dentry_pin(dentry, AGFS_TARGET_INODE)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
-    journal(S, path, dtype, ino)
+    journal(S, path, ino)
 
 agfs_mkdir(dir, dentry, mode):
     ino = next_ino++
     create dir inodes/<ino>/
     agfs_dentry_pin(dentry, AGFS_TARGET_INODE)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
-    journal(S, path, dtype, ino)
+    journal(S, path, ino)
 
 agfs_symlink(dir, dentry, target):
     ino = next_ino++
     create symlink inodes/<ino> -> target
     agfs_dentry_pin(dentry, AGFS_TARGET_INODE)
     AGFS_I(d_inode(dentry))->staging_gen = sbi->gen
-    journal(S, path, dtype, ino)
+    journal(S, path, ino)
 ```
 
 `touch` (create + close, no write) produces an empty inode in the store —
@@ -337,7 +338,7 @@ agfs_unlink(dir, dentry):
     tomb = agfs_dentry_create(parent, name, namelen, AGFS_TARGET_NONE, NULL)
     if IS_ERR(tomb): return PTR_ERR(tomb)
 
-    journal(D, path, dtype)  # must be before d_drop (uses dentry path)
+    journal(D, path)  # must be before d_drop (uses dentry path)
 
     if staged:
         agfs_dentry_unpin(dentry)   # reset to ground state + dput
@@ -345,7 +346,7 @@ agfs_unlink(dir, dentry):
 
 agfs_rmdir(dir, dentry):
     # Same logic as agfs_unlink.
-    journal(D, path, dtype)
+    journal(D, path)
 ```
 
 Subsequent lookup of the name finds the negative dentry in the dcache
@@ -380,7 +381,7 @@ agfs_rename(old_parent, old_dentry, new_parent, new_dentry):
         # Base file being renamed — becomes a redirect via lower_path.
         agfs_dentry_pin(old_dentry, AGFS_TARGET_PATH)
 
-    journal(R, dst, src, dtype)
+    journal(R, dst, src)
 
     # Clean up new_dentry if it was staged.
     new_staged = AGFS_D(new_dentry)->pinned
@@ -399,7 +400,8 @@ agfs_rename(old_parent, old_dentry, new_parent, new_dentry):
 rename finds the redirect state on `b`'s dentry, uses its dentry path as the
 old path, and sets a new redirect on `c`'s dentry. The base source is
 derived from `lower_path.dentry` — each rename is
-recorded as a separate journal entry and replayed in order at commit time.
+recorded as a separate journal entry (the DirTree collapses chains into
+minimal redirects at commit time).
 **Roundtrip renames** (`mv a->tmp`, then `mv tmp->a`) are detected at
 rename time: when the effective base source equals the destination
 relpath, the rename chain is a no-op. The kernel
@@ -512,9 +514,9 @@ The journal is an append-only file at `.agfs/journal`. Each record is a
 sequence of NUL-separated fields terminated by a newline.
 
 ```
-S\0<path>\0<dtype>\0<ino>\n       — Stage (staged content at path)
-D\0<path>\0<dtype>\n              — Delete
-R\0<dst>\0<src>\0<dtype>\n             — Rename
+S\0<path>\0<ino>\n                — Stage (staged content at path)
+D\0<path>\n                      — Delete
+R\0<dst>\0<src>\n                 — Rename
 M\0<gen>\0<name>\n                — Mark
 J\0<gen>\0<target_gen>\n          — Jump
 ```
@@ -524,9 +526,9 @@ it needs. The kernel always uses `S` for creates/COW and `R` for renames:
 
 | Tag | Fields | Meaning |
 |-----|--------|---------|
-| `S` | `<path>`, `<dtype>`, `<ino>` | Staged content at path (create or COW) |
-| `D` | `<path>`, `<dtype>` | Entry deleted |
-| `R` | `<dst>`, `<src>`, `<dtype>` | Rename |
+| `S` | `<path>`, `<ino>` | Staged content at path (create or COW) |
+| `D` | `<path>` | Entry deleted |
+| `R` | `<dst>`, `<src>` | Rename |
 | `M` | `<gen>`, `<name>` | Mark meta |
 | `J` | `<gen>`, `<target_gen>` | Jump meta |
 
@@ -541,7 +543,6 @@ strictly sequential: meta\[i\] has gen_id = i (meta\[0\] is a phantom
 
 `<path>` is the full overlay path (e.g. `/dir/file`).
 `<src>` is the overlay path before the rename (R only).
-`<dtype>` is `f` (regular file), `d` (directory), or `l` (symlink).
 `<ino>` is the staged inode ID (decimal).
 
 All renames — staged or redirect, file or directory — emit a single R
@@ -577,18 +578,19 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 
 **Commit** (`agfs commit`):
 
-1. Build a `Journal` from the journal records, then call `live_segments()` to get
-   only reachable segments (filtering out dead branches from jumps).
-2. Replay live records in journal order directly on the base filesystem.
-   Each record is applied one by one:
-   - **S**: copy `inodes/<ino>` to `base/path` (create parents as needed;
-     directories → `mkdir`). If `base/path` already exists, overwrite.
-   - **D**: remove `base/path` if it exists (unlink for files/symlinks, rmdir for directories).
-   - **R**: `rename(base/src, base/dst)`.
-   No temp files, no sorting, no conflict detection — the temporal order
-   from the journal is the correct replay order.
-3. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
-4. Signal kernel to reset staging state (`AGFS_IOC_JUMP` with `target_gen=0`, `tree_len=0` — reset mode, no J record written).
+1. Build a `Journal` from the journal records, then build a `DirTree` from all
+   live segments. The tree collapses redundant operations (e.g. create-then-delete,
+   overwrite chains, rename chains) into a minimal set of final-state entries.
+2. Walk the `DirTree` and collect commit ops into three ordered buckets:
+   - **Renames**: `BasePath(src)` redirects &rarr; `rename(base/src, base/dst)`.
+     Topo-sorted by source/destination conflicts; rotation cycles (e.g. swap)
+     broken with temporary renames.
+   - **Deletes**: `Tombstone` entries &rarr; `remove(base/path)`.
+   - **Stages**: `StagedFile(ino)` entries &rarr; copy `inodes/<ino>` to `base/path`.
+3. Apply in order: temp renames &rarr; renames &rarr; deletes &rarr; stages.
+4. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
+5. Signal kernel to reset staging state (`AGFS_IOC_JUMP` with `target_gen=0`,
+   `tree_len=0` &mdash; reset mode, no J record written).
 
 **Abort** (`agfs abort`):
 

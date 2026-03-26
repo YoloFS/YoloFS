@@ -54,7 +54,7 @@ pub fn run(meta_name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::journal::{Action, DirNode, DirTree, Segment, Target};
+    use crate::journal::{Action, DirTree, Segment, Target};
 
     fn build(actions: &[Action]) -> DirTree {
         DirTree::build(std::iter::once(Segment {
@@ -68,10 +68,9 @@ mod tests {
         let tree = build(&[Action::Stage {
             path: "/src/main.rs".into(),
             ino: 1,
-            dtype: Some(libc::DT_REG),
         }]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/src/main.rs"), Some(Target::Inode(1))));
+        assert!(matches!(tree.get("/src/main.rs"), Some(Target::StagedFile(1))));
     }
 
     #[test]
@@ -80,15 +79,13 @@ mod tests {
             Action::Stage {
                 path: "/old.txt".into(),
                 ino: 1,
-                dtype: Some(libc::DT_REG),
             },
             Action::Delete {
                 path: "/old.txt".into(),
-                dtype: Some(libc::DT_REG),
             },
         ]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/old.txt"), Some(Target::None)));
+        assert!(matches!(tree.get("/old.txt"), Some(Target::Tombstone)));
     }
 
     #[test]
@@ -96,11 +93,10 @@ mod tests {
         let tree = build(&[Action::Rename {
             src: "/a.txt".into(),
             dst: "/b.txt".into(),
-            dtype: Some(libc::DT_REG),
         }]);
 
-        assert!(matches!(tree.get("/a.txt"), Some(Target::None)));
-        assert!(matches!(tree.get("/b.txt"), Some(Target::Path(Some(src))) if src == "/a.txt"));
+        assert!(matches!(tree.get("/a.txt"), Some(Target::Tombstone)));
+        assert!(matches!(tree.get("/b.txt"), Some(Target::BasePath(src)) if src == "/a.txt"));
     }
 
     #[test]
@@ -109,38 +105,35 @@ mod tests {
             Action::Rename {
                 src: "/old.rs".into(),
                 dst: "/new.rs".into(),
-                dtype: Some(libc::DT_REG),
             },
             Action::Stage {
                 path: "/new.rs".into(),
                 ino: 5,
-                dtype: Some(libc::DT_REG),
             },
         ]);
 
-        assert!(matches!(tree.get("/new.rs"), Some(Target::Inode(5))));
-        assert!(matches!(tree.get("/old.rs"), Some(Target::None)));
+        assert!(matches!(tree.get("/new.rs"), Some(Target::StagedFile(5))));
+        assert!(matches!(tree.get("/old.rs"), Some(Target::Tombstone)));
     }
 
     #[test]
-    fn directory_inode_gets_dir_node() {
+    fn directory_inode_gets_node() {
         let tree = build(&[Action::Stage {
             path: "/newdir".into(),
             ino: 1,
-            dtype: Some(libc::DT_DIR),
         }]);
-        assert!(matches!(tree.get_node("/newdir"), Some(DirNode::Dir(_, _))));
+        let node = tree.get_node("/newdir").expect("should exist");
+        assert!(matches!(node.target, Target::StagedFile(1)));
     }
 
     #[test]
-    fn symlink_inode_gets_file_node() {
+    fn symlink_inode_gets_node() {
         let tree = build(&[Action::Stage {
             path: "/link".into(),
             ino: 1,
-            dtype: Some(libc::DT_LNK),
         }]);
-        // Symlinks are stored as File nodes (leaf)
-        assert!(matches!(tree.get_node("/link"), Some(DirNode::File(_))));
+        let node = tree.get_node("/link").expect("should exist");
+        assert!(matches!(node.target, Target::StagedFile(1)));
     }
 
     #[test]
@@ -150,23 +143,22 @@ mod tests {
     }
 
     #[test]
-    fn renamed_directory_gets_dir_node() {
+    fn renamed_directory_gets_node() {
         let tree = build(&[Action::Rename {
             src: "/mydir".into(),
             dst: "/newdir".into(),
-            dtype: Some(libc::DT_DIR),
         }]);
-        assert!(matches!(tree.get_node("/newdir"), Some(DirNode::Dir(_, _))));
+        let node = tree.get_node("/newdir").expect("should exist");
+        assert!(matches!(node.target, Target::BasePath(ref src) if src == "/mydir"));
     }
 
     #[test]
-    fn renamed_symlink_gets_file_node() {
+    fn renamed_symlink_gets_node() {
         let tree = build(&[Action::Rename {
             src: "/mylink".into(),
             dst: "/newlink".into(),
-            dtype: Some(libc::DT_LNK),
         }]);
-        // Symlinks are stored as File nodes (leaf)
-        assert!(matches!(tree.get_node("/newlink"), Some(DirNode::File(_))));
+        let node = tree.get_node("/newlink").expect("should exist");
+        assert!(matches!(node.target, Target::BasePath(ref src) if src == "/mylink"));
     }
 }

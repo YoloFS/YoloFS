@@ -6,9 +6,9 @@
  * commit/abort/status/diff. The kernel never reads it back.
  *
  * Record format (NUL-separated fields, newline-terminated):
- *   S\0<path>\0<dtype>\0<ino>\n       — Stage (staged content at path)
- *   D\0<path>\0<dtype>\n              — Delete
- *   R\0<dst>\0<src>\0<dtype>\n         — Rename
+ *   S\0<path>\0<ino>\n                — Stage (staged content at path)
+ *   D\0<path>\n                       — Delete
+ *   R\0<dst>\0<src>\n                  — Rename
  *   M\0<gen>\0<name>\n                — Mark
  *   J\0<gen>\0<target_gen>\n          — Jump
  */
@@ -80,47 +80,36 @@ static int journal_write(struct agfs_sb_info *sbi, char tag,
 /* ── Public: typed journal record writers ──────────────────────────── */
 
 int agfs_journal_stage(struct agfs_sb_info *sbi, struct dentry *dentry,
-		      u32 ino, unsigned char d_type)
+		      u32 ino)
 {
 	char path_buf[AGFS_PATH_MAX];
 	char ino_str[11];
-	char dtype_str[4];
 	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
 	if (IS_ERR(path))
 		return PTR_ERR(path);
 
 	snprintf(ino_str, sizeof(ino_str), "%u", ino);
-	snprintf(dtype_str, sizeof(dtype_str), "%u", (unsigned)d_type);
 
 	return journal_write(sbi, 'S',
-			     (const char *[]){ path,
-					       dtype_str, ino_str,
-					       NULL });
+			     (const char *[]){ path, ino_str, NULL });
 }
 
-int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry,
-		       unsigned char d_type)
+int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry)
 {
 	char path_buf[AGFS_PATH_MAX];
-	char dtype_str[4];
 	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
 	if (IS_ERR(path))
 		return PTR_ERR(path);
 
-	snprintf(dtype_str, sizeof(dtype_str), "%u", (unsigned)d_type);
-
 	return journal_write(sbi, 'D',
-			     (const char *[]){ path,
-					       dtype_str,
-					       NULL });
+			     (const char *[]){ path, NULL });
 }
 
 int agfs_journal_rename(struct agfs_sb_info *sbi, struct dentry *old_dentry,
-			struct dentry *new_dentry, unsigned char d_type)
+			struct dentry *new_dentry)
 {
 	char dst_buf[AGFS_PATH_MAX];
 	char src_buf[AGFS_PATH_MAX];
-	char dtype_str[4];
 	char *dst_path, *src_path;
 
 	dst_path = dentry_path_raw(new_dentry, dst_buf, sizeof(dst_buf));
@@ -131,13 +120,8 @@ int agfs_journal_rename(struct agfs_sb_info *sbi, struct dentry *old_dentry,
 	if (IS_ERR(src_path))
 		return PTR_ERR(src_path);
 
-	snprintf(dtype_str, sizeof(dtype_str), "%u", (unsigned)d_type);
-
 	return journal_write(sbi, 'R',
-			     (const char *[]){ dst_path,
-					       src_path,
-					       dtype_str,
-					       NULL });
+			     (const char *[]){ dst_path, src_path, NULL });
 }
 
 int agfs_journal_mark(struct agfs_sb_info *sbi, u16 id, const char *name)

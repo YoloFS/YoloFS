@@ -143,7 +143,6 @@ mod tests {
     fn format_staged() {
         let action = Action::Stage {
             path: "/src/main.rs".into(),
-            dtype: Some(libc::DT_REG),
             ino: 42,
         };
         let s = strip_ansi(&format_action(&action));
@@ -157,7 +156,6 @@ mod tests {
         let action = Action::Rename {
             src: "/a".into(),
             dst: "/b".into(),
-            dtype: Some(libc::DT_REG),
         };
         let s = strip_ansi(&format_action(&action));
         assert!(s.contains("renamed"), "should say renamed: {s}");

@@ -600,31 +600,31 @@ fn complex_multi_operation_commit() {
     ) = (false, false, false, false, false, false, false);
 
     t.for_each(|path, target| {
-        if matches!(target, Target::Inode(_)) && path.ends_with("/hello.txt") {
+        if matches!(target, Target::StagedFile(_)) && path.ends_with("/hello.txt") {
             has_modified_hello = true;
         }
-        if matches!(target, Target::Inode(_)) && path.ends_with("/multi.txt") {
+        if matches!(target, Target::StagedFile(_)) && path.ends_with("/multi.txt") {
             has_modified_multi = true;
         }
         // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
         // Tree builder preserves original base path through rename chains.
-        if let Target::Path(Some(src)) = target {
+        if let Target::BasePath(src) = target {
             if src.ends_with("/subdir/deep.txt") && path.ends_with("/top.txt") {
                 has_renamed_deep_to_top = true;
             }
         }
-        if matches!(target, Target::None) && path.ends_with("/deep.txt") {
+        if matches!(target, Target::Tombstone) && path.ends_with("/deep.txt") {
             has_deleted_deep = true;
         }
-        if matches!(target, Target::Inode(_)) && path.ends_with("/link.txt") {
+        if matches!(target, Target::StagedFile(_)) && path.ends_with("/link.txt") {
             has_added_link = true;
         }
         // Check temp.txt/brand_new.txt: only as tombstones (spurious), not as
         // redirects or inodes.
-        if path.ends_with("/temp.txt") && !matches!(target, Target::None) {
+        if path.ends_with("/temp.txt") && !matches!(target, Target::Tombstone) {
             has_temp = true;
         }
-        if path.ends_with("/brand_new.txt") && !matches!(target, Target::None) {
+        if path.ends_with("/brand_new.txt") && !matches!(target, Target::Tombstone) {
             has_brand_new = true;
         }
     });
