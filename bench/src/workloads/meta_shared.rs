@@ -1,6 +1,6 @@
 use crate::workload::CacheMode;
 use crate::workloads;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};

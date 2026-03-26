@@ -1514,7 +1514,11 @@ const CHECKPOINT_DEPTHS: &[usize] = &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 const CHECKPOINT_SCALING_BACKENDS: &[&str] = &["agfs-realistic", "overlayfs", "branchfs"];
 const CHECKPOINT_SCALING_MODES: &[&str] = &["create", "read", "commit"];
 
-fn run_checkpoint_scaling(out_dir: &Path, backend_filter: Option<&str>, mode_filter: Option<&str>) -> Result<()> {
+fn run_checkpoint_scaling(
+    out_dir: &Path,
+    backend_filter: Option<&str>,
+    mode_filter: Option<&str>,
+) -> Result<()> {
     let all_backends = backends::all();
     let backend_names: Vec<&str> = if let Some(name) = backend_filter {
         // Validate the name.
@@ -1621,10 +1625,8 @@ fn run_checkpoint_scaling(out_dir: &Path, backend_filter: Option<&str>, mode_fil
     } else {
         Vec::new()
     };
-    let ran_backends: std::collections::HashSet<&str> =
-        backend_names.iter().copied().collect();
-    let ran_modes: std::collections::HashSet<&str> =
-        modes.iter().copied().collect();
+    let ran_backends: std::collections::HashSet<&str> = backend_names.iter().copied().collect();
+    let ran_modes: std::collections::HashSet<&str> = modes.iter().copied().collect();
     merged.retain(|r| {
         !ran_backends.contains(r.backend.as_str()) || !ran_modes.contains(r.mode.as_str())
     });
