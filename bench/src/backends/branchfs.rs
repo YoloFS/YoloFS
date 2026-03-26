@@ -1,6 +1,6 @@
 use crate::backend::{self, Backend, CheckpointController, CheckpointOutcome};
 use crate::workload::{CacheMode, IterResult, Workload};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -11,7 +11,8 @@ struct BranchFsCheckpointController {
     mnt_dir: PathBuf,
     storage_dir: PathBuf,
     current_branch: String,
-    work_dir: String,
+    /// Number of nested checkpoint branches created (for commit unwinding).
+    depth: usize,
 }
 
 impl CheckpointController for BranchFsCheckpointController {
@@ -38,13 +39,12 @@ impl CheckpointController for BranchFsCheckpointController {
         }
 
         self.current_branch = next;
-        // After creating a new branch, the subprocess's cwd becomes stale
-        // (FUSE switches the active branch). Redirect to the same work_dir
-        // under the mount so the subprocess re-enters the live branch.
-        let new_dest = self.mnt_dir.join(&self.work_dir);
+        self.depth += 1;
+        // branchfs auto-switches the mount to the new branch; the mount
+        // path is unchanged so the subprocess's saved_cwd remains valid.
         Ok(CheckpointOutcome::Continue {
             checkpoint_ms: t.elapsed().as_millis() as u64,
-            next_dest: Some(new_dest),
+            next_dest: None,
         })
     }
 }
@@ -203,24 +203,24 @@ impl Backend for BranchFs {
                     crate::workloads::drop_page_cache()
                         .context("dropping page cache after subprocess READY")?;
                 }
-                let mut cp = BranchFsCheckpointController {
-                    mnt_dir: mnt_dir.clone(),
-                    storage_dir: storage_dir.clone(),
-                    current_branch: if workload.needs_checkpoint() {
-                        "bench-chkpt".to_string()
-                    } else {
-                        "bench".to_string()
-                    },
-                    work_dir: workload.work_dir().to_string(),
-                };
-                sp.go_with_checkpoint(&mut cp)
+                sp
             }
             Err(e) => {
                 unmount(&mnt_dir, &storage_dir);
                 return Err(e.context("workload failed under branchfs"));
             }
         };
-        let sub = match sub {
+        let mut cp = BranchFsCheckpointController {
+            mnt_dir: mnt_dir.clone(),
+            storage_dir: storage_dir.clone(),
+            current_branch: if workload.needs_checkpoint() {
+                "bench-chkpt".to_string()
+            } else {
+                "bench".to_string()
+            },
+            depth: 0,
+        };
+        let sub = match sub.go_with_checkpoint(&mut cp) {
             Ok(r) => r,
             Err(e) => {
                 unmount(&mnt_dir, &storage_dir);
@@ -229,32 +229,38 @@ impl Backend for BranchFs {
         };
         let staging_ms = sub.staging_ms;
 
-        // Commit the branch back to base.
+        // Commit all branch levels back to base. The checkpoint controller
+        // may have created nested branches (bench-step-001, bench-step-002, ...);
+        // branchfs commit only merges one level at a time, so we repeat.
+        // Levels: checkpoint depth + 1 for "bench" (+ 1 for "bench-chkpt" if present).
+        let commit_levels = cp.depth
+            + 1 // the initial "bench" branch
+            + if workload.needs_checkpoint() { 1 } else { 0 };
         let t1 = Instant::now();
-        let out = Command::new("branchfs")
-            .arg("commit")
-            .arg(&mnt_dir)
-            .arg("--storage")
-            .arg(&storage_dir)
-            .stdout(Stdio::null())
-            .stderr(if verbose {
-                Stdio::inherit()
-            } else {
-                Stdio::piped()
-            })
-            .output()
-            .context("running branchfs commit")?;
+        for _ in 0..commit_levels {
+            let out = Command::new("branchfs")
+                .arg("commit")
+                .arg(&mnt_dir)
+                .arg("--storage")
+                .arg(&storage_dir)
+                .stdout(Stdio::null())
+                .stderr(if verbose {
+                    Stdio::inherit()
+                } else {
+                    Stdio::piped()
+                })
+                .output()
+                .context("running branchfs commit")?;
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                unmount(&mnt_dir, &storage_dir);
+                bail!("branchfs commit failed: {stderr}");
+            }
+        }
         let commit_ms = t1.elapsed().as_millis() as u64;
-
-        let commit_ok = out.status.success();
-        let commit_stderr = String::from_utf8_lossy(&out.stderr).to_string();
 
         // Always unmount.
         unmount(&mnt_dir, &storage_dir);
-
-        if !commit_ok {
-            bail!("branchfs commit failed: {commit_stderr}");
-        }
 
         Ok((
             IterResult {

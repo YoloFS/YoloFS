@@ -110,11 +110,14 @@ enum Cmd {
         #[arg(long)]
         bpftrace: bool,
     },
-    /// Measure op latency vs checkpoint depth
+    /// Measure op latency vs checkpoint depth (default: all three backends)
     CheckpointScaling {
-        /// Backend to test (default: agfs-realistic)
-        #[arg(long, default_value = "agfs-realistic")]
-        backend: String,
+        /// Backend to test (default: all three: agfs-realistic, overlayfs, branchfs)
+        #[arg(long)]
+        backend: Option<String>,
+        /// Mode to run: create, read, commit (default: all three)
+        #[arg(long)]
+        mode: Option<String>,
     },
     /// Visual diff of a PDF between two git commits
     DiffPdf {
@@ -1285,12 +1288,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(Cmd::CheckpointScaling {
-        backend: backend_name,
-    }) = cli.cmd
-    {
+    if let Some(Cmd::CheckpointScaling { backend, mode }) = cli.cmd {
         let out_dir = results_dir(&env, false);
-        run_checkpoint_scaling(&out_dir, &backend_name)?;
+        run_checkpoint_scaling(&out_dir, backend.as_deref(), mode.as_deref())?;
         return Ok(());
     }
 
@@ -1511,12 +1511,29 @@ fn main() -> Result<()> {
 
 const CHECKPOINT_DEPTHS: &[usize] = &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
-fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
+const CHECKPOINT_SCALING_BACKENDS: &[&str] = &["agfs-realistic", "overlayfs", "branchfs"];
+const CHECKPOINT_SCALING_MODES: &[&str] = &["create", "read", "commit"];
+
+fn run_checkpoint_scaling(out_dir: &Path, backend_filter: Option<&str>, mode_filter: Option<&str>) -> Result<()> {
     let all_backends = backends::all();
-    let b = all_backends
-        .iter()
-        .find(|b| b.name() == backend_name)
-        .with_context(|| format!("unknown backend: {backend_name}"))?;
+    let backend_names: Vec<&str> = if let Some(name) = backend_filter {
+        // Validate the name.
+        all_backends
+            .iter()
+            .find(|b| b.name() == name)
+            .with_context(|| format!("unknown backend: {name}"))?;
+        vec![name]
+    } else {
+        CHECKPOINT_SCALING_BACKENDS.to_vec()
+    };
+    let modes: Vec<&str> = if let Some(m) = mode_filter {
+        if !CHECKPOINT_SCALING_MODES.contains(&m) {
+            bail!("unknown mode: {m}. Available: create, read, commit");
+        }
+        vec![m]
+    } else {
+        CHECKPOINT_SCALING_MODES.to_vec()
+    };
 
     let wl = workloads::checkpoint_scaling::CheckpointScaling;
 
@@ -1535,57 +1552,83 @@ fn run_checkpoint_scaling(out_dir: &Path, backend_name: &str) -> Result<()> {
         p99_us: f64,
     }
 
-    let mut results = Vec::new();
+    let mut all_results: Vec<CheckpointScalingResult> = Vec::new();
 
-    for mode in ["create", "read"] {
-        let mut points = Vec::new();
-        eprintln!("checkpoint-scaling: {backend_name} / {mode}");
+    for &backend_name in &backend_names {
+        let b = all_backends
+            .iter()
+            .find(|b| b.name() == backend_name)
+            .with_context(|| format!("unknown backend: {backend_name}"))?;
 
-        for &depth in CHECKPOINT_DEPTHS {
-            unsafe {
-                std::env::set_var("CHECKPOINT_SCALING_MODE", mode);
-                std::env::set_var("CHECKPOINT_SCALING_DEPTH", depth.to_string());
-            }
-            match b.run_one(&wl, false) {
-                Ok((result, _)) => {
-                    if let Some(ref op) = result.op_result {
-                        // mean from p50 approximation for now; IOPS→mean
-                        // loses precision for small sample counts.
-                        let mean_us = op.lat_us_mean;
-                        eprintln!(
-                            "  depth={depth}: {mean_us:.1}µs mean, {:.1}µs p50, {:.1}µs p99",
-                            op.lat_us_p50, op.lat_us_p99
-                        );
-                        points.push(CheckpointScalingPoint {
-                            depth,
-                            mean_us,
-                            p50_us: op.lat_us_p50,
-                            p99_us: op.lat_us_p99,
-                        });
+        for &mode in &modes {
+            let mut points = Vec::new();
+            eprintln!("checkpoint-scaling: {backend_name} / {mode}");
+
+            for &depth in CHECKPOINT_DEPTHS {
+                unsafe {
+                    std::env::set_var("CHECKPOINT_SCALING_MODE", mode);
+                    std::env::set_var("CHECKPOINT_SCALING_DEPTH", depth.to_string());
+                }
+                match b.run_one(&wl, false) {
+                    Ok((result, _)) => {
+                        if mode == "commit" {
+                            // Commit mode: the measured value is the backend's
+                            // commit time (flattening all checkpoints to base),
+                            // not per-op latency from the workload subprocess.
+                            if let Some(ms) = result.commit_ms {
+                                let us = (ms as f64) * 1000.0;
+                                eprintln!("  depth={depth}: {us:.0}µs commit");
+                                points.push(CheckpointScalingPoint {
+                                    depth,
+                                    mean_us: us,
+                                    p50_us: us,
+                                    p99_us: us,
+                                });
+                            }
+                        } else if let Some(ref op) = result.op_result {
+                            let mean_us = op.lat_us_mean;
+                            eprintln!(
+                                "  depth={depth}: {mean_us:.1}µs mean, {:.1}µs p50, {:.1}µs p99",
+                                op.lat_us_p50, op.lat_us_p99
+                            );
+                            points.push(CheckpointScalingPoint {
+                                depth,
+                                mean_us,
+                                p50_us: op.lat_us_p50,
+                                p99_us: op.lat_us_p99,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  depth={depth}: FAILED: {e:#}");
+                        break;
                     }
                 }
-                Err(e) => {
-                    eprintln!("  depth={depth}: FAILED: {e:#}");
-                    break;
-                }
             }
-        }
 
-        results.push(CheckpointScalingResult {
-            backend: backend_name.to_string(),
-            mode: mode.to_string(),
-            points,
-        });
+            all_results.push(CheckpointScalingResult {
+                backend: backend_name.to_string(),
+                mode: mode.to_string(),
+                points,
+            });
+        }
     }
 
     let json_path = out_dir.join("checkpoint-scaling.json");
+    // Merge with existing results so filtered runs don't clobber others.
     let mut merged: Vec<CheckpointScalingResult> = if json_path.exists() {
         serde_json::from_str(&fs::read_to_string(&json_path)?).unwrap_or_default()
     } else {
         Vec::new()
     };
-    merged.retain(|r| r.backend != backend_name);
-    merged.extend(results);
+    let ran_backends: std::collections::HashSet<&str> =
+        backend_names.iter().copied().collect();
+    let ran_modes: std::collections::HashSet<&str> =
+        modes.iter().copied().collect();
+    merged.retain(|r| {
+        !ran_backends.contains(r.backend.as_str()) || !ran_modes.contains(r.mode.as_str())
+    });
+    merged.extend(all_results);
     std::fs::write(&json_path, serde_json::to_string_pretty(&merged)?)?;
     eprintln!("Results written to {}", json_path.display());
 

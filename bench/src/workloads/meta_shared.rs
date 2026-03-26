@@ -1,6 +1,6 @@
 use crate::workload::CacheMode;
 use crate::workloads;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -142,7 +142,7 @@ workloads::define_rust_execution!(
         let buf = vec![0xAB; workloads::OP_FILE_SIZE];
         let mut latencies = Vec::with_capacity(count);
         for i in 0..count {
-            let path = dest.join(format!("file-{i:04}.dat"));
+            let path = dest.join(format!("file-{i:06}.dat"));
             let t0 = Instant::now();
             std::fs::OpenOptions::new()
                 .append(true)
@@ -160,8 +160,8 @@ workloads::define_rust_execution!(
     fn meta_rename_core(dest: &Path, count: usize) -> Result<Vec<Duration>> {
         let mut latencies = Vec::with_capacity(count);
         for i in 0..count {
-            let from = dest.join(format!("file-{i:04}.dat"));
-            let to = dest.join(format!("renamed-{i:04}.dat"));
+            let from = dest.join(format!("file-{i:06}.dat"));
+            let to = dest.join(format!("renamed-{i:06}.dat"));
             let t0 = Instant::now();
             std::fs::rename(&from, &to)
                 .with_context(|| format!("renaming {} -> {}", from.display(), to.display()))?;
@@ -175,7 +175,7 @@ workloads::define_rust_execution!(
     fn meta_unlink_core(dest: &Path, count: usize) -> Result<Vec<Duration>> {
         let mut latencies = Vec::with_capacity(count);
         for i in 0..count {
-            let path = dest.join(format!("file-{i:04}.dat"));
+            let path = dest.join(format!("file-{i:06}.dat"));
             let t0 = Instant::now();
             std::fs::remove_file(&path).with_context(|| format!("unlinking {}", path.display()))?;
             latencies.push(t0.elapsed());
@@ -188,7 +188,7 @@ workloads::define_rust_execution!(
     fn meta_stat_core(dest: &Path, count: usize) -> Result<Vec<Duration>> {
         let mut latencies = Vec::with_capacity(count);
         for i in 0..count {
-            let path = dest.join(format!("file-{i:04}.dat"));
+            let path = dest.join(format!("file-{i:06}.dat"));
             let t0 = Instant::now();
             let meta = std::fs::metadata(&path).with_context(|| format!("stat {}", path.display()))?;
             std::hint::black_box(meta);
@@ -202,7 +202,7 @@ workloads::define_rust_execution!(
     fn meta_open_core(dest: &Path, count: usize) -> Result<Vec<Duration>> {
         let mut latencies = Vec::with_capacity(count);
         for i in 0..count {
-            let path = dest.join(format!("file-{i:04}.dat"));
+            let path = dest.join(format!("file-{i:06}.dat"));
             let t0 = Instant::now();
             let f = std::fs::File::open(&path)
                 .with_context(|| format!("open {}", path.display()))?;
@@ -234,7 +234,7 @@ workloads::define_rust_execution!(
 // Cold variants of stat and readdir (single operation, cold cache).
 workloads::define_rust_execution!(
     fn meta_stat_cold_core(dest: &Path) -> Result<Vec<Duration>> {
-        let path = dest.join(COLD_DATA_SUBDIR).join("file-0000.dat");
+        let path = dest.join(COLD_DATA_SUBDIR).join("file-000000.dat");
         let t0 = Instant::now();
         let meta = std::fs::metadata(&path).with_context(|| format!("stat {}", path.display()))?;
         std::hint::black_box(meta);
@@ -244,7 +244,7 @@ workloads::define_rust_execution!(
 
 workloads::define_rust_execution!(
     fn meta_open_cold_core(dest: &Path) -> Result<Vec<Duration>> {
-        let path = dest.join(COLD_DATA_SUBDIR).join("file-0000.dat");
+        let path = dest.join(COLD_DATA_SUBDIR).join("file-000000.dat");
         let t0 = Instant::now();
         let f = std::fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
         std::hint::black_box(f);

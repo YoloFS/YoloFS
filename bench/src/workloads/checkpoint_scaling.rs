@@ -1,11 +1,16 @@
 // checkpoint-scaling: measure op latency as a function of checkpoint depth.
 //
-// Two modes (set via CHECKPOINT_SCALING_MODE env var):
+// Three modes (set via CHECKPOINT_SCALING_MODE env var):
 // - "create": after K checkpoints, measure creating 100 new files
-// - "read": after K checkpoints, measure reading 100 files from checkpoint 1
+// - "read": after K checkpoints, measure reading 100 files created before any checkpoint
+// - "commit": build K checkpoints, then exit (commit time measured by backend)
 //
 // CHECKPOINT_SCALING_DEPTH sets K (number of checkpoints to create first).
-// FILES_PER_CHECKPOINT = 100 files per checkpoint layer.
+//
+// Before any checkpoints, 100 target files and 10 seed files are created.
+// Checkpoint creation is intentionally trivial: each checkpoint just overwrites
+// the 10 seed files. This isolates the effect of checkpoint *depth* on the
+// measured operations without inflating per-layer state.
 
 use crate::workload::{Workload, WorkloadKind};
 use agfs::config::Perm;
@@ -13,7 +18,8 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::Instant;
 
-const FILES_PER_CHECKPOINT: usize = 100;
+const MEASURE_FILES: usize = 100;
+const SEED_FILES: usize = 10;
 
 pub struct CheckpointScaling;
 
@@ -22,9 +28,9 @@ pub fn details() -> crate::workloads::WorkloadDetails {
         "Checkpoint-depth scaling workload (fixed-size create/read probes).",
         "Creates synthetic files under a single workload directory; no external fixture required.",
         Some(
-            "Uses backend checkpoint protocol between setup phases. Configure with CHECKPOINT_SCALING_MODE={create|read} and CHECKPOINT_SCALING_DEPTH=<N>.",
+            "Uses backend checkpoint protocol between setup phases. Configure with CHECKPOINT_SCALING_MODE={create|read|commit} and CHECKPOINT_SCALING_DEPTH=<N>. Checkpoint creation is trivial: 10 seed files are overwritten at each layer.",
         ),
-        "Builds a checkpoint chain, then measures 100 create or 100 read operations and emits OpResult.",
+        "Builds a checkpoint chain (overwriting 10 seed files per layer), then measures 100 create or 100 read operations (or exits for commit-time measurement) and emits OpResult.",
         file!(),
     )
 }
@@ -77,26 +83,37 @@ impl Workload for CheckpointScaling {
         let root = Path::new(".");
         let buf = vec![0u8; 4096];
 
+        // Pre-checkpoint setup (before any checkpoints):
+        // - 100 target files (used as read targets in "read" mode)
+        // - 10 seed files (overwritten at each checkpoint to make it non-empty)
+        for i in 0..MEASURE_FILES {
+            std::fs::write(root.join(format!("target-{i:06}.dat")), &buf)?;
+        }
+        for i in 0..SEED_FILES {
+            std::fs::write(root.join(format!("seed-{i:06}.dat")), &buf)?;
+        }
+
+        // Build K checkpoints. Each one just overwrites the 10 seed files.
+        let mut built_depth = 0usize;
+        for chk in 0..depth {
+            for i in 0..SEED_FILES {
+                std::fs::write(root.join(format!("seed-{i:06}.dat")), &buf)?;
+            }
+            if !emit_checkpoint(chk + 1)? {
+                break;
+            }
+            built_depth += 1;
+        }
+        eprintln!("  checkpoint-scaling({mode}): built depth {built_depth}/{depth}");
+        if built_depth < depth {
+            anyhow::bail!("backend stopped at depth {built_depth} (requested {depth})");
+        }
+
         match mode.as_str() {
             "create" => {
-                // Setup: create K checkpoints, each with 100 files (untimed).
-                let mut file_id = 0usize;
-                let mut built_depth = 0usize;
-                for chk in 0..depth {
-                    for _ in 0..FILES_PER_CHECKPOINT {
-                        std::fs::write(root.join(format!("setup-{file_id:06}.dat")), &buf)?;
-                        file_id += 1;
-                    }
-                    if !emit_checkpoint(chk + 1)? {
-                        break;
-                    }
-                    built_depth += 1;
-                }
-                eprintln!("  checkpoint-scaling(create): built depth {built_depth}/{depth}");
-
                 // Measure: create 100 new files.
-                let mut latencies = Vec::with_capacity(FILES_PER_CHECKPOINT);
-                for i in 0..FILES_PER_CHECKPOINT {
+                let mut latencies = Vec::with_capacity(MEASURE_FILES);
+                for i in 0..MEASURE_FILES {
                     let t = Instant::now();
                     std::fs::write(root.join(format!("measure-{i:06}.dat")), &buf)?;
                     latencies.push(t.elapsed());
@@ -109,32 +126,9 @@ impl Workload for CheckpointScaling {
                 ))?;
             }
             "read" => {
-                // Setup: first checkpoint has the target files.
-                for i in 0..FILES_PER_CHECKPOINT {
-                    std::fs::write(root.join(format!("target-{i:06}.dat")), &buf)?;
-                }
-                if !emit_checkpoint(1)? {
-                    anyhow::bail!("backend stopped at first checkpoint");
-                }
-
-                // Remaining K-1 checkpoints with filler files.
-                let mut file_id = 0usize;
-                let mut built_depth = 1usize;
-                for chk in 1..depth {
-                    for _ in 0..FILES_PER_CHECKPOINT {
-                        std::fs::write(root.join(format!("filler-{file_id:06}.dat")), &buf)?;
-                        file_id += 1;
-                    }
-                    if !emit_checkpoint(chk + 1)? {
-                        break;
-                    }
-                    built_depth += 1;
-                }
-                eprintln!("  checkpoint-scaling(read): built depth {built_depth}/{depth}");
-
-                // Measure: read the 100 target files from checkpoint 1.
-                let mut latencies = Vec::with_capacity(FILES_PER_CHECKPOINT);
-                for i in 0..FILES_PER_CHECKPOINT {
+                // Measure: read the 100 target files created before checkpoints.
+                let mut latencies = Vec::with_capacity(MEASURE_FILES);
+                for i in 0..MEASURE_FILES {
                     let path = root.join(format!("target-{i:06}.dat"));
                     let t = Instant::now();
                     let _data = std::fs::read(&path)?;
@@ -146,6 +140,10 @@ impl Workload for CheckpointScaling {
                     Instant::now().elapsed(),
                     None,
                 ))?;
+            }
+            "commit" => {
+                // No measurement — just exit. The backend's commit phase
+                // (measured by run_one) flattens all checkpoints back to base.
             }
             _ => anyhow::bail!("unknown CHECKPOINT_SCALING_MODE: {mode}"),
         }

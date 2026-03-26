@@ -1,6 +1,6 @@
 use crate::backend::{self, Backend, CheckpointController, CheckpointOutcome};
 use crate::workload::{CacheMode, IterResult, Workload};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -15,17 +15,9 @@ struct OverlayCheckpointController {
     layer_idx: usize,
 }
 
-/// Maximum stacked lower layers before we stop checkpointing.
-/// Overlayfs mount options string length is bounded by the kernel page size;
-/// deep long-path stacking hits this limit around 60–80 layers.
-const MAX_OVERLAY_LAYERS: usize = 50;
-
 impl CheckpointController for OverlayCheckpointController {
     fn checkpoint(&mut self, _step: usize) -> Result<CheckpointOutcome> {
         let next = self.layer_idx + 1;
-        if next > MAX_OVERLAY_LAYERS {
-            return Ok(CheckpointOutcome::Stop);
-        }
 
         let t = Instant::now();
         let next_upper = self.root.join(format!("upper-{next}"));
@@ -39,14 +31,19 @@ impl CheckpointController for OverlayCheckpointController {
         let completed_layers = (0..=self.layer_idx)
             .map(|i| self.root.join(format!("upper-{i}")))
             .collect::<Vec<_>>();
-        sudo_mount_overlay_layers(
+        match sudo_mount_overlay_layers(
             &self.lower,
             &completed_layers,
             &next_upper,
             &next_work,
             &self.merged,
-        )
-        .with_context(|| format!("overlayfs checkpoint remount at layer {next}"))?;
+        ) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("  overlayfs: mount failed at layer {next}, stopping: {e:#}");
+                return Ok(CheckpointOutcome::Stop);
+            }
+        }
 
         self.layer_idx = next;
         // After unmount+remount, the subprocess's cwd is stale. Redirect.

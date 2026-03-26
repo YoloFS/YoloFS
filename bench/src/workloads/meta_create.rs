@@ -84,6 +84,10 @@ impl Workload for MetaCreate {
         workloads::allow_rw_rules(session_root)
     }
 
+    fn hidden(&self) -> bool {
+        self.count == 100_000
+    }
+
     fn run(&self, dest: &Path, _verbose: bool) -> Result<()> {
         run_create(dest, self.count)
     }
