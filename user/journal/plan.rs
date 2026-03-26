@@ -522,8 +522,7 @@ mod tests {
     fn mixed_direct_and_conflicted_renames() {
         // /b←/a and /d←/c are independent of each other but /b←/a
         // conflicts with /a←/e (dst_b == src_a).
-        let plan =
-            build(&[rename("/b", "/a"), rename("/d", "/c"), rename("/a", "/e")]).into_plan();
+        let plan = build(&[rename("/b", "/a"), rename("/d", "/c"), rename("/a", "/e")]).into_plan();
         assert_eq!(plan.directs.len(), 1, "/d←/c should be direct");
         assert_eq!(plan.saves.len(), 2, "/b←/a and /a←/e conflict");
     }
