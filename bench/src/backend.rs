@@ -1,7 +1,7 @@
 // Backend trait — abstraction over staging/commit mechanisms.
 
 use crate::workload::{CheckpointLatencySeries, IterResult, OpResult, Workload};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::io::BufRead;
 use std::io::Write;
 use std::path::Path;
@@ -70,7 +70,7 @@ pub struct SubprocessResult {
     pub staging_ms: u64,
     /// Self-reported op metrics, if the subprocess printed RESULTS + JSON.
     pub op_result: Option<OpResult>,
-    /// Self-reported checkpoint-series metrics for checkpoint-scalability workloads.
+    /// Self-reported checkpoint-series metrics for checkpoint-scaling workloads.
     pub checkpoint_series: Option<CheckpointLatencySeries>,
 }
 

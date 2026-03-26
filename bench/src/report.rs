@@ -34,86 +34,6 @@ pub fn render(results: &BenchResults, out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn render_commit_scaling_report(out_dir: &Path) -> Result<()> {
-    let json_path = out_dir.join("commit-scaling.json");
-    if !json_path.exists() {
-        return Ok(());
-    }
-
-    #[derive(serde::Deserialize)]
-    struct CommitScalingResult {
-        #[serde(default)]
-        backend: String,
-        op: String,
-        points: Vec<CommitScalingPoint>,
-    }
-    #[derive(serde::Deserialize)]
-    struct CommitScalingPoint {
-        count: usize,
-        staging_ms: u64,
-        commit_ms: u64,
-    }
-
-    let data: Vec<CommitScalingResult> =
-        serde_json::from_str(&std::fs::read_to_string(&json_path)?)?;
-
-    let mut html = String::new();
-    html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\">\n");
-    html.push_str("<title>Commit Scaling</title>\n");
-    html.push_str("<script src=\"https://cdn.plot.ly/plotly-2.35.2.min.js\"></script>\n");
-    html.push_str("</head><body>\n");
-    html.push_str("<h2>Commit time vs file count</h2>\n");
-    html.push_str("<div id=\"commit-plot\" style=\"width:900px;height:500px\"></div>\n");
-    html.push_str("<h2>Staging time vs file count</h2>\n");
-    html.push_str("<div id=\"staging-plot\" style=\"width:900px;height:500px\"></div>\n");
-    html.push_str("<script>\n");
-
-    for (div_id, field) in [("commit-plot", "commit"), ("staging-plot", "staging")] {
-        html.push_str(&format!("Plotly.newPlot('{div_id}', [\n"));
-        for res in &data {
-            let xs: Vec<String> = res.points.iter().map(|p| p.count.to_string()).collect();
-            let ys: Vec<String> = res
-                .points
-                .iter()
-                .map(|p| {
-                    if field == "commit" {
-                        p.commit_ms
-                    } else {
-                        p.staging_ms
-                    }
-                    .to_string()
-                })
-                .collect();
-            let trace_name = if res.backend.is_empty() {
-                res.op.clone()
-            } else {
-                format!("{} ({})", res.op, res.backend)
-            };
-            html.push_str(&format!(
-                "  {{x: [{}], y: [{}], mode: 'lines+markers', name: '{}'}},\n",
-                xs.join(","),
-                ys.join(","),
-                trace_name
-            ));
-        }
-        let ylabel = if field == "commit" {
-            "Commit time (ms)"
-        } else {
-            "Staging time (ms)"
-        };
-        html.push_str(&format!(
-            "], {{xaxis: {{title: 'File count'}}, yaxis: {{title: '{ylabel}'}}}});\n"
-        ));
-    }
-
-    html.push_str("</script></body></html>\n");
-
-    let html_path = out_dir.join("report-commit-scaling.html");
-    std::fs::write(&html_path, &html)?;
-    eprintln!("Report written to {}", html_path.display());
-    Ok(())
-}
-
 pub fn render_paper_only(results: &BenchResults, out_dir: &Path) -> Result<()> {
     crate::paper::render(results, out_dir)
 }
@@ -141,7 +61,7 @@ fn render_workload(
 ) -> Result<()> {
     let has_checkpoint_series = wl.backends.iter().any(|b| b.checkpoint_series.is_some());
     if has_checkpoint_series {
-        return render_checkpoint_scalability_workload(wl, out_dir, current_repo_state);
+        return render_checkpoint_series_workload(wl, out_dir, current_repo_state);
     }
     let is_op = wl.backends.iter().any(|b| b.mean_iops.is_some());
     if is_op {
@@ -151,7 +71,7 @@ fn render_workload(
     }
 }
 
-fn render_checkpoint_scalability_workload(
+fn render_checkpoint_series_workload(
     wl: &WorkloadResult,
     out_dir: &Path,
     current_repo_state: Option<&RepoState>,

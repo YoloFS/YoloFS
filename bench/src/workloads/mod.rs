@@ -1,4 +1,3 @@
-pub mod checkpoint_scalability;
 pub mod checkpoint_scaling;
 pub mod fio_rand_read_cold;
 pub mod fio_rand_read_warm;
@@ -21,9 +20,7 @@ pub mod meta_stat_cold;
 pub mod meta_stat_warm;
 pub mod meta_unlink;
 pub mod overwrite_files;
-pub mod read_files;
 pub mod rename_files;
-pub mod stat_files;
 pub mod unlink_files;
 pub mod worktree;
 pub mod write_files;
@@ -187,7 +184,6 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
         "overwrite-files" => overwrite_files::details(),
         "rename-files" => rename_files::details(),
         "unlink-files" => unlink_files::details(),
-        "checkpoint-scalability" => checkpoint_scalability::details(),
         "checkpoint-scaling" => checkpoint_scaling::details(),
         "worktree" => worktree::details(),
         "linux-untar" => linux_untar::details(),

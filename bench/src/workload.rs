@@ -28,7 +28,7 @@ pub struct IterResult {
     pub checkpoint_series: Option<CheckpointLatencySeries>,
 }
 
-/// Per-checkpoint latency samples for checkpoint-scalability session workloads.
+/// Per-checkpoint latency samples for checkpoint-scaling workloads.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CheckpointLatencySeries {
     pub points: Vec<CheckpointLatencyPoint>,
