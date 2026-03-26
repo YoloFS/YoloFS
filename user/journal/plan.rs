@@ -7,7 +7,7 @@
 //
 // ## Algorithm
 //
-// 1. **Collect**: DFS the tree, partitioning nodes into three buckets:
+// 1. **Collect**: DFS the tree, emitting actions for each node:
 //      - stages  (StagedFile)  — copy a staged inode to base
 //      - renames (BasePath)    — move a base path to a new location
 //      - deletes (Tombstone)   — remove a base path
@@ -16,111 +16,78 @@
 //    (`remove_dir_all`), so child actions are unnecessary.  Any children
 //    staged before the delete are dead — the Tombstone overwrites them.
 //
-// 2. **Order renames** via selective two-phase save/place.  A rename
-//    reads from `src` (a base path) and writes to `dst`.  Two renames
-//    *conflict* when any path (src or dst) of one is an ancestor,
-//    descendant, or equal to any path of the other.  Conflicts are
-//    detected in O(n log n) by sorting all 2n paths in trie order and
-//    sweeping with a stack of active ancestors.
+// 2. **Process renames**: every rename source is moved to a temp path,
+//    deepest source first (so children are extracted before their parent
+//    directory is moved).  The corresponding temp→destination placements
+//    are emitted in DFS order (parent destinations before children).
 //
-//    **Independent renames** (no conflict with any other rename) skip
-//    the temp-path detour and execute as a single rename syscall, in
-//    DFS order of their destinations.
+//    Cost: 2n rename syscalls for n renames.
 //
-//    **Conflicted renames** use a two-phase strategy:
-//
-//    Phase 1 — save: move every conflicted source to a temp path,
-//    deepest first.  This extracts children before parents, so moving
-//    a parent directory doesn't carry away an already-saved child.
-//
-//    Phase 2 — place: move each temp to its destination, in DFS order
-//    (parent destinations before children).  This ensures parent dirs
-//    exist before children are placed inside them.
-//
-//    Cost: n + k rename syscalls where k is the number of conflicted
-//    renames (each costs 2).  Best case n (all independent), worst
-//    case 2n (all conflicted).
-//
-// 3. **Concatenate**: save-renames → direct-renames → place-renames
-//    → deletes → stages.
+// 3. **Concatenate**: saves → places → deletes+stages.
 //
 // ## Why this order is correct
 //
-// - **Save-renames first**: all conflicted sources are safely moved to
-//   temp paths before any destination is written.
-// - **Direct-renames next**: independent renames execute as single
-//   syscalls.  They have no path overlap with any other rename, so
-//   order among themselves only requires parent-before-child (DFS).
-// - **Place-renames next**: destinations are written in DFS order (parent
-//   before child).  `apply_rename`'s `remove_existing` at each destination
-//   can't wipe a child that hasn't been placed yet.
-// - **Deletes after renames**: renames read from base paths; deletes destroy
-//   base paths.  By this point all sources have been saved.
-// - **Stages last**: parent directories exist — either from base, renames,
-//   or earlier stages.  DFS pre-order guarantees parents staged before
-//   children.
+// Ordering principle: **Tombstone/StagedFile must not clobber BasePath**.
+// BasePath is the only target type that references existing base state
+// (it carries a source path it needs to read).  Tombstone and StagedFile
+// are pure writes — they destroy or create, referencing nothing in base.
+// If a Tombstone or StagedFile fires before a BasePath has read its
+// source, it can clobber that source path.  Therefore all BasePath reads
+// (saves) must complete before any Tombstone/StagedFile writes execute.
+// Within the writers, places must precede deletes+stages because a
+// stage may target a child of a rename destination.  Deletes and stages
+// have no dependency on each other — the DirTree guarantees no stage
+// writes under a deleted path — so they are interleaved in DFS order.
 
 use super::tree::DirTree;
 use super::types::*;
 
 /// A commit plan: the minimal set of filesystem mutations to apply.
 ///
-/// Renames are split into direct (conflict-free) and two-phase
-/// (save sources, then place at destinations).  Use `actions()` to
-/// iterate all mutations in the correct execution order.
+/// Renames use a two-phase strategy: save all sources to temp paths,
+/// then place temps at destinations.  Use `iter()` to iterate all
+/// mutations in the correct execution order.
 pub struct CommitPlan {
-    /// Phase 1: save conflicted rename sources to temp paths (deepest source first).
+    /// Phase 1: save all rename sources to temp paths (deepest source first).
     saves: Vec<Action>,
-    /// Phase 2: direct renames — conflict-free, single rename syscall (DFS order).
-    directs: Vec<Action>,
-    /// Phase 3: place temp paths at destinations (DFS order, parent first).
-    places: Vec<Action>,
-    /// Phase 4: tombstone removals.
-    deletes: Vec<Action>,
-    /// Phase 5: staged inode copies (DFS pre-order, parent first).
-    stages: Vec<Action>,
+    /// Phase 2: places (temp→destination, DFS order) then deletes+stages
+    /// (interleaved in DFS order).
+    ops: Vec<Action>,
 }
 
 impl CommitPlan {
     pub fn is_empty(&self) -> bool {
-        self.saves.is_empty()
-            && self.directs.is_empty()
-            && self.deletes.is_empty()
-            && self.stages.is_empty()
+        self.saves.is_empty() && self.ops.is_empty()
     }
 
     pub fn len(&self) -> usize {
         // saves and places are paired — count as one rename each
-        self.saves.len() + self.directs.len() + self.deletes.len() + self.stages.len()
+        self.ops.len()
     }
 
     /// Iterate all actions in execution order.
     pub fn iter(&self) -> impl Iterator<Item = &Action> {
-        self.saves
-            .iter()
-            .chain(&self.directs)
-            .chain(&self.places)
-            .chain(&self.deletes)
-            .chain(&self.stages)
+        self.saves.iter().chain(&self.ops)
     }
 }
 
 /// Convert a DirTree into a commit plan.
 pub(super) fn into_plan(tree: &DirTree) -> CommitPlan {
     let mut renames = Vec::new();
-    let mut deletes = Vec::new();
-    let mut stages = Vec::new();
+    let mut ops = Vec::new();
     let mut prefix = String::new();
-    collect(tree, &mut prefix, &mut renames, &mut deletes, &mut stages);
+    collect(tree, &mut prefix, &mut renames, &mut ops);
 
-    let (saves, directs, places) = order_renames(renames);
+    let (saves, places) = process_renames(renames);
+
+    // Phase 2: places first (parent dirs exist before children),
+    // then deletes+stages (already in DFS order from collect).
+    let mut all_ops = places;
+    all_ops.extend(ops);
 
     CommitPlan {
         saves,
-        directs,
-        places,
-        deletes,
-        stages,
+        ops: all_ops,
     }
 }
 
@@ -128,8 +95,7 @@ fn collect(
     tree: &DirTree,
     prefix: &mut String,
     renames: &mut Vec<Action>,
-    deletes: &mut Vec<Action>,
-    stages: &mut Vec<Action>,
+    ops: &mut Vec<Action>,
 ) {
     for (name, node) in &tree.nodes {
         let path_len = prefix.len();
@@ -138,7 +104,7 @@ fn collect(
 
         match &node.target {
             Target::StagedFile(ino) => {
-                stages.push(Action::Stage {
+                ops.push(Action::Stage {
                     path: prefix.clone(),
                     ino: *ino,
                 });
@@ -150,7 +116,7 @@ fn collect(
                 });
             }
             Target::Tombstone => {
-                deletes.push(Action::Delete {
+                ops.push(Action::Delete {
                     path: prefix.clone(),
                 });
             }
@@ -158,51 +124,26 @@ fn collect(
         }
 
         if !matches!(node.target, Target::Tombstone) {
-            collect(&node.children, prefix, renames, deletes, stages);
+            collect(&node.children, prefix, renames, ops);
         }
 
         prefix.truncate(path_len);
     }
 }
 
-// ── Rename ordering (selective two-phase save/place) ──────────────────
+// ── Rename processing (two-phase save/place) ─────────────────────────
 
-/// `ancestor` is a strict path ancestor of `descendant`?
+/// Split renames into saves and places.
 ///
-/// "/a" is an ancestor of "/a/b" but not of "/a", "/ab", or "/a-x".
-fn is_path_ancestor(ancestor: &str, descendant: &str) -> bool {
-    descendant.len() > ancestor.len()
-        && descendant.as_bytes()[ancestor.len()] == b'/'
-        && descendant[..ancestor.len()] == *ancestor
-}
-
-/// Compare paths in trie order: '/' is treated as '\x00' so that
-/// children sort immediately after their parent, before unrelated
-/// paths that happen to share a prefix (e.g. "/a/b" before "/a-x").
-fn trie_order_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    for (&x, &y) in a.iter().zip(b.iter()) {
-        let xk = if x == b'/' { 0 } else { x };
-        let yk = if y == b'/' { 0 } else { y };
-        match xk.cmp(&yk) {
-            std::cmp::Ordering::Equal => {}
-            other => return other,
-        }
-    }
-    a.len().cmp(&b.len())
-}
-
-/// Split renames into saves, directs, and places.
-///
-/// - **saves**: move each conflicted source to a temp path, deepest source first.
-/// - **directs**: conflict-free renames, single syscall each, DFS order.
-/// - **places**: move each temp to its destination, DFS order.
-fn order_renames(renames: Vec<Action>) -> (Vec<Action>, Vec<Action>, Vec<Action>) {
+/// - **saves**: move every source to a temp path, deepest source first
+///   (so children are extracted before their parent directory moves).
+/// - **places**: move each temp to its destination, in DFS order
+///   (parent destinations before children).
+fn process_renames(renames: Vec<Action>) -> (Vec<Action>, Vec<Action>) {
     if renames.is_empty() {
-        return (Vec::new(), Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new());
     }
 
-    // Extract (dst, src) pairs, keeping original order index.
     let pairs: Vec<(&str, &str)> = renames
         .iter()
         .map(|a| match a {
@@ -210,64 +151,21 @@ fn order_renames(renames: Vec<Action>) -> (Vec<Action>, Vec<Action>, Vec<Action>
             _ => unreachable!(),
         })
         .collect();
-    let n = pairs.len();
 
-    // Detect conflicts via ancestor scan in trie-sorted order.
-    //
-    // Two renames conflict when any path (src or dst) of one is an
-    // ancestor, descendant, or equal to any path of the other.  Rather
-    // than checking every pair (O(n²)), we sort all 2n paths in trie
-    // order and sweep with a stack: after popping non-ancestors, every
-    // remaining stack entry is an ancestor-or-equal of the current path.
-    // Any cross-rename match on the stack means a conflict.
-    let mut needs_temp = vec![false; n];
-    let mut tagged: Vec<(&str, usize)> = Vec::with_capacity(2 * n);
-    for (i, &(dst, src)) in pairs.iter().enumerate() {
-        tagged.push((src, i));
-        tagged.push((dst, i));
-    }
-    tagged.sort_unstable_by(|a, b| trie_order_cmp(a.0, b.0));
+    // Sort by source depth (deepest first) for saves.
+    let mut by_depth: Vec<usize> = (0..pairs.len()).collect();
+    by_depth.sort_by(|&a, &b| pairs[b].1.len().cmp(&pairs[a].1.len()));
 
-    let mut stack: Vec<(&str, usize)> = Vec::new();
-    for &(path, idx) in &tagged {
-        while let Some(&(top, _)) = stack.last() {
-            if top == path || is_path_ancestor(top, path) {
-                break;
-            }
-            stack.pop();
-        }
-        for &(_, anc_idx) in &stack {
-            if anc_idx != idx {
-                needs_temp[idx] = true;
-                needs_temp[anc_idx] = true;
-            }
-        }
-        stack.push((path, idx));
-    }
+    let mut saves = Vec::with_capacity(pairs.len());
+    let mut places = Vec::with_capacity(pairs.len());
 
-    // Direct renames: conflict-free, preserve DFS order.
-    let directs: Vec<Action> = (0..n)
-        .filter(|&i| !needs_temp[i])
-        .map(|i| Action::Rename {
-            dst: pairs[i].0.to_string(),
-            src: pairs[i].1.to_string(),
-        })
-        .collect();
-
-    // Conflicted renames: sort by source depth (deepest first) for saves.
-    let mut temp_indices: Vec<usize> = (0..n).filter(|&i| needs_temp[i]).collect();
-    temp_indices.sort_by(|&a, &b| pairs[b].1.len().cmp(&pairs[a].1.len()));
-
-    let mut saves = Vec::with_capacity(temp_indices.len());
-    let mut place_indexed: Vec<(usize, Action)> = Vec::with_capacity(temp_indices.len());
-
-    for (temp_n, &orig_idx) in temp_indices.iter().enumerate() {
+    for (temp_n, &orig_idx) in by_depth.iter().enumerate() {
         let tmp = temp_path(temp_n);
         saves.push(Action::Rename {
             dst: tmp.clone(),
             src: pairs[orig_idx].1.to_string(),
         });
-        place_indexed.push((
+        places.push((
             orig_idx,
             Action::Rename {
                 dst: pairs[orig_idx].0.to_string(),
@@ -277,10 +175,10 @@ fn order_renames(renames: Vec<Action>) -> (Vec<Action>, Vec<Action>, Vec<Action>
     }
 
     // Places in original DFS order (parent destinations before children).
-    place_indexed.sort_by_key(|(idx, _)| *idx);
-    let places = place_indexed.into_iter().map(|(_, a)| a).collect();
+    places.sort_by_key(|(idx, _)| *idx);
+    let places = places.into_iter().map(|(_, a)| a).collect();
 
-    (saves, directs, places)
+    (saves, places)
 }
 
 fn temp_path(n: usize) -> String {
@@ -317,54 +215,45 @@ mod tests {
     }
 
     fn get_renames(plan: &CommitPlan) -> Vec<(String, String)> {
-        // Direct renames are already (dst, src).
-        let mut result: Vec<(String, String)> = plan
-            .directs
+        // Pair places with saves to find original source.
+        plan.ops
             .iter()
-            .map(|op| match op {
-                Action::Rename { dst, src } => (dst.clone(), src.clone()),
-                _ => unreachable!(),
+            .filter_map(|op| {
+                let Action::Rename { dst, src: tmp } = op else {
+                    return None;
+                };
+                let orig_src = plan
+                    .saves
+                    .iter()
+                    .find_map(|s| match s {
+                        Action::Rename {
+                            dst: save_dst,
+                            src: save_src,
+                        } if save_dst == tmp => Some(save_src.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| tmp.clone());
+                Some((dst.clone(), orig_src))
             })
-            .collect();
-
-        // Temp-based renames: pair places with saves to find original source.
-        result.extend(plan.places.iter().map(|op| {
-            let Action::Rename { dst, src: tmp } = op else {
-                unreachable!()
-            };
-            let orig_src = plan
-                .saves
-                .iter()
-                .find_map(|s| match s {
-                    Action::Rename {
-                        dst: save_dst,
-                        src: save_src,
-                    } if save_dst == tmp => Some(save_src.clone()),
-                    _ => None,
-                })
-                .unwrap_or_else(|| tmp.clone());
-            (dst.clone(), orig_src)
-        }));
-
-        result
+            .collect()
     }
 
     fn get_stages(plan: &CommitPlan) -> Vec<(String, u32)> {
-        plan.stages
+        plan.ops
             .iter()
-            .map(|op| match op {
-                Action::Stage { path, ino } => (path.clone(), *ino),
-                _ => unreachable!(),
+            .filter_map(|op| match op {
+                Action::Stage { path, ino } => Some((path.clone(), *ino)),
+                _ => None,
             })
             .collect()
     }
 
     fn get_deletes(plan: &CommitPlan) -> Vec<String> {
-        plan.deletes
+        plan.ops
             .iter()
-            .map(|op| match op {
-                Action::Delete { path } => path.clone(),
-                _ => unreachable!(),
+            .filter_map(|op| match op {
+                Action::Delete { path } => Some(path.clone()),
+                _ => None,
             })
             .collect()
     }
@@ -471,70 +360,7 @@ mod tests {
         );
     }
 
-    // ── Rename ordering: direct vs temp ─────────────────────────────────
-
-    #[test]
-    fn independent_rename_skips_temp() {
-        // A single rename has no conflicts — should be direct.
-        let plan = build(&[rename("/b", "/a")]).into_plan();
-        assert_eq!(plan.directs.len(), 1);
-        assert!(plan.saves.is_empty());
-        assert!(plan.places.is_empty());
-    }
-
-    #[test]
-    fn independent_renames_all_direct() {
-        // Two renames with no path overlap — both direct.
-        let plan = build(&[rename("/b", "/a"), rename("/d", "/c")]).into_plan();
-        assert_eq!(plan.directs.len(), 2);
-        assert!(plan.saves.is_empty());
-        assert!(plan.places.is_empty());
-    }
-
-    #[test]
-    fn conflicting_renames_use_temps() {
-        // dst of one equals src of other — conflict.
-        let plan = build(&[rename("/a", "/c"), rename("/c", "/b")]).into_plan();
-        assert!(plan.directs.is_empty());
-        assert_eq!(plan.saves.len(), 2);
-        assert_eq!(plan.places.len(), 2);
-    }
-
-    #[test]
-    fn nested_source_renames_use_temps() {
-        // Parent/child sources conflict.
-        let plan = build(&[rename("/x", "/dir/file"), rename("/y", "/dir")]).into_plan();
-        assert!(plan.directs.is_empty());
-        assert_eq!(plan.saves.len(), 2);
-    }
-
-    #[test]
-    fn nested_destination_renames_use_temps() {
-        // Parent/child destinations conflict — a direct place of the parent
-        // would clobber the child via remove_dir_all.
-        let plan = build(&[rename("/a", "/x"), rename("/a/b", "/y")]).into_plan();
-        assert!(plan.directs.is_empty());
-        assert_eq!(plan.saves.len(), 2);
-        assert_eq!(plan.places.len(), 2);
-    }
-
-    #[test]
-    fn mixed_direct_and_conflicted_renames() {
-        // /b←/a and /d←/c are independent of each other but /b←/a
-        // conflicts with /a←/e (dst_b == src_a).
-        let plan =
-            build(&[rename("/b", "/a"), rename("/d", "/c"), rename("/a", "/e")]).into_plan();
-        assert_eq!(plan.directs.len(), 1, "/d←/c should be direct");
-        assert_eq!(plan.saves.len(), 2, "/b←/a and /a←/e conflict");
-    }
-
-    #[test]
-    fn prefix_not_ancestor_is_independent() {
-        // /ab is NOT an ancestor of /a — these should be independent.
-        let plan = build(&[rename("/ab", "/x"), rename("/a", "/y")]).into_plan();
-        assert_eq!(plan.directs.len(), 2);
-        assert!(plan.saves.is_empty());
-    }
+    // ── Rename ordering ──────────────────────────────────────────────────
 
     #[test]
     fn saves_deepest_source_first() {
@@ -548,9 +374,9 @@ mod tests {
     }
 
     #[test]
-    fn directs_preserve_dfs_order() {
-        // Three renames with nested destinations but unrelated sources:
-        // no conflicts, all become direct renames in DFS order.
+    fn places_preserve_dfs_order() {
+        // Three renames with nested destinations: places should be
+        // in DFS order (parent before child).
         let plan = build(&[
             rename("/a", "/x"),
             rename("/a/b", "/y"),
@@ -563,15 +389,6 @@ mod tests {
         let idx_abc = renames.iter().position(|p| p.0 == "/a/b/c").unwrap();
         assert!(idx_a < idx_ab, "/a must come before /a/b");
         assert!(idx_ab < idx_abc, "/a/b must come before /a/b/c");
-    }
-
-    #[test]
-    fn saves_and_places_paired() {
-        // Conflicting renames (dst of one = src of other): every
-        // conflicted rename produces one save + one place.
-        let plan = build(&[rename("/a", "/c"), rename("/c", "/b")]).into_plan();
-        assert_eq!(plan.saves.len(), plan.places.len());
-        assert_eq!(plan.saves.len(), 2);
     }
 
     #[test]
@@ -640,34 +457,11 @@ mod tests {
         get_renames(plan)
             .into_iter()
             .map(|(dst, src)| Action::Rename { dst, src })
-            .chain(plan.deletes.iter().cloned())
-            .chain(plan.stages.iter().cloned())
+            .chain(plan.ops.iter().filter_map(|a| match a {
+                Action::Rename { .. } => None, // skip places (already resolved above)
+                other => Some(other.clone()),
+            }))
             .collect()
-    }
-
-    /// For cycle cases, we can't get exact idempotence because temp renames
-    /// rewrite sources. Instead, verify the trees agree on all non-passthrough
-    /// entries (same paths map to same targets).
-    fn assert_same_entries(tree1: &DirTree, tree2: &DirTree) {
-        let mut entries1 = Vec::new();
-        tree1.for_each(|p, t| entries1.push((p.to_string(), t.clone())));
-        entries1.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let mut entries2 = Vec::new();
-        tree2.for_each(|p, t| entries2.push((p.to_string(), t.clone())));
-        entries2.sort_by(|a, b| a.0.cmp(&b.0));
-
-        // Filter out temp path artifacts
-        let entries1: Vec<_> = entries1
-            .into_iter()
-            .filter(|(p, _)| !p.contains(".agfs-commit-tmp-"))
-            .collect();
-        let entries2: Vec<_> = entries2
-            .into_iter()
-            .filter(|(p, _)| !p.contains(".agfs-commit-tmp-"))
-            .collect();
-
-        assert_eq!(entries1, entries2, "trees should have same logical entries");
     }
 
     fn assert_idempotent(input: &[Action]) {

@@ -581,16 +581,17 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
 1. Build a `Journal` from the journal records, then build a `DirTree` from all
    live segments. The tree collapses redundant operations (e.g. create-then-delete,
    overwrite chains, rename chains) into a minimal set of final-state entries.
-2. Walk the `DirTree` and collect commit ops into three ordered buckets:
-   - **Renames**: `BasePath(src)` redirects &rarr; `rename(base/src, base/dst)`.
-     Independent renames (no path overlap) execute as a single syscall.
-     Conflicted renames (nested sources/destinations, or destination =
-     another's source) use a two-phase save/place strategy; rotation cycles
-     (e.g. swap) are handled automatically.
-   - **Deletes**: `Tombstone` entries &rarr; `remove(base/path)`.
-   - **Stages**: `StagedFile(ino)` entries &rarr; copy `inodes/<ino>` to `base/path`.
-3. Apply in order: save-renames &rarr; direct-renames &rarr; place-renames
-   &rarr; deletes &rarr; stages.
+2. Walk the `DirTree` and collect commit ops into two groups:
+   - **Renames**: `BasePath(src)` redirects &rarr; two-phase save/place
+     through temp paths. All sources are saved deepest-first, then placed
+     at destinations in DFS order. Handles swaps and rotation cycles
+     automatically.
+   - **Ops**: `Tombstone` entries &rarr; `remove(base/path)`;
+     `StagedFile(ino)` entries &rarr; copy `inodes/<ino>` to `base/path`.
+     Interleaved in DFS order.
+3. Apply in order: saves &rarr; places &rarr; ops (deletes+stages).
+   Principle: readers before writers — renames read from base paths, so
+   saves must complete before any destination is written.
 4. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
 5. Signal kernel to reset staging state (`AGFS_IOC_JUMP` with `target_gen=0`,
    `tree_len=0` &mdash; reset mode, no J record written).
