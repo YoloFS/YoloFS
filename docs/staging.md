@@ -583,11 +583,14 @@ I/O redirection. The `agfs` CLI reads the journal and applies or discards.
    overwrite chains, rename chains) into a minimal set of final-state entries.
 2. Walk the `DirTree` and collect commit ops into three ordered buckets:
    - **Renames**: `BasePath(src)` redirects &rarr; `rename(base/src, base/dst)`.
-     Topo-sorted by source/destination conflicts; rotation cycles (e.g. swap)
-     broken with temporary renames.
+     Independent renames (no path overlap) execute as a single syscall.
+     Conflicted renames (nested sources/destinations, or destination =
+     another's source) use a two-phase save/place strategy; rotation cycles
+     (e.g. swap) are handled automatically.
    - **Deletes**: `Tombstone` entries &rarr; `remove(base/path)`.
    - **Stages**: `StagedFile(ino)` entries &rarr; copy `inodes/<ino>` to `base/path`.
-3. Apply in order: temp renames &rarr; renames &rarr; deletes &rarr; stages.
+3. Apply in order: save-renames &rarr; direct-renames &rarr; place-renames
+   &rarr; deletes &rarr; stages.
 4. Clean up: remove all files under `.agfs/inodes/`, truncate `.agfs/journal`.
 5. Signal kernel to reset staging state (`AGFS_IOC_JUMP` with `target_gen=0`,
    `tree_len=0` &mdash; reset mode, no J record written).

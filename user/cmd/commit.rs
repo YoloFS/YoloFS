@@ -3,10 +3,7 @@
 // `agfs commit` — apply staged changes to base.
 //
 // Builds a DirTree from live journal segments, converts it to a commit
-// plan (see journal/plan.rs), then applies in three phases:
-//   Phase 1: Renames — rename base paths (topo-sorted, cycles broken via temp)
-//   Phase 2: Deletes — remove from base (deepest-first)
-//   Phase 3: Stages  — copy staged inodes to base (shallowest-first)
+// plan (see journal/plan.rs), then applies each action in execution order.
 
 use crate::journal::Journal;
 use anyhow::{Context, Result};
@@ -106,44 +103,22 @@ fn apply_plan(agfs: &Path, plan: &crate::journal::CommitPlan) -> Result<usize> {
     use crate::journal::types::Action;
     let mut ensured: HashSet<PathBuf> = HashSet::new();
 
-    // Phase 1: save all rename sources to temp paths (deepest first).
-    for action in &plan.saves {
-        let Action::Rename { dst, src } = action else {
-            unreachable!()
-        };
-        apply_rename(
-            &crate::utils::to_base_path(src),
-            &crate::utils::to_base_path(dst),
-            &mut ensured,
-        )?;
-    }
-
-    // Phase 2: place temps at destinations (DFS order, parent first).
-    for action in &plan.places {
-        let Action::Rename { dst, src } = action else {
-            unreachable!()
-        };
-        apply_rename(
-            &crate::utils::to_base_path(src),
-            &crate::utils::to_base_path(dst),
-            &mut ensured,
-        )?;
-    }
-
-    // Phase 3: deletes.
-    for action in &plan.deletes {
-        let Action::Delete { path } = action else {
-            unreachable!()
-        };
-        apply_delete(&crate::utils::to_base_path(path))?;
-    }
-
-    // Phase 4: stages.
-    for action in &plan.stages {
-        let Action::Stage { path, ino } = action else {
-            unreachable!()
-        };
-        apply_stage(agfs, *ino, &crate::utils::to_base_path(path), &mut ensured)?;
+    for action in plan.iter() {
+        match action {
+            Action::Rename { src, dst } => {
+                apply_rename(
+                    &crate::utils::to_base_path(src),
+                    &crate::utils::to_base_path(dst),
+                    &mut ensured,
+                )?;
+            }
+            Action::Delete { path } => {
+                apply_delete(&crate::utils::to_base_path(path))?;
+            }
+            Action::Stage { path, ino } => {
+                apply_stage(agfs, *ino, &crate::utils::to_base_path(path), &mut ensured)?;
+            }
+        }
     }
 
     Ok(plan.len())
