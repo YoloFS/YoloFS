@@ -363,65 +363,62 @@ mod tests {
     // ── Rename ordering: direct vs temp ─────────────────────────────────
 
     #[test]
-    fn independent_rename_skips_temp() {
-        // A single rename has no conflicts — should be direct.
+    fn independent_rename_single() {
+        // A single rename — produces one logical rename.
         let plan = build(&[rename("/b", "/a")]).into_plan();
-        assert_eq!(plan.directs.len(), 1);
-        assert!(plan.saves.is_empty());
-        assert!(plan.places.is_empty());
+        assert_eq!(plan.saves.len(), 1);
+        assert_eq!(get_renames(&plan).len(), 1);
     }
 
     #[test]
-    fn independent_renames_all_direct() {
-        // Two renames with no path overlap — both direct.
+    fn independent_renames_both_preserved() {
+        // Two renames with no path overlap — both preserved.
         let plan = build(&[rename("/b", "/a"), rename("/d", "/c")]).into_plan();
-        assert_eq!(plan.directs.len(), 2);
-        assert!(plan.saves.is_empty());
-        assert!(plan.places.is_empty());
+        assert_eq!(plan.saves.len(), 2);
+        assert_eq!(get_renames(&plan).len(), 2);
     }
 
     #[test]
     fn conflicting_renames_use_temps() {
-        // dst of one equals src of other — conflict.
+        // dst of one equals src of other — both renames preserved.
         let plan = build(&[rename("/a", "/c"), rename("/c", "/b")]).into_plan();
-        assert!(plan.directs.is_empty());
         assert_eq!(plan.saves.len(), 2);
-        assert_eq!(plan.places.len(), 2);
+        assert_eq!(get_renames(&plan).len(), 2);
     }
 
     #[test]
     fn nested_source_renames_use_temps() {
-        // Parent/child sources conflict.
+        // Parent/child sources.
         let plan = build(&[rename("/x", "/dir/file"), rename("/y", "/dir")]).into_plan();
-        assert!(plan.directs.is_empty());
         assert_eq!(plan.saves.len(), 2);
+        assert_eq!(get_renames(&plan).len(), 2);
     }
 
     #[test]
     fn nested_destination_renames_use_temps() {
-        // Parent/child destinations conflict — a direct place of the parent
-        // would clobber the child via remove_dir_all.
+        // Parent/child destinations — saves required so parent doesn't
+        // clobber child via remove_dir_all.
         let plan = build(&[rename("/a", "/x"), rename("/a/b", "/y")]).into_plan();
-        assert!(plan.directs.is_empty());
         assert_eq!(plan.saves.len(), 2);
-        assert_eq!(plan.places.len(), 2);
+        assert_eq!(get_renames(&plan).len(), 2);
     }
 
     #[test]
-    fn mixed_direct_and_conflicted_renames() {
+    fn mixed_independent_and_conflicted_renames() {
         // /b←/a and /d←/c are independent of each other but /b←/a
-        // conflicts with /a←/e (dst_b == src_a).
+        // conflicts with /a←/e (dst_b == src_a).  All three go through
+        // save/place.
         let plan = build(&[rename("/b", "/a"), rename("/d", "/c"), rename("/a", "/e")]).into_plan();
-        assert_eq!(plan.directs.len(), 1, "/d←/c should be direct");
-        assert_eq!(plan.saves.len(), 2, "/b←/a and /a←/e conflict");
+        assert_eq!(plan.saves.len(), 3, "all three renames use saves");
+        assert_eq!(get_renames(&plan).len(), 3, "all three renames preserved");
     }
 
     #[test]
     fn prefix_not_ancestor_is_independent() {
         // /ab is NOT an ancestor of /a — these should be independent.
         let plan = build(&[rename("/ab", "/x"), rename("/a", "/y")]).into_plan();
-        assert_eq!(plan.directs.len(), 2);
-        assert!(plan.saves.is_empty());
+        assert_eq!(plan.saves.len(), 2);
+        assert_eq!(get_renames(&plan).len(), 2);
     }
 
     #[test]
