@@ -15,10 +15,9 @@ fn rename_produces_rename_record() {
     let j = journal(&s);
     let acts = actions(&j);
     assert!(
-        acts.iter().any(
-            |a| matches!(a, Action::Rename { src, dst, .. }
-            if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))
-        ),
+        acts.iter()
+            .any(|a| matches!(a, Action::Rename { src, dst, .. }
+            if dst.ends_with("/moved.txt") && src.ends_with("/hello.txt"))),
         "journal should have a Rename record for hello.txt → moved.txt: {acts:?}"
     );
 }

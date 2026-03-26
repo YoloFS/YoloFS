@@ -111,7 +111,10 @@ fn collect(
 
         match &node.target {
             Target::StagedFile(ino) => {
-                stages.push(Action::Stage { path: prefix.clone(), ino: *ino });
+                stages.push(Action::Stage {
+                    path: prefix.clone(),
+                    ino: *ino,
+                });
             }
             Target::BasePath(src) => {
                 renames.push(Action::Rename {
@@ -120,7 +123,9 @@ fn collect(
                 });
             }
             Target::Tombstone => {
-                deletes.push(Action::Delete { path: prefix.clone() });
+                deletes.push(Action::Delete {
+                    path: prefix.clone(),
+                });
             }
             Target::Passthrough => {}
         }
@@ -132,7 +137,6 @@ fn collect(
         prefix.truncate(path_len);
     }
 }
-
 
 // ── Rename ordering (two-phase save/place) ────────────────────────────
 
@@ -148,8 +152,14 @@ fn order_renames(renames: Vec<Action>) -> (Vec<Action>, Vec<Action>) {
     // Sort by source depth (deepest first) for the save phase.
     let mut indexed: Vec<(usize, Action)> = renames.into_iter().enumerate().collect();
     indexed.sort_by(|a, b| {
-        let src_a = match &a.1 { Action::Rename { src, .. } => src, _ => unreachable!() };
-        let src_b = match &b.1 { Action::Rename { src, .. } => src, _ => unreachable!() };
+        let src_a = match &a.1 {
+            Action::Rename { src, .. } => src,
+            _ => unreachable!(),
+        };
+        let src_b = match &b.1 {
+            Action::Rename { src, .. } => src,
+            _ => unreachable!(),
+        };
         src_b.len().cmp(&src_a.len())
     });
 
@@ -163,7 +173,10 @@ fn order_renames(renames: Vec<Action>) -> (Vec<Action>, Vec<Action>) {
         };
 
         let tmp = temp_path(n);
-        saves.push(Action::Rename { dst: tmp.clone(), src });
+        saves.push(Action::Rename {
+            dst: tmp.clone(),
+            src,
+        });
         place_by_idx[orig_idx] = Some(Action::Rename { dst, src: tmp });
     }
 
@@ -195,9 +208,7 @@ mod tests {
     }
 
     fn delete(path: &str) -> Action {
-        Action::Delete {
-            path: path.into(),
-        }
+        Action::Delete { path: path.into() }
     }
 
     fn rename(dest: &str, src: &str) -> Action {
@@ -213,12 +224,28 @@ mod tests {
         plan.places
             .iter()
             .map(|op| {
-                let Action::Rename { dst, src: tmp } = op else { unreachable!() };
+                let Action::Rename { dst, src: tmp } = op else {
+                    unreachable!()
+                };
                 // Find the save that wrote to this temp path.
-                let orig_src = plan.saves.iter().find_map(|s| {
-                    let Action::Rename { dst: save_dst, src: save_src } = s else { unreachable!() };
-                    if save_dst == tmp { Some(save_src.clone()) } else { None }
-                }).unwrap_or_else(|| tmp.clone());
+                let orig_src = plan
+                    .saves
+                    .iter()
+                    .find_map(|s| {
+                        let Action::Rename {
+                            dst: save_dst,
+                            src: save_src,
+                        } = s
+                        else {
+                            unreachable!()
+                        };
+                        if save_dst == tmp {
+                            Some(save_src.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| tmp.clone());
                 (dst.clone(), orig_src)
             })
             .collect()
@@ -351,10 +378,7 @@ mod tests {
     #[test]
     fn saves_deepest_source_first() {
         // Sources /dir and /dir/f: save /dir/f first (deeper).
-        let plan = build(&[
-            rename("/x", "/dir/file"),
-            rename("/y", "/dir"),
-        ]).into_plan();
+        let plan = build(&[rename("/x", "/dir/file"), rename("/y", "/dir")]).into_plan();
         assert_eq!(plan.saves.len(), 2);
         // First save should be the deeper source.
         let first_src = match &plan.saves[0] {
@@ -372,7 +396,8 @@ mod tests {
             rename("/a", "/x"),
             rename("/a/b", "/y"),
             rename("/a/b/c", "/z"),
-        ]).into_plan();
+        ])
+        .into_plan();
         let renames = get_renames(&plan);
         let idx_a = renames.iter().position(|p| p.0 == "/a").unwrap();
         let idx_ab = renames.iter().position(|p| p.0 == "/a/b").unwrap();
@@ -393,11 +418,8 @@ mod tests {
     fn source_resolution_in_chain() {
         // mv /a /b, mv /b /c, then mv /c/f /x.
         // Chain collapse: /c ← /a. Source resolution: /x ← /a/f.
-        let plan = build(&[
-            rename("/b", "/a"),
-            rename("/c", "/b"),
-            rename("/x", "/c/f"),
-        ]).into_plan();
+        let plan =
+            build(&[rename("/b", "/a"), rename("/c", "/b"), rename("/x", "/c/f")]).into_plan();
         let renames = get_renames(&plan);
         // /x should have source /a/f (resolved through chain).
         let x_rename = renames.iter().find(|(dst, _)| dst == "/x").unwrap();
@@ -407,10 +429,8 @@ mod tests {
     #[test]
     fn redirect_child_rename() {
         // mv /dir /other, then mv /dir/f /other/renamed.
-        let plan = build(&[
-            rename("/other", "/dir"),
-            rename("/other/renamed", "/dir/f"),
-        ]).into_plan();
+        let plan =
+            build(&[rename("/other", "/dir"), rename("/other/renamed", "/dir/f")]).into_plan();
         let renames = get_renames(&plan);
         assert_eq!(renames.len(), 2);
     }
@@ -423,7 +443,8 @@ mod tests {
             rename("/tmp", "/a"),
             rename("/a", "/b"),
             rename("/b", "/tmp"),
-        ]).into_plan();
+        ])
+        .into_plan();
         let renames = get_renames(&plan);
         // After chain collapse: /a ← /b, /b ← /a (swap).
         assert_eq!(renames.len(), 2, "swap should produce 2 logical renames");
@@ -436,9 +457,14 @@ mod tests {
             rename("/a", "/c"),
             rename("/c", "/b"),
             rename("/b", "/tmp"),
-        ]).into_plan();
+        ])
+        .into_plan();
         let renames = get_renames(&plan);
-        assert_eq!(renames.len(), 3, "3-way rotation should produce 3 logical renames");
+        assert_eq!(
+            renames.len(),
+            3,
+            "3-way rotation should produce 3 logical renames"
+        );
     }
 
     // ── Idempotence: actions → tree → actions → tree ──────────────────
@@ -491,7 +517,10 @@ mod tests {
         let plan = tree1.into_plan();
         let logical = actions_without_temps(&plan);
         let tree2 = build(&logical);
-        assert_eq!(tree1, tree2, "tree should be a fixed point of build ∘ into_plan");
+        assert_eq!(
+            tree1, tree2,
+            "tree should be a fixed point of build ∘ into_plan"
+        );
     }
 
     #[test]
@@ -554,22 +583,22 @@ mod tests {
             rename("/tmp", "/a"),
             rename("/a", "/b"),
             rename("/b", "/tmp"),
-        ]).into_plan();
+        ])
+        .into_plan();
         let mut renames = get_renames(&plan);
         renames.sort();
         assert_eq!(
             renames,
-            vec![("/a".to_string(), "/b".to_string()), ("/b".to_string(), "/a".to_string())]
+            vec![
+                ("/a".to_string(), "/b".to_string()),
+                ("/b".to_string(), "/a".to_string())
+            ]
         );
     }
 
     #[test]
     fn idempotent_nested_stages() {
-        assert_idempotent(&[
-            add("/a", 1),
-            add("/a/b", 2),
-            add("/a/b/c", 3),
-        ]);
+        assert_idempotent(&[add("/a", 1), add("/a/b", 2), add("/a/b/c", 3)]);
     }
 
     #[test]
@@ -578,11 +607,7 @@ mod tests {
         // get dropped by into_plan (it doesn't recurse into tombstoned
         // dirs). Verify the round-tripped tree is a subset with matching
         // targets.
-        let tree1 = build(&[
-            add("/dir/f", 1),
-            delete("/dir/f"),
-            delete("/dir"),
-        ]);
+        let tree1 = build(&[add("/dir/f", 1), delete("/dir/f"), delete("/dir")]);
         let plan = tree1.into_plan();
         let all = actions_without_temps(&plan);
         let tree2 = build(&all);
@@ -591,7 +616,8 @@ mod tests {
         tree2.for_each(|p, t| entries2.push((p.to_string(), t.clone())));
         for (path, target) in &entries2 {
             assert_eq!(
-                tree1.get(path), Some(target),
+                tree1.get(path),
+                Some(target),
                 "tree2 entry {path} should match tree1"
             );
         }

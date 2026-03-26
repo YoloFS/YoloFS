@@ -55,9 +55,7 @@ fn apply_stage(
     // Remove whatever exists at the target, unless we're staging a dir
     // over an existing dir (children may have been placed by renames).
     if let Ok(existing) = base_path.symlink_metadata() {
-        let both_dirs = meta.is_dir()
-            && existing.is_dir()
-            && !existing.file_type().is_symlink();
+        let both_dirs = meta.is_dir() && existing.is_dir() && !existing.file_type().is_symlink();
         if !both_dirs {
             remove_existing(base_path, &existing)?;
         }
@@ -92,8 +90,7 @@ fn apply_rename(src: &Path, dst: &Path, ensured: &mut HashSet<PathBuf>) -> Resul
     if let Ok(existing) = dst.symlink_metadata() {
         remove_existing(dst, &existing)?;
     }
-    fs::rename(src, dst)
-        .with_context(|| format!("renaming {} → {}", src.display(), dst.display()))
+    fs::rename(src, dst).with_context(|| format!("renaming {} → {}", src.display(), dst.display()))
 }
 
 fn apply_delete(path: &Path) -> Result<()> {
@@ -111,7 +108,9 @@ fn apply_plan(agfs: &Path, plan: &crate::journal::CommitPlan) -> Result<usize> {
 
     // Phase 1: save all rename sources to temp paths (deepest first).
     for action in &plan.saves {
-        let Action::Rename { dst, src } = action else { unreachable!() };
+        let Action::Rename { dst, src } = action else {
+            unreachable!()
+        };
         apply_rename(
             &crate::utils::to_base_path(src),
             &crate::utils::to_base_path(dst),
@@ -121,7 +120,9 @@ fn apply_plan(agfs: &Path, plan: &crate::journal::CommitPlan) -> Result<usize> {
 
     // Phase 2: place temps at destinations (DFS order, parent first).
     for action in &plan.places {
-        let Action::Rename { dst, src } = action else { unreachable!() };
+        let Action::Rename { dst, src } = action else {
+            unreachable!()
+        };
         apply_rename(
             &crate::utils::to_base_path(src),
             &crate::utils::to_base_path(dst),
@@ -131,13 +132,17 @@ fn apply_plan(agfs: &Path, plan: &crate::journal::CommitPlan) -> Result<usize> {
 
     // Phase 3: deletes.
     for action in &plan.deletes {
-        let Action::Delete { path } = action else { unreachable!() };
+        let Action::Delete { path } = action else {
+            unreachable!()
+        };
         apply_delete(&crate::utils::to_base_path(path))?;
     }
 
     // Phase 4: stages.
     for action in &plan.stages {
-        let Action::Stage { path, ino } = action else { unreachable!() };
+        let Action::Stage { path, ino } = action else {
+            unreachable!()
+        };
         apply_stage(agfs, *ino, &crate::utils::to_base_path(path), &mut ensured)?;
     }
 

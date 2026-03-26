@@ -195,8 +195,6 @@ mod tests {
     fn parse_delete() {
         let records = parse(b"D\0/foo\n").unwrap();
         assert_eq!(records.len(), 1);
-        assert!(
-            matches!(&records[0], Record::Action(Action::Delete { path }) if path == "/foo")
-        );
+        assert!(matches!(&records[0], Record::Action(Action::Delete { path }) if path == "/foo"));
     }
 }

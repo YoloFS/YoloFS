@@ -79,7 +79,11 @@ impl DirTree {
         self.nodes
             .values()
             .map(|n| {
-                let own = if matches!(n.target, Target::Passthrough) { 0 } else { 1 };
+                let own = if matches!(n.target, Target::Passthrough) {
+                    0
+                } else {
+                    1
+                };
                 own + n.children.len()
             })
             .sum()
@@ -415,9 +419,7 @@ mod tests {
     }
 
     fn delete(path: &str) -> Action {
-        Action::Delete {
-            path: path.into(),
-        }
+        Action::Delete { path: path.into() }
     }
 
     fn rename(dest: &str, src: &str) -> Action {
@@ -447,7 +449,10 @@ mod tests {
     fn add_nested_file() {
         let tree = build(&[add("/dir/sub/file", 1)]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/dir/sub/file"), Some(Target::StagedFile(1))));
+        assert!(matches!(
+            tree.get("/dir/sub/file"),
+            Some(Target::StagedFile(1))
+        ));
     }
 
     #[test]
@@ -662,12 +667,7 @@ mod tests {
     #[test]
     fn delete_dir_with_children() {
         // Deleting a dir tombstones it; children remain in the subtree.
-        let tree = build(&[
-            add("/d", 1),
-            add("/d/f1", 2),
-            add("/d/f2", 3),
-            delete("/d"),
-        ]);
+        let tree = build(&[add("/d", 1), add("/d/f1", 2), add("/d/f2", 3), delete("/d")]);
         assert_eq!(tree.len(), 3);
         assert!(matches!(tree.get("/d"), Some(Target::Tombstone)));
         assert!(matches!(tree.get("/d/f1"), Some(Target::StagedFile(2))));
@@ -679,9 +679,7 @@ mod tests {
         let tree = build(&[
             add("/d", 1),
             add("/d/f", 2),
-            Action::Delete {
-                path: "/d".into(),
-            },
+            Action::Delete { path: "/d".into() },
         ]);
         // Delete always tombstones. Children remain in the subtree.
         assert_eq!(tree.len(), 2);
@@ -978,9 +976,7 @@ mod tests {
                 src: "/a".into(),
                 dst: "/b".into(),
             },
-            Action::Delete {
-                path: "/b".into(),
-            },
+            Action::Delete { path: "/b".into() },
         ]);
         // Both /a and /b should be tombstoned.
         assert!(
@@ -1338,9 +1334,7 @@ mod tests {
     #[test]
     fn serialize_negative_dentry_symlink() {
         // delete on a base-only symlink produces a negative dentry.
-        let tree = build(&[Action::Delete {
-            path: "/s".into(),
-        }]);
+        let tree = build(&[Action::Delete { path: "/s".into() }]);
         let buf = tree.serialize();
         assert_eq!(buf[5], 3); // kind=None/negative
     }

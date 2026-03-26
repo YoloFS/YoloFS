@@ -23,7 +23,10 @@ fn stage_record_has_no_dtype() {
         .filter(|line| !line.is_empty() && line[0] == b'S')
         .collect();
 
-    assert!(!stage_lines.is_empty(), "journal should contain an S record");
+    assert!(
+        !stage_lines.is_empty(),
+        "journal should contain an S record"
+    );
     for line in &stage_lines {
         let (tag, fields) = parse_line(line);
         assert_eq!(tag, b'S');
@@ -32,7 +35,10 @@ fn stage_record_has_no_dtype() {
             3,
             "S record should have exactly 3 fields (S, path, ino), got {}: {:?}",
             fields.len(),
-            fields.iter().map(|f| String::from_utf8_lossy(f)).collect::<Vec<_>>()
+            fields
+                .iter()
+                .map(|f| String::from_utf8_lossy(f))
+                .collect::<Vec<_>>()
         );
     }
 }
@@ -51,7 +57,10 @@ fn delete_record_has_no_dtype() {
         .filter(|line| !line.is_empty() && line[0] == b'D')
         .collect();
 
-    assert!(!delete_lines.is_empty(), "journal should contain a D record");
+    assert!(
+        !delete_lines.is_empty(),
+        "journal should contain a D record"
+    );
     for line in &delete_lines {
         let (tag, fields) = parse_line(line);
         assert_eq!(tag, b'D');
@@ -60,7 +69,10 @@ fn delete_record_has_no_dtype() {
             2,
             "D record should have exactly 2 fields (D, path), got {}: {:?}",
             fields.len(),
-            fields.iter().map(|f| String::from_utf8_lossy(f)).collect::<Vec<_>>()
+            fields
+                .iter()
+                .map(|f| String::from_utf8_lossy(f))
+                .collect::<Vec<_>>()
         );
     }
 }
@@ -79,7 +91,10 @@ fn rename_record_has_no_dtype() {
         .filter(|line| !line.is_empty() && line[0] == b'R')
         .collect();
 
-    assert!(!rename_lines.is_empty(), "journal should contain an R record");
+    assert!(
+        !rename_lines.is_empty(),
+        "journal should contain an R record"
+    );
     for line in &rename_lines {
         let (tag, fields) = parse_line(line);
         assert_eq!(tag, b'R');
@@ -88,7 +103,10 @@ fn rename_record_has_no_dtype() {
             3,
             "R record should have exactly 3 fields (R, dst, src), got {}: {:?}",
             fields.len(),
-            fields.iter().map(|f| String::from_utf8_lossy(f)).collect::<Vec<_>>()
+            fields
+                .iter()
+                .map(|f| String::from_utf8_lossy(f))
+                .collect::<Vec<_>>()
         );
     }
 }

@@ -621,7 +621,10 @@ fn commit_create_then_delete_noop() {
         "ephemeral file should not be in base"
     );
     // Existing files should be untouched
-    assert_eq!(fs::read_to_string(s.base_path("hello.txt")).unwrap(), orig_hello);
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        orig_hello
+    );
 }
 
 /// Rename chain: a → b → c. DirTree collapses to single redirect c → a.
@@ -634,8 +637,14 @@ fn commit_rename_chain() {
 
     s.cli(&["commit"]).expect("commit");
 
-    assert!(!s.base_path("hello.txt").exists(), "original should be gone");
-    assert!(!s.base_path("step1.txt").exists(), "intermediate should be gone");
+    assert!(
+        !s.base_path("hello.txt").exists(),
+        "original should be gone"
+    );
+    assert!(
+        !s.base_path("step1.txt").exists(),
+        "intermediate should be gone"
+    );
     assert_eq!(
         fs::read_to_string(s.base_path("step2.txt")).unwrap(),
         "base content\n",
@@ -690,9 +699,18 @@ fn commit_three_way_rotation() {
 
     s.cli(&["commit"]).expect("commit");
 
-    assert_eq!(fs::read_to_string(s.base_path("hello.txt")).unwrap(), orig_third);
-    assert_eq!(fs::read_to_string(s.base_path("multi.txt")).unwrap(), orig_hello);
-    assert_eq!(fs::read_to_string(s.base_path("third.txt")).unwrap(), orig_multi);
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        orig_third
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("multi.txt")).unwrap(),
+        orig_hello
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("third.txt")).unwrap(),
+        orig_multi
+    );
 }
 
 /// Rename a child out of a directory, then rename the parent.
@@ -750,7 +768,10 @@ fn commit_delete_and_recreate_dir() {
     s.cli(&["commit"]).expect("commit");
 
     assert!(s.base_path("subdir").is_dir());
-    assert!(!s.base_path("subdir/deep.txt").exists(), "old child should be gone");
+    assert!(
+        !s.base_path("subdir/deep.txt").exists(),
+        "old child should be gone"
+    );
     assert_eq!(
         fs::read_to_string(s.base_path("subdir/fresh.txt")).unwrap(),
         "fresh\n"
@@ -769,9 +790,18 @@ fn commit_deep_nested_creation() {
 
     s.cli(&["commit"]).expect("commit");
 
-    assert_eq!(fs::read_to_string(s.base_path("a/top.txt")).unwrap(), "top\n");
-    assert_eq!(fs::read_to_string(s.base_path("a/b/mid.txt")).unwrap(), "mid\n");
-    assert_eq!(fs::read_to_string(s.base_path("a/b/c/deep.txt")).unwrap(), "deep\n");
+    assert_eq!(
+        fs::read_to_string(s.base_path("a/top.txt")).unwrap(),
+        "top\n"
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("a/b/mid.txt")).unwrap(),
+        "mid\n"
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("a/b/c/deep.txt")).unwrap(),
+        "deep\n"
+    );
 }
 
 /// Rename into a new nested directory path.
@@ -853,8 +883,14 @@ fn commit_mixed_create_rename_delete() {
     s.cli(&["commit"]).expect("commit");
 
     assert_eq!(fs::read_to_string(s.base_path("new.txt")).unwrap(), "new\n");
-    assert_eq!(fs::read_to_string(s.base_path("newdir/inside.txt")).unwrap(), "inside\n");
-    assert_eq!(fs::read_to_string(s.base_path("moved.txt")).unwrap(), "base content\n");
+    assert_eq!(
+        fs::read_to_string(s.base_path("newdir/inside.txt")).unwrap(),
+        "inside\n"
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("moved.txt")).unwrap(),
+        "base content\n"
+    );
     assert!(!s.base_path("hello.txt").exists());
     assert!(!s.base_path("multi.txt").exists());
     assert_eq!(
@@ -870,11 +906,17 @@ fn commit_twice() {
 
     fs::write(s.mnt_path("hello.txt"), "round1\n").unwrap();
     s.cli(&["commit"]).expect("commit 1");
-    assert_eq!(fs::read_to_string(s.base_path("hello.txt")).unwrap(), "round1\n");
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        "round1\n"
+    );
 
     fs::write(s.mnt_path("hello.txt"), "round2\n").unwrap();
     s.cli(&["commit"]).expect("commit 2");
-    assert_eq!(fs::read_to_string(s.base_path("hello.txt")).unwrap(), "round2\n");
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        "round2\n"
+    );
 }
 
 /// Commit with symlinks in a renamed directory.
@@ -887,9 +929,17 @@ fn commit_rename_dir_with_symlink() {
 
     s.cli(&["commit"]).expect("commit");
 
-    assert!(s.base_path("moved/link").symlink_metadata().unwrap().file_type().is_symlink());
+    assert!(
+        s.base_path("moved/link")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
     assert_eq!(
-        fs::read_link(s.base_path("moved/link")).unwrap().to_string_lossy(),
+        fs::read_link(s.base_path("moved/link"))
+            .unwrap()
+            .to_string_lossy(),
         "deep.txt"
     );
 }
@@ -1029,7 +1079,10 @@ fn commit_rename_dir_delete_child_stage_child() {
     s.cli(&["commit"]).expect("commit");
 
     assert!(s.base_path("other").is_dir());
-    assert!(!s.base_path("other/deep.txt").exists(), "deleted child should be gone");
+    assert!(
+        !s.base_path("other/deep.txt").exists(),
+        "deleted child should be gone"
+    );
     assert_eq!(
         fs::read_to_string(s.base_path("other/replacement.txt")).unwrap(),
         "new\n",
@@ -1073,9 +1126,18 @@ fn commit_multiple_renames_into_redirected_dir() {
 
     s.cli(&["commit"]).expect("commit");
 
-    assert_eq!(fs::read_to_string(s.base_path("other/deep.txt")).unwrap(), "nested\n");
-    assert_eq!(fs::read_to_string(s.base_path("other/a.txt")).unwrap(), "base content\n");
-    assert_eq!(fs::read_to_string(s.base_path("other/b.txt")).unwrap(), "line1\nline2\n");
+    assert_eq!(
+        fs::read_to_string(s.base_path("other/deep.txt")).unwrap(),
+        "nested\n"
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("other/a.txt")).unwrap(),
+        "base content\n"
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("other/b.txt")).unwrap(),
+        "line1\nline2\n"
+    );
     assert!(!s.base_path("subdir").exists());
     assert!(!s.base_path("hello.txt").exists());
     assert!(!s.base_path("multi.txt").exists());
@@ -1088,7 +1150,11 @@ fn commit_rename_child_within_redirected_dir() {
     let s = AgfsSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir"), s.mnt_path("other")).unwrap();
-    fs::rename(s.mnt_path("other/deep.txt"), s.mnt_path("other/renamed.txt")).unwrap();
+    fs::rename(
+        s.mnt_path("other/deep.txt"),
+        s.mnt_path("other/renamed.txt"),
+    )
+    .unwrap();
 
     s.cli(&["commit"]).expect("commit");
 
@@ -1117,7 +1183,10 @@ fn commit_deep_rename_chain_with_extraction() {
         "nested\n",
     );
     assert!(s.base_path("b").is_dir(), "renamed dir should exist");
-    assert!(!s.base_path("b/deep.txt").exists(), "extracted file should be gone from dir");
+    assert!(
+        !s.base_path("b/deep.txt").exists(),
+        "extracted file should be gone from dir"
+    );
     assert!(!s.base_path("subdir").exists());
     assert!(!s.base_path("a").exists());
 }

@@ -70,7 +70,10 @@ mod tests {
             ino: 1,
         }]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/src/main.rs"), Some(Target::StagedFile(1))));
+        assert!(matches!(
+            tree.get("/src/main.rs"),
+            Some(Target::StagedFile(1))
+        ));
     }
 
     #[test]
