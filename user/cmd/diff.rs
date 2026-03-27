@@ -87,28 +87,40 @@ fn print_segment_footer(closing: &Option<(u64, String)>) {
 
 // ── Per-change printing (summary vs verbose) ─────────────────────────
 
-fn print_change(agfs: &Path, path: &str, target: &Target, verbose: bool) {
-    let base_exists = crate::utils::to_base_path(path).exists();
+fn print_change(
+    agfs: &Path,
+    path: &str,
+    target: &Target,
+    verbose: bool,
+    base_exists_cache: &mut std::collections::HashMap<String, bool>,
+) {
+    let base_exists = *base_exists_cache
+        .entry(path.to_string())
+        .or_insert_with(|| crate::utils::to_base_path(path).exists());
     match target {
         Target::StagedFile(ino) if !base_exists => {
             println!("{} {}", path.bold(), "(added)".green());
-            if is_binary_inode(agfs, *ino) {
-                println!("  {}", "Binary file (not shown)".dimmed());
-            } else if verbose {
-                print_unified_diff("", &read_inode(agfs, *ino));
+            if verbose {
+                if is_binary_inode(agfs, *ino) {
+                    println!("  {}", "Binary file (not shown)".dimmed());
+                } else {
+                    print_unified_diff("", &read_inode(agfs, *ino));
+                }
             }
         }
         Target::StagedFile(ino) => {
-            let binary = is_binary_inode(agfs, *ino) || is_binary_base(path);
-            if binary {
-                println!("{} {}", path.bold(), "(modified)".yellow());
-                println!("  {}", "Binary files differ".dimmed());
-            } else if verbose {
-                let old_text = read_base(path);
-                let new_text = read_inode(agfs, *ino);
-                if old_text != new_text {
+            if verbose {
+                let binary = is_binary_inode(agfs, *ino) || is_binary_base(path);
+                if binary {
                     println!("{} {}", path.bold(), "(modified)".yellow());
-                    print_unified_diff(&old_text, &new_text);
+                    println!("  {}", "Binary files differ".dimmed());
+                } else {
+                    let old_text = read_base(path);
+                    let new_text = read_inode(agfs, *ino);
+                    if old_text != new_text {
+                        println!("{} {}", path.bold(), "(modified)".yellow());
+                        print_unified_diff(&old_text, &new_text);
+                    }
                 }
             } else {
                 println!("{} {}", path.bold(), "(modified)".yellow());
@@ -176,6 +188,7 @@ fn run(
     let has_checkpoints = labels.iter().any(|c| c.is_some());
 
     let mut total = 0usize;
+    let mut base_exists_cache = std::collections::HashMap::new();
 
     for (seg, label) in journal.into_live_segments_range(start, end).zip(labels) {
         let tree = DirTree::build(std::iter::once(seg));
@@ -206,7 +219,7 @@ fn run(
 
         tree.for_each(|p, target| {
             if path.is_none() || target.matches_path(p, path.unwrap()) {
-                print_change(&agfs, p, target, verbose);
+                print_change(&agfs, p, target, verbose, &mut base_exists_cache);
             }
         });
         total += count;
