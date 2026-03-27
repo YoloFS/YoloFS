@@ -262,7 +262,10 @@ fn watch_logs_directory_stat_ask() {
         stderr.contains(&expected_path),
         "watch daemon should have received an ask for {expected_path}, got:\n{stderr}"
     );
-    assert!(meta.is_ok(), "directory stat should succeed after allow-all");
+    assert!(
+        meta.is_ok(),
+        "directory stat should succeed after allow-all"
+    );
 }
 
 /// Traversal into a nested file should raise an ask on the traversed
@@ -301,5 +304,8 @@ fn watch_logs_directory_traversal_ask() {
         "watch daemon should have received a traversal ask for {expected_path}, got:\n{stderr}"
     );
 
-    assert!(meta.is_ok(), "metadata lookup should succeed after allow-all");
+    assert!(
+        meta.is_ok(),
+        "metadata lookup should succeed after allow-all"
+    );
 }
