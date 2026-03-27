@@ -54,10 +54,7 @@ impl AgfsSession {
     /// Wrap an existing mounted session root (for tests that do custom setup).
     pub fn from_existing_root(root: std::path::PathBuf) -> Result<Self> {
         let mnt = root.join(".agfs/mnt");
-        let cursor = Some(
-            kmsg::KmsgCursor::now()
-                .context("could not open /dev/kmsg")?,
-        );
+        let cursor = Some(kmsg::KmsgCursor::now().context("could not open /dev/kmsg")?);
         Ok(Self {
             root,
             mnt,
