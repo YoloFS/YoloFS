@@ -1,6 +1,6 @@
 use crate::backend::{self, Backend, CheckpointController, CheckpointOutcome};
 use crate::workload::{CacheMode, IterResult, Workload};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -229,6 +229,7 @@ impl Backend for BranchFs {
         };
         let staging_ms = sub.staging_ms;
 
+
         // Commit all branch levels back to base. The checkpoint controller
         // may have created nested branches (bench-step-001, bench-step-002, ...);
         // branchfs commit only merges one level at a time, so we repeat.
@@ -266,7 +267,7 @@ impl Backend for BranchFs {
             IterResult {
                 init_ms: Some(init_ms),
                 staging_ms: Some(staging_ms),
-                status_ms: None, // branchfs has no status query
+                status_us: None, // branchfs has no status mechanism
                 commit_ms: Some(commit_ms),
                 total_ms: init_ms + staging_ms + commit_ms,
                 op_result: sub.op_result,
@@ -296,3 +297,4 @@ fn which(name: &str) -> bool {
         .status()
         .is_ok_and(|s| s.success())
 }
+
