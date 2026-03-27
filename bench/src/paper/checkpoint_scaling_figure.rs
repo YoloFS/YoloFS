@@ -150,6 +150,8 @@ def plot_panel(ax, data_csv, xlabel, show_ylabel, ylabel=None, exclude_backends=
     ax.set_ylim(bottom=0)
     if show_ylabel:
         ax.set_ylabel(ylabel or 'latency (\u00b5s/op)')
+    elif show_ylabel is None:
+        pass  # tick labels visible, no ylabel text
     else:
         ax.tick_params(axis='y', labelleft=False)
 
@@ -161,7 +163,7 @@ plot_panel(ax_status, STATUS_DATA, 'status', show_ylabel=True, ylabel='latency (
 ax_status.text(0.95, 0.05, 'BranchFS: N/A', transform=ax_status.transAxes,
                fontsize=5, color='#999', ha='right', va='bottom')
 # Main commit panel: AgFS and OverlayFS only (linear scale).
-plot_panel(ax_commit, COMMIT_DATA, 'commit', show_ylabel=False,
+plot_panel(ax_commit, COMMIT_DATA, 'commit', show_ylabel=None,
            exclude_backends={{'BranchFS'}})
 
 # Convert status y-axis from µs to ms for readability.

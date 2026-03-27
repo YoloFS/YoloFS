@@ -16,7 +16,10 @@ fn hide_session() -> AgfsSession {
     fs::write(root.join("test.sh"), "#!/bin/sh\necho ok\n").unwrap();
 
     let mut rules = BTreeMap::new();
-    rules.insert(root.join("secret").to_string_lossy().into_owned(), Perm::Hide);
+    rules.insert(
+        root.join("secret").to_string_lossy().into_owned(),
+        Perm::Hide,
+    );
 
     let config = Config {
         permission: true,
