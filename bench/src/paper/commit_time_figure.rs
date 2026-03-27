@@ -1,13 +1,12 @@
 //! Publication figure: commit + status time per operation (session microbenchmarks).
 
 use super::Artifact;
-use crate::report;
 use crate::BenchResults;
+use crate::report;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const CAPTION: &str =
-    "Commit and status cost per file operation (\\textmu s/op) for 10\\,000 files. \
+const CAPTION: &str = "Commit and status cost per file operation (\\textmu s/op) for 10\\,000 files. \
      TODO.";
 const LABEL: &str = "fig:commit-time";
 
