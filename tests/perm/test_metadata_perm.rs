@@ -147,9 +147,7 @@ fn create_denied_with_ro_rule() {
         .unwrap();
     assert!(output.status.success(), "mount failed");
 
-    let mnt = root
-        .join(".agfs/mnt")
-        .join(root.strip_prefix("/").unwrap());
+    let mnt = root.join(".agfs/mnt").join(root.strip_prefix("/").unwrap());
     let result = fs::write(mnt.join("denied.txt"), "data");
     assert!(
         result.is_err(),

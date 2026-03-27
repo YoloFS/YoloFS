@@ -132,4 +132,3 @@ fn stat_allowed_under_deny() {
         meta.err()
     );
 }
-
