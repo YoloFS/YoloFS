@@ -1,4 +1,0 @@
-app:
-  name: myapp
-  version: 1.0.0
-  workers: 4

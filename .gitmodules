@@ -19,3 +19,6 @@
 [submodule "paper"]
 	path = paper
 	url = git@github.com:ShawnZhong/AgFS-Paper.git
+[submodule "agent-eval"]
+	path = agent-eval
+	url = git@github.com:ShawnZhong/AgFS-Agent-Bench.git

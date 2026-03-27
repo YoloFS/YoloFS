@@ -1,5 +1,0 @@
-#include <stdio.h>
-int main() {
-    printf("Old version\n");
-    return 0;
-}
