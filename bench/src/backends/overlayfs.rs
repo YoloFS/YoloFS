@@ -188,15 +188,25 @@ impl Backend for Overlayfs {
             r
         };
 
-        // Measure status time: walk upper dir and classify changes,
-        // printing each one to emulate agfs status output overhead.
-        let status_ms = {
+        // Measure status time: walk ALL upper dirs (one per checkpoint layer)
+        // and classify changes in each independently, emulating agfs status
+        // which processes each journal segment separately.
+        let status_us = {
+            let final_idx = current_upper
+                .file_name()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.strip_prefix("upper-"))
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
             let t = Instant::now();
             let mut sink = std::io::sink();
-            if current_upper.exists() {
-                report_upper_changes(&current_upper, &lower, "", &mut sink);
+            for i in 0..=final_idx {
+                let upper_i = root.path().join(format!("upper-{i}"));
+                if upper_i.exists() {
+                    report_upper_changes(&upper_i, &lower, "", &mut sink);
+                }
             }
-            t.elapsed().as_millis() as u64
+            t.elapsed().as_micros() as u64
         };
 
         // Unmount before commit.
@@ -226,7 +236,7 @@ impl Backend for Overlayfs {
             IterResult {
                 init_ms: Some(init_ms),
                 staging_ms: Some(result.staging_ms),
-                status_ms: Some(status_ms),
+                status_us: Some(status_us),
                 commit_ms: Some(commit_ms),
                 total_ms,
                 op_result: result.op_result,
