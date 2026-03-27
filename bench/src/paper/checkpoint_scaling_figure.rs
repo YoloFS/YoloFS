@@ -1,10 +1,10 @@
-//! Publication figure: checkpoint depth scaling (split create/read/commit latency).
+//! Publication figure: checkpoint depth scaling (split create/read/status/commit latency).
 
 use super::Artifact;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const CAPTION: &str = "Checkpoint scalability. The latency of creating a new file, reading an existing file, and committing all checkpoints back to base as the number of checkpoints grow. OverlayFS fails to support more checkpoints because of mount option limits.";
+const CAPTION: &str = "Checkpoint scalability. The latency of creating a new file, reading an existing file, querying staged changes, and committing all checkpoints back to base as the number of checkpoints grow. OverlayFS fails to support more checkpoints because of mount option limits.";
 const LABEL: &str = "fig:checkpoint-scaling";
 
 pub fn artifact_meta(paper_dir: &Path) -> Artifact {
@@ -48,12 +48,12 @@ pub fn render(out_dir: &Path, paper_dir: &Path) -> Result<Artifact> {
         serde_json::from_str(&std::fs::read_to_string(&json_path)?)?;
 
     // For each backend, find the maximum depth that create or read achieved.
-    // Commit data beyond that depth is invalid (backend stopped early but
-    // still reported a commit time for the partial build).
+    // Commit and status data beyond that depth is invalid (backend stopped
+    // early but still reported a time for the partial build).
     let mut max_depth_per_backend: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     for res in &data {
-        if res.mode == "commit" {
+        if res.mode == "commit" || res.mode == "status" {
             continue;
         }
         let max_d = res.points.iter().map(|p| p.depth).max().unwrap_or(0);
@@ -65,6 +65,7 @@ pub fn render(out_dir: &Path, paper_dir: &Path) -> Result<Artifact> {
 
     let mut create_lines = Vec::new();
     let mut read_lines = Vec::new();
+    let mut status_lines = Vec::new();
     let mut commit_lines = Vec::new();
     for res in &data {
         if res.backend == "agfs-no-perm" {
@@ -82,13 +83,14 @@ pub fn render(out_dir: &Path, paper_dir: &Path) -> Result<Artifact> {
             .copied()
             .unwrap_or(usize::MAX);
         for p in &res.points {
-            if res.mode == "commit" && p.depth > depth_cap {
+            if (res.mode == "commit" || res.mode == "status") && p.depth > depth_cap {
                 continue;
             }
             let row = format!("{},{},{:.2}", label, p.depth, p.mean_us);
             match res.mode.as_str() {
                 "create" => create_lines.push(row),
                 "read" => read_lines.push(row),
+                "status" => status_lines.push(row),
                 "commit" => commit_lines.push(row),
                 _ => {}
             }
@@ -111,6 +113,11 @@ backend,depth,mean_us
 {read_data}
 """
 
+STATUS_DATA = """\
+backend,depth,mean_us
+{status_data}
+"""
+
 COMMIT_DATA = """\
 backend,depth,mean_us
 {commit_data}
@@ -122,8 +129,8 @@ plt.rcParams.update({{'font.size': 7, 'axes.labelsize': 7, 'xtick.labelsize': 6.
 order = ['AgFS', 'OverlayFS', 'BranchFS']
 colors = [S.BACKEND_COLORS.get(n, S.TABLEAU10['gray']) for n in order]
 
-fig, (ax_create, ax_read, ax_commit) = plt.subplots(1, 3, sharey=False, figsize=(5.0, 1.3),
-                                                      gridspec_kw={{'wspace': 0.15}})
+fig, ((ax_create, ax_read), (ax_status, ax_commit)) = plt.subplots(
+    2, 2, sharey=False, figsize=(3.33, 2.4), gridspec_kw={{'wspace': 0.3, 'hspace': 0.45}})
 
 def plot_panel(ax, data_csv, xlabel, show_ylabel, ylabel=None, exclude_backends=None):
     reader = csv.DictReader(StringIO(data_csv.strip()))
@@ -139,7 +146,7 @@ def plot_panel(ax, data_csv, xlabel, show_ylabel, ylabel=None, exclude_backends=
         ys = [p[1] for p in pts]
         ax.plot(xs, ys, marker='o', markersize=2.5, linewidth=1.2,
                 color=colors[i], label=name)
-    ax.set_xlabel(xlabel, fontweight='bold', fontsize=6.5)
+    ax.set_title(xlabel, fontweight='bold', fontsize=6.5, pad=3)
     ax.set_ylim(bottom=0)
     if show_ylabel:
         ax.set_ylabel(ylabel or 'latency (\u00b5s/op)')
@@ -148,9 +155,18 @@ def plot_panel(ax, data_csv, xlabel, show_ylabel, ylabel=None, exclude_backends=
 
 plot_panel(ax_create, CREATE_DATA, 'create', show_ylabel=True)
 plot_panel(ax_read, READ_DATA, 'read', show_ylabel=False)
-# Main commit panel: AgFS and OverlayFS only (linear scale).
-plot_panel(ax_commit, COMMIT_DATA, 'commit', show_ylabel=True, ylabel='latency (ms)',
+plot_panel(ax_status, STATUS_DATA, 'status', show_ylabel=True, ylabel='latency (ms)',
            exclude_backends={{'BranchFS'}})
+# BranchFS has no status mechanism — show N/A.
+ax_status.text(0.95, 0.05, 'BranchFS: N/A', transform=ax_status.transAxes,
+               fontsize=5, color='#999', ha='right', va='bottom')
+# Main commit panel: AgFS and OverlayFS only (linear scale).
+plot_panel(ax_commit, COMMIT_DATA, 'commit', show_ylabel=False,
+           exclude_backends={{'BranchFS'}})
+
+# Convert status y-axis from µs to ms for readability.
+from matplotlib.ticker import FuncFormatter
+ax_status.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{{y/1000:.0f}}'))
 
 # Cap commit y-axis to non-BranchFS data range.
 commit_reader = csv.DictReader(StringIO(COMMIT_DATA.strip()))
@@ -159,7 +175,6 @@ if commit_non_branch:
     ax_commit.set_ylim(top=max(commit_non_branch) * 1.3)
 
 # Convert commit y-axis from µs to ms for readability.
-from matplotlib.ticker import FuncFormatter
 ax_commit.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{{y/1000:.0f}}'))
 
 # Tiny inset in the commit panel showing all backends on BranchFS scale (seconds).
@@ -204,9 +219,8 @@ fig.tight_layout(pad=0.3)
 
 # Shared x-axis label below both panels.
 fig.canvas.draw()
-xlabel_bb = ax_create.xaxis.label.get_window_extent(fig.canvas.get_renderer())
-xlabel_bottom_fig = fig.transFigure.inverted().transform((0, xlabel_bb.y0))[1]
-fig.text(0.5, xlabel_bottom_fig - 0.06, 'number of checkpoints', ha='center', fontsize=7)
+# Shared x-axis label below the bottom row.
+fig.text(0.5, -0.02, 'number of checkpoints', ha='center', fontsize=7)
 
 fig.savefig('{pdf_path}', bbox_inches='tight', dpi=300)
 plt.close(fig)
@@ -214,6 +228,7 @@ plt.close(fig)
         preamble = preamble,
         create_data = create_lines.join("\n"),
         read_data = read_lines.join("\n"),
+        status_data = status_lines.join("\n"),
         commit_data = commit_lines.join("\n"),
         pdf_path = pdf_path.display(),
     );
