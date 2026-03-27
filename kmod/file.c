@@ -27,35 +27,8 @@ static int agfs_check_open_perm(struct agfs_sb_info *sbi,
 				struct dentry *dentry,
 				struct file *file, char *buf)
 {
-	struct inode *inode = d_inode(dentry);
-	struct agfs_inode_info *ii = AGFS_I(inode);
-	enum agfs_perm perm;
-	int err;
-
-	if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
-		agfs_cache_perm(inode, dentry);
-	perm = ii->cached_perm;
-
-	if (perm == AGFS_PERM_ASK) {
-		unsigned int op;
-		char *relpath;
-
-		if (file->f_mode & FMODE_EXEC)
-			op = AGFS_OP_EXEC;
-		else if (file->f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC))
-			op = AGFS_OP_WRITE;
-		else
-			op = AGFS_OP_READ;
-
-		relpath = dentry_path_raw(dentry, buf, AGFS_PATH_MAX);
-		if (IS_ERR(relpath))
-			return PTR_ERR(relpath);
-		err = agfs_ask_userspace(sbi, dentry, relpath, op, &perm);
-		if (err)
-			return err;
-	}
-
-	return agfs_check_perm(perm, file->f_flags);
+	(void)buf;
+	return agfs_check_dentry_perm(sbi, dentry, file->f_flags, file->f_mode);
 }
 
 /*

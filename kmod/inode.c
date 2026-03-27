@@ -9,6 +9,24 @@
 #include "agfs.h"
 #include <linux/xattr.h>
 
+/* ── Permission check for metadata (directory) operations ─────────── */
+
+/*
+ * Check if a metadata operation (create, mkdir, unlink, rename, symlink)
+ * is allowed.  Uses the parent directory's permission (metadata ops are
+ * mutations of the parent).  Reuses the same resolve→ask→check pipeline
+ * as agfs_open.
+ */
+static int agfs_check_mutate_perm(struct dentry *dentry)
+{
+	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
+
+	if (!sbi->permission)
+		return 0;
+
+	return agfs_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY, 0);
+}
+
 /* ── create/mkdir/symlink — allocate inode + set up dentry ────────── */
 
 static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
@@ -38,12 +56,18 @@ static int agfs_create_staged(struct inode *dir, struct dentry *dentry,
 static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
 		       struct dentry *dentry, umode_t mode, bool excl)
 {
+	int err = agfs_check_mutate_perm(dentry);
+	if (err)
+		return err;
 	return agfs_create_staged(dir, dentry, mode, NULL);
 }
 
 static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 		      struct dentry *dentry, umode_t mode)
 {
+	int err = agfs_check_mutate_perm(dentry);
+	if (err)
+		return err;
 	return agfs_create_staged(dir, dentry, S_IFDIR | mode, NULL);
 }
 
@@ -52,6 +76,9 @@ static int agfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 static int agfs_delete_entry(struct inode *dir, struct dentry *dentry)
 {
 	struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
+	int perm_err = agfs_check_mutate_perm(dentry);
+	if (perm_err)
+		return perm_err;
 	struct dentry *tomb = NULL;
 	int err;
 
@@ -91,6 +118,9 @@ static int agfs_rmdir(struct inode *dir, struct dentry *dentry)
 static int agfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 			struct dentry *dentry, const char *symname)
 {
+	int err = agfs_check_mutate_perm(dentry);
+	if (err)
+		return err;
 	return agfs_create_staged(dir, dentry, S_IFLNK, symname);
 }
 
@@ -103,6 +133,15 @@ static int agfs_rename(struct mnt_idmap *idmap,
 {
 	struct agfs_sb_info *sbi = AGFS_SB(old_dentry->d_sb);
 	struct dentry *tomb = NULL;
+	int perm_err;
+
+	/* Check write permission on both source and destination dirs. */
+	perm_err = agfs_check_mutate_perm(old_dentry);
+	if (perm_err)
+		return perm_err;
+	perm_err = agfs_check_mutate_perm(new_dentry);
+	if (perm_err)
+		return perm_err;
 	int err;
 
 	if (flags)

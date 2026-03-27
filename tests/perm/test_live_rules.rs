@@ -129,26 +129,18 @@ fn rename_across_permission_boundary() {
     fs::read_to_string(s.mnt_path("allowed/file.txt"))
         .expect("reading file in allowed dir should succeed");
 
-    // Rename is a dir op — should succeed.
-    fs::rename(
+    // Rename into a denied directory should fail (destination is deny).
+    let result = fs::rename(
         s.mnt_path("allowed/file.txt"),
         s.mnt_path("denied/file.txt"),
-    )
-    .expect("rename is a dir op and should succeed");
-
-    // Force cache invalidation so the permission is re-resolved at the new location.
-    s.cli(&[
-        "rule",
-        "add",
-        &s.root.join("denied").display().to_string(),
-        "deny",
-    ])
-    .unwrap();
-
-    // Reading from the denied directory should now fail.
-    let result = fs::read_to_string(s.mnt_path("denied/file.txt"));
+    );
     assert!(
         result.is_err(),
-        "reading renamed file in denied dir should fail"
+        "rename into denied dir should fail"
     );
+
+    // File should still be readable in the allowed directory.
+    let content = fs::read_to_string(s.mnt_path("allowed/file.txt"))
+        .expect("file should still be in allowed dir");
+    assert_eq!(content, "content\n");
 }

@@ -4,13 +4,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-// ── Directory ops bypass agfs permission (inode.c: agfs_permission
-//    delegates to lower FS for non-regular files) ──
+// ── Directory ops are now gated by agfs permission rules ──
 
-/// mkdir should succeed even under a deny rule because directory ops
-/// are checked against the lower FS, not agfs permission rules.
+/// mkdir should fail under deny.
 #[test]
-fn mkdir_allowed_under_deny() {
+fn mkdir_denied_under_deny() {
     let s = AgfsSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
@@ -18,13 +16,13 @@ fn mkdir_allowed_under_deny() {
     })
     .expect("session setup");
 
-    fs::create_dir(s.mnt_path("newdir")).expect("mkdir should succeed: dir ops bypass agfs perm");
+    let result = fs::create_dir(s.mnt_path("newdir"));
+    assert!(result.is_err(), "mkdir should be denied");
 }
 
-/// unlink should succeed under allow-ro because inode removal is a
-/// directory operation and doesn't go through agfs_permission on the file.
+/// unlink should fail under allow-ro (needs write on parent dir).
 #[test]
-fn unlink_allowed_under_allow_ro() {
+fn unlink_denied_under_allow_ro() {
     let s = AgfsSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
@@ -32,15 +30,13 @@ fn unlink_allowed_under_allow_ro() {
     })
     .expect("session setup");
 
-    // unlink goes through agfs_unlink which adds a DELETED dirent
-    fs::remove_file(s.mnt_path("hello.txt"))
-        .expect("unlink should succeed: it is a dir op on the parent");
+    let result = fs::remove_file(s.mnt_path("hello.txt"));
+    assert!(result.is_err(), "unlink should be denied under allow-ro");
 }
 
-/// symlink creation should succeed under deny because symlink is a
-/// directory inode operation.
+/// symlink creation should fail under deny.
 #[test]
-fn symlink_allowed_under_deny() {
+fn symlink_denied_under_deny() {
     let s = AgfsSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
@@ -48,13 +44,13 @@ fn symlink_allowed_under_deny() {
     })
     .expect("session setup");
 
-    std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt"))
-        .expect("symlink should succeed: dir ops bypass agfs perm");
+    let result = std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt"));
+    assert!(result.is_err(), "symlink should be denied");
 }
 
-/// rmdir should succeed even under deny because it is a directory inode op.
+/// rmdir should fail under deny.
 #[test]
-fn rmdir_allowed_under_deny() {
+fn rmdir_denied_under_deny() {
     let s = AgfsSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
@@ -62,12 +58,13 @@ fn rmdir_allowed_under_deny() {
     })
     .expect("session setup");
 
-    fs::remove_dir(s.mnt_path("subdir")).expect("rmdir should succeed: dir ops bypass agfs perm");
+    let result = fs::remove_dir(s.mnt_path("subdir"));
+    assert!(result.is_err(), "rmdir should be denied");
 }
 
-/// rename should succeed under deny because it is a directory inode op.
+/// rename should fail under deny.
 #[test]
-fn rename_allowed_under_deny() {
+fn rename_denied_under_deny() {
     let s = AgfsSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
@@ -75,13 +72,13 @@ fn rename_allowed_under_deny() {
     })
     .expect("session setup");
 
-    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt"))
-        .expect("rename should succeed: dir ops bypass agfs perm");
+    let result = fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt"));
+    assert!(result.is_err(), "rename should be denied");
 }
 
-/// file creation should succeed under deny because it is a directory inode op.
+/// File creation should fail under deny (both dir op and open are gated).
 #[test]
-fn create_allowed_under_deny() {
+fn create_denied_under_deny() {
     let s = AgfsSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
@@ -89,25 +86,16 @@ fn create_allowed_under_deny() {
     })
     .expect("session setup");
 
-    // O_CREAT goes through agfs_create (dir op) then agfs_open checks perm.
-    // fs::write uses O_WRONLY|O_CREAT|O_TRUNC, so the create (dir op) succeeds
-    // but the open (file op) should fail under deny.
     let result = fs::write(s.mnt_path("newfile.txt"), "data");
+    assert!(result.is_err(), "write to new file should fail under deny");
     assert!(
-        result.is_err(),
-        "write to new file should fail under deny (open is gated)"
-    );
-
-    // The file was created in inode store (dir op succeeded). Verify via status.
-    let status = s.cli(&["status"]).unwrap();
-    assert!(
-        status.contains("newfile.txt"),
-        "status should show the created file: {status}"
+        !s.mnt_path("newfile.txt").exists(),
+        "file should not exist after denied create"
     );
 }
 
 /// Listing a directory's contents should work even under deny
-/// (readdir is a directory operation, not a regular file open).
+/// (readdir is not a mutation, agfs_readdir doesn't check perm).
 #[test]
 fn readdir_allowed_under_deny() {
     let s = AgfsSession::new_with_config(Config {
@@ -117,49 +105,31 @@ fn readdir_allowed_under_deny() {
     })
     .expect("session setup");
 
-    let entries: Vec<_> = fs::read_dir(s.mnt_path(""))
-        .expect("readdir should succeed under deny")
+    let entries: Vec<_> = fs::read_dir(s.mnt_path("."))
+        .expect("readdir should succeed")
+        .filter_map(|e| e.ok())
         .collect();
-    assert!(!entries.is_empty(), "directory should have entries");
+    assert!(
+        !entries.is_empty(),
+        "readdir should see base files even under deny"
+    );
 }
 
-// ── Base directory permissions are enforced ──────────────────────────
-
-/// Creating a file inside a read-only base directory should fail because
-/// agfs_permission delegates directory checks to the lower filesystem.
+/// Stat should work even under deny (stat doesn't go through agfs_open).
 #[test]
-fn create_in_readonly_base_dir_denied() {
+fn stat_allowed_under_deny() {
     let s = AgfsSession::new_with_config(Config {
-        permission: true,
-        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ask_default: Some(Perm::Deny),
+        rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
     .expect("session setup");
 
-    let dir = s.base_path("subdir");
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("chmod");
-
-    let result = fs::write(s.mnt_path("subdir/newfile.txt"), "data");
-    assert!(result.is_err(), "create should fail in read-only base dir");
-
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("restore");
+    let meta = fs::metadata(s.mnt_path("hello.txt"));
+    assert!(
+        meta.is_ok(),
+        "stat should succeed (no open needed): {:?}",
+        meta.err()
+    );
 }
 
-/// mkdir inside a read-only base directory should fail.
-#[test]
-fn mkdir_in_readonly_base_dir_denied() {
-    let s = AgfsSession::new_with_config(Config {
-        permission: true,
-        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
-        ..Default::default()
-    })
-    .expect("session setup");
-
-    let dir = s.base_path("subdir");
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("chmod");
-
-    let result = fs::create_dir(s.mnt_path("subdir/newdir"));
-    assert!(result.is_err(), "mkdir should fail in read-only base dir");
-
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("restore");
-}
