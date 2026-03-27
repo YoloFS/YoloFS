@@ -13,8 +13,13 @@ use std::path::Path;
 pub fn reset_staging(agfs: &Path) -> Result<()> {
     let inodes_dir = agfs.join("inodes");
     if inodes_dir.exists() {
-        fs::remove_dir_all(&inodes_dir).context("removing inode store")?;
-        fs::create_dir(&inodes_dir).context("recreating inode store")?;
+        // Remove each shard subdirectory but keep the inodes/ directory itself.
+        // The kernel module caches the inodes_dir dentry at mount time, so
+        // deleting and recreating the directory would invalidate that cache.
+        for entry in fs::read_dir(&inodes_dir).context("reading inode store")? {
+            let path = entry.context("reading directory entry")?.path();
+            fs::remove_dir_all(&path).context("removing shard directory")?;
+        }
     }
     let journal_path = agfs.join("journal");
     if journal_path.exists() {

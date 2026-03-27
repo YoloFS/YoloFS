@@ -11,7 +11,6 @@
 
 use super::helpers::{inode_path, tree};
 use crate::helpers::AgfsSession;
-use agfs::journal::tree::DirNode;
 use agfs::journal::{DirTree, Target};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -640,7 +639,7 @@ fn readdir_dtype_matches_cli() {
 
         // Find matching CLI entry via DirNode to determine expected type
         let tree_path = format!("{prefix}/{name}");
-        let Some(node) = t.get_node(&tree_path) else {
+        let Some(_node) = t.get_node(&tree_path) else {
             continue; // base-only entry, no CLI overlay
         };
 
