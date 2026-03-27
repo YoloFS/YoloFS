@@ -1,7 +1,7 @@
 use crate::backend::{self, Backend, CheckpointController, CheckpointOutcome};
 use crate::workload::{CacheMode, IterResult, Workload, WorkloadKind};
 use agfs::config::{Config, Perm};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::collections::BTreeMap;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
@@ -125,7 +125,7 @@ impl Session {
         nix::unistd::close(saved_stdout)?;
 
         result.context("in-process agfs status")?;
-        Ok(t.elapsed().as_millis() as u64)
+        Ok(t.elapsed().as_micros() as u64)
     }
 
     fn journal_debug(&self) -> String {
@@ -268,7 +268,7 @@ fn run_agfs_iteration(
     let result = result?;
 
     // Measure status query time (agfs status).
-    let status_ms = session.status_time()?;
+    let status_us = session.status_time()?;
 
     let commit_ms = match session.commit(verbose) {
         Ok(ms) => ms,
@@ -285,7 +285,7 @@ fn run_agfs_iteration(
         IterResult {
             init_ms: Some(init_ms),
             staging_ms: Some(result.staging_ms),
-            status_ms: Some(status_ms),
+            status_us: Some(status_us),
             commit_ms: Some(commit_ms),
             total_ms: init_ms + result.staging_ms + commit_ms,
             op_result: result.op_result,
@@ -454,7 +454,7 @@ impl Backend for AgfsRealistic {
             }
         };
         let result = result?;
-        let status_ms = session.status_time()?;
+        let status_us = session.status_time()?;
 
         let commit_ms = match session.commit(verbose) {
             Ok(ms) => ms,
@@ -471,7 +471,7 @@ impl Backend for AgfsRealistic {
             IterResult {
                 init_ms: Some(init_ms),
                 staging_ms: Some(result.staging_ms),
-                status_ms: Some(status_ms),
+                status_us: Some(status_us),
                 commit_ms: Some(commit_ms),
                 total_ms: init_ms + result.staging_ms + commit_ms,
                 op_result: result.op_result,

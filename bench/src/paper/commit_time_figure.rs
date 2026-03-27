@@ -1,12 +1,13 @@
 //! Publication figure: commit + status time per operation (session microbenchmarks).
 
 use super::Artifact;
-use crate::BenchResults;
 use crate::report;
+use crate::BenchResults;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const CAPTION: &str = "Commit and status cost per file operation (\\textmu s/op) for 10\\,000 files. \
+const CAPTION: &str =
+    "Commit and status cost per file operation (\\textmu s/op) for 10\\,000 files. \
      TODO.";
 const LABEL: &str = "fig:commit-time";
 
@@ -70,15 +71,15 @@ pub fn render(results: &BenchResults, paper_dir: &Path) -> Result<Artifact> {
                     avg_commit / FILE_COUNT * 1000.0
                 ));
 
-                let avg_status: f64 = runs
+                let avg_status_us: f64 = runs
                     .iter()
-                    .map(|r| r.status_ms.unwrap_or(0) as f64)
+                    .map(|r| r.status_us.unwrap_or(0) as f64)
                     .sum::<f64>()
                     / n;
-                if avg_status > 0.0 {
+                if avg_status_us > 0.0 {
                     data_lines.push(format!(
                         "{op_label},{backend_label},status,{:.2}",
-                        avg_status / FILE_COUNT * 1000.0
+                        avg_status_us / FILE_COUNT
                     ));
                 }
             }

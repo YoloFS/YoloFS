@@ -2,7 +2,6 @@ use crate::helpers::AgfsSession;
 use agfs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 
 // ── Directory ops are now gated by agfs permission rules ──
 

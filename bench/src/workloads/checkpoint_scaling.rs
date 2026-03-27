@@ -1,9 +1,10 @@
 // checkpoint-scaling: measure op latency as a function of checkpoint depth.
 //
-// Three modes (set via CHECKPOINT_SCALING_MODE env var):
+// Four modes (set via CHECKPOINT_SCALING_MODE env var):
 // - "create": after K checkpoints, measure creating 100 new files
 // - "read": after K checkpoints, measure reading 100 files created before any checkpoint
 // - "commit": build K checkpoints, then exit (commit time measured by backend)
+// - "status": build K checkpoints, then exit (status time measured by backend)
 //
 // CHECKPOINT_SCALING_DEPTH sets K (number of checkpoints to create first).
 //
@@ -28,7 +29,7 @@ pub fn details() -> crate::workloads::WorkloadDetails {
         "Checkpoint-depth scaling workload (fixed-size create/read probes).",
         "Creates synthetic files under a single workload directory; no external fixture required.",
         Some(
-            "Uses backend checkpoint protocol between setup phases. Configure with CHECKPOINT_SCALING_MODE={create|read|commit} and CHECKPOINT_SCALING_DEPTH=<N>. Checkpoint creation is trivial: 10 seed files are overwritten at each layer.",
+            "Uses backend checkpoint protocol between setup phases. Configure with CHECKPOINT_SCALING_MODE={create|read|commit|status} and CHECKPOINT_SCALING_DEPTH=<N>. Checkpoint creation is trivial: 10 seed files are overwritten at each layer.",
         ),
         "Builds a checkpoint chain (overwriting 10 seed files per layer), then measures 100 create or 100 read operations (or exits for commit-time measurement) and emits OpResult.",
         file!(),
@@ -141,9 +142,9 @@ impl Workload for CheckpointScaling {
                     None,
                 ))?;
             }
-            "commit" => {
-                // No measurement — just exit. The backend's commit phase
-                // (measured by run_one) flattens all checkpoints back to base.
+            "commit" | "status" => {
+                // No measurement — just exit. The backend's commit/status
+                // phase (measured by run_one) provides the timing data.
             }
             _ => anyhow::bail!("unknown CHECKPOINT_SCALING_MODE: {mode}"),
         }

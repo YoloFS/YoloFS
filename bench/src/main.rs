@@ -1512,7 +1512,7 @@ fn main() -> Result<()> {
 const CHECKPOINT_DEPTHS: &[usize] = &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
 const CHECKPOINT_SCALING_BACKENDS: &[&str] = &["agfs-realistic", "overlayfs", "branchfs"];
-const CHECKPOINT_SCALING_MODES: &[&str] = &["create", "read", "commit"];
+const CHECKPOINT_SCALING_MODES: &[&str] = &["create", "read", "commit", "status"];
 
 fn run_checkpoint_scaling(
     out_dir: &Path,
@@ -1532,7 +1532,7 @@ fn run_checkpoint_scaling(
     };
     let modes: Vec<&str> = if let Some(m) = mode_filter {
         if !CHECKPOINT_SCALING_MODES.contains(&m) {
-            bail!("unknown mode: {m}. Available: create, read, commit");
+            bail!("unknown mode: {m}. Available: create, read, commit, status");
         }
         vec![m]
     } else {
@@ -1582,6 +1582,20 @@ fn run_checkpoint_scaling(
                             if let Some(ms) = result.commit_ms {
                                 let us = (ms as f64) * 1000.0;
                                 eprintln!("  depth={depth}: {us:.0}µs commit");
+                                points.push(CheckpointScalingPoint {
+                                    depth,
+                                    mean_us: us,
+                                    p50_us: us,
+                                    p99_us: us,
+                                });
+                            }
+                        } else if mode == "status" {
+                            // Status mode: the measured value is the backend's
+                            // status query time (enumerating staged changes).
+                            // status_us is already in microseconds.
+                            if let Some(us_val) = result.status_us {
+                                let us = us_val as f64;
+                                eprintln!("  depth={depth}: {us:.0}µs status");
                                 points.push(CheckpointScalingPoint {
                                     depth,
                                     mean_us: us,
