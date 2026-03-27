@@ -6,8 +6,10 @@ to `allow`, `allow-rw`, `allow-ro`, `allow-rx`, or `deny`. When a thread touches
 the thread is put to sleep; a userspace daemon receives the request and
 writes back a decision that wakes the thread.
 
-Permission gating only applies to **regular files** — directories always
-pass through (controlled by standard Unix permissions on the lower FS).
+Permission gating applies to **file access** (open for read/write/exec)
+and **metadata mutations** (create, mkdir, unlink, rmdir, rename, symlink).
+Directory traversal (lookup, readdir, stat) is always allowed — controlled
+by standard Unix permissions on the lower FS.
 
 ## Permission States
 
@@ -19,7 +21,8 @@ enum agfs_perm {
     AGFS_PERM_ALLOW_RW,    // Read + write. No execute.
     AGFS_PERM_ALLOW_RO,    // Read only. No write, no execute.
     AGFS_PERM_ALLOW_RX,    // Read + execute. No write.
-    AGFS_PERM_DENY,        // All access returns -EACCES.
+    AGFS_PERM_DENY,        // File access and mutations return -EACCES.
+                           // Directory listing and stat still work.
 };
 ```
 
@@ -176,40 +179,43 @@ void agfs_cache_perm(struct inode *inode, struct dentry *dentry)
     info->perm_gen = atomic64_read(&sb->perm_gen);
 }
 
-// Called by permission() -- O(1) in steady state.
+// Shared permission check: resolve, ask if needed, check flags.
+// Used by agfs_open (for file access) and agfs_check_mutate_perm
+// (for metadata ops like create/unlink/rename).  Lives in perm.c.
+int agfs_check_dentry_perm(struct agfs_sb_info *sbi,
+                           struct dentry *dentry,
+                           int f_flags, fmode_t f_mode)
+{
+    struct agfs_inode_info *ii = AGFS_I(d_inode(dentry));
+    enum agfs_perm perm;
+
+    if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
+        agfs_cache_perm(d_inode(dentry), dentry);
+    perm = ii->cached_perm;
+
+    if (perm == AGFS_PERM_ASK) {
+        // ... ask daemon or apply default_perm ...
+    }
+    return agfs_check_perm(perm, f_flags);
+}
+
+// Metadata ops check write permission on the parent directory.
+static int agfs_check_mutate_perm(struct dentry *dentry)
+{
+    struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
+    if (!sbi->permission)
+        return 0;
+    return agfs_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY, 0);
+}
+
+// agfs_permission() for VFS MAY_READ/MAY_WRITE/MAY_EXEC checks.
+// Directories delegate to lower FS (readdir/stat always allowed).
 static int agfs_permission(struct mnt_idmap *idmap,
                            struct inode *inode, int mask)
 {
-    struct agfs_inode_info *info = AGFS_I(inode);
-    struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
-
     if (!S_ISREG(inode->i_mode))
-        return inode_permission(info->lower_inode, mask);
-
-    // Check generation -- re-resolve if stale.
-    if (info->perm_gen != atomic64_read(&sbi->perm_gen)) {
-        struct dentry *dentry = d_find_alias(inode);
-        if (dentry) {
-            agfs_cache_perm(inode, dentry);
-            dput(dentry);
-        }
-    }
-    enum agfs_perm perm = info->cached_perm;
-
-    if (perm == AGFS_PERM_ASK)
-        return 0;  // ask is handled in open(), not here
-
-    switch (perm) {
-    case AGFS_PERM_ALLOW:     return 0;
-    case AGFS_PERM_ALLOW_RW:
-        return (mask & MAY_EXEC) ? -EACCES : 0;
-    case AGFS_PERM_ALLOW_RO:
-        return (mask & (MAY_WRITE | MAY_EXEC)) ? -EACCES : 0;
-    case AGFS_PERM_ALLOW_RX:
-        return (mask & MAY_WRITE) ? -EACCES : 0;
-    case AGFS_PERM_DENY:      return -EACCES;
-    default:                  return -EACCES;
-    }
+        return inode_permission(idmap, agfs_lower_inode(inode), mask);
+    // ... resolve cached perm, check against mask ...
 }
 ```
 
@@ -218,46 +224,35 @@ changes), `permission()` is a single generation compare + switch — O(1).
 On rule change, the generation bumps and inodes re-resolve lazily on
 next access.
 
-The `ask` path is handled in `agfs_open()` where the dentry is directly
-available and the thread can sleep:
+The `ask` path is handled in `agfs_open()` which calls the shared
+`agfs_check_dentry_perm()`. The dentry is directly available and the
+thread can sleep if needed:
 
 ```c
 static int agfs_open(struct inode *inode, struct file *file)
 {
     struct dentry *dentry = file->f_path.dentry;
-    int err;
 
-    if (S_ISDIR(inode->i_mode))
-        goto do_open;
-
-    enum agfs_perm perm = AGFS_I(inode)->cached_perm;
-
-    if (perm == AGFS_PERM_ASK) {
-        char buf[AGFS_PATH_MAX];
-        char *relpath = dentry_path_raw(dentry, buf, AGFS_PATH_MAX);
-        if (IS_ERR(relpath))
-            return PTR_ERR(relpath);   // -ENAMETOOLONG if path won't fit
-
-        unsigned int op;
-        if (file->f_mode & FMODE_EXEC)
-            op = AGFS_OP_EXEC;
-        else if (file->f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC))
-            op = AGFS_OP_WRITE;
-        else
-            op = AGFS_OP_READ;
-
-        err = agfs_ask_userspace(AGFS_SB(inode->i_sb), dentry,
-                                 relpath, op, &perm);
+    if (sbi->permission) {
+        err = agfs_check_dentry_perm(sbi, dentry, file->f_flags, file->f_mode);
         if (err)
             return err;
     }
+    // ... staging redirect (lazy COW, see staging.md#open--read--write-path) ...
+}
+```
 
-    err = agfs_check_perm(perm, file->f_flags);
+Metadata operations (create, mkdir, unlink, rmdir, rename, symlink) use
+the same check on the **parent directory** to verify write permission:
+
+```c
+static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
+                       struct dentry *dentry, umode_t mode, bool excl)
+{
+    int err = agfs_check_mutate_perm(dentry);  // checks parent for write
     if (err)
         return err;
-
-do_open:
-    // ... staging redirect (lazy COW, see staging.md#open--read--write-path) ...
+    return agfs_create_staged(dir, dentry, mode, NULL);
 }
 ```
 
@@ -365,12 +360,28 @@ longest-prefix-match for free. This satisfies all three principles:
   permission until the next generation bump. This trades strict
   post-rename freshness for O(1) steady-state checks.
 
-**Limitation**: directory permissions are not gated — only regular files
-are checked. Directory access is controlled by standard Unix permissions on
-the lower FS. This is intentional: gating directories would require
-intercepting `lookup()` and `readdir()`, adding latency to every path
-traversal. For agent sandboxing, controlling file-level read/write/exec is
-sufficient.
+**What is gated**:
+
+| Operation | Check | Gate point |
+|-----------|-------|------------|
+| open (read/write/exec) | file's own perm | `agfs_open` → `agfs_check_dentry_perm` |
+| create, mkdir, symlink | parent dir's perm (write) | `agfs_check_mutate_perm` |
+| unlink, rmdir | parent dir's perm (write) | `agfs_check_mutate_perm` |
+| rename | both parents' perm (write) | `agfs_check_mutate_perm` × 2 |
+
+**What is NOT gated** (always allowed):
+
+| Operation | Reason |
+|-----------|--------|
+| stat / getattr | No open needed; reads inode metadata |
+| readdir | Directory listing; delegates to lower FS |
+| lookup | Path resolution; delegates to lower FS |
+| readlink | Symlink target; no open |
+
+Under `deny`, an agent can see what files exist (names, sizes,
+timestamps) but cannot read contents, modify, create, or delete.
+To hide directory contents entirely, a future `hidden` permission
+level could gate readdir and stat.
 
 ## Comparison with Landlock
 
