@@ -134,10 +134,7 @@ fn rename_across_permission_boundary() {
         s.mnt_path("allowed/file.txt"),
         s.mnt_path("denied/file.txt"),
     );
-    assert!(
-        result.is_err(),
-        "rename into denied dir should fail"
-    );
+    assert!(result.is_err(), "rename into denied dir should fail");
 
     // File should still be readable in the allowed directory.
     let content = fs::read_to_string(s.mnt_path("allowed/file.txt"))
