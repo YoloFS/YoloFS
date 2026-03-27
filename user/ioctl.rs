@@ -25,6 +25,7 @@ pub const AGFS_PERM_ALLOW_RW: u8 = 3;
 pub const AGFS_PERM_ALLOW_RO: u8 = 4;
 pub const AGFS_PERM_ALLOW_RX: u8 = 5;
 pub const AGFS_PERM_DENY: u8 = 6;
+pub const AGFS_PERM_HIDE: u8 = 7;
 
 // Ioctl command numbers — must match kmod/agfs.h
 nix::ioctl_write_ptr!(ioctl_rule_add, b'A', 10, AgfsIocRule);

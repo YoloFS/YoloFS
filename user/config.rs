@@ -24,6 +24,7 @@ pub enum Perm {
     AllowRo,
     AllowRx,
     Deny,
+    Hide,
 }
 
 impl Perm {
@@ -35,6 +36,7 @@ impl Perm {
             Perm::AllowRo => ioctl::AGFS_PERM_ALLOW_RO,
             Perm::AllowRx => ioctl::AGFS_PERM_ALLOW_RX,
             Perm::Deny => ioctl::AGFS_PERM_DENY,
+            Perm::Hide => ioctl::AGFS_PERM_HIDE,
         }
     }
 }
@@ -48,6 +50,7 @@ impl fmt::Display for Perm {
             Perm::AllowRo => "allow-ro",
             Perm::AllowRx => "allow-rx",
             Perm::Deny => "deny",
+            Perm::Hide => "hide",
         })
     }
 }
@@ -62,6 +65,7 @@ impl FromStr for Perm {
             "allow-ro" => Ok(Perm::AllowRo),
             "allow-rx" => Ok(Perm::AllowRx),
             "deny" => Ok(Perm::Deny),
+            "hide" => Ok(Perm::Hide),
             _ => anyhow::bail!("unknown permission: {s}"),
         }
     }

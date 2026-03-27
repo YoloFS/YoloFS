@@ -51,6 +51,7 @@ enum agfs_perm {
 	AGFS_PERM_ALLOW_RO	= 4,	/* read only */
 	AGFS_PERM_ALLOW_RX	= 5,	/* read + execute */
 	AGFS_PERM_DENY		= 6,	/* all access denied */
+	AGFS_PERM_HIDE	= 7,	/* path invisible: ENOENT on lookup/stat/open */
 };
 
 /* ── Ioctl Structures ──────────────────────────────────────────────── */

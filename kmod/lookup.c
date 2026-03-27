@@ -108,7 +108,15 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 	if (err)
 		return ERR_PTR(err);
 
-	if (d_inode(dentry))
+	if (d_inode(dentry)) {
 		agfs_cache_perm(d_inode(dentry), dentry);
+
+		/* Hidden entries appear as if they don't exist. */
+		if (AGFS_SB(dentry->d_sb)->permission &&
+		    AGFS_I(d_inode(dentry))->cached_perm == AGFS_PERM_HIDE) {
+			d_drop(dentry);
+			return ERR_PTR(-ENOENT);
+		}
+	}
 	return NULL;
 }
