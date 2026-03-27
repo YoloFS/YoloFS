@@ -38,12 +38,7 @@ static int agfs_dir_open(struct inode *inode, struct file *file)
 	 * The ask protocol is also invoked for unruled directories. */
 	if (sbi->permission) {
 		struct dentry *dentry = file->f_path.dentry;
-		int err = agfs_check_dentry_perm(sbi, dentry,
-						  file->f_flags, file->f_mode);
-		/* Allow deny to pass for read-only dir opens (readdir).
-		 * Hide returns ENOENT which we always honor. */
-		if (err == -EACCES)
-			err = 0;
+		int err = agfs_check_dir_perm(sbi, dentry, false, false);
 		if (err)
 			return err;
 	}

@@ -48,11 +48,12 @@ interposition. It adds two orthogonal capabilities:
 
 The two layers execute in order for every VFS operation:
 
-1. **Perm Gating Layer** — resolves the effective permission for the file.
-   Only applies to **regular files** — directories always pass through
-   (controlled by standard Unix permissions on the lower FS).
-   If `ask`, sleeps the calling thread. If `deny`, returns `-EACCES`.
-   If `allow-*`, falls through.
+1. **Perm Gating Layer** — resolves the effective permission for the path.
+   Regular-file opens use the file's own permission. Directory lookup,
+   traversal, `readdir`, and `stat` use the directory's own permission.
+   Directory mutations use the parent directory's permission. If `ask`,
+   the thread sleeps until userspace decides. `deny` still allows
+   directory visibility/traversal, while `hide` returns `-ENOENT`.
 2. **Staging Layer** — routes reads to the staged inode if the file has been
    modified, otherwise to the base. Ensures writes go to staged inodes.
    Uses per-directory linked lists of pinned staged VFS dentries for deletions and renames.

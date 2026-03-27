@@ -87,6 +87,13 @@ struct dentry *agfs_lookup(struct inode *dir, struct dentry *dentry,
 
 	/* d_init already allocated d_fsdata */
 
+	if (AGFS_SB(dentry->d_sb)->permission) {
+		err = agfs_check_dir_perm(AGFS_SB(dentry->d_sb),
+					  dentry->d_parent, false, true);
+		if (err)
+			return ERR_PTR(err);
+	}
+
 	/* Base (lower) filesystem lookup */
 	lower_dir_dentry = agfs_lower_dentry(dentry->d_parent);
 	lower_mnt = agfs_lower_mnt(dentry->d_parent);

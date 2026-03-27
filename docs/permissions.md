@@ -1,15 +1,16 @@
 # Permission Gating Layer
 
 The permission gating layer controls which files an agent can access and how.
-Every file starts in the `ask` state. A rule engine promotes matching paths
+Every path starts in the `ask` state. A rule engine promotes matching paths
 to `allow`, `allow-rw`, `allow-ro`, `allow-rx`, or `deny`. When a thread touches an `ask` file,
 the thread is put to sleep; a userspace daemon receives the request and
 writes back a decision that wakes the thread.
 
-Permission gating applies to **file access** (open for read/write/exec)
-and **metadata mutations** (create, mkdir, unlink, rmdir, rename, symlink).
-Directory traversal (lookup, readdir, stat) is always allowed — controlled
-by standard Unix permissions on the lower FS.
+Permission gating applies to **file access** (open for read/write/exec),
+**directory read-like access** (lookup/traversal, readdir, stat), and
+**metadata mutations** (create, mkdir, unlink, rmdir, rename, symlink).
+Directory read-like operations use the permission of the directory in
+question. Directory mutations use the permission of the parent directory.
 
 ## Permission States
 
@@ -21,8 +22,9 @@ enum agfs_perm {
     AGFS_PERM_ALLOW_RW,    // Read + write. No execute.
     AGFS_PERM_ALLOW_RO,    // Read only. No write, no execute.
     AGFS_PERM_ALLOW_RX,    // Read + execute. No write.
-    AGFS_PERM_DENY,        // File access and mutations return -EACCES.
-                           // Directory listing and stat still work.
+    AGFS_PERM_DENY,        // Files: all access denied.
+                           // Dirs: traversal/readdir/stat still work,
+                           //       but mutations are denied.
     AGFS_PERM_HIDDEN,      // Like deny, but the path itself is invisible.
                            // Parent's readdir skips it; stat returns -ENOENT.
 };
@@ -69,8 +71,8 @@ Rules live directly on dentries. One field, one structure.
 
 ### Ask Protocol Engine
 
-The ask protocol handles files with no matching rule. A thread accessing
-an `ask` file sleeps until a userspace daemon decides. All ask state is
+The ask protocol handles paths with no matching rule. A thread accessing
+an `ask` path sleeps until a userspace daemon decides. All ask state is
 grouped into `struct agfs_ask_engine` (embedded in `agfs_sb_info` as
 `ask_engine`), plus per-connection and per-request structures.
 
@@ -181,9 +183,10 @@ void agfs_cache_perm(struct inode *inode, struct dentry *dentry)
     info->perm_gen = atomic64_read(&sb->perm_gen);
 }
 
-// Shared permission check: resolve, ask if needed, check flags.
-// Used by agfs_open (for file access) and agfs_check_mutate_perm
-// (for metadata ops like create/unlink/rename).  Lives in perm.c.
+// Shared permission check: resolve, ask if needed, check the requested op.
+// Used by agfs_open (for file access), agfs_dir_open (for directory readdir),
+// agfs_lookup/agfs_getattr (for directory lookup/stat), and
+// agfs_check_mutate_perm (for metadata ops).  Lives in perm.c.
 int agfs_check_dentry_perm(struct agfs_sb_info *sbi,
                            struct dentry *dentry,
                            int f_flags, fmode_t f_mode)
@@ -211,13 +214,12 @@ static int agfs_check_mutate_perm(struct dentry *dentry)
 }
 
 // agfs_permission() for VFS MAY_READ/MAY_WRITE/MAY_EXEC checks.
-// Directories delegate to lower FS (readdir/stat always allowed).
+// Directories do not sleep here; ask handling for directory read-like ops
+// lives in agfs_lookup/agfs_getattr/agfs_dir_open.
 static int agfs_permission(struct mnt_idmap *idmap,
                            struct inode *inode, int mask)
 {
-    if (!S_ISREG(inode->i_mode))
-        return inode_permission(idmap, agfs_lower_inode(inode), mask);
-    // ... resolve cached perm, check against mask ...
+    // ... regular files enforce allow/deny here ...
 }
 ```
 
@@ -226,9 +228,10 @@ changes), `permission()` is a single generation compare + switch — O(1).
 On rule change, the generation bumps and inodes re-resolve lazily on
 next access.
 
-The `ask` path is handled in `agfs_open()` which calls the shared
-`agfs_check_dentry_perm()`. The dentry is directly available and the
-thread can sleep if needed:
+The `ask` path is handled in the operations that already have a stable dentry
+and may sleep: `agfs_open()` for regular-file opens, `agfs_dir_open()` for
+directory `readdir`, `agfs_lookup()` for directory traversal, and
+`agfs_getattr()` for directory `stat`:
 
 ```c
 static int agfs_open(struct inode *inode, struct file *file)
@@ -271,6 +274,8 @@ static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
 - `permission("src/main.rs")` -> cached_perm=ALLOW_RW (from lookup) -> **pass**
 - `permission("etc/passwd")` -> cached_perm=DENY -> **-EACCES**
 - `permission("etc/hosts")` -> cached_perm=ALLOW_RO -> **pass for read, deny write**
+- `readdir("etc")` -> cached_perm=DENY -> **pass** (visible but not mutable)
+- `stat("etc")` -> cached_perm=ASK -> ask daemon -> **sleeps until decision**
 - `open("tmp/foo")` -> cached_perm=ASK -> ask daemon -> **sleeps until decision**
 
 ## The Ask Protocol
@@ -368,21 +373,22 @@ longest-prefix-match for free. This satisfies all three principles:
 | Operation | Check | Gate point |
 |-----------|-------|------------|
 | open (read/write/exec) | file's own perm | `agfs_open` → `agfs_check_dentry_perm` |
+| readdir | directory's own perm (read-like) | `agfs_dir_open` → `agfs_check_dir_perm` |
+| stat | directory's own perm (read-like) | `agfs_getattr` → `agfs_check_dir_perm` |
+| lookup / traversal | parent directory's own perm (read-like) | `agfs_lookup` → `agfs_check_dir_perm` |
 | create, mkdir, symlink | parent dir's perm (write) | `agfs_check_mutate_perm` |
 | unlink, rmdir | parent dir's perm (write) | `agfs_check_mutate_perm` |
 | rename | both parents' perm (write) | `agfs_check_mutate_perm` × 2 |
 
-**What is NOT gated** (always allowed):
+**What is NOT gated**:
 
 | Operation | Reason |
 |-----------|--------|
-| stat / getattr | No open needed; reads inode metadata |
-| readdir | Directory listing; delegates to lower FS |
-| lookup | Path resolution; delegates to lower FS |
 | readlink | Symlink target; no open |
 
 Under `deny`, an agent can see what files exist (names, sizes,
-timestamps) but cannot read contents, modify, create, or delete.
+timestamps) and can traverse directories, but cannot read file contents,
+modify, create, or delete.
 
 ### Hidden
 

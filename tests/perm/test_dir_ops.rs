@@ -131,3 +131,25 @@ fn stat_allowed_under_deny() {
         meta.err()
     );
 }
+
+/// readdir uses the directory's own permission. ask_default=deny should still
+/// allow listing because deny does not hide directories.
+#[test]
+fn readdir_on_ask_dir_still_succeeds_when_default_denies() {
+    let s = AgfsSession::new_with_config(Config {
+        ask_default: Some(Perm::Deny),
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+    s.cli(&["rule", "add", "subdir", "ask"]).unwrap();
+
+    let entries: Vec<_> = fs::read_dir(s.mnt_path("subdir"))
+        .expect("readdir should succeed")
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(
+        !entries.is_empty(),
+        "readdir should list entries in ask dir even when ask_default=deny"
+    );
+}

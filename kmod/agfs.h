@@ -411,6 +411,8 @@ void agfs_cache_perm(struct inode *inode, struct dentry *dentry);
 int agfs_check_perm(enum agfs_perm perm, int f_flags);
 int agfs_check_dentry_perm(struct agfs_sb_info *sbi, struct dentry *dentry,
 			   int f_flags, fmode_t f_mode);
+int agfs_check_dir_perm(struct agfs_sb_info *sbi, struct dentry *dentry,
+			 bool write, bool exec);
 int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 		       const char *relpath, enum agfs_op op,
 		       enum agfs_perm *result);

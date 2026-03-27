@@ -106,6 +106,19 @@ int agfs_check_dentry_perm(struct agfs_sb_info *sbi, struct dentry *dentry,
 	return agfs_check_perm(perm, f_flags);
 }
 
+int agfs_check_dir_perm(struct agfs_sb_info *sbi, struct dentry *dentry,
+			bool write, bool exec)
+{
+	int err;
+	int f_flags = write ? O_WRONLY : O_RDONLY;
+	fmode_t f_mode = exec ? FMODE_EXEC : 0;
+
+	err = agfs_check_dentry_perm(sbi, dentry, f_flags, f_mode);
+	if (!write && err == -EACCES)
+		return 0;
+	return err;
+}
+
 /* ── Ask Protocol ─────────────────────────────────────────────────── */
 
 int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
