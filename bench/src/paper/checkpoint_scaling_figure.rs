@@ -163,7 +163,7 @@ from matplotlib.ticker import FuncFormatter
 ax_commit.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{{y/1000:.0f}}'))
 
 # Tiny inset in the commit panel showing all backends on BranchFS scale (seconds).
-inset = ax_commit.inset_axes([0.18, 0.52, 0.35, 0.40])
+inset = ax_commit.inset_axes([0.58, 0.05, 0.28, 0.35])
 commit_reader2 = csv.DictReader(StringIO(COMMIT_DATA.strip()))
 all_commit = list(commit_reader2)
 for i, name in enumerate(order):
@@ -174,10 +174,15 @@ for i, name in enumerate(order):
     inset.plot([p[0] for p in pts], [p[1] for p in pts],
                marker='o', markersize=1.2, linewidth=0.8, color=colors[i])
 inset.set_ylim(bottom=0, top=11e6)
-inset.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{{y/1e6:.0f}}'))
-inset.set_ylabel('(s)', fontsize=6.5, labelpad=2, rotation=0, va='center')
-inset.set_xticks([50])
-inset.set_yticks([0, 5e6, 10e6])
+inset.set_xticks([])
+inset.set_yticks([])
+inset.xaxis.set_minor_locator(plt.NullLocator())
+inset.yaxis.set_minor_locator(plt.NullLocator())
+# Place '10s' outside top of y-axis (left), '100' outside right of x-axis (bottom).
+inset.text(-0.05, 0.95, '10s', transform=inset.transAxes, fontsize=6.5,
+           ha='right', va='top')
+inset.text(1.05, 0.02, '100', transform=inset.transAxes, fontsize=6.5,
+           ha='left', va='bottom')
 inset.tick_params(labelsize=6.5, pad=0.5, length=1.5)
 inset.tick_params(axis='y', which='major', pad=0.5)
 for label in inset.yaxis.get_ticklabels():

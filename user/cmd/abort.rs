@@ -13,15 +13,8 @@ use std::path::Path;
 pub fn reset_staging(agfs: &Path) -> Result<()> {
     let inodes_dir = agfs.join("inodes");
     if inodes_dir.exists() {
-        for entry in fs::read_dir(&inodes_dir).context("reading inode store")? {
-            let entry = entry.context("reading directory entry")?;
-            let path = entry.path();
-            if entry.file_type().context("reading file type")?.is_dir() {
-                fs::remove_dir_all(&path).context("removing staged directory")?;
-            } else {
-                fs::remove_file(&path).context("removing staged inode")?;
-            }
-        }
+        fs::remove_dir_all(&inodes_dir).context("removing inode store")?;
+        fs::create_dir(&inodes_dir).context("recreating inode store")?;
     }
     let journal_path = agfs.join("journal");
     if journal_path.exists() {
