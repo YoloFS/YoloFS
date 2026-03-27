@@ -23,6 +23,8 @@ enum agfs_perm {
     AGFS_PERM_ALLOW_RX,    // Read + execute. No write.
     AGFS_PERM_DENY,        // File access and mutations return -EACCES.
                            // Directory listing and stat still work.
+    AGFS_PERM_HIDDEN,      // Like deny, but the path itself is invisible.
+                           // Parent's readdir skips it; stat returns -ENOENT.
 };
 ```
 
@@ -263,6 +265,7 @@ static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
  agfs rule add /etc         deny
  agfs rule add /etc/hosts   allow-ro
  agfs rule add /usr/bin     allow-rx
+ agfs rule add ~/.mozilla   hidden
 ```
 
 - `permission("src/main.rs")` -> cached_perm=ALLOW_RW (from lookup) -> **pass**
@@ -380,8 +383,39 @@ longest-prefix-match for free. This satisfies all three principles:
 
 Under `deny`, an agent can see what files exist (names, sizes,
 timestamps) but cannot read contents, modify, create, or delete.
-To hide directory contents entirely, a future `hidden` permission
-level could gate readdir and stat.
+
+### Hidden
+
+`hidden` goes further than `deny`: it makes the path itself invisible.
+The parent directory's readdir skips hidden entries, and any access
+(stat, open, lookup) returns ENOENT as if the path doesn't exist.
+
+**Motivation**: `deny` is sufficient for preventing unauthorized
+reads and writes, but it leaks the directory structure. An agent
+under `deny` on `~/.mozilla` can still enumerate profile directories,
+discover cached site favicons and history database filenames — enough
+to infer which websites the user visits, purely from directory
+listings. Similarly, `~/tax2025/w2.pdf` and `~/tax2025/1099-broker.pdf`
+reveal financial information from filenames alone.
+`hidden` prevents this information leakage entirely: the path doesn't
+exist from the agent's perspective.
+
+**When to use each**:
+
+| Level | Use case |
+|-------|----------|
+| `deny` | Directories the agent knows about but shouldn't modify (e.g., system config). Structure is visible for context. |
+| `hidden` | Personal data the agent has no reason to access (e.g., `~/tax2025`, `~/.mozilla`, `~/.local/share/keyrings`, medical records, financial documents). |
+
+In `agfs.toml`:
+
+```toml
+[rules]
+"/usr"           = "allow-rx"
+"/home/user/src" = "allow-rw"
+"/home/user/tax2025"          = "hidden"
+"/home/user/.mozilla"         = "hidden"
+```
 
 ## Comparison with Landlock
 
