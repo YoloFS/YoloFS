@@ -137,7 +137,7 @@ static long agfs_put_response_ioctl(struct file *file, unsigned long arg)
 	if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
 		return -EFAULT;
 
-	if (in.decision > AGFS_PERM_DENY)
+	if (in.decision > AGFS_PERM_HIDE)
 		return -EINVAL;
 
 	spin_lock(&eng->dispatch_lock);
@@ -266,7 +266,7 @@ static long agfs_rule_add_ioctl(struct file *file, unsigned long arg)
 	if (err)
 		return err;
 
-	if (rule.perm > AGFS_PERM_DENY) {
+	if (rule.perm > AGFS_PERM_HIDE) {
 		path_put(&rule_path);
 		return -EINVAL;
 	}

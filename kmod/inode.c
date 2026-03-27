@@ -199,10 +199,6 @@ static int agfs_permission(struct mnt_idmap *idmap,
 	if (!sbi->permission)
 		return 0;
 
-	/* Directories: delegate to lower FS */
-	if (!S_ISREG(inode->i_mode))
-		return inode_permission(idmap, agfs_lower_inode(inode), mask);
-
 	/* Check generation — re-resolve if stale */
 	if (info->perm_gen != atomic64_read(&sbi->perm_gen)) {
 		struct dentry *dentry = d_find_alias(inode);
@@ -212,6 +208,14 @@ static int agfs_permission(struct mnt_idmap *idmap,
 		}
 	}
 	perm = info->cached_perm;
+
+	/* Hidden paths return ENOENT regardless of type */
+	if (perm == AGFS_PERM_HIDE)
+		return -ENOENT;
+
+	/* Directories: delegate to lower FS (deny still allows traversal) */
+	if (!S_ISREG(inode->i_mode))
+		return inode_permission(idmap, agfs_lower_inode(inode), mask);
 
 	/* Ask is handled in open(), not here */
 	if (perm == AGFS_PERM_ASK)
@@ -292,9 +296,19 @@ static int agfs_getattr(struct mnt_idmap *idmap,
 {
 	struct dentry *dentry = path->dentry;
 	struct inode *inode = d_inode(dentry);
+	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
 	struct path lower_path;
 	struct inode *lower_inode;
 	int err;
+
+	/* Hidden paths return ENOENT on stat. */
+	if (sbi->permission) {
+		struct agfs_inode_info *ii = AGFS_I(inode);
+		if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
+			agfs_cache_perm(inode, dentry);
+		if (ii->cached_perm == AGFS_PERM_HIDE)
+			return -ENOENT;
+	}
 
 	agfs_get_lower_path(dentry, &lower_path);
 	lower_inode = d_inode(lower_path.dentry);

@@ -55,6 +55,8 @@ int agfs_check_perm(enum agfs_perm perm, int f_flags)
 		return wants_write ? -EACCES : 0;
 	case AGFS_PERM_DENY:
 		return -EACCES;
+	case AGFS_PERM_HIDE:
+		return -ENOENT;	/* path doesn't exist from agent's perspective */
 	case AGFS_PERM_ASK:
 		return 0; /* ask is handled by caller (agfs_open) */
 	default:

@@ -26,9 +26,27 @@ static struct dentry *agfs_alloc_cursor(struct dentry *parent)
 
 static int agfs_dir_open(struct inode *inode, struct file *file)
 {
+	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
 	struct agfs_dir_info *di;
 	struct file *lower_file;
 	struct path lower_path;
+
+	/* Permission-gate directory opens using the shared check.
+	 * For hide: returns ENOENT (directory is invisible).
+	 * For deny: agfs_check_perm with O_RDONLY returns EACCES, but
+	 * we want deny to allow readdir — so only block on hide.
+	 * The ask protocol is also invoked for unruled directories. */
+	if (sbi->permission) {
+		struct dentry *dentry = file->f_path.dentry;
+		int err = agfs_check_dentry_perm(sbi, dentry,
+						  file->f_flags, file->f_mode);
+		/* Allow deny to pass for read-only dir opens (readdir).
+		 * Hide returns ENOENT which we always honor. */
+		if (err == -EACCES)
+			err = 0;
+		if (err)
+			return err;
+	}
 
 	di = kzalloc(sizeof(*di), GFP_KERNEL);
 	if (!di)
@@ -118,6 +136,31 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 	/* Check if this base entry is overridden by a pinned entry */
 	if (agfs_base_entry_overridden(rdd->dentry, name, namelen))
 		return true; /* skip — overridden */
+
+	/* Check if this entry is hidden by permission rules.
+	 * Scan the parent's pinned rule dentries for a matching name
+	 * with AGFS_PERM_HIDE. Rule dentries are pinned (dget'd) so
+	 * they're always in the dcache as children of the parent. */
+	if (AGFS_SB(rdd->dentry->d_sb)->permission) {
+		struct hlist_node *p;
+		struct dentry *child;
+		bool is_hidden = false;
+
+		spin_lock(&rdd->dentry->d_lock);
+		hlist_for_each_entry(child, &rdd->dentry->d_children, d_sib) {
+			struct agfs_dentry_info *cdi = AGFS_D(child);
+			if (cdi && cdi->perm == AGFS_PERM_HIDE &&
+			    child->d_name.len == namelen &&
+			    !memcmp(child->d_name.name, name, namelen)) {
+				is_hidden = true;
+				break;
+			}
+		}
+		spin_unlock(&rdd->dentry->d_lock);
+
+		if (is_hidden)
+			return true; /* skip — hidden */
+	}
 
 	if (*rdd->off < rdd->caller_ctx->pos) {
 		(*rdd->off)++;
