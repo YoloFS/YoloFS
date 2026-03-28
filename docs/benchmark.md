@@ -150,19 +150,28 @@ build/commit cycles. This is the flagship macro benchmark — it exercises
 the full agfs lifecycle under a realistic agent-like workload.
 
 **Fixture**: Reuses the linux git clone from the `worktree` workload
-(`~/.cache/agfs-bench/linux`). No additional setup.
+(`~/.cache/agfs-bench/linux`) as the source repository and object store.
+The timed workload does **not** start from whatever commit that clone
+happens to be on. Instead, it always creates a detached worktree at the
+exact pinned base commit for the chosen series, so the scripted edits are
+defined against a stable tree.
 
 **Patchset**: A real Linux kernel patchset, extracted from git history and
-replayed via `git apply`. The benchmark ships the patches as embedded data
+replayed as an explicit developer workflow, not via `git apply`. The
+benchmark ships checked-in search/edit/build/commit scripts for each patch
 (no network during the run). Requirements for the chosen series:
 
 - 5–10 commits from a single subsystem (ext4, overlayfs, or VFS)
 - Touches files in `fs/` (and possibly `include/linux/`)
 - Each intermediate commit compiles with tinyconfig
-- Landed AFTER v6.12.1 so the base tree doesn't already contain them
+- Has a clearly defined upstream base commit that can be checked out exactly
+- Each step can be reproduced against that base with grep/sed/git commands
 
 **Chosen series**: Amir Goldstein's overlayfs `ovl_file` refactoring
-(5 commits, merged in v6.13, not present in v6.12.1):
+(5 commits, merged in v6.13). The workload starts from the parent of commit 1,
+not from a local v6.12.x tree:
+
+- Base commit: `87a8a76c34a2^`
 
 1. `87a8a76c34a2` — allocate container struct `ovl_file` for ovl private context
 2. `18e48d0e2c7b` — store upper real file in `ovl_file` struct
@@ -172,7 +181,9 @@ replayed via `git apply`. The benchmark ships the patches as embedded data
 
 4 of 5 commits touch only `fs/overlayfs/file.c`; commit 1 also
 touches `dir.c` and `overlayfs.h`. Total: ~210 insertions, ~150
-deletions. Patches stored in `bench/fixtures/dev-workflow/`.
+deletions. The benchmark stores checked-in workflow fixtures under
+`bench/fixtures/dev-workflow/`: pinned commit IDs, per-commit grep
+commands, per-commit `sed -i` edit scripts, and commit messages.
 
 Each commit follows the same developer/agent loop:
 1. **Search** — `grep -rn` for relevant patterns (e.g., find all call
@@ -182,15 +193,18 @@ Each commit follows the same developer/agent loop:
 3. **Build** — `make -j$(nproc)` incremental build
 4. **Commit** — `git status` → `git diff` → `git add <files>` → `git commit -m "..."`
 
-The real patches serve as reference for what edits to make, but the
-workload uses grep + sed (not `git apply`) to emulate how an agent
-would actually work: search for context, then transform the code.
+The real upstream patches serve as reference for what edits to make, but the
+workload executes checked-in grep + sed scripts (not `git apply`) to emulate
+how an agent would actually work: search for context, transform the checked-out
+base tree, build, inspect the diff, and commit. This avoids version drift:
+the scripts are authored once against the exact pinned base commit and the
+workload always materializes that same starting tree before timing begins.
 
 **Steps measured** (each timed independently):
 
 | Step | What | Runs once or per-patch |
 |------|------|------------------------|
-| `worktree` | `git worktree add --detach <dest>` | once |
+| `worktree` | `git worktree add --detach <dest> <base-commit>` | once |
 | `config` | `make tinyconfig` | once |
 | `initial-build` | `make -j$(nproc)` from clean | once |
 | `search` | `grep -rn <pattern> fs/` | per-patch |
