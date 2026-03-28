@@ -142,6 +142,87 @@ Design notes:
 
 ### Session macro-benchmarks
 
+#### Developer workflow (`dev-workflow`)
+
+Emulates a realistic multi-step kernel development session: creating a
+worktree, building, then iterating through a patchset with search/edit/
+build/commit cycles. This is the flagship macro benchmark — it exercises
+the full agfs lifecycle under a realistic agent-like workload.
+
+**Fixture**: Reuses the linux git clone from the `worktree` workload
+(`~/.cache/agfs-bench/linux`). No additional setup.
+
+**Patchset**: A real Linux kernel patchset, extracted from git history and
+replayed via `git apply`. The benchmark ships the patches as embedded data
+(no network during the run). Requirements for the chosen series:
+
+- 5–10 commits from a single subsystem (ext4, overlayfs, or VFS)
+- Touches files in `fs/` (and possibly `include/linux/`)
+- Each intermediate commit compiles with tinyconfig
+- Landed AFTER v6.12.1 so the base tree doesn't already contain them
+
+**Chosen series**: Amir Goldstein's overlayfs `ovl_file` refactoring
+(5 commits, merged in v6.13, not present in v6.12.1):
+
+1. `87a8a76c34a2` — allocate container struct `ovl_file` for ovl private context
+2. `18e48d0e2c7b` — store upper real file in `ovl_file` struct
+3. `c2c54b5f34f6` — do not open non-data lower file for fsync
+4. `4333e42ed444` — convert `ovl_real_fdget_path()` callers to `ovl_real_file_path()`
+5. `d66907b51ba0` — convert `ovl_real_fdget()` callers to `ovl_real_file()`
+
+4 of 5 commits touch only `fs/overlayfs/file.c`; commit 1 also
+touches `dir.c` and `overlayfs.h`. Total: ~210 insertions, ~150
+deletions. Patches stored in `bench/fixtures/dev-workflow/`.
+
+Each commit follows the same developer/agent loop:
+1. **Search** — `grep -rn` for relevant patterns (e.g., find all call
+   sites of a function, locate struct definitions)
+2. **Edit** — `sed -i` to make the changes (reproducing what the real
+   commit does, derived from studying the actual diff)
+3. **Build** — `make -j$(nproc)` incremental build
+4. **Commit** — `git status` → `git diff` → `git add <files>` → `git commit -m "..."`
+
+The real patches serve as reference for what edits to make, but the
+workload uses grep + sed (not `git apply`) to emulate how an agent
+would actually work: search for context, then transform the code.
+
+**Steps measured** (each timed independently):
+
+| Step | What | Runs once or per-patch |
+|------|------|------------------------|
+| `worktree` | `git worktree add --detach <dest>` | once |
+| `config` | `make tinyconfig` | once |
+| `initial-build` | `make -j$(nproc)` from clean | once |
+| `search` | `grep -rn <pattern> fs/` | per-patch |
+| `edit` | `sed -i` commands reproducing the commit | per-patch |
+| `incremental-build` | `make -j$(nproc)` after edit | per-patch |
+| `git-status` | `git status` | per-patch |
+| `git-diff` | `git diff` | per-patch |
+| `git-add` | `git add <files>` | per-patch |
+| `git-commit` | `git commit -m "..."` | per-patch |
+| `checkpoint` | backend checkpoint after each commit | per-patch |
+
+For agfs, each `git commit` is followed by an agfs checkpoint. For
+overlayfs/branchfs, the equivalent checkpoint mechanism is used. For
+native, checkpoints are no-ops.
+
+**Output**: A JSON series with per-step timings. The workload also records
+total wall time and the number of files changed per commit.
+
+**Paper plot**: Horizontal stacked bar chart. X-axis = time (seconds).
+Each bar is one backend. Segments colored by step type (worktree, config,
+initial build, search, edit, incremental build, git commit, checkpoint).
+The search/edit/incremental-build/commit segments are aggregated across
+all 5 commits. This shows the total session cost breakdown at a glance.
+
+**CLI**:
+```
+agfs-bench dev-workflow [--backend <name>]
+```
+
+Single command, runs the full workflow on each backend, writes
+`dev-workflow.json` and a Plotly HTML report.
+
 #### Worktree (`worktree`)
 
 Runs `git worktree add --detach` from a local Linux kernel clone
