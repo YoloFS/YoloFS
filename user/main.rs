@@ -17,6 +17,10 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
+    /// Automatically allow all permission requests without prompting
+    #[arg(long)]
+    allow_all: bool,
+
     /// Command to run inside the sandbox (after --)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     exec_args: Vec<String>,
@@ -191,7 +195,7 @@ fn run_cli() -> anyhow::Result<u8> {
                 Cli::command().print_help()?;
                 std::process::exit(1);
             }
-            return run(&cli.exec_args);
+            return run(&cli.exec_args, cli.allow_all);
         }
     }
 
@@ -199,12 +203,12 @@ fn run_cli() -> anyhow::Result<u8> {
 }
 
 /// Full workflow: mount (if needed) → watch → exec → diff → commit/abort/stage.
-fn run(exec_args: &[String]) -> anyhow::Result<u8> {
+fn run(exec_args: &[String], allow_all: bool) -> anyhow::Result<u8> {
     // 1. Mount if not already mounted
     mount::mount()?;
 
     // 2. Start background watch daemon (prompts for permission asks)
-    watch::run_background()?;
+    watch::run_background(allow_all)?;
 
     // 3. Exec (spawn + wait) — continue to diff even if command fails
     let cmd_exit_code = exec::run(exec_args).unwrap_or(1);

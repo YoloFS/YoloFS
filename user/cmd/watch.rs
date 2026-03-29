@@ -174,12 +174,12 @@ fn parse_input(input: &str) -> Perm {
 /// Spawn a background watch daemon thread that prompts for ask requests.
 /// The thread runs until the process exits (it cannot be stopped early
 /// because it blocks on a kernel ioctl).
-pub fn run_background() -> Result<()> {
+pub fn run_background(allow_all: bool) -> Result<()> {
     let agfs = crate::utils::session_dir()?;
     let ctl_file = ioctl::open(&agfs)?;
 
     std::thread::spawn(move || {
-        if let Err(e) = watch_loop(&ctl_file, false) {
+        if let Err(e) = watch_loop(&ctl_file, allow_all) {
             eprintln!("{} {e}", "agfs watch:".red());
         }
     });
