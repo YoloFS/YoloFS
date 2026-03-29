@@ -137,7 +137,6 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
 	 * with AGFS_PERM_HIDE. Rule dentries are pinned (dget'd) so
 	 * they're always in the dcache as children of the parent. */
 	if (AGFS_SB(rdd->dentry->d_sb)->permission) {
-		struct hlist_node *p;
 		struct dentry *child;
 		bool is_hidden = false;
 
