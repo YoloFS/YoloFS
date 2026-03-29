@@ -154,8 +154,7 @@ fn render_macro_step_workload(
                 Bar::new(backend_names.clone(), values)
                     .name(category.to_string())
                     .marker(
-                        plotly::common::Marker::new()
-                            .color(dev_workflow_category_color(category)),
+                        plotly::common::Marker::new().color(dev_workflow_category_color(category)),
                     )
                     .hover_info(HoverInfo::Text)
                     .hover_text_array(hover),
@@ -185,10 +184,7 @@ fn render_macro_step_workload(
     let status = workload_staleness(wl, current_repo_state);
     let mut full_html = String::new();
     full_html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\">");
-    full_html.push_str(&format!(
-        "<title>{}</title>",
-        escape_html(&wl.workload)
-    ));
+    full_html.push_str(&format!("<title>{}</title>", escape_html(&wl.workload)));
     full_html.push_str(
         "<style>body{font-family:system-ui,sans-serif;margin:1em;background:#fafafa}h1{font-size:1.15em}p{color:#555}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(480px,1fr));gap:1em}iframe{width:100%;height:420px;border:1px solid #ddd;border-radius:4px;background:#fff}</style>",
     );

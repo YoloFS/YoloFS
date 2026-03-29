@@ -1,7 +1,7 @@
 // Backend trait — abstraction over staging/commit mechanisms.
 
 use crate::workload::{CheckpointLatencySeries, IterResult, MacroStepSeries, OpResult, Workload};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::BufRead;
 use std::io::Write;
 use std::path::Path;

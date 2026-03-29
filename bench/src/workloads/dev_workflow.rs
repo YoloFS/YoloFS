@@ -1,6 +1,6 @@
 use crate::workload::{MacroStepSeries, MacroStepTiming, Workload, WorkloadKind};
 use agfs::config::Perm;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -449,18 +449,24 @@ mod tests {
         for commit in fixture.commits {
             assert!(!commit.id.is_empty());
             assert!(!commit.message.is_empty());
-            assert!(!workload
-                .load_commands(&commit.search_commands)
-                .expect("search commands should load")
-                .is_empty());
-            assert!(!workload
-                .load_commands(&commit.read_commands)
-                .expect("read commands should load")
-                .is_empty());
-            assert!(!workload
-                .load_commands(&commit.edit_commands)
-                .expect("edit commands should load")
-                .is_empty());
+            assert!(
+                !workload
+                    .load_commands(&commit.search_commands)
+                    .expect("search commands should load")
+                    .is_empty()
+            );
+            assert!(
+                !workload
+                    .load_commands(&commit.read_commands)
+                    .expect("read commands should load")
+                    .is_empty()
+            );
+            assert!(
+                !workload
+                    .load_commands(&commit.edit_commands)
+                    .expect("edit commands should load")
+                    .is_empty()
+            );
         }
     }
 }
