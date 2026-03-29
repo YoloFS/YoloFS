@@ -102,6 +102,8 @@ impl Default for Config {
             ("/etc".into(), Perm::AllowRo),
             ("/bin".into(), Perm::AllowRx),
             ("/sbin".into(), Perm::AllowRx),
+            ("$HOME/.local".into(), Perm::AllowRo),
+            ("$HOME/.claude.json".into(), Perm::AllowRo),
         ]);
         Config {
             ask_default: Some(Perm::Deny),
