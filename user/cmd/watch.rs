@@ -79,7 +79,7 @@ fn prompt_decision(req: &PermRequest) -> Perm {
         format!("(pid={} {})", req.pid, req.comm_str()).dimmed(),
     );
     eprint!(
-        "  [{}]llow allow-[{}] allow-[{}] allow-[{}] [{}]eny (enter = deny): ",
+        "  [{}]llow allow-[{}] allow-[{}] allow-[{}] [{}]eny (enter = allow): ",
         "a".blue().bold(),
         "rw".blue().bold(),
         "ro".blue().bold(),
@@ -162,8 +162,8 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
 /// unit-tested without terminal access.
 fn parse_input(input: &str) -> Perm {
     match input {
-        "" | "d" | "deny" => Perm::Deny,
-        "a" | "allow" => Perm::Allow,
+        "" | "a" | "allow" => Perm::Allow,
+        "d" | "deny" => Perm::Deny,
         "rw" | "allow-rw" => Perm::AllowRw,
         "ro" | "allow-ro" => Perm::AllowRo,
         "rx" | "allow-rx" => Perm::AllowRx,
@@ -192,8 +192,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_string_is_deny() {
-        assert_eq!(parse_input(""), Perm::Deny);
+    fn empty_string_is_allow() {
+        assert_eq!(parse_input(""), Perm::Allow);
     }
 
     #[test]

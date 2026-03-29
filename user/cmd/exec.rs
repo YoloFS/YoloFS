@@ -57,7 +57,7 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         bail!("mount point .agfs/mnt/ does not exist — run `agfs mount` first");
     }
 
-    let default_shell = env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+    let default_shell = "sh".to_string();
 
     let (cmd, args) = if exec_args.is_empty() {
         eprintln!("{}", "agfs: entering sandbox (exit to return)".cyan());
