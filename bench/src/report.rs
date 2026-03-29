@@ -79,12 +79,32 @@ fn render_workload(
 /// Each facet groups one or more step categories into a single sub-chart.
 fn dev_workflow_facets() -> &'static [(&'static str, &'static [&'static str])] {
     &[
-        ("Worktree", &["worktree"]),
-        ("Git Commit", &["git-status", "git-diff", "git-add", "git-commit"]),
+        ("Worktree", &["worktree", "checkpoint-worktree"]),
+        (
+            "Git Commit",
+            &[
+                "git-status",
+                "git-diff",
+                "git-add",
+                "git-commit",
+                "checkpoint-git-commit",
+            ],
+        ),
         ("Read", &["search", "read"]),
-        ("Edit", &["edit", "checkpoint"]),
-        ("Initial Build", &["config", "initial-build"]),
-        ("Incremental Build", &["incremental-build"]),
+        ("Edit", &["edit", "checkpoint-edit"]),
+        (
+            "Initial Build",
+            &[
+                "config",
+                "checkpoint-config",
+                "initial-build",
+                "checkpoint-initial-build",
+            ],
+        ),
+        (
+            "Incremental Build",
+            &["incremental-build", "checkpoint-incremental-build"],
+        ),
     ]
 }
 
@@ -678,12 +698,19 @@ fn dev_workflow_category_color(category: &str) -> &'static str {
         "search" => "#E56B6F",
         "read" => "#EAAC8B",
         "edit" => "#4D908E",
-        "checkpoint" => "#577590",
         "incremental-build" => "#277DA1",
         "git-status" => "#90BE6D",
         "git-diff" => "#F9C74F",
         "git-add" => "#F8961E",
         "git-commit" => "#F3722C",
+        // Checkpoint variants — all share a single muted tone so they are
+        // visually distinct from the work they follow.
+        "checkpoint-worktree"
+        | "checkpoint-config"
+        | "checkpoint-initial-build"
+        | "checkpoint-edit"
+        | "checkpoint-incremental-build"
+        | "checkpoint-git-commit" => "#577590",
         _ => "#999999",
     }
 }
@@ -712,7 +739,28 @@ fn summarize_macro_steps(
 }
 
 fn dev_workflow_step_category(step: &str) -> Option<&str> {
-    step.split_once(':').map(|(prefix, _)| prefix)
+    let (prefix, suffix) = step.split_once(':')?;
+    if prefix != "checkpoint" {
+        return Some(prefix);
+    }
+    // Checkpoint steps: "checkpoint: worktree", "checkpoint: config",
+    // "checkpoint: initial-build", "checkpoint: incremental-build <id>",
+    // "checkpoint: git-commit <id>", "checkpoint: <id> #<n>" (edit).
+    let suffix = suffix.trim();
+    if suffix.starts_with("worktree") {
+        Some("checkpoint-worktree")
+    } else if suffix.starts_with("config") {
+        Some("checkpoint-config")
+    } else if suffix.starts_with("initial-build") {
+        Some("checkpoint-initial-build")
+    } else if suffix.starts_with("incremental-build") {
+        Some("checkpoint-incremental-build")
+    } else if suffix.starts_with("git-commit") {
+        Some("checkpoint-git-commit")
+    } else {
+        // Per-edit checkpoint: "checkpoint: <commit_id> #<n>"
+        Some("checkpoint-edit")
+    }
 }
 
 fn dev_workflow_hover_text(category: &str, summary: &MacroStepCategorySummary) -> String {
@@ -1834,6 +1882,35 @@ mod tests {
             Some("git-commit")
         );
         assert_eq!(dev_workflow_step_category("malformed"), None);
+    }
+
+    #[test]
+    fn dev_workflow_step_category_checkpoint_variants() {
+        assert_eq!(
+            dev_workflow_step_category("checkpoint: worktree"),
+            Some("checkpoint-worktree")
+        );
+        assert_eq!(
+            dev_workflow_step_category("checkpoint: config"),
+            Some("checkpoint-config")
+        );
+        assert_eq!(
+            dev_workflow_step_category("checkpoint: initial-build"),
+            Some("checkpoint-initial-build")
+        );
+        assert_eq!(
+            dev_workflow_step_category("checkpoint: incremental-build c2c54b5f34f6"),
+            Some("checkpoint-incremental-build")
+        );
+        assert_eq!(
+            dev_workflow_step_category("checkpoint: git-commit c2c54b5f34f6"),
+            Some("checkpoint-git-commit")
+        );
+        // Per-edit checkpoint: "checkpoint: <commit_id> #<n>"
+        assert_eq!(
+            dev_workflow_step_category("checkpoint: c2c54b5f34f6 #1"),
+            Some("checkpoint-edit")
+        );
     }
 
     #[test]

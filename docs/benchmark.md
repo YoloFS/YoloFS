@@ -222,20 +222,27 @@ executes helper binaries inside that tree during a realistic developer session.
 | Step | What | Runs once or per-patch |
 |------|------|------------------------|
 | `worktree` | `git worktree add --detach <dest> <base-commit>` | once |
+| `checkpoint` | backend checkpoint after worktree | once |
 | `config` | `make tinyconfig` | once |
+| `checkpoint` | backend checkpoint after config | once |
 | `initial-build` | `make -j$(nproc)` from clean | once |
+| `checkpoint` | backend checkpoint after initial build | once |
 | `search` | `grep -rn <pattern> fs/` | per-patch |
 | `read` | `sed -n` / contextual source reads near matched regions | per-patch |
 | `edit` | one checked-in atomic edit command | repeated within each patch |
+| `checkpoint` | backend checkpoint after each edit command | repeated within each patch |
 | `incremental-build` | `make -j$(nproc)` after edit | per-patch |
+| `checkpoint` | backend checkpoint after incremental build | per-patch |
 | `git-status` | `git status` | per-patch |
 | `git-diff` | `git diff` | per-patch |
 | `git-add` | `git add <files>` | per-patch |
 | `git-commit` | `git commit -m "..."` | per-patch |
-| `checkpoint` | backend checkpoint after each edit command | repeated within each patch |
+| `checkpoint` | backend checkpoint after git commit | per-patch |
 
-For agfs, each edit command is followed by an agfs checkpoint. For
-overlayfs/branchfs, the equivalent checkpoint mechanism is used. For
+Every write-heavy phase (worktree creation, config, initial build, each
+edit command, each incremental build, and each git commit) is followed by
+a backend checkpoint. For agfs this is an agfs checkpoint; for
+overlayfs/branchfs the equivalent unmount+remount mechanism is used; for
 native, checkpoints are no-ops.
 
 **Output**: Results JSON stores an ordered per-step timing series for each

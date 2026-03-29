@@ -233,6 +233,16 @@ impl Workload for DevWorkflow {
         // that emit_checkpoint's current_dir() call succeeds later.
         std::env::set_current_dir(&dest)
             .with_context(|| format!("re-entering worktree dir {}", dest.display()))?;
+        checkpoint_step += 1;
+        let cp = emit_checkpoint(checkpoint_step)?;
+        macro_steps.push(MacroStepTiming {
+            step: "checkpoint: worktree".to_string(),
+            ms: cp.checkpoint_ms,
+        });
+        if cp.stop {
+            crate::workloads::emit_macro_step_series(&MacroStepSeries { steps: macro_steps })?;
+            return Ok(());
+        }
 
         let jobs = std::thread::available_parallelism()
             .map(|n| n.get().to_string())
@@ -256,6 +266,16 @@ impl Workload for DevWorkflow {
             step: "config: tinyconfig".to_string(),
             ms: t0.elapsed().as_millis() as u64,
         });
+        checkpoint_step += 1;
+        let cp = emit_checkpoint(checkpoint_step)?;
+        macro_steps.push(MacroStepTiming {
+            step: "checkpoint: config".to_string(),
+            ms: cp.checkpoint_ms,
+        });
+        if cp.stop {
+            crate::workloads::emit_macro_step_series(&MacroStepSeries { steps: macro_steps })?;
+            return Ok(());
+        }
 
         let build_arg = format!("-j{jobs}");
         let mut initial_build = Self::make_cmd(&dest, &[&build_arg]);
@@ -263,6 +283,16 @@ impl Workload for DevWorkflow {
             step: "initial-build: make".to_string(),
             ms: self.run_cmd_timed(&mut initial_build, verbose, "running initial make")?,
         });
+        checkpoint_step += 1;
+        let cp = emit_checkpoint(checkpoint_step)?;
+        macro_steps.push(MacroStepTiming {
+            step: "checkpoint: initial-build".to_string(),
+            ms: cp.checkpoint_ms,
+        });
+        if cp.stop {
+            crate::workloads::emit_macro_step_series(&MacroStepSeries { steps: macro_steps })?;
+            return Ok(());
+        }
 
         for commit in &fixture.commits {
             for (idx, command) in self
@@ -334,6 +364,16 @@ impl Workload for DevWorkflow {
                     &format!("running incremental make for {}", commit.id),
                 )?,
             });
+            checkpoint_step += 1;
+            let cp = emit_checkpoint(checkpoint_step)?;
+            macro_steps.push(MacroStepTiming {
+                step: format!("checkpoint: incremental-build {}", commit.id),
+                ms: cp.checkpoint_ms,
+            });
+            if cp.stop {
+                crate::workloads::emit_macro_step_series(&MacroStepSeries { steps: macro_steps })?;
+                return Ok(());
+            }
 
             let mut status = Command::new("git");
             status.args(["status", "--short"]).current_dir(&dest);
@@ -379,6 +419,16 @@ impl Workload for DevWorkflow {
                 step: format!("git-commit: {}", commit.id),
                 ms: self.run_cmd_timed(&mut commit_cmd, verbose, "running git commit")?,
             });
+            checkpoint_step += 1;
+            let cp = emit_checkpoint(checkpoint_step)?;
+            macro_steps.push(MacroStepTiming {
+                step: format!("checkpoint: git-commit {}", commit.id),
+                ms: cp.checkpoint_ms,
+            });
+            if cp.stop {
+                crate::workloads::emit_macro_step_series(&MacroStepSeries { steps: macro_steps })?;
+                return Ok(());
+            }
         }
 
         crate::workloads::emit_macro_step_series(&MacroStepSeries { steps: macro_steps })?;
