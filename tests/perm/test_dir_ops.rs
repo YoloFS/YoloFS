@@ -3,7 +3,9 @@ use agfs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
 
-// ── Directory ops are now gated by agfs permission rules ──
+// ── Directory read-like ops (stat, readdir, lookup/traversal) are NOT
+// permission-gated — only hide applies.  Mutations (mkdir, unlink,
+// rmdir, rename, symlink) ARE gated via the parent directory's perm. ──
 
 /// mkdir should fail under deny.
 #[test]
@@ -132,8 +134,8 @@ fn stat_allowed_under_deny() {
     );
 }
 
-/// readdir uses the directory's own permission. ask_default=deny should still
-/// allow listing because deny does not hide directories.
+/// readdir is not permission-gated. Even on an ask directory with
+/// ask_default=deny, readdir succeeds because it is never gated.
 #[test]
 fn readdir_on_ask_dir_still_succeeds_when_default_denies() {
     let s = AgfsSession::new_with_config(Config {
@@ -151,5 +153,111 @@ fn readdir_on_ask_dir_still_succeeds_when_default_denies() {
     assert!(
         !entries.is_empty(),
         "readdir should list entries in ask dir even when ask_default=deny"
+    );
+}
+
+// ── Verify directory read-like ops are NOT gated ──
+//
+// These tests use no explicit rules (everything defaults to ask) and no
+// daemon, with ask_default=deny.  If stat/readdir/lookup went through the
+// ask path they would resolve to deny and fail.  Their success proves
+// that directory read-like ops bypass the ask path entirely.
+
+/// Stat on a directory is not gated.
+#[test]
+fn stat_on_ask_dir_not_gated() {
+    let s = AgfsSession::new_with_config(Config {
+        ask_default: Some(Perm::Deny),
+        rules: BTreeMap::new(),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let meta = fs::metadata(s.mnt_path("subdir"));
+    assert!(
+        meta.is_ok(),
+        "stat on directory should not be gated: {:?}",
+        meta.err()
+    );
+}
+
+/// Readdir on a directory is not gated.
+#[test]
+fn readdir_on_ask_dir_not_gated() {
+    let s = AgfsSession::new_with_config(Config {
+        ask_default: Some(Perm::Deny),
+        rules: BTreeMap::new(),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let entries: Vec<_> = fs::read_dir(s.mnt_path("subdir"))
+        .expect("readdir should not be gated")
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(!entries.is_empty(), "readdir should list entries");
+}
+
+/// Path lookup/traversal through directories is not gated. Stat on a
+/// nested file succeeds because traversal + stat are both ungated.
+#[test]
+fn lookup_traversal_not_gated() {
+    let s = AgfsSession::new_with_config(Config {
+        ask_default: Some(Perm::Deny),
+        rules: BTreeMap::new(),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let meta = fs::metadata(s.mnt_path("subdir/deep.txt"));
+    assert!(
+        meta.is_ok(),
+        "stat on nested file should succeed (traversal + stat not gated): {:?}",
+        meta.err()
+    );
+}
+
+/// File open IS still gated even though dir ops are not.
+#[test]
+fn file_open_still_gated_when_dir_not_gated() {
+    let s = AgfsSession::new_with_config(Config {
+        ask_default: Some(Perm::Deny),
+        rules: BTreeMap::new(),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    // Traversal + stat succeeds (not gated)
+    assert!(
+        fs::metadata(s.mnt_path("subdir/deep.txt")).is_ok(),
+        "stat should succeed"
+    );
+    // But reading the file fails (file open IS gated → ask → deny)
+    assert!(
+        fs::read_to_string(s.mnt_path("subdir/deep.txt")).is_err(),
+        "file read should be denied (open is still gated)"
+    );
+}
+
+/// mkdir inside an ask directory is gated (ask resolves to deny with no daemon).
+#[test]
+fn mkdir_in_ask_dir_gated() {
+    let s = AgfsSession::new_with_config(Config {
+        ask_default: Some(Perm::Deny),
+        rules: BTreeMap::new(),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    // Traversal succeeds (not gated)
+    assert!(
+        fs::metadata(s.mnt_path("subdir")).is_ok(),
+        "stat should succeed"
+    );
+    // But mkdir fails (mutation IS gated via parent perm → ask → deny)
+    let result = fs::create_dir(s.mnt_path("subdir/newchild"));
+    assert!(
+        result.is_err(),
+        "mkdir should be denied (mutations are still gated)"
     );
 }

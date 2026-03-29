@@ -101,12 +101,17 @@ fn non_hidden_path_works() {
     assert_eq!(content, "visible\n");
 }
 
-/// opendir on hidden dir should fail.
+/// opendir on hidden dir should fail with ENOENT.
 #[test]
 fn opendir_hidden_fails() {
     let s = hide_session();
     let result = fs::read_dir(s.mnt_path("secret"));
     assert!(result.is_err(), "opendir on hidden dir should fail");
+    assert_eq!(
+        result.unwrap_err().kind(),
+        std::io::ErrorKind::NotFound,
+        "opendir on hidden dir should return ENOENT"
+    );
 }
 
 /// Hide on a single file (not a directory).

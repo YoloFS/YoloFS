@@ -31,16 +31,15 @@ static int agfs_dir_open(struct inode *inode, struct file *file)
 	struct file *lower_file;
 	struct path lower_path;
 
-	/* Permission-gate directory opens using the shared check.
-	 * For hide: returns ENOENT (directory is invisible).
-	 * For deny: agfs_check_perm with O_RDONLY returns EACCES, but
-	 * we want deny to allow readdir — so only block on hide.
-	 * The ask protocol is also invoked for unruled directories. */
+	/* Hidden directories are invisible — return ENOENT.
+	 * All other perms (including deny) allow readdir. */
 	if (sbi->permission) {
 		struct dentry *dentry = file->f_path.dentry;
-		int err = agfs_check_dir_perm(sbi, dentry, false, false);
-		if (err)
-			return err;
+		struct agfs_inode_info *ii = AGFS_I(d_inode(dentry));
+		if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
+			agfs_cache_perm(d_inode(dentry), dentry);
+		if (ii->cached_perm == AGFS_PERM_HIDE)
+			return -ENOENT;
 	}
 
 	di = kzalloc(sizeof(*di), GFP_KERNEL);
