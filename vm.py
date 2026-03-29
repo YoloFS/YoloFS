@@ -229,12 +229,25 @@ def ensure_vm_started():
     wait_for_vm(str(Path.cwd()))
 
 
+def _ensure_kvm_access():
+    """Ensure /dev/kvm is accessible, chmod if needed."""
+    kvm = Path("/dev/kvm")
+    if not kvm.exists():
+        print("Warning: /dev/kvm does not exist; KVM acceleration unavailable.")
+        return
+    if os.access(kvm, os.R_OK | os.W_OK):
+        return
+    print("/dev/kvm not accessible, attempting chmod 666...")
+    subprocess.run(["sudo", "chmod", "666", str(kvm)], check=True)
+
+
 def run_vm(
     ram: str,
     cpus: int,
     extra_args: list[str],
     foreground: bool = False,
 ):
+    _ensure_kvm_access()
     cmd = [
         "qemu-system-x86_64",
         "-enable-kvm",
