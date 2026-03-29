@@ -6,7 +6,7 @@
   `docs/`, and related implementation and benchmark code.
 - It does **not** apply to the paper-related directories (`paper/`,
   `paper-plan/`, `paper-study/`) or the evaluation/result directories
-  (`eval/`, `results-eval/`, `results-bench/`).
+  (`agent-eval/`, `agent-results/`, `eval/`, `results-eval/`, `results-bench/`).
 - If one of those directories has its own `AGENTS.md`, follow that file instead.
 
 ## Principles
