@@ -26,6 +26,8 @@ pub struct IterResult {
     pub op_result: Option<OpResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint_series: Option<CheckpointLatencySeries>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub macro_step_series: Option<MacroStepSeries>,
 }
 
 /// Per-checkpoint latency samples for checkpoint-scaling workloads.
@@ -45,6 +47,18 @@ pub struct CheckpointLatencyPoint {
     pub overwrite_avg_lat_us: f64,
     pub file_count: usize,
     pub checkpoint_ms: u64,
+}
+
+/// Ordered per-step timings for macro workloads that report internal phases.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MacroStepSeries {
+    pub steps: Vec<MacroStepTiming>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MacroStepTiming {
+    pub step: String,
+    pub ms: u64,
 }
 
 /// Per-operation metrics reported by Op workloads.

@@ -1,0 +1,3 @@
+sed -n '85,210p' fs/overlayfs/file.c >/dev/null
+sed -n '1320,1420p' fs/overlayfs/dir.c >/dev/null
+sed -n '860,870p' fs/overlayfs/overlayfs.h >/dev/null

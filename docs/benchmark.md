@@ -153,52 +153,69 @@ the full agfs lifecycle under a realistic agent-like workload.
 (`~/.cache/agfs-bench/linux`) as the source repository and object store.
 The timed workload does **not** start from whatever commit that clone
 happens to be on. Instead, it always creates a detached worktree at the
-exact pinned base commit for the chosen series, so the scripted edits are
-defined against a stable tree.
+exact pinned base commit for the chosen series, so the checked-in command
+lists are defined against a stable tree.
 
 **Patchset**: A real Linux kernel patchset, extracted from git history and
 replayed as an explicit developer workflow, not via `git apply`. The
-benchmark ships checked-in search/edit/build/commit scripts for each patch
-(no network during the run). Requirements for the chosen series:
+benchmark ships checked-in search commands, read commands, edit commands,
+build steps, and git steps for each patch (no network during the run).
+Requirements for the chosen series:
 
 - 5–10 commits from a single subsystem (ext4, overlayfs, or VFS)
 - Touches files in `fs/` (and possibly `include/linux/`)
 - Each intermediate commit compiles with tinyconfig
 - Has a clearly defined upstream base commit that can be checked out exactly
-- Each step can be reproduced against that base with grep/sed/git commands
+- Each step can be reproduced against that base with grep/read/edit/git
+  commands
 
 **Chosen series**: Amir Goldstein's overlayfs `ovl_file` refactoring
-(5 commits, merged in v6.13). The workload starts from the parent of commit 1,
-not from a local v6.12.x tree:
+(5 commits, merged in v6.13). The workload starts from the parent of the
+earliest commit in the chain, not from a local v6.12.x tree:
 
-- Base commit: `87a8a76c34a2^`
+- Base commit: `c2c54b5f34f6^`
 
-1. `87a8a76c34a2` — allocate container struct `ovl_file` for ovl private context
-2. `18e48d0e2c7b` — store upper real file in `ovl_file` struct
-3. `c2c54b5f34f6` — do not open non-data lower file for fsync
+1. `c2c54b5f34f6` — do not open non-data lower file for fsync
+2. `87a8a76c34a2` — allocate container struct `ovl_file` for ovl private context
+3. `18e48d0e2c7b` — store upper real file in `ovl_file` struct
 4. `4333e42ed444` — convert `ovl_real_fdget_path()` callers to `ovl_real_file_path()`
 5. `d66907b51ba0` — convert `ovl_real_fdget()` callers to `ovl_real_file()`
 
 4 of 5 commits touch only `fs/overlayfs/file.c`; commit 1 also
 touches `dir.c` and `overlayfs.h`. Total: ~210 insertions, ~150
 deletions. The benchmark stores checked-in workflow fixtures under
-`bench/fixtures/dev-workflow/`: pinned commit IDs, per-commit grep
-commands, per-commit `sed -i` edit scripts, and commit messages.
+`bench/fixtures/dev-workflow/`: pinned commit IDs, per-commit command
+lists for search/read/edit, and commit messages.
 
 Each commit follows the same developer/agent loop:
 1. **Search** — `grep -rn` for relevant patterns (e.g., find all call
    sites of a function, locate struct definitions)
-2. **Edit** — `sed -i` to make the changes (reproducing what the real
-   commit does, derived from studying the actual diff)
-3. **Build** — `make -j$(nproc)` incremental build
-4. **Commit** — `git status` → `git diff` → `git add <files>` → `git commit -m "..."`
+2. **Read** — `sed -n` / contextual reads around the matched regions to
+   inspect the code before mutating it
+3. **Edit** — a sequence of checked-in atomic shell commands reproducing
+   what the real commit does; each command mutates one source region with
+   ordinary text tools (`sed`, `patch`, etc.) and is checkpointed
+   independently
+4. **Build** — `make -j$(nproc)` incremental build
+5. **Commit** — `git status` → `git diff` → `git add <files>` → `git commit -m "..."`
 
 The real upstream patches serve as reference for what edits to make, but the
-workload executes checked-in grep + sed scripts (not `git apply`) to emulate
-how an agent would actually work: search for context, transform the checked-out
-base tree, build, inspect the diff, and commit. This avoids version drift:
-the scripts are authored once against the exact pinned base commit and the
-workload always materializes that same starting tree before timing begins.
+workload executes checked-in grep commands, contextual read commands, and
+individually replayable edit commands (not `git apply`) to emulate how an
+agent would actually work: search for context, read the nearby code,
+transform the checked-out base tree one edit command at a time, build,
+inspect the diff, and commit. This avoids version drift: the command lists
+are authored once against the exact pinned base commit and the workload
+always materializes that same starting tree before timing begins.
+
+In practice, the edit stage uses `sed -i` for simple local substitutions and
+`patch` for larger multi-line block rewrites. Each checked-in shell snippet is
+one atomic benchmark step.
+
+For `agfs-realistic`, the workload's allowlist explicitly covers standard
+system config reads under `/etc`, Git's normal config reads, and host `/tmp`,
+and it fully allows the session worktree itself: the kernel build writes and
+executes helper binaries inside that tree during a realistic developer session.
 
 **Steps measured** (each timed independently):
 
@@ -208,26 +225,29 @@ workload always materializes that same starting tree before timing begins.
 | `config` | `make tinyconfig` | once |
 | `initial-build` | `make -j$(nproc)` from clean | once |
 | `search` | `grep -rn <pattern> fs/` | per-patch |
-| `edit` | `sed -i` commands reproducing the commit | per-patch |
+| `read` | `sed -n` / contextual source reads near matched regions | per-patch |
+| `edit` | one checked-in atomic edit command | repeated within each patch |
 | `incremental-build` | `make -j$(nproc)` after edit | per-patch |
 | `git-status` | `git status` | per-patch |
 | `git-diff` | `git diff` | per-patch |
 | `git-add` | `git add <files>` | per-patch |
 | `git-commit` | `git commit -m "..."` | per-patch |
-| `checkpoint` | backend checkpoint after each commit | per-patch |
+| `checkpoint` | backend checkpoint after each edit command | repeated within each patch |
 
-For agfs, each `git commit` is followed by an agfs checkpoint. For
+For agfs, each edit command is followed by an agfs checkpoint. For
 overlayfs/branchfs, the equivalent checkpoint mechanism is used. For
 native, checkpoints are no-ops.
 
-**Output**: A JSON series with per-step timings. The workload also records
-total wall time and the number of files changed per commit.
+**Output**: Results JSON stores an ordered per-step timing series for each
+iteration in addition to total wall time. The workload also records the number
+of files changed per commit.
 
 **Paper plot**: Horizontal stacked bar chart. X-axis = time (seconds).
 Each bar is one backend. Segments colored by step type (worktree, config,
-initial build, search, edit, incremental build, git commit, checkpoint).
-The search/edit/incremental-build/commit segments are aggregated across
-all 5 commits. This shows the total session cost breakdown at a glance.
+initial build, search, read, edit, incremental build, git status/diff/add/
+commit, checkpoint). The repeated per-commit segments are aggregated across
+all 5 commits. Hover text still exposes the detailed underlying step timings.
+This shows the total session cost breakdown at a glance.
 
 **CLI**:
 ```

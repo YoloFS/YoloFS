@@ -1,7 +1,7 @@
 use crate::backend::{self, Backend, CheckpointController, CheckpointOutcome};
 use crate::workload::{CacheMode, IterResult, Workload, WorkloadKind};
 use agfs::config::{Config, Perm};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::collections::BTreeMap;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
@@ -290,6 +290,7 @@ fn run_agfs_iteration(
             total_ms: init_ms + result.staging_ms + commit_ms,
             op_result: result.op_result,
             checkpoint_series: result.checkpoint_series,
+            macro_step_series: result.macro_step_series,
         },
         vec![],
     ))
@@ -320,6 +321,14 @@ impl Backend for AgfsNoPerm {
 
     fn unsupported_reason(&self, workload: &dyn Workload) -> Option<&'static str> {
         cold_staged_reason(workload)
+    }
+
+    fn default_skip_reason(&self, workload: &dyn Workload) -> Option<&'static str> {
+        if workload.name() == "dev-workflow" {
+            Some("dev-workflow only runs agfs-realistic by default; use --backend agfs-no-perm to include")
+        } else {
+            None
+        }
     }
 
     fn run_one(&self, workload: &dyn Workload, verbose: bool) -> Result<(IterResult, Vec<String>)> {
@@ -476,6 +485,7 @@ impl Backend for AgfsRealistic {
                 total_ms: init_ms + result.staging_ms + commit_ms,
                 op_result: result.op_result,
                 checkpoint_series: result.checkpoint_series,
+                macro_step_series: result.macro_step_series,
             },
             vec![],
         ))

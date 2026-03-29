@@ -1,4 +1,5 @@
 pub mod checkpoint_scaling;
+pub mod dev_workflow;
 pub mod fio_rand_read_cold;
 pub mod fio_rand_read_warm;
 pub mod fio_rand_write;
@@ -26,7 +27,7 @@ pub mod worktree;
 pub mod write_files;
 
 use crate::backend;
-use crate::workload::OpResult;
+use crate::workload::{MacroStepSeries, OpResult};
 use crate::workload::{Workload, WorkloadKind};
 use agfs::config::Perm;
 use anyhow::{Context, Result, bail};
@@ -88,6 +89,7 @@ pub fn all() -> Vec<Box<dyn Workload>> {
     v.push(Box::new(checkpoint_scaling::CheckpointScaling));
     // macro
     v.push(Box::new(worktree::Worktree::new()));
+    v.push(Box::new(dev_workflow::DevWorkflow::new()));
     v.push(Box::new(linux_untar::LinuxUntar::new()));
     // op
     v.push(Box::new(fio_seq_read_cold::FioSeqReadCold));
@@ -186,6 +188,7 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
         "unlink-files" => unlink_files::details(),
         "checkpoint-scaling" => checkpoint_scaling::details(),
         "worktree" => worktree::details(),
+        "dev-workflow" => dev_workflow::details(),
         "linux-untar" => linux_untar::details(),
         "meta-create" | "meta-create-100" | "meta-create-100k" => meta_create::details(),
         "meta-append" | "meta-append-100" => meta_append::details(),
@@ -279,6 +282,16 @@ pub fn allow_rw_rules(session_root: &Path) -> Vec<(String, Perm)> {
 
 pub fn emit_op_result(result: &OpResult) -> Result<()> {
     let json = serde_json::to_string(result).context("serialising OpResult")?;
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "{}", backend::RESULTS_MARKER)?;
+    writeln!(out, "{json}")?;
+    out.flush()?;
+    Ok(())
+}
+
+pub fn emit_macro_step_series(series: &MacroStepSeries) -> Result<()> {
+    let json = serde_json::to_string(series).context("serialising MacroStepSeries")?;
     let stdout = io::stdout();
     let mut out = stdout.lock();
     writeln!(out, "{}", backend::RESULTS_MARKER)?;

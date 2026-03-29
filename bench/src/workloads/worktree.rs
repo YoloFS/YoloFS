@@ -16,6 +16,45 @@ pub struct Worktree {
     fixture: PathBuf,
 }
 
+pub fn linux_fixture_dir() -> PathBuf {
+    dirs_next::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("agfs-bench/linux")
+}
+
+pub fn ensure_linux_fixture(fixture: &Path) -> Result<()> {
+    if fixture.exists() {
+        // Prune stale worktree registrations left by previous bench runs
+        // whose tempdirs have since been deleted.
+        let _ = Command::new("git")
+            .args(["worktree", "prune"])
+            .current_dir(fixture)
+            .status();
+        return Ok(());
+    }
+    std::fs::create_dir_all(fixture.parent().unwrap()).context("creating agfs-bench cache dir")?;
+
+    // Prefer cloning from the local mirror if it exists (fast, no network).
+    let mirror = fixture.parent().unwrap().join("linux.git");
+    let src = if mirror.exists() {
+        eprintln!("Cloning linux from local mirror…");
+        mirror.to_string_lossy().into_owned()
+    } else {
+        eprintln!("Cloning linux from {} (this runs once)…", LINUX_URL);
+        LINUX_URL.to_string()
+    };
+
+    let status = Command::new("git")
+        .args(["clone", &src])
+        .arg(fixture)
+        .status()
+        .context("running git clone")?;
+    if !status.success() {
+        bail!("git clone of linux failed");
+    }
+    Ok(())
+}
+
 pub fn details() -> crate::workloads::WorkloadDetails {
     crate::workloads::workload_details(
         "Session macrobenchmark that materializes a Linux kernel git worktree to simulate large real-world file creation.",
@@ -29,9 +68,7 @@ pub fn details() -> crate::workloads::WorkloadDetails {
 impl Worktree {
     pub fn new() -> Self {
         Worktree {
-            fixture: dirs_next::cache_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("agfs-bench/linux"),
+            fixture: linux_fixture_dir(),
         }
     }
 }
@@ -54,37 +91,7 @@ impl Workload for Worktree {
     }
 
     fn ensure_fixture(&self) -> Result<()> {
-        if self.fixture.exists() {
-            // Prune stale worktree registrations left by previous bench runs
-            // whose tempdirs have since been deleted.
-            let _ = Command::new("git")
-                .args(["worktree", "prune"])
-                .current_dir(&self.fixture)
-                .status();
-            return Ok(());
-        }
-        std::fs::create_dir_all(self.fixture.parent().unwrap())
-            .context("creating agfs-bench cache dir")?;
-
-        // Prefer cloning from the local mirror if it exists (fast, no network).
-        let mirror = self.fixture.parent().unwrap().join("linux.git");
-        let src = if mirror.exists() {
-            eprintln!("Cloning linux from local mirror…");
-            mirror.to_string_lossy().into_owned()
-        } else {
-            eprintln!("Cloning linux from {} (this runs once)…", LINUX_URL);
-            LINUX_URL.to_string()
-        };
-
-        let status = Command::new("git")
-            .args(["clone", &src])
-            .arg(&self.fixture)
-            .status()
-            .context("running git clone")?;
-        if !status.success() {
-            bail!("git clone of linux failed");
-        }
-        Ok(())
+        ensure_linux_fixture(&self.fixture)
     }
 
     fn realistic_rules(&self, session_root: &Path) -> Vec<(String, Perm)> {

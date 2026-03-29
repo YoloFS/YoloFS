@@ -241,6 +241,7 @@ impl Backend for Overlayfs {
                 total_ms,
                 op_result: result.op_result,
                 checkpoint_series: result.checkpoint_series,
+                macro_step_series: result.macro_step_series,
             },
             vec![],
         ))

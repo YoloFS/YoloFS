@@ -1,7 +1,7 @@
 // Backend trait — abstraction over staging/commit mechanisms.
 
-use crate::workload::{CheckpointLatencySeries, IterResult, OpResult, Workload};
-use anyhow::{Context, Result, bail};
+use crate::workload::{CheckpointLatencySeries, IterResult, MacroStepSeries, OpResult, Workload};
+use anyhow::{bail, Context, Result};
 use std::io::BufRead;
 use std::io::Write;
 use std::path::Path;
@@ -55,6 +55,14 @@ pub trait Backend: Send + Sync {
         None
     }
 
+    /// Like `unsupported_reason`, but only checked when the backend was
+    /// selected implicitly (no explicit `--backend`). Returns `Some(reason)`
+    /// to skip this backend for the given workload by default while still
+    /// allowing it when explicitly requested.
+    fn default_skip_reason(&self, _workload: &dyn Workload) -> Option<&'static str> {
+        None
+    }
+
     /// Run one timed iteration: set up, run workload, commit, tear down.
     /// Returns (timing, kernel_messages).
     fn run_one(&self, workload: &dyn Workload, verbose: bool) -> Result<(IterResult, Vec<String>)>;
@@ -72,6 +80,8 @@ pub struct SubprocessResult {
     pub op_result: Option<OpResult>,
     /// Self-reported checkpoint-series metrics for checkpoint-scaling workloads.
     pub checkpoint_series: Option<CheckpointLatencySeries>,
+    /// Self-reported per-step timings for macro workloads.
+    pub macro_step_series: Option<MacroStepSeries>,
 }
 
 pub trait CheckpointController {
@@ -208,6 +218,7 @@ impl PausedSubprocess {
 
         let mut op_result = None;
         let mut checkpoint_series = None;
+        let mut macro_step_series = None;
         let mut found_results = false;
         let mut expect_checkpoint_json = false;
         let mut line_buf = String::new();
@@ -258,12 +269,14 @@ impl PausedSubprocess {
                 found_results = true;
                 continue;
             }
-            if found_results && op_result.is_none() {
+            if found_results {
                 if let Ok(op) = serde_json::from_str::<OpResult>(trimmed) {
                     op_result = Some(op);
                 } else if let Ok(series) = serde_json::from_str::<CheckpointLatencySeries>(trimmed)
                 {
                     checkpoint_series = Some(series);
+                } else if let Ok(series) = serde_json::from_str::<MacroStepSeries>(trimmed) {
+                    macro_step_series = Some(series);
                 } else {
                     bail!("parsing workload result JSON failed: {trimmed}");
                 }
@@ -286,6 +299,7 @@ impl PausedSubprocess {
             staging_ms,
             op_result,
             checkpoint_series,
+            macro_step_series,
         })
     }
 }

@@ -1,5 +1,5 @@
 use crate::backend::{self, Backend};
-use crate::workload::{CacheMode, IterResult, Workload};
+use crate::workload::{CacheMode, IterResult, Workload, WorkloadKind};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -32,9 +32,20 @@ impl Backend for Native {
             workload.prepare_workdir(&dest)?;
         }
         let cold = workload.cache_mode() == CacheMode::DropPageCache;
-        let mut cmd =
-            backend::exec_workload_cmd(workload.name(), std::path::Path::new("."), verbose, cold)?;
-        cmd.current_dir(&dest);
+        let mut cmd = if workload.kind() == WorkloadKind::Macro {
+            let mut c = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
+            c.current_dir(root.path());
+            c
+        } else {
+            let mut c = backend::exec_workload_cmd(
+                workload.name(),
+                std::path::Path::new("."),
+                verbose,
+                cold,
+            )?;
+            c.current_dir(&dest);
+            c
+        };
         cmd.stderr(if verbose {
             Stdio::inherit()
         } else {
@@ -52,6 +63,7 @@ impl Backend for Native {
                 total_ms: result.staging_ms,
                 op_result: result.op_result,
                 checkpoint_series: result.checkpoint_series,
+                macro_step_series: result.macro_step_series,
             },
             vec![],
         ))

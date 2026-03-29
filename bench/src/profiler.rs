@@ -507,6 +507,8 @@ fn generate_flamegraph(out_dir: &Path) -> Result<()> {
     // Include the bench process plus any child processes that do real work.
     let comms = if workload_name.starts_with("fio-") {
         "agfs-bench,fio"
+    } else if workload_name == "dev-workflow" {
+        "agfs-bench,bash,python3,grep,git,make,cc1,ld"
     } else if workload_name == "linux-untar" {
         "agfs-bench,tar,xz"
     } else {

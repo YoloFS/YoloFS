@@ -59,6 +59,10 @@ fn render_workload(
     out_dir: &Path,
     current_repo_state: Option<&RepoState>,
 ) -> Result<()> {
+    let has_macro_step_series = wl.backends.iter().any(|b| b.macro_step_series.is_some());
+    if has_macro_step_series {
+        return render_macro_step_workload(wl, out_dir, current_repo_state);
+    }
     let has_checkpoint_series = wl.backends.iter().any(|b| b.checkpoint_series.is_some());
     if has_checkpoint_series {
         return render_checkpoint_series_workload(wl, out_dir, current_repo_state);
@@ -69,6 +73,126 @@ fn render_workload(
     } else {
         render_session_workload(wl, out_dir, current_repo_state)
     }
+}
+
+/// Facets for the dev-workflow small-multiples view.
+/// Each facet groups one or more step categories into a single sub-chart.
+fn dev_workflow_facets() -> &'static [(&'static str, &'static [&'static str])] {
+    &[
+        ("Worktree", &["worktree"]),
+        ("Git Commit", &["git-status", "git-diff", "git-add", "git-commit"]),
+        ("Read", &["search", "read"]),
+        ("Edit", &["edit", "checkpoint"]),
+        ("Initial Build", &["config", "initial-build"]),
+        ("Incremental Build", &["incremental-build"]),
+    ]
+}
+
+fn render_macro_step_workload(
+    wl: &WorkloadResult,
+    out_dir: &Path,
+    current_repo_state: Option<&RepoState>,
+) -> Result<()> {
+    let order = backends::display_order();
+    let mut sorted = wl.backends.clone();
+    sorted.retain(|b| report_backend_visible(&b.backend));
+    sorted.sort_by_key(|b| {
+        order
+            .iter()
+            .position(|&name| name == b.backend)
+            .unwrap_or(usize::MAX)
+    });
+
+    let backend_names: Vec<String> = sorted.iter().map(|b| b.backend.clone()).collect();
+    let facets = dev_workflow_facets();
+
+    // Render one sub-chart per facet.
+    for (facet_label, categories) in facets {
+        let mut plot = Plot::new();
+        let mut has_data = false;
+
+        for &category in *categories {
+            let mut values = Vec::with_capacity(sorted.len());
+            let mut hover = Vec::with_capacity(sorted.len());
+            for backend in &sorted {
+                let summary = backend
+                    .macro_step_series
+                    .as_ref()
+                    .map(|series| summarize_macro_steps(series, category))
+                    .unwrap_or_else(|| MacroStepCategorySummary {
+                        total_ms: 0,
+                        detail_lines: Vec::new(),
+                    });
+                values.push(summary.total_ms as f64);
+                hover.push(dev_workflow_hover_text(category, &summary));
+            }
+            if values.iter().all(|v| *v == 0.0) {
+                continue;
+            }
+            has_data = true;
+            plot.add_trace(
+                Bar::new(backend_names.clone(), values)
+                    .name(category.to_string())
+                    .marker(
+                        plotly::common::Marker::new()
+                            .color(dev_workflow_category_color(category)),
+                    )
+                    .hover_info(HoverInfo::Text)
+                    .hover_text_array(hover),
+            );
+        }
+
+        if !has_data {
+            continue;
+        }
+
+        let layout = Layout::new()
+            .bar_mode(BarMode::Stack)
+            .title(Title::with_text(*facet_label))
+            .x_axis(Axis::new().title(Title::with_text("backend")))
+            .y_axis(Axis::new().title(Title::with_text("time (ms)")));
+
+        plot.set_layout(layout);
+        plot.set_configuration(Configuration::new().responsive(true).fill_frame(true));
+
+        let facet_slug = facet_label.to_lowercase().replace(' ', "-");
+        let facet_path = out_dir.join(format!("report-{}-{}.html", wl.workload, facet_slug));
+        std::fs::write(&facet_path, plot.to_html())
+            .with_context(|| format!("writing {}", facet_path.display()))?;
+    }
+
+    // Generate wrapper page with iframe grid.
+    let status = workload_staleness(wl, current_repo_state);
+    let mut full_html = String::new();
+    full_html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\">");
+    full_html.push_str(&format!(
+        "<title>{}</title>",
+        escape_html(&wl.workload)
+    ));
+    full_html.push_str(
+        "<style>body{font-family:system-ui,sans-serif;margin:1em;background:#fafafa}h1{font-size:1.15em}p{color:#555}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(480px,1fr));gap:1em}iframe{width:100%;height:420px;border:1px solid #ddd;border-radius:4px;background:#fff}</style>",
+    );
+    full_html.push_str("</head><body>");
+    full_html.push_str(&format!("<h1>{}</h1>", escape_html(&wl.workload)));
+    full_html.push_str(
+        "<p>Dev-workflow facets: one stacked-bar chart per phase (bars = backends, stack = step categories).</p>",
+    );
+    full_html.push_str("<div class=\"grid\">");
+    for (facet_label, _) in facets {
+        let facet_slug = facet_label.to_lowercase().replace(' ', "-");
+        full_html.push_str(&format!(
+            "<iframe src=\"report-{}-{}.html\"></iframe>",
+            wl.workload, facet_slug
+        ));
+    }
+    full_html.push_str("</div></body></html>");
+    full_html = inject_workload_status(full_html, &status);
+
+    let html_path = out_dir.join(format!("report-{}.html", wl.workload));
+    std::fs::write(&html_path, &full_html)
+        .with_context(|| format!("writing {}", html_path.display()))?;
+    eprintln!("Report written to {}", html_path.display());
+    Ok(())
 }
 
 fn render_checkpoint_series_workload(
@@ -544,6 +668,63 @@ fn backend_color(backend: &str) -> &'static str {
         "branchfs" => "#D17B0F",
         _ => "#4C6EF5",
     }
+}
+
+fn dev_workflow_category_color(category: &str) -> &'static str {
+    match category {
+        "worktree" => "#355070",
+        "config" => "#6D597A",
+        "initial-build" => "#B56576",
+        "search" => "#E56B6F",
+        "read" => "#EAAC8B",
+        "edit" => "#4D908E",
+        "checkpoint" => "#577590",
+        "incremental-build" => "#277DA1",
+        "git-status" => "#90BE6D",
+        "git-diff" => "#F9C74F",
+        "git-add" => "#F8961E",
+        "git-commit" => "#F3722C",
+        _ => "#999999",
+    }
+}
+
+#[derive(Default)]
+struct MacroStepCategorySummary {
+    total_ms: u64,
+    detail_lines: Vec<String>,
+}
+
+fn summarize_macro_steps(
+    series: &crate::workload::MacroStepSeries,
+    category: &str,
+) -> MacroStepCategorySummary {
+    let mut summary = MacroStepCategorySummary::default();
+    for step in &series.steps {
+        if dev_workflow_step_category(&step.step) != Some(category) {
+            continue;
+        }
+        summary.total_ms += step.ms;
+        summary
+            .detail_lines
+            .push(format!("{}: {} ms", step.step, step.ms));
+    }
+    summary
+}
+
+fn dev_workflow_step_category(step: &str) -> Option<&str> {
+    step.split_once(':').map(|(prefix, _)| prefix)
+}
+
+fn dev_workflow_hover_text(category: &str, summary: &MacroStepCategorySummary) -> String {
+    if summary.detail_lines.is_empty() {
+        return format!("{category}: 0 ms");
+    }
+    let mut text = format!("{category}: {} ms", summary.total_ms);
+    for line in &summary.detail_lines {
+        text.push_str("<br>");
+        text.push_str(&escape_html(line));
+    }
+    text
 }
 
 #[derive(Clone, Copy)]
@@ -1638,5 +1819,45 @@ fn badge_text(freshness: &WorkloadFreshness) -> String {
             Some(commit) => format!("{} {}", freshness.summary, commit),
             None => freshness.summary.clone(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dev_workflow_step_category, summarize_macro_steps};
+    use crate::workload::{MacroStepSeries, MacroStepTiming};
+
+    #[test]
+    fn dev_workflow_step_category_uses_prefix_before_colon() {
+        assert_eq!(
+            dev_workflow_step_category("git-commit: d66907b51ba0"),
+            Some("git-commit")
+        );
+        assert_eq!(dev_workflow_step_category("malformed"), None);
+    }
+
+    #[test]
+    fn summarize_macro_steps_filters_by_category() {
+        let series = MacroStepSeries {
+            steps: vec![
+                MacroStepTiming {
+                    step: "search: c1 #1".to_string(),
+                    ms: 3,
+                },
+                MacroStepTiming {
+                    step: "search: c1 #2".to_string(),
+                    ms: 5,
+                },
+                MacroStepTiming {
+                    step: "edit: c1 #1".to_string(),
+                    ms: 7,
+                },
+            ],
+        };
+
+        let summary = summarize_macro_steps(&series, "search");
+        assert_eq!(summary.total_ms, 8);
+        assert_eq!(summary.detail_lines.len(), 2);
+        assert!(summary.detail_lines[0].contains("search: c1 #1"));
     }
 }

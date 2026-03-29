@@ -1,0 +1,172 @@
+patch -p1 <<'EOF'
+--- a/fs/overlayfs/dir.c
++++ b/fs/overlayfs/dir.c
+@@ -1323,6 +1323,7 @@ static int ovl_create_tmpfile(struct file *file, struct dentry *dentry,
+ 	const struct cred *old_cred, *new_cred = NULL;
+ 	struct path realparentpath;
+ 	struct file *realfile;
++	struct ovl_file *of;
+ 	struct dentry *newdentry;
+ 	/* It's okay to set O_NOATIME, since the owner will be current fsuid */
+ 	int flags = file->f_flags | OVL_OPEN_FLAGS;
+EOF
+%%
+patch -p1 <<'EOF'
+--- a/fs/overlayfs/dir.c
++++ b/fs/overlayfs/dir.c
+@@ -1344,14 +1345,21 @@ static int ovl_create_tmpfile(struct file *file, struct dentry *dentry,
+ 	if (err)
+ 		goto out_revert_creds;
+ 
++	of = ovl_file_alloc(realfile);
++	if (!of) {
++		fput(realfile);
++		err = -ENOMEM;
++		goto out_revert_creds;
++	}
++
+ 	/* ovl_instantiate() consumes the newdentry reference on success */
+ 	newdentry = dget(realfile->f_path.dentry);
+ 	err = ovl_instantiate(dentry, inode, newdentry, false, file);
+ 	if (!err) {
+-		file->private_data = realfile;
++		file->private_data = of;
+ 	} else {
+ 		dput(newdentry);
+-		fput(realfile);
++		ovl_file_free(of);
+ 	}
+ out_revert_creds:
+ 	ovl_revert_creds(old_cred);
+EOF
+%%
+patch -p1 <<'EOF'
+--- a/fs/overlayfs/dir.c
++++ b/fs/overlayfs/dir.c
+@@ -1407,7 +1415,7 @@ static int ovl_tmpfile(struct mnt_idmap *idmap, struct inode *dir,
+ put_realfile:
+ 	/* Without FMODE_OPENED ->release() won't be called on @file */
+ 	if (!(file->f_mode & FMODE_OPENED))
+-		fput(file->private_data);
++		ovl_file_free(file->private_data);
+ put_inode:
+ 	iput(inode);
+ drop_write:
+EOF
+%%
+patch -p1 <<'EOF'
+--- a/fs/overlayfs/file.c
++++ b/fs/overlayfs/file.c
+@@ -89,10 +89,32 @@ static int ovl_change_flags(struct file *file, unsigned int flags)
+ 	return 0;
+ }
+ 
++struct ovl_file {
++	struct file *realfile;
++};
++
++struct ovl_file *ovl_file_alloc(struct file *realfile)
++{
++	struct ovl_file *of = kzalloc(sizeof(struct ovl_file), GFP_KERNEL);
++
++	if (unlikely(!of))
++		return NULL;
++
++	of->realfile = realfile;
++	return of;
++}
++
++void ovl_file_free(struct ovl_file *of)
++{
++	fput(of->realfile);
++	kfree(of);
++}
++
+ static int ovl_real_fdget_path(const struct file *file, struct fd *real,
+ 			       struct path *realpath)
+ {
+-	struct file *realfile = file->private_data;
++	struct ovl_file *of = file->private_data;
++	struct file *realfile = of->realfile;
+ 
+ 	real->word = (unsigned long)realfile;
+ 
+EOF
+%%
+patch -p1 <<'EOF'
+--- a/fs/overlayfs/file.c
++++ b/fs/overlayfs/file.c
+@@ -144,6 +166,7 @@ static int ovl_open(struct inode *inode, struct file *file)
+ 	struct dentry *dentry = file_dentry(file);
+ 	struct file *realfile;
+ 	struct path realpath;
++	struct ovl_file *of;
+ 	int err;
+ 
+ 	/* lazy lookup and verify lowerdata */
+EOF
+%%
+patch -p1 <<'EOF'
+--- a/fs/overlayfs/file.c
++++ b/fs/overlayfs/file.c
+@@ -166,15 +189,20 @@ static int ovl_open(struct inode *inode, struct file *file)
+ 	if (IS_ERR(realfile))
+ 		return PTR_ERR(realfile);
+ 
+-	file->private_data = realfile;
++	of = ovl_file_alloc(realfile);
++	if (!of) {
++		fput(realfile);
++		return -ENOMEM;
++	}
++
++	file->private_data = of;
+ 
+ 	return 0;
+ }
+ 
+ static int ovl_release(struct inode *inode, struct file *file)
+ {
+-	fput(file->private_data);
+-
++	ovl_file_free(file->private_data);
+ 	return 0;
+ }
+ 
+EOF
+%%
+patch -p1 <<'EOF'
+--- a/fs/overlayfs/file.c
++++ b/fs/overlayfs/file.c
+@@ -426,13 +454,13 @@ static int ovl_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+ 
+ static int ovl_mmap(struct file *file, struct vm_area_struct *vma)
+ {
+-	struct file *realfile = file->private_data;
++	struct ovl_file *of = file->private_data;
+ 	struct backing_file_ctx ctx = {
+ 		.cred = ovl_creds(file_inode(file)->i_sb),
+ 		.accessed = ovl_file_accessed,
+ 	};
+ 
+-	return backing_file_mmap(realfile, vma, &ctx);
++	return backing_file_mmap(of->realfile, vma, &ctx);
+ }
+ 
+ static long ovl_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
+EOF
+%%
+patch -p1 <<'EOF'
+--- a/fs/overlayfs/overlayfs.h
++++ b/fs/overlayfs/overlayfs.h
+@@ -863,6 +863,9 @@ int ovl_real_fileattr_set(const struct path *realpath, struct fileattr *fa);
+ int ovl_fileattr_get(struct dentry *dentry, struct fileattr *fa);
+ int ovl_fileattr_set(struct mnt_idmap *idmap,
+ 		     struct dentry *dentry, struct fileattr *fa);
++struct ovl_file;
++struct ovl_file *ovl_file_alloc(struct file *realfile);
++void ovl_file_free(struct ovl_file *of);
+ 
+ /* copy_up.c */
+ int ovl_copy_up(struct dentry *dentry);
+EOF

@@ -56,9 +56,10 @@ struct Cli {
     #[arg(long)]
     backend: Option<String>,
 
-    /// Number of timed iterations per (workload, backend); one warm-up run precedes these
-    #[arg(long, default_value_t = 3)]
-    runs: usize,
+    /// Number of timed iterations per (workload, backend); one warm-up run
+    /// precedes these. Defaults to 3 for micro/op workloads, 1 for macro.
+    #[arg(long)]
+    runs: Option<usize>,
 
     /// Capture detailed logs for all runs, not just failures
     #[arg(long)]
@@ -263,6 +264,8 @@ struct BackendResult {
     repo_state: Option<RepoState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     checkpoint_series: Option<crate::workload::CheckpointLatencySeries>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    macro_step_series: Option<crate::workload::MacroStepSeries>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -582,6 +585,7 @@ fn run_backend(
 
     let mut iterations = Vec::with_capacity(runs);
     let mut checkpoint_series_runs: Vec<crate::workload::CheckpointLatencySeries> = Vec::new();
+    let mut macro_step_series_runs: Vec<crate::workload::MacroStepSeries> = Vec::new();
     let mut all_kernel_msgs: Vec<String> = Vec::new();
     for i in 0..runs {
         eprint!("    iter {}/{}… ", i + 1, runs);
@@ -617,6 +621,9 @@ fn run_backend(
         }
         if let Some(series) = result.checkpoint_series.take() {
             checkpoint_series_runs.push(series);
+        }
+        if let Some(series) = result.macro_step_series.clone() {
+            macro_step_series_runs.push(series);
         }
         iterations.push(result);
     }
@@ -659,6 +666,7 @@ fn run_backend(
         mean_write_lat_us_p99: None,
         repo_state: repo_state.clone(),
         checkpoint_series: aggregate_checkpoint_series(&checkpoint_series_runs),
+        macro_step_series: aggregate_macro_step_series(&macro_step_series_runs),
     })
 }
 
@@ -707,6 +715,34 @@ fn aggregate_checkpoint_series(
     }
 
     Some(crate::workload::CheckpointLatencySeries { points })
+}
+
+fn aggregate_macro_step_series(
+    runs: &[crate::workload::MacroStepSeries],
+) -> Option<crate::workload::MacroStepSeries> {
+    let first = runs.first()?;
+    if first.steps.is_empty() {
+        return None;
+    }
+    let len = first.steps.len();
+    if runs.iter().any(|s| s.steps.len() != len) {
+        return None;
+    }
+    for idx in 0..len {
+        let step = &first.steps[idx].step;
+        if runs.iter().any(|s| &s.steps[idx].step != step) {
+            return None;
+        }
+    }
+
+    let n = runs.len() as f64;
+    let steps = (0..len)
+        .map(|idx| crate::workload::MacroStepTiming {
+            step: first.steps[idx].step.clone(),
+            ms: (runs.iter().map(|s| s.steps[idx].ms as f64).sum::<f64>() / n).round() as u64,
+        })
+        .collect();
+    Some(crate::workload::MacroStepSeries { steps })
 }
 
 fn run_backend_op(
@@ -864,6 +900,7 @@ fn run_backend_op(
         mean_write_lat_us_p99,
         repo_state: repo_state.clone(),
         checkpoint_series: None,
+        macro_step_series: None,
     })
 }
 
@@ -1398,6 +1435,7 @@ fn main() -> Result<()> {
         require_fio()?;
     }
 
+    let backend_explicit = cli.backend.is_some();
     let selected_backends: Vec<Box<dyn Backend>> = if let Some(name) = &cli.backend {
         // Explicit --backend: run it even if hidden, just check availability.
         let b = backends::by_name(name).with_context(|| format!("unknown backend: {name}"))?;
@@ -1432,16 +1470,18 @@ fn main() -> Result<()> {
         workload.ensure_fixture()?;
 
         let is_op = workload.kind() == workload::WorkloadKind::Op;
+        let is_macro = workload.kind() == workload::WorkloadKind::Macro;
+        let runs = cli.runs.unwrap_or(if is_macro { 1 } else { 3 });
         let mut did_warm_up = false;
         for b in &selected_backends {
             if cli.skip_complete
                 && let Some(existing) = read_existing_results(&json_path)?
-                && has_exact_runs(&existing, workload.name(), b.name(), cli.runs)
+                && has_exact_runs(&existing, workload.name(), b.name(), runs)
             {
                 eprintln!(
                     "  backend: {} (skipping, already has {} timed iterations)",
                     b.name(),
-                    cli.runs
+                    runs
                 );
                 continue;
             }
@@ -1461,6 +1501,14 @@ fn main() -> Result<()> {
                 continue;
             }
 
+            if !backend_explicit {
+                if let Some(reason) = b.default_skip_reason(workload.as_ref()) {
+                    eprintln!("  backend: {} (skipping: {})", b.name(), reason);
+                    remove_stale_backend(&out_dir, workload.name(), b.name())?;
+                    continue;
+                }
+            }
+
             if !did_warm_up {
                 eprintln!("  warm-up…");
                 let native = backends::native::Native;
@@ -1475,7 +1523,7 @@ fn main() -> Result<()> {
                     b.as_ref(),
                     workload.as_ref(),
                     cli.verbose,
-                    cli.runs,
+                    runs,
                     &env.repo_state,
                 )?
             } else {
@@ -1483,7 +1531,7 @@ fn main() -> Result<()> {
                     b.as_ref(),
                     workload.as_ref(),
                     cli.verbose,
-                    cli.runs,
+                    runs,
                     &env.repo_state,
                 )?
             };
@@ -1951,7 +1999,8 @@ fn find_pdftoppm_output(prefix: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::RepoState;
+    use super::{RepoState, aggregate_macro_step_series};
+    use crate::workload::{MacroStepSeries, MacroStepTiming};
 
     #[test]
     fn repo_state_deserializes_legacy_cli_dirty_field() {
@@ -1962,5 +2011,62 @@ mod tests {
         assert_eq!(state.commit, "deadbeef");
         assert!(state.user_dirty);
         assert!(!state.kmod_dirty);
+    }
+
+    #[test]
+    fn aggregate_macro_step_series_averages_matching_steps() {
+        let series = vec![
+            MacroStepSeries {
+                steps: vec![
+                    MacroStepTiming {
+                        step: "search: c1 #1".to_string(),
+                        ms: 10,
+                    },
+                    MacroStepTiming {
+                        step: "edit: c1 #1".to_string(),
+                        ms: 21,
+                    },
+                ],
+            },
+            MacroStepSeries {
+                steps: vec![
+                    MacroStepTiming {
+                        step: "search: c1 #1".to_string(),
+                        ms: 14,
+                    },
+                    MacroStepTiming {
+                        step: "edit: c1 #1".to_string(),
+                        ms: 19,
+                    },
+                ],
+            },
+        ];
+
+        let aggregated = aggregate_macro_step_series(&series).expect("series should aggregate");
+        assert_eq!(aggregated.steps.len(), 2);
+        assert_eq!(aggregated.steps[0].step, "search: c1 #1");
+        assert_eq!(aggregated.steps[0].ms, 12);
+        assert_eq!(aggregated.steps[1].step, "edit: c1 #1");
+        assert_eq!(aggregated.steps[1].ms, 20);
+    }
+
+    #[test]
+    fn aggregate_macro_step_series_rejects_step_mismatch() {
+        let series = vec![
+            MacroStepSeries {
+                steps: vec![MacroStepTiming {
+                    step: "search: c1 #1".to_string(),
+                    ms: 10,
+                }],
+            },
+            MacroStepSeries {
+                steps: vec![MacroStepTiming {
+                    step: "read: c1 #1".to_string(),
+                    ms: 10,
+                }],
+            },
+        ];
+
+        assert!(aggregate_macro_step_series(&series).is_none());
     }
 }
