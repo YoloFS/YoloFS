@@ -343,17 +343,17 @@ fn rendered_gbps_cell(native_kbps: u64, kbps: Option<u64>) -> String {
     let native_gbps = native_kbps as f64 / (1024.0 * 1024.0);
     let gbps = kbps as f64 / (1024.0 * 1024.0);
     let delta_pct = ((gbps / native_gbps) - 1.0) * 100.0;
-    if delta_pct.abs() < 5.0 {
-        "\\cellcolor{TableauGreen!25!white}<5\\%".to_string()
+    if delta_pct > -3.0 {
+        "\\cellcolor{TableauGreen!25!white}$\\pm 3\\%$".to_string()
     } else if delta_pct < 0.0 {
-        let severity = (-delta_pct).clamp(5.0, 100.0);
-        let pct = 18.0 + (severity - 5.0) / 95.0 * 42.0;
+        let severity = (-delta_pct).clamp(3.0, 100.0);
+        let pct = 18.0 + (severity - 3.0) / 95.0 * 42.0;
         format!(
-            "\\cellcolor{{TableauRed!{:.0}!white}}{{{:+.0}\\%}}",
+            "\\cellcolor{{TableauRed!{:.0}!white}}{{${:+.0}\\%$}}",
             pct, delta_pct
         )
     } else {
-        format!("{:+.0}\\%", delta_pct)
+        format!("${:+.0}\\%$", delta_pct)
     }
 }
 
