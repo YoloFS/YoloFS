@@ -139,7 +139,7 @@ colors = {{
 }}
 native_line_kw = dict(S.NATIVE_LINE_KW)
 native_line_kw['path_effects'] = [pe.withStroke(linewidth=1.8, foreground='white', alpha=0.45)]
-native_handle = S.native_legend_handle('Native')
+native_handle = S.native_legend_handle('Base')
 native_handle.set_path_effects(native_line_kw['path_effects'])
 
 plt.rcParams.update({{'font.size': 6.5, 'axes.labelsize': 6.5, 'xtick.labelsize': 6,
@@ -216,7 +216,7 @@ legend_handles = [
     S.backend_legend_handle('AgFS'),
     S.backend_legend_handle('OverlayFS'),
     mpatches.Patch(facecolor='#666', edgecolor='#666', label='run'),
-    mpatches.Patch(facecolor='white', edgecolor='#666', hatch='////', label='checkpoint'),
+    mpatches.Patch(facecolor='white', edgecolor='#666', hatch='////', label='snapshot'),
     mpatches.Patch(facecolor='white', edgecolor='#666', hatch='....', label='commit'),
     native_handle,
 ]

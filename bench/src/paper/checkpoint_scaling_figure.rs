@@ -4,7 +4,7 @@ use super::Artifact;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const CAPTION: &str = "Checkpoint scalability. The latency of creating a new file, reading an existing file, reporting staged changes, and committing all checkpoints back to base as the number of checkpoints grow. OverlayFS fails to support more checkpoints because of mount option limits.";
+const CAPTION: &str = "Snapshot scalability. The latency of creating a new file, reading an existing file, reporting staged changes, and committing all snapshots back to base as the number of snapshots grow. OverlayFS fails to support more snapshots because of mount option limits.";
 const LABEL: &str = "fig:checkpoint-scaling";
 
 pub fn artifact_meta(paper_dir: &Path) -> Artifact {
@@ -247,7 +247,7 @@ fig.tight_layout(pad=0.3)
 # Shared x-axis label below both panels.
 fig.canvas.draw()
 # Shared x-axis label below the bottom row.
-fig.text(0.5, -0.02, 'number of checkpoints', ha='center', fontsize=8)
+fig.text(0.5, -0.02, 'number of snapshots', ha='center', fontsize=8)
 
 fig.savefig('{pdf_path}', bbox_inches='tight', dpi=300)
 plt.close(fig)

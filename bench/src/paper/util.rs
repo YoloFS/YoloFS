@@ -7,7 +7,7 @@ use std::process::Command;
 /// Stylized backend names for publication.
 pub fn backend_display_name(name: &str) -> &'static str {
     match name {
-        "native" => "Native",
+        "native" => "Base",
         "agfs-no-perm" => "AgFS",
         "agfs-realistic" => "AgFS-R",
         "agfs" => "AgFS",
@@ -123,7 +123,7 @@ NATIVE_COLOR = 'black'
 # Backends whose bars are never capped or broken out.
 UNCAPPABLE = {'OverlayFS'}
 
-# ── Native baseline drawing ──
+# ── Base baseline drawing ──
 NATIVE_LINE_KW = dict(
     color=NATIVE_COLOR, linewidth=1.0, linestyle='-', zorder=5,
     path_effects=[pe.withStroke(linewidth=3.0, foreground='white', alpha=0.5)],
@@ -139,7 +139,7 @@ def fmt_lat(v):
         return f'{v/1000:.0f}ms'
     return f'{v:.0f}'
 
-def native_legend_handle(label='Native'):
+def native_legend_handle(label='Base'):
     import matplotlib.lines as mlines
     return mlines.Line2D([], [], label=label, **NATIVE_LINE_KW)
 

@@ -1,7 +1,7 @@
 //! Publication figure: metadata operation latency small multiples.
 //!
 //! Layout: 1 row (100 files) × 7 columns (ops).
-//! Within each subplot, x-axis = source (base, stage, checkpoint),
+//! Within each subplot, x-axis = source (base, stage, snapshot),
 //! bars colored by backend. Legend identifies backends.
 
 use super::util::backend_display_name;
@@ -29,7 +29,7 @@ const ALL_BACKENDS: &[&str] = &[
 /// Display names for figure legend.
 fn fig_backend_name(key: &str) -> &'static str {
     match key {
-        "native" => "Native",
+        "native" => "Base",
         "agfs-no-perm" => "AgFS (no perm)",
         "agfs-realistic" => "AgFS",
         "overlayfs" => "OverlayFS",
@@ -50,11 +50,7 @@ const OPS: &[(&str, &str)] = &[
 ];
 
 /// Source variants in display order.
-const SOURCES: &[(&str, &str)] = &[
-    ("base", "Base"),
-    ("checkpoint", "Chkpt"),
-    ("stage", "Stage"),
-];
+const SOURCES: &[(&str, &str)] = &[("base", "Base"), ("checkpoint", "Snap"), ("stage", "Stage")];
 
 // ── Figure variant configuration ────────────────────────────────────────────
 
@@ -69,7 +65,7 @@ struct FigureVariant {
 /// Shared caption and label for the paper figure.
 const CAPTION: &str = "Metadata operation latency (\\textmu s). \
      The dashed line marks the native ext4 baseline. \
-     Bars grouped by file source layer (base / checkpoint / staged) for the
+     Bars grouped by file source layer (base / snapshot / staged) for the
      100-file workloads. Outlier bars are capped and annotated.";
 const LABEL: &str = "fig:meta-ops";
 
@@ -249,7 +245,7 @@ ops = [{ops}]
 bar_backends = [{bar_backends}]
 native_key = '{native_key}'
 sources = [{sources}]
-source_full = {{'Base': 'base', 'Chkpt': 'checkpoint', 'Stage': 'stage'}}
+source_full = {{'Base': 'base', 'Snap': 'checkpoint', 'Stage': 'stage'}}
 sizes = [100]
 size_labels = {{100: '100 files'}}
 CAP_FACTOR = {cap_factor}

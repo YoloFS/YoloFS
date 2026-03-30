@@ -13,9 +13,10 @@ terms: "mark" (M) for checkpoint records and "jump" (J) for restore records.
 | Bookmark a point | `agfs checkpoint` | Mark (`M` tag, `Meta::Mark`) |
 | Return to a point | `agfs restore` | Jump (`J` tag, `Meta::Jump`) |
 
-CLI commands, help text, and user-visible output use "checkpoint" and
-"restore".  Internal types, journal tags, kernel functions, and ioctl
-names use "mark" and "jump".
+CLI commands, help text, and general user-visible output use "checkpoint" and
+"restore". Internal types, journal tags, kernel functions, and ioctl names
+use "mark" and "jump". Paper benchmark figures may use presentation-specific
+labels such as "snapshot" and "Base" when that improves figure readability.
 
 ## Renames
 

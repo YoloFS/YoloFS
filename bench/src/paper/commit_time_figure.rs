@@ -190,7 +190,7 @@ ax_commit.xaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
 # Legend at top, shared.
 from matplotlib.patches import Patch
 legend_items = [Patch(facecolor=backend_colors[b], edgecolor='white', label=b) for b in backends]
-legend_items.append(S.native_legend_handle('Native baseline'))
+legend_items.append(S.native_legend_handle('Base'))
 fig.legend(handles=legend_items, loc='upper center', bbox_to_anchor=(0.5, 0.995),
            ncol=nb + 1, handlelength=0.95, handletextpad=0.35,
            borderpad=0.15, columnspacing=0.55)
