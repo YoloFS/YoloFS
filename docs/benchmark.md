@@ -54,8 +54,11 @@ and that preferred artifact now shows only the `100 files` row instead of both
 `100 files` and `10K files`. This keeps the paper figure focused on the small
 directory case without carrying the extra comparison row, and because that is
 now the only row in the figure, it does not repeat `100 files` as a left-side
-row label. Across paper-facing plots, the source layer previously labeled
-`checkpoint`/`Chkpt` is now labeled `snapshot`/`Snap`.
+row label. Its paper layout also keeps the full width while further shortening
+the single-row figure height so the bars read less tall, and reserves extra
+top margin so the legend sits above the plot area without overlap. Across paper-facing
+plots, the source layer previously labeled `checkpoint`/`Chkpt` is now labeled
+`snapshot`/`Snap`.
 
 The fio paper table uses real column rules around the Base throughput column
 instead of per-cell `\multicolumn` borders so the separators render

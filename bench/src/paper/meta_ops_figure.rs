@@ -297,7 +297,7 @@ def compute_cap(vals, floor_vals):
 ncols = len(ops)
 nrows = 1
 
-fig = plt.figure(figsize=(14, 2.5))
+fig = plt.figure(figsize=(14, 1.8))
 gs = gridspec.GridSpec(nrows, ncols, figure=fig, wspace=0.35, hspace=0.35)
 
 drew_native_line = False
@@ -406,6 +406,8 @@ for b in bar_backends:
 
 fig.legend(handles=legend_items, loc='upper center', ncol=nb + 1,
            bbox_to_anchor=(0.5, 1.0))
+
+fig.subplots_adjust(top=0.72)
 
 fig.savefig('{pdf_path}', bbox_inches='tight', dpi=300)
 plt.close(fig)
