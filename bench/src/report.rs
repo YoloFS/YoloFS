@@ -139,7 +139,9 @@ fn render_macro_step_workload(
             "#1982C4",
             sorted
                 .iter()
-                .map(|b| b.mean_init_ms.unwrap_or(0.0) + b.mean_staging_ms.unwrap_or(b.mean_total_ms))
+                .map(|b| {
+                    b.mean_init_ms.unwrap_or(0.0) + b.mean_staging_ms.unwrap_or(b.mean_total_ms)
+                })
                 .collect::<Vec<_>>(),
         ),
         (
@@ -191,7 +193,9 @@ fn render_macro_step_workload(
         );
     }
     if !phase_shapes.is_empty() {
-        phase_layout = phase_layout.shapes(phase_shapes).annotations(phase_annotations);
+        phase_layout = phase_layout
+            .shapes(phase_shapes)
+            .annotations(phase_annotations);
     }
     phase_plot.set_layout(phase_layout);
     phase_plot.set_configuration(Configuration::new().responsive(true).fill_frame(true));
@@ -238,7 +242,8 @@ fn render_macro_step_workload(
             ));
         }
 
-        let has_data = run_values.iter().any(|v| *v > 0.0) || checkpoint_values.iter().any(|v| *v > 0.0);
+        let has_data =
+            run_values.iter().any(|v| *v > 0.0) || checkpoint_values.iter().any(|v| *v > 0.0);
 
         if !has_data {
             continue;
@@ -317,10 +322,7 @@ fn render_macro_step_workload(
     let status = workload_staleness(wl, current_repo_state);
     let mut full_html = String::new();
     full_html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\">");
-    full_html.push_str(&format!(
-        "<title>{}</title>",
-        escape_html(&wl.workload)
-    ));
+    full_html.push_str(&format!("<title>{}</title>", escape_html(&wl.workload)));
     full_html.push_str(
         "<style>body{font-family:system-ui,sans-serif;margin:1em;background:#fafafa}h1{font-size:1.15em}p{color:#555}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(480px,1fr));gap:1em}iframe{width:100%;height:420px;border:1px solid #ddd;border-radius:4px;background:#fff}</style>",
     );

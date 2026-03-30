@@ -1,8 +1,8 @@
 //! Publication figure: commit time per operation (session microbenchmarks).
 
 use super::Artifact;
-use crate::report;
 use crate::BenchResults;
+use crate::report;
 use anyhow::{Context, Result};
 use std::path::Path;
 
