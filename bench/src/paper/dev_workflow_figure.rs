@@ -5,7 +5,7 @@ use crate::BenchResults;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const CAPTION: &str = "Developer workflow breakdown (s). Each small multiple shows workflow-phase time split into run versus checkpoint, with native shown as a horizontal baseline. The summary panel shows total run versus backend commit time. TODO.";
+const CAPTION: &str = "A developer workload of setting up and iterating on the Linux kernel codebase.";
 const LABEL: &str = "fig:dev-workflow";
 const WORKLOAD: &str = "dev-workflow";
 
@@ -69,7 +69,7 @@ pub fn render(results: &BenchResults, paper_dir: &Path) -> Result<Artifact> {
 
     let mut csv_lines = Vec::new();
     csv_lines.push(
-        "facet,backend,run_s,checkpoint_s,native_run_s,run_total_s,commit_s,native_total_s"
+        "facet,backend,run_s,checkpoint_s,native_run_s,run_total_s,checkpoint_total_s,commit_s,native_total_s"
             .to_string(),
     );
 
@@ -84,17 +84,30 @@ pub fn render(results: &BenchResults, paper_dir: &Path) -> Result<Artifact> {
             let run_total_s = (backend.mean_init_ms.unwrap_or(0.0)
                 + backend.mean_staging_ms.unwrap_or(backend.mean_total_ms))
                 / 1000.0;
+            let checkpoint_total_s = sum_categories(
+                backend,
+                &[
+                    "checkpoint-worktree",
+                    "checkpoint-config",
+                    "checkpoint-initial-build",
+                    "checkpoint-edit",
+                    "checkpoint-incremental-build",
+                    "checkpoint-git-commit",
+                ],
+                true,
+            ) / 1000.0;
             let native_total_s = (native.mean_init_ms.unwrap_or(0.0)
                 + native.mean_staging_ms.unwrap_or(native.mean_total_ms))
                 / 1000.0;
             csv_lines.push(format!(
-                "{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
+                "{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
                 facet_label,
                 backend_label,
                 run_s,
                 checkpoint_s,
                 native_run_ms / 1000.0,
                 run_total_s,
+                checkpoint_total_s,
                 backend.mean_commit_ms.unwrap_or(0.0) / 1000.0,
                 native_total_s,
             ));
@@ -112,7 +125,7 @@ from io import StringIO
 import csv
 
 DATA = """\
-facet,backend,run_s,checkpoint_s,native_run_s,run_total_s,commit_s,native_total_s
+facet,backend,run_s,checkpoint_s,native_run_s,run_total_s,checkpoint_total_s,commit_s,native_total_s
 {data}
 """
 
@@ -123,6 +136,10 @@ colors = {{
     'AgFS': S.BACKEND_COLORS['AgFS'],
     'OverlayFS': S.BACKEND_COLORS['OverlayFS'],
 }}
+native_line_kw = dict(S.NATIVE_LINE_KW)
+native_line_kw['path_effects'] = [pe.withStroke(linewidth=1.8, foreground='white', alpha=0.45)]
+native_handle = S.native_legend_handle('Native')
+native_handle.set_path_effects(native_line_kw['path_effects'])
 
 plt.rcParams.update({{'font.size': 6.5, 'axes.labelsize': 6.5, 'xtick.labelsize': 6,
                       'ytick.labelsize': 5.2, 'legend.fontsize': 5.8}})
@@ -151,12 +168,12 @@ for idx, facet in enumerate(facets):
     native_run = next((float(r['native_run_s']) for r in fr), 0.0)
     for i, backend in enumerate(backends):
         color = colors[backend]
-        ax.bar(x[i], run[i], color=color, edgecolor=color, linewidth=0.35, width=0.14)
-        ax.bar(x[i], chk[i], bottom=run[i], color='white', edgecolor=color, linewidth=0.35,
+        ax.bar(x[i], run[i], color=color, edgecolor=color, linewidth=0.6, width=0.14)
+        ax.bar(x[i], chk[i], bottom=run[i], color='white', edgecolor=color, linewidth=0.6,
                width=0.14)
         ax.bar(x[i], chk[i], bottom=run[i], color='none', edgecolor=color, linewidth=0.0,
                hatch='////', width=0.14, zorder=3)
-    ax.axhline(native_run, **S.NATIVE_LINE_KW)
+    ax.axhline(native_run, **native_line_kw)
     ax.set_xticks([])
     ymax = max(max((r + c) for r, c in zip(run, chk)), native_run, 0.0)
     ax.set_ylim(0, ymax * 1.08 if ymax > 0 else 1.0)
@@ -169,15 +186,21 @@ ax = ax_total
 x = np.array([0.0, 0.2])
 run_total = [next((float(r['run_total_s']) for r in rows if r['facet'] == facets[0] and r['backend'] == b), 0.0) for b in backends]
 commit = [next((float(r['commit_s']) for r in rows if r['facet'] == facets[0] and r['backend'] == b), 0.0) for b in backends]
+checkpoint_total = [next((float(r['checkpoint_total_s']) for r in rows if r['facet'] == facets[0] and r['backend'] == b), 0.0) for b in backends]
 native_total = next((float(r['native_total_s']) for r in rows if r['facet'] == facets[0]), 0.0)
+stack_base = np.array(run_total) + np.array(checkpoint_total)
 for i, backend in enumerate(backends):
     color = colors[backend]
-    ax.bar(x[i], run_total[i], color=color, edgecolor=color, linewidth=0.35, width=0.14)
-    ax.bar(x[i], commit[i], bottom=run_total[i], color='white', edgecolor=color, linewidth=0.35,
+    ax.bar(x[i], run_total[i], color=color, edgecolor=color, linewidth=0.6, width=0.14)
+    ax.bar(x[i], checkpoint_total[i], bottom=run_total[i], color='white', edgecolor=color, linewidth=0.6,
            width=0.14)
-    ax.bar(x[i], commit[i], bottom=run_total[i], color='none', edgecolor=color, linewidth=0.0,
-           hatch='xx', width=0.14, zorder=3)
-ax.axhline(native_total, **S.NATIVE_LINE_KW)
+    ax.bar(x[i], checkpoint_total[i], bottom=run_total[i], color='none', edgecolor=color, linewidth=0.0,
+           hatch='////', width=0.14, zorder=3)
+    ax.bar(x[i], commit[i], bottom=stack_base[i], color='white', edgecolor=color, linewidth=0.6,
+           width=0.14)
+    ax.bar(x[i], commit[i], bottom=stack_base[i], color='none', edgecolor=color, linewidth=0.0,
+           hatch='....', width=0.14, zorder=3)
+ax.axhline(native_total, **native_line_kw)
 ax.set_xticks([])
 ax.set_ylim(bottom=0)
 ax.set_xlim(-0.14, 0.34)
@@ -191,10 +214,10 @@ for ax in axes + [ax_total]:
 legend_handles = [
     S.backend_legend_handle('AgFS'),
     S.backend_legend_handle('OverlayFS'),
-    mpatches.Patch(facecolor='white', edgecolor='#666', label='run'),
+    mpatches.Patch(facecolor='#666', edgecolor='#666', label='run'),
     mpatches.Patch(facecolor='white', edgecolor='#666', hatch='////', label='checkpoint'),
-    mpatches.Patch(facecolor='white', edgecolor='#333', hatch='xx', label='commit'),
-    S.native_legend_handle('Native'),
+    mpatches.Patch(facecolor='white', edgecolor='#666', hatch='....', label='commit'),
+    native_handle,
 ]
 fig.legend(handles=legend_handles, loc='upper center', bbox_to_anchor=(0.5, 0.92),
            ncol=6, handlelength=1.1, handletextpad=0.35, borderpad=0.15, columnspacing=0.55)
@@ -252,12 +275,12 @@ plt.close(fig)
          \\begin{{document}}\n\
          \\thispagestyle{{empty}}\n\
          % --- BEGIN figure fragment (includable via \\input) ---\n\
-         \\begin{{figure*}}[t]\n\
+         \\begin{{figure}}[t]\n\
          \\centering\n\
-         \\includegraphics[width=0.42\\textwidth]{{{plot_pdf_name}}}\n\
+         \\includegraphics[width=\\columnwidth]{{{plot_pdf_name}}}\n\
          \\caption{{{CAPTION}}}\n\
          \\label{{{LABEL}}}\n\
-         \\end{{figure*}}\n\
+         \\end{{figure}}\n\
          % --- END figure fragment ---\n\
          \\end{{document}}\n"
     );
