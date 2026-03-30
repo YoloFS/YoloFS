@@ -147,8 +147,8 @@ backend_colors = {{
     'BranchFS':   S.TABLEAU10['orange'],
 }}
 
-plt.rcParams.update({{'font.size': 6.6, 'axes.labelsize': 6.6, 'xtick.labelsize': 6.1,
-                      'ytick.labelsize': 6.1, 'legend.fontsize': 5.6}})
+plt.rcParams.update({{'font.size': 8.6, 'axes.labelsize': 8.6, 'xtick.labelsize': 7.8,
+                      'ytick.labelsize': 7.8, 'legend.fontsize': 7.2}})
 
 nb = len(backends)
 bar_height = 0.5 / nb
@@ -160,7 +160,7 @@ commit_max = max(
     + [baseline.get(op, 0) for op in ops]
 ) * 1.1
 
-fig, ax_commit = plt.subplots(1, 1, figsize=(1.88, 0.82))
+fig, ax_commit = plt.subplots(1, 1, figsize=(2.7, 1.08))
 
 # Left panel: commit time.
 for bi, b in enumerate(backends):

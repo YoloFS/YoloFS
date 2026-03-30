@@ -1,10 +1,10 @@
 //! Publication table: fio data-operation throughput summary.
 
-use super::Artifact;
 use super::util::{backend_display_name, latex_escape, run_pdflatex_cropped};
-use crate::BenchResults;
+use super::Artifact;
 use crate::workload::WorkloadKind;
 use crate::workloads;
+use crate::BenchResults;
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -78,25 +78,28 @@ fn build_tex(results: &BenchResults) -> Result<String> {
     tex.push_str("\\small\n");
     tex.push_str("\\setlength{\\tabcolsep}{4pt}\n");
 
-    // Column spec: no vertical rules in the spec itself — we add them
-    // per-row via \multicolumn so booktabs rules stay clean.
+    // Column spec: keep a real vertical separator around the Base column so
+    // the rule is continuous through headers and grouped body rows.
     let _ncols = 3 + columns.len();
     let mut col_spec = String::from("l@{\\,}l@{\\,}l");
-    for _ in &columns {
-        col_spec.push('c');
+    for (i, _) in columns.iter().enumerate() {
+        if i == 0 {
+            col_spec.push_str("|c|");
+        } else {
+            col_spec.push('c');
+        }
     }
-    tex.push_str(&format!("\\begin{{tabular}}{{{col_spec}}}\n\\toprule\n"));
-
-    // Header row: "Workload" with right border, Base with both borders.
-    tex.push_str("\\multicolumn{3}{l|}{Workload}");
     tex.push_str(&format!(
-        " & \\multicolumn{{1}}{{|c|}}{{{}}}",
-        latex_escape(columns[0].display)
+        "\\begin{{tabular}}{{{col_spec}}}\n\\noalign{{\\hrule height 0.8pt}}\n"
     ));
+
+    // Header row.
+    tex.push_str("\\multicolumn{3}{l|}{Workload}");
+    tex.push_str(&format!(" & {}", latex_escape(columns[0].display)));
     for col in &columns[1..] {
         tex.push_str(&format!(" & {}", latex_escape(col.display)));
     }
-    tex.push_str(" \\\\\n\\midrule\n");
+    tex.push_str(" \\\\\n\\noalign{\\hrule height 0.5pt}\n");
 
     // Data rows grouped by access pattern, then by operation.
     let structured: Vec<(FioDims, &std::collections::BTreeMap<String, u64>)> = op_rows
@@ -125,10 +128,11 @@ fn build_tex(results: &BenchResults) -> Result<String> {
                     continue;
                 };
 
-                // Between op groups within the same access group: partial rule from col 2.
+                // Between op groups within the same access group: use \cline so
+                // the rule meets the real Base-column vertical separators cleanly.
                 if k == j && j != i {
                     let ncols = 3 + columns.len();
-                    tex.push_str(&format!("\\cmidrule(l){{2-{ncols}}}\n"));
+                    tex.push_str(&format!("\\cline{{2-{ncols}}}\n"));
                 }
 
                 // Access column: multirow for first row in this access group.
@@ -169,9 +173,9 @@ fn build_tex(results: &BenchResults) -> Result<String> {
                     } else {
                         rendered_gbps_cell(native_kbps, vals.get(col.key).copied())
                     };
-                    // Wrap the Base column in \multicolumn to get vertical rules.
+                    // Base uses the real column rule from the tabular spec.
                     if ci == 0 {
-                        tex.push_str(&format!(" & \\multicolumn{{1}}{{|c|}}{{{rendered}}}"));
+                        tex.push_str(&format!(" & {rendered}"));
                     } else {
                         tex.push_str(&format!(" & {rendered}"));
                     }
@@ -182,12 +186,12 @@ fn build_tex(results: &BenchResults) -> Result<String> {
         }
 
         if access_end < structured.len() {
-            tex.push_str("\\midrule\n");
+            tex.push_str("\\noalign{\\hrule height 0.5pt}\n");
         }
         i = access_end;
     }
 
-    tex.push_str("\\bottomrule\n\\end{tabular}\n");
+    tex.push_str("\\noalign{\\hrule height 0.8pt}\n\\end{tabular}\n");
     tex.push_str(&format!("\\caption{{{CAPTION}}}\n"));
     tex.push_str(&format!("\\label{{{LABEL}}}\n"));
     tex.push_str("\\end{table}\n");
@@ -369,7 +373,11 @@ impl FioDims {
     }
 
     fn locality_label(&self) -> &'static str {
-        if self.cold { "cold" } else { "warm" }
+        if self.cold {
+            "cold"
+        } else {
+            "warm"
+        }
     }
 }
 

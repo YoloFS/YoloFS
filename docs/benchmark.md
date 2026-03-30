@@ -49,6 +49,13 @@ keeps a native anchor even though native has no backend commit phase. The
 status/report panel omits its own xlabel; the left side carries the shared
 unit text and the bold `commit` xlabel.
 
+The fio paper table uses real column rules around the Base throughput column
+instead of per-cell `\multicolumn` borders so the separators render
+continuously through headers and grouped body rows. Because the table uses
+vertical rules around Base, it also uses standard `\hline`/`\cline` rules
+instead of `booktabs` horizontal rules, which intentionally do not join
+vertical separators cleanly.
+
 ---
 
 ## 2. Workloads
