@@ -6,11 +6,12 @@ to `allow`, `allow-rw`, `allow-ro`, `allow-rx`, or `deny`. When a thread touches
 the thread is put to sleep; a userspace daemon receives the request and
 writes back a decision that wakes the thread.
 
-Permission gating applies to **file access** (open for read/write/exec),
-**directory read-like access** (lookup/traversal, readdir, stat), and
-**metadata mutations** (create, mkdir, unlink, rmdir, rename, symlink).
-Directory read-like operations use the permission of the directory in
-question. Directory mutations use the permission of the parent directory.
+Permission gating applies to **file access** (open for read/write/exec)
+and **metadata mutations** (create, mkdir, unlink, rmdir, rename,
+symlink).  Directory mutations use the permission of the parent
+directory.  Directory read-like operations (lookup/traversal, readdir,
+stat) are **not** permission-gated — only `hide` applies (returns
+ENOENT).  `deny` and `ask` have no effect on directory read-like ops.
 
 ## Permission States
 
@@ -184,9 +185,8 @@ void agfs_cache_perm(struct inode *inode, struct dentry *dentry)
 }
 
 // Shared permission check: resolve, ask if needed, check the requested op.
-// Used by agfs_open (for file access), agfs_dir_open (for directory readdir),
-// agfs_lookup/agfs_getattr (for directory lookup/stat), and
-// agfs_check_mutate_perm (for metadata ops).  Lives in perm.c.
+// Used by agfs_open (for file access) and agfs_check_mutate_perm (for
+// metadata ops).  Lives in perm.c.
 int agfs_check_dentry_perm(struct agfs_sb_info *sbi,
                            struct dentry *dentry,
                            int f_flags, fmode_t f_mode)
@@ -228,10 +228,10 @@ changes), `permission()` is a single generation compare + switch — O(1).
 On rule change, the generation bumps and inodes re-resolve lazily on
 next access.
 
-The `ask` path is handled in the operations that already have a stable dentry
-and may sleep: `agfs_open()` for regular-file opens, `agfs_dir_open()` for
-directory `readdir`, `agfs_lookup()` for directory traversal, and
-`agfs_getattr()` for directory `stat`:
+The `ask` path is handled in operations that have a stable dentry and may
+sleep: `agfs_open()` for regular-file opens.  Directory read-like
+operations (readdir, lookup/traversal, stat) are **not** gated by ask —
+they only check for `hide`:
 
 ```c
 static int agfs_open(struct inode *inode, struct file *file)
@@ -274,8 +274,8 @@ static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
 - `permission("src/main.rs")` -> cached_perm=ALLOW_RW (from lookup) -> **pass**
 - `permission("etc/passwd")` -> cached_perm=DENY -> **-EACCES**
 - `permission("etc/hosts")` -> cached_perm=ALLOW_RO -> **pass for read, deny write**
-- `readdir("etc")` -> cached_perm=DENY -> **pass** (visible but not mutable)
-- `stat("etc")` -> cached_perm=ASK -> ask daemon -> **sleeps until decision**
+- `readdir("etc")` -> cached_perm=DENY -> **pass** (dir read-like ops not gated)
+- `stat("etc")` -> cached_perm=ASK -> **pass** (dir read-like ops not gated)
 - `open("tmp/foo")` -> cached_perm=ASK -> ask daemon -> **sleeps until decision**
 
 ## The Ask Protocol
@@ -373,9 +373,9 @@ longest-prefix-match for free. This satisfies all three principles:
 | Operation | Check | Gate point |
 |-----------|-------|------------|
 | open (read/write/exec) | file's own perm | `agfs_open` → `agfs_check_dentry_perm` |
-| readdir | directory's own perm (read-like) | `agfs_dir_open` → `agfs_check_dir_perm` |
-| stat | directory's own perm (read-like) | `agfs_getattr` → `agfs_check_dir_perm` |
-| lookup / traversal | parent directory's own perm (read-like) | `agfs_lookup` → `agfs_check_dir_perm` |
+| readdir | hide only | `agfs_dir_open` (inline hide check) |
+| stat | hide only | `agfs_getattr` (inline hide check) |
+| lookup / traversal | not gated | — |
 | create, mkdir, symlink | parent dir's perm (write) | `agfs_check_mutate_perm` |
 | unlink, rmdir | parent dir's perm (write) | `agfs_check_mutate_perm` |
 | rename | both parents' perm (write) | `agfs_check_mutate_perm` × 2 |

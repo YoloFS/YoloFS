@@ -280,16 +280,37 @@ pub fn setup_agfs_dir(agfs_dir: &Path) -> Result<()> {
     // Chown .agfs/ and its contents to the real user. The CLI runs setuid
     // root, so dirs/files created above are root-owned. After exec drops
     // privileges, the real user needs write access to inodes/ (for staging
-    // blobs) and journal (for appends).
-    let uid = Some(nix::unistd::getuid());
-    let gid = Some(nix::unistd::getgid());
-    for path in [
-        agfs_dir.to_path_buf(),
-        agfs_dir.join("inodes"),
-        agfs_dir.join("mnt"),
-        journal,
-    ] {
-        nix::unistd::chown(&path, uid, gid).with_context(|| format!("chown {}", path.display()))?;
+    // blobs) and journal (for appends). Skip when not setuid (euid == uid).
+    let uid = nix::unistd::getuid();
+    if nix::unistd::geteuid() != uid {
+        let uid = Some(uid);
+        let gid = Some(nix::unistd::getgid());
+        for path in [
+            agfs_dir.to_path_buf(),
+            agfs_dir.join("inodes"),
+            agfs_dir.join("mnt"),
+            journal,
+        ] {
+            if let Err(e) = nix::unistd::chown(&path, uid, gid) {
+                // chown is unsupported on some filesystems (9p, virtio-fs).
+                // Tolerate the failure if the real user can already write.
+                let writable = nix::unistd::access(
+                    &path,
+                    nix::unistd::AccessFlags::W_OK | nix::unistd::AccessFlags::R_OK,
+                )
+                .is_ok();
+                if writable {
+                    eprintln!(
+                        "{} chown {}: {} (directory already accessible, continuing)",
+                        "agfs: warning:".yellow(),
+                        path.display(),
+                        e,
+                    );
+                } else {
+                    return Err(e).with_context(|| format!("chown {}", path.display()));
+                }
+            }
+        }
     }
 
     Ok(())
