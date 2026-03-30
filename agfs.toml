@@ -1,0 +1,11 @@
+permission = true
+staging = true
+ask_default = "deny"
+checkpoint = false
+
+[rules]
+"." = "allow"
+"/etc" = "allow-ro"
+"/tmp" = "allow"
+"/users/ljx" = "deny"
+"/usr" = "allow"
