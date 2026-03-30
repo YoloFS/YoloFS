@@ -43,6 +43,12 @@ regenerates a single workload page (and refreshes the index) without
 re-rendering every workload. For the paper-oriented developer-workflow plot,
 `agfs-bench rerender --paper dev-workflow` is accepted as a convenience alias.
 
+The `commit-time` paper figure uses the native `10,000`-file metadata-op time
+as its baseline reference instead of the session-micro backends, so the figure
+keeps a native anchor even though native has no backend commit phase. The
+status/report panel omits its own xlabel; the left side carries the shared
+unit text and the bold `commit` xlabel.
+
 ---
 
 ## 2. Workloads

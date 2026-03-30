@@ -5,24 +5,13 @@ use crate::BenchResults;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const CAPTION: &str = "A developer workload of setting up and iterating on the Linux kernel codebase.";
+const CAPTION: &str =
+    "A developer workload of setting up and iterating on the Linux kernel codebase.";
 const LABEL: &str = "fig:dev-workflow";
 const WORKLOAD: &str = "dev-workflow";
 
 const FACETS: &[(&str, &[&str])] = &[
     ("Worktree", &["worktree", "checkpoint-worktree"]),
-    (
-        "Git",
-        &[
-            "git-status",
-            "git-diff",
-            "git-add",
-            "git-commit",
-            "checkpoint-git-commit",
-        ],
-    ),
-    ("Read", &["search", "read"]),
-    ("Edit", &["edit", "checkpoint-edit"]),
     (
         "Init. Build",
         &[
@@ -32,9 +21,21 @@ const FACETS: &[(&str, &[&str])] = &[
             "checkpoint-initial-build",
         ],
     ),
+    ("Read", &["search", "read"]),
+    ("Edit", &["edit", "checkpoint-edit"]),
     (
         "Incr. Build",
         &["incremental-build", "checkpoint-incremental-build"],
+    ),
+    (
+        "Git",
+        &[
+            "git-status",
+            "git-diff",
+            "git-add",
+            "git-commit",
+            "checkpoint-git-commit",
+        ],
     ),
 ];
 
@@ -144,8 +145,8 @@ native_handle.set_path_effects(native_line_kw['path_effects'])
 plt.rcParams.update({{'font.size': 6.5, 'axes.labelsize': 6.5, 'xtick.labelsize': 6,
                       'ytick.labelsize': 5.2, 'legend.fontsize': 5.8}})
 
-fig = plt.figure(figsize=(2.85, 2.05))
-gs = fig.add_gridspec(2, 4, width_ratios=[0.56, 0.56, 0.56, 0.82], wspace=0.42, hspace=0.5)
+fig = plt.figure(figsize=(2.85, 1.82))
+gs = fig.add_gridspec(2, 4, width_ratios=[0.56, 0.56, 0.56, 0.82], wspace=0.42, hspace=0.42)
 axes = [
     fig.add_subplot(gs[0, 0]),
     fig.add_subplot(gs[0, 1]),
@@ -179,7 +180,7 @@ for idx, facet in enumerate(facets):
     ax.set_ylim(0, ymax * 1.08 if ymax > 0 else 1.0)
     ax.set_xlim(-0.14, 0.32)
     ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
-    ax.text(0.5, -0.12, facet, transform=ax.transAxes, ha='center', va='top',
+    ax.text(0.5, -0.095, facet, transform=ax.transAxes, ha='center', va='top',
             fontsize=6.2, fontweight='bold')
 
 ax = ax_total
@@ -219,13 +220,13 @@ legend_handles = [
     mpatches.Patch(facecolor='white', edgecolor='#666', hatch='....', label='commit'),
     native_handle,
 ]
-fig.legend(handles=legend_handles, loc='upper center', bbox_to_anchor=(0.5, 0.92),
+fig.legend(handles=legend_handles, loc='upper center', bbox_to_anchor=(0.5, 0.905),
            ncol=6, handlelength=1.1, handletextpad=0.35, borderpad=0.15, columnspacing=0.55)
-fig.text(0.02, 0.46, 'time (s)', rotation=90, va='center', ha='center', fontsize=6.5)
-fig.subplots_adjust(left=0.12, right=0.99, top=0.81, bottom=0.15)
+fig.text(0.055, 0.46, 'time (s)', rotation=90, va='center', ha='center', fontsize=6.5)
+fig.subplots_adjust(left=0.12, right=0.99, top=0.8, bottom=0.125)
 
 edit_bbox = axes[3].get_position()
-title_y = edit_bbox.y0 - 0.12 * edit_bbox.height
+title_y = edit_bbox.y0 - 0.095 * edit_bbox.height
 total_bbox = ax_total.get_position()
 fig.text(total_bbox.x0 + total_bbox.width / 2, title_y, 'Total', ha='center', va='top',
          fontsize=6.2, fontweight='bold')
