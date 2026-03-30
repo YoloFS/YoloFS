@@ -1,6 +1,6 @@
 use crate::workload::{MacroStepSeries, MacroStepTiming, Workload, WorkloadKind};
 use agfs::config::Perm;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
