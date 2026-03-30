@@ -1,10 +1,10 @@
 //! Publication table: fio data-operation throughput summary.
 
-use super::util::{backend_display_name, latex_escape, run_pdflatex_cropped};
 use super::Artifact;
+use super::util::{backend_display_name, latex_escape, run_pdflatex_cropped};
+use crate::BenchResults;
 use crate::workload::WorkloadKind;
 use crate::workloads;
-use crate::BenchResults;
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -394,11 +394,7 @@ impl FioDims {
     }
 
     fn locality_label(&self) -> &'static str {
-        if self.cold {
-            "cold"
-        } else {
-            "warm"
-        }
+        if self.cold { "cold" } else { "warm" }
     }
 }
 
