@@ -101,6 +101,8 @@ int agfs_check_dentry_perm(struct agfs_sb_info *sbi, struct dentry *dentry,
 		err = agfs_ask_userspace(sbi, dentry, relpath, op, &perm);
 		if (err)
 			return err;
+		/* Cache the decision so subsequent checks don't re-ask. */
+		ii->cached_perm = perm;
 	}
 
 	return agfs_check_perm(perm, f_flags);
