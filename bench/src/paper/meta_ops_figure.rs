@@ -63,10 +63,8 @@ struct FigureVariant {
 }
 
 /// Shared caption and label for the paper figure.
-const CAPTION: &str = "Metadata operation latency (\\textmu s). \
-     The dashed line marks the native ext4 baseline. \
-     Bars grouped by file source layer (base / snapshot / staged) for the
-     100-file workloads. Outlier bars are capped and annotated.";
+const CAPTION: &str = "Metadata operation latency. \
+     The files can reside in the base filesystem, a snapshot, or the staging area.";
 const LABEL: &str = "fig:meta-ops";
 
 const VARIANT: FigureVariant = FigureVariant {
