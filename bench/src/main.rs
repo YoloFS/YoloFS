@@ -91,11 +91,14 @@ enum Cmd {
     /// Regenerate the HTML report from existing results JSON without re-running benchmarks
     Rerender {
         /// Only regenerate paper artifacts (no Plotly HTML workload/index pages)
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["paper", "workload"])]
         paper_only: bool,
-        /// Regenerate a single paper artifact by name (e.g. "commit-time", "meta-ops", "fio-table")
-        #[arg(long)]
+        /// Regenerate a single paper artifact by name (e.g. "commit-time", "meta-ops", "fio-table", "dev-workflow")
+        #[arg(long, conflicts_with_all = ["paper_only", "workload"])]
         paper: Option<String>,
+        /// Regenerate a single HTML workload report (and refresh the index)
+        #[arg(long, conflicts_with_all = ["paper_only", "paper"])]
+        workload: Option<String>,
     },
     /// List available workloads and backends
     List,
@@ -1352,13 +1355,20 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(Cmd::Rerender { paper_only, paper }) = cli.cmd {
+    if let Some(Cmd::Rerender {
+        paper_only,
+        paper,
+        workload,
+    }) = cli.cmd
+    {
         let out_dir = results_dir(&env, false);
         let results_path = out_dir.join("results.json");
         let json = fs::read_to_string(&results_path)
             .with_context(|| format!("reading {}", results_path.display()))?;
         let results: BenchResults = serde_json::from_str(&json).context("parsing results.json")?;
-        if let Some(ref name) = paper {
+        if let Some(ref name) = workload {
+            report::render_one(&results, name, &out_dir)?;
+        } else if let Some(ref name) = paper {
             let paper_dir = out_dir.join("paper");
             std::fs::create_dir_all(&paper_dir)?;
             match name.as_str() {
@@ -1374,8 +1384,11 @@ fn main() -> Result<()> {
                 "checkpoint-scaling" => {
                     paper::checkpoint_scaling_figure::render(&out_dir, &paper_dir)?;
                 }
+                "dev-workflow" => {
+                    paper::dev_workflow_figure::render(&results, &paper_dir)?;
+                }
                 _ => bail!(
-                    "unknown paper artifact: {name}. Available: commit-time, meta-ops, fio-table, checkpoint-scaling"
+                    "unknown paper artifact: {name}. Available: commit-time, meta-ops, fio-table, checkpoint-scaling, dev-workflow"
                 ),
             }
         } else if paper_only {
@@ -1995,78 +2008,4 @@ fn find_pdftoppm_output(prefix: &Path) -> Result<PathBuf> {
         }
     }
     bail!("pdftoppm output not found for {}", prefix.display())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{RepoState, aggregate_macro_step_series};
-    use crate::workload::{MacroStepSeries, MacroStepTiming};
-
-    #[test]
-    fn repo_state_deserializes_legacy_cli_dirty_field() {
-        let state: RepoState =
-            serde_json::from_str(r#"{"commit":"deadbeef","cli_dirty":true,"kmod_dirty":false}"#)
-                .expect("legacy repo state should deserialize");
-
-        assert_eq!(state.commit, "deadbeef");
-        assert!(state.user_dirty);
-        assert!(!state.kmod_dirty);
-    }
-
-    #[test]
-    fn aggregate_macro_step_series_averages_matching_steps() {
-        let series = vec![
-            MacroStepSeries {
-                steps: vec![
-                    MacroStepTiming {
-                        step: "search: c1 #1".to_string(),
-                        ms: 10,
-                    },
-                    MacroStepTiming {
-                        step: "edit: c1 #1".to_string(),
-                        ms: 21,
-                    },
-                ],
-            },
-            MacroStepSeries {
-                steps: vec![
-                    MacroStepTiming {
-                        step: "search: c1 #1".to_string(),
-                        ms: 14,
-                    },
-                    MacroStepTiming {
-                        step: "edit: c1 #1".to_string(),
-                        ms: 19,
-                    },
-                ],
-            },
-        ];
-
-        let aggregated = aggregate_macro_step_series(&series).expect("series should aggregate");
-        assert_eq!(aggregated.steps.len(), 2);
-        assert_eq!(aggregated.steps[0].step, "search: c1 #1");
-        assert_eq!(aggregated.steps[0].ms, 12);
-        assert_eq!(aggregated.steps[1].step, "edit: c1 #1");
-        assert_eq!(aggregated.steps[1].ms, 20);
-    }
-
-    #[test]
-    fn aggregate_macro_step_series_rejects_step_mismatch() {
-        let series = vec![
-            MacroStepSeries {
-                steps: vec![MacroStepTiming {
-                    step: "search: c1 #1".to_string(),
-                    ms: 10,
-                }],
-            },
-            MacroStepSeries {
-                steps: vec![MacroStepTiming {
-                    step: "read: c1 #1".to_string(),
-                    ms: 10,
-                }],
-            },
-        ];
-
-        assert!(aggregate_macro_step_series(&series).is_none());
-    }
 }

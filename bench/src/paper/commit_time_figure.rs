@@ -1,4 +1,4 @@
-//! Publication figure: commit + status time per operation (session microbenchmarks).
+//! Publication figure: commit time per operation (session microbenchmarks).
 
 use super::Artifact;
 use crate::BenchResults;
@@ -6,8 +6,7 @@ use crate::report;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const CAPTION: &str = "Commit and status cost per file operation (\\textmu s/op) for 10\\,000 files. \
-     TODO.";
+const CAPTION: &str = "Commit cost per file operation (\\textmu s/op) for 10\\,000 files. TODO.";
 const LABEL: &str = "fig:commit-time";
 
 const WORKLOADS: &[(&str, &str)] = &[
@@ -15,6 +14,13 @@ const WORKLOADS: &[(&str, &str)] = &[
     ("overwrite-files", "overwrite"),
     ("rename-files", "rename"),
     ("unlink-files", "unlink"),
+];
+
+const NATIVE_BASELINES: &[(&str, &str)] = &[
+    ("create", "meta-create"),
+    ("overwrite", "meta-append-base"),
+    ("rename", "meta-rename-base"),
+    ("unlink", "meta-unlink-base"),
 ];
 
 /// Backends to show (no native — no commit; no agfs-no-perm).
@@ -31,7 +37,7 @@ pub fn artifact_meta(paper_dir: &Path) -> Artifact {
     let plot_pdf = paper_dir.join("commit-time-figure-plot.pdf");
     Artifact {
         group: None,
-        title: "Commit + status time per operation".to_string(),
+        title: "Commit time per operation".to_string(),
         preferred: true,
         tex_path: format!("paper/{}", tex_path.file_name().unwrap().to_string_lossy()),
         pdf_path: None,
@@ -69,19 +75,29 @@ pub fn render(results: &BenchResults, paper_dir: &Path) -> Result<Artifact> {
                     "{op_label},{backend_label},commit,{:.2}",
                     avg_commit / FILE_COUNT * 1000.0
                 ));
-
-                let avg_status_us: f64 = runs
-                    .iter()
-                    .map(|r| r.status_us.unwrap_or(0) as f64)
-                    .sum::<f64>()
-                    / n;
-                if avg_status_us > 0.0 {
-                    data_lines.push(format!(
-                        "{op_label},{backend_label},status,{:.2}",
-                        avg_status_us / FILE_COUNT
-                    ));
-                }
             }
+        }
+    }
+
+    let mut baseline_lines = Vec::new();
+    for &(op_label, wl_name) in NATIVE_BASELINES {
+        let wl = results
+            .workloads
+            .iter()
+            .find(|w| report::normalize_legacy_workload_name(&w.workload) == wl_name)
+            .and_then(|wl| wl.backends.iter().find(|b| b.backend == "native"));
+
+        if let Some(b) = wl {
+            let runs = &b.iterations;
+            if runs.is_empty() {
+                continue;
+            }
+            let avg_total_ms =
+                runs.iter().map(|r| r.total_ms as f64).sum::<f64>() / runs.len() as f64;
+            baseline_lines.push(format!(
+                "{op_label},{:.2}",
+                avg_total_ms / FILE_COUNT * 1000.0
+            ));
         }
     }
 
@@ -105,12 +121,20 @@ op,backend,metric,us_per_op
 {data}
 """
 
+BASELINE = """\
+op,us_per_op
+{baseline_data}
+"""
+
 reader = csv.DictReader(StringIO(DATA.strip()))
 rows = list(reader)
 
+baseline = {{}}
+for r in csv.DictReader(StringIO(BASELINE.strip())):
+    baseline[r['op']] = float(r['us_per_op'])
+
 ops = {ops_py}
 backends = [{backends_py}]
-metrics = ['commit', 'status']
 
 # Build lookup: (op, backend, metric) -> us_per_op
 lookup = {{}}
@@ -123,23 +147,20 @@ backend_colors = {{
     'BranchFS':   S.TABLEAU10['orange'],
 }}
 
-plt.rcParams.update({{'font.size': 7, 'axes.labelsize': 7, 'xtick.labelsize': 6.5,
-                      'ytick.labelsize': 6.5, 'legend.fontsize': 6}})
+plt.rcParams.update({{'font.size': 6.6, 'axes.labelsize': 6.6, 'xtick.labelsize': 6.1,
+                      'ytick.labelsize': 6.1, 'legend.fontsize': 5.6}})
 
 nb = len(backends)
 bar_height = 0.5 / nb
-y = np.arange(len(ops)) * 0.7  # tighter spacing between groups
+y = np.arange(len(ops)) * 0.62
 
-# Compute data ranges to set panel widths proportional (same µs/inch).
-commit_max = max(lookup.get((op, b, 'commit'), 0) for op in ops for b in backends) * 1.1
-status_max = max((lookup.get((op, b, 'status'), 0) for op in ops for b in backends), default=1) * 1.1
-if status_max < 1:
-    status_max = commit_max * 0.3  # fallback if no status data
-ratio_commit = commit_max / (commit_max + status_max)
-ratio_status = status_max / (commit_max + status_max)
+# Compute commit panel range.
+commit_max = max(
+    [lookup.get((op, b, 'commit'), 0) for op in ops for b in backends]
+    + [baseline.get(op, 0) for op in ops]
+) * 1.1
 
-fig, (ax_commit, ax_status) = plt.subplots(1, 2, sharey=True, figsize=(3.33, 0.9),
-                                            gridspec_kw={{'width_ratios': [ratio_commit, ratio_status], 'wspace': 0.15}})
+fig, ax_commit = plt.subplots(1, 1, figsize=(1.88, 0.82))
 
 # Left panel: commit time.
 for bi, b in enumerate(backends):
@@ -149,55 +170,39 @@ for bi, b in enumerate(backends):
                    color=backend_colors.get(b, '#999'),
                    edgecolor='white', linewidth=0.3,
                    label=b)
-ax_commit.set_xlabel('commit', fontweight='bold')
+group_half = bar_height * nb * 0.5
+for oi, op in enumerate(ops):
+    val = baseline.get(op)
+    if val is not None:
+        ax_commit.vlines(val, y[oi] - group_half, y[oi] + group_half, **S.NATIVE_LINE_KW)
+ax_commit.set_xlabel('commit time (\u00b5s/file)')
+ax_commit.xaxis.labelpad = 1
 ax_commit.set_xlim(left=0)
 ax_commit.set_yticks(y)
 ax_commit.set_yticklabels([op for op in ops], fontweight='bold')
 ax_commit.tick_params(axis='y', length=0, pad=4)
 
-# Right panel: status time.
-for bi, b in enumerate(backends):
-    vals = [lookup.get((op, b, 'status'), 0) for op in ops]
-    offset = ((nb - 1) / 2 - bi) * bar_height
-    ax_status.barh(y + offset, vals, bar_height * 0.85,
-                   color=backend_colors.get(b, '#999'),
-                   edgecolor='white', linewidth=0.3)
-    # Show N/A for backends with no status data.
-    for oi, op in enumerate(ops):
-        if (op, b, 'status') not in lookup:
-            ax_status.text(0.5, y[oi] + offset, 'N/A', va='center',
-                           fontsize=5, color='#999')
-ax_status.set_xlabel('report', fontweight='bold')
-ax_status.set_xlim(left=0)
-ax_status.tick_params(axis='y', length=0)
-
-# Set per-panel ranges (same physical scale via width_ratios).
+# Set axis range.
 from matplotlib.ticker import MaxNLocator
 ax_commit.set_xlim(0, commit_max)
-ax_status.set_xlim(0, status_max)
 ax_commit.xaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
-ax_status.xaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))
 
 # Legend at top, shared.
 from matplotlib.patches import Patch
 legend_items = [Patch(facecolor=backend_colors[b], edgecolor='white', label=b) for b in backends]
-fig.legend(handles=legend_items, loc='upper center', bbox_to_anchor=(0.5, 1.0),
-           ncol=nb, handlelength=1, handletextpad=0.4,
-           borderpad=0.2, columnspacing=0.8)
+legend_items.append(S.native_legend_handle('Native baseline'))
+fig.legend(handles=legend_items, loc='upper center', bbox_to_anchor=(0.5, 0.995),
+           ncol=nb + 1, handlelength=0.95, handletextpad=0.35,
+           borderpad=0.15, columnspacing=0.55)
 
-fig.tight_layout(pad=0.3)
+fig.subplots_adjust(left=0.2, right=0.99, top=0.79, bottom=0.22)
 
-# Place "µs/file" centered below xlabels by measuring their position.
-fig.canvas.draw()
-# Get the bottom of the commit xlabel in figure coords.
-xlabel_bb = ax_commit.xaxis.label.get_window_extent(fig.canvas.get_renderer())
-xlabel_bottom_fig = fig.transFigure.inverted().transform((0, xlabel_bb.y0))[1]
-fig.text(0.5, xlabel_bottom_fig - 0.06, '\u00b5s/file', ha='center', fontsize=7)
 fig.savefig('{pdf_path}', bbox_inches='tight', dpi=300)
 plt.close(fig)
 "#,
         preamble = preamble,
         data = data_lines.join("\n"),
+        baseline_data = baseline_lines.join("\n"),
         ops_py = format!(
             "[{}]",
             WORKLOADS
@@ -258,7 +263,7 @@ plt.close(fig)
 
     Ok(Artifact {
         group: None,
-        title: "Commit + status time per operation".to_string(),
+        title: "Commit time per operation".to_string(),
         preferred: true,
         tex_path: format!("paper/{}", tex_path.file_name().unwrap().to_string_lossy()),
         pdf_path: preview_pdf,

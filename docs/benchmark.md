@@ -38,6 +38,17 @@ the difference from native is under 5%, the cell is rendered as
 
 A dedicated `paper-report.html` page links these artifacts.
 
+For HTML report-only regeneration, `agfs-bench rerender --workload <name>`
+regenerates a single workload page (and refreshes the index) without
+re-rendering every workload. For the paper-oriented developer-workflow plot,
+`agfs-bench rerender --paper dev-workflow` is accepted as a convenience alias.
+
+The `commit-time` paper figure uses the native `10,000`-file metadata-op time
+as its baseline reference instead of the session-micro backends, so the figure
+keeps a native anchor even though native has no backend commit phase. The
+status/report panel omits its own xlabel; the left side carries the shared
+unit text and the bold `commit` xlabel.
+
 ---
 
 ## 2. Workloads
@@ -142,6 +153,22 @@ Design notes:
 
 ### Session macro-benchmarks
 
+#### Minimal developer workflow (`mini-dev-workflow`)
+
+Fast reproducer for backend/workflow interactions that uses the same shape as
+`dev-workflow` but replaces the Linux kernel fixture with a tiny checked-in Git
+repository. It still exercises:
+
+1. `git worktree add` into the workload destination
+2. an initial build that creates nested object paths
+3. checked-in search/read/edit command lists
+4. backend-managed checkpoints after worktree, initial build, each edit,
+   incremental build, and git commit
+5. `git status` / `git diff` / `git add` / `git commit`
+
+This workload exists to debug slow backend-specific failures, especially when
+the full Linux `dev-workflow` run is too expensive to iterate on.
+
 #### Developer workflow (`dev-workflow`)
 
 Emulates a realistic multi-step kernel development session: creating a
@@ -185,7 +212,8 @@ earliest commit in the chain, not from a local v6.12.x tree:
 touches `dir.c` and `overlayfs.h`. Total: ~210 insertions, ~150
 deletions. The benchmark stores checked-in workflow fixtures under
 `bench/fixtures/dev-workflow/`: pinned commit IDs, per-commit command
-lists for search/read/edit, and commit messages.
+lists for search/read/edit, commit messages, and the generated tinyconfig
+variant with `CONFIG_OVERLAY_FS=y`.
 
 Each commit follows the same developer/agent loop:
 1. **Search** — `grep -rn` for relevant patterns (e.g., find all call
@@ -207,6 +235,14 @@ transform the checked-out base tree one edit command at a time, build,
 inspect the diff, and commit. This avoids version drift: the command lists
 are authored once against the exact pinned base commit and the workload
 always materializes that same starting tree before timing begins.
+
+Default backend runs skip `branchfs` for `dev-workflow`. It remains available
+when explicitly requested with `--backend branchfs` for targeted debugging.
+
+The HTML report for `dev-workflow` shows one small stacked bar chart per
+workflow phase, collapsed to `run` versus `checkpoint`, with native shown as a
+horizontal baseline line. The separate summary plot shows stacked `run` versus
+backend `commit`, again with native shown as a horizontal baseline.
 
 In practice, the edit stage uses `sed -i` for simple local substitutions and
 `patch` for larger multi-line block rewrites. Each checked-in shell snippet is
@@ -594,6 +630,9 @@ O(1) branch creation and atomic commit-to-parent semantics. Each iteration:
    directory (`branchfs mount --base <base> --storage <storage> <mnt>`).
 2. Creates a `bench` branch (`branchfs create bench <mnt>`).
 3. Runs the workload inside the mount (via `exec-workload` subprocess).
+   For macro workloads that replace their own work directory in-place, such as
+   `dev-workflow`, branchfs starts the subprocess from a stable parent
+   directory and passes the mounted work directory via `--dest`.
 4. Commits the branch (`branchfs commit <mnt>`).
 5. Unmounts (`branchfs unmount <mnt>`).
 
@@ -777,8 +816,10 @@ agfs-bench exec-workload --name <name> --dest <path> [--verbose]
 - `exec-workload`: internal subcommand used by all backends to run a
   workload as a subprocess. Prints a `READY` marker to stdout before the
   workload starts, enabling the parent to split init from staging time.
-  Backends run the subprocess with `cwd=--dest` and workload file operations
-  use relative paths rooted at `.`.
+  Most backends run the subprocess with `cwd=--dest` and workload file
+  operations use relative paths rooted at `.`. Macro workloads may instead run
+  from a stable parent directory while receiving the work directory via
+  `--dest` when the workload needs to replace that directory in-place.
 
 ### Logging and failure handling
 

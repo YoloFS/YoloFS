@@ -1,5 +1,5 @@
 use crate::backend::{self, Backend, CheckpointController, CheckpointOutcome};
-use crate::workload::{CacheMode, IterResult, Workload};
+use crate::workload::{CacheMode, IterResult, Workload, WorkloadKind};
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -7,9 +7,14 @@ use std::time::Instant;
 
 pub struct BranchFs;
 
+fn branchfs_workload_recreates_workdir(workload: &dyn Workload) -> bool {
+    matches!(workload.name(), "dev-workflow" | "mini-dev-workflow")
+}
+
 struct BranchFsCheckpointController {
     mnt_dir: PathBuf,
     storage_dir: PathBuf,
+    resume_dir: PathBuf,
     current_branch: String,
     /// Number of nested checkpoint branches created (for commit unwinding).
     depth: usize,
@@ -40,11 +45,11 @@ impl CheckpointController for BranchFsCheckpointController {
 
         self.current_branch = next;
         self.depth += 1;
-        // branchfs auto-switches the mount to the new branch; the mount
-        // path is unchanged so the subprocess's saved_cwd remains valid.
+        // branchfs auto-switches the mount to the new branch. Resume from the
+        // backend-selected stable cwd for this workload.
         Ok(CheckpointOutcome::Continue {
             checkpoint_ms: t.elapsed().as_millis() as u64,
-            next_dest: None,
+            next_dest: Some(self.resume_dir.clone()),
         })
     }
 }
@@ -63,6 +68,14 @@ impl Backend for BranchFs {
                 "cold metadata on staged/checkpoint files cannot be measured on branchfs: \
                   flushing FUSE daemon state requires unmounting, which loses branch state",
             )
+        } else {
+            None
+        }
+    }
+
+    fn default_skip_reason(&self, workload: &dyn Workload) -> Option<&'static str> {
+        if workload.name() == "dev-workflow" {
+            Some("dev-workflow skips branchfs by default; use --backend branchfs to include")
         } else {
             None
         }
@@ -100,8 +113,11 @@ impl Backend for BranchFs {
 
         // Populate base directory before mounting (not timed).
         let base_work = base_dir.join(workload.work_dir());
-        std::fs::create_dir_all(&base_work)?;
-        workload.populate_base(&base_work)?;
+        let recreates_workdir = branchfs_workload_recreates_workdir(workload);
+        if !recreates_workdir {
+            std::fs::create_dir_all(&base_work)?;
+            workload.populate_base(&base_work)?;
+        }
 
         let pipe = if verbose {
             Stdio::inherit()
@@ -156,11 +172,14 @@ impl Backend for BranchFs {
 
         // Run the workload inside the branch via subprocess.
         let dest = mnt_dir.join(workload.work_dir());
-        std::fs::create_dir_all(&dest)?;
+        if !recreates_workdir {
+            std::fs::create_dir_all(&dest)?;
+        }
         if workload.needs_prepare_workdir() {
             workload.prepare_workdir(&dest)?;
         }
-        if workload.needs_checkpoint() {
+        let eager_checkpoint_branch = workload.needs_checkpoint() && !recreates_workdir;
+        if eager_checkpoint_branch {
             // Checkpoint: create a nested branch parented on "bench".
             // Files from "bench" are visible in the child but writes
             // trigger branchfs's copy-on-write.
@@ -186,12 +205,24 @@ impl Backend for BranchFs {
                 bail!("branchfs create for checkpoint failed: {stderr}");
             }
         }
-        std::fs::metadata(&dest)
-            .with_context(|| format!("warming branchfs FUSE path for {}", dest.display()))?;
+        let warm_path = if recreates_workdir { &mnt_dir } else { &dest };
+        std::fs::metadata(warm_path)
+            .with_context(|| format!("warming branchfs FUSE path for {}", warm_path.display()))?;
         let cold = workload.cache_mode() == CacheMode::DropPageCache;
-        let mut cmd =
-            backend::exec_workload_cmd(workload.name(), std::path::Path::new("."), verbose, cold)?;
-        cmd.current_dir(&dest);
+        let mut cmd = if workload.kind() == WorkloadKind::Macro {
+            let mut c = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
+            c.current_dir(if recreates_workdir { &mnt_dir } else { &dest });
+            c
+        } else {
+            let mut c = backend::exec_workload_cmd(
+                workload.name(),
+                std::path::Path::new("."),
+                verbose,
+                cold,
+            )?;
+            c.current_dir(&dest);
+            c
+        };
         cmd.stderr(if verbose {
             Stdio::inherit()
         } else {
@@ -213,7 +244,12 @@ impl Backend for BranchFs {
         let mut cp = BranchFsCheckpointController {
             mnt_dir: mnt_dir.clone(),
             storage_dir: storage_dir.clone(),
-            current_branch: if workload.needs_checkpoint() {
+            resume_dir: if recreates_workdir {
+                mnt_dir.clone()
+            } else {
+                mnt_dir.join(workload.work_dir())
+            },
+            current_branch: if eager_checkpoint_branch {
                 "bench-chkpt".to_string()
             } else {
                 "bench".to_string()
@@ -232,10 +268,10 @@ impl Backend for BranchFs {
         // Commit all branch levels back to base. The checkpoint controller
         // may have created nested branches (bench-step-001, bench-step-002, ...);
         // branchfs commit only merges one level at a time, so we repeat.
-        // Levels: checkpoint depth + 1 for "bench" (+ 1 for "bench-chkpt" if present).
+        // Levels: checkpoint depth + 1 for "bench" (+ 1 for eager "bench-chkpt" if present).
         let commit_levels = cp.depth
             + 1 // the initial "bench" branch
-            + if workload.needs_checkpoint() { 1 } else { 0 };
+            + if eager_checkpoint_branch { 1 } else { 0 };
         let t1 = Instant::now();
         for _ in 0..commit_levels {
             let out = Command::new("branchfs")

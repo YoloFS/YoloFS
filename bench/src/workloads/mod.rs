@@ -20,6 +20,7 @@ pub mod meta_shared;
 pub mod meta_stat_cold;
 pub mod meta_stat_warm;
 pub mod meta_unlink;
+pub mod mini_dev_workflow;
 pub mod overwrite_files;
 pub mod rename_files;
 pub mod unlink_files;
@@ -90,6 +91,7 @@ pub fn all() -> Vec<Box<dyn Workload>> {
     // macro
     v.push(Box::new(worktree::Worktree::new()));
     v.push(Box::new(dev_workflow::DevWorkflow::new()));
+    v.push(Box::new(mini_dev_workflow::MiniDevWorkflow::new()));
     v.push(Box::new(linux_untar::LinuxUntar::new()));
     // op
     v.push(Box::new(fio_seq_read_cold::FioSeqReadCold));
@@ -189,6 +191,7 @@ pub fn details(name: &str) -> Option<WorkloadDetails> {
         "checkpoint-scaling" => checkpoint_scaling::details(),
         "worktree" => worktree::details(),
         "dev-workflow" => dev_workflow::details(),
+        "mini-dev-workflow" => mini_dev_workflow::details(),
         "linux-untar" => linux_untar::details(),
         "meta-create" | "meta-create-100" | "meta-create-100k" => meta_create::details(),
         "meta-append" | "meta-append-100" => meta_append::details(),

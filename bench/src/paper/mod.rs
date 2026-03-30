@@ -2,6 +2,7 @@
 
 pub mod checkpoint_scaling_figure;
 pub mod commit_time_figure;
+pub mod dev_workflow_figure;
 pub mod fio_data_table;
 pub mod meta_ops_figure;
 mod util;
@@ -36,6 +37,12 @@ pub fn render(results: &crate::BenchResults, out_dir: &Path) -> Result<()> {
     match checkpoint_scaling_figure::render(out_dir, &paper_dir) {
         Ok(art) => artifacts.push(art),
         Err(e) => eprintln!("  warning: checkpoint-scaling-figure: {e:#}"),
+    }
+
+    // ── developer workflow figure ──
+    match dev_workflow_figure::render(results, &paper_dir) {
+        Ok(art) => artifacts.push(art),
+        Err(e) => eprintln!("  warning: dev-workflow-figure: {e:#}"),
     }
 
     // ── paper-report.html ──
@@ -91,6 +98,7 @@ pub fn install(_results: &crate::BenchResults, out_dir: &Path, paper_dir: &Path)
     artifacts.extend(meta_ops_figure::artifact_metas(&bench_paper_dir));
     artifacts.push(commit_time_figure::artifact_meta(&bench_paper_dir));
     artifacts.push(checkpoint_scaling_figure::artifact_meta(&bench_paper_dir));
+    artifacts.push(dev_workflow_figure::artifact_meta(&bench_paper_dir));
 
     let gen_dir = paper_dir.join("generated");
     std::fs::create_dir_all(&gen_dir).with_context(|| format!("creating {}", gen_dir.display()))?;

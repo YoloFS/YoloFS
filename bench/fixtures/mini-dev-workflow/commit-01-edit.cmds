@@ -1,0 +1,8 @@
+%%
+python3 - <<'PY'
+from pathlib import Path
+p = Path('src/hello.c')
+text = p.read_text()
+text = text.replace('return "hello v1";', 'return "hello v2";')
+p.write_text(text)
+PY
