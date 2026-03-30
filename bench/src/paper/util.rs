@@ -1,6 +1,6 @@
 //! Shared helpers for paper artifact generation.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::process::Command;
 
@@ -100,23 +100,23 @@ plt.rcParams.update({
 # ── Tableau-10 palette ──
 TABLEAU10 = {
     'blue':   '#4e79a7',
-    'orange': '#f28e2b',
+    'orange': '#f28e2c',
     'red':    '#e15759',
     'teal':   '#76b7b2',
     'green':  '#59a14f',
-    'yellow': '#edc948',
-    'purple': '#b07aa1',
+    'yellow': '#edc949',
+    'purple': '#af7aa1',
     'pink':   '#ff9da7',
     'brown':  '#9c755f',
-    'gray':   '#bab0ac',
+    'gray':   '#bab0ab',
 }
 
 # ── Backend colors (consistent across all figures) ──
 BACKEND_COLORS = {
     'AgFS (no perm)': '#a0c8e2',   # Tableau-20 light blue
-    'AgFS':           '#4e79a7',   # Tableau-10 blue
-    'OverlayFS':      '#59a14f',   # Tableau-10 green
-    'BranchFS':       '#f28e2b',   # Tableau-10 orange
+    'AgFS':           '#4e79a7',   # Tableau blue
+    'OverlayFS':      '#59a14f',   # Tableau green
+    'BranchFS':       '#f28e2c',   # Tableau orange
 }
 NATIVE_COLOR = 'black'
 

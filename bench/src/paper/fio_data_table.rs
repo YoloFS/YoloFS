@@ -9,9 +9,20 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 /// Table caption for the float environment.
-const CAPTION: &str = "Single-threaded I/O throughput on a 1 GB staged file with 4 KB I/O requests compared with the base ext4 filesystem. \\checkmark\\ = within 5\\% of Base.";
+const CAPTION: &str = "Single-threaded I/O throughput on a 1 GB staged file with 4 KB I/O requests compared with the base Ext4 filesystem.";
 /// LaTeX label for cross-referencing.
 const LABEL: &str = "tab:op-data";
+const TABLEAU_COLOR_DEFS: &str = "\
+\\definecolor{TableauBlue}{HTML}{4E79A7}\n\
+\\definecolor{TableauOrange}{HTML}{F28E2C}\n\
+\\definecolor{TableauGreen}{HTML}{59A14F}\n\
+\\definecolor{TableauYellow}{HTML}{EDC949}\n\
+\\definecolor{TableauPurple}{HTML}{AF7AA1}\n\
+\\definecolor{TableauPink}{HTML}{FF9DA7}\n\
+\\definecolor{TableauBrown}{HTML}{9C755F}\n\
+\\definecolor{TableauGray}{HTML}{BAB0AB}\n\
+\\definecolor{TableauTeal}{HTML}{76B7B2}\n\
+\\definecolor{TableauRed}{HTML}{E15759}\n";
 
 pub fn render(results: &BenchResults, paper_dir: &Path) -> Result<Artifact> {
     let tex_path = paper_dir.join("op-data-summary.tex");
@@ -67,12 +78,15 @@ fn build_tex(results: &BenchResults) -> Result<String> {
     tex.push_str("\\settopmatter{printacmref=false,printfolios=false}\n");
     tex.push_str("\\renewcommand\\footnotetextcopyrightpermission[1]{}\n");
     tex.push_str("\\usepackage{multirow}\n");
+    tex.push_str("\\usepackage[table]{xcolor}\n");
+    tex.push_str(TABLEAU_COLOR_DEFS);
     tex.push_str("\\begin{document}\n");
     tex.push_str("\\thispagestyle{empty}\n");
 
     // The table fragment lives between BEGIN/END markers so it can be
     // extracted and \\input{} into a larger paper .tex file.
     tex.push_str("% --- BEGIN table fragment (includable via \\input) ---\n");
+    tex.push_str(TABLEAU_COLOR_DEFS);
     tex.push_str("\\begin{table}[h]\n");
     tex.push_str("\\centering\n");
     tex.push_str("\\small\n");
@@ -330,7 +344,14 @@ fn rendered_gbps_cell(native_kbps: u64, kbps: Option<u64>) -> String {
     let gbps = kbps as f64 / (1024.0 * 1024.0);
     let delta_pct = ((gbps / native_gbps) - 1.0) * 100.0;
     if delta_pct.abs() < 5.0 {
-        "\\checkmark".to_string()
+        "\\cellcolor{TableauGreen!25!white}<5\\%".to_string()
+    } else if delta_pct < 0.0 {
+        let severity = (-delta_pct).clamp(5.0, 100.0);
+        let pct = 18.0 + (severity - 5.0) / 95.0 * 42.0;
+        format!(
+            "\\cellcolor{{TableauRed!{:.0}!white}}{{{:+.0}\\%}}",
+            pct, delta_pct
+        )
     } else {
         format!("{:+.0}\\%", delta_pct)
     }

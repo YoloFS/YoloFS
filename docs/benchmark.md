@@ -46,14 +46,22 @@ re-rendering every workload. For the paper-oriented developer-workflow plot,
 The `commit-time` paper figure uses the native `10,000`-file metadata-op time
 as its baseline reference instead of the session-micro backends, so the figure
 keeps a native anchor even though native has no backend commit phase. The
-status/report panel omits its own xlabel; the left side carries the shared
-unit text and the bold `commit` xlabel.
+published figure now shows only the commit panel, with the x-axis labeled
+`commit time (μs/file)`.
+
+The metadata-ops paper figure keeps only the capped/annotated paper variant,
+and that preferred artifact now shows only the `100 files` row instead of both
+`100 files` and `10K files`. This keeps the paper figure focused on the small
+directory case without carrying the extra comparison row, and because that is
+now the only row in the figure, it does not repeat `100 files` as a left-side
+row label.
 
 The fio paper table uses real column rules around the Base throughput column
 instead of per-cell `\multicolumn` borders so the separators render
 continuously through headers and grouped body rows. Because the table uses
-vertical rules around Base, it also uses standard `\hline`/`\cline` rules
-instead of `booktabs` horizontal rules, which intentionally do not join
+vertical rules around Base, it uses custom `\noalign{\hrule ...}` top/mid/
+bottom rules plus `\cline` instead of `booktabs` horizontal rules, which
+intentionally do not join
 vertical separators cleanly.
 
 ---
@@ -624,7 +632,12 @@ layers correctly override earlier ones.
 For `checkpoint-scalability`, overlayfs runs in best-effort mode: if remounting
 with additional lower layers fails (for example due to mount option/lowerdir
 limits), the workload stops adding points and emits the partial series
-collected so far.
+collected so far. The paper plot marks that truncation with a small `x` just
+after the last OverlayFS point so the series ending reads as a failure marker,
+not a completed run, and uses enlarged text so the four-panel figure remains
+readable at single-column paper scale. Its y-axes also force a few sensible
+major ticks per panel so compact panels do not collapse to only `0` and one
+other label.
 
 This gives a clean measurement of overlayfs overhead without shell noise.
 

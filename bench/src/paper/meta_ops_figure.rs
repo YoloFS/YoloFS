@@ -1,15 +1,13 @@
 //! Publication figure: metadata operation latency small multiples.
 //!
-//! Layout: 2 rows (100 files, 10K files) × 7 columns (ops).
+//! Layout: 1 row (100 files) × 7 columns (ops).
 //! Within each subplot, x-axis = source (base, stage, checkpoint),
 //! bars colored by backend. Legend identifies backends.
-//!
-//! Multiple figure variants are generated to allow comparison.
 
-use super::Artifact;
 use super::util::backend_display_name;
-use crate::BenchResults;
+use super::Artifact;
 use crate::report;
+use crate::BenchResults;
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -60,93 +58,53 @@ const SOURCES: &[(&str, &str)] = &[
 
 // ── Figure variant configuration ────────────────────────────────────────────
 
-#[derive(Clone, Copy)]
-enum OutlierStrategy {
-    /// Use brokenaxes to show both ranges.
-    BrokenAxis {
-        break_threshold: f64,
-        height_ratios: (u32, u32),
-    },
-    /// Cap outlier bars with hatching and text annotations.
-    CapAndAnnotate { cap_factor: f64 },
-    /// Plain auto-scaled axes, no special treatment.
-    Plain,
-}
-
 struct FigureVariant {
-    /// Output filename stem (e.g. "meta-ops-broken").
+    /// Output filename stem.
     name: &'static str,
     /// Human-readable title for the HTML index.
     title: &'static str,
-    /// The preferred variant is shown expanded; others are collapsed.
-    preferred: bool,
-    strategy: OutlierStrategy,
+    cap_factor: f64,
 }
 
-/// Shared caption and label — only one variant ends up in the paper.
+/// Shared caption and label for the paper figure.
 const CAPTION: &str = "Metadata operation latency (\\textmu s). \
      The dashed line marks the native ext4 baseline. \
-     Bars grouped by file source layer (base / checkpoint / staged). TODO";
+     Bars grouped by file source layer (base / checkpoint / staged) for the
+     100-file workloads. Outlier bars are capped and annotated.";
 const LABEL: &str = "fig:meta-ops";
 
-const VARIANTS: &[FigureVariant] = &[
-    FigureVariant {
-        name: "meta-ops-broken",
-        title: "Meta ops (broken axis)",
-        preferred: false,
-        strategy: OutlierStrategy::BrokenAxis {
-            break_threshold: 3.0,
-            height_ratios: (1, 5),
-        },
-    },
-    FigureVariant {
-        name: "meta-ops-capped",
-        title: "Meta ops (capped + annotated)",
-        preferred: true,
-        strategy: OutlierStrategy::CapAndAnnotate { cap_factor: 5.0 },
-    },
-    FigureVariant {
-        name: "meta-ops-plain",
-        title: "Meta ops (plain)",
-        preferred: false,
-        strategy: OutlierStrategy::Plain,
-    },
-];
+const VARIANT: FigureVariant = FigureVariant {
+    name: "meta-ops-capped",
+    title: "Meta ops (100 files, capped + annotated)",
+    cap_factor: 5.0,
+};
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
 pub fn render(results: &BenchResults, paper_dir: &Path) -> Result<Vec<Artifact>> {
     let data_csv = build_data_csv(results);
-    let mut artifacts = Vec::new();
-
-    for variant in VARIANTS {
-        match render_variant(variant, &data_csv, paper_dir) {
-            Ok(art) => artifacts.push(art),
-            Err(e) => eprintln!("  warning: {}: {e:#}", variant.name),
+    match render_variant(&VARIANT, &data_csv, paper_dir) {
+        Ok(art) => Ok(vec![art]),
+        Err(e) => {
+            eprintln!("  warning: {}: {e:#}", VARIANT.name);
+            Ok(vec![])
         }
     }
-
-    Ok(artifacts)
 }
 
-/// Return artifact metadata for all variants without rendering (for install-paper).
+/// Return artifact metadata without rendering (for install-paper).
 pub fn artifact_metas(paper_dir: &Path) -> Vec<Artifact> {
-    VARIANTS
-        .iter()
-        .map(|v| {
-            let tex_path = paper_dir.join(format!("{}.tex", v.name));
-            let plot_pdf = paper_dir.join(format!("{}-plot.pdf", v.name));
-            Artifact {
-                group: Some("Metadata operation latency".to_string()),
-                title: v.title.to_string(),
-                preferred: v.preferred,
-                tex_path: format!("paper/{}", tex_path.file_name().unwrap().to_string_lossy()),
-                pdf_path: None,
-                tex_abs: tex_path,
-                plot_pdfs: vec![plot_pdf],
-            }
-        })
-        .collect()
+    let tex_path = paper_dir.join(format!("{}.tex", VARIANT.name));
+    let plot_pdf = paper_dir.join(format!("{}-plot.pdf", VARIANT.name));
+    vec![Artifact {
+        group: Some("Metadata operation latency".to_string()),
+        title: VARIANT.title.to_string(),
+        preferred: true,
+        tex_path: format!("paper/{}", tex_path.file_name().unwrap().to_string_lossy()),
+        pdf_path: None,
+        tex_abs: tex_path,
+        plot_pdfs: vec![plot_pdf],
+    }]
 }
 
 fn render_variant(variant: &FigureVariant, data_csv: &str, paper_dir: &Path) -> Result<Artifact> {
@@ -206,7 +164,7 @@ fn render_variant(variant: &FigureVariant, data_csv: &str, paper_dir: &Path) -> 
     Ok(Artifact {
         group: Some("Metadata operation latency".to_string()),
         title: variant.title.to_string(),
-        preferred: variant.preferred,
+        preferred: true,
         tex_path: format!("paper/{}", tex_path.file_name().unwrap().to_string_lossy()),
         pdf_path: preview_pdf,
         tex_abs: tex_path.to_path_buf(),
@@ -221,7 +179,7 @@ fn build_data_csv(results: &BenchResults) -> String {
     lines.push("op,size,source,backend,lat_us".to_string());
 
     for &(op_label, stem) in OPS {
-        for &(size, size_suffix) in &[(100, "-100"), (10000, "")] {
+        for &(size, size_suffix) in &[(100, "-100")] {
             let sources: &[&str] = if stem == "meta-create" {
                 &["stage"]
             } else {
@@ -278,21 +236,6 @@ fn build_script(variant: &FigureVariant, data_csv: &str, pdf_path: &Path) -> Str
     let sources_py: Vec<String> = SOURCES.iter().map(|(_, s)| format!("'{s}'")).collect();
     let native_name = fig_backend_name(NATIVE);
 
-    let strategy_code = match variant.strategy {
-        OutlierStrategy::BrokenAxis {
-            break_threshold,
-            height_ratios,
-        } => format!(
-            "STRATEGY = 'broken'\nBREAK_THRESHOLD = {break_threshold}\n\
-             HEIGHT_RATIOS = ({}, {})\n",
-            height_ratios.0, height_ratios.1
-        ),
-        OutlierStrategy::CapAndAnnotate { cap_factor } => {
-            format!("STRATEGY = 'capped'\nCAP_FACTOR = {cap_factor}\n")
-        }
-        OutlierStrategy::Plain => "STRATEGY = 'plain'\n".to_string(),
-    };
-
     format!(
         r#"{preamble}
 DATA = """\
@@ -307,10 +250,9 @@ bar_backends = [{bar_backends}]
 native_key = '{native_key}'
 sources = [{sources}]
 source_full = {{'Base': 'base', 'Chkpt': 'checkpoint', 'Stage': 'stage'}}
-sizes = [100, 10000]
-size_labels = {{100: '100 files', 10000: '10K files'}}
-
-{strategy_code}
+sizes = [100]
+size_labels = {{100: '100 files'}}
+CAP_FACTOR = {cap_factor}
 
 # Build lookup: (op, size, source, backend) -> lat_us
 lookup = {{}}
@@ -359,12 +301,9 @@ def compute_cap(vals, floor_vals):
 
 # ── Figure setup ──
 ncols = len(ops)
-nrows = 2
+nrows = 1
 
-if STRATEGY == 'broken':
-    from brokenaxes import brokenaxes
-
-fig = plt.figure(figsize=(14, 4.5))
+fig = plt.figure(figsize=(14, 2.5))
 gs = gridspec.GridSpec(nrows, ncols, figure=fig, wspace=0.35, hspace=0.35)
 
 drew_native_line = False
@@ -393,31 +332,11 @@ for row_idx, size in enumerate(sizes):
         if not all_vals:
             continue
 
-        # ── Create axis depending on strategy ──
-        is_broken = False
-        cap = None
-
-        if STRATEGY == 'broken':
-            brk = find_break(all_vals, floor_vals)
-            if brk is not None:
-                ax = brokenaxes(ylims=brk, subplot_spec=gs[row_idx, col_idx],
-                                height_ratios=HEIGHT_RATIOS, d=0.008, tilt=45,
-                                despine=False)
-                is_broken = True
-            else:
-                ax = fig.add_subplot(gs[row_idx, col_idx])
-                ax.set_ylim(0, max(all_vals) * 1.15)
-        elif STRATEGY == 'capped':
-            ax = fig.add_subplot(gs[row_idx, col_idx])
-            cap = compute_cap(all_vals, floor_vals)
-            ax.set_ylim(0, cap)
-        else:
-            ax = fig.add_subplot(gs[row_idx, col_idx])
-            ax.set_ylim(0, max(all_vals) * 1.15)
-
-        if not is_broken:
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
+        ax = fig.add_subplot(gs[row_idx, col_idx])
+        cap = compute_cap(all_vals, floor_vals)
+        ax.set_ylim(0, cap)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
 
         # ── Draw Native baseline ──
         native_src = 'base' if op != 'create' else 'stage'
@@ -435,10 +354,7 @@ for row_idx, size in enumerate(sizes):
             vals = [lookup.get((op, size, sk, b), 0) for sk in src_keys]
             offset = (bi - (nb - 1) / 2) * bar_width
 
-            if cap is not None:
-                display = [min(v, cap) if v > 0 else 0 for v in vals]
-            else:
-                display = vals
+            display = [min(v, cap) if v > 0 else 0 for v in vals]
 
             bars = ax.bar(x + offset, display, bar_width * 0.9,
                           color=S.BACKEND_COLORS[b],
@@ -446,33 +362,31 @@ for row_idx, size in enumerate(sizes):
                           label=b if row_idx == 0 and col_idx == 0 else None)
 
             # Capped bar decorations: fade top to white and annotate.
-            if cap is not None:
-                bw = bar_width * 0.9
-                for i, v in enumerate(vals):
-                    if v > cap:
-                        fade_bottom = cap * 0.65
-                        fade_height = cap - fade_bottom
-                        xpos = x[i] + offset
-                        n_steps = 80
-                        step_h = fade_height / n_steps
-                        for s in range(n_steps):
-                            alpha = (s / (n_steps - 1)) * 0.92
-                            y_bot = fade_bottom + s * step_h
-                            ax.bar(xpos, step_h, bw, bottom=y_bot,
-                                   color=(1, 1, 1, alpha), edgecolor='none',
-                                   zorder=6)
-                        capped_at_src.setdefault(i, []).append((v, xpos, b))
+            bw = bar_width * 0.9
+            for i, v in enumerate(vals):
+                if v > cap:
+                    fade_bottom = cap * 0.65
+                    fade_height = cap - fade_bottom
+                    xpos = x[i] + offset
+                    n_steps = 80
+                    step_h = fade_height / n_steps
+                    for s in range(n_steps):
+                        alpha = (s / (n_steps - 1)) * 0.92
+                        y_bot = fade_bottom + s * step_h
+                        ax.bar(xpos, step_h, bw, bottom=y_bot,
+                               color=(1, 1, 1, alpha), edgecolor='none',
+                               zorder=6)
+                    capped_at_src.setdefault(i, []).append((v, xpos, b))
 
         # Ranked annotations for capped bars.
-        if cap is not None:
-            all_capped = []
-            for si, entries in capped_at_src.items():
-                all_capped.extend(entries)
-            if all_capped:
-                ranked = sorted(all_capped, key=lambda e: e[0], reverse=True)
-                for rank, (v, xp, _b) in enumerate(ranked):
-                    yp = cap * (0.95 - rank * 0.05)
-                    annotations.append((xp, yp, S.fmt_lat(v)))
+        all_capped = []
+        for si, entries in capped_at_src.items():
+            all_capped.extend(entries)
+        if all_capped:
+            ranked = sorted(all_capped, key=lambda e: e[0], reverse=True)
+            for rank, (v, xp, _b) in enumerate(ranked):
+                yp = cap * (0.95 - rank * 0.05)
+                annotations.append((xp, yp, S.fmt_lat(v)))
 
         for (xp, yp, txt) in annotations:
             ax.annotate(txt, (xp, yp), fontsize=9, ha='center', va='center',
@@ -480,30 +394,16 @@ for row_idx, size in enumerate(sizes):
                         bbox=dict(boxstyle='round,pad=0.15', fc='white',
                                   ec='none', alpha=0.7))
 
-        # ── Op name below bottom row ──
-        if row_idx == nrows - 1:
-            if is_broken:
-                ax.axs[-1].set_xlabel(op, fontweight='bold', labelpad=4)
-            else:
-                ax.set_xlabel(op, fontweight='bold', labelpad=4)
+        # ── Op name below row ──
+        ax.set_xlabel(op, fontweight='bold', labelpad=4)
 
         # ── Ticks and labels ──
-        if is_broken:
-            for a in ax.axs:
-                a.yaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))
-                a.tick_params(axis='x', length=0, pad=2)
-                a.set_xticks(x)
-                a.set_xticklabels([])
-            ax.axs[-1].set_xticklabels(src_labels)
-            if col_idx == 0:
-                ax.set_ylabel(size_labels[size] + '\nlatency (\u00b5s)',
-                              labelpad=25)
-        else:
-            ax.set_xticks(x)
-            ax.set_xticklabels(src_labels)
-            ax.tick_params(axis='x', length=0, pad=2)
-            if col_idx == 0:
-                ax.set_ylabel(size_labels[size] + '\nlatency (\u00b5s)')
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))
+        ax.set_xticks(x)
+        ax.set_xticklabels(src_labels)
+        ax.tick_params(axis='x', length=0, pad=2)
+        if col_idx == 0:
+            ax.set_ylabel('latency (\u00b5s)')
 
 # ── Legend ──
 legend_items = [S.native_legend_handle(native_key)]
@@ -522,7 +422,7 @@ plt.close(fig)
         bar_backends = bar_backends_py.join(", "),
         native_key = native_name,
         sources = sources_py.join(", "),
-        strategy_code = strategy_code,
+        cap_factor = variant.cap_factor,
         pdf_path = pdf_path.display(),
     )
 }

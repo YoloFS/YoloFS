@@ -4,7 +4,7 @@ use super::Artifact;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const CAPTION: &str = "Checkpoint scalability. The latency of creating a new file, reading an existing file, querying staged changes, and committing all checkpoints back to base as the number of checkpoints grow. OverlayFS fails to support more checkpoints because of mount option limits.";
+const CAPTION: &str = "Checkpoint scalability. The latency of creating a new file, reading an existing file, reporting staged changes, and committing all checkpoints back to base as the number of checkpoints grow. OverlayFS fails to support more checkpoints because of mount option limits.";
 const LABEL: &str = "fig:checkpoint-scaling";
 
 pub fn artifact_meta(paper_dir: &Path) -> Artifact {
@@ -123,16 +123,25 @@ backend,depth,mean_us
 {commit_data}
 """
 
-plt.rcParams.update({{'font.size': 7, 'axes.labelsize': 7, 'xtick.labelsize': 6.5,
-                      'ytick.labelsize': 6.5, 'legend.fontsize': 6}})
+plt.rcParams.update({{'font.size': 8, 'axes.labelsize': 8, 'xtick.labelsize': 7.5,
+                      'ytick.labelsize': 7.5, 'legend.fontsize': 7}})
 
 order = ['AgFS', 'OverlayFS', 'BranchFS']
 colors = [S.BACKEND_COLORS.get(n, S.TABLEAU10['gray']) for n in order]
+overlay_name = 'OverlayFS'
+overlay_depths = (
+    [int(r['depth']) for r in csv.DictReader(StringIO(CREATE_DATA.strip())) if r['backend'] == overlay_name]
+    + [int(r['depth']) for r in csv.DictReader(StringIO(READ_DATA.strip())) if r['backend'] == overlay_name]
+    + [int(r['depth']) for r in csv.DictReader(StringIO(STATUS_DATA.strip())) if r['backend'] == overlay_name]
+    + [int(r['depth']) for r in csv.DictReader(StringIO(COMMIT_DATA.strip())) if r['backend'] == overlay_name]
+)
+overlay_failure_depth = max(overlay_depths) if overlay_depths else None
 
 fig, ((ax_create, ax_read), (ax_status, ax_commit)) = plt.subplots(
     2, 2, sharey=False, figsize=(3.33, 2.4), gridspec_kw={{'wspace': 0.3, 'hspace': 0.45}})
 
-def plot_panel(ax, data_csv, xlabel, show_ylabel, ylabel=None, exclude_backends=None):
+def plot_panel(ax, data_csv, xlabel, show_ylabel, ylabel=None, exclude_backends=None,
+               mark_overlay_failure=False):
     reader = csv.DictReader(StringIO(data_csv.strip()))
     rows = list(reader)
     for i, name in enumerate(order):
@@ -146,7 +155,13 @@ def plot_panel(ax, data_csv, xlabel, show_ylabel, ylabel=None, exclude_backends=
         ys = [p[1] for p in pts]
         ax.plot(xs, ys, marker='o', markersize=2.5, linewidth=1.2,
                 color=colors[i], label=name)
-    ax.set_title(xlabel, fontweight='bold', fontsize=6.5, pad=3)
+        if mark_overlay_failure and name == overlay_name and overlay_failure_depth is not None and xs and xs[-1] == overlay_failure_depth:
+            x_cross = xs[-1] + 4
+            y_cross = ys[-1]
+            ax.plot([x_cross], [y_cross], marker='x', markersize=4.0,
+                    markeredgewidth=0.9, linestyle='None', color=colors[i],
+                    clip_on=False, zorder=6)
+    ax.set_title(xlabel, fontweight='bold', fontsize=7.5, pad=3)
     ax.set_ylim(bottom=0)
     if show_ylabel:
         ax.set_ylabel(ylabel or 'latency (\u00b5s/op)')
@@ -154,17 +169,21 @@ def plot_panel(ax, data_csv, xlabel, show_ylabel, ylabel=None, exclude_backends=
         pass  # tick labels visible, no ylabel text
     else:
         ax.tick_params(axis='y', labelleft=False)
+    if overlay_failure_depth is not None:
+        ax.set_xlim(right=max(ax.get_xlim()[1], overlay_failure_depth + 8))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=4, min_n_ticks=3,
+                                           steps=[1, 2, 2.5, 5, 10]))
 
-plot_panel(ax_create, CREATE_DATA, 'create', show_ylabel=True)
-plot_panel(ax_read, READ_DATA, 'read', show_ylabel=False)
-plot_panel(ax_status, STATUS_DATA, 'status', show_ylabel=True, ylabel='latency (ms)',
-           exclude_backends={{'BranchFS'}})
-# BranchFS has no status mechanism — show N/A.
+plot_panel(ax_create, CREATE_DATA, 'create', show_ylabel=True, mark_overlay_failure=True)
+plot_panel(ax_read, READ_DATA, 'read', show_ylabel=False, mark_overlay_failure=True)
+plot_panel(ax_status, STATUS_DATA, 'report', show_ylabel=True, ylabel='latency (ms)',
+           exclude_backends={{'BranchFS'}}, mark_overlay_failure=True)
+# BranchFS has no report mechanism — show N/A.
 ax_status.text(0.95, 0.05, 'BranchFS: N/A', transform=ax_status.transAxes,
-               fontsize=5, color='#999', ha='right', va='bottom')
+               fontsize=6, color='#999', ha='right', va='bottom')
 # Main commit panel: AgFS and OverlayFS only (linear scale).
 plot_panel(ax_commit, COMMIT_DATA, 'commit', show_ylabel=None,
-           exclude_backends={{'BranchFS'}})
+           exclude_backends={{'BranchFS'}}, mark_overlay_failure=True)
 
 # Convert status y-axis from µs to ms for readability.
 from matplotlib.ticker import FuncFormatter
@@ -175,6 +194,8 @@ commit_reader = csv.DictReader(StringIO(COMMIT_DATA.strip()))
 commit_non_branch = [float(r['mean_us']) for r in commit_reader if r['backend'] != 'BranchFS']
 if commit_non_branch:
     ax_commit.set_ylim(top=max(commit_non_branch) * 1.3)
+ax_commit.yaxis.set_major_locator(MaxNLocator(nbins=4, min_n_ticks=3,
+                                              steps=[1, 2, 2.5, 5, 10]))
 
 # Convert commit y-axis from µs to ms for readability.
 ax_commit.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{{y/1000:.0f}}'))
@@ -190,17 +211,21 @@ for i, name in enumerate(order):
     pts.sort()
     inset.plot([p[0] for p in pts], [p[1] for p in pts],
                marker='o', markersize=1.2, linewidth=0.8, color=colors[i])
+    if name == overlay_name and overlay_failure_depth is not None and pts and pts[-1][0] == overlay_failure_depth:
+        inset.plot([pts[-1][0] + 4], [pts[-1][1]], marker='x', markersize=2.4,
+                   markeredgewidth=0.7, linestyle='None', color=colors[i],
+                   clip_on=False, zorder=6)
 inset.set_ylim(bottom=0, top=11e6)
 inset.set_xticks([])
 inset.set_yticks([])
 inset.xaxis.set_minor_locator(plt.NullLocator())
 inset.yaxis.set_minor_locator(plt.NullLocator())
 # Place '10s' outside top of y-axis (left), '100' outside right of x-axis (bottom).
-inset.text(-0.05, 0.95, '10s', transform=inset.transAxes, fontsize=6.5,
+inset.text(-0.05, 0.95, '10s', transform=inset.transAxes, fontsize=7.5,
            ha='right', va='top')
-inset.text(1.05, 0.02, '100', transform=inset.transAxes, fontsize=6.5,
+inset.text(1.05, 0.02, '100', transform=inset.transAxes, fontsize=7.5,
            ha='left', va='bottom')
-inset.tick_params(labelsize=6.5, pad=0.5, length=1.5)
+inset.tick_params(labelsize=7, pad=0.5, length=1.5)
 inset.tick_params(axis='y', which='major', pad=0.5)
 for label in inset.yaxis.get_ticklabels():
     label.set_clip_on(False)
@@ -222,7 +247,7 @@ fig.tight_layout(pad=0.3)
 # Shared x-axis label below both panels.
 fig.canvas.draw()
 # Shared x-axis label below the bottom row.
-fig.text(0.5, -0.02, 'number of checkpoints', ha='center', fontsize=7)
+fig.text(0.5, -0.02, 'number of checkpoints', ha='center', fontsize=8)
 
 fig.savefig('{pdf_path}', bbox_inches='tight', dpi=300)
 plt.close(fig)
