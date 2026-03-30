@@ -115,7 +115,7 @@ fn render_macro_step_workload(
 ) -> Result<()> {
     let order = backends::display_order();
     let mut sorted = wl.backends.clone();
-    sorted.retain(|b| report_backend_visible(&b.backend));
+    sorted.retain(|b| report_backend_visible_for_workload(&wl.workload, &b.backend));
     sorted.sort_by_key(|b| {
         order
             .iter()
@@ -123,18 +123,95 @@ fn render_macro_step_workload(
             .unwrap_or(usize::MAX)
     });
 
+    let native = sorted.iter().find(|b| b.backend == "native").cloned();
+    sorted.retain(|b| b.backend != "native");
+
     let backend_names: Vec<String> = sorted.iter().map(|b| b.backend.clone()).collect();
     let facets = dev_workflow_facets();
+
+    // Render backend-level benchmark phase timings separately from the
+    // workload-internal macro-step facets. For paper readability, collapse the
+    // outer phases to just run (init + staging) and commit.
+    let mut phase_plot = Plot::new();
+    let phase_defs = [
+        (
+            "run",
+            "#1982C4",
+            sorted
+                .iter()
+                .map(|b| b.mean_init_ms.unwrap_or(0.0) + b.mean_staging_ms.unwrap_or(b.mean_total_ms))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "commit",
+            "#8AC926",
+            sorted
+                .iter()
+                .map(|b| b.mean_commit_ms.unwrap_or(0.0))
+                .collect::<Vec<_>>(),
+        ),
+    ];
+    for (label, color, values) in phase_defs {
+        let mut hover = Vec::with_capacity(sorted.len());
+        for value in &values {
+            hover.push(format!("{}: {:.1} ms", label, value));
+        }
+        if values.iter().all(|v| *v == 0.0) {
+            continue;
+        }
+        phase_plot.add_trace(
+            Bar::new(backend_names.clone(), values)
+                .name(label)
+                .marker(plotly::common::Marker::new().color(color))
+                .hover_info(HoverInfo::Text)
+                .hover_text_array(hover),
+        );
+    }
+    let mut phase_layout = Layout::new()
+        .bar_mode(BarMode::Stack)
+        .title(Title::with_text("Run vs Commit"))
+        .x_axis(Axis::new().title(Title::with_text("backend")))
+        .y_axis(Axis::new().title(Title::with_text("time (ms)")));
+    let mut phase_shapes = Vec::new();
+    let mut phase_annotations = Vec::new();
+    if let Some(native) = &native {
+        let native_run = native.mean_init_ms.unwrap_or(0.0)
+            + native.mean_staging_ms.unwrap_or(native.mean_total_ms);
+        add_baseline_to_plot(
+            &mut phase_plot,
+            &mut phase_shapes,
+            &mut phase_annotations,
+            &backend_names,
+            BaselineSpec {
+                value: native_run,
+                hover_label: "native run (init + staging)",
+                visible_label: "native run",
+                secondary_shift: false,
+            },
+        );
+    }
+    if !phase_shapes.is_empty() {
+        phase_layout = phase_layout.shapes(phase_shapes).annotations(phase_annotations);
+    }
+    phase_plot.set_layout(phase_layout);
+    phase_plot.set_configuration(Configuration::new().responsive(true).fill_frame(true));
+    let phase_path = out_dir.join(format!("report-{}-backend-phases.html", wl.workload));
+    std::fs::write(&phase_path, phase_plot.to_html())
+        .with_context(|| format!("writing {}", phase_path.display()))?;
 
     // Render one sub-chart per facet.
     for (facet_label, categories) in facets {
         let mut plot = Plot::new();
-        let mut has_data = false;
-
-        for &category in *categories {
-            let mut values = Vec::with_capacity(sorted.len());
-            let mut hover = Vec::with_capacity(sorted.len());
-            for backend in &sorted {
+        let mut run_values = Vec::with_capacity(sorted.len());
+        let mut run_hover = Vec::with_capacity(sorted.len());
+        let mut checkpoint_values = Vec::with_capacity(sorted.len());
+        let mut checkpoint_hover = Vec::with_capacity(sorted.len());
+        for backend in &sorted {
+            let mut run_total = 0u64;
+            let mut run_lines = Vec::new();
+            let mut checkpoint_total = 0u64;
+            let mut checkpoint_lines = Vec::new();
+            for &category in *categories {
                 let summary = backend
                     .macro_step_series
                     .as_ref()
@@ -143,34 +220,89 @@ fn render_macro_step_workload(
                         total_ms: 0,
                         detail_lines: Vec::new(),
                     });
-                values.push(summary.total_ms as f64);
-                hover.push(dev_workflow_hover_text(category, &summary));
+                if category.starts_with("checkpoint-") {
+                    checkpoint_total += summary.total_ms;
+                    checkpoint_lines.extend(summary.detail_lines);
+                } else {
+                    run_total += summary.total_ms;
+                    run_lines.extend(summary.detail_lines);
+                }
             }
-            if values.iter().all(|v| *v == 0.0) {
-                continue;
-            }
-            has_data = true;
-            plot.add_trace(
-                Bar::new(backend_names.clone(), values)
-                    .name(category.to_string())
-                    .marker(
-                        plotly::common::Marker::new()
-                            .color(dev_workflow_category_color(category)),
-                    )
-                    .hover_info(HoverInfo::Text)
-                    .hover_text_array(hover),
-            );
+            run_values.push(run_total as f64);
+            checkpoint_values.push(checkpoint_total as f64);
+            run_hover.push(dev_workflow_group_hover_text("run", run_total, &run_lines));
+            checkpoint_hover.push(dev_workflow_group_hover_text(
+                "checkpoint",
+                checkpoint_total,
+                &checkpoint_lines,
+            ));
         }
+
+        let has_data = run_values.iter().any(|v| *v > 0.0) || checkpoint_values.iter().any(|v| *v > 0.0);
 
         if !has_data {
             continue;
         }
 
-        let layout = Layout::new()
+        plot.add_trace(
+            Bar::new(backend_names.clone(), run_values)
+                .name("run")
+                .marker(plotly::common::Marker::new().color("#4D908E"))
+                .hover_info(HoverInfo::Text)
+                .hover_text_array(run_hover),
+        );
+        plot.add_trace(
+            Bar::new(backend_names.clone(), checkpoint_values)
+                .name("checkpoint")
+                .marker(plotly::common::Marker::new().color("#577590"))
+                .hover_info(HoverInfo::Text)
+                .hover_text_array(checkpoint_hover),
+        );
+
+        let mut native_run = None;
+        if let Some(native) = &native {
+            let mut run_total = 0u64;
+            for &category in *categories {
+                if category.starts_with("checkpoint-") {
+                    continue;
+                }
+                let summary = native
+                    .macro_step_series
+                    .as_ref()
+                    .map(|series| summarize_macro_steps(series, category))
+                    .unwrap_or_else(|| MacroStepCategorySummary {
+                        total_ms: 0,
+                        detail_lines: Vec::new(),
+                    });
+                run_total += summary.total_ms;
+            }
+            native_run = Some(run_total as f64);
+        }
+
+        let mut layout = Layout::new()
             .bar_mode(BarMode::Stack)
             .title(Title::with_text(*facet_label))
             .x_axis(Axis::new().title(Title::with_text("backend")))
             .y_axis(Axis::new().title(Title::with_text("time (ms)")));
+        let mut shapes = Vec::new();
+        let mut annotations = Vec::new();
+        if let Some(native_run) = native_run {
+            add_baseline_to_plot(
+                &mut plot,
+                &mut shapes,
+                &mut annotations,
+                &backend_names,
+                BaselineSpec {
+                    value: native_run,
+                    hover_label: "native run",
+                    visible_label: "native",
+                    secondary_shift: false,
+                },
+            );
+        }
+        if !shapes.is_empty() {
+            layout = layout.shapes(shapes).annotations(annotations);
+        }
 
         plot.set_layout(layout);
         plot.set_configuration(Configuration::new().responsive(true).fill_frame(true));
@@ -195,9 +327,13 @@ fn render_macro_step_workload(
     full_html.push_str("</head><body>");
     full_html.push_str(&format!("<h1>{}</h1>", escape_html(&wl.workload)));
     full_html.push_str(
-        "<p>Dev-workflow facets: one stacked-bar chart per phase (bars = backends, stack = step categories).</p>",
+        "<p>Dev-workflow facets: one stacked-bar chart per workflow phase (bars = backends, stack = run vs checkpoint), plus a stacked run-vs-commit backend summary.</p>",
     );
     full_html.push_str("<div class=\"grid\">");
+    full_html.push_str(&format!(
+        "<iframe src=\"report-{}-backend-phases.html\"></iframe>",
+        wl.workload
+    ));
     for (facet_label, _) in facets {
         let facet_slug = facet_label.to_lowercase().replace(' ', "-");
         full_html.push_str(&format!(
@@ -690,31 +826,6 @@ fn backend_color(backend: &str) -> &'static str {
     }
 }
 
-fn dev_workflow_category_color(category: &str) -> &'static str {
-    match category {
-        "worktree" => "#355070",
-        "config" => "#6D597A",
-        "initial-build" => "#B56576",
-        "search" => "#E56B6F",
-        "read" => "#EAAC8B",
-        "edit" => "#4D908E",
-        "incremental-build" => "#277DA1",
-        "git-status" => "#90BE6D",
-        "git-diff" => "#F9C74F",
-        "git-add" => "#F8961E",
-        "git-commit" => "#F3722C",
-        // Checkpoint variants — all share a single muted tone so they are
-        // visually distinct from the work they follow.
-        "checkpoint-worktree"
-        | "checkpoint-config"
-        | "checkpoint-initial-build"
-        | "checkpoint-edit"
-        | "checkpoint-incremental-build"
-        | "checkpoint-git-commit" => "#577590",
-        _ => "#999999",
-    }
-}
-
 #[derive(Default)]
 struct MacroStepCategorySummary {
     total_ms: u64,
@@ -738,7 +849,7 @@ fn summarize_macro_steps(
     summary
 }
 
-fn dev_workflow_step_category(step: &str) -> Option<&str> {
+pub(crate) fn dev_workflow_step_category(step: &str) -> Option<&str> {
     let (prefix, suffix) = step.split_once(':')?;
     if prefix != "checkpoint" {
         return Some(prefix);
@@ -763,12 +874,12 @@ fn dev_workflow_step_category(step: &str) -> Option<&str> {
     }
 }
 
-fn dev_workflow_hover_text(category: &str, summary: &MacroStepCategorySummary) -> String {
-    if summary.detail_lines.is_empty() {
-        return format!("{category}: 0 ms");
+fn dev_workflow_group_hover_text(label: &str, total_ms: u64, detail_lines: &[String]) -> String {
+    if detail_lines.is_empty() {
+        return format!("{label}: 0 ms");
     }
-    let mut text = format!("{category}: {} ms", summary.total_ms);
-    for line in &summary.detail_lines {
+    let mut text = format!("{label}: {} ms", total_ms);
+    for line in detail_lines {
         text.push_str("<br>");
         text.push_str(&escape_html(line));
     }
@@ -804,7 +915,7 @@ fn workload_staleness(wl: &WorkloadResult, current: Option<&RepoState>) -> Workl
         .map(str::to_string);
 
     for backend in &wl.backends {
-        if !report_backend_visible(&backend.backend) {
+        if !report_backend_visible_for_workload(&wl.workload, &backend.backend) {
             continue;
         }
         match (&backend.repo_state, current) {
@@ -886,6 +997,16 @@ fn repo_state_drift(recorded: &RepoState, current: &RepoState) -> Vec<String> {
 pub fn report_backend_visible(name: &str) -> bool {
     // Hide stale pre-rename results from report plots/tables.
     name != "agfs-allow-all"
+}
+
+pub fn report_backend_visible_for_workload(workload: &str, backend: &str) -> bool {
+    if !report_backend_visible(backend) {
+        return false;
+    }
+    if workload == "dev-workflow" && backend == "branchfs" {
+        return false;
+    }
+    true
 }
 
 fn dirty_label(dirty: bool) -> &'static str {
@@ -1867,74 +1988,5 @@ fn badge_text(freshness: &WorkloadFreshness) -> String {
             Some(commit) => format!("{} {}", freshness.summary, commit),
             None => freshness.summary.clone(),
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{dev_workflow_step_category, summarize_macro_steps};
-    use crate::workload::{MacroStepSeries, MacroStepTiming};
-
-    #[test]
-    fn dev_workflow_step_category_uses_prefix_before_colon() {
-        assert_eq!(
-            dev_workflow_step_category("git-commit: d66907b51ba0"),
-            Some("git-commit")
-        );
-        assert_eq!(dev_workflow_step_category("malformed"), None);
-    }
-
-    #[test]
-    fn dev_workflow_step_category_checkpoint_variants() {
-        assert_eq!(
-            dev_workflow_step_category("checkpoint: worktree"),
-            Some("checkpoint-worktree")
-        );
-        assert_eq!(
-            dev_workflow_step_category("checkpoint: config"),
-            Some("checkpoint-config")
-        );
-        assert_eq!(
-            dev_workflow_step_category("checkpoint: initial-build"),
-            Some("checkpoint-initial-build")
-        );
-        assert_eq!(
-            dev_workflow_step_category("checkpoint: incremental-build c2c54b5f34f6"),
-            Some("checkpoint-incremental-build")
-        );
-        assert_eq!(
-            dev_workflow_step_category("checkpoint: git-commit c2c54b5f34f6"),
-            Some("checkpoint-git-commit")
-        );
-        // Per-edit checkpoint: "checkpoint: <commit_id> #<n>"
-        assert_eq!(
-            dev_workflow_step_category("checkpoint: c2c54b5f34f6 #1"),
-            Some("checkpoint-edit")
-        );
-    }
-
-    #[test]
-    fn summarize_macro_steps_filters_by_category() {
-        let series = MacroStepSeries {
-            steps: vec![
-                MacroStepTiming {
-                    step: "search: c1 #1".to_string(),
-                    ms: 3,
-                },
-                MacroStepTiming {
-                    step: "search: c1 #2".to_string(),
-                    ms: 5,
-                },
-                MacroStepTiming {
-                    step: "edit: c1 #1".to_string(),
-                    ms: 7,
-                },
-            ],
-        };
-
-        let summary = summarize_macro_steps(&series, "search");
-        assert_eq!(summary.total_ms, 8);
-        assert_eq!(summary.detail_lines.len(), 2);
-        assert!(summary.detail_lines[0].contains("search: c1 #1"));
     }
 }

@@ -1,0 +1,21 @@
+{
+  "base_commit": "7e5fd4c8d0193c371f378120d051092372b3c361",
+  "commits": [
+    {
+      "id": "3431a2c59034",
+      "message": "update greeting",
+      "files": ["src/hello.c"],
+      "search_commands": "commit-01-search.cmds",
+      "read_commands": "commit-01-read.cmds",
+      "edit_commands": "commit-01-edit.cmds"
+    },
+    {
+      "id": "607b51f1eaf0",
+      "message": "extract greeting helper",
+      "files": ["src/hello.c"],
+      "search_commands": "commit-02-search.cmds",
+      "read_commands": "commit-02-read.cmds",
+      "edit_commands": "commit-02-edit.cmds"
+    }
+  ]
+}

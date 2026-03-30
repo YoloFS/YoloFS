@@ -1,0 +1,1 @@
+sed -n '1,40p' src/hello.c

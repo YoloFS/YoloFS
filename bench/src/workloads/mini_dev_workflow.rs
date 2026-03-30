@@ -23,41 +23,44 @@ struct CommitFixture {
     edit_commands: String,
 }
 
-pub struct DevWorkflow {
-    linux_fixture: PathBuf,
+pub struct MiniDevWorkflow {
+    repo_cache: PathBuf,
     fixture_dir: PathBuf,
 }
 
 pub fn details() -> crate::workloads::WorkloadDetails {
     crate::workloads::workload_details(
-        "Session macrobenchmark that replays a real overlayfs patch series as a search/edit/build/commit workflow on a pinned Linux base commit.",
-        "Ensures `~/.cache/agfs-bench/linux` exists as the source repo/object store and reuses checked-in workflow fixtures under `bench/fixtures/dev-workflow/`.",
+        "Fast macrobenchmark that mirrors dev-workflow with a tiny checked-in Git repo and nested object builds.",
+        "Clones the checked-in fixture repo from `bench/fixtures/mini-dev-workflow/source-repo/` into `~/.cache/agfs-bench/mini-dev-workflow` once and reuses checked-in command lists under `bench/fixtures/mini-dev-workflow/`.",
         None,
-        "Runs `git worktree add --detach <dest> <base-commit>`, `make tinyconfig`, a clean build, then per-commit search/read/edit command lists, incremental build, git status/diff/add/commit, and a backend-managed checkpoint after each edit command.",
+        "Runs `git worktree add --detach <dest> <base-commit>`, an initial `make`, then per-commit search/read/edit command lists, incremental build, and git status/diff/add/commit with backend-managed checkpoints between phases.",
         file!(),
     )
 }
 
-impl DevWorkflow {
+impl MiniDevWorkflow {
     pub fn new() -> Self {
         Self {
-            linux_fixture: crate::workloads::worktree::linux_fixture_dir(),
-            fixture_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/dev-workflow"),
+            repo_cache: dirs_next::cache_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join("agfs-bench/mini-dev-workflow"),
+            fixture_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("fixtures/mini-dev-workflow"),
         }
     }
 
-    fn metadata_path(&self) -> PathBuf {
-        self.fixture_dir.join("overlayfs-ovl-file.json")
+    fn source_repo_path(&self) -> PathBuf {
+        self.fixture_dir.join("source-repo")
     }
 
-    fn config_fixture_path(&self) -> PathBuf {
-        self.fixture_dir.join("tinyconfig-overlayfs.config")
+    fn metadata_path(&self) -> PathBuf {
+        self.fixture_dir.join("series.json")
     }
 
     fn load_fixture(&self) -> Result<SeriesFixture> {
-        let text =
-            fs::read_to_string(self.metadata_path()).context("reading dev-workflow fixture")?;
-        serde_json::from_str(&text).context("parsing dev-workflow fixture")
+        let text = fs::read_to_string(self.metadata_path())
+            .context("reading mini-dev-workflow fixture")?;
+        serde_json::from_str(&text).context("parsing mini-dev-workflow fixture")
     }
 
     fn run_cmd(&self, cmd: &mut Command, verbose: bool, what: &str) -> Result<()> {
@@ -86,8 +89,9 @@ impl DevWorkflow {
 
     fn load_commands(&self, file_name: &str) -> Result<Vec<String>> {
         let path = self.fixture_dir.join(file_name);
-        let text = fs::read_to_string(&path)
-            .with_context(|| format!("reading dev-workflow command file {}", path.display()))?;
+        let text = fs::read_to_string(&path).with_context(|| {
+            format!("reading mini-dev-workflow command file {}", path.display())
+        })?;
         if text.lines().any(|line| line == "%%") {
             let mut commands = Vec::new();
             let mut current = Vec::new();
@@ -109,7 +113,6 @@ impl DevWorkflow {
             }
             return Ok(commands);
         }
-
         let mut commands = Vec::new();
         for line in text.lines() {
             let line = line.trim();
@@ -136,29 +139,16 @@ impl DevWorkflow {
         self.run_cmd_timed(&mut cmd, verbose, what)
     }
 
-    fn make_cmd(dest: &Path, args: &[&str]) -> Command {
+    fn make_cmd(dest: &Path) -> Command {
         let mut cmd = Command::new("make");
-        cmd.args(args).current_dir(dest);
+        cmd.current_dir(dest);
         cmd
-    }
-
-    fn install_config_fixture(&self, dest: &Path) -> Result<()> {
-        let fixture = self.config_fixture_path();
-        let config_path = dest.join(".config");
-        fs::copy(&fixture, &config_path).with_context(|| {
-            format!(
-                "copying config fixture {} to {}",
-                fixture.display(),
-                config_path.display()
-            )
-        })?;
-        Ok(())
     }
 }
 
-impl Workload for DevWorkflow {
+impl Workload for MiniDevWorkflow {
     fn name(&self) -> &'static str {
-        "dev-workflow"
+        "mini-dev-workflow"
     }
 
     fn kind(&self) -> WorkloadKind {
@@ -166,24 +156,42 @@ impl Workload for DevWorkflow {
     }
 
     fn description(&self) -> &'static str {
-        "Pinned Linux worktree plus search/edit/build/commit replay of an overlayfs patch series"
+        "Tiny git worktree plus search/edit/build/commit replay with nested object outputs"
     }
 
     fn work_dir(&self) -> &'static str {
-        "dev-workflow-dest"
+        "mini-dev-workflow-dest"
     }
 
     fn ensure_fixture(&self) -> Result<()> {
-        crate::workloads::worktree::ensure_linux_fixture(&self.linux_fixture)
+        if self.repo_cache.exists() {
+            let _ = Command::new("git")
+                .args(["worktree", "prune"])
+                .current_dir(&self.repo_cache)
+                .status();
+            return Ok(());
+        }
+        std::fs::create_dir_all(
+            self.repo_cache
+                .parent()
+                .context("mini-dev-workflow cache parent")?,
+        )?;
+        let status = Command::new("git")
+            .arg("clone")
+            .arg(self.source_repo_path())
+            .arg(&self.repo_cache)
+            .status()
+            .context("cloning mini-dev-workflow source repo")?;
+        if !status.success() {
+            bail!("git clone of mini-dev-workflow fixture failed");
+        }
+        Ok(())
     }
 
     fn realistic_rules(&self, session_root: &Path) -> Vec<(String, Perm)> {
         let mut rules = vec![
             (session_root.to_string_lossy().into_owned(), Perm::Allow),
-            (
-                self.linux_fixture.to_string_lossy().into_owned(),
-                Perm::Allow,
-            ),
+            (self.repo_cache.to_string_lossy().into_owned(), Perm::Allow),
             (
                 self.fixture_dir.to_string_lossy().into_owned(),
                 Perm::AllowRx,
@@ -210,7 +218,7 @@ impl Workload for DevWorkflow {
         let mut checkpoint_step = 0usize;
         let mut macro_steps = Vec::new();
         let dest = if dest == Path::new(".") {
-            std::env::current_dir().context("resolving dev-workflow current dir")?
+            std::env::current_dir().context("resolving mini-dev-workflow current dir")?
         } else {
             dest.to_path_buf()
         };
@@ -219,7 +227,10 @@ impl Workload for DevWorkflow {
             let mut entries =
                 fs::read_dir(&dest).with_context(|| format!("reading {}", dest.display()))?;
             if entries.next().is_some() {
-                bail!("dev-workflow destination is not empty: {}", dest.display());
+                bail!(
+                    "mini-dev-workflow destination is not empty: {}",
+                    dest.display()
+                );
             }
             fs::remove_dir(&dest)
                 .with_context(|| format!("removing placeholder {}", dest.display()))?;
@@ -228,7 +239,7 @@ impl Workload for DevWorkflow {
         let prune_t0 = Instant::now();
         let _ = Command::new("git")
             .args(["worktree", "prune"])
-            .current_dir(&self.linux_fixture)
+            .current_dir(&self.repo_cache)
             .status();
         macro_steps.push(MacroStepTiming {
             step: "worktree: prune".to_string(),
@@ -239,21 +250,17 @@ impl Workload for DevWorkflow {
         add.args(["worktree", "add", "--detach"])
             .arg(&dest)
             .arg(&fixture.base_commit)
-            .current_dir(&self.linux_fixture);
+            .current_dir(&self.repo_cache);
         macro_steps.push(MacroStepTiming {
             step: "worktree: add".to_string(),
             ms: self.run_cmd_timed(&mut add, verbose, "running git worktree add")?,
         });
-        // Keep the long-lived workload process on a stable parent cwd and run
-        // child commands with explicit current_dir(dest). This avoids keeping
-        // the process attached to a worktree path across backend-managed
-        // checkpoint transitions.
         if let Some(parent) = dest.parent() {
             std::env::set_current_dir(parent)
                 .with_context(|| format!("switching to stable parent {}", parent.display()))?;
         }
         checkpoint_step += 1;
-        let cp = emit_checkpoint(checkpoint_step)?;
+        let cp = super::dev_workflow::emit_checkpoint(checkpoint_step)?;
         macro_steps.push(MacroStepTiming {
             step: "checkpoint: worktree".to_string(),
             ms: cp.checkpoint_ms,
@@ -263,43 +270,13 @@ impl Workload for DevWorkflow {
             return Ok(());
         }
 
-        let jobs = std::thread::available_parallelism()
-            .map(|n| n.get().to_string())
-            .unwrap_or_else(|_| "1".to_string());
-
-        let t0 = Instant::now();
-        let mut tinyconfig = Self::make_cmd(&dest, &["tinyconfig"]);
-        tinyconfig.arg(format!("-j{jobs}"));
-        self.run_cmd(&mut tinyconfig, verbose, "running make tinyconfig")?;
-        // Install the checked-in tinyconfig variant with CONFIG_OVERLAY_FS=y
-        // so incremental builds actually recompile the edited fs/overlayfs/
-        // files without relying on scripts/config temp-file behavior.
-        self.install_config_fixture(&dest)?;
-        let mut olddefconfig = Self::make_cmd(&dest, &["olddefconfig"]);
-        self.run_cmd(&mut olddefconfig, verbose, "running make olddefconfig")?;
-        macro_steps.push(MacroStepTiming {
-            step: "config: tinyconfig".to_string(),
-            ms: t0.elapsed().as_millis() as u64,
-        });
-        checkpoint_step += 1;
-        let cp = emit_checkpoint(checkpoint_step)?;
-        macro_steps.push(MacroStepTiming {
-            step: "checkpoint: config".to_string(),
-            ms: cp.checkpoint_ms,
-        });
-        if cp.stop {
-            crate::workloads::emit_macro_step_series(&MacroStepSeries { steps: macro_steps })?;
-            return Ok(());
-        }
-
-        let build_arg = format!("-j{jobs}");
-        let mut initial_build = Self::make_cmd(&dest, &[&build_arg]);
+        let mut initial_build = Self::make_cmd(&dest);
         macro_steps.push(MacroStepTiming {
             step: "initial-build: make".to_string(),
             ms: self.run_cmd_timed(&mut initial_build, verbose, "running initial make")?,
         });
         checkpoint_step += 1;
-        let cp = emit_checkpoint(checkpoint_step)?;
+        let cp = super::dev_workflow::emit_checkpoint(checkpoint_step)?;
         macro_steps.push(MacroStepTiming {
             step: "checkpoint: initial-build".to_string(),
             ms: cp.checkpoint_ms,
@@ -358,7 +335,7 @@ impl Workload for DevWorkflow {
                     ms,
                 });
                 checkpoint_step += 1;
-                let checkpoint = emit_checkpoint(checkpoint_step)?;
+                let checkpoint = super::dev_workflow::emit_checkpoint(checkpoint_step)?;
                 macro_steps.push(MacroStepTiming {
                     step: format!("checkpoint: {} #{}", commit.id, idx + 1),
                     ms: checkpoint.checkpoint_ms,
@@ -370,7 +347,8 @@ impl Workload for DevWorkflow {
                     return Ok(());
                 }
             }
-            let mut incremental_build = Self::make_cmd(&dest, &[&build_arg]);
+
+            let mut incremental_build = Self::make_cmd(&dest);
             macro_steps.push(MacroStepTiming {
                 step: format!("incremental-build: {}", commit.id),
                 ms: self.run_cmd_timed(
@@ -380,7 +358,7 @@ impl Workload for DevWorkflow {
                 )?,
             });
             checkpoint_step += 1;
-            let cp = emit_checkpoint(checkpoint_step)?;
+            let cp = super::dev_workflow::emit_checkpoint(checkpoint_step)?;
             macro_steps.push(MacroStepTiming {
                 step: format!("checkpoint: incremental-build {}", commit.id),
                 ms: cp.checkpoint_ms,
@@ -435,7 +413,7 @@ impl Workload for DevWorkflow {
                 ms: self.run_cmd_timed(&mut commit_cmd, verbose, "running git commit")?,
             });
             checkpoint_step += 1;
-            let cp = emit_checkpoint(checkpoint_step)?;
+            let cp = super::dev_workflow::emit_checkpoint(checkpoint_step)?;
             macro_steps.push(MacroStepTiming {
                 step: format!("checkpoint: git-commit {}", commit.id),
                 ms: cp.checkpoint_ms,
@@ -449,61 +427,4 @@ impl Workload for DevWorkflow {
         crate::workloads::emit_macro_step_series(&MacroStepSeries { steps: macro_steps })?;
         Ok(())
     }
-}
-
-pub(crate) struct CheckpointResponse {
-    pub(crate) stop: bool,
-    pub(crate) checkpoint_ms: u64,
-}
-
-pub(crate) fn emit_checkpoint(step: usize) -> Result<CheckpointResponse> {
-    use std::io::{BufRead, Write};
-
-    let saved_cwd = std::env::current_dir()?;
-    std::env::set_current_dir("/")?;
-
-    println!("{}", crate::backend::CHECKPOINT_MARKER);
-    println!("{{\"step\":{step}}}");
-    std::io::stdout().flush()?;
-
-    let stdin = std::io::stdin();
-    let mut lock = stdin.lock();
-    let mut line = String::new();
-
-    lock.read_line(&mut line)?;
-    if line.trim() != crate::backend::RESULTS_MARKER {
-        bail!(
-            "expected {} after checkpoint",
-            crate::backend::RESULTS_MARKER
-        );
-    }
-    line.clear();
-    lock.read_line(&mut line)?;
-
-    #[derive(Deserialize)]
-    struct Resp {
-        stop: bool,
-        #[serde(default)]
-        checkpoint_ms: u64,
-        #[serde(default)]
-        next_dest: Option<String>,
-    }
-
-    let resp: Resp = serde_json::from_str(line.trim()).context("parsing checkpoint response")?;
-    if resp.stop {
-        return Ok(CheckpointResponse {
-            stop: true,
-            checkpoint_ms: resp.checkpoint_ms,
-        });
-    }
-    let target = resp
-        .next_dest
-        .as_deref()
-        .map(Path::new)
-        .unwrap_or(&saved_cwd);
-    std::env::set_current_dir(target)?;
-    Ok(CheckpointResponse {
-        stop: false,
-        checkpoint_ms: resp.checkpoint_ms,
-    })
 }

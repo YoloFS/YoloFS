@@ -1,0 +1,11 @@
+%%
+python3 - <<'PY'
+from pathlib import Path
+p = Path('src/hello.c')
+text = p.read_text()
+text = text.replace(
+    'const char *message(void) {\n    return "hello v2";\n}\n',
+    'static const char *greet_target(const char *name) {\n    (void)name;\n    return "hello v2";\n}\n\nconst char *message(void) {\n    return greet_target("developer");\n}\n'
+)
+p.write_text(text)
+PY
