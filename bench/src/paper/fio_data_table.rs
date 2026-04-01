@@ -79,6 +79,7 @@ fn build_tex(results: &BenchResults) -> Result<String> {
     tex.push_str("\\renewcommand\\footnotetextcopyrightpermission[1]{}\n");
     tex.push_str("\\usepackage{multirow}\n");
     tex.push_str("\\usepackage[table]{xcolor}\n");
+    tex.push_str("\\usepackage{hhline}\n");
     tex.push_str(TABLEAU_COLOR_DEFS);
     tex.push_str("\\begin{document}\n");
     tex.push_str("\\thispagestyle{empty}\n");
@@ -92,17 +93,9 @@ fn build_tex(results: &BenchResults) -> Result<String> {
     tex.push_str("\\small\n");
     tex.push_str("\\setlength{\\tabcolsep}{4pt}\n");
 
-    // Column spec: keep a real vertical separator around the Base column so
-    // the rule is continuous through headers and grouped body rows.
-    let _ncols = 3 + columns.len();
-    let mut col_spec = String::from("l@{\\,}l@{\\,}l");
-    for (i, _) in columns.iter().enumerate() {
-        if i == 0 {
-            col_spec.push_str("|c|");
-        } else {
-            col_spec.push('c');
-        }
-    }
+    let col_spec = format!("l@{{\\,}}l@{{\\,}}l|c|{}",
+        "c".repeat(columns.len() - 1));
+
     tex.push_str(&format!(
         "\\begin{{tabular}}{{{col_spec}}}\n\\noalign{{\\hrule height 0.8pt}}\n"
     ));
@@ -116,7 +109,7 @@ fn build_tex(results: &BenchResults) -> Result<String> {
     tex.push_str(" \\\\\n\\noalign{\\hrule height 0.5pt}\n");
 
     // Data rows grouped by access pattern, then by operation.
-    let structured: Vec<(FioDims, &std::collections::BTreeMap<String, u64>)> = op_rows
+    let structured: Vec<(FioDims, &std::collections::BTreeMap<String, ThroughputVal>)> = op_rows
         .iter()
         .filter_map(|(name, vals)| parse_fio_dims(name).map(|d| (d, vals)))
         .collect();
@@ -138,15 +131,25 @@ fn build_tex(results: &BenchResults) -> Result<String> {
             }
 
             for (k, (dims, vals)) in (j..op_end).zip(&structured[j..op_end]) {
-                let Some(native_kbps) = vals.get("native").copied() else {
+                let Some(native_val) = vals.get("native").copied() else {
                     continue;
                 };
+                let native_kbps = native_val.mean_kbps;
 
-                // Between op groups within the same access group: use \cline so
-                // the rule meets the real Base-column vertical separators cleanly.
+                // hhline pattern: ~ skips multirow cols, | preserves vrules,
+                // - draws a horizontal segment.
+                let ncols = columns.len();
+                let hhline_op = format!("\\hhline{{~--{}}}", "-".repeat(ncols));
+                let hhline_row = format!("\\hhline{{~~-{}}}", "-".repeat(ncols));
+
                 if k == j && j != i {
-                    let ncols = 3 + columns.len();
-                    tex.push_str(&format!("\\cline{{2-{ncols}}}\n"));
+                    // Between op groups (read/write) within the same access group.
+                    tex.push_str(&hhline_op);
+                    tex.push('\n');
+                } else if k != j {
+                    // Between rows within the same op group (cold/warm) — skip op multirow col.
+                    tex.push_str(&hhline_row);
+                    tex.push('\n');
                 }
 
                 // Access column: multirow for first row in this access group.
@@ -175,17 +178,18 @@ fn build_tex(results: &BenchResults) -> Result<String> {
                 };
                 tex.push_str(&format!(" & {locality}"));
 
+                let noise_pct = native_val.half_range_kbps
+                    .filter(|&hr| hr > 0.0 && native_kbps > 0)
+                    .map(|hr| hr / native_kbps as f64 * 100.0)
+                    .unwrap_or(0.0);
+
                 for (ci, col) in columns.iter().enumerate() {
                     let rendered = if col.key == "native" {
-                        format_gbps(native_kbps)
+                        format_gbps_with_range(native_val)
                     } else if col.key == "agfs" {
-                        let kbps = vals
-                            .get("agfs-no-perm")
-                            .copied()
-                            .or_else(|| vals.get("agfs-realistic").copied());
-                        rendered_gbps_cell(native_kbps, kbps)
+                        rendered_gbps_cell(native_kbps, vals.get("agfs-realistic").map(|v| v.mean_kbps), noise_pct)
                     } else {
-                        rendered_gbps_cell(native_kbps, vals.get(col.key).copied())
+                        rendered_gbps_cell(native_kbps, vals.get(col.key).map(|v| v.mean_kbps), noise_pct)
                     };
                     // Base uses the real column rule from the tabular spec.
                     if ci == 0 {
@@ -200,7 +204,7 @@ fn build_tex(results: &BenchResults) -> Result<String> {
         }
 
         if access_end < structured.len() {
-            tex.push_str("\\noalign{\\hrule height 0.5pt}\n");
+            tex.push_str("\\hline\n");
         }
         i = access_end;
     }
@@ -222,7 +226,15 @@ struct Column {
     display: &'static str,
 }
 
-type OpRow = (String, std::collections::BTreeMap<String, u64>);
+/// Per-backend throughput data: mean in KB/s and optional half-range in KB/s
+/// computed as (max - min) / 2 across iterations.
+#[derive(Clone, Copy)]
+struct ThroughputVal {
+    mean_kbps: u64,
+    half_range_kbps: Option<f64>,
+}
+
+type OpRow = (String, std::collections::BTreeMap<String, ThroughputVal>);
 
 fn collect_data(results: &BenchResults) -> (Vec<Column>, Vec<OpRow>) {
     let mut op_rows: Vec<OpRow> = Vec::new();
@@ -253,7 +265,18 @@ fn collect_data(results: &BenchResults) -> (Vec<Column>, Vec<OpRow>) {
                 continue;
             }
             if let Some(kbps) = b.mean_throughput_kbps {
-                backend_vals.insert(b.backend.clone(), kbps);
+                // Compute half-range from per-iteration throughput: (max - min) / 2.
+                let iter_tps: Vec<f64> = b.iterations.iter()
+                    .filter_map(|it| it.op_result.as_ref()?.throughput_kbps.map(|v| v as f64))
+                    .collect();
+                let half_range_kbps = if iter_tps.len() >= 2 {
+                    let mn = iter_tps.iter().copied().fold(f64::INFINITY, f64::min);
+                    let mx = iter_tps.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    Some((mx - mn) / 2.0)
+                } else {
+                    None
+                };
+                backend_vals.insert(b.backend.clone(), ThroughputVal { mean_kbps: kbps, half_range_kbps });
             }
         }
         op_rows.push((canonical, backend_vals));
@@ -266,47 +289,20 @@ fn collect_data(results: &BenchResults) -> (Vec<Column>, Vec<OpRow>) {
             .unwrap_or(usize::MAX)
     });
 
-    // Decide whether to merge the two agfs variants into one column.
-    let merge_agfs = op_rows.iter().all(|(_, vals)| {
-        let Some(native) = vals.get("native") else {
-            return true;
-        };
-        let a = rendered_gbps_cell(*native, vals.get("agfs-no-perm").copied());
-        let b = rendered_gbps_cell(*native, vals.get("agfs-realistic").copied());
-        a == b
-    });
-
     let mut columns: Vec<Column> = vec![Column {
         key: "native",
         display: "Base (GB/s)",
     }];
 
-    if merge_agfs {
-        if op_rows
-            .iter()
-            .any(|(_, v)| v.contains_key("agfs-no-perm") || v.contains_key("agfs-realistic"))
-        {
-            columns.push(Column {
-                key: "agfs",
-                display: backend_display_name("agfs"),
-            });
-        }
-    } else {
-        if op_rows.iter().any(|(_, v)| v.contains_key("agfs-no-perm")) {
-            columns.push(Column {
-                key: "agfs-no-perm",
-                display: backend_display_name("agfs-no-perm"),
-            });
-        }
-        if op_rows
-            .iter()
-            .any(|(_, v)| v.contains_key("agfs-realistic"))
-        {
-            columns.push(Column {
-                key: "agfs-realistic",
-                display: backend_display_name("agfs-realistic"),
-            });
-        }
+    // Single AgFS column using agfs-realistic data only.
+    if op_rows
+        .iter()
+        .any(|(_, v)| v.contains_key("agfs-realistic"))
+    {
+        columns.push(Column {
+            key: "agfs",
+            display: backend_display_name("agfs"),
+        });
     }
 
     for name in ["overlayfs", "branchfs"] {
@@ -336,24 +332,49 @@ fn format_gbps(kbps: u64) -> String {
     }
 }
 
-fn rendered_gbps_cell(native_kbps: u64, kbps: Option<u64>) -> String {
+fn format_gbps_with_range(val: ThroughputVal) -> String {
+    let mean = format_gbps(val.mean_kbps);
+    match val.half_range_kbps {
+        Some(hr) if hr > 0.0 && val.mean_kbps > 0 => {
+            let pct = hr / val.mean_kbps as f64 * 100.0;
+            if pct >= 0.5 {
+                format!("${mean} \\pm {pct:.0}\\%$")
+            } else {
+                mean
+            }
+        }
+        _ => mean,
+    }
+}
+
+fn rendered_gbps_cell(native_kbps: u64, kbps: Option<u64>, noise_pct: f64) -> String {
     let Some(kbps) = kbps else {
         return "-".to_string();
     };
     let native_gbps = native_kbps as f64 / (1024.0 * 1024.0);
     let gbps = kbps as f64 / (1024.0 * 1024.0);
     let delta_pct = ((gbps / native_gbps) - 1.0) * 100.0;
-    if delta_pct > -3.0 {
-        "\\cellcolor{TableauGreen!25!white}$\\pm 3\\%$".to_string()
+    let delta_str = if delta_pct.abs() < 0.5 {
+        "0".to_string()
+    } else {
+        format!("{:+.0}", delta_pct)
+    };
+    // No coloring if the delta is within the base measurement noise.
+    if delta_pct.abs() <= noise_pct {
+        format!("${delta_str}\\%$")
     } else if delta_pct < 0.0 {
-        let severity = (-delta_pct).clamp(3.0, 100.0);
-        let pct = 18.0 + (severity - 3.0) / 95.0 * 42.0;
+        let severity = (-delta_pct).clamp(0.0, 100.0);
+        let pct = severity / 100.0 * 60.0;
         format!(
-            "\\cellcolor{{TableauRed!{:.0}!white}}{{${:+.0}\\%$}}",
-            pct, delta_pct
+            "\\cellcolor{{TableauRed!{:.0}!white}}{{${delta_str}\\%$}}",
+            pct
         )
     } else {
-        format!("${:+.0}\\%$", delta_pct)
+        let pct = 25.0_f64.min(delta_pct / 5.0 * 25.0);
+        format!(
+            "\\cellcolor{{TableauGreen!{:.0}!white}}${delta_str}\\%$",
+            pct
+        )
     }
 }
 

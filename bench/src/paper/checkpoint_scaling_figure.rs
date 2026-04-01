@@ -4,7 +4,7 @@ use super::Artifact;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const CAPTION: &str = "Snapshot scalability. The latency of creating a new file, reading an existing file, reporting staged changes, and committing all snapshots back to base as the number of snapshots grow. OverlayFS fails to support more snapshots because of mount option limits.";
+const CAPTION: &str = "Snapshot scalability. The latency of creating a new file, reading an existing file, and committing all snapshots back to base as the number of snapshots grow. OverlayFS fails to support more snapshots because of mount option limits.";
 const LABEL: &str = "fig:checkpoint-scaling";
 
 pub fn artifact_meta(paper_dir: &Path) -> Artifact {
@@ -65,10 +65,9 @@ pub fn render(out_dir: &Path, paper_dir: &Path) -> Result<Artifact> {
 
     let mut create_lines = Vec::new();
     let mut read_lines = Vec::new();
-    let mut status_lines = Vec::new();
     let mut commit_lines = Vec::new();
     for res in &data {
-        if res.backend == "agfs-no-perm" {
+        if res.backend == "agfs-no-perm" || res.mode == "status" {
             continue;
         }
         // In this figure agfs-realistic is the only AgFS variant, so label it
@@ -83,14 +82,13 @@ pub fn render(out_dir: &Path, paper_dir: &Path) -> Result<Artifact> {
             .copied()
             .unwrap_or(usize::MAX);
         for p in &res.points {
-            if (res.mode == "commit" || res.mode == "status") && p.depth > depth_cap {
+            if res.mode == "commit" && p.depth > depth_cap {
                 continue;
             }
             let row = format!("{},{},{:.2}", label, p.depth, p.mean_us);
             match res.mode.as_str() {
                 "create" => create_lines.push(row),
                 "read" => read_lines.push(row),
-                "status" => status_lines.push(row),
                 "commit" => commit_lines.push(row),
                 _ => {}
             }
@@ -113,11 +111,6 @@ backend,depth,mean_us
 {read_data}
 """
 
-STATUS_DATA = """\
-backend,depth,mean_us
-{status_data}
-"""
-
 COMMIT_DATA = """\
 backend,depth,mean_us
 {commit_data}
@@ -132,15 +125,25 @@ overlay_name = 'OverlayFS'
 overlay_depths = (
     [int(r['depth']) for r in csv.DictReader(StringIO(CREATE_DATA.strip())) if r['backend'] == overlay_name]
     + [int(r['depth']) for r in csv.DictReader(StringIO(READ_DATA.strip())) if r['backend'] == overlay_name]
-    + [int(r['depth']) for r in csv.DictReader(StringIO(STATUS_DATA.strip())) if r['backend'] == overlay_name]
     + [int(r['depth']) for r in csv.DictReader(StringIO(COMMIT_DATA.strip())) if r['backend'] == overlay_name]
 )
 overlay_failure_depth = max(overlay_depths) if overlay_depths else None
 
-fig, ((ax_create, ax_read), (ax_status, ax_commit)) = plt.subplots(
-    2, 2, sharey=False, figsize=(3.33, 2.4), gridspec_kw={{'wspace': 0.3, 'hspace': 0.45}})
+fig = plt.figure(figsize=(3.33, 1.3))
+# Manual positions: [left, bottom, width, height] in figure coords.
+# Equal plot widths (pw), uniform visual gaps between plot edges.
+pw = 0.24
+h = 0.54
+bot = 0.22
+left1 = 0.12
+gap = 0.045
+left2 = left1 + pw + gap
+left3 = left2 + pw + gap + 0.04  # extra for commit ylabel
+ax_create = fig.add_axes([left1, bot, pw, h])
+ax_read   = fig.add_axes([left2, bot, pw, h])
+ax_commit = fig.add_axes([left3, bot, pw, h])
 
-def plot_panel(ax, data_csv, xlabel, show_ylabel, ylabel=None, exclude_backends=None,
+def plot_panel(ax, data_csv, panel_label, show_ylabel, ylabel=None, exclude_backends=None,
                mark_overlay_failure=False):
     reader = csv.DictReader(StringIO(data_csv.strip()))
     rows = list(reader)
@@ -161,7 +164,6 @@ def plot_panel(ax, data_csv, xlabel, show_ylabel, ylabel=None, exclude_backends=
             ax.plot([x_cross], [y_cross], marker='x', markersize=4.0,
                     markeredgewidth=0.9, linestyle='None', color=colors[i],
                     clip_on=False, zorder=6)
-    ax.set_title(xlabel, fontweight='bold', fontsize=7.5, pad=3)
     ax.set_ylim(bottom=0)
     if show_ylabel:
         ax.set_ylabel(ylabel or 'latency (\u00b5s/op)')
@@ -176,18 +178,15 @@ def plot_panel(ax, data_csv, xlabel, show_ylabel, ylabel=None, exclude_backends=
 
 plot_panel(ax_create, CREATE_DATA, 'create', show_ylabel=True, mark_overlay_failure=True)
 plot_panel(ax_read, READ_DATA, 'read', show_ylabel=False, mark_overlay_failure=True)
-plot_panel(ax_status, STATUS_DATA, 'report', show_ylabel=True, ylabel='latency (ms)',
-           exclude_backends={{'BranchFS'}}, mark_overlay_failure=True)
-# BranchFS has no report mechanism — show N/A.
-ax_status.text(0.95, 0.05, 'BranchFS: N/A', transform=ax_status.transAxes,
-               fontsize=6, color='#999', ha='right', va='bottom')
 # Main commit panel: AgFS and OverlayFS only (linear scale).
-plot_panel(ax_commit, COMMIT_DATA, 'commit', show_ylabel=None,
+plot_panel(ax_commit, COMMIT_DATA, 'commit', show_ylabel=True, ylabel='latency (ms)',
            exclude_backends={{'BranchFS'}}, mark_overlay_failure=True)
 
-# Convert status y-axis from µs to ms for readability.
+# Panel titles.
+for ax, name in [(ax_create, 'create'), (ax_read, 'read'), (ax_commit, 'commit')]:
+    ax.set_title(name, fontweight='bold', fontsize=7.5, pad=2)
+
 from matplotlib.ticker import FuncFormatter
-ax_status.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{{y/1000:.0f}}'))
 
 # Cap commit y-axis to non-BranchFS data range.
 commit_reader = csv.DictReader(StringIO(COMMIT_DATA.strip()))
@@ -235,19 +234,15 @@ for sp in inset.spines.values():
     sp.set_linewidth(0.4)
     sp.set_color('gray')
 
-# Shared legend at top.
+
 handles, labels = ax_create.get_legend_handles_labels()
 fig.legend(handles=handles, labels=labels, loc='upper center',
-           bbox_to_anchor=(0.5, 1.0), ncol=len(order),
+           bbox_to_anchor=(0.5, 0.97), ncol=len(order),
            handlelength=1.5, handletextpad=0.4,
-           borderpad=0.2, columnspacing=0.8)
+           borderpad=0.15, columnspacing=0.8)
 
-fig.tight_layout(pad=0.3)
-
-# Shared x-axis label below both panels.
-fig.canvas.draw()
-# Shared x-axis label below the bottom row.
-fig.text(0.5, -0.02, 'number of snapshots', ha='center', fontsize=8)
+# Shared x-axis label.
+fig.text(0.5, 0.02, 'number of snapshots', ha='center', fontsize=8)
 
 fig.savefig('{pdf_path}', bbox_inches='tight', dpi=300)
 plt.close(fig)
@@ -255,7 +250,6 @@ plt.close(fig)
         preamble = preamble,
         create_data = create_lines.join("\n"),
         read_data = read_lines.join("\n"),
-        status_data = status_lines.join("\n"),
         commit_data = commit_lines.join("\n"),
         pdf_path = pdf_path.display(),
     );
