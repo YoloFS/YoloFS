@@ -4,10 +4,10 @@
 //! Within each subplot, x-axis = source (base, stage, snapshot),
 //! bars colored by backend. Legend identifies backends.
 
-use super::util::backend_display_name;
 use super::Artifact;
-use crate::report;
+use super::util::backend_display_name;
 use crate::BenchResults;
+use crate::report;
 use anyhow::{Context, Result};
 use std::path::Path;
 
