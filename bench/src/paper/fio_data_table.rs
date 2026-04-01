@@ -93,8 +93,7 @@ fn build_tex(results: &BenchResults) -> Result<String> {
     tex.push_str("\\small\n");
     tex.push_str("\\setlength{\\tabcolsep}{4pt}\n");
 
-    let col_spec = format!("l@{{\\,}}l@{{\\,}}l|c|{}",
-        "c".repeat(columns.len() - 1));
+    let col_spec = format!("l@{{\\,}}l@{{\\,}}l|c|{}", "c".repeat(columns.len() - 1));
 
     tex.push_str(&format!(
         "\\begin{{tabular}}{{{col_spec}}}\n\\noalign{{\\hrule height 0.8pt}}\n"
@@ -178,7 +177,8 @@ fn build_tex(results: &BenchResults) -> Result<String> {
                 };
                 tex.push_str(&format!(" & {locality}"));
 
-                let noise_pct = native_val.half_range_kbps
+                let noise_pct = native_val
+                    .half_range_kbps
                     .filter(|&hr| hr > 0.0 && native_kbps > 0)
                     .map(|hr| hr / native_kbps as f64 * 100.0)
                     .unwrap_or(0.0);
@@ -187,9 +187,17 @@ fn build_tex(results: &BenchResults) -> Result<String> {
                     let rendered = if col.key == "native" {
                         format_gbps_with_range(native_val)
                     } else if col.key == "agfs" {
-                        rendered_gbps_cell(native_kbps, vals.get("agfs-realistic").map(|v| v.mean_kbps), noise_pct)
+                        rendered_gbps_cell(
+                            native_kbps,
+                            vals.get("agfs-realistic").map(|v| v.mean_kbps),
+                            noise_pct,
+                        )
                     } else {
-                        rendered_gbps_cell(native_kbps, vals.get(col.key).map(|v| v.mean_kbps), noise_pct)
+                        rendered_gbps_cell(
+                            native_kbps,
+                            vals.get(col.key).map(|v| v.mean_kbps),
+                            noise_pct,
+                        )
                     };
                     // Base uses the real column rule from the tabular spec.
                     if ci == 0 {
@@ -266,7 +274,9 @@ fn collect_data(results: &BenchResults) -> (Vec<Column>, Vec<OpRow>) {
             }
             if let Some(kbps) = b.mean_throughput_kbps {
                 // Compute half-range from per-iteration throughput: (max - min) / 2.
-                let iter_tps: Vec<f64> = b.iterations.iter()
+                let iter_tps: Vec<f64> = b
+                    .iterations
+                    .iter()
                     .filter_map(|it| it.op_result.as_ref()?.throughput_kbps.map(|v| v as f64))
                     .collect();
                 let half_range_kbps = if iter_tps.len() >= 2 {
@@ -276,7 +286,13 @@ fn collect_data(results: &BenchResults) -> (Vec<Column>, Vec<OpRow>) {
                 } else {
                     None
                 };
-                backend_vals.insert(b.backend.clone(), ThroughputVal { mean_kbps: kbps, half_range_kbps });
+                backend_vals.insert(
+                    b.backend.clone(),
+                    ThroughputVal {
+                        mean_kbps: kbps,
+                        half_range_kbps,
+                    },
+                );
             }
         }
         op_rows.push((canonical, backend_vals));
