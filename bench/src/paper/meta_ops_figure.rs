@@ -293,6 +293,9 @@ def compute_cap(vals, floor_vals):
         cap = max(cap, floor_max * 1.15)
     return cap
 
+plt.rcParams.update({{'font.size': 17, 'axes.labelsize': 17, 'xtick.labelsize': 13,
+                      'ytick.labelsize': 14, 'legend.fontsize': 14}})
+
 # ── Figure setup ──
 ncols = len(ops)
 nrows = 1
@@ -383,7 +386,7 @@ for row_idx, size in enumerate(sizes):
                 annotations.append((xp, yp, S.fmt_lat(v)))
 
         for (xp, yp, txt) in annotations:
-            ax.annotate(txt, (xp, yp), fontsize=9, ha='center', va='center',
+            ax.annotate(txt, (xp, yp), fontsize=14, ha='center', va='center',
                         color='#b00', fontweight='bold', zorder=7,
                         bbox=dict(boxstyle='round,pad=0.15', fc='white',
                                   ec='none', alpha=0.7))
@@ -397,7 +400,7 @@ for row_idx, size in enumerate(sizes):
         ax.set_xticklabels(src_labels)
         ax.tick_params(axis='x', length=0, pad=2)
         if col_idx == 0:
-            ax.set_ylabel('latency (\u00b5s)')
+            ax.set_ylabel('Latency (\u00b5s)')
 
 # ── Legend ──
 legend_items = [S.native_legend_handle(native_key)]

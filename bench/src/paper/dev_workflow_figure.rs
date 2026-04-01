@@ -142,8 +142,8 @@ native_line_kw['path_effects'] = [pe.withStroke(linewidth=1.8, foreground='white
 native_handle = S.native_legend_handle('Base')
 native_handle.set_path_effects(native_line_kw['path_effects'])
 
-plt.rcParams.update({{'font.size': 6.5, 'axes.labelsize': 6.5, 'xtick.labelsize': 6,
-                      'ytick.labelsize': 5.2, 'legend.fontsize': 5.8}})
+plt.rcParams.update({{'font.size': 7.3, 'axes.labelsize': 7.3, 'xtick.labelsize': 7.3,
+                      'ytick.labelsize': 7.3, 'legend.fontsize': 7.3}})
 
 fig = plt.figure(figsize=(2.85, 1.82))
 gs = fig.add_gridspec(2, 4, width_ratios=[0.56, 0.56, 0.56, 0.82], wspace=0.42, hspace=0.42)
@@ -181,7 +181,7 @@ for idx, facet in enumerate(facets):
     ax.set_xlim(-0.14, 0.32)
     ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
     ax.text(0.5, -0.095, facet, transform=ax.transAxes, ha='center', va='top',
-            fontsize=6.2, fontweight='bold')
+            fontsize=7.3, fontweight='bold')
 
 ax = ax_total
 x = np.array([0.0, 0.2])
@@ -222,14 +222,14 @@ legend_handles = [
 ]
 fig.legend(handles=legend_handles, loc='upper center', bbox_to_anchor=(0.5, 0.905),
            ncol=6, handlelength=1.1, handletextpad=0.35, borderpad=0.15, columnspacing=0.55)
-fig.text(0.055, 0.46, 'time (s)', rotation=90, va='center', ha='center', fontsize=6.5)
+fig.text(0.055, 0.46, 'Time (s)', rotation=90, va='center', ha='center', fontsize=8.5)
 fig.subplots_adjust(left=0.12, right=0.99, top=0.8, bottom=0.125)
 
 edit_bbox = axes[3].get_position()
 title_y = edit_bbox.y0 - 0.095 * edit_bbox.height
 total_bbox = ax_total.get_position()
 fig.text(total_bbox.x0 + total_bbox.width / 2, title_y, 'Total', ha='center', va='top',
-         fontsize=6.2, fontweight='bold')
+         fontsize=7.3, fontweight='bold')
 
 fig.savefig('{pdf_path}', bbox_inches='tight', dpi=300)
 plt.close(fig)

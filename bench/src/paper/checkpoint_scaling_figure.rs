@@ -116,8 +116,8 @@ backend,depth,mean_us
 {commit_data}
 """
 
-plt.rcParams.update({{'font.size': 8, 'axes.labelsize': 8, 'xtick.labelsize': 7.5,
-                      'ytick.labelsize': 7.5, 'legend.fontsize': 7}})
+plt.rcParams.update({{'font.size': 8.5, 'axes.labelsize': 8.5, 'xtick.labelsize': 8.5,
+                      'ytick.labelsize': 8.5, 'legend.fontsize': 7.5}})
 
 order = ['AgFS', 'OverlayFS', 'BranchFS']
 colors = [S.BACKEND_COLORS.get(n, S.TABLEAU10['gray']) for n in order]
@@ -166,7 +166,7 @@ def plot_panel(ax, data_csv, panel_label, show_ylabel, ylabel=None, exclude_back
                     clip_on=False, zorder=6)
     ax.set_ylim(bottom=0)
     if show_ylabel:
-        ax.set_ylabel(ylabel or 'latency (\u00b5s/op)')
+        ax.set_ylabel(ylabel or 'Latency (\u00b5s/op)')
     elif show_ylabel is None:
         pass  # tick labels visible, no ylabel text
     else:
@@ -175,16 +175,18 @@ def plot_panel(ax, data_csv, panel_label, show_ylabel, ylabel=None, exclude_back
         ax.set_xlim(right=max(ax.get_xlim()[1], overlay_failure_depth + 8))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=4, min_n_ticks=3,
                                            steps=[1, 2, 2.5, 5, 10]))
+    ax.tick_params(axis='x', length=2, pad=1.5)
+    ax.tick_params(axis='y', length=2, pad=1.5)
 
 plot_panel(ax_create, CREATE_DATA, 'create', show_ylabel=True, mark_overlay_failure=True)
 plot_panel(ax_read, READ_DATA, 'read', show_ylabel=False, mark_overlay_failure=True)
 # Main commit panel: AgFS and OverlayFS only (linear scale).
-plot_panel(ax_commit, COMMIT_DATA, 'commit', show_ylabel=True, ylabel='latency (ms)',
+plot_panel(ax_commit, COMMIT_DATA, 'commit', show_ylabel=True, ylabel='ms',
            exclude_backends={{'BranchFS'}}, mark_overlay_failure=True)
 
 # Panel titles.
 for ax, name in [(ax_create, 'create'), (ax_read, 'read'), (ax_commit, 'commit')]:
-    ax.set_title(name, fontweight='bold', fontsize=7.5, pad=2)
+    ax.set_title(name, fontweight='bold', fontsize=8.5, pad=2)
 
 from matplotlib.ticker import FuncFormatter
 
@@ -220,9 +222,9 @@ inset.set_yticks([])
 inset.xaxis.set_minor_locator(plt.NullLocator())
 inset.yaxis.set_minor_locator(plt.NullLocator())
 # Place '10s' outside top of y-axis (left), '100' outside right of x-axis (bottom).
-inset.text(-0.05, 0.95, '10s', transform=inset.transAxes, fontsize=7.5,
+inset.text(-0.05, 0.95, '10s', transform=inset.transAxes, fontsize=8.5,
            ha='right', va='top')
-inset.text(1.05, 0.02, '100', transform=inset.transAxes, fontsize=7.5,
+inset.text(1.05, 0.02, '100', transform=inset.transAxes, fontsize=8.5,
            ha='left', va='bottom')
 inset.tick_params(labelsize=7, pad=0.5, length=1.5)
 inset.tick_params(axis='y', which='major', pad=0.5)
@@ -242,7 +244,7 @@ fig.legend(handles=handles, labels=labels, loc='upper center',
            borderpad=0.15, columnspacing=0.8)
 
 # Shared x-axis label.
-fig.text(0.5, 0.02, 'number of snapshots', ha='center', fontsize=8)
+fig.text(0.5, 0.02, 'Number of snapshots', ha='center', fontsize=8.5)
 
 fig.savefig('{pdf_path}', bbox_inches='tight', dpi=300)
 plt.close(fig)

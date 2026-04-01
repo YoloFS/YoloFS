@@ -147,8 +147,8 @@ backend_colors = {{
     'BranchFS':   S.TABLEAU10['orange'],
 }}
 
-plt.rcParams.update({{'font.size': 8.6, 'axes.labelsize': 8.6, 'xtick.labelsize': 7.8,
-                      'ytick.labelsize': 7.8, 'legend.fontsize': 7.2}})
+plt.rcParams.update({{'font.size': 8.5, 'axes.labelsize': 8.5, 'xtick.labelsize': 8.5,
+                      'ytick.labelsize': 8.5, 'legend.fontsize': 8.5}})
 
 nb = len(backends)
 bar_height = 0.5 / nb
@@ -175,7 +175,7 @@ for oi, op in enumerate(ops):
     val = baseline.get(op)
     if val is not None:
         ax_commit.vlines(val, y[oi] - group_half, y[oi] + group_half, **S.NATIVE_LINE_KW)
-ax_commit.set_xlabel('commit time (\u00b5s/file)')
+ax_commit.set_xlabel('Commit time (\u00b5s/file)')
 ax_commit.xaxis.labelpad = 1
 ax_commit.set_xlim(left=0)
 ax_commit.set_yticks(y)

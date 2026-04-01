@@ -88,7 +88,7 @@ fn build_tex(results: &BenchResults) -> Result<String> {
     // extracted and \\input{} into a larger paper .tex file.
     tex.push_str("% --- BEGIN table fragment (includable via \\input) ---\n");
     tex.push_str(TABLEAU_COLOR_DEFS);
-    tex.push_str("\\begin{table}[h]\n");
+    tex.push_str("\\begin{table}[t]\n");
     tex.push_str("\\centering\n");
     tex.push_str("\\small\n");
     tex.push_str("\\setlength{\\tabcolsep}{4pt}\n");
