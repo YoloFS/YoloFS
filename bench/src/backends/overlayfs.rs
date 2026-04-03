@@ -142,8 +142,7 @@ impl Backend for Overlayfs {
         }
 
         let cold = workload.cache_mode() == CacheMode::DropPageCache;
-        let mut cmd =
-            backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
+        let mut cmd = backend::exec_workload_cmd(workload.name(), &dest, verbose, cold)?;
         // For cold workloads the overlay is unmounted while the subprocess is
         // paused at READY.  Setting cwd inside the mount would keep it busy,
         // so use the session root (outside the mount) instead.
