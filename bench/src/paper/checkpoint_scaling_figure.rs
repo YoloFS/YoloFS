@@ -4,7 +4,7 @@ use super::Artifact;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const CAPTION: &str = "Snapshot scalability. The latency of creating a new file, reading an existing file, and committing all snapshots back to base as the number of snapshots grow. OverlayFS fails to support more snapshots because of mount option limits.";
+const CAPTION: &str = "Snapshot scalability. As the number of snapshots grows, do filesystems become slower? (OverlayFS fails at \\textasciitilde50 snapshots.)";
 const LABEL: &str = "fig:checkpoint-scaling";
 
 pub fn artifact_meta(paper_dir: &Path) -> Artifact {

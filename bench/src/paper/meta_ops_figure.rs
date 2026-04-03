@@ -392,7 +392,7 @@ for row_idx, size in enumerate(sizes):
                                   ec='none', alpha=0.7))
 
         # ── Op name below row ──
-        ax.set_xlabel(op, fontweight='bold', labelpad=4)
+        ax.set_xlabel(op, fontweight='bold', labelpad=4, fontsize=14)
 
         # ── Ticks and labels ──
         ax.yaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))

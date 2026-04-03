@@ -213,12 +213,12 @@ for ax in axes + [ax_total]:
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '0' if abs(y) < 1e-12 else f'{{y:.2g}}'))
 
 legend_handles = [
+    native_handle,
     S.backend_legend_handle('AgFS'),
     S.backend_legend_handle('OverlayFS'),
     mpatches.Patch(facecolor='#666', edgecolor='#666', label='run'),
     mpatches.Patch(facecolor='white', edgecolor='#666', hatch='////', label='snapshot'),
     mpatches.Patch(facecolor='white', edgecolor='#666', hatch='....', label='commit'),
-    native_handle,
 ]
 fig.legend(handles=legend_handles, loc='upper center', bbox_to_anchor=(0.5, 0.905),
            ncol=6, handlelength=1.1, handletextpad=0.35, borderpad=0.15, columnspacing=0.55)
