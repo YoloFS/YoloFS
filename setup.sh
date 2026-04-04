@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install_deps.sh — Install dependencies for agfs.
+# setup.sh — Install dependencies for agfs.
 
 set -euo pipefail
 

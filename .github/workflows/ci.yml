@@ -25,8 +25,8 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Install dependencies
-        run: ./install_deps.sh
+      - name: Setup environment
+        run: ./setup.sh
 
       - name: Build and install
         run: make install
