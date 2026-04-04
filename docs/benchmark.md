@@ -25,7 +25,7 @@ it against alternative staging/sandboxing approaches.
 ### Publication artifacts
 
 The report pipeline can emit a publication-oriented **data-op (fio)** summary
-table under `results-bench/<host>/paper/`:
+table under `bench-results/<host>/paper/`:
 
 - `op-data-summary.tex` — compact LaTeX table source,
 - `op-data-summary.pdf` — compiled table PDF (if `pdflatex` is available),
@@ -833,7 +833,7 @@ agfs-bench exec-workload --name <name> --dest <path> [--verbose]
 - `--runs N`: number of timed iterations (default 3).
 - `--verbose`: capture detailed logs for all runs, not just failures.
 - `--timestamped-results`: write results into a timestamped subdirectory
-  (`results-bench/<hostname>/<timestamp>/`) instead of overwriting.
+  (`bench-results/<hostname>/<timestamp>/`) instead of overwriting.
 - `rerender`: regenerate HTML reports from existing `results.json`.
 - `list`: print all registered workloads and backends with availability.
 - `profile`: run the profiling mode (see §7).
@@ -855,7 +855,7 @@ with verbose logging enabled. Verbose logs include:
 
 ### Results
 
-Results are written to `results-bench/<hostname>/`. By default the previous
+Results are written to `bench-results/<hostname>/`. By default the previous
 result for that host is overwritten; pass `--timestamped-results` to retain
 multiple runs.
 
@@ -949,7 +949,7 @@ need to run as root.
 
 ### Output
 
-Artifacts are saved to `results-bench/<hostname>/profiling/<workload>/<scenario>/`:
+Artifacts are saved to `bench-results/<hostname>/profiling/<workload>/<scenario>/`:
 
 - `summary.txt` — ranked op table (printed to stdout and saved)
 - `bpftrace.txt` — raw per-op latency histograms

@@ -966,7 +966,7 @@ fn results_dir(env: &Env, timestamped: bool) -> PathBuf {
         (Some(hw), Some(cluster)) => format!("{hw}@{cluster}"),
         _ => env.hostname.clone(),
     };
-    let base = repo_root().join("results-bench").join(dir_name);
+    let base = repo_root().join("bench-results").join(dir_name);
     if timestamped {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
