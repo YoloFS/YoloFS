@@ -1,3 +1,4 @@
 [build]
+target-dir = "local/target"
 # Frame pointers for accurate perf stack unwinding.
 rustflags = ["-C", "force-frame-pointers=yes"]

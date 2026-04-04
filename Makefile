@@ -1,39 +1,46 @@
 # ── Variables ─────────────────────────────────────────────────────────
 
 KDIR             := /lib/modules/$(shell uname -r)
-KMOD_OUT         := target/kmod/agfs.ko
+KMOD_OUT         := local/kmod/agfs.ko
 KMOD_INSTALL_DIR := $(KDIR)/extra
-TARGET_DIR       := $(CURDIR)-target
+LOCAL_DIR        := $(CURDIR)-local
 
 # ── Build ─────────────────────────────────────────────────────────────
 
-.PHONY: build user kmod clean
+.PHONY: build user kmod
 
 build: user kmod
 
-$(TARGET_DIR):
+$(LOCAL_DIR):
 	mkdir -p $@
 
-clean:
-	rm -rf $(TARGET_DIR)
-
-user: | $(TARGET_DIR)
+user: | $(LOCAL_DIR)
 	cargo build --release -p agfs
 
 kmod: $(KMOD_OUT)
 
-$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(TARGET_DIR)
-	mkdir -p $(TARGET_DIR)/kmod
-	cp kmod/Kbuild $(TARGET_DIR)/kmod/Kbuild
-	$(MAKE) -j$(nproc) -C $(KDIR)/build M=$(TARGET_DIR)/kmod KBUILD_KMOD_SRC=$(CURDIR)/kmod \
+$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(LOCAL_DIR)
+	mkdir -p $(LOCAL_DIR)/kmod
+	cp kmod/Kbuild $(LOCAL_DIR)/kmod/Kbuild
+	$(MAKE) -j$(nproc) -C $(KDIR)/build M=$(LOCAL_DIR)/kmod KBUILD_KMOD_SRC=$(CURDIR)/kmod \
 		CONFIG_DEBUG_INFO_BTF_MODULES= modules
+
+.PHONY: clean clean-user clean-kmod
+
+clean: clean-user clean-kmod
+
+clean-user:
+	cargo clean
+
+clean-kmod:
+	rm -rf $(LOCAL_DIR)/kmod
 
 # ── Install ───────────────────────────────────────────────────────────
 
 .PHONY: install uninstall
 
 install: user kmod
-	sudo install -m 4755 -o root target/release/agfs /usr/local/bin/agfs
+	sudo install -m 4755 -o root local/target/release/agfs /usr/local/bin/agfs
 	sudo install -d $(KMOD_INSTALL_DIR)
 	sudo install -m 644 $(KMOD_OUT) $(KMOD_INSTALL_DIR)/agfs.ko
 
@@ -47,10 +54,10 @@ uninstall:
 
 test: test-unit test-e2e
 
-test-unit: | $(TARGET_DIR)
+test-unit: | $(LOCAL_DIR)
 	cargo test --release -p agfs --lib
 
-test-e2e: install | $(TARGET_DIR)
+test-e2e: install | $(LOCAL_DIR)
 	agfs reload
 	cargo test --release -p agfs --test e2e -- --test-threads=1
 	agfs unload
@@ -59,11 +66,11 @@ test-e2e: install | $(TARGET_DIR)
 
 .PHONY: lint fix
 
-lint: | $(TARGET_DIR)
+lint: | $(LOCAL_DIR)
 	cargo fmt --check
 	cargo clippy --release -- -D warnings
 
-fix: | $(TARGET_DIR)
+fix: | $(LOCAL_DIR)
 	cargo fmt
 	cargo clippy --release --fix --allow-dirty
 
@@ -71,22 +78,22 @@ fix: | $(TARGET_DIR)
 
 .PHONY: bench bench-micro bench-macro
 
-bench: install | $(TARGET_DIR)
+bench: install | $(LOCAL_DIR)
 	agfs reload
 	cargo build --release -p agfs-bench
-	./target/release/agfs-bench
+	./local/target/release/agfs-bench
 	agfs unload
 
-bench-micro: install | $(TARGET_DIR)
+bench-micro: install | $(LOCAL_DIR)
 	agfs reload
 	cargo build --release -p agfs-bench
-	./target/release/agfs-bench --micro
+	./local/target/release/agfs-bench --micro
 	agfs unload
 
-bench-macro: install | $(TARGET_DIR)
+bench-macro: install | $(LOCAL_DIR)
 	agfs reload
 	cargo build --release -p agfs-bench
-	./target/release/agfs-bench --macro
+	./local/target/release/agfs-bench --macro
 	agfs unload
 
 # ── VM ────────────────────────────────────────────────────────────────

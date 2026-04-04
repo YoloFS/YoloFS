@@ -7,7 +7,7 @@ PAPER_DIR ?= $(REPO_ROOT)/paper
 
 install-paper:
 	cargo build --release --manifest-path $(REPO_ROOT)/Cargo.toml -p agfs-bench
-	$(REPO_ROOT)/target/release/agfs-bench install-paper --paper-dir $(PAPER_DIR)
+	$(REPO_ROOT)/local/target/release/agfs-bench install-paper --paper-dir $(PAPER_DIR)
 
 # ── Third-party backends ──────────────────────────────────────────────
 
