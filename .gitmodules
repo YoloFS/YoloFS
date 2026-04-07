@@ -1,6 +1,6 @@
 [submodule "bench-results"]
 	path = bench-results
-	url = git@github.com:ShawnZhong/Agfs-Bench-Results.git
+	url = https://github.com/ShawnZhong/Agfs-Bench-Results.git
 [submodule "bench/third_party/branchfs"]
 	path = bench/third_party/branchfs
 	url = https://github.com/multikernel/branchfs
@@ -9,16 +9,16 @@
 	url = https://github.com/binpash/try
 [submodule "paper-study"]
 	path = paper-study
-	url = git@github.com:ShawnZhong/AgFS-Paper-Study.git
+	url = https://github.com/ShawnZhong/AgFS-Paper-Study.git
 [submodule "paper-plan"]
 	path = paper-plan
-	url = git@github.com:ShawnZhong/AgFS-Paper-Plan.git
+	url = https://github.com/ShawnZhong/AgFS-Paper-Plan.git
 [submodule "paper"]
 	path = paper
-	url = git@github.com:ShawnZhong/AgFS-Paper.git
+	url = https://github.com/ShawnZhong/AgFS-Paper.git
 [submodule "agent-eval"]
 	path = agent-eval
-	url = git@github.com:ShawnZhong/AgFS-Agent-Bench.git
+	url = https://github.com/ShawnZhong/AgFS-Agent-Bench.git
 [submodule "agent-results"]
 	path = agent-results
-	url = git@github.com:ShawnZhong/AgFS-Agent-Results.git
+	url = https://github.com/ShawnZhong/AgFS-Agent-Results.git

@@ -16,7 +16,7 @@ jobs:
         with:
           submodules: false
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -40,11 +40,15 @@ jobs:
       - name: Example script
         run: ./example.sh
 
-      - name: Auto-fix lint and update submodules
+      - name: Auto-fix lint
+        run: make fix
+
+      - name: Update submodules
+        run: git submodule update --init --remote --depth=1
+
+      - name: Commit and push changes
         run: |
-          make fix
-          git submodule update --init --remote --depth=1
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git diff --cached --quiet || (git commit -m "style: auto-fix lint and update submodules" && git push)
+          git diff --cached --quiet || (git commit -m "chore: auto-fix lint and update submodules" && git push)
