@@ -43,7 +43,7 @@ jobs:
       - name: Auto-fix lint and update submodules
         run: |
           make fix
-          git submodule update --init --remote --no-recurse --depth=1
+          git submodule update --init --remote --depth=1
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
