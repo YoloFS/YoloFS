@@ -20,9 +20,19 @@ jobs:
         run: make fix
 
       - name: Update submodules
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
-          git submodule update --init --remote --depth=1
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config -f .gitmodules --get-regexp 'submodule\..*\.path' | while read key path; do
+            case "$path" in */*) continue ;; esac
+            name=$(echo "$key" | sed 's/^submodule\.\(.*\)\.path$/\1/')
+            url=$(git config -f .gitmodules "submodule.$name.url")
+            sha=$(git ls-remote "$url" HEAD | awk '{print $1}')
+            if [ -n "$sha" ]; then
+              git update-index --cacheinfo 160000,"$sha","$path"
+            fi
+          done
 
       - name: Commit and push changes
         run: |
