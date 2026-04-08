@@ -14,13 +14,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          token: ${{ secrets.GH_PAT }}
+          submodules: false
 
       - name: Auto-fix lint
         run: make fix
 
       - name: Update submodules
-        run: git submodule update --init --remote --depth=1
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --remote --depth=1
 
       - name: Commit and push changes
         run: |
