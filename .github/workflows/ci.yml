@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  ci:
+  test:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
@@ -39,3 +39,35 @@ jobs:
 
       - name: Example script
         run: ./example.sh
+
+  chore:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: false
+
+      - name: Auto-fix lint
+        run: make fix
+
+      - name: Update submodules
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          git config -f .gitmodules --get-regexp 'submodule\.[^.]*\.path' | while read key path; do
+            name=$(echo "$key" | sed 's/^submodule\.\(.*\)\.path$/\1/')
+            url=$(git config -f .gitmodules "submodule.$name.url")
+            repo=$(echo "$url" | sed 's|.*github.com/||;s|\.git$||')
+            sha=$(gh api "repos/$repo/commits/HEAD" --jq .sha)
+            if [ -n "$sha" ]; then
+              git update-index --cacheinfo 160000,"$sha","$path"
+            fi
+          done
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || (git commit -m "chore: auto-fix lint and update submodules" && git push)
