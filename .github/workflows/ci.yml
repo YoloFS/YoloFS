@@ -63,18 +63,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Debug PAT access
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          for repo in YoloFS/bench-results YoloFS/paper-study YoloFS/paper-plan YoloFS/paper YoloFS/agent-bench YoloFS/agent-results; do
-            code=$(curl -sS -o /dev/null -w "%{http_code}" \
-              -H "Authorization: token $GH_PAT" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$repo")
-            echo "$code  $repo"
-          done
-
       - name: Auto-fix lint
         run: |
           make fix
