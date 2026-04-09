@@ -1,2 +1,0 @@
-grep -Rn "message" src
-grep -Rn "hello v2" src
