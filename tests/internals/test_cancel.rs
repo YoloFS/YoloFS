@@ -1,8 +1,8 @@
 use super::helpers::{actions, journal};
 use crate::helpers::YoloSession;
-use yolofs::journal::Action;
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
+use yolofs::journal::Action;
 
 // ── Always-tombstone on delete ────────────────────────────────────────────────
 //

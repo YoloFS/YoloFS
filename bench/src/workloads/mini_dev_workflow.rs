@@ -1,11 +1,11 @@
 use crate::workload::{MacroStepSeries, MacroStepTiming, Workload, WorkloadKind};
-use yolofs::config::Perm;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
+use yolofs::config::Perm;
 
 #[derive(Deserialize)]
 struct SeriesFixture {

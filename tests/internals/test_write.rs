@@ -1,9 +1,9 @@
 use super::helpers::{actions, ino_for, inode_path, inos, journal, tree};
 use crate::helpers::YoloSession;
-use yolofs::journal::Action;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
+use yolofs::journal::Action;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 

@@ -1,12 +1,12 @@
 use crate::backend::{self, Backend, CheckpointController, CheckpointOutcome};
 use crate::workload::{CacheMode, IterResult, Workload, WorkloadKind};
-use yolofs::config::{Config, Perm};
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Instant;
+use yolofs::config::{Config, Perm};
 
 // ── Session (mount / unmount lifecycle) ──────────────────────────────────────
 

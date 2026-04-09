@@ -1,8 +1,8 @@
 use crate::workload::{Workload, WorkloadKind};
-use yolofs::config::Perm;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use yolofs::config::Perm;
 
 /// Compute a relative path from `from` (a directory) to `to`.
 fn relative_path(from: &Path, to: &Path) -> PathBuf {

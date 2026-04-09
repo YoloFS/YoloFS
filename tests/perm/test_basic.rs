@@ -1,7 +1,7 @@
 use crate::helpers::YoloSession;
-use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
+use yolofs::config::{Config, Perm};
 
 /// With no daemon and ask_default=deny, reading an unruled file should fail.
 #[test]

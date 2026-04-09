@@ -1,6 +1,6 @@
 use crate::helpers::{YOLO_BIN, YoloSession};
-use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
+use yolofs::config::{Config, Perm};
 
 #[test]
 fn mount_and_unmount() {
@@ -111,7 +111,8 @@ fn mount_no_config_uses_defaults() {
 #[test]
 fn mount_invalid_config_fails() {
     let tmp = tempfile::tempdir().expect("creating temp dir");
-    std::fs::write(tmp.path().join("yolofs.toml"), "{{invalid toml").expect("writing invalid config");
+    std::fs::write(tmp.path().join("yolofs.toml"), "{{invalid toml")
+        .expect("writing invalid config");
 
     let output = std::process::Command::new(YOLO_BIN)
         .arg("mount")

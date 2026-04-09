@@ -30,7 +30,6 @@ pub mod write_files;
 use crate::backend;
 use crate::workload::{MacroStepSeries, OpResult};
 use crate::workload::{Workload, WorkloadKind};
-use yolofs::config::Perm;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::fs::File;
@@ -38,6 +37,7 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
+use yolofs::config::Perm;
 
 pub const OP_FILE_SIZE: usize = 4096;
 pub const FIO_FILE_SIZE: &str = "1g";

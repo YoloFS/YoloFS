@@ -10,7 +10,10 @@ fn unmount_command_cleans_up() {
 
     let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
     assert!(ok, "unmount should succeed: {stderr}");
-    assert!(!yolo_dir.exists(), ".yolofs/ should be removed after unmount");
+    assert!(
+        !yolo_dir.exists(),
+        ".yolofs/ should be removed after unmount"
+    );
 }
 
 #[test]

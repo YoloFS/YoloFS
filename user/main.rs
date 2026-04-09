@@ -1,12 +1,12 @@
 // yolo CLI — main.rs
 
+use clap::{CommandFactory, Parser, Subcommand};
+use colored::Colorize;
+use std::io::{self, BufRead, Write};
 use yolofs::cmd::{
     abort, audit, checkpoint, commit, diff, exec, load, mount, restore, timeline, watch,
 };
 use yolofs::config;
-use clap::{CommandFactory, Parser, Subcommand};
-use colored::Colorize;
-use std::io::{self, BufRead, Write};
 
 #[derive(Parser)]
 #[command(

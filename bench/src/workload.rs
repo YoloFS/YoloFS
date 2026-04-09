@@ -1,9 +1,9 @@
 // Workload trait and shared iteration result type.
 
-use yolofs::config::Perm;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use yolofs::config::Perm;
 
 /// Timing for one timed iteration.
 ///

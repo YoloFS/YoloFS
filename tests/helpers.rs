@@ -1,10 +1,10 @@
-use yolofs::config::Config;
-use yolofs::kmsg;
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
+use yolofs::config::Config;
+use yolofs::kmsg;
 
 pub const YOLO_BIN: &str = "yolo";
 

@@ -1,7 +1,7 @@
 use crate::helpers::{YOLO_BIN, YoloSession};
-use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
+use yolofs::config::{Config, Perm};
 
 /// Helper: create a session with a hide rule on a subdirectory.
 fn hide_session() -> YoloSession {
