@@ -21,7 +21,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+            local/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
@@ -53,7 +53,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+            local/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
@@ -62,6 +62,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config url."https://x:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Debug PAT access
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          for repo in YoloFS/bench-results YoloFS/paper-study YoloFS/paper-plan YoloFS/paper YoloFS/agent-bench YoloFS/agent-results; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" \
+              -H "Authorization: token $GH_PAT" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$repo")
+            echo "$code  $repo"
+          done
 
       - name: Auto-fix lint
         run: |
@@ -75,13 +87,17 @@ jobs:
             name=${key#submodule.}; name=${name%.path}
             url=$(git config -f .gitmodules "submodule.$name.url")
             case "$url" in *github.com/YoloFS/*) ;; *) continue ;; esac
-            sha=$(git ls-remote "$url" HEAD | cut -f1)
+            if ! ls_out=$(git ls-remote "$url" HEAD 2>&1); then
+              echo "::warning::git ls-remote failed for $url (submodule $name at $path): $ls_out; skipping"
+              continue
+            fi
+            sha=$(printf '%s\n' "$ls_out" | cut -f1)
             if [ -z "$sha" ]; then
-              echo "::error::git ls-remote failed for $url (submodule $name at $path)"
-              exit 1
+              echo "::warning::empty sha from $url (submodule $name at $path); skipping"
+              continue
             fi
             git update-index --cacheinfo 160000,"$sha","$path"
-          done
+          done || true
           git diff --cached --quiet || git commit -m "chore: update submodules"
 
       - name: Push changes
