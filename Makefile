@@ -74,28 +74,6 @@ fix: | $(LOCAL_DIR)
 	cargo fmt
 	cargo clippy --release --fix --allow-dirty
 
-# ── Bench ─────────────────────────────────────────────────────────────
-
-.PHONY: bench bench-micro bench-macro
-
-bench: install | $(LOCAL_DIR)
-	yolo reload
-	cd bench && cargo build --release
-	./local/target/release/yolo-bench
-	yolo unload
-
-bench-micro: install | $(LOCAL_DIR)
-	yolo reload
-	cd bench && cargo build --release
-	./local/target/release/yolo-bench --micro
-	yolo unload
-
-bench-macro: install | $(LOCAL_DIR)
-	yolo reload
-	cd bench && cargo build --release
-	./local/target/release/yolo-bench --macro
-	yolo unload
-
 # ── VM ────────────────────────────────────────────────────────────────
 
 .PHONY: vm-%
