@@ -158,8 +158,7 @@ mod tests {
         if build_path.exists() {
             let found = find_ko().expect("find_ko should succeed when build dir exists");
             assert_eq!(
-                found,
-                build_path,
+                found, build_path,
                 "should prefer build/<kernel-version>/ over system path"
             );
         }
