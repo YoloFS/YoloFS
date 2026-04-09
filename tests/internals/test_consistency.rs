@@ -11,12 +11,12 @@
 
 use super::helpers::{inode_path, tree};
 use crate::helpers::YoloSession;
-use yolofs::journal::{DirTree, Target};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use yolofs::journal::{DirTree, Target};
 
 // ── Helpers ──────────────────────────────────────────────────────────
 

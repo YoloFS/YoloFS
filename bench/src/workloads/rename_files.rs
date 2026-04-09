@@ -6,9 +6,9 @@
 // directory).
 
 use crate::workload::{Workload, WorkloadKind};
-use yolofs::config::Perm;
 use anyhow::{Context, Result};
 use std::path::Path;
+use yolofs::config::Perm;
 
 pub struct RenameFiles {
     pub count: usize,

@@ -116,7 +116,12 @@ fn apply_plan(yolofs: &Path, plan: &crate::journal::CommitPlan) -> Result<usize>
                 apply_delete(&crate::utils::to_base_path(path))?;
             }
             Action::Stage { path, ino } => {
-                apply_stage(yolofs, *ino, &crate::utils::to_base_path(path), &mut ensured)?;
+                apply_stage(
+                    yolofs,
+                    *ino,
+                    &crate::utils::to_base_path(path),
+                    &mut ensured,
+                )?;
             }
         }
     }

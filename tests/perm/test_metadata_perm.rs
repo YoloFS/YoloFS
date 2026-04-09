@@ -1,7 +1,7 @@
-use crate::helpers::{YoloSession, YOLO_BIN};
-use yolofs::config::{Config, Perm};
+use crate::helpers::{YOLO_BIN, YoloSession};
 use std::collections::BTreeMap;
 use std::fs;
+use yolofs::config::{Config, Perm};
 
 /// Helper: create a session with deny-by-default and no rules on the session root.
 fn deny_session() -> YoloSession {
@@ -147,7 +147,9 @@ fn create_denied_with_ro_rule() {
         .unwrap();
     assert!(output.status.success(), "mount failed");
 
-    let mnt = root.join(".yolofs/mnt").join(root.strip_prefix("/").unwrap());
+    let mnt = root
+        .join(".yolofs/mnt")
+        .join(root.strip_prefix("/").unwrap());
     let result = fs::write(mnt.join("denied.txt"), "data");
     assert!(
         result.is_err(),

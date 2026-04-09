@@ -1,7 +1,7 @@
 use crate::helpers::YoloSession;
-use yolofs::journal::{self, Action, DirTree, Meta, Record};
 use std::fs;
 use std::path::PathBuf;
+use yolofs::journal::{self, Action, DirTree, Meta, Record};
 
 /// Read the journal for a session.
 pub fn journal(s: &YoloSession) -> journal::Journal {

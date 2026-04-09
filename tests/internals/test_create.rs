@@ -1,7 +1,7 @@
 use super::helpers::{actions, ino_for, inode_path, journal, tree};
 use crate::helpers::YoloSession;
-use yolofs::journal::Action;
 use std::fs;
+use yolofs::journal::Action;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 

@@ -1,7 +1,7 @@
 use crate::helpers::YoloSession;
-use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
+use yolofs::config::{Config, Perm};
 
 // ── allow-ro tests (perm.c: yolo_check_perm, inode.c: yolo_permission) ──
 

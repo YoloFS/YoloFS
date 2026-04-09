@@ -1,7 +1,7 @@
 use super::helpers::{ino_for, inode_path, inos, tree};
 use crate::helpers::YoloSession;
-use yolofs::utils;
 use std::fs;
+use yolofs::utils;
 
 // ── Inode store structure and properties ───────────────────────────────
 

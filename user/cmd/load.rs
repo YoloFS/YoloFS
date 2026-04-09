@@ -163,7 +163,10 @@ proc /proc proc rw,nosuid 0 0
 /tmp/project/.yolofs /.yolofs/mnt yolofs rw 0 0
 ";
         let dirs = parse_mounts(content);
-        assert_eq!(dirs, vec!["/home/user/.yolofs/abc", "/tmp/project/.yolofs",]);
+        assert_eq!(
+            dirs,
+            vec!["/home/user/.yolofs/abc", "/tmp/project/.yolofs",]
+        );
     }
 
     #[test]

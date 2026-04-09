@@ -5,10 +5,10 @@
 // Parameterized by count for commit-scaling measurements.
 
 use crate::workload::{Workload, WorkloadKind};
-use yolofs::config::Perm;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
+use yolofs::config::Perm;
 
 pub struct WriteFiles {
     pub count: usize,

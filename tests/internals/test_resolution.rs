@@ -1,7 +1,7 @@
 use super::helpers::{actions, journal, records};
 use crate::helpers::YoloSession;
-use yolofs::journal::{Action, Meta, Record};
 use std::fs;
+use yolofs::journal::{Action, Meta, Record};
 
 // ── Compound journal operations ──────────────────────────────────────────────
 //

@@ -1,7 +1,7 @@
 use crate::helpers::{YOLO_BIN, YoloSession};
-use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
+use yolofs::config::{Config, Perm};
 
 // ── Newly created files respect permissions ──
 

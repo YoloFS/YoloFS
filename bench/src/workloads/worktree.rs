@@ -5,10 +5,10 @@
 // pack transfer or delta computation.
 
 use crate::workload::{Workload, WorkloadKind};
-use yolofs::config::Perm;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use yolofs::config::Perm;
 
 const LINUX_URL: &str = "https://github.com/torvalds/linux.git";
 

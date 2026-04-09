@@ -14,10 +14,10 @@
 // measured operations without inflating per-layer state.
 
 use crate::workload::{Workload, WorkloadKind};
-use yolofs::config::Perm;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::Instant;
+use yolofs::config::Perm;
 
 const MEASURE_FILES: usize = 100;
 const SEED_FILES: usize = 10;

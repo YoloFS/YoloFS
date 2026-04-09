@@ -1,8 +1,8 @@
 use super::helpers::{ino_for, inode_path, inos, journal, metas, tree};
 use crate::helpers::YoloSession;
-use yolofs::journal::Meta;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
+use yolofs::journal::Meta;
 
 // ── Journal state after restore ──────────────────────────────────────────
 
