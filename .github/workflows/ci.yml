@@ -48,28 +48,37 @@ jobs:
         with:
           submodules: false
 
-      - name: Auto-fix lint
-        run: make fix
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Update submodules
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          git config -f .gitmodules --get-regexp 'submodule\..*\.path' | while read key path; do
-            name=$(echo "$key" | sed 's/^submodule\.\(.*\)\.path$/\1/')
-            url=$(git config -f .gitmodules "submodule.$name.url")
-            repo=$(echo "$url" | sed 's|.*github.com/||;s|\.git$||')
-            # Skip third-party submodules
-            case "$repo" in YoloFS/*) ;; *) continue ;; esac
-            sha=$(gh api "repos/$repo/commits/HEAD" --jq .sha)
-            if [ -n "$sha" ]; then
-              git update-index --cacheinfo 160000,"$sha","$path"
-            fi
-          done
-
-      - name: Commit and push changes
+      - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config url."https://x:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Auto-fix lint
+        run: |
+          make fix
           git add -A
-          git diff --cached --quiet || (git commit -m "chore: auto-fix lint and update submodules" && git push)
+          git diff --cached --quiet || git commit -m "chore: auto-fix lint"
+
+      - name: Update submodules
+        run: |
+          git config -f .gitmodules --get-regexp 'submodule\..*\.path' | while read key path; do
+            name=${key#submodule.}; name=${name%.path}
+            url=$(git config -f .gitmodules "submodule.$name.url")
+            case "$url" in *github.com/YoloFS/*) ;; *) continue ;; esac
+            sha=$(git ls-remote "$url" HEAD 2>/dev/null | cut -f1) || continue
+            [ -n "$sha" ] && git update-index --cacheinfo 160000,"$sha","$path"
+          done
+          git diff --cached --quiet || git commit -m "chore: update submodules"
+
+      - name: Push changes
+        run: git diff --cached --quiet || git push
