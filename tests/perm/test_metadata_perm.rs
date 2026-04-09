@@ -1,4 +1,4 @@
-use crate::helpers::YoloSession;
+use crate::helpers::{YoloSession, YOLO_BIN};
 use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
@@ -139,7 +139,7 @@ fn create_denied_with_ro_rule() {
     config.save(&root.join("yolofs.toml")).unwrap();
 
     // Mount manually using the pre-configured root.
-    let output = std::process::Command::new("yolofs")
+    let output = std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&root)
         .env("NO_COLOR", "1")
@@ -154,7 +154,7 @@ fn create_denied_with_ro_rule() {
         "create should be denied with allow-ro rule"
     );
 
-    let _ = std::process::Command::new("yolofs")
+    let _ = std::process::Command::new(YOLO_BIN)
         .args(["unmount", "--force"])
         .current_dir(&root)
         .env("NO_COLOR", "1")
