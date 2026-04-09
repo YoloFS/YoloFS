@@ -1,10 +1,10 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
-/// `agfs audit` shows file operations.
+/// `yolofs audit` shows file operations.
 #[test]
 fn audit_shows_added_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "content\n").expect("write");
 
@@ -15,10 +15,10 @@ fn audit_shows_added_file() {
     );
 }
 
-/// `agfs audit` shows checkpoint and restore records.
+/// `yolofs audit` shows checkpoint and restore records.
 #[test]
 fn audit_shows_checkpoints_and_restores() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -35,10 +35,10 @@ fn audit_shows_checkpoints_and_restores() {
     );
 }
 
-/// `agfs audit` marks unreachable records with (unreachable) suffix after restore.
+/// `yolofs audit` marks unreachable records with (unreachable) suffix after restore.
 #[test]
 fn audit_dims_unreachable_after_restore() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -63,10 +63,10 @@ fn audit_dims_unreachable_after_restore() {
     );
 }
 
-/// `agfs audit --path` filters to a specific file.
+/// `yolofs audit --path` filters to a specific file.
 #[test]
 fn audit_path_filter() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "aaa\n").expect("write a");
     fs::write(s.mnt_path("b.txt"), "bbb\n").expect("write b");
@@ -82,10 +82,10 @@ fn audit_path_filter() {
     );
 }
 
-/// `agfs audit` on a fresh session shows no records.
+/// `yolofs audit` on a fresh session shows no records.
 #[test]
 fn audit_fresh_session() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let output = s.cli(&["audit"]).expect("audit");
     // A fresh session has no records at all

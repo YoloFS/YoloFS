@@ -1,5 +1,5 @@
-use crate::helpers::AgfsSession;
-use agfs::config::{Config, Perm};
+use crate::helpers::YoloSession;
+use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -8,7 +8,7 @@ use std::fs;
 /// O_TRUNC counts as a write operation; allow-ro should deny it.
 #[test]
 fn truncate_denied_on_allow_ro() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
         ..Default::default()
@@ -25,7 +25,7 @@ fn truncate_denied_on_allow_ro() {
 /// O_APPEND counts as a write operation; allow-ro should deny it.
 #[test]
 fn append_denied_on_allow_ro() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
         ..Default::default()
@@ -41,7 +41,7 @@ fn append_denied_on_allow_ro() {
 /// O_RDWR counts as a write; allow-ro should deny it.
 #[test]
 fn rdwr_denied_on_allow_ro() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
         ..Default::default()
@@ -60,7 +60,7 @@ fn rdwr_denied_on_allow_ro() {
 /// allow-rw should permit O_TRUNC.
 #[test]
 fn truncate_allowed_on_allow_rw() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
         ..Default::default()
@@ -79,7 +79,7 @@ fn truncate_allowed_on_allow_rw() {
 /// allow-rx should permit read + exec but deny O_TRUNC.
 #[test]
 fn allow_rx_denies_truncate() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRx)]),
         ..Default::default()
@@ -96,7 +96,7 @@ fn allow_rx_denies_truncate() {
 /// allow-rx should deny O_APPEND.
 #[test]
 fn allow_rx_denies_append() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRx)]),
         ..Default::default()

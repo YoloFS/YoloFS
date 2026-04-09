@@ -1,11 +1,11 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
 
 #[test]
 fn readdir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let entries: Vec<String> = fs::read_dir(s.mnt_path(""))
         .expect("readdir")
@@ -17,12 +17,12 @@ fn readdir() {
     assert!(entries.contains(&"subdir".to_string()));
 }
 
-// ── readdir with staged changes (file.c: agfs_readdir) ──
+// ── readdir with staged changes (file.c: yolo_readdir) ──
 
 /// Newly created files should appear in readdir.
 #[test]
 fn readdir_shows_created_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("newfile.txt"), "new\n").expect("create");
 
@@ -42,7 +42,7 @@ fn readdir_shows_created_file() {
 /// Deleted files should be hidden from readdir.
 #[test]
 fn readdir_hides_deleted_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
@@ -64,7 +64,7 @@ fn readdir_hides_deleted_file() {
 /// discovers it when merging dirents + base.
 #[test]
 fn readdir_after_rename() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt")).expect("rename");
 
@@ -94,7 +94,7 @@ fn readdir_after_rename() {
 /// Newly created directories appear in readdir.
 #[test]
 fn readdir_shows_created_dir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
@@ -112,7 +112,7 @@ fn readdir_shows_created_dir() {
 /// readdir on a subdirectory lists its contents.
 #[test]
 fn readdir_subdir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let entries: Vec<String> = fs::read_dir(s.mnt_path("subdir"))
         .expect("readdir subdir")
@@ -128,7 +128,7 @@ fn readdir_subdir() {
 /// readdir on a newly created dir with files inside it.
 #[test]
 fn readdir_new_dir_with_files() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
     fs::write(s.mnt_path("newdir/a.txt"), "a\n").expect("write a");
@@ -149,7 +149,7 @@ fn readdir_new_dir_with_files() {
 /// Overridden directories must report as directories, not regular files.
 #[test]
 fn readdir_dtype_dir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("dtype_dir")).expect("mkdir");
 
@@ -170,7 +170,7 @@ fn readdir_dtype_dir() {
 /// Overridden symlinks must report as symlinks in readdir d_type.
 #[test]
 fn readdir_dtype_symlink() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("dtype_link")).expect("symlink");
 
@@ -191,7 +191,7 @@ fn readdir_dtype_symlink() {
 /// Overridden regular files should still report as regular files.
 #[test]
 fn readdir_dtype_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("dtype_file.txt"), "data\n").expect("create");
 
@@ -211,7 +211,7 @@ fn readdir_dtype_file() {
 
 #[test]
 fn readdir_many_files() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("bigdir")).expect("mkdir");
     for i in 0..100 {
@@ -242,11 +242,11 @@ fn readdir_many_files() {
 // ── readdir inode number correctness ──
 
 /// A newly created file must have a non-zero inode number in readdir.
-/// Regression: agfs_emit_dirents passed ino=0 to dir_emit for staged
+/// Regression: yolo_emit_dirents passed ino=0 to dir_emit for staged
 /// entries, which caused some kernels to silently drop the entry.
 #[test]
 fn readdir_created_file_has_nonzero_ino() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("newfile.txt"), "data\n").expect("create");
 
@@ -266,7 +266,7 @@ fn readdir_created_file_has_nonzero_ino() {
 /// dir_emit because de->ino is 0 for redirects.
 #[test]
 fn readdir_renamed_file_has_nonzero_ino() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt")).expect("rename");
 
@@ -287,7 +287,7 @@ fn readdir_renamed_file_has_nonzero_ino() {
 /// This exercises the link variant's d_type encoding.
 #[test]
 fn readdir_dtype_renamed_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("link_file.txt")).expect("rename");
 
@@ -309,7 +309,7 @@ fn readdir_dtype_renamed_file() {
 /// This exercises the link variant's d_type encoding for directories.
 #[test]
 fn readdir_dtype_renamed_dir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir"), s.mnt_path("link_dir")).expect("rename dir");
 
@@ -331,7 +331,7 @@ fn readdir_dtype_renamed_dir() {
 /// Verifies the 2-bit d_type encoding handles all variants correctly.
 #[test]
 fn readdir_dtype_all_three_types() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("typedir")).expect("mkdir container");
     fs::write(s.mnt_path("typedir/reg.txt"), "regular\n").expect("create regular");
@@ -428,7 +428,7 @@ fn readdir_small_buf(path: &std::path::Path) -> (Vec<String>, usize) {
 /// With a small getdents64 buffer, this makes many kernel re-entries.
 #[test]
 fn readdir_small_buf_base_only() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let dir = s.mnt_path("basedir");
     // Create files in the base layer by writing to the host path.
@@ -462,7 +462,7 @@ fn readdir_small_buf_base_only() {
 /// Phase 1, preventing double-skip of base entries on resumed getdents64.
 #[test]
 fn readdir_small_buf_mixed() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Base layer: 20 files
     let host_dir = s.base_path("mixdir");
@@ -507,7 +507,7 @@ fn readdir_small_buf_mixed() {
 /// live staged names and skip the old base names hidden by tombstones.
 #[test]
 fn readdir_small_buf_rename_delete_create() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let host_dir = s.base_path("renmix");
     fs::create_dir(&host_dir).expect("mkdir host");
@@ -550,7 +550,7 @@ fn readdir_small_buf_rename_delete_create() {
 /// Exercises the merge path where phase 2 has nothing to emit.
 #[test]
 fn readdir_small_buf_staged_only() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let dir = s.mnt_path("stagedir");
     fs::create_dir(&dir).expect("mkdir");
@@ -581,7 +581,7 @@ fn readdir_small_buf_staged_only() {
 /// double-skipping base entries in Phase 2.
 #[test]
 fn readdir_small_buf_all_tombstones() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Base layer: 15 files.
     let host_dir = s.base_path("tombdir");
@@ -611,7 +611,7 @@ fn readdir_small_buf_all_tombstones() {
 /// resumption into phase 2 after phase 1 has been fully emitted.
 #[test]
 fn readdir_small_buf_few_staged_many_base() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Base layer: 28 files
     let host_dir = s.base_path("fewstage");

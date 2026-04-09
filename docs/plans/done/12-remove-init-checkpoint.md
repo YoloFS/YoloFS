@@ -4,7 +4,7 @@
 
 On mount, the kernel writes an implicit `(initial)` checkpoint (gen=1) to the
 journal. This exists purely as a user-facing convenience so users can
-`agfs restore 1` to get back to mount-time state. However, `commit` and `abort`
+`yolo restore 1` to get back to mount-time state. However, `commit` and `abort`
 already reset to clean state via `target_gen=0`, and the journal system supports
 a 0th segment (`from: None`) for records before any checkpoint. The init
 checkpoint adds complexity without functional value.
@@ -16,7 +16,7 @@ Remove the init checkpoint entirely — kernel, docs, tests.
 ## Changes
 
 ### Kernel
-- `kmod/super.c`: Remove the `agfs_journal_checkpoint(sbi, 1, "(initial)")` call
+- `kmod/super.c`: Remove the `yolo_journal_checkpoint(sbi, 1, "(initial)")` call
   and its comment.
 
 ### Documentation

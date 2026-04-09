@@ -1,11 +1,11 @@
-use crate::helpers::AgfsSession;
-use agfs::journal::{self, Action, DirTree, Meta, Record};
+use crate::helpers::YoloSession;
+use yolofs::journal::{self, Action, DirTree, Meta, Record};
 use std::fs;
 use std::path::PathBuf;
 
 /// Read the journal for a session.
-pub fn journal(s: &AgfsSession) -> journal::Journal {
-    journal::Journal::read(&s.root.join(".agfs")).expect("read journal")
+pub fn journal(s: &YoloSession) -> journal::Journal {
+    journal::Journal::read(&s.root.join(".yolofs")).expect("read journal")
 }
 
 /// Collect all actions from the journal in order.
@@ -34,13 +34,13 @@ pub fn records(j: &journal::Journal) -> Vec<Record> {
 
 /// Resolve the journal into a DirTree.
 /// Uses `Journal` to filter out dead records (e.g. after jump).
-pub fn tree(s: &AgfsSession) -> DirTree {
+pub fn tree(s: &YoloSession) -> DirTree {
     let j = journal(s);
     j.into_tree()
 }
 
 /// List numeric inode entries in the inode store.
-pub fn inos(s: &AgfsSession) -> Vec<u32> {
+pub fn inos(s: &YoloSession) -> Vec<u32> {
     // Walk shard directories: inodes/<shard>/<ino>
     let mut ids: Vec<u32> = Vec::new();
     if let Ok(shards) = fs::read_dir(s.inodes_dir()) {
@@ -61,7 +61,7 @@ pub fn inos(s: &AgfsSession) -> Vec<u32> {
 }
 
 /// Get the inode path for a given ino (sharded: inodes/<shard>/<ino>).
-pub fn inode_path(s: &AgfsSession, ino: u32) -> PathBuf {
+pub fn inode_path(s: &YoloSession, ino: u32) -> PathBuf {
     s.inodes_dir()
         .join((ino / 100).to_string())
         .join(ino.to_string())

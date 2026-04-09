@@ -1,10 +1,10 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
 /// Full lifecycle: write → status → diff → commit → verify base
 #[test]
 fn full_write_commit_cycle() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // 1. Write changes
     fs::write(s.mnt_path("hello.txt"), "updated\n").unwrap();
@@ -37,7 +37,7 @@ fn full_write_commit_cycle() {
 /// Full lifecycle: write → status → abort → verify base unchanged
 #[test]
 fn full_write_abort_cycle() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // 1. Write changes to existing files only (new file creation
     //    goes to lower FS, not inode store)
@@ -64,11 +64,11 @@ fn full_write_abort_cycle() {
 }
 
 /// Commit, then verify base is updated.
-/// Note: After commit clears inode store, agfs dentries may be stale
+/// Note: After commit clears inode store, yolofs dentries may be stale
 /// until cache invalidation. We verify the base FS directly.
 #[test]
 fn double_commit() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // First round
     fs::write(s.mnt_path("hello.txt"), "round1\n").unwrap();
@@ -82,7 +82,7 @@ fn double_commit() {
 /// Abort, then verify base unchanged.
 #[test]
 fn abort_then_commit() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Aborted round
     fs::write(s.mnt_path("hello.txt"), "aborted\n").unwrap();
@@ -98,7 +98,7 @@ fn abort_then_commit() {
 /// Delete + commit: file removed from base.
 #[test]
 fn delete_commit_then_verify_base() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
@@ -119,7 +119,7 @@ fn delete_commit_then_verify_base() {
 /// After commit, the inode store should be clean.
 #[test]
 fn commit_clears_inode_store() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").unwrap();
     fs::write(s.mnt_path("newfile.txt"), "new\n").unwrap();
@@ -139,7 +139,7 @@ fn commit_clears_inode_store() {
 /// to go through the base path again.
 #[test]
 fn abort_then_modify_commit() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Aborted round
     fs::write(s.mnt_path("hello.txt"), "aborted\n").unwrap();

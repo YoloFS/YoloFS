@@ -1,8 +1,8 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 
 #[test]
 fn run_success_exit_code_zero() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     let code = session.run_in_sandbox(&["true"]).unwrap();
     assert_eq!(code, 0, "successful command should return exit code 0");
@@ -10,7 +10,7 @@ fn run_success_exit_code_zero() {
 
 #[test]
 fn run_failure_exit_code_propagated() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     let code = session.run_in_sandbox(&["false"]).unwrap();
     assert_eq!(code, 1, "`false` should return exit code 1");
@@ -18,7 +18,7 @@ fn run_failure_exit_code_propagated() {
 
 #[test]
 fn run_custom_exit_code() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     let code = session.run_in_sandbox(&["sh", "-c", "exit 42"]).unwrap();
     assert_eq!(code, 42, "exit 42 should propagate as exit code 42");
@@ -26,7 +26,7 @@ fn run_custom_exit_code() {
 
 #[test]
 fn run_command_not_found() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     let code = session.run_in_sandbox(&["nonexistent_cmd_xyz"]).unwrap();
     assert_ne!(
@@ -37,7 +37,7 @@ fn run_command_not_found() {
 
 #[test]
 fn run_shell_pipe() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     let chroot_path = session.root.join("hello.txt");
     let code = session
@@ -52,7 +52,7 @@ fn run_shell_pipe() {
 
 #[test]
 fn run_shell_quotes() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     let chroot_path = session.root.join("hello.txt");
     let code = session
@@ -67,7 +67,7 @@ fn run_shell_quotes() {
 
 #[test]
 fn run_reads_file_through_mount() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     // Inside the chroot, paths are relative to the mount root (which IS /)
     // The test file lives at <root>/hello.txt, visible as <root>/hello.txt inside chroot
@@ -84,7 +84,7 @@ fn run_reads_file_through_mount() {
 /// Writing to a file via absolute path inside the sandbox should succeed.
 #[test]
 fn run_write_file_absolute_path() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     let target = session.root.join("exec_output.txt");
     let code = session
@@ -97,7 +97,7 @@ fn run_write_file_absolute_path() {
 /// The cwd after chroot+chdir is the session root directory.
 #[test]
 fn run_write_file_relative_path() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     let code = session
         .run_in_sandbox(&["sh", "-c", "echo hello > relative_test.txt"])
@@ -110,17 +110,17 @@ fn run_write_file_relative_path() {
 
 #[test]
 fn run_env_var_propagated() {
-    let session = AgfsSession::new().expect("session setup");
-    // AGFS_SESSION is always set by exec.rs — verify the sandbox sees it
+    let session = YoloSession::new().expect("session setup");
+    // YOLO_SESSION is always set by exec.rs — verify the sandbox sees it
     let code = session
-        .run_in_sandbox(&["sh", "-c", "test -n \"$AGFS_SESSION\""])
+        .run_in_sandbox(&["sh", "-c", "test -n \"$YOLO_SESSION\""])
         .unwrap();
-    assert_eq!(code, 0, "AGFS_SESSION env var should be set in sandbox");
+    assert_eq!(code, 0, "YOLO_SESSION env var should be set in sandbox");
 }
 
 #[test]
 fn run_stderr_output() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
     let code = session
         .run_in_sandbox(&["sh", "-c", "echo err >&2"])
         .unwrap();
@@ -129,7 +129,7 @@ fn run_stderr_output() {
 
 #[test]
 fn run_reads_modified_file() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
     let target = session.root.join("hello.txt");
     // Modify through mount
     std::fs::write(session.mnt_path("hello.txt"), "modified\n").expect("write");
@@ -147,7 +147,7 @@ fn run_reads_modified_file() {
 
 #[test]
 fn run_multiple_commands_sequentially() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
     let target = session.root.join("seq_test.txt");
 
     let code1 = session
@@ -164,7 +164,7 @@ fn run_multiple_commands_sequentially() {
 /// Auto-checkpoint is skipped when the exec command produces no changes.
 #[test]
 fn run_no_changes_skips_checkpoint() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     let before = session.cli(&["timeline"]).expect("timeline before");
     let before_count = before.matches("checkpoint").count();
@@ -185,7 +185,7 @@ fn run_no_changes_skips_checkpoint() {
 /// Auto-checkpoint is created when the exec command makes changes.
 #[test]
 fn run_with_changes_creates_checkpoint() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     let before = session.cli(&["timeline"]).expect("timeline before");
     let before_count = before.matches("checkpoint [").count();

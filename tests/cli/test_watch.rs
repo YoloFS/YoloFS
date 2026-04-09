@@ -1,18 +1,18 @@
-use crate::helpers::{AGFS_BIN, AgfsSession};
-use agfs::config::{Config, Perm};
+use crate::helpers::{YOLO_BIN, YoloSession};
+use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-/// `agfs watch --allow-all` should answer every ask with allow, so
-/// `touch a` inside `agfs exec` must succeed.
+/// `yolofs watch --allow-all` should answer every ask with allow, so
+/// `touch a` inside `yolofs exec` must succeed.
 ///
 /// Regression: even with the daemon running and --allow-all set, the
 /// kernel never delivers the ask for the new file and the touch fails.
 #[test]
 fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Ask),
         rules: BTreeMap::new(),
         ..Default::default()
@@ -21,7 +21,7 @@ fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
 
     // Start the daemon before exec so it is already blocked in ioctl read
     // when the kernel raises the ask for the new file.
-    let mut watch = std::process::Command::new(AGFS_BIN)
+    let mut watch = std::process::Command::new(YOLO_BIN)
         .args(["watch", "--allow-all"])
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
@@ -29,7 +29,7 @@ fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("spawning agfs watch --allow-all");
+        .expect("spawning yolofs watch --allow-all");
 
     // Give the daemon time to open the ioctl fd and block on the first read.
     std::thread::sleep(Duration::from_millis(200));
@@ -59,7 +59,7 @@ fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
 /// with a clear "already running" message (kernel returns EBUSY).
 #[test]
 fn second_watch_reports_already_running() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
@@ -67,7 +67,7 @@ fn second_watch_reports_already_running() {
     .expect("session setup");
 
     // Start first watch in background.
-    let mut watch1 = Command::new(AGFS_BIN)
+    let mut watch1 = Command::new(YOLO_BIN)
         .arg("watch")
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
@@ -98,8 +98,8 @@ fn second_watch_reports_already_running() {
 /// Helper: mount with "/" = Allow (so dir traversal never triggers an ask),
 /// then live-add an Ask rule for a single file so only that file's open()
 /// goes through the interactive daemon path.
-fn session_with_ask_file() -> (AgfsSession, String) {
-    let s = AgfsSession::new_with_config(Config {
+fn session_with_ask_file() -> (YoloSession, String) {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
@@ -111,13 +111,13 @@ fn session_with_ask_file() -> (AgfsSession, String) {
     (s, file_path)
 }
 
-/// Interactive `agfs watch` — daemon reads "a\n" from piped stdin and
+/// Interactive `yolofs watch` — daemon reads "a\n" from piped stdin and
 /// responds Allow.  A subsequent read through the mount should succeed.
 #[test]
 fn interactive_watch_allow_permits_read() {
     let (s, _path) = session_with_ask_file();
 
-    let mut watch = Command::new(AGFS_BIN)
+    let mut watch = Command::new(YOLO_BIN)
         .args(["watch"])
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
@@ -151,13 +151,13 @@ fn interactive_watch_allow_permits_read() {
     assert_eq!(content, "base content\n");
 }
 
-/// Interactive `agfs watch` — daemon reads "d\n" from piped stdin and
+/// Interactive `yolofs watch` — daemon reads "d\n" from piped stdin and
 /// responds Deny.  A subsequent read through the mount should fail.
 #[test]
 fn interactive_watch_deny_blocks_read() {
     let (s, _path) = session_with_ask_file();
 
-    let mut watch = Command::new(AGFS_BIN)
+    let mut watch = Command::new(YOLO_BIN)
         .args(["watch"])
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
@@ -189,14 +189,14 @@ fn interactive_watch_deny_blocks_read() {
     assert!(result.is_err(), "read should fail after interactive 'deny'");
 }
 
-/// Interactive `agfs watch` — daemon reads "ro\n" → AllowRo.
+/// Interactive `yolofs watch` — daemon reads "ro\n" → AllowRo.
 /// Read succeeds, but write is denied.
 #[test]
 fn interactive_watch_allow_ro_permits_read_denies_write() {
     let (s, _path) = session_with_ask_file();
 
     // Pre-fill two responses: "ro\n" for the read open, "ro\n" for the write open.
-    let mut watch = Command::new(AGFS_BIN)
+    let mut watch = Command::new(YOLO_BIN)
         .args(["watch"])
         .current_dir(&s.root)
         .env("NO_COLOR", "1")

@@ -1,7 +1,7 @@
-// agfs CLI — diff.rs
+// yolo CLI — diff.rs
 //
-// `agfs status` — one-line summary of staged changes.
-// `agfs diff`   — git-style unified diff of staged vs base.
+// `yolo status` — one-line summary of staged changes.
+// `yolo diff`   — git-style unified diff of staged vs base.
 // `--at <name>` — show state at a meta (single segment).
 // `--from <name>` — diff changes since a meta.
 // `--to <name>` — diff changes up to a meta.
@@ -31,16 +31,16 @@ fn read_file_lossy(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
-fn read_inode(agfs: &Path, ino: u32) -> String {
-    read_file_lossy(&crate::utils::inode_path(agfs, ino))
+fn read_inode(yolofs: &Path, ino: u32) -> String {
+    read_file_lossy(&crate::utils::inode_path(yolofs, ino))
 }
 
 fn read_base(rel_path: &str) -> String {
     read_file_lossy(&crate::utils::to_base_path(rel_path))
 }
 
-fn is_binary_inode(agfs: &Path, ino: u32) -> bool {
-    read_file_text(&crate::utils::inode_path(agfs, ino)).is_none()
+fn is_binary_inode(yolofs: &Path, ino: u32) -> bool {
+    read_file_text(&crate::utils::inode_path(yolofs, ino)).is_none()
 }
 
 fn is_binary_base(rel_path: &str) -> bool {
@@ -88,7 +88,7 @@ fn print_segment_footer(closing: &Option<(u64, String)>) {
 // ── Per-change printing (summary vs verbose) ─────────────────────────
 
 fn print_change(
-    agfs: &Path,
+    yolofs: &Path,
     path: &str,
     target: &Target,
     verbose: bool,
@@ -101,22 +101,22 @@ fn print_change(
         Target::StagedFile(ino) if !base_exists => {
             println!("{} {}", path.bold(), "(added)".green());
             if verbose {
-                if is_binary_inode(agfs, *ino) {
+                if is_binary_inode(yolofs, *ino) {
                     println!("  {}", "Binary file (not shown)".dimmed());
                 } else {
-                    print_unified_diff("", &read_inode(agfs, *ino));
+                    print_unified_diff("", &read_inode(yolofs, *ino));
                 }
             }
         }
         Target::StagedFile(ino) => {
             if verbose {
-                let binary = is_binary_inode(agfs, *ino) || is_binary_base(path);
+                let binary = is_binary_inode(yolofs, *ino) || is_binary_base(path);
                 if binary {
                     println!("{} {}", path.bold(), "(modified)".yellow());
                     println!("  {}", "Binary files differ".dimmed());
                 } else {
                     let old_text = read_base(path);
-                    let new_text = read_inode(agfs, *ino);
+                    let new_text = read_inode(yolofs, *ino);
                     if old_text != new_text {
                         println!("{} {}", path.bold(), "(modified)".yellow());
                         print_unified_diff(&old_text, &new_text);
@@ -142,13 +142,13 @@ fn print_change(
 
 // ── Public entry points ──────────────────────────────────────────────
 
-/// `agfs status` — summary view.
+/// `yolo status` — summary view.
 pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> Result<()> {
     run(false, at, from, to, None)?;
     Ok(())
 }
 
-/// `agfs diff` — verbose diff view. Returns true if there were changes.
+/// `yolo diff` — verbose diff view. Returns true if there were changes.
 pub fn run_diff(
     at: Option<&str>,
     from: Option<&str>,
@@ -168,8 +168,8 @@ fn run(
     to: Option<&str>,
     path: Option<&str>,
 ) -> Result<bool> {
-    let agfs = crate::utils::session_dir()?;
-    let journal = Journal::read(&agfs)?;
+    let yolofs = crate::utils::session_dir()?;
+    let journal = Journal::read(&yolofs)?;
     let num = journal.segments.len();
     let (start, end) = journal.metas.segment_range(at, from, to, num)?;
 
@@ -219,7 +219,7 @@ fn run(
 
         tree.for_each(|p, target| {
             if path.is_none() || target.matches_path(p, path.unwrap()) {
-                print_change(&agfs, p, target, verbose, &mut base_exists_cache);
+                print_change(&yolofs, p, target, verbose, &mut base_exists_cache);
             }
         });
         total += count;
@@ -271,14 +271,14 @@ mod tests {
     use tempfile::TempDir;
 
     fn state_map<'a>(
-        agfs: &Path,
+        yolofs: &Path,
         entries: &'a [(String, Target)],
     ) -> BTreeMap<&'a str, Option<String>> {
         let mut map = BTreeMap::new();
         for (path, target) in entries {
             match target {
                 Target::StagedFile(ino) => {
-                    map.insert(path.as_str(), Some(read_inode(agfs, *ino)));
+                    map.insert(path.as_str(), Some(read_inode(yolofs, *ino)));
                 }
                 Target::Tombstone => {
                     map.insert(path.as_str(), None);
@@ -293,9 +293,9 @@ mod tests {
         map
     }
 
-    /// Create a temp dir that looks like an agfs session with staged inodes.
+    /// Create a temp dir that looks like an yolofs session with staged inodes.
     /// Returns the TempDir (must be kept alive) and its path.
-    fn make_agfs(inodes: &[(u32, &str)]) -> TempDir {
+    fn make_yolofs(inodes: &[(u32, &str)]) -> TempDir {
         let tmp = TempDir::new().unwrap();
         let inodes_dir = tmp.path().join("inodes");
         fs::create_dir_all(&inodes_dir).unwrap();
@@ -309,14 +309,14 @@ mod tests {
 
     #[test]
     fn state_map_empty_changes() {
-        let tmp = make_agfs(&[]);
+        let tmp = make_yolofs(&[]);
         let map = state_map(tmp.path(), &[]);
         assert!(map.is_empty());
     }
 
     #[test]
     fn state_map_added() {
-        let tmp = make_agfs(&[(1, "hello\n")]);
+        let tmp = make_yolofs(&[(1, "hello\n")]);
         let dentries = vec![("/src/main.rs".into(), Target::StagedFile(1))];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn state_map_modified() {
-        let tmp = make_agfs(&[(5, "new content")]);
+        let tmp = make_yolofs(&[(5, "new content")]);
         let dentries = vec![("/etc/config".into(), Target::StagedFile(5))];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn state_map_deleted() {
-        let tmp = make_agfs(&[]);
+        let tmp = make_yolofs(&[]);
         let dentries = vec![("/old/file.txt".into(), Target::Tombstone)];
         let map = state_map(tmp.path(), &dentries);
         assert_eq!(map.len(), 1);
@@ -345,7 +345,7 @@ mod tests {
     fn state_map_renamed() {
         // Renamed reads base content via read_base(from). Since the `from` path
         // won't exist on the real filesystem, read_file_lossy returns "".
-        let tmp = make_agfs(&[]);
+        let tmp = make_yolofs(&[]);
         let entries = vec![(
             "/nonexistent/new.rs".into(),
             Target::BasePath("/nonexistent/old.rs".into()),
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn state_map_renamed_modified() {
-        let tmp = make_agfs(&[(7, "modified content")]);
+        let tmp = make_yolofs(&[(7, "modified content")]);
         let entries = vec![
             (
                 "/nonexistent/new.rs".into(),
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn state_map_multiple_changes() {
-        let tmp = make_agfs(&[(1, "aaa"), (2, "bbb")]);
+        let tmp = make_yolofs(&[(1, "aaa"), (2, "bbb")]);
         let dentries = vec![
             ("/a.txt".into(), Target::StagedFile(1)),
             ("/b.txt".into(), Target::StagedFile(2)),

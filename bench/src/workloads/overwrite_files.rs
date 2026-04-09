@@ -1,11 +1,11 @@
 // overwrite-files workload: overwrite N pre-existing small (4 KiB) files.
 //
-// Exercises the copy-on-write / copy-up path: for agfs this triggers
-// agfs_do_cow on the first write to each file; for overlayfs the kernel
+// Exercises the copy-on-write / copy-up path: for YoloFS this triggers
+// yolo_do_cow on the first write to each file; for overlayfs the kernel
 // copies the file from lower to upper before the write lands.
 
 use crate::workload::{Workload, WorkloadKind};
-use agfs::config::Perm;
+use yolofs::config::Perm;
 use anyhow::{Context, Result};
 use std::path::Path;
 

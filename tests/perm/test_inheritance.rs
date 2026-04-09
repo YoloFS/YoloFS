@@ -1,15 +1,15 @@
-use crate::helpers::{AGFS_BIN, AgfsSession};
-use agfs::config::{Config, Perm};
+use crate::helpers::{YOLO_BIN, YoloSession};
+use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
 
-// ── Rule inheritance (perm.c: agfs_resolve_perm walks dentry chain) ──
+// ── Rule inheritance (perm.c: yolo_resolve_perm walks dentry chain) ──
 
 /// A more specific (child) rule should override a broader (parent) rule.
 /// "/" = deny, but session root = allow-rw → files in session are accessible.
 #[test]
 fn child_rule_overrides_parent() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         permission: false,
         rules: BTreeMap::new(),
         ..Default::default()
@@ -24,9 +24,9 @@ fn child_rule_overrides_parent() {
         rules: BTreeMap::from([("/".into(), Perm::Deny), (root_path, Perm::AllowRw)]),
         ..Default::default()
     }
-    .save(&s.root.join("agfs.toml"))
+    .save(&s.root.join("yolofs.toml"))
     .unwrap();
-    std::process::Command::new(AGFS_BIN)
+    std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
@@ -42,7 +42,7 @@ fn child_rule_overrides_parent() {
 /// Files under a/b/c inherit allow-rw; files at top level get denied.
 #[test]
 fn deep_nested_rules_closest_wins() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         permission: false,
         rules: BTreeMap::new(),
         ..Default::default()
@@ -63,9 +63,9 @@ fn deep_nested_rules_closest_wins() {
         ]),
         ..Default::default()
     }
-    .save(&s.root.join("agfs.toml"))
+    .save(&s.root.join("yolofs.toml"))
     .unwrap();
-    std::process::Command::new(AGFS_BIN)
+    std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
@@ -86,7 +86,7 @@ fn deep_nested_rules_closest_wins() {
 /// Different directories can have different permission rules simultaneously.
 #[test]
 fn different_paths_different_rules() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         permission: false,
         rules: BTreeMap::new(),
         ..Default::default()
@@ -108,9 +108,9 @@ fn different_paths_different_rules() {
         ]),
         ..Default::default()
     }
-    .save(&s.root.join("agfs.toml"))
+    .save(&s.root.join("yolofs.toml"))
     .unwrap();
-    std::process::Command::new(AGFS_BIN)
+    std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&s.root)
         .env("NO_COLOR", "1")

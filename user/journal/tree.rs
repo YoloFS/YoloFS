@@ -1,4 +1,4 @@
-// agfs CLI — journal/tree.rs
+// yolo CLI — journal/tree.rs
 //
 // Dir tree builder. Applies journal records sequentially to build a tree
 // representing the overlay state (the in-kernel dirent table).

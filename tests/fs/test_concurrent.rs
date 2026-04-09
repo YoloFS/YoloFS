@@ -1,10 +1,10 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 use std::thread;
 
 #[test]
 fn concurrent_writes_to_different_files() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let handles: Vec<_> = (0..10)
         .map(|i| {
@@ -28,7 +28,7 @@ fn concurrent_writes_to_different_files() {
 
 #[test]
 fn concurrent_reads() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let handles: Vec<_> = (0..10)
         .map(|_| {
@@ -45,7 +45,7 @@ fn concurrent_reads() {
 
 #[test]
 fn concurrent_create_and_readdir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create several files first
     for i in 0..5 {

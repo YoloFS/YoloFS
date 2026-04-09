@@ -1,14 +1,14 @@
-# Plan: Add `in_base` to `agfs_dirent` and `P` journal tag
+# Plan: Add `in_base` to `yolo_dirent` and `P` journal tag
 
 ## Problem
 
-The `base` field on `agfs_dirent` is overloaded. It serves as both:
+The `base` field on `yolo_dirent` is overloaded. It serves as both:
 1. **Redirect source path** — for redirect dirents (`ino == REDIRECT`)
-2. **In-base indicator** — `NULL` (not in base) vs `AGFS_BASE_PRESENT` (in base)
+2. **In-base indicator** — `NULL` (not in base) vs `YOLO_BASE_PRESENT` (in base)
 
 For staged and deleted dirents this works because `base` is free (no
 redirect path). For redirect dirents, `base` always holds a non-NULL
-redirect path, so `agfs_de_in_base()` returns true even when the
+redirect path, so `yolo_de_in_base()` returns true even when the
 destination name was never in base. This caused a bug: rename-overwrite
 chain collapse lost track of overwritten base files.
 
@@ -17,7 +17,7 @@ chain collapse lost track of overwritten base files.
 Two changes that work together:
 
 1. **Kernel dirent**: Add a dedicated `bool in_base` field to `struct
-   agfs_dirent`. Stop using `AGFS_BASE_PRESENT` as a sentinel. Let `base`
+   yolo_dirent`. Stop using `YOLO_BASE_PRESENT` as a sentinel. Let `base`
    mean only "redirect source path" (non-NULL for redirects, NULL
    otherwise). This gives the kernel correct `dst_in_base` for subsequent
    renames at the same path.
@@ -45,39 +45,39 @@ Two changes that work together:
 
 ### Kernel (`kmod/`)
 
-1. **`agfs.h`** — `struct agfs_dirent`:
+1. **`yolofs.h`** — `struct yolo_dirent`:
    - Add `bool in_base` field.
-   - Remove `AGFS_BASE_PRESENT` sentinel.
-   - `agfs_de_in_base()`: return `de->in_base` instead of `de->base != NULL`.
-   - `agfs_de_base_free()`: drop sentinel check (just `kfree` or NULL).
-   - `agfs_de_base_dup()`: drop sentinel check (just `kstrdup` or NULL).
+   - Remove `YOLO_BASE_PRESENT` sentinel.
+   - `yolo_de_in_base()`: return `de->in_base` instead of `de->base != NULL`.
+   - `yolo_de_base_free()`: drop sentinel check (just `kfree` or NULL).
+   - `yolo_de_base_dup()`: drop sentinel check (just `kstrdup` or NULL).
 
-2. **`staging.c`** — `agfs_add_dirent()`:
+2. **`staging.c`** — `yolo_add_dirent()`:
    - Update-in-place (existing dirent): for deletes, inherit
      `old_de->in_base`. For non-deletes, set `old_de->in_base =
      de->in_base`.
    - New dirent: for deletes without prior dirent, set `in_base = true`
      (file was only in base). Otherwise copy from template.
    - `base` handling: copy `de->base` as redirect path (no sentinel).
-   - COW path (`agfs_do_cow` dirent): set `in_base = true` (COW always
+   - COW path (`yolo_do_cow` dirent): set `in_base = true` (COW always
      modifies a file that existed), `base = NULL` (staged, not redirect).
 
-3. **`inode.c`** — `agfs_create_staged()`:
+3. **`inode.c`** — `yolo_create_staged()`:
    - Set `de.in_base = in_base` (from deleted-dirent check).
    - Set `de.base = NULL` (staged files never have a redirect path).
 
-4. **`inode.c`** — `agfs_rename()`:
+4. **`inode.c`** — `yolo_rename()`:
    - Staged source: `de.in_base = dst_in_base`, `de.base = NULL`.
    - Redirect source: `de.in_base = dst_in_base`, `de.base = redirect_path`.
    - Journal: emit `P` instead of `R` when
-     `dst_in_base && !agfs_ino_is_staged(ino)`. Revert the `D(dst)`
+     `dst_in_base && !yolo_ino_is_staged(ino)`. Revert the `D(dst)`
      workaround added earlier.
 
-5. **`journal.c`** — add `agfs_journal_replace()`:
-   - Same as `agfs_journal_redirect()` but emits tag `P` instead of `R`.
+5. **`journal.c`** — add `yolo_journal_replace()`:
+   - Same as `yolo_journal_redirect()` but emits tag `P` instead of `R`.
 
 6. **`ioctl.c`** — restore entry injection:
-   - Add `__u8 in_base` to `struct agfs_ioc_restore_entry`
+   - Add `__u8 in_base` to `struct yolo_ioc_restore_entry`
      (use one of the padding bytes).
    - Set `de.in_base` from entry when injecting dirents.
 
@@ -150,7 +150,7 @@ Two changes that work together:
       - Renamed dest (redirect entry) → `in_base` from `Change::Renamed`
     - Pass through to ioctl entry.
 
-11. **`cli/ioctl.rs`** — `AgfsIocRestoreEntry`:
+11. **`cli/ioctl.rs`** — `YoloIocRestoreEntry`:
     - Add `in_base: u8` field (using one padding byte to match the kernel
       struct change).
 
@@ -158,7 +158,7 @@ Two changes that work together:
 
 12. **Revert `D(dst)` changes** from this session:
     - `kmod/inode.c`: remove the `D(dst)` emission block added before the
-      existing journal records in `agfs_rename()`. Replace with `P` tag
+      existing journal records in `yolo_rename()`. Replace with `P` tag
       emission (item 4).
     - `cli/journal/resolve.rs`: remove `dst_in_base` field from
       `Action::Rename`, remove `D(dst)` inference in Redirect handler,
@@ -202,10 +202,10 @@ Two changes that work together:
 
 14. **`docs/staging.md`**:
     - Update journal format table with `P` tag.
-    - Update `agfs_dirent` struct documentation with `in_base` field.
+    - Update `yolo_dirent` struct documentation with `in_base` field.
     - Update edge cases to reference `in_base` instead of `base` pointer
       semantics.
-    - Remove references to `AGFS_BASE_PRESENT` sentinel.
+    - Remove references to `YOLO_BASE_PRESENT` sentinel.
     - Update rename pseudocode to emit `P` instead of `D(dst) + R`.
     - Document the `A`/`M` ↔ `R`/`P` symmetry in the journal format
       section.

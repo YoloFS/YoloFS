@@ -1,5 +1,5 @@
 use crate::workload::{Workload, WorkloadKind};
-use agfs::config::Perm;
+use yolofs::config::Perm;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -44,7 +44,7 @@ pub struct LinuxUntar {
 pub fn details() -> crate::workloads::WorkloadDetails {
     crate::workloads::workload_details(
         "Session macrobenchmark that untars a Linux source release into the mounted destination.",
-        "Caches one Linux source tarball under ~/.cache/agfs-bench/linux-tar/ and reuses it across runs.",
+        "Caches one Linux source tarball under ~/.cache/yolo-bench/linux-tar/ and reuses it across runs.",
         None,
         "Runs `tar -xJf <cached-tarball> -C <dest> --strip-components=1`.",
         file!(),
@@ -55,7 +55,7 @@ impl LinuxUntar {
     pub fn new() -> Self {
         let fixture_dir = dirs_next::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("agfs-bench/linux-tar");
+            .join("yolo-bench/linux-tar");
         let tarball_path = fixture_dir.join(LINUX_TARBALL_FILE);
         Self {
             fixture_dir,
@@ -119,7 +119,7 @@ impl Workload for LinuxUntar {
         std::env::set_current_dir(dest).with_context(|| format!("chdir to {}", dest.display()))?;
 
         // Use a relative path to the tarball so it resolves correctly
-        // inside an agfs exec chroot.
+        // inside a YoloFS exec chroot.
         let tarball_rel = relative_path(dest, &self.tarball_path);
 
         let status = Command::new("tar")

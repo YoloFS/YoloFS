@@ -27,7 +27,7 @@ pub fn render(out_dir: &Path, paper_dir: &Path) -> Result<Artifact> {
     let json_path = out_dir.join("checkpoint-scaling.json");
     if !json_path.exists() {
         anyhow::bail!(
-            "checkpoint-scaling.json not found — run `agfs-bench checkpoint-scaling` first"
+            "checkpoint-scaling.json not found — run `yolo-bench checkpoint-scaling` first"
         );
     }
 
@@ -67,13 +67,13 @@ pub fn render(out_dir: &Path, paper_dir: &Path) -> Result<Artifact> {
     let mut read_lines = Vec::new();
     let mut commit_lines = Vec::new();
     for res in &data {
-        if res.backend == "agfs-no-perm" || res.mode == "status" {
+        if res.backend == "yolo-no-perm" || res.mode == "status" {
             continue;
         }
-        // In this figure agfs-realistic is the only AgFS variant, so label it
-        // simply "AgFS" rather than "AgFS-R".
+        // In this figure yolo-realistic is the only YoloFS variant, so label it
+        // simply "YoloFS" rather than "YoloFS-R".
         let label = match res.backend.as_str() {
-            "agfs-realistic" => "AgFS",
+            "yolo-realistic" => "YoloFS",
             other => super::util::backend_display_name(other),
         }
         .to_string();
@@ -119,7 +119,7 @@ backend,depth,mean_us
 plt.rcParams.update({{'font.size': 8.5, 'axes.labelsize': 8.5, 'xtick.labelsize': 8.5,
                       'ytick.labelsize': 8.5, 'legend.fontsize': 7.5}})
 
-order = ['AgFS', 'OverlayFS', 'BranchFS']
+order = ['YoloFS', 'OverlayFS', 'BranchFS']
 colors = [S.BACKEND_COLORS.get(n, S.TABLEAU10['gray']) for n in order]
 overlay_name = 'OverlayFS'
 overlay_depths = (
@@ -180,7 +180,7 @@ def plot_panel(ax, data_csv, panel_label, show_ylabel, ylabel=None, exclude_back
 
 plot_panel(ax_create, CREATE_DATA, 'create', show_ylabel=True, mark_overlay_failure=True)
 plot_panel(ax_read, READ_DATA, 'read', show_ylabel=False, mark_overlay_failure=True)
-# Main commit panel: AgFS and OverlayFS only (linear scale).
+# Main commit panel: YoloFS and OverlayFS only (linear scale).
 plot_panel(ax_commit, COMMIT_DATA, 'commit', show_ylabel=True, ylabel='ms',
            exclude_backends={{'BranchFS'}}, mark_overlay_failure=True)
 

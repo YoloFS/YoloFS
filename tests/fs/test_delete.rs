@@ -1,12 +1,12 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
-// ── inode.c: agfs_unlink — adds DELETED dirent ──
+// ── inode.c: yolo_unlink — adds DELETED dirent ──
 
 /// Deleting a file through the mount hides it from the mount view.
 #[test]
 fn delete_hides_file_from_mount() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
@@ -19,7 +19,7 @@ fn delete_hides_file_from_mount() {
 /// Deleting a file does not touch the base.
 #[test]
 fn delete_preserves_base() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
@@ -30,10 +30,10 @@ fn delete_preserves_base() {
     );
 }
 
-/// Deleting creates a visible change in `agfs status`.
+/// Deleting creates a visible change in `yolofs status`.
 #[test]
 fn delete_creates_status_entry() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
@@ -51,7 +51,7 @@ fn delete_creates_status_entry() {
 /// Commit after delete removes the file from base.
 #[test]
 fn delete_commit_removes_from_base() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
     s.cli(&["commit"]).expect("commit");
@@ -65,7 +65,7 @@ fn delete_commit_removes_from_base() {
 /// Abort after delete restores the file in the mount view.
 #[test]
 fn delete_abort_restores_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
     s.cli(&["abort"]).expect("abort");
@@ -81,7 +81,7 @@ fn delete_abort_restores_file() {
 /// Deleting a nested file hides it from the mount.
 #[test]
 fn delete_nested_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink nested");
 
@@ -100,7 +100,7 @@ fn delete_nested_file() {
 /// Deleting a nonexistent file should fail.
 #[test]
 fn delete_nonexistent_fails() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let result = fs::remove_file(s.mnt_path("no_such_file.txt"));
     assert!(result.is_err(), "deleting nonexistent file should fail");

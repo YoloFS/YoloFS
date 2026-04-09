@@ -1,29 +1,29 @@
-use agfs::config::Config;
-use agfs::kmsg;
+use yolofs::config::Config;
+use yolofs::kmsg;
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-pub const AGFS_BIN: &str = "agfs";
+pub const YOLO_BIN: &str = "yolo";
 
-/// A managed agfs session for testing, driven entirely through the CLI.
+/// A managed yolofs session for testing, driven entirely through the CLI.
 ///
-/// Creates a temp directory, seeds base files, and uses `agfs mount` /
-/// `agfs commit` / `agfs abort` for the full lifecycle.
+/// Creates a temp directory, seeds base files, and uses `yolo mount` /
+/// `yolo commit` / `yolo abort` for the full lifecycle.
 ///
 /// On drop the kernel ring buffer is checked for any kernel messages produced
 /// since the session started.  If any are found the test fails with a panic.
-pub struct AgfsSession {
+pub struct YoloSession {
     pub root: PathBuf,
     pub mnt: PathBuf,
     mounted: bool,
     cursor: Option<kmsg::KmsgCursor>,
 }
 
-impl AgfsSession {
-    /// Create a new test session with a custom agfs.toml config.
+impl YoloSession {
+    /// Create a new test session with a custom yolofs.toml config.
     pub fn new_with_config(config: Config) -> Result<Self> {
         let root = tempfile::tempdir().context("creating temp dir")?.keep();
 
@@ -37,9 +37,9 @@ impl AgfsSession {
         fs::write(root.join("test.sh"), "#!/bin/sh\necho ok\n")?;
         fs::set_permissions(root.join("test.sh"), fs::Permissions::from_mode(0o755))?;
 
-        config.save(&root.join("agfs.toml"))?;
+        config.save(&root.join("yolofs.toml"))?;
 
-        let mnt = root.join(".agfs/mnt");
+        let mnt = root.join(".yolofs/mnt");
 
         let mut session = Self {
             root,
@@ -53,7 +53,7 @@ impl AgfsSession {
 
     /// Wrap an existing mounted session root (for tests that do custom setup).
     pub fn from_existing_root(root: std::path::PathBuf) -> Result<Self> {
-        let mnt = root.join(".agfs/mnt");
+        let mnt = root.join(".yolofs/mnt");
         let cursor = Some(kmsg::KmsgCursor::now().context("could not open /dev/kmsg")?);
         Ok(Self {
             root,
@@ -63,7 +63,7 @@ impl AgfsSession {
         })
     }
 
-    /// Create a new test session: seed files, write agfs.toml, `agfs mount`.
+    /// Create a new test session: seed files, write yolofs.toml, `yolo mount`.
     pub fn new() -> Result<Self> {
         Self::new_with_config(Config {
             permission: false,
@@ -80,21 +80,21 @@ impl AgfsSession {
                 .context("could not open /dev/kmsg — set kernel.dmesg_restrict=0")?,
         );
 
-        let output = Command::new(AGFS_BIN)
+        let output = Command::new(YOLO_BIN)
             .arg("mount")
             .current_dir(&self.root)
             .env("NO_COLOR", "1")
             .output()
-            .context("running agfs mount")?;
+            .context("running yolo mount")?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("agfs mount failed: {stderr}");
+            bail!("yolofs mount failed: {stderr}");
         }
         self.mounted = true;
         Ok(())
     }
 
-    /// Resolve a relative path through the agfs mount.
+    /// Resolve a relative path through the yolofs mount.
     /// e.g., "hello.txt" → <mnt>/<root>/hello.txt
     pub fn mnt_path(&self, rel: &str) -> PathBuf {
         self.mnt
@@ -109,22 +109,22 @@ impl AgfsSession {
 
     /// Get the inode store directory path.
     pub fn inodes_dir(&self) -> PathBuf {
-        self.root.join(".agfs/inodes")
+        self.root.join(".yolofs/inodes")
     }
 
-    /// Run an agfs CLI subcommand from the session root, return stdout.
+    /// Run an yolo CLI subcommand from the session root, return stdout.
     pub fn cli(&self, args: &[&str]) -> Result<String> {
-        let output = Command::new(AGFS_BIN)
+        let output = Command::new(YOLO_BIN)
             .args(args)
             .current_dir(&self.root)
             .env("NO_COLOR", "1")
             .output()
-            .context("running agfs CLI")?;
+            .context("running yolo CLI")?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
             bail!(
-                "agfs {:?} failed ({}): stdout={} stderr={}",
+                "yolo {:?} failed ({}): stdout={} stderr={}",
                 args,
                 output.status,
                 stdout,
@@ -134,14 +134,14 @@ impl AgfsSession {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Run an agfs CLI subcommand and return (success, stdout, stderr).
+    /// Run an yolo CLI subcommand and return (success, stdout, stderr).
     pub fn cli_output(&self, args: &[&str]) -> Result<(bool, String, String)> {
-        let output = Command::new(AGFS_BIN)
+        let output = Command::new(YOLO_BIN)
             .args(args)
             .current_dir(&self.root)
             .env("NO_COLOR", "1")
             .output()
-            .context("running agfs CLI")?;
+            .context("running yolo CLI")?;
         Ok((
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).to_string(),
@@ -149,18 +149,18 @@ impl AgfsSession {
         ))
     }
 
-    /// Run an agfs CLI subcommand and return the raw exit code.
+    /// Run an yolo CLI subcommand and return the raw exit code.
     pub fn cli_exit_code(&self, args: &[&str]) -> Result<i32> {
-        let output = Command::new(AGFS_BIN)
+        let output = Command::new(YOLO_BIN)
             .args(args)
             .current_dir(&self.root)
             .env("NO_COLOR", "1")
             .output()
-            .context("running agfs CLI")?;
+            .context("running yolo CLI")?;
         Ok(output.status.code().unwrap_or(-1))
     }
 
-    /// Run a command inside the sandbox via `agfs exec --` and return exit code.
+    /// Run a command inside the sandbox via `yolo exec --` and return exit code.
     pub fn run_in_sandbox(&self, cmd: &[&str]) -> Result<i32> {
         let mut args = vec!["exec", "--"];
         args.extend_from_slice(cmd);
@@ -168,7 +168,7 @@ impl AgfsSession {
     }
 }
 
-impl Drop for AgfsSession {
+impl Drop for YoloSession {
     fn drop(&mut self) {
         // Check the kernel ring buffer for unexpected messages before tearing
         // down.  Guard against double-panic: skip the check if already unwinding.
@@ -182,7 +182,7 @@ impl Drop for AgfsSession {
         };
 
         if self.mounted {
-            let _ = Command::new(AGFS_BIN)
+            let _ = Command::new(YOLO_BIN)
                 .args(["unmount", "--force"])
                 .current_dir(&self.root)
                 .env("NO_COLOR", "1")

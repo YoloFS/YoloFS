@@ -1,10 +1,10 @@
-/// agfs integration test harness.
+/// yolofs integration test harness.
 ///
 /// These tests exercise the full kernel module + CLI stack.
 ///
-///   cargo test -p agfs --test e2e -- --test-threads=1
+///   cargo test -p yolofs --test e2e -- --test-threads=1
 ///
-/// --test-threads=1 is required because each test mounts/unmounts agfs.
+/// --test-threads=1 is required because each test mounts/unmounts yolofs.
 mod helpers;
 
 mod cli;

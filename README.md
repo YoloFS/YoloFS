@@ -1,9 +1,9 @@
-# AgFS — Agentic Filesystem
+# YoloFS — Agentic Filesystem
 
 A Linux kernel stackable filesystem that provides **staging-commit semantics**
 and **progressive permission gating** for AI-agent sandboxing.
 
-AgFS stacks on top of any lower filesystem (ext4, xfs, NFS, ...) using VFS
+YoloFS stacks on top of any lower filesystem (ext4, xfs, NFS, ...) using VFS
 interposition. Every write goes to a staging layer —
 invisible to the lower FS until an explicit `commit`. Every file access is
 gated by a rule engine that can allow, deny, or interactively prompt a human
@@ -33,7 +33,7 @@ Design goals:
  └────────────────────┬─────────────────────────────┘
                       │ VFS syscall
  ┌────────────────────▼─────────────────────────────┐
- │                    AgFS                           │
+ │                    YoloFS                           │
  │       ┌─────────────┐    ┌──────────────┐        │
  │       │ Perm Gating │ →  │   Staging    │        │
  │       │   Layer     │    │    Layer     │        │
@@ -53,34 +53,34 @@ make install
 
 # Initialize a session in your project directory
 cd /home/user/project
-agfs init
+yolo init
 
-# Configure rules (or edit agfs.toml directly)
-agfs rule add .         allow-rw    # project files: full access
-agfs rule add /etc      deny        # system config: blocked
-agfs rule add /etc/hosts allow-ro   # except hosts: read-only
-agfs rule add /usr/bin  allow-rx    # binaries: run but not modify
+# Configure rules (or edit yolofs.toml directly)
+yolo rule add .         allow-rw    # project files: full access
+yolo rule add /etc      deny        # system config: blocked
+yolo rule add /etc/hosts allow-ro   # except hosts: read-only
+yolo rule add /usr/bin  allow-rx    # binaries: run but not modify
 
 # Launch an interactive sandbox (mount + watch + shell)
-agfs
+yolo
 # ... agent or shell works inside the sandbox ...
 # On exit: shows diff, prompts to commit/abort
 
 # Or use individual commands for more control:
-agfs mount
-agfs watch &                # background daemon for permission prompts
-agfs exec -- make build     # run a command inside the sandbox
-agfs status                 # show staged changes
-agfs diff                   # git-style diff of staged vs base
-agfs commit                 # apply changes to the real filesystem
-# agfs abort                # or discard everything
+yolo mount
+yolo watch &                # background daemon for permission prompts
+yolo exec -- make build     # run a command inside the sandbox
+yolo status                 # show staged changes
+yolo diff                   # git-style diff of staged vs base
+yolo commit                 # apply changes to the real filesystem
+# yolo abort                # or discard everything
 ```
 
 ## How It Compares
 
 **Staging** (vs OverlayFS):
 
-| Aspect | AgFS | OverlayFS |
+| Aspect | YoloFS | OverlayFS |
 |--------|------|-----------|
 | **Model** | Explicit commit/abort with checkpoints | Live union — upper *is* the state |
 | **Truncating write** | Zero-copy (empty inode) | Full copy-up, then truncate |
@@ -90,7 +90,7 @@ agfs commit                 # apply changes to the real filesystem
 
 **Permissions** (vs Landlock):
 
-| Aspect | AgFS | Landlock |
+| Aspect | YoloFS | Landlock |
 |--------|------|----------|
 | **Default policy** | Ask (block + prompt) | Deny (handled rights) |
 | **Overlapping rules** | Nearest-ancestor wins (both directions) | Additive only (can't deny child of allowed parent) |
@@ -110,14 +110,14 @@ make test       # run unit + e2e tests
 
 ## Configuration
 
-AgFS is configured via `agfs.toml` in the session directory:
+YoloFS is configured via `yolofs.toml` in the session directory:
 
 ```toml
 permission = true       # enable permission gating
 staging = true          # enable staging area
 ask_default = "deny"    # fallback when no daemon or on timeout
 ask_timeout = 30        # seconds before ask request times out (0 = infinite)
-checkpoint = true         # auto-checkpoint after each `agfs exec`
+checkpoint = true         # auto-checkpoint after each `yolo exec`
 
 [rules]
 "."          = "allow-rw"
@@ -127,7 +127,7 @@ checkpoint = true         # auto-checkpoint after each `agfs exec`
 ```
 
 Paths in `[rules]` can be **absolute** (`/etc`) or **relative** to the session
-root (the directory containing `.agfs/`).
+root (the directory containing `.yolofs/`).
 
 ## Documentation
 

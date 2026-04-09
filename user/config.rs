@@ -1,6 +1,6 @@
-// agfs CLI — config.rs
+// yolo CLI — config.rs
 //
-// Manages agfs.toml: read, rule add/remove, apply rules on mount.
+// Manages yolofs.toml: read, rule add/remove, apply rules on mount.
 
 use crate::ioctl;
 use anyhow::{Context, Result};
@@ -30,13 +30,13 @@ pub enum Perm {
 impl Perm {
     pub fn to_ioctl(self) -> u8 {
         match self {
-            Perm::Ask => ioctl::AGFS_PERM_ASK,
-            Perm::Allow => ioctl::AGFS_PERM_ALLOW,
-            Perm::AllowRw => ioctl::AGFS_PERM_ALLOW_RW,
-            Perm::AllowRo => ioctl::AGFS_PERM_ALLOW_RO,
-            Perm::AllowRx => ioctl::AGFS_PERM_ALLOW_RX,
-            Perm::Deny => ioctl::AGFS_PERM_DENY,
-            Perm::Hide => ioctl::AGFS_PERM_HIDE,
+            Perm::Ask => ioctl::YOLO_PERM_ASK,
+            Perm::Allow => ioctl::YOLO_PERM_ALLOW,
+            Perm::AllowRw => ioctl::YOLO_PERM_ALLOW_RW,
+            Perm::AllowRo => ioctl::YOLO_PERM_ALLOW_RO,
+            Perm::AllowRx => ioctl::YOLO_PERM_ALLOW_RX,
+            Perm::Deny => ioctl::YOLO_PERM_DENY,
+            Perm::Hide => ioctl::YOLO_PERM_HIDE,
         }
     }
 }
@@ -118,13 +118,13 @@ impl Default for Config {
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
-        let content = fs::read_to_string(path).context("reading agfs.toml")?;
-        toml::from_str(&content).context("parsing agfs.toml")
+        let content = fs::read_to_string(path).context("reading yolofs.toml")?;
+        toml::from_str(&content).context("parsing yolofs.toml")
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
         let content = toml::to_string_pretty(self).context("serializing config")?;
-        fs::write(path, content).context("writing agfs.toml")
+        fs::write(path, content).context("writing yolofs.toml")
     }
 }
 
@@ -132,7 +132,7 @@ impl Config {
 
 fn config_path() -> Result<std::path::PathBuf> {
     let cwd = env::current_dir().context("getting cwd")?;
-    Ok(cwd.join("agfs.toml"))
+    Ok(cwd.join("yolofs.toml"))
 }
 
 fn is_mounted() -> bool {
@@ -170,10 +170,10 @@ fn resolve_through_mount(abs_path: &str, mnt: &Path) -> String {
 
 // ── Mount options ─────────────────────────────────────────────────────
 
-/// Build kernel mount option string from agfs.toml.
-pub fn mount_options(agfs_dir: &Path) -> String {
-    let cwd = agfs_dir.parent().unwrap_or(Path::new("."));
-    let config_path = cwd.join("agfs.toml");
+/// Build kernel mount option string from yolofs.toml.
+pub fn mount_options(yolo_dir: &Path) -> String {
+    let cwd = yolo_dir.parent().unwrap_or(Path::new("."));
+    let config_path = cwd.join("yolofs.toml");
     let config = Config::load(&config_path).unwrap_or_default();
 
     let mut opts = vec![
@@ -193,7 +193,7 @@ pub fn mount_options(agfs_dir: &Path) -> String {
 
 // ── Apply rules from config ───────────────────────────────────────────
 
-/// Read config from agfs.toml (if present).
+/// Read config from yolofs.toml (if present).
 pub fn load_config() -> Config {
     let cp = match config_path() {
         Ok(p) => p,
@@ -202,11 +202,11 @@ pub fn load_config() -> Config {
     Config::load(&cp).unwrap_or_default()
 }
 
-/// Create agfs.toml with default config if it doesn't exist.
+/// Create yolofs.toml with default config if it doesn't exist.
 pub fn init(dir: &Path) -> Result<()> {
-    let cp = dir.join("agfs.toml");
+    let cp = dir.join("yolofs.toml");
     if cp.exists() {
-        eprintln!("{}", "agfs.toml already exists".yellow());
+        eprintln!("{}", "yolofs.toml already exists".yellow());
     } else {
         Config::default().save(&cp)?;
         eprintln!("{} {}", "created".green().bold(), cp.display());
@@ -214,10 +214,10 @@ pub fn init(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Read [rules] from agfs.toml and apply via ioctl. Called during mount.
-pub fn apply_rules(agfs_dir: &Path) -> Result<()> {
-    let cwd = agfs_dir.parent().unwrap_or(Path::new("."));
-    let cp = cwd.join("agfs.toml");
+/// Read [rules] from yolofs.toml and apply via ioctl. Called during mount.
+pub fn apply_rules(yolo_dir: &Path) -> Result<()> {
+    let cwd = yolo_dir.parent().unwrap_or(Path::new("."));
+    let cp = cwd.join("yolofs.toml");
     if !cp.exists() {
         return Ok(());
     }
@@ -227,13 +227,13 @@ pub fn apply_rules(agfs_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let ctl_file = ioctl::open(agfs_dir)?;
-    let mnt = agfs_dir.join("mnt");
+    let ctl_file = ioctl::open(yolo_dir)?;
+    let mnt = yolo_dir.join("mnt");
 
     eprintln!(
         "{}",
         format!(
-            "agfs: applying {} rule(s) from agfs.toml",
+            "yolofs: applying {} rule(s) from yolofs.toml",
             config.rules.len()
         )
         .cyan()
@@ -263,7 +263,7 @@ pub fn apply_rules(agfs_dir: &Path) -> Result<()> {
 pub fn add_rule(path: &str, perm_str: &str) -> Result<()> {
     let perm: Perm = perm_str.parse()?;
 
-    // Persist to agfs.toml
+    // Persist to yolofs.toml
     let cp = config_path()?;
     let mut config = if cp.exists() {
         Config::load(&cp)?
@@ -278,11 +278,11 @@ pub fn add_rule(path: &str, perm_str: &str) -> Result<()> {
 
     // Apply live if mounted
     if is_mounted() {
-        let agfs = crate::utils::session_dir()?;
-        let mnt = agfs.join("mnt");
+        let yolofs = crate::utils::session_dir()?;
+        let mnt = yolofs.join("mnt");
         let abs_path = resolve_to_abs(path)?;
         let resolved = resolve_through_mount(&abs_path, &mnt);
-        let ctl_file = ioctl::open(&agfs)?;
+        let ctl_file = ioctl::open(&yolofs)?;
         ioctl::add_rule(&ctl_file, &resolved, perm.to_ioctl())?;
         eprintln!(
             "{} {} = {} {}",
@@ -299,7 +299,7 @@ pub fn add_rule(path: &str, perm_str: &str) -> Result<()> {
 }
 
 pub fn remove_rule(path: &str) -> Result<()> {
-    // Update agfs.toml
+    // Update yolofs.toml
     let cp = config_path()?;
     if cp.exists() {
         let mut config = Config::load(&cp)?;
@@ -309,11 +309,11 @@ pub fn remove_rule(path: &str) -> Result<()> {
 
     // Apply live if mounted
     if is_mounted() {
-        let agfs = crate::utils::session_dir()?;
-        let mnt = agfs.join("mnt");
+        let yolofs = crate::utils::session_dir()?;
+        let mnt = yolofs.join("mnt");
         let abs_path = resolve_to_abs(path)?;
         let resolved = resolve_through_mount(&abs_path, &mnt);
-        let ctl_file = ioctl::open(&agfs)?;
+        let ctl_file = ioctl::open(&yolofs)?;
         ioctl::remove_rule(&ctl_file, &resolved)?;
         eprintln!(
             "{} {} {}",
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn resolve_to_abs_nonexistent_fails() {
-        assert!(resolve_to_abs("/nonexistent_agfs_test_path").is_err());
+        assert!(resolve_to_abs("/nonexistent_yolo_test_path").is_err());
     }
 
     #[test]
@@ -387,16 +387,16 @@ mod tests {
 
     #[test]
     fn resolve_through_mount_absolute() {
-        let mnt = PathBuf::from("/mnt/agfs");
+        let mnt = PathBuf::from("/mnt/yolofs");
         let result = resolve_through_mount("/etc/passwd", &mnt);
-        assert_eq!(result, "/mnt/agfs/etc/passwd");
+        assert_eq!(result, "/mnt/yolofs/etc/passwd");
     }
 
     #[test]
     fn resolve_through_mount_strips_leading_slash() {
-        let mnt = PathBuf::from("/mnt/agfs");
+        let mnt = PathBuf::from("/mnt/yolofs");
         let result = resolve_through_mount("/usr/bin", &mnt);
-        assert_eq!(result, "/mnt/agfs/usr/bin");
+        assert_eq!(result, "/mnt/yolofs/usr/bin");
     }
 
     #[test]
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn config_save_load_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("agfs.toml");
+        let path = tmp.path().join("yolofs.toml");
         let config = Config::default();
         config.save(&path).unwrap();
         let loaded = Config::load(&path).unwrap();
@@ -420,13 +420,13 @@ mod tests {
 
     #[test]
     fn config_load_missing_file() {
-        assert!(Config::load(Path::new("/nonexistent/agfs.toml")).is_err());
+        assert!(Config::load(Path::new("/nonexistent/yolofs.toml")).is_err());
     }
 
     #[test]
     fn config_load_invalid_toml() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("agfs.toml");
+        let path = tmp.path().join("yolofs.toml");
         fs::write(&path, "not valid { toml").unwrap();
         assert!(Config::load(&path).is_err());
     }
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn config_load_empty_sections() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("agfs.toml");
+        let path = tmp.path().join("yolofs.toml");
         fs::write(&path, "[rules]\n").unwrap();
         let config = Config::load(&path).unwrap();
         assert!(config.rules.is_empty());
@@ -444,9 +444,9 @@ mod tests {
     #[test]
     fn mount_options_no_config() {
         let tmp = tempfile::tempdir().unwrap();
-        let agfs_dir = tmp.path().join(".agfs");
-        fs::create_dir_all(&agfs_dir).unwrap();
-        let opts = mount_options(&agfs_dir);
+        let yolo_dir = tmp.path().join(".yolofs");
+        fs::create_dir_all(&yolo_dir).unwrap();
+        let opts = mount_options(&yolo_dir);
         // Falls back to defaults: permission=1,staging=1,ask_default=...
         assert!(opts.contains("permission=1"), "opts = {opts}");
         assert!(opts.contains("staging=1"), "opts = {opts}");
@@ -455,16 +455,16 @@ mod tests {
     #[test]
     fn mount_options_with_flags() {
         let tmp = tempfile::tempdir().unwrap();
-        let agfs_dir = tmp.path().join(".agfs");
-        fs::create_dir_all(&agfs_dir).unwrap();
+        let yolo_dir = tmp.path().join(".yolofs");
+        fs::create_dir_all(&yolo_dir).unwrap();
         let config = Config {
             permission: false,
             staging: false,
             ask_timeout: Some(5),
             ..Default::default()
         };
-        config.save(&tmp.path().join("agfs.toml")).unwrap();
-        let opts = mount_options(&agfs_dir);
+        config.save(&tmp.path().join("yolofs.toml")).unwrap();
+        let opts = mount_options(&yolo_dir);
         assert!(opts.contains("permission=0"), "opts = {opts}");
         assert!(opts.contains("staging=0"), "opts = {opts}");
         assert!(opts.contains("ask_timeout=5"), "opts = {opts}");
@@ -473,14 +473,14 @@ mod tests {
     #[test]
     fn mount_options_partial_flags() {
         let tmp = tempfile::tempdir().unwrap();
-        let agfs_dir = tmp.path().join(".agfs");
-        fs::create_dir_all(&agfs_dir).unwrap();
+        let yolo_dir = tmp.path().join(".yolofs");
+        fs::create_dir_all(&yolo_dir).unwrap();
         let config = Config {
             ask_timeout: Some(10),
             ..Default::default()
         };
-        config.save(&tmp.path().join("agfs.toml")).unwrap();
-        let opts = mount_options(&agfs_dir);
+        config.save(&tmp.path().join("yolofs.toml")).unwrap();
+        let opts = mount_options(&yolo_dir);
         assert!(opts.contains("ask_timeout=10"));
         assert!(opts.contains("permission=1"), "opts = {opts}");
         assert!(opts.contains("staging=1"), "opts = {opts}");
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn add_rule_to_config() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("agfs.toml");
+        let path = tmp.path().join("yolofs.toml");
         Config {
             rules: BTreeMap::new(),
             ..Default::default()
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn remove_rule_from_config() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("agfs.toml");
+        let path = tmp.path().join("yolofs.toml");
         let mut config = Config {
             rules: BTreeMap::new(),
             ..Default::default()
@@ -529,7 +529,7 @@ mod tests {
     #[test]
     fn config_invalid_perm() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("agfs.toml");
+        let path = tmp.path().join("yolofs.toml");
         fs::write(&path, "[rules]\n\"/tmp\" = \"bogus\"\n").unwrap();
         assert!(Config::load(&path).is_err());
     }
@@ -539,8 +539,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         super::init(tmp.path()).unwrap();
 
-        let path = tmp.path().join("agfs.toml");
-        assert!(path.exists(), "agfs.toml should be created");
+        let path = tmp.path().join("yolofs.toml");
+        assert!(path.exists(), "yolofs.toml should be created");
         let config = Config::load(&path).unwrap();
         assert!(
             config.permission,
@@ -552,7 +552,7 @@ mod tests {
     #[test]
     fn init_does_not_overwrite() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("agfs.toml");
+        let path = tmp.path().join("yolofs.toml");
         fs::write(&path, "permission = false\nstaging = false\n").unwrap();
 
         super::init(tmp.path()).unwrap();

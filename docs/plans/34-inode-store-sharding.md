@@ -2,20 +2,20 @@
 
 ## Problem
 
-The inode store (`.agfs/inodes/`) is a single flat directory. Every
-`agfs_inode_alloc` call does `lookup_one_len` + `vfs_create` in this
+The inode store (`.yolofs/inodes/`) is a single flat directory. Every
+`yolo_inode_alloc` call does `lookup_one_len` + `vfs_create` in this
 directory. Both operations search the ext4 htree, which grows with the
 number of staged files.
 
-Profiling linux-untar (~80K files) shows `agfs_inode_alloc` at 88% of
-`agfs_create` inclusive time. The `lookup_one_len` on line 55 of
+Profiling linux-untar (~80K files) shows `yolo_inode_alloc` at 88% of
+`yolo_create` inclusive time. The `lookup_one_len` on line 55 of
 `staging.c` is the dominant cost — it does a full negative lookup in the
 flat directory (the inode name is always fresh, so the lookup always
 fails before the create redoes the search).
 
 At 80K entries the ext4 htree is ~3 levels deep. The cost is O(log N)
 per create but with high constant factors (buffer_head lookups, journal
-handles, hash computation). This makes agfs create ~9µs/file slower than
+handles, hash computation). This makes yolofs create ~9µs/file slower than
 overlayfs, which creates files in the natural directory tree.
 
 ## Approach
@@ -23,7 +23,7 @@ overlayfs, which creates files in the natural directory tree.
 Shard the inode store into subdirectories based on inode number:
 
 ```
-.agfs/inodes/<shard>/<ino>
+.yolofs/inodes/<shard>/<ino>
 ```
 
 where `<shard> = ino / SHARD_SIZE` (e.g., SHARD_SIZE = 1000).
@@ -33,7 +33,7 @@ htree at 1 level. Shard directories are created on demand.
 
 ## Changes
 
-### kmod/staging.c — `agfs_inode_alloc`
+### kmod/staging.c — `yolo_inode_alloc`
 
 - Compute `shard = ino / SHARD_SIZE`.
 - Look up or create the shard directory under `sbi->inodes_dir`.

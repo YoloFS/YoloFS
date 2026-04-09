@@ -1,5 +1,5 @@
 use crate::workload::{MacroStepSeries, MacroStepTiming, Workload, WorkloadKind};
-use agfs::config::Perm;
+use yolofs::config::Perm;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::fs;
@@ -31,7 +31,7 @@ pub struct MiniDevWorkflow {
 pub fn details() -> crate::workloads::WorkloadDetails {
     crate::workloads::workload_details(
         "Fast macrobenchmark that mirrors dev-workflow with a tiny checked-in Git repo and nested object builds.",
-        "Clones the checked-in fixture repo from `bench/fixtures/mini-dev-workflow/source-repo/` into `~/.cache/agfs-bench/mini-dev-workflow` once and reuses checked-in command lists under `bench/fixtures/mini-dev-workflow/`.",
+        "Clones the checked-in fixture repo from `bench/fixtures/mini-dev-workflow/source-repo/` into `~/.cache/yolo-bench/mini-dev-workflow` once and reuses checked-in command lists under `bench/fixtures/mini-dev-workflow/`.",
         None,
         "Runs `git worktree add --detach <dest> <base-commit>`, an initial `make`, then per-commit search/read/edit command lists, incremental build, and git status/diff/add/commit with backend-managed checkpoints between phases.",
         file!(),
@@ -43,7 +43,7 @@ impl MiniDevWorkflow {
         Self {
             repo_cache: dirs_next::cache_dir()
                 .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("agfs-bench/mini-dev-workflow"),
+                .join("yolo-bench/mini-dev-workflow"),
             fixture_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("fixtures/mini-dev-workflow"),
         }
@@ -399,9 +399,9 @@ impl Workload for MiniDevWorkflow {
             commit_cmd
                 .args([
                     "-c",
-                    "user.name=AgFS Bench",
+                    "user.name=YoloFS Bench",
                     "-c",
-                    "user.email=bench@agfs.local",
+                    "user.email=bench@yolo.local",
                     "commit",
                     "--no-gpg-sign",
                     "-m",

@@ -1,4 +1,4 @@
-// agfs CLI — journal module
+// yolo CLI — journal module
 //
 // Structured access to the append-only journal.
 //

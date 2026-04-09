@@ -1,7 +1,7 @@
-// agfs CLI — audit.rs
+// yolo CLI — audit.rs
 //
-// `agfs audit`                — full session history (every record, dead branches dimmed).
-// `agfs audit --path <path>`  — trace operations on a specific file.
+// `yolo audit`                — full session history (every record, dead branches dimmed).
+// `yolo audit --path <path>`  — trace operations on a specific file.
 
 use crate::journal::{self, Journal};
 use anyhow::Result;
@@ -9,10 +9,10 @@ use colored::Colorize;
 
 /// Display the full journal with dead branches dimmed.
 pub fn run(path_filter: Option<&str>) -> Result<()> {
-    let agfs = crate::utils::session_dir()?;
+    let yolofs = crate::utils::session_dir()?;
     let path_filter = path_filter.map(crate::utils::normalize_path);
 
-    let journal = Journal::read(&agfs)?;
+    let journal = Journal::read(&yolofs)?;
 
     if journal.segments.iter().all(|s| s.records.is_empty()) && journal.metas.len() <= 1 {
         println!("{}", "No journal records.".yellow());

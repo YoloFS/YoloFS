@@ -3,12 +3,12 @@ members = [".", "bench"]
 exclude = ["bench/third_party/branchfs"]
 
 [package]
-name = "agfs"
+name = "yolofs"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "agfs"
+name = "yolo"
 path = "user/main.rs"
 
 [lib]

@@ -13,5 +13,5 @@ checkpoint = true
 "$HOME/.bash_history" = "allow-rw"
 "$HOME/.ssh/id_ed25519" = "ask"
 "." = "allow-rw"
-".agfs" = "hide"
-"agfs.toml" = "hide"
+".yolofs" = "hide"
+"yolofs.toml" = "hide"

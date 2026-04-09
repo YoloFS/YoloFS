@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup.sh — Install dependencies for agfs.
+# setup.sh — Install dependencies for YoloFS.
 
 set -euo pipefail
 
@@ -20,7 +20,7 @@ BUILD_PKGS=(
     build-essential                # gcc, make — kernel module compilation
     "linux-headers-$(uname -r)"   # kernel headers for kmod build
     bc                             # kernel build arithmetic
-    kmod                           # insmod/rmmod for loading agfs.ko
+    kmod                           # insmod/rmmod for loading yolofs.ko
 )
 
 # ── APT packages ──────────────────────────────────────────────────────
@@ -66,5 +66,5 @@ fi
 if [ "$(cat /proc/sys/kernel/dmesg_restrict 2>/dev/null)" != "0" ]; then
     info "Setting kernel.dmesg_restrict=0 for /dev/kmsg access"
     sudo sysctl -w kernel.dmesg_restrict=0 >/dev/null
-    echo 'kernel.dmesg_restrict=0' | sudo tee /etc/sysctl.d/99-agfs.conf >/dev/null
+    echo 'kernel.dmesg_restrict=0' | sudo tee /etc/sysctl.d/99-yolofs.conf >/dev/null
 fi

@@ -1,15 +1,15 @@
-# agfs — Evaluation & Benchmarking
+# YoloFS — Evaluation & Benchmarking
 
-This document describes the evaluation strategy for agfs: what to measure,
+This document describes the evaluation strategy for YoloFS: what to measure,
 why, and how the benchmark suite is structured.
 
 ---
 
 ## 1. Goals
 
-agfs adds overhead over a native filesystem in two areas:
+YoloFS adds overhead over a native filesystem in two areas:
 
-1. **VFS interposition** — every syscall passes through agfs's stackable ops
+1. **VFS interposition** — every syscall passes through YoloFS's stackable ops
    before reaching the lower filesystem.
 2. **Permission gating** — each file access may be resolved from a per-inode
    cache, matched against a rule, or round-tripped through a userspace daemon.
@@ -19,7 +19,7 @@ rather than directly to the base filesystem, and eventually
 flushed to the base on `commit`.
 
 The benchmark suite produces comprehensive, reproducible results demonstrating
-agfs overhead across realistic workloads, and puts it in context by comparing
+YoloFS overhead across realistic workloads, and puts it in context by comparing
 it against alternative staging/sandboxing approaches.
 
 ### Publication artifacts
@@ -38,10 +38,10 @@ the difference from native is under 5%, the cell is rendered as
 
 A dedicated `paper-report.html` page links these artifacts.
 
-For HTML report-only regeneration, `agfs-bench rerender --workload <name>`
+For HTML report-only regeneration, `yolo-bench rerender --workload <name>`
 regenerates a single workload page (and refreshes the index) without
 re-rendering every workload. For the paper-oriented developer-workflow plot,
-`agfs-bench rerender --paper dev-workflow` is accepted as a convenience alias.
+`yolo-bench rerender --paper dev-workflow` is accepted as a convenience alias.
 
 The `commit-time` paper figure uses the native `10,000`-file metadata-op time
 as its baseline reference instead of the session-micro backends, so the figure
@@ -109,7 +109,7 @@ measures the full lifecycle: mount → workload → commit.
 | `read-files` | Read 1,000 existing files | Read passthrough (lower fs or staged inode) |
 | `stat-files` | Stat 1,000 existing files | Metadata / permission check overhead |
 | `overwrite-files` | Overwrite 1,000 existing files | Copy-on-write / copy-up path |
-| `rename-files` | Rename 1,000 existing files | Directory ops + journal (agfs) or copy-up (overlayfs) |
+| `rename-files` | Rename 1,000 existing files | Directory ops + journal (YoloFS) or copy-up (overlayfs) |
 
 #### Checkpoint scalability session benchmarks
 
@@ -140,7 +140,7 @@ Default per-checkpoint sample counts for this family:
 - `readdir`: 1 operation per checkpoint step,
 - all other operations listed above: 10 operations per checkpoint step.
 
-Checkpoint depth is configurable via `AGFS_BENCH_CHECKPOINT_STEPS` (default:
+Checkpoint depth is configurable via `YOLO_BENCH_CHECKPOINT_STEPS` (default:
 `100`).
 
 To avoid a shrinking or steady-state-only dataset, the benchmark enforces a
@@ -193,10 +193,10 @@ the full Linux `dev-workflow` run is too expensive to iterate on.
 Emulates a realistic multi-step kernel development session: creating a
 worktree, building, then iterating through a patchset with search/edit/
 build/commit cycles. This is the flagship macro benchmark — it exercises
-the full agfs lifecycle under a realistic agent-like workload.
+the full YoloFS lifecycle under a realistic agent-like workload.
 
 **Fixture**: Reuses the linux git clone from the `worktree` workload
-(`~/.cache/agfs-bench/linux`) as the source repository and object store.
+(`~/.cache/yolo-bench/linux`) as the source repository and object store.
 The timed workload does **not** start from whatever commit that clone
 happens to be on. Instead, it always creates a detached worktree at the
 exact pinned base commit for the chosen series, so the checked-in command
@@ -267,7 +267,7 @@ In practice, the edit stage uses `sed -i` for simple local substitutions and
 `patch` for larger multi-line block rewrites. Each checked-in shell snippet is
 one atomic benchmark step.
 
-For `agfs-realistic`, the workload's allowlist explicitly covers standard
+For `yolo-realistic`, the workload's allowlist explicitly covers standard
 system config reads under `/etc`, Git's normal config reads, and host `/tmp`,
 and it fully allows the session worktree itself: the kernel build writes and
 executes helper binaries inside that tree during a realistic developer session.
@@ -296,7 +296,7 @@ executes helper binaries inside that tree during a realistic developer session.
 
 Every write-heavy phase (worktree creation, config, initial build, each
 edit command, each incremental build, and each git commit) is followed by
-a backend checkpoint. For agfs this is an agfs checkpoint; for
+a backend checkpoint. For YoloFS this is an yolo checkpoint; for
 overlayfs/branchfs the equivalent unmount+remount mechanism is used; for
 native, checkpoints are no-ops.
 
@@ -313,7 +313,7 @@ This shows the total session cost breakdown at a glance.
 
 **CLI**:
 ```
-agfs-bench dev-workflow [--backend <name>]
+yolo-bench dev-workflow [--backend <name>]
 ```
 
 Single command, runs the full workflow on each backend, writes
@@ -322,7 +322,7 @@ Single command, runs the full workflow on each backend, writes
 #### Worktree (`worktree`)
 
 Runs `git worktree add --detach` from a local Linux kernel clone
-(`~/.cache/agfs-bench/linux`). Exercises the read-heavy path: the workload
+(`~/.cache/yolo-bench/linux`). Exercises the read-heavy path: the workload
 reads thousands of objects from the base repository and writes a new working
 tree into the mount. The fixture (initial clone) is constructed once and
 reused; subsequent runs use `git worktree prune` to clean up stale entries
@@ -335,7 +335,7 @@ directory (`tar -xJf ... --strip-components=1`). This stresses bulk directory
 creation, inode allocation, and metadata updates from a large source tree
 without requiring a pre-existing git repository in the workload runtime path.
 
-Fixture setup is cached and reused in `~/.cache/agfs-bench/linux-tar/`:
+Fixture setup is cached and reused in `~/.cache/yolo-bench/linux-tar/`:
 
 - On first use, the workload downloads one Linux source tarball once.
 - Subsequent runs and benchmark invocations reuse the same cached tarball.
@@ -354,7 +354,7 @@ overhead of the interposition layer.
 
 Large-file I/O using [fio](https://github.com/axboe/fio). Each workload
 generates a jobfile, runs `fio --output-format=json`, and parses the result.
-Buffered I/O (`direct=0`) is used because agfs operates at the VFS level and
+Buffered I/O (`direct=0`) is used because yolofs operates at the VFS level and
 real agent workloads use the page cache. The generated fio jobfiles set
 `invalidate=0` so fio does not discard the page cache on open. Read-style fio
 workloads that need a pre-existing file create the 1 GiB backing file inside
@@ -377,10 +377,10 @@ split.
 
 | Workload | Operation | Cache | What it measures |
 |---|---|---|---|
-| `fio-seq-read-cold` | Sequential 4K read, 256 MiB over a 1 GiB file | cold | Disk read + agfs lookup overhead |
+| `fio-seq-read-cold` | Sequential 4K read, 256 MiB over a 1 GiB file | cold | Disk read + YoloFS lookup overhead |
 | `fio-seq-read-warm` | Sequential 4K read, 256 MiB over a 1 GiB file | warm | Pure VFS interposition overhead |
 | `fio-seq-write` | Sequential 4K write, 256 MiB over a 1 GiB file | — | Write path + staging overhead |
-| `fio-rand-read-cold` | Random 4K read, 256 MiB over a 1 GiB file | cold | Random disk + agfs overhead |
+| `fio-rand-read-cold` | Random 4K read, 256 MiB over a 1 GiB file | cold | Random disk + YoloFS overhead |
 | `fio-rand-read-warm` | Random 4K read, 256 MiB over a 1 GiB file | warm | Random read interposition overhead |
 | `fio-rand-write` | Random 4K write, 256 MiB over a 1 GiB file | — | Random write + staging overhead |
 | `fio-randrw-cold` | 70/30 read/write mix, 4K, 256 MiB over a 1 GiB file | cold | Mixed I/O, first-access pattern |
@@ -432,12 +432,12 @@ should cover `base`, `stage`, and `checkpoint` source variants.
 
 Each backend implements the checkpoint variant differently:
 
-- **agfs**: The agfs config used by the benchmark sets `checkpoint: false`
+- **YoloFS**: The YoloFS config used by the benchmark sets `checkpoint: false`
   to disable auto-checkpointing. For checkpoint variants, the backend
-  explicitly calls `agfs checkpoint` after `prepare_workdir()` and before
+  explicitly calls `yolo checkpoint` after `prepare_workdir()` and before
   the timed run. This increments `sbi->checkpoint_gen` in the kernel so
   that subsequent opens of the prepared files trigger re-COW via
-  `agfs_do_cow`.
+  `yolo_do_cow`.
 - **overlayfs**: The backend unmounts after `prepare_workdir()`, then
   remounts with the old upper directory demoted to an additional lower
   layer and a fresh upper directory. overlayfs supports multiple stacked
@@ -506,9 +506,9 @@ The existing subprocess protocol (print `READY`, do work, exit) is extended.
 Op workloads print a JSON results line after the work completes:
 
 ```
-AGFS_BENCH_READY
+YOLO_BENCH_READY
 <work happens>
-AGFS_BENCH_RESULTS
+YOLO_BENCH_RESULTS
 {"iops": 125000, "throughput_kbps": 500000, "lat_us_p50": 3.2, "lat_us_p99": 18.5, "lat_us_p999": 142.0}
 ```
 
@@ -517,7 +517,7 @@ instead of measuring wall time.
 
 #### Visualization
 
-Op benchmarks run across all backends (native, agfs, overlayfs, branchfs).
+Op benchmarks run across all backends (native, YoloFS, overlayfs, branchfs).
 A per-workload timeout (default 120 s) prevents FUSE-heavy backends from
 blocking the entire suite indefinitely.
 
@@ -556,12 +556,12 @@ The report index page groups results into three sections: Session Micro,
 Session Macro, and Per-Operation. Op benchmarks are included in the default
 (no-flags) run alongside session benchmarks.
 
-For long-running sweeps, `agfs-bench --skip-complete --runs N` resumes from
+For long-running sweeps, `yolo-bench --skip-complete --runs N` resumes from
 the current `results.json`: any `(workload, backend)` pair that already has
 exactly `N` timed iterations recorded is skipped, while missing or partially
 recorded pairs are still executed and merged back into the report.
 
-`agfs-bench` must be run from a release build. The binary exits immediately
+`yolo-bench` must be run from a release build. The binary exits immediately
 when compiled with debug assertions so benchmark numbers do not come from an
 unoptimized runner.
 
@@ -579,37 +579,37 @@ transitions.
 
 Each workload is run under multiple backends. A backend defines how writes are
 staged and committed. The goal is to isolate the cost of each mechanism and
-place agfs in context relative to alternatives.
+place YoloFS in context relative to alternatives.
 
 | Backend | Mechanism | Needs root? | Default? |
 |---|---|---|---|
 | `native` | Direct ext4 writes, no staging | no | yes |
-| `agfs-no-perm` | Kernel stackable fs; permission gating disabled (`permission=false`) | no (setuid) | yes |
-| `agfs-realistic` | Kernel stackable fs; workload-defined rules | no (setuid) | yes |
+| `yolo-no-perm` | Kernel stackable fs; permission gating disabled (`permission=false`) | no (setuid) | yes |
+| `yolo-realistic` | Kernel stackable fs; workload-defined rules | no (setuid) | yes |
 | `overlayfs` | User-namespace overlayfs; replay upper on commit | no (user-ns) | yes |
 | `branchfs` | FUSE copy-on-write branches; `branchfs commit` | no | yes |
 
-`agfs-bench` does **not** need to run as root. The agfs binary is setuid,
+`yolo-bench` does **not** need to run as root. The YoloFS binary is setuid,
 overlayfs uses user namespaces, and branchfs runs in userspace. Only
 the profiler (§7) invokes `sudo` internally for `perf` and `bpftrace`.
 
-### agfs backends
+### YoloFS backends
 
-The agfs backend is split into two configurations to isolate the cost of each
+The YoloFS backend is split into two configurations to isolate the cost of each
 level of gating:
 
 | Backend | Configuration | What it measures |
 |---|---|---|
-| `agfs-no-perm` | `permission=false` | VFS interposition + staging only; permission checks are fully disabled |
-| `agfs-realistic` | `permission=true`, workload-defined rules | Typical rule-based config with permission checking enabled |
+| `yolo-no-perm` | `permission=false` | VFS interposition + staging only; permission checks are fully disabled |
+| `yolo-realistic` | `permission=true`, workload-defined rules | Typical rule-based config with permission checking enabled |
 
-`agfs-no-perm` is the lower bound for pure agfs interposition overhead.
+`yolo-no-perm` is the lower bound for pure YoloFS interposition overhead.
 `native` is the absolute floor.
 
-Both agfs backend configurations set `checkpoint: false` in the generated
-`agfs.toml` to prevent `agfs exec` from auto-checkpointing. For workloads
+Both YoloFS backend configurations set `checkpoint: false` in the generated
+`yolofs.toml` to prevent `yolo exec` from auto-checkpointing. For workloads
 that need a checkpoint (the `source=checkpoint` metadata variants), the
-backend explicitly calls `agfs checkpoint` between `prepare_workdir()` and
+backend explicitly calls `yolo checkpoint` between `prepare_workdir()` and
 the timed run, giving the harness full control over when `checkpoint_gen`
 is incremented.
 
@@ -682,7 +682,7 @@ total = init_time + staging_time + commit_time
 | Backend | init | staging | commit |
 |---|---|---|---|
 | `native` | — | workload | — |
-| `agfs-*` | `agfs mount` | workload | `agfs commit` |
+| `yolo-*` | `yolo mount` | workload | `yolo commit` |
 | `overlayfs` | `unshare` + `mount -t overlay` | workload | replay upper → lower |
 | `branchfs` | `branchfs mount` + `create` | workload | `branchfs commit` |
 
@@ -691,7 +691,7 @@ subcommand. The subprocess prints a `READY` marker to stdout just before it
 starts the workload. The parent watches for this marker — wall time before it
 arrives is startup overhead (process spawn, or for `overlayfs`, full
 namespace + overlayfs setup), wall time after is staging. For backends with a
-separate init step (agfs, branchfs), init is measured in the parent before
+separate init step (YoloFS, branchfs), init is measured in the parent before
 spawning the subprocess; for `overlayfs`, init *is* the startup time
 reported by the subprocess protocol.
 
@@ -735,7 +735,7 @@ subsequent runs. If the fixture already exists it is not rebuilt.
 
 - Each workload declares its own fixture requirements via `ensure_fixture()`,
   called once before any backends run for that workload.
-- `worktree`: clones the Linux kernel to `~/.cache/agfs-bench/linux`.
+- `worktree`: clones the Linux kernel to `~/.cache/yolo-bench/linux`.
 - `write-files`: no external fixture needed.
 
 **Warm-up**: one warm-up run is performed in `native` mode before all backends
@@ -753,7 +753,7 @@ when the session is dropped at the end of each iteration.
 
 ## 6. Implementation
 
-The benchmark suite is a Rust binary (`agfs-bench`) in the same Cargo workspace
+The benchmark suite is a Rust binary (`yolo-bench`) in the same Cargo workspace
 as the CLI, under `bench/src/`. It shares ioctl types, mount helpers, config
 parsing, and kmsg utilities with the CLI via the library crate.
 
@@ -766,7 +766,7 @@ bench/src/
   backends/
     mod.rs         — registry (all, by_name)
     native.rs
-    agfs.rs        — agfs-no-perm + agfs-realistic + ProfileSession
+    yolofs.rs        — yolo-no-perm + yolo-realistic + ProfileSession
     overlayfs.rs   — direct overlayfs in user namespace
     branchfs.rs
   workload.rs      — Workload trait + IterResult
@@ -779,7 +779,7 @@ bench/src/
 
 Op workloads share helper code in `workloads/mod.rs` for:
 
-- emitting the `AGFS_BENCH_RESULTS` JSON line,
+- emitting the `YOLO_BENCH_RESULTS` JSON line,
 - computing latency percentiles from per-operation samples,
 - dropping or warming caches for cold/warm read-path benchmarks,
 - generating fio jobfiles from a small set of parameters.
@@ -798,7 +798,7 @@ Each backend implements `available()`, `unavailable_reason()`, and `hidden()`.
 - **Hidden** backends are functional but excluded from default runs because
   they add noise. Use `--backend <name>` to run them explicitly.
 
-`agfs-bench list` shows all backends with their status.
+`yolo-bench list` shows all backends with their status.
 
 ### Third-party tools
 
@@ -809,13 +809,13 @@ Each backend implements `available()`, `unavailable_reason()`, and `hidden()`.
 ### CLI
 
 ```
-agfs-bench [--workload <name> ...] [--backend <name>] [--micro] [--macro] [--op]
+yolo-bench [--workload <name> ...] [--backend <name>] [--micro] [--macro] [--op]
            [--op-group <meta|fio>]
            [--runs N] [--verbose] [--timestamped-results]
-agfs-bench rerender
-agfs-bench list
-agfs-bench profile [--workload <name>] [--scenario <name>] [--no-bpftrace]
-agfs-bench exec-workload --name <name> --dest <path> [--verbose]
+yolo-bench rerender
+yolo-bench list
+yolo-bench profile [--workload <name>] [--scenario <name>] [--no-bpftrace]
+yolo-bench exec-workload --name <name> --dest <path> [--verbose]
 ```
 
 - With no flags: runs all workloads × all available non-hidden backends.
@@ -851,7 +851,7 @@ On failure, the failing (workload, backend) combination is automatically rerun
 with verbose logging enabled. Verbose logs include:
 
 - Workload stdout/stderr
-- agfs audit contents at the point of failure (agfs backend only)
+- yolo audit contents at the point of failure (YoloFS backend only)
 
 ### Results
 
@@ -895,38 +895,38 @@ bench runner.
 
 ## 7. Profiling
 
-`agfs-bench profile` identifies *where* agfs overhead goes. It runs a single
-iteration (no warmup, no averaging) with profiling tools active. Only the agfs
+`yolo-bench profile` identifies *where* YoloFS overhead goes. It runs a single
+iteration (no warmup, no averaging) with profiling tools active. Only the YoloFS
 backend is profiled (the other backends are not kernel-instrumented).
 
 ### bpftrace op latency histograms
 
-A bpftrace script runs alongside the workload, instrumenting these agfs hot-path
+A bpftrace script runs alongside the workload, instrumenting these YoloFS hot-path
 kfunctions via BTF (`kfunc`/`kretfunc` probes):
 
 | Function | What it covers |
 |---|---|
-| `agfs_lookup` | Dentry resolution (every path component) |
-| `agfs_permission` | Permission check |
-| `agfs_resolve_perm` | Rule match + inode cache lookup/store |
-| `agfs_open` | File open |
-| `agfs_create` | File creation |
-| `agfs_create_staged` | Staging entry allocation for new file |
-| `agfs_read_iter` | Read path (lower fs or staged inode) |
-| `agfs_write_iter` | Write path (always to staged inode) |
-| `agfs_do_cow` | Copy-on-write execution (at open time) |
-| `agfs_staging_alloc` | Inode allocation in inode store |
-| `agfs_readdir` | Directory listing merged from base + staging |
-| `agfs_journal_stage` | Journal S record for staged entry (create/mkdir/symlink/COW) |
-| `agfs_journal_delete` | Journal D record for deletion |
-| `agfs_journal_rename` | Journal R record for rename |
-| `agfs_journal_mark` | Journal M record for checkpoint |
-| `agfs_release` | File release |
-| `agfs_fill_base` | Readdir phase-2 base-entry dedup |
+| `yolo_lookup` | Dentry resolution (every path component) |
+| `yolo_permission` | Permission check |
+| `yolo_resolve_perm` | Rule match + inode cache lookup/store |
+| `yolo_open` | File open |
+| `yolo_create` | File creation |
+| `yolo_create_staged` | Staging entry allocation for new file |
+| `yolo_read_iter` | Read path (lower fs or staged inode) |
+| `yolo_write_iter` | Write path (always to staged inode) |
+| `yolo_do_cow` | Copy-on-write execution (at open time) |
+| `yolo_staging_alloc` | Inode allocation in inode store |
+| `yolo_readdir` | Directory listing merged from base + staging |
+| `yolo_journal_stage` | Journal S record for staged entry (create/mkdir/symlink/COW) |
+| `yolo_journal_delete` | Journal D record for deletion |
+| `yolo_journal_rename` | Journal R record for rename |
+| `yolo_journal_mark` | Journal M record for checkpoint |
+| `yolo_release` | File release |
+| `yolo_fill_base` | Readdir phase-2 base-entry dedup |
 
 Each function gets its own per-tid start map (`@s_<func>[tid]`) to avoid
-clobbering timestamps on nested calls (e.g. `agfs_create` calling
-`agfs_staging_alloc`). Latency is accumulated into a `hist()` map in
+clobbering timestamps on nested calls (e.g. `yolo_create` calling
+`yolo_staging_alloc`). Latency is accumulated into a `hist()` map in
 microseconds; the map is flushed on SIGINT when the workload completes.
 
 perf is spawned first so it is already recording before bpftrace begins
@@ -960,7 +960,7 @@ Artifacts are saved to `bench-results/<hostname>/profiling/<workload>/<scenario>
 Example summary:
 
 ```
-Profile: write-files / agfs-no-perm  (wall: 167 ms)
+Profile: write-files / yolo-no-perm  (wall: 167 ms)
 
   op                               calls  median µs  p99 µs    total ms
   --------------------------------------------------------------------------

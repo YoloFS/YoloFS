@@ -5,7 +5,7 @@
 // pack transfer or delta computation.
 
 use crate::workload::{Workload, WorkloadKind};
-use agfs::config::Perm;
+use yolofs::config::Perm;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,7 +19,7 @@ pub struct Worktree {
 pub fn linux_fixture_dir() -> PathBuf {
     dirs_next::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("agfs-bench/linux")
+        .join("yolo-bench/linux")
 }
 
 pub fn ensure_linux_fixture(fixture: &Path) -> Result<()> {
@@ -32,7 +32,7 @@ pub fn ensure_linux_fixture(fixture: &Path) -> Result<()> {
             .status();
         return Ok(());
     }
-    std::fs::create_dir_all(fixture.parent().unwrap()).context("creating agfs-bench cache dir")?;
+    std::fs::create_dir_all(fixture.parent().unwrap()).context("creating yolo-bench cache dir")?;
 
     // Prefer cloning from the local mirror if it exists (fast, no network).
     let mirror = fixture.parent().unwrap().join("linux.git");
@@ -58,7 +58,7 @@ pub fn ensure_linux_fixture(fixture: &Path) -> Result<()> {
 pub fn details() -> crate::workloads::WorkloadDetails {
     crate::workloads::workload_details(
         "Session macrobenchmark that materializes a Linux kernel git worktree to simulate large real-world file creation.",
-        "Ensures `~/.cache/agfs-bench/linux` exists by cloning Linux once, preferring a local mirror when available, and pruning stale worktree metadata before each run.",
+        "Ensures `~/.cache/yolo-bench/linux` exists by cloning Linux once, preferring a local mirror when available, and pruning stale worktree metadata before each run.",
         None,
         "Runs `git worktree add --detach <dest>` inside the cached Linux clone. This creates roughly 80k files with no network transfer.",
         file!(),

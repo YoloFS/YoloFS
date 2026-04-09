@@ -1,14 +1,14 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Shard size must match AGFS_SHARD_SIZE in kmod/staging.c.
-/// Must match AGFS_SHARD_SIZE in kmod/staging.c.
+/// Shard size must match YOLO_SHARD_SIZE in kmod/staging.c.
+/// Must match YOLO_SHARD_SIZE in kmod/staging.c.
 const SHARD_SIZE: u32 = 100;
 
 /// Get the staged inode path for a given ino.
 /// Layout: `inodes/<shard>/<ino>` where shard = ino / SHARD_SIZE.
-pub fn inode_path(agfs_dir: &Path, ino: u32) -> PathBuf {
-    agfs_dir
+pub fn inode_path(yolo_dir: &Path, ino: u32) -> PathBuf {
+    yolo_dir
         .join("inodes")
         .join((ino / SHARD_SIZE).to_string())
         .join(ino.to_string())
@@ -19,7 +19,7 @@ pub fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
 }
 
-/// Convert an agfs-relative path (e.g. "/src/main.rs") to a base filesystem path.
+/// Convert an yolofs-relative path (e.g. "/src/main.rs") to a base filesystem path.
 pub fn to_base_path(rel: &str) -> PathBuf {
     Path::new("/").join(rel.trim_start_matches('/'))
 }
@@ -42,18 +42,18 @@ pub fn normalize_path(p: &str) -> String {
     normalize_path_with_cwd(p, &cwd)
 }
 
-/// Locate the agfs session directory.
-/// Checks AGFS_SESSION env var first, then falls back to .agfs/.
+/// Locate the yolofs session directory.
+/// Checks YOLO_SESSION env var first, then falls back to .yolofs/.
 pub fn session_dir() -> Result<PathBuf> {
-    if let Ok(session) = std::env::var("AGFS_SESSION") {
+    if let Ok(session) = std::env::var("YOLO_SESSION") {
         return Ok(PathBuf::from(session));
     }
     let cwd = std::env::current_dir().context("getting cwd")?;
-    let dir = cwd.join(".agfs");
+    let dir = cwd.join(".yolofs");
     if dir.exists() {
         Ok(dir)
     } else {
-        anyhow::bail!("no agfs session found (no .agfs/ directory)")
+        anyhow::bail!("no yolofs session found (no .yolofs/ directory)")
     }
 }
 
@@ -102,25 +102,25 @@ mod tests {
         let guard = tempfile::tempdir().unwrap();
         std::env::set_current_dir(guard.path()).unwrap();
 
-        // ── Part 1: AGFS_SESSION env var takes precedence ──
-        let dir = "/tmp/agfs-test-session";
+        // ── Part 1: YOLO_SESSION env var takes precedence ──
+        let dir = "/tmp/yolofs-test-session";
         // SAFETY: no other thread reads this var during this test.
         unsafe {
-            std::env::set_var("AGFS_SESSION", dir);
+            std::env::set_var("YOLO_SESSION", dir);
         }
         let result = session_dir().unwrap();
         assert_eq!(result, PathBuf::from(dir));
         unsafe {
-            std::env::remove_var("AGFS_SESSION");
+            std::env::remove_var("YOLO_SESSION");
         }
 
-        // ── Part 2: falls back to .agfs/ in cwd ──
+        // ── Part 2: falls back to .yolofs/ in cwd ──
         let tmp = tempfile::tempdir().unwrap();
-        let agfs_dir = tmp.path().join(".agfs");
-        std::fs::create_dir(&agfs_dir).unwrap();
+        let yolo_dir = tmp.path().join(".yolofs");
+        std::fs::create_dir(&yolo_dir).unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = session_dir().unwrap();
-        assert_eq!(result, agfs_dir);
+        assert_eq!(result, yolo_dir);
     }
 
     #[test]

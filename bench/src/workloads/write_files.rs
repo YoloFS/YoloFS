@@ -5,7 +5,7 @@
 // Parameterized by count for commit-scaling measurements.
 
 use crate::workload::{Workload, WorkloadKind};
-use agfs::config::Perm;
+use yolofs::config::Perm;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;

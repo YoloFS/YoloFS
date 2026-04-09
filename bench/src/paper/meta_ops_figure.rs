@@ -15,13 +15,13 @@ use std::path::Path;
 const NATIVE: &str = "native";
 
 /// Backends drawn as bars (display order).
-const BAR_BACKENDS: &[&str] = &["agfs-no-perm", "agfs-realistic", "overlayfs", "branchfs"];
+const BAR_BACKENDS: &[&str] = &["yolo-no-perm", "yolo-realistic", "overlayfs", "branchfs"];
 
 /// All backends emitted into the CSV (native + bar backends).
 const ALL_BACKENDS: &[&str] = &[
     "native",
-    "agfs-no-perm",
-    "agfs-realistic",
+    "yolo-no-perm",
+    "yolo-realistic",
     "overlayfs",
     "branchfs",
 ];
@@ -30,8 +30,8 @@ const ALL_BACKENDS: &[&str] = &[
 fn fig_backend_name(key: &str) -> &'static str {
     match key {
         "native" => "Base",
-        "agfs-no-perm" => "AgFS (no perm)",
-        "agfs-realistic" => "AgFS",
+        "yolo-no-perm" => "YoloFS (no perm)",
+        "yolo-realistic" => "YoloFS",
         "overlayfs" => "OverlayFS",
         "branchfs" => "BranchFS",
         _ => backend_display_name(key),

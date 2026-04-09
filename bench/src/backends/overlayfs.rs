@@ -76,11 +76,11 @@ impl Backend for Overlayfs {
     fn run_one(&self, workload: &dyn Workload, verbose: bool) -> Result<(IterResult, Vec<String>)> {
         let cache = dirs_next::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("agfs-bench");
+            .join("yolofs-bench");
         std::fs::create_dir_all(&cache)?;
 
         let root = tempfile::Builder::new()
-            .prefix("agfs-bench-ovl-")
+            .prefix("yolofs-bench-ovl-")
             .tempdir_in(&cache)
             .context("creating overlayfs session tempdir")?;
 
@@ -195,7 +195,7 @@ impl Backend for Overlayfs {
         };
 
         // Measure status time: walk ALL upper dirs (one per checkpoint layer)
-        // and classify changes in each independently, emulating agfs status
+        // and classify changes in each independently, emulating yolofs status
         // which processes each journal segment separately.
         let status_us = {
             let final_idx = current_upper
@@ -318,7 +318,7 @@ fn sudo_umount_best_effort(merged: &std::path::Path) {
 /// by checking against the lower dir. Returns total change count.
 /// Walk the upper dir, classify each entry (added/modified/deleted) by checking
 /// against the lower dir, and print each change — emulating the output overhead
-/// of `agfs status` for a fair timing comparison.
+/// of `yolofs status` for a fair timing comparison.
 fn report_upper_changes(
     upper: &std::path::Path,
     lower: &std::path::Path,

@@ -1,5 +1,5 @@
-use crate::helpers::{AGFS_BIN, AgfsSession};
-use agfs::config::{Config, Perm};
+use crate::helpers::{YOLO_BIN, YoloSession};
+use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -9,7 +9,7 @@ use std::fs;
 /// when reopened. The perm_gen fix ensures new inodes get re-resolved.
 #[test]
 fn newly_created_file_checked_on_reopen() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
         ..Default::default()
@@ -26,9 +26,9 @@ fn newly_created_file_checked_on_reopen() {
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     }
-    .save(&s.root.join("agfs.toml"))
+    .save(&s.root.join("yolofs.toml"))
     .unwrap();
-    std::process::Command::new(AGFS_BIN)
+    std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
@@ -44,11 +44,11 @@ fn newly_created_file_checked_on_reopen() {
 
 // ── Rule change via live ioctl (cache invalidation) ──
 
-/// Changing rules at runtime via `agfs rule add` should take effect
+/// Changing rules at runtime via `yolofs rule add` should take effect
 /// on subsequent opens (perm_gen increment forces cache re-resolution).
 #[test]
 fn live_rule_change_takes_effect() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
@@ -70,7 +70,7 @@ fn live_rule_change_takes_effect() {
 /// Removing a rule at runtime should re-gate access.
 #[test]
 fn live_rule_remove_reapplies_gating() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
@@ -95,7 +95,7 @@ fn live_rule_remove_reapplies_gating() {
 /// is bumped by a rule change).
 #[test]
 fn rename_across_permission_boundary() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         permission: false,
         rules: BTreeMap::new(),
         ..Default::default()
@@ -116,9 +116,9 @@ fn rename_across_permission_boundary() {
         ]),
         ..Default::default()
     }
-    .save(&s.root.join("agfs.toml"))
+    .save(&s.root.join("yolofs.toml"))
     .unwrap();
-    std::process::Command::new(AGFS_BIN)
+    std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&s.root)
         .env("NO_COLOR", "1")

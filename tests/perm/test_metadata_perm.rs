@@ -1,11 +1,11 @@
-use crate::helpers::AgfsSession;
-use agfs::config::{Config, Perm};
+use crate::helpers::YoloSession;
+use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
 
 /// Helper: create a session with deny-by-default and no rules on the session root.
-fn deny_session() -> AgfsSession {
-    AgfsSession::new_with_config(Config {
+fn deny_session() -> YoloSession {
+    YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
@@ -108,7 +108,7 @@ fn create_allowed_with_rw_rule() {
     // Use the default session which has permission=false, then we can't
     // easily set rules dynamically. Instead, create a session with
     // a rule pointing at its own root.
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Default session has permission=false, so create always works.
     fs::write(s.mnt_path("allowed.txt"), "data").expect("create should succeed without perm");
@@ -136,10 +136,10 @@ fn create_denied_with_ro_rule() {
         rules,
         ..Default::default()
     };
-    config.save(&root.join("agfs.toml")).unwrap();
+    config.save(&root.join("yolofs.toml")).unwrap();
 
     // Mount manually using the pre-configured root.
-    let output = std::process::Command::new("agfs")
+    let output = std::process::Command::new("yolofs")
         .arg("mount")
         .current_dir(&root)
         .env("NO_COLOR", "1")
@@ -147,14 +147,14 @@ fn create_denied_with_ro_rule() {
         .unwrap();
     assert!(output.status.success(), "mount failed");
 
-    let mnt = root.join(".agfs/mnt").join(root.strip_prefix("/").unwrap());
+    let mnt = root.join(".yolofs/mnt").join(root.strip_prefix("/").unwrap());
     let result = fs::write(mnt.join("denied.txt"), "data");
     assert!(
         result.is_err(),
         "create should be denied with allow-ro rule"
     );
 
-    let _ = std::process::Command::new("agfs")
+    let _ = std::process::Command::new("yolofs")
         .args(["unmount", "--force"])
         .current_dir(&root)
         .env("NO_COLOR", "1")

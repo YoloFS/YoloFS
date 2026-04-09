@@ -1,6 +1,6 @@
-// agfs CLI — restore.rs
+// yolo CLI — restore.rs
 //
-// `agfs restore <name|id>` — restore to a previous meta.
+// `yolo restore <name|id>` — restore to a previous meta.
 
 use crate::ioctl;
 use crate::journal::{Journal, Meta};
@@ -8,11 +8,11 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 
 pub fn run(meta_name: &str) -> Result<()> {
-    let agfs = crate::utils::session_dir()?;
+    let yolofs = crate::utils::session_dir()?;
 
     // Search all metas (including dead zones) for the target,
     // so that undo-restore (restoring to a dead meta) works.
-    let journal = Journal::read(&agfs)?;
+    let journal = Journal::read(&yolofs)?;
     let target_gen = journal.metas.find_meta(meta_name)?;
     let meta = journal.metas.get(target_gen as usize).cloned();
 
@@ -24,7 +24,7 @@ pub fn run(meta_name: &str) -> Result<()> {
 
     // Jump kernel state — if this fails (e.g. EBUSY), the journal is
     // still intact (append-only) and the operation can be retried.
-    let ctl_file = ioctl::open(&agfs).context("opening ctl for jump")?;
+    let ctl_file = ioctl::open(&yolofs).context("opening ctl for jump")?;
     let _new_gen = ioctl::jump(&ctl_file, target_gen, &buf).context("ioctl JUMP")?;
 
     let label = match &meta {

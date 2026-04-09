@@ -1,12 +1,12 @@
 // rename-files workload: rename N pre-existing files.
 //
-// Exercises the directory-operation path: for agfs this goes through
-// agfs_rename and appends a journal rename record; for overlayfs the
+// Exercises the directory-operation path: for YoloFS this goes through
+// yolo_rename and appends a journal rename record; for overlayfs the
 // kernel handles the rename in the upper dir (with copy-up of the parent
 // directory).
 
 use crate::workload::{Workload, WorkloadKind};
-use agfs::config::Perm;
+use yolofs::config::Perm;
 use anyhow::{Context, Result};
 use std::path::Path;
 

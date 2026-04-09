@@ -1,4 +1,4 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn write_triggers_cow() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write through mount");
 
@@ -18,7 +18,7 @@ fn write_triggers_cow() {
     let base = fs::read_to_string(s.base_path("hello.txt")).expect("read base");
     assert_eq!(base, "base content\n");
 
-    // The change should be visible via `agfs status` and `agfs diff`
+    // The change should be visible via `yolofs status` and `yolofs diff`
     let status = s.cli(&["status"]).expect("status");
     assert!(
         status.contains("hello.txt"),
@@ -34,7 +34,7 @@ fn write_triggers_cow() {
 
 #[test]
 fn write_nested_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("subdir/deep.txt"), "changed\n").expect("write nested");
 
@@ -48,7 +48,7 @@ fn write_nested_file() {
 
 #[test]
 fn multiple_writes_same_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "first\n").unwrap();
     fs::write(s.mnt_path("hello.txt"), "second\n").unwrap();
@@ -65,7 +65,7 @@ fn multiple_writes_same_file() {
 
 #[test]
 fn sequential_writes_to_different_files() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "mod1\n").unwrap();
     fs::write(s.mnt_path("multi.txt"), "mod2\n").unwrap();
@@ -101,7 +101,7 @@ fn sequential_writes_to_different_files() {
 
 #[test]
 fn overwrite_then_read() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Write, read, overwrite, read — should always see latest
     fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
@@ -119,7 +119,7 @@ fn overwrite_then_read() {
 
 #[test]
 fn append_multiple_times() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     for i in 0..5 {
         let mut f = OpenOptions::new()
@@ -143,7 +143,7 @@ fn append_multiple_times() {
 
 #[test]
 fn truncating_write() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Truncating write (O_TRUNC) via create-new
     fs::write(s.mnt_path("hello.txt"), "truncated\n").unwrap();
@@ -161,7 +161,7 @@ fn truncating_write() {
 
 #[test]
 fn append_to_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Open for append
     let mut f = OpenOptions::new()
@@ -189,7 +189,7 @@ fn append_to_file() {
 /// (the staged copy in the inode store is what gets written to).
 #[test]
 fn write_to_readonly_base_triggers_cow() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Make the base file read-only
     let base = s.base_path("hello.txt");
@@ -210,7 +210,7 @@ fn write_to_readonly_base_triggers_cow() {
 fn cow_preserves_readonly_mode() {
     use std::os::unix::fs::MetadataExt;
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let base = s.base_path("hello.txt");
     fs::set_permissions(&base, fs::Permissions::from_mode(0o444)).expect("chmod");
@@ -233,7 +233,7 @@ fn cow_preserves_readonly_mode() {
 fn cow_preserves_executable_mode() {
     use std::os::unix::fs::MetadataExt;
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // test.sh is seeded with mode 0o755
     fs::write(s.mnt_path("test.sh"), "#!/bin/sh\necho modified\n").expect("write");

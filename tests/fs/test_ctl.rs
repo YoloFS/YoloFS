@@ -1,4 +1,4 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 /// The .ctl control file should exist at the mount root.
 #[test]
 fn ctl_exists_at_mount_root() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let ctl = s.mnt.join(".ctl");
 
     let meta = fs::metadata(&ctl).expect(".ctl should exist");
@@ -16,7 +16,7 @@ fn ctl_exists_at_mount_root() {
 /// The .ctl control file should have mode 0600.
 #[test]
 fn ctl_has_correct_permissions() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let ctl = s.mnt.join(".ctl");
 
     let meta = fs::metadata(&ctl).expect(".ctl should exist");
@@ -27,7 +27,7 @@ fn ctl_has_correct_permissions() {
 /// The .ctl control file should be openable for reading.
 #[test]
 fn ctl_can_be_opened() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let ctl = s.mnt.join(".ctl");
 
     let file = fs::File::open(&ctl);
@@ -41,7 +41,7 @@ fn ctl_can_be_opened() {
 /// The .ctl control file should have zero size.
 #[test]
 fn ctl_has_zero_size() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let ctl = s.mnt.join(".ctl");
 
     let meta = fs::metadata(&ctl).expect(".ctl should exist");

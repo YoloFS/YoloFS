@@ -1,64 +1,64 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * agfs — permission gating layer.
+ * yolofs — permission gating layer.
  *
  * Resolve, cache, and check permissions. Implements the ask protocol
  * for blocking threads on unresolved permissions.
  */
 
-#include "agfs.h"
+#include "yolofs.h"
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
 
 /* ── Resolve permission by walking up dentry chain ─────────────────── */
 
-enum agfs_perm agfs_resolve_perm(struct dentry *dentry)
+enum yolo_perm yolo_resolve_perm(struct dentry *dentry)
 {
 	struct dentry *cur = dentry;
 
 	while (cur) {
-		struct agfs_dentry_info *di = AGFS_D(cur);
-		if (di && di->perm != AGFS_PERM_NONE)
+		struct yolo_dentry_info *di = YOLO_D(cur);
+		if (di && di->perm != YOLO_PERM_NONE)
 			return di->perm;
 		if (cur == cur->d_parent)
 			break;
 		cur = cur->d_parent;
 	}
-	return AGFS_PERM_ASK;
+	return YOLO_PERM_ASK;
 }
 
 /* ── Cache resolved perm on inode ──────────────────────────────────── */
 
-void agfs_cache_perm(struct inode *inode, struct dentry *dentry)
+void yolo_cache_perm(struct inode *inode, struct dentry *dentry)
 {
-	struct agfs_inode_info *info = AGFS_I(inode);
-	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
+	struct yolo_inode_info *info = YOLO_I(inode);
+	struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
 
-	info->cached_perm = agfs_resolve_perm(dentry);
+	info->cached_perm = yolo_resolve_perm(dentry);
 	info->perm_gen = atomic64_read(&sbi->perm_gen);
 }
 
 /* ── Check perm against file flags ─────────────────────────────────── */
 
-int agfs_check_perm(enum agfs_perm perm, int f_flags)
+int yolo_check_perm(enum yolo_perm perm, int f_flags)
 {
 	bool wants_write = (f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC));
 
 	switch (perm) {
-	case AGFS_PERM_ALLOW:
+	case YOLO_PERM_ALLOW:
 		return 0;
-	case AGFS_PERM_ALLOW_RW:
+	case YOLO_PERM_ALLOW_RW:
 		return 0;
-	case AGFS_PERM_ALLOW_RO:
+	case YOLO_PERM_ALLOW_RO:
 		return wants_write ? -EACCES : 0;
-	case AGFS_PERM_ALLOW_RX:
+	case YOLO_PERM_ALLOW_RX:
 		return wants_write ? -EACCES : 0;
-	case AGFS_PERM_DENY:
+	case YOLO_PERM_DENY:
 		return -EACCES;
-	case AGFS_PERM_HIDE:
+	case YOLO_PERM_HIDE:
 		return -ENOENT;	/* path doesn't exist from agent's perspective */
-	case AGFS_PERM_ASK:
-		return 0; /* ask is handled by caller (agfs_open) */
+	case YOLO_PERM_ASK:
+		return 0; /* ask is handled by caller (yolo_open) */
 	default:
 		return -EACCES;
 	}
@@ -69,57 +69,57 @@ int agfs_check_perm(enum agfs_perm perm, int f_flags)
 /*
  * Full permission check for a dentry: resolve cached perm, ask daemon
  * if unresolved, then check against the given flags.  Used by both
- * agfs_open (via file.c) and metadata ops (via inode.c).
+ * yolo_open (via file.c) and metadata ops (via inode.c).
  */
-int agfs_check_dentry_perm(struct agfs_sb_info *sbi, struct dentry *dentry,
+int yolo_check_dentry_perm(struct yolo_sb_info *sbi, struct dentry *dentry,
 			   int f_flags, fmode_t f_mode)
 {
 	struct inode *inode = d_inode(dentry);
-	struct agfs_inode_info *ii = AGFS_I(inode);
-	enum agfs_perm perm;
+	struct yolo_inode_info *ii = YOLO_I(inode);
+	enum yolo_perm perm;
 	int err;
 
 	if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
-		agfs_cache_perm(inode, dentry);
+		yolo_cache_perm(inode, dentry);
 	perm = ii->cached_perm;
 
-	if (perm == AGFS_PERM_ASK) {
+	if (perm == YOLO_PERM_ASK) {
 		unsigned int op;
-		char buf[AGFS_PATH_MAX];
+		char buf[YOLO_PATH_MAX];
 		char *relpath;
 
 		if (f_mode & FMODE_EXEC)
-			op = AGFS_OP_EXEC;
+			op = YOLO_OP_EXEC;
 		else if (f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC))
-			op = AGFS_OP_WRITE;
+			op = YOLO_OP_WRITE;
 		else
-			op = AGFS_OP_READ;
+			op = YOLO_OP_READ;
 
 		relpath = dentry_path_raw(dentry, buf, sizeof(buf));
 		if (IS_ERR(relpath))
 			return PTR_ERR(relpath);
-		err = agfs_ask_userspace(sbi, dentry, relpath, op, &perm);
+		err = yolo_ask_userspace(sbi, dentry, relpath, op, &perm);
 		if (err)
 			return err;
 		/* Cache the decision so subsequent checks don't re-ask. */
 		ii->cached_perm = perm;
 	}
 
-	return agfs_check_perm(perm, f_flags);
+	return yolo_check_perm(perm, f_flags);
 }
 
 /* ── Ask Protocol ─────────────────────────────────────────────────── */
 
-int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
-		       const char *relpath, enum agfs_op op,
-		       enum agfs_perm *result)
+int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
+		       const char *relpath, enum yolo_op op,
+		       enum yolo_perm *result)
 {
-	struct agfs_perm_request *req;
+	struct yolo_perm_request *req;
 	long timeout;
 	int err = 0;
 
 	if (!sbi->permission) {
-		*result = AGFS_PERM_ALLOW;
+		*result = YOLO_PERM_ALLOW;
 		return 0;
 	}
 
@@ -135,11 +135,11 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 
 	kref_init(&req->ref);
 	req->id = atomic64_inc_return(&sbi->ask_engine.next_req_id);
-	req->path_len = strscpy(req->path, relpath, AGFS_PATH_MAX);
+	req->path_len = strscpy(req->path, relpath, YOLO_PATH_MAX);
 	req->op = op;
 	req->pid = current->pid;
 	get_task_comm(req->comm, current);
-	req->decision = AGFS_PERM_NONE; /* undecided */
+	req->decision = YOLO_PERM_NONE; /* undecided */
 	init_completion(&req->done);
 	INIT_LIST_HEAD(&req->list);
 
@@ -169,14 +169,14 @@ int agfs_ask_userspace(struct agfs_sb_info *sbi, struct dentry *dentry,
 		list_del_init(&req->list);
 	spin_unlock(&sbi->ask_engine.pending_lock);
 
-	if (!err && req->decision == AGFS_PERM_NONE) {
+	if (!err && req->decision == YOLO_PERM_NONE) {
 		/* Shouldn't happen — treat as deny */
-		req->decision = AGFS_PERM_DENY;
+		req->decision = YOLO_PERM_DENY;
 	}
 
 	if (!err)
 		*result = req->decision;
 
-	kref_put(&req->ref, agfs_perm_request_release);
+	kref_put(&req->ref, yolo_perm_request_release);
 	return err;
 }

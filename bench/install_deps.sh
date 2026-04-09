@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install_deps.sh — Install additional dependencies for agfs-bench.
+# install_deps.sh — Install additional dependencies for yolo-bench.
 
 set -euo pipefail
 
@@ -10,7 +10,7 @@ BENCH_PKGS=(
     fio                        # flexible I/O tester for throughput/latency measurement
     # profiling
     "linux-tools-$(uname -r)"  # perf for flamegraph generation
-    bpftrace                   # per-op latency histograms on agfs kfuncs
+    bpftrace                   # per-op latency histograms on YoloFS kfuncs
     # try backend build deps (third_party/try)
     autoconf                   # try's autotools build system
     attr                       # xattr utilities used by try

@@ -1,5 +1,5 @@
 use crate::workload::{MacroStepSeries, MacroStepTiming, Workload, WorkloadKind};
-use agfs::config::Perm;
+use yolofs::config::Perm;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::fs;
@@ -31,7 +31,7 @@ pub struct DevWorkflow {
 pub fn details() -> crate::workloads::WorkloadDetails {
     crate::workloads::workload_details(
         "Session macrobenchmark that replays a real overlayfs patch series as a search/edit/build/commit workflow on a pinned Linux base commit.",
-        "Ensures `~/.cache/agfs-bench/linux` exists as the source repo/object store and reuses checked-in workflow fixtures under `bench/fixtures/dev-workflow/`.",
+        "Ensures `~/.cache/yolo-bench/linux` exists as the source repo/object store and reuses checked-in workflow fixtures under `bench/fixtures/dev-workflow/`.",
         None,
         "Runs `git worktree add --detach <dest> <base-commit>`, `make tinyconfig`, a clean build, then per-commit search/read/edit command lists, incremental build, git status/diff/add/commit, and a backend-managed checkpoint after each edit command.",
         file!(),
@@ -421,9 +421,9 @@ impl Workload for DevWorkflow {
             commit_cmd
                 .args([
                     "-c",
-                    "user.name=AgFS Bench",
+                    "user.name=YoloFS Bench",
                     "-c",
-                    "user.email=bench@agfs.local",
+                    "user.email=bench@yolo.local",
                     "commit",
                     "--no-gpg-sign",
                     "-m",

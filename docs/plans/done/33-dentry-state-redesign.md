@@ -56,19 +56,19 @@ Key points:
 ### Kernel (C)
 
 ```c
-enum agfs_target {
-    AGFS_TARGET_INODE = 1,
-    AGFS_TARGET_PATH  = 2,
-    AGFS_TARGET_NONE  = 3,
+enum yolo_target {
+    YOLO_TARGET_INODE = 1,
+    YOLO_TARGET_PATH  = 2,
+    YOLO_TARGET_NONE  = 3,
 };
 
-struct agfs_dentry_info {
+struct yolo_dentry_info {
     spinlock_t       lock;
     struct path      lower_path;
-    enum agfs_target target;
+    enum yolo_target target;
     bool             in_base;
     bool             pinned;
-    enum agfs_perm   perm;
+    enum yolo_perm   perm;
     struct list_head rule_pin;
     struct dentry    *rule_dentry;
 };
@@ -77,7 +77,7 @@ struct agfs_dentry_info {
 Key points:
 
 - The kernel stores `target`, `in_base`, and `pinned`.
-- The only ground/unpinned state is `(AGFS_TARGET_NONE, false)`.
+- The only ground/unpinned state is `(YOLO_TARGET_NONE, false)`.
 - Passthrough is therefore **not** a target on the kernel side; it is simply
   the absence of staged state (`pinned=false`).
 - File type is derived from the lower inode when lookup / readdir / restore
@@ -154,11 +154,11 @@ Important details:
 - Recover regular-file vs symlink behavior from the backing inode/path rather
   than expecting `dtype` on resolved CLI dentries.
 
-### Kernel — `kmod/agfs.h`, `kmod/dentry.c`, `kmod/inode.c`, `kmod/ioctl.c`
+### Kernel — `kmod/yolofs.h`, `kmod/dentry.c`, `kmod/inode.c`, `kmod/ioctl.c`
 
-- Replace `kind`/`agfs_dkind` with `target`/`agfs_target`.
-- Introduce explicit `pinned` handling via `agfs_dentry_set()` /
-  `agfs_dentry_reset()`.
+- Replace `kind`/`yolo_dkind` with `target`/`yolo_target`.
+- Introduce explicit `pinned` handling via `yolo_dentry_set()` /
+  `yolo_dentry_reset()`.
 - Restore path understands the recursive tree format and the empty-path
   passthrough encoding.
 

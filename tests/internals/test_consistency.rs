@@ -10,8 +10,8 @@
 //!   3. Asserts the two views agree on visibility and readdir contents
 
 use super::helpers::{inode_path, tree};
-use crate::helpers::AgfsSession;
-use agfs::journal::{DirTree, Target};
+use crate::helpers::YoloSession;
+use yolofs::journal::{DirTree, Target};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
@@ -36,11 +36,11 @@ fn entry_names(dir: &Path, skip: &[&str]) -> BTreeSet<String> {
         .collect()
 }
 
-fn root_prefix(s: &AgfsSession) -> String {
+fn root_prefix(s: &YoloSession) -> String {
     s.root.to_str().unwrap().to_string()
 }
 
-fn expected_backing_metadata(s: &AgfsSession, target: &Target) -> std::fs::Metadata {
+fn expected_backing_metadata(s: &YoloSession, target: &Target) -> std::fs::Metadata {
     match target {
         Target::StagedFile(ino) => inode_path(s, *ino)
             .symlink_metadata()
@@ -83,7 +83,7 @@ fn assert_same_file_type(rel: &str, actual: &std::fs::Metadata, expected: &std::
 ///
 /// For visible entries, also verifies the kernel-exposed file type matches
 /// the actual backing inode or redirect source.
-fn assert_overlay_visible(s: &AgfsSession) {
+fn assert_overlay_visible(s: &YoloSession) {
     let prefix = root_prefix(s);
     let t = tree(s);
     t.for_each(|path, target| {
@@ -129,7 +129,7 @@ fn assert_overlay_visible(s: &AgfsSession) {
 
 /// Resolve the base filesystem directory for a given relative path,
 /// following any Links in the CLI DirTree (handles renamed base dirs).
-fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
+fn resolve_base_dir(s: &YoloSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
     if rel_dir.is_empty() {
         return s.root.clone();
     }
@@ -160,7 +160,7 @@ fn resolve_base_dir(s: &AgfsSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
 ///
 /// Handles renamed base directories by resolving Links to find the
 /// effective base directory.
-fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
+fn assert_dir_matches(s: &YoloSession, rel_dir: &str) {
     let prefix = root_prefix(s);
     let dir_prefix = if rel_dir.is_empty() {
         prefix.clone()
@@ -168,7 +168,7 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
         format!("{prefix}/{rel_dir}")
     };
     let skip: &[&str] = if rel_dir.is_empty() {
-        &[".agfs", "agfs.toml"]
+        &[".yolofs", "yolofs.toml"]
     } else {
         &[]
     };
@@ -221,7 +221,7 @@ fn assert_dir_matches(s: &AgfsSession, rel_dir: &str) {
 }
 
 /// Combined assertion: overlay visibility + root directory readdir.
-fn assert_consistent(s: &AgfsSession) {
+fn assert_consistent(s: &YoloSession) {
     assert_overlay_visible(s);
     assert_dir_matches(s, "");
 }
@@ -230,14 +230,14 @@ fn assert_consistent(s: &AgfsSession) {
 
 #[test]
 fn add_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::write(s.mnt_path("new.txt"), "data\n").expect("create");
     assert_consistent(&s);
 }
 
 #[test]
 fn add_nested_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::create_dir(s.mnt_path("d")).expect("mkdir");
     fs::write(s.mnt_path("d/nested.txt"), "deep\n").expect("create");
     assert_overlay_visible(&s);
@@ -247,7 +247,7 @@ fn add_nested_file() {
 
 #[test]
 fn add_multiple_files() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     for i in 0..10 {
         fs::write(s.mnt_path(&format!("f{i}.txt")), format!("data {i}\n")).expect("create");
     }
@@ -258,7 +258,7 @@ fn add_multiple_files() {
 
 #[test]
 fn modify_base_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     assert_consistent(&s);
 }
@@ -268,7 +268,7 @@ fn modify_base_file() {
 /// A+D on a staged-only file produces a tombstone (always-tombstone rule).
 #[test]
 fn delete_staged_file_tombstones() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::write(s.mnt_path("temp.txt"), "temp\n").expect("create");
     fs::remove_file(s.mnt_path("temp.txt")).expect("delete");
     assert_consistent(&s);
@@ -284,7 +284,7 @@ fn delete_staged_file_tombstones() {
 /// D on a base file produces a tombstone.
 #[test]
 fn delete_base_file_tombstones() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
     assert_consistent(&s);
 
@@ -298,7 +298,7 @@ fn delete_base_file_tombstones() {
 /// Delete all base files — everything tombstoned, mount shows nothing.
 #[test]
 fn delete_all_base_files() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
     fs::remove_file(s.mnt_path("multi.txt")).expect("delete");
     fs::remove_file(s.mnt_path("test.sh")).expect("delete");
@@ -313,7 +313,7 @@ fn delete_all_base_files() {
 /// Rename a base file: Link at dest, Tombstone at source.
 #[test]
 fn rename_base_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
     assert_consistent(&s);
     assert_eq!(
@@ -325,7 +325,7 @@ fn rename_base_file() {
 /// Rename a staged file: inode reference moves, tombstone at source.
 #[test]
 fn rename_staged_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::write(s.mnt_path("new.txt"), "staged\n").expect("create");
     fs::rename(s.mnt_path("new.txt"), s.mnt_path("renamed.txt")).expect("rename");
     assert_consistent(&s);
@@ -338,7 +338,7 @@ fn rename_staged_file() {
 /// Chain renames: a→b→c.
 #[test]
 fn rename_chain() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::write(s.mnt_path("a.txt"), "start\n").expect("create");
     fs::rename(s.mnt_path("a.txt"), s.mnt_path("b.txt")).expect("rename 1");
     fs::rename(s.mnt_path("b.txt"), s.mnt_path("c.txt")).expect("rename 2");
@@ -349,7 +349,7 @@ fn rename_chain() {
 /// Rename a base directory: Link at dest dir, contents accessible.
 #[test]
 fn rename_base_dir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::rename(s.mnt_path("subdir"), s.mnt_path("newdir")).expect("rename dir");
     assert_overlay_visible(&s);
     assert_dir_matches(&s, "");
@@ -365,7 +365,7 @@ fn rename_base_dir() {
 /// Rename across directories: file moves from root to a new staged dir.
 #[test]
 fn rename_into_new_dir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::create_dir(s.mnt_path("target")).expect("mkdir");
     fs::write(s.mnt_path("src.txt"), "moved\n").expect("create");
     fs::rename(s.mnt_path("src.txt"), s.mnt_path("target/dst.txt")).expect("rename cross-dir");
@@ -377,7 +377,7 @@ fn rename_into_new_dir() {
 /// Rename a base file into a new staged directory.
 #[test]
 fn rename_base_into_new_dir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::create_dir(s.mnt_path("dest")).expect("mkdir");
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("dest/moved.txt")).expect("rename");
     assert_overlay_visible(&s);
@@ -394,7 +394,7 @@ fn rename_base_into_new_dir() {
 /// Rename a staged file onto an existing base file (overwrite).
 #[test]
 fn replace_base_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::write(s.mnt_path("new.txt"), "overwrite\n").expect("create");
     fs::rename(s.mnt_path("new.txt"), s.mnt_path("hello.txt")).expect("replace");
     assert_consistent(&s);
@@ -408,14 +408,14 @@ fn replace_base_file() {
 
 #[test]
 fn mkdir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
     assert_consistent(&s);
 }
 
 #[test]
 fn mkdir_with_files() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::create_dir(s.mnt_path("d")).expect("mkdir");
     fs::write(s.mnt_path("d/a.txt"), "a\n").expect("write a");
     fs::write(s.mnt_path("d/b.txt"), "b\n").expect("write b");
@@ -426,7 +426,7 @@ fn mkdir_with_files() {
 
 #[test]
 fn rmdir_base() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink");
     fs::remove_dir(s.mnt_path("subdir")).expect("rmdir");
     assert_consistent(&s);
@@ -436,7 +436,7 @@ fn rmdir_base() {
 
 #[test]
 fn symlink() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
     assert_consistent(&s);
 }
@@ -445,7 +445,7 @@ fn symlink() {
 
 #[test]
 fn mixed_operations() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("added.txt"), "new\n").expect("create");
     fs::create_dir(s.mnt_path("d")).expect("mkdir");
@@ -461,7 +461,7 @@ fn mixed_operations() {
 
 #[test]
 fn create_delete_recreate() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::write(s.mnt_path("cycle.txt"), "v1\n").expect("create v1");
     fs::remove_file(s.mnt_path("cycle.txt")).expect("delete");
     fs::write(s.mnt_path("cycle.txt"), "v2\n").expect("create v2");
@@ -472,7 +472,7 @@ fn create_delete_recreate() {
 /// Modify a base file then delete it (A+D → tombstone).
 #[test]
 fn modify_then_delete_base() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("modify");
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
     assert_consistent(&s);
@@ -487,7 +487,7 @@ fn modify_then_delete_base() {
 /// Rename a base file then delete it at the new location.
 #[test]
 fn rename_then_delete() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("rename");
     fs::remove_file(s.mnt_path("temp.txt")).expect("delete");
     assert_consistent(&s);
@@ -500,7 +500,7 @@ fn rename_then_delete() {
 /// Swap two base files via a temporary name.
 #[test]
 fn swap_via_tmp() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("tmp.txt")).expect("step 1");
     fs::rename(s.mnt_path("multi.txt"), s.mnt_path("hello.txt")).expect("step 2");
     fs::rename(s.mnt_path("tmp.txt"), s.mnt_path("multi.txt")).expect("step 3");
@@ -522,7 +522,7 @@ fn swap_via_tmp() {
 /// Checkpoint, add more changes, restore — state should match checkpoint.
 #[test]
 fn restore_state() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "aa\n").expect("create a");
     fs::write(s.mnt_path("hello.txt"), "mod\n").expect("modify");
@@ -543,7 +543,7 @@ fn restore_state() {
 /// Two checkpoints, restore to the first one.
 #[test]
 fn restore_to_earlier_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("create");
     s.cli(&["checkpoint", "c1"]).expect("checkpoint 1");
@@ -562,7 +562,7 @@ fn restore_to_earlier_checkpoint() {
 /// Restore with renames: verify Link entries survive the round-trip.
 #[test]
 fn restore_with_renames() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
     fs::write(s.mnt_path("new.txt"), "new\n").expect("create");
@@ -590,7 +590,7 @@ fn restore_with_renames() {
 /// userspace checking the base filesystem.
 #[test]
 fn create_over_tombstone() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete base");
     fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");
     assert_consistent(&s);
@@ -609,7 +609,7 @@ fn create_over_tombstone() {
 /// Delete a base dir, recreate it, add files inside.
 #[test]
 fn recreate_base_dir_with_files() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink child");
     fs::remove_dir(s.mnt_path("subdir")).expect("rmdir");
     fs::create_dir(s.mnt_path("subdir")).expect("mkdir again");
@@ -624,7 +624,7 @@ fn recreate_base_dir_with_files() {
 /// Verify that kernel readdir d_type matches CLI dtype for staged entries.
 #[test]
 fn readdir_dtype_matches_cli() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("reg.txt"), "data\n").expect("create file");
     fs::create_dir(s.mnt_path("dir")).expect("mkdir");
@@ -667,7 +667,7 @@ fn readdir_dtype_matches_cli() {
 /// Verify that kernel readdir ino for staged entries matches stat ino.
 #[test]
 fn readdir_ino_matches_cli() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("check_ino.txt"), "data\n").expect("create");
 
@@ -694,7 +694,7 @@ fn readdir_ino_matches_cli() {
 /// Operations at 4 levels of directory nesting.
 #[test]
 fn deep_nesting() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("a")).expect("mkdir a");
     fs::create_dir(s.mnt_path("a/b")).expect("mkdir a/b");
@@ -713,7 +713,7 @@ fn deep_nesting() {
 /// Rename a file from deep nesting to root, then delete at root.
 #[test]
 fn deep_rename_to_root() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("a")).expect("mkdir a");
     fs::create_dir(s.mnt_path("a/b")).expect("mkdir a/b");

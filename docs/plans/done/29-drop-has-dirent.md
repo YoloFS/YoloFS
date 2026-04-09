@@ -46,7 +46,7 @@ of rejected.
 
 ### 3. Kernel parsing (`kmod/ioctl.c`)
 
-- `agfs_restore_inject()`: remove `has_dirent` variable and its `read_u8` call.
+- `yolo_restore_inject()`: remove `has_dirent` variable and its `read_u8` call.
   Always read `val:le64` after the name.
 - If `val == 0`: skip dentry creation (Passthrough — no `d_alloc`/`d_add`),
   proceed directly to reading `child_count`.

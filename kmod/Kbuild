@@ -1,6 +1,6 @@
 src := $(KBUILD_KMOD_SRC)
 
-obj-m += agfs.o
-agfs-y := $(patsubst $(src)/%.c,%.o,$(wildcard $(src)/*.c))
+obj-m += yolofs.o
+yolofs-y := $(patsubst $(src)/%.c,%.o,$(wildcard $(src)/*.c))
 
 ccflags-y += -I$(src)

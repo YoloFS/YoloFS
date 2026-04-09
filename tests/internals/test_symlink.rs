@@ -1,6 +1,6 @@
 use super::helpers::{actions, ino_for, inode_path, journal, tree};
-use crate::helpers::AgfsSession;
-use agfs::journal::Action;
+use crate::helpers::YoloSession;
+use yolofs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -8,7 +8,7 @@ use std::fs;
 /// Creating a symlink produces an Entry record with dtype=Link.
 #[test]
 fn symlink_produces_add_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
 
@@ -26,7 +26,7 @@ fn symlink_produces_add_record() {
 /// Creating a symlink produces a symlink inode in inode store.
 #[test]
 fn symlink_creates_symlink_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
 
@@ -49,7 +49,7 @@ fn symlink_creates_symlink_inode() {
 /// Symlink to an absolute path preserves the absolute target.
 #[test]
 fn symlink_absolute_target() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     std::os::unix::fs::symlink("/etc/hostname", s.mnt_path("abs_link")).expect("symlink");
 
@@ -62,7 +62,7 @@ fn symlink_absolute_target() {
 /// Symlink to a relative path with directories preserves the full relative target.
 #[test]
 fn symlink_relative_with_dirs() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     std::os::unix::fs::symlink("../hello.txt", s.mnt_path("subdir/uplink")).expect("symlink");
 

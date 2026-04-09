@@ -1,6 +1,6 @@
 use super::helpers::{ino_for, inode_path, journal, metas, records, tree};
-use crate::helpers::AgfsSession;
-use agfs::journal::{Action, Meta, Record};
+use crate::helpers::YoloSession;
+use yolofs::journal::{Action, Meta, Record};
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -8,7 +8,7 @@ use std::fs;
 /// Creating a checkpoint produces a Mark record with the given name.
 #[test]
 fn checkpoint_produces_checkpoint_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     s.cli(&["checkpoint", "build"]).expect("checkpoint");
@@ -25,7 +25,7 @@ fn checkpoint_produces_checkpoint_record() {
 /// Write after checkpoint produces a new Add (re-COW) with a different ino.
 #[test]
 fn recow_after_checkpoint_produces_new_add() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
@@ -70,7 +70,7 @@ fn recow_after_checkpoint_produces_new_add() {
 /// Multiple checkpoints interleaved with writes: each mark gets a unique id.
 #[test]
 fn multiple_checkpoints_have_distinct_ids() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
@@ -101,7 +101,7 @@ fn multiple_checkpoints_have_distinct_ids() {
 /// Writing to a base file triggers COW (staged inode), then renaming emits R.
 #[test]
 fn rename_after_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
@@ -123,7 +123,7 @@ fn rename_after_checkpoint() {
 /// Delete after checkpoint: the DEL record appears after the Mark record.
 #[test]
 fn delete_after_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
@@ -146,7 +146,7 @@ fn delete_after_checkpoint() {
 /// After checkpoint + re-COW, the pre-checkpoint inode is preserved with old content.
 #[test]
 fn recow_preserves_pre_checkpoint_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
 
@@ -177,7 +177,7 @@ fn recow_preserves_pre_checkpoint_inode() {
 /// Multiple checkpoints preserve each version's inode independently.
 #[test]
 fn multiple_checkpoints_preserve_all_inodes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // v1 → chk → v2 → chk → v3
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
@@ -204,11 +204,11 @@ fn multiple_checkpoints_preserve_all_inodes() {
 
 /// Writing an untouched base file after checkpoint triggers COW correctly.
 /// This exercises the path where the dentry's cached dirent pointer is NULL
-/// (no prior staged entry), so agfs_read_dirent returns packed=0 (tombstone)
+/// (no prior staged entry), so yolo_read_dirent returns packed=0 (tombstone)
 /// and the slow COW path runs.
 #[test]
 fn untouched_base_file_cow_after_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Touch hello.txt to make the session dirty, then checkpoint.
     fs::write(s.mnt_path("hello.txt"), "dirty\n").expect("write");

@@ -1,9 +1,9 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
 #[test]
 fn abort_discards_changes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "will be aborted\n").unwrap();
 
@@ -24,7 +24,7 @@ fn abort_discards_changes() {
 
 #[test]
 fn abort_when_nothing_staged() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let output = s.cli(&["abort", "--force"]).expect("abort");
     assert!(output.contains("Nothing to discard"), "output: {output}");
@@ -33,7 +33,7 @@ fn abort_when_nothing_staged() {
 /// Abort after restore discards all staging (including restored state).
 #[test]
 fn abort_after_restore_discards_all() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");

@@ -1,5 +1,5 @@
-use crate::helpers::AgfsSession;
-use agfs::config::{Config, Perm};
+use crate::helpers::YoloSession;
+use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -10,7 +10,7 @@ use std::fs;
 /// mkdir should fail under deny.
 #[test]
 fn mkdir_denied_under_deny() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
@@ -24,7 +24,7 @@ fn mkdir_denied_under_deny() {
 /// unlink should fail under allow-ro (needs write on parent dir).
 #[test]
 fn unlink_denied_under_allow_ro() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
         ..Default::default()
@@ -38,7 +38,7 @@ fn unlink_denied_under_allow_ro() {
 /// symlink creation should fail under deny.
 #[test]
 fn symlink_denied_under_deny() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
@@ -52,7 +52,7 @@ fn symlink_denied_under_deny() {
 /// rmdir should fail under deny.
 #[test]
 fn rmdir_denied_under_deny() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
@@ -66,7 +66,7 @@ fn rmdir_denied_under_deny() {
 /// rename should fail under deny.
 #[test]
 fn rename_denied_under_deny() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
@@ -80,7 +80,7 @@ fn rename_denied_under_deny() {
 /// File creation should fail under deny (both dir op and open are gated).
 #[test]
 fn create_denied_under_deny() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
@@ -96,10 +96,10 @@ fn create_denied_under_deny() {
 }
 
 /// Listing a directory's contents should work even under deny
-/// (readdir is not a mutation, agfs_readdir doesn't check perm).
+/// (readdir is not a mutation, yolo_readdir doesn't check perm).
 #[test]
 fn readdir_allowed_under_deny() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
@@ -116,10 +116,10 @@ fn readdir_allowed_under_deny() {
     );
 }
 
-/// Stat should work even under deny (stat doesn't go through agfs_open).
+/// Stat should work even under deny (stat doesn't go through yolo_open).
 #[test]
 fn stat_allowed_under_deny() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
@@ -138,7 +138,7 @@ fn stat_allowed_under_deny() {
 /// ask_default=deny, readdir succeeds because it is never gated.
 #[test]
 fn readdir_on_ask_dir_still_succeeds_when_default_denies() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
@@ -166,7 +166,7 @@ fn readdir_on_ask_dir_still_succeeds_when_default_denies() {
 /// Stat on a directory is not gated.
 #[test]
 fn stat_on_ask_dir_not_gated() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
@@ -184,7 +184,7 @@ fn stat_on_ask_dir_not_gated() {
 /// Readdir on a directory is not gated.
 #[test]
 fn readdir_on_ask_dir_not_gated() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
@@ -202,7 +202,7 @@ fn readdir_on_ask_dir_not_gated() {
 /// nested file succeeds because traversal + stat are both ungated.
 #[test]
 fn lookup_traversal_not_gated() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
@@ -220,7 +220,7 @@ fn lookup_traversal_not_gated() {
 /// File open IS still gated even though dir ops are not.
 #[test]
 fn file_open_still_gated_when_dir_not_gated() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
@@ -242,7 +242,7 @@ fn file_open_still_gated_when_dir_not_gated() {
 /// mkdir inside an ask directory is gated (ask resolves to deny with no daemon).
 #[test]
 fn mkdir_in_ask_dir_gated() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()

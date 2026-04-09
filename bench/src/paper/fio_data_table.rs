@@ -186,10 +186,10 @@ fn build_tex(results: &BenchResults) -> Result<String> {
                 for (ci, col) in columns.iter().enumerate() {
                     let rendered = if col.key == "native" {
                         format_gbps_with_range(native_val)
-                    } else if col.key == "agfs" {
+                    } else if col.key == "yolo" {
                         rendered_gbps_cell(
                             native_kbps,
-                            vals.get("agfs-realistic").map(|v| v.mean_kbps),
+                            vals.get("yolo-realistic").map(|v| v.mean_kbps),
                             noise_pct,
                         )
                     } else {
@@ -228,9 +228,9 @@ fn build_tex(results: &BenchResults) -> Result<String> {
 }
 
 struct Column {
-    /// Internal key (e.g. "agfs-no-perm", "agfs", "overlayfs").
+    /// Internal key (e.g. "yolo-no-perm", "yolo", "overlayfs").
     key: &'static str,
-    /// Display name for the header (e.g. "AgFS", "OverlayFS").
+    /// Display name for the header (e.g. "YoloFS", "OverlayFS").
     display: &'static str,
 }
 
@@ -310,14 +310,14 @@ fn collect_data(results: &BenchResults) -> (Vec<Column>, Vec<OpRow>) {
         display: "Base (GB/s)",
     }];
 
-    // Single AgFS column using agfs-realistic data only.
+    // Single YoloFS column using yolo-realistic data only.
     if op_rows
         .iter()
-        .any(|(_, v)| v.contains_key("agfs-realistic"))
+        .any(|(_, v)| v.contains_key("yolo-realistic"))
     {
         columns.push(Column {
-            key: "agfs",
-            display: backend_display_name("agfs"),
+            key: "yolo",
+            display: backend_display_name("yolo"),
         });
     }
 

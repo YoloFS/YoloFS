@@ -5,7 +5,7 @@
 The top-level Rust userspace implementation lives under `cli/`, but the desired
 internal name for that source tree is `user/`. This rename should affect the
 repository layout and internal path references without changing the external
-`agfs` CLI or the `tests/cli/` test suite naming.
+`yolofs` CLI or the `tests/cli/` test suite naming.
 
 ## Approach
 

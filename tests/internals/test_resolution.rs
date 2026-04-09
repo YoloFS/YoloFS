@@ -1,6 +1,6 @@
 use super::helpers::{actions, journal, records};
-use crate::helpers::AgfsSession;
-use agfs::journal::{Action, Meta, Record};
+use crate::helpers::YoloSession;
+use yolofs::journal::{Action, Meta, Record};
 use std::fs;
 
 // ── Compound journal operations ──────────────────────────────────────────────
@@ -12,7 +12,7 @@ use std::fs;
 /// Multiple operations produce records in order.
 #[test]
 fn operations_produce_ordered_records() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // write → checkpoint → delete → rename
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
@@ -64,7 +64,7 @@ fn operations_produce_ordered_records() {
 /// Writing to a renamed file: rename produces R, then write produces A at new path.
 #[test]
 fn write_after_rename() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
     fs::write(s.mnt_path("moved.txt"), "updated\n").expect("write renamed file");
@@ -100,7 +100,7 @@ fn write_after_rename() {
 /// All renames now emit a single R record.
 #[test]
 fn create_then_rename() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("temp.txt"), "ephemeral\n").expect("create");
     fs::rename(s.mnt_path("temp.txt"), s.mnt_path("final.txt")).expect("rename");
@@ -123,7 +123,7 @@ fn create_then_rename() {
 /// Create a file, then delete it — both Stage and DEL records should be present.
 #[test]
 fn create_then_delete() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("ephemeral.txt"), "gone soon\n").expect("create");
     fs::remove_file(s.mnt_path("ephemeral.txt")).expect("delete");
@@ -145,7 +145,7 @@ fn create_then_delete() {
 /// Write to a base file, then delete it — produces A then DEL.
 #[test]
 fn modify_then_delete() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
@@ -165,7 +165,7 @@ fn modify_then_delete() {
 /// Rename a file, then delete the new name — produces RDR then DEL.
 #[test]
 fn rename_then_delete() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
     fs::remove_file(s.mnt_path("moved.txt")).expect("delete renamed file");
@@ -199,7 +199,7 @@ fn rename_then_delete() {
 /// Kernel emits fused RDR record with both old and new paths (no separate DEL).
 #[test]
 fn rename_emits_fused_redirect_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
@@ -236,7 +236,7 @@ fn rename_emits_fused_redirect_record() {
 /// Overwrite rename (mv onto existing file) emits fused Rename record.
 #[test]
 fn rename_overwrite_emits_fused_rename_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // hello.txt and multi.txt both exist in base
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("multi.txt")).expect("overwrite rename");

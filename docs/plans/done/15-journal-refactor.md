@@ -122,7 +122,7 @@ pub struct Journal {
 ```rust
 impl Journal {
     pub fn new(records: Vec<Record>) -> Self;
-    pub fn read(agfs_dir: &Path) -> Result<Self>;
+    pub fn read(yolo_dir: &Path) -> Result<Self>;
 }
 ```
 
@@ -183,11 +183,11 @@ impl Journal {
 Commands that use `Journal`: diff, timeline, audit, restore, mount, commit,
 abort. All change from:
 ```rust
-let sj = SegmentedJournal::new(journal::read(&agfs)?);
+let sj = SegmentedJournal::new(journal::read(&yolofs)?);
 ```
 to:
 ```rust
-let journal = Journal::read(&agfs)?;
+let journal = Journal::read(&yolofs)?;
 ```
 
 And from consuming methods to borrowing:

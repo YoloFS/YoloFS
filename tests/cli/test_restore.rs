@@ -1,10 +1,10 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
 /// Restore to a checkpoint makes the mount reflect the checkpoint state.
 #[test]
 fn restore_shows_checkpoint_state() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "version 1\n").expect("write v1");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -20,7 +20,7 @@ fn restore_shows_checkpoint_state() {
 /// Post-checkpoint created files are invisible after restore.
 #[test]
 fn restore_hides_post_checkpoint_creates() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("before.txt"), "before\n").expect("write before");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -43,7 +43,7 @@ fn restore_hides_post_checkpoint_creates() {
 /// Post-checkpoint deletes are undone after restore.
 #[test]
 fn restore_undoes_post_checkpoint_deletes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("doomed.txt"), "keep me\n").expect("write");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -64,7 +64,7 @@ fn restore_undoes_post_checkpoint_deletes() {
 /// COW works after restore — editing a restored file creates a new inode.
 #[test]
 fn cow_works_after_restore() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint 1");
@@ -87,7 +87,7 @@ fn cow_works_after_restore() {
 /// Commit after restore applies the restored state to base.
 #[test]
 fn commit_after_restore() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "wanted\n").expect("write");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -107,7 +107,7 @@ fn commit_after_restore() {
 /// Restore with renames preserves the rename.
 #[test]
 fn restore_preserves_renames() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("old.txt"), "content\n").expect("write");
     fs::rename(s.mnt_path("old.txt"), s.mnt_path("new.txt")).expect("rename");
@@ -129,7 +129,7 @@ fn restore_preserves_renames() {
 /// Restore by numeric ID works.
 #[test]
 fn restore_by_numeric_id() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     // Mark gets id=1 (first user checkpoint)
@@ -146,7 +146,7 @@ fn restore_by_numeric_id() {
 /// Restore CLI output includes checkpoint name and change count.
 #[test]
 fn restore_prints_summary() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
@@ -168,7 +168,7 @@ fn restore_prints_summary() {
 /// Restore to nonexistent checkpoint fails.
 #[test]
 fn restore_nonexistent_fails() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let result = s.cli(&["restore", "nonexistent"]);
     assert!(
@@ -182,7 +182,7 @@ fn restore_nonexistent_fails() {
 /// Restore to chk2, then restore further back to chk1.
 #[test]
 fn restore_backward_through_checkpoints() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint 1");
@@ -210,7 +210,7 @@ fn restore_backward_through_checkpoints() {
 /// Restore, make new changes, checkpoint, restore to the new checkpoint.
 #[test]
 fn restore_edit_checkpoint_restore_cycle() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "original\n").expect("write");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint 1");
@@ -244,7 +244,7 @@ fn restore_edit_checkpoint_restore_cycle() {
 /// Restore with mkdir + files inside the directory.
 #[test]
 fn restore_with_nested_directory() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("mydir")).expect("mkdir");
     fs::write(s.mnt_path("mydir/a.txt"), "a\n").expect("write a");
@@ -269,7 +269,7 @@ fn restore_with_nested_directory() {
 /// scaffolds rather than explicit staged dir nodes.
 #[test]
 fn restore_keeps_deep_file_through_passthrough_dirs() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir_all(s.mnt_path("base/a/b/c")).expect("mkdir base dirs");
     fs::write(s.mnt_path("base/a/b/c/anchor.txt"), "anchor\n").expect("write anchor");
@@ -326,7 +326,7 @@ fn restore_keeps_deep_file_through_passthrough_dirs() {
 /// Restore with rename chain: mv a→b, mv b→c, checkpoint, then restore.
 #[test]
 fn restore_rename_chain() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "content\n").expect("write a");
     fs::rename(s.mnt_path("a.txt"), s.mnt_path("b.txt")).expect("rename a→b");
@@ -349,7 +349,7 @@ fn restore_rename_chain() {
 /// more changes → restore → commit applies only checkpoint state to base.
 #[test]
 fn restore_then_commit_full_roundtrip() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create multiple files
     fs::write(s.mnt_path("keep.txt"), "keep\n").expect("write keep");
@@ -383,7 +383,7 @@ fn restore_then_commit_full_roundtrip() {
 /// Symlink at checkpoint is preserved after restore.
 #[test]
 fn restore_preserves_symlinks() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("target.txt"), "target\n").expect("write target");
     std::os::unix::fs::symlink("target.txt", s.mnt_path("link.txt")).expect("symlink");
@@ -404,7 +404,7 @@ fn restore_preserves_symlinks() {
 /// Many files across many directories — stress test for dirent injection.
 #[test]
 fn restore_many_files_across_dirs() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create a tree with 3 dirs × 5 files = 15 entries
     for dir_i in 0..3 {
@@ -444,7 +444,7 @@ fn restore_many_files_across_dirs() {
 /// Readdir after restore shows the correct merged listing.
 #[test]
 fn readdir_after_restore() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("staged.txt"), "staged\n").expect("write staged");
     fs::write(s.mnt_path("deleted_base.txt"), "to delete\n").expect("write base file");
@@ -472,10 +472,10 @@ fn readdir_after_restore() {
     );
 }
 
-/// `agfs status` after restore shows only checkpoint-state changes.
+/// `yolofs status` after restore shows only checkpoint-state changes.
 #[test]
 fn status_after_restore() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -494,10 +494,10 @@ fn status_after_restore() {
     );
 }
 
-/// `agfs diff` after restore shows only checkpoint-state diffs.
+/// `yolofs diff` after restore shows only checkpoint-state diffs.
 #[test]
 fn diff_after_restore() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -516,7 +516,7 @@ fn diff_after_restore() {
 /// New mutations after restore append to the journal correctly.
 #[test]
 fn journal_appends_after_restore() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("old.txt"), "old\n").expect("write old");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -545,7 +545,7 @@ fn journal_appends_after_restore() {
 /// Restoring to the same checkpoint twice is idempotent.
 #[test]
 fn restore_idempotent() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -565,7 +565,7 @@ fn restore_idempotent() {
 /// Deleting a base file before checkpoint; restore brings back the delete.
 #[test]
 fn restore_base_file_deletion() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // base_file.txt exists in the base FS (it was there before mount)
     // Write to create it through the mount, commit so it's in base, remount
@@ -598,7 +598,7 @@ fn restore_base_file_deletion() {
 /// Deeply nested new directories: mkdir -p a/b/c with a file inside.
 #[test]
 fn restore_deeply_nested_new_dirs() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("a")).expect("mkdir a");
     fs::create_dir(s.mnt_path("a/b")).expect("mkdir a/b");
@@ -620,7 +620,7 @@ fn restore_deeply_nested_new_dirs() {
 /// Rename + recreate at the original name, then checkpoint and restore.
 #[test]
 fn restore_rename_then_recreate() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "original\n").expect("write a");
     fs::rename(s.mnt_path("a.txt"), s.mnt_path("b.txt")).expect("rename a→b");
@@ -641,10 +641,10 @@ fn restore_rename_then_recreate() {
     );
 }
 
-/// `agfs timeline` after restore shows all checkpoints and the restore record.
+/// `yolofs timeline` after restore shows all checkpoints and the restore record.
 #[test]
 fn timeline_after_restore() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "first"]).expect("checkpoint 1");
@@ -671,7 +671,7 @@ fn timeline_after_restore() {
 /// Write after restore without new checkpoint modifies the file in place.
 #[test]
 fn write_after_restore_modifies_in_place() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -694,7 +694,7 @@ fn write_after_restore_modifies_in_place() {
 /// Renamed directory has correct d_type (DT_DIR) after restore.
 #[test]
 fn restore_renamed_directory_dtype() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create directory in base first via commit
     fs::create_dir(s.mnt_path("old_dir")).expect("mkdir");
@@ -731,7 +731,7 @@ fn restore_renamed_directory_dtype() {
 /// Renamed symlink has correct d_type (DT_LNK) after restore.
 #[test]
 fn restore_renamed_symlink_dtype() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("target.txt"), "target\n").expect("write target");
     std::os::unix::fs::symlink("target.txt", s.mnt_path("old_link")).expect("symlink");
@@ -765,7 +765,7 @@ fn restore_renamed_symlink_dtype() {
 /// O_APPEND fd (which survived the set_len truncation without a reopen).
 #[test]
 fn kernel_appends_to_journal_after_restore() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("before.txt"), "before\n").expect("write before");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -791,10 +791,10 @@ fn kernel_appends_to_journal_after_restore() {
 // ── Append-only journal / J-record tests ─────────────────────────────
 
 /// After restore, the journal is append-only (not truncated).
-/// Verify that `agfs timeline` shows the restore event.
+/// Verify that `yolofs timeline` shows the restore event.
 #[test]
 fn timeline_shows_restore_event() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "build"]).expect("checkpoint");
@@ -818,7 +818,7 @@ fn timeline_shows_restore_event() {
 /// Restore, make changes, checkpoint, then restore again (further back).
 #[test]
 fn multiple_restores_in_session() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "c1"]).expect("checkpoint c1");
@@ -845,7 +845,7 @@ fn multiple_restores_in_session() {
 /// Restore then commit applies only the live changes.
 #[test]
 fn commit_after_multiple_restores() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "c1"]).expect("checkpoint c1");
@@ -869,7 +869,7 @@ fn commit_after_multiple_restores() {
 /// Undo-restore: restore forward to a checkpoint that was in a dead zone.
 #[test]
 fn undo_restore() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "c1"]).expect("checkpoint c1");
@@ -895,13 +895,13 @@ fn undo_restore() {
 /// (triggering re-COW), then restore to the checkpoint and commit.
 /// The file should appear in base — it was staged at checkpoint time.
 ///
-/// This exercises a bug where agfs_do_cow hardcodes overwrites=true,
+/// This exercises a bug where yolo_do_cow hardcodes overwrites=true,
 /// flipping the flag for staged-only files.  If restore uses the
 /// corrupted overwrites=true, the committed file might be missing or
 /// the abort path might leave a ghost entry.
 #[test]
 fn restore_created_file_after_recow_then_commit() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create a brand-new file (not in base) and checkpoint.
     fs::write(s.mnt_path("newfile.txt"), "v1\n").expect("create");
@@ -933,7 +933,7 @@ fn restore_created_file_after_recow_then_commit() {
 /// should NOT appear in base (it was never in base).
 #[test]
 fn restore_created_file_after_recow_then_abort() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("newfile.txt"), "v1\n").expect("create");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -950,15 +950,15 @@ fn restore_created_file_after_recow_then_abort() {
 
 // ── Depth-limit and cleanup tests ────────────────────────────────────
 
-/// Create a directory tree near the AGFS_JUMP_MAX_DEPTH limit (32)
+/// Create a directory tree near the YOLO_JUMP_MAX_DEPTH limit (32)
 /// with staged files at every level, checkpoint, modify, restore.
-/// Exercises the iterative depth-first `agfs_unstage_all` walk at depth.
+/// Exercises the iterative depth-first `yolo_unstage_all` walk at depth.
 #[test]
 fn restore_deep_tree_near_max_depth() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Build a 20-level deep directory tree with a file at each level.
-    // The restore ioctl depth limit (AGFS_JUMP_MAX_DEPTH=32) also
+    // The restore ioctl depth limit (YOLO_JUMP_MAX_DEPTH=32) also
     // counts intermediate unset dirs for the path from / to the
     // session root, so we stay under the budget.
     let depth = 20;
@@ -1015,12 +1015,12 @@ fn restore_deep_tree_near_max_depth() {
 
 /// Restore a checkpoint with deeply nested staged entries, then
 /// immediately unmount (without reading files).  Verifies that
-/// `agfs_unstage_all` properly releases all pinned dentries during
-/// unmount — the AgfsSession Drop handler will panic if the kernel
+/// `yolo_unstage_all` properly releases all pinned dentries during
+/// unmount — the YoloSession Drop handler will panic if the kernel
 /// produces any warnings (e.g. from leaked dentry refs).
 #[test]
 fn restore_then_immediate_unmount() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create a non-trivial tree across multiple directories.
     for dir in &["ra", "rb", "rc"] {
@@ -1047,7 +1047,7 @@ fn restore_then_immediate_unmount() {
     s.cli(&["restore", "chk1"]).expect("restore");
 
     // Immediately unmount without reading any files.
-    // AgfsSession::drop checks for kernel warnings — if agfs_unstage_all
+    // YoloSession::drop checks for kernel warnings — if yolo_unstage_all
     // leaks dentry references, the kernel will WARN and this test fails.
     let (ok, _, stderr) = s.cli_output(&["unmount", "--force"]).unwrap();
     assert!(ok, "unmount after restore should succeed: {stderr}");
@@ -1056,7 +1056,7 @@ fn restore_then_immediate_unmount() {
 /// Restore to a jump meta (not a checkpoint) by its numeric gen_id.
 #[test]
 fn restore_to_restore_meta() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // v1 state
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write v1");

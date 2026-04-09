@@ -1,6 +1,6 @@
 use super::helpers::{ino_for, inode_path, inos, journal, metas, tree};
-use crate::helpers::AgfsSession;
-use agfs::journal::Meta;
+use crate::helpers::YoloSession;
+use yolofs::journal::Meta;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
@@ -9,7 +9,7 @@ use std::os::unix::fs::MetadataExt;
 /// Restore keeps journal records up to and including the mark meta.
 #[test]
 fn restore_journal_contains_checkpoint_meta() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -29,7 +29,7 @@ fn restore_journal_contains_checkpoint_meta() {
 /// Restore appends a J record; reachable + resolve excludes post-checkpoint mutations.
 #[test]
 fn restore_journal_has_no_post_checkpoint_records() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -65,7 +65,7 @@ fn restore_journal_has_no_post_checkpoint_records() {
 /// Pre-checkpoint inodes are preserved after restore.
 #[test]
 fn restore_keeps_pre_checkpoint_inodes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     let pre_ino = ino_for(&tree(&s), "/a.txt");
@@ -88,7 +88,7 @@ fn restore_keeps_pre_checkpoint_inodes() {
 /// Post-checkpoint inodes are orphaned but still on disk after restore.
 #[test]
 fn restore_orphans_post_checkpoint_inodes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -115,7 +115,7 @@ fn restore_orphans_post_checkpoint_inodes() {
 /// Abort after restore cleans up all inodes including orphans.
 #[test]
 fn abort_after_jump_cleans_orphans() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -135,7 +135,7 @@ fn abort_after_jump_cleans_orphans() {
 /// be recycled.
 #[test]
 fn restore_new_files_get_fresh_inodes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create a file and checkpoint.
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
@@ -181,7 +181,7 @@ fn restore_new_files_get_fresh_inodes() {
 /// Writing to a restored file without a new checkpoint reuses the inode.
 #[test]
 fn write_after_jump_without_checkpoint_reuses_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -206,7 +206,7 @@ fn write_after_jump_without_checkpoint_reuses_inode() {
 /// Writing after restore + new checkpoint triggers re-COW (new inode).
 #[test]
 fn write_after_jump_and_checkpoint_triggers_recow() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -230,7 +230,7 @@ fn write_after_jump_and_checkpoint_triggers_recow() {
 /// Re-COW after restore preserves the pre-checkpoint inode content.
 #[test]
 fn recow_after_jump_preserves_old_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
     let v1_ino = ino_for(&tree(&s), "/file.txt");
@@ -256,7 +256,7 @@ fn recow_after_jump_preserves_old_inode() {
 /// Resolved dentries after restore exactly match the checkpoint state.
 #[test]
 fn resolved_changes_match_checkpoint_state() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
@@ -290,7 +290,7 @@ fn resolved_changes_match_checkpoint_state() {
 /// Renamed directory resolves to a Renamed change after restore.
 #[test]
 fn restore_renamed_directory_in_resolved_changes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create directory in base first via commit
     fs::create_dir(s.mnt_path("old_dir")).expect("mkdir");
@@ -333,7 +333,7 @@ fn restore_renamed_directory_in_resolved_changes() {
 /// Renamed symlink resolves correctly after restore and inode store is consistent.
 #[test]
 fn restore_renamed_symlink_in_resolved_changes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("target.txt"), "target\n").expect("write target");
     std::os::unix::fs::symlink("target.txt", s.mnt_path("old_link")).expect("symlink");
@@ -378,9 +378,9 @@ fn restore_renamed_symlink_in_resolved_changes() {
 /// The journal file inode must be preserved across restore (set_len, not replace).
 #[test]
 fn restore_preserves_journal_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
-    let journal_path = s.root.join(".agfs/journal");
+    let journal_path = s.root.join(".yolofs/journal");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -400,9 +400,9 @@ fn restore_preserves_journal_inode() {
 /// After restore, the journal grows (J record appended) and original bytes are preserved.
 #[test]
 fn restore_journal_is_byte_prefix() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
-    let journal_path = s.root.join(".agfs/journal");
+    let journal_path = s.root.join(".yolofs/journal");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -438,7 +438,7 @@ fn restore_journal_is_byte_prefix() {
 /// target checkpoint's gen_id (monotonically increasing).
 #[test]
 fn restore_j_record_has_correct_gen() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");

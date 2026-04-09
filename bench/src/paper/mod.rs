@@ -75,7 +75,7 @@ pub(crate) struct Artifact {
 /// extracts float fragments (between BEGIN/END markers), and writes
 /// everything to `<paper_dir>/generated/`.
 ///
-/// Run `agfs-bench rerender` first if artifacts are stale.
+/// Run `yolo-bench rerender` first if artifacts are stale.
 pub fn install(_results: &crate::BenchResults, out_dir: &Path, paper_dir: &Path) -> Result<()> {
     if !paper_dir.join("main.tex").exists() {
         anyhow::bail!(
@@ -87,7 +87,7 @@ pub fn install(_results: &crate::BenchResults, out_dir: &Path, paper_dir: &Path)
     let bench_paper_dir = out_dir.join("paper");
     if !bench_paper_dir.exists() {
         anyhow::bail!(
-            "{} not found — run `agfs-bench rerender` first",
+            "{} not found — run `yolo-bench rerender` first",
             bench_paper_dir.display()
         );
     }
@@ -199,7 +199,7 @@ fn rewrite_includegraphics(fragment: &str, prefix: &str) -> String {
 fn render_index(artifacts: &[Artifact], out_dir: &Path) -> Result<()> {
     let mut html = String::new();
     html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\">\n");
-    html.push_str("<title>agfs-bench paper report</title>\n");
+    html.push_str("<title>yolo-bench paper report</title>\n");
     html.push_str(
         "<style>\n\
         body { font-family: system-ui, sans-serif; margin: 1.5em; background: #fafafa; }\n\

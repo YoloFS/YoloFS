@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * agfs — append-only journal.
+ * yolofs — append-only journal.
  *
  * Written by the kernel on every mutation. Read by the CLI for
  * commit/abort/status/diff. The kernel never reads it back.
@@ -13,14 +13,14 @@
  *   J\0<gen>\0<target_gen>\n          — Jump
  */
 
-#include "agfs.h"
+#include "yolofs.h"
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/namei.h>
 
 /* ── Open the journal file, cache on sbi ───────────────────────────── */
 
-int agfs_journal_open(struct agfs_sb_info *sbi)
+int yolo_journal_open(struct yolo_sb_info *sbi)
 {
 	struct path journal_p;
 	struct file *f;
@@ -43,10 +43,10 @@ int agfs_journal_open(struct agfs_sb_info *sbi)
 
 /* ── Write one record ───────────────────────────────────────────────── */
 
-static int journal_write(struct agfs_sb_info *sbi, char tag,
+static int journal_write(struct yolo_sb_info *sbi, char tag,
 			 const char **fields)
 {
-	char buf[3 * AGFS_PATH_MAX + 64];
+	char buf[3 * YOLO_PATH_MAX + 64];
 	size_t off = 0;
 	const char **fp;
 	struct file *f = sbi->journal_file;
@@ -79,10 +79,10 @@ static int journal_write(struct agfs_sb_info *sbi, char tag,
 
 /* ── Public: typed journal record writers ──────────────────────────── */
 
-int agfs_journal_stage(struct agfs_sb_info *sbi, struct dentry *dentry,
+int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
 		      u32 ino)
 {
-	char path_buf[AGFS_PATH_MAX];
+	char path_buf[YOLO_PATH_MAX];
 	char ino_str[11];
 	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
 	if (IS_ERR(path))
@@ -94,9 +94,9 @@ int agfs_journal_stage(struct agfs_sb_info *sbi, struct dentry *dentry,
 			     (const char *[]){ path, ino_str, NULL });
 }
 
-int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry)
+int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry)
 {
-	char path_buf[AGFS_PATH_MAX];
+	char path_buf[YOLO_PATH_MAX];
 	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
 	if (IS_ERR(path))
 		return PTR_ERR(path);
@@ -105,11 +105,11 @@ int agfs_journal_delete(struct agfs_sb_info *sbi, struct dentry *dentry)
 			     (const char *[]){ path, NULL });
 }
 
-int agfs_journal_rename(struct agfs_sb_info *sbi, struct dentry *old_dentry,
+int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 			struct dentry *new_dentry)
 {
-	char dst_buf[AGFS_PATH_MAX];
-	char src_buf[AGFS_PATH_MAX];
+	char dst_buf[YOLO_PATH_MAX];
+	char src_buf[YOLO_PATH_MAX];
 	char *dst_path, *src_path;
 
 	dst_path = dentry_path_raw(new_dentry, dst_buf, sizeof(dst_buf));
@@ -124,7 +124,7 @@ int agfs_journal_rename(struct agfs_sb_info *sbi, struct dentry *old_dentry,
 			     (const char *[]){ dst_path, src_path, NULL });
 }
 
-int agfs_journal_mark(struct agfs_sb_info *sbi, u16 id, const char *name)
+int yolo_journal_mark(struct yolo_sb_info *sbi, u16 id, const char *name)
 {
 	char id_str[6];
 
@@ -134,14 +134,14 @@ int agfs_journal_mark(struct agfs_sb_info *sbi, u16 id, const char *name)
 }
 
 /**
- * agfs_journal_jump - Append a jump record to the journal.
+ * yolo_journal_jump - Append a jump record to the journal.
  * @sbi: superblock info (has journal_file)
  * @gen: new generation assigned to this jump
  * @target_gen: the mark gen being jumped to
  *
  * Format: J\0<gen>\0<target_gen>\n
  */
-int agfs_journal_jump(struct agfs_sb_info *sbi, u16 gen, u16 target_gen)
+int yolo_journal_jump(struct yolo_sb_info *sbi, u16 gen, u16 target_gen)
 {
 	char gen_str[6];
 	char target_str[6];

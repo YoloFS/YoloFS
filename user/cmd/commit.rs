@@ -1,6 +1,6 @@
-// agfs CLI — commit.rs
+// yolo CLI — commit.rs
 //
-// `agfs commit` — apply staged changes to base.
+// `yolo commit` — apply staged changes to base.
 //
 // Builds a DirTree from live journal segments, converts it to a commit
 // plan (see journal/plan.rs), then applies each action in execution order.
@@ -38,12 +38,12 @@ fn remove_existing(path: &Path, meta: &fs::Metadata) -> Result<()> {
 
 /// Apply a staged inode to base.
 fn apply_stage(
-    agfs_dir: &Path,
+    yolo_dir: &Path,
     ino: u32,
     base_path: &Path,
     ensured: &mut HashSet<PathBuf>,
 ) -> Result<()> {
-    let staged = crate::utils::inode_path(agfs_dir, ino);
+    let staged = crate::utils::inode_path(yolo_dir, ino);
     let meta = fs::symlink_metadata(&staged)
         .with_context(|| format!("stat staged inode {}", staged.display()))?;
 
@@ -99,7 +99,7 @@ fn apply_delete(path: &Path) -> Result<()> {
 
 // ── Apply ─────────────────────────────────────────────────────────────
 
-fn apply_plan(agfs: &Path, plan: &crate::journal::CommitPlan) -> Result<usize> {
+fn apply_plan(yolofs: &Path, plan: &crate::journal::CommitPlan) -> Result<usize> {
     use crate::journal::types::Action;
     let mut ensured: HashSet<PathBuf> = HashSet::new();
 
@@ -116,7 +116,7 @@ fn apply_plan(agfs: &Path, plan: &crate::journal::CommitPlan) -> Result<usize> {
                 apply_delete(&crate::utils::to_base_path(path))?;
             }
             Action::Stage { path, ino } => {
-                apply_stage(agfs, *ino, &crate::utils::to_base_path(path), &mut ensured)?;
+                apply_stage(yolofs, *ino, &crate::utils::to_base_path(path), &mut ensured)?;
             }
         }
     }
@@ -127,9 +127,9 @@ fn apply_plan(agfs: &Path, plan: &crate::journal::CommitPlan) -> Result<usize> {
 // ── Entry point ───────────────────────────────────────────────────────
 
 pub fn run() -> Result<()> {
-    let agfs = crate::utils::session_dir()?;
+    let yolofs = crate::utils::session_dir()?;
 
-    let journal = Journal::read(&agfs)?;
+    let journal = Journal::read(&yolofs)?;
     let plan = journal.into_tree().into_plan();
 
     if plan.is_empty() {
@@ -137,9 +137,9 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    let committed = apply_plan(&agfs, &plan)?;
+    let committed = apply_plan(&yolofs, &plan)?;
 
-    super::abort::reset_staging(&agfs)?;
+    super::abort::reset_staging(&yolofs)?;
 
     println!(
         "{}",

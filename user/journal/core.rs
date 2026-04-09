@@ -1,4 +1,4 @@
-// agfs CLI — journal/core.rs
+// yolo CLI — journal/core.rs
 //
 // The Journal: segments + metas + precomputed liveness.
 // Borrowing filter methods — no moves, no collects, no intermediate allocations.
@@ -69,8 +69,8 @@ impl Journal {
     }
 
     /// Read and parse the journal file, then build a Journal.
-    pub fn read(agfs_dir: &Path) -> Result<Self> {
-        Ok(Self::new(parse::read(agfs_dir)?))
+    pub fn read(yolo_dir: &Path) -> Result<Self> {
+        Ok(Self::new(parse::read(yolo_dir)?))
     }
 
     /// Whether the segment with this gen_id is alive (for audit/timeline display).

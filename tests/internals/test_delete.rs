@@ -1,6 +1,6 @@
 use super::helpers::{actions, ino_for, inode_path, inos, journal, tree};
-use crate::helpers::AgfsSession;
-use agfs::journal::Action;
+use crate::helpers::YoloSession;
+use yolofs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -8,7 +8,7 @@ use std::fs;
 /// Deleting a file produces a Delete record.
 #[test]
 fn delete_produces_delete_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
@@ -26,7 +26,7 @@ fn delete_produces_delete_record() {
 /// Deleting a file does NOT create a new inode (only a journal DEL record).
 #[test]
 fn delete_creates_no_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let inos_before = inos(&s);
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
@@ -41,7 +41,7 @@ fn delete_creates_no_inode() {
 /// Delete then recreate a file: the new file gets a fresh inode.
 #[test]
 fn delete_recreate_gets_new_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
     fs::write(s.mnt_path("hello.txt"), "reborn\n").expect("recreate");

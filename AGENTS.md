@@ -1,8 +1,8 @@
-# AGENTS.md — Coding Guidelines for AgFS
+# AGENTS.md — Coding Guidelines for YoloFS
 
 ## Scope
 
-- This file applies to the AgFS implementation work: `kmod/`, `user/`, `tests/`,
+- This file applies to the YoloFS implementation work: `kmod/`, `user/`, `tests/`,
   `docs/`, and related implementation and benchmark code.
 - It does **not** apply to the paper-related directories (`paper/`,
   `paper-plan/`, `paper-study/`) or the evaluation/result directories
@@ -35,9 +35,9 @@
   Unit tests live inline via `#[cfg(test)]` in each module.
 - **tests/** — E2E / integration tests.
   - `tests/fs/` — black-box filesystem behavior through the mount via `std::fs`.
-  - `tests/cli/` — black-box; run `agfs <subcommand>` and assert on stdout/stderr/exit-code.
+  - `tests/cli/` — black-box; run `yolo <subcommand>` and assert on stdout/stderr/exit-code.
   - `tests/perm/` — black-box permission rule enforcement.
-  - `tests/internals/` — white-box; inspect `.agfs/inodes/` and `.agfs/journal` directly.
+  - `tests/internals/` — white-box; inspect `.yolofs/inodes/` and `.yolofs/journal` directly.
 - **docs/** — Design documents (architecture.md, cli.md, internals.md, permissions.md, staging.md, benchmark.md). Keep in sync with code.
 
 ## Build & Test

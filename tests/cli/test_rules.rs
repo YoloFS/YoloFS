@@ -1,11 +1,11 @@
-use crate::helpers::AGFS_BIN;
-use crate::helpers::AgfsSession;
-use agfs::config::{Config, Perm};
+use crate::helpers::YOLO_BIN;
+use crate::helpers::YoloSession;
+use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 
 #[test]
 fn apply_rules_shows_results() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     // Unmount, write custom rules, remount
     session.cli(&["unmount"]).unwrap();
@@ -17,15 +17,15 @@ fn apply_rules_shows_results() {
         ]),
         ..Default::default()
     }
-    .save(&session.root.join("agfs.toml"))
+    .save(&session.root.join("yolofs.toml"))
     .unwrap();
 
-    let output = std::process::Command::new(AGFS_BIN)
+    let output = std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&session.root)
         .env("NO_COLOR", "1")
         .output()
-        .expect("running agfs mount");
+        .expect("running yolofs mount");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("applying 2 rule(s)"), "stderr = {stderr}");
@@ -35,22 +35,22 @@ fn apply_rules_shows_results() {
 
 #[test]
 fn apply_rules_rejects_invalid_toml() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     session.cli(&["unmount"]).unwrap();
     // Write raw TOML with an invalid perm — typed Config can't represent this
     std::fs::write(
-        session.root.join("agfs.toml"),
+        session.root.join("yolofs.toml"),
         "permission = false\n\n[rules]\n\"/etc\" = \"bogus\"\n",
     )
     .unwrap();
 
-    let output = std::process::Command::new(AGFS_BIN)
+    let output = std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&session.root)
         .env("NO_COLOR", "1")
         .output()
-        .expect("running agfs mount");
+        .expect("running yolofs mount");
 
     assert!(
         !output.status.success(),
@@ -60,7 +60,7 @@ fn apply_rules_rejects_invalid_toml() {
 
 #[test]
 fn rule_add_persists_offline() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     session.cli(&["unmount"]).unwrap();
     Config {
@@ -68,7 +68,7 @@ fn rule_add_persists_offline() {
         rules: BTreeMap::new(),
         ..Default::default()
     }
-    .save(&session.root.join("agfs.toml"))
+    .save(&session.root.join("yolofs.toml"))
     .unwrap();
 
     let (ok, _, stderr) = session
@@ -76,31 +76,31 @@ fn rule_add_persists_offline() {
         .unwrap();
     assert!(ok, "rule add should succeed: {stderr}");
 
-    let content = std::fs::read_to_string(session.root.join("agfs.toml")).unwrap();
+    let content = std::fs::read_to_string(session.root.join("yolofs.toml")).unwrap();
     assert!(
         content.contains("allow-rw"),
-        "rule should be in agfs.toml: {content}"
+        "rule should be in yolofs.toml: {content}"
     );
 }
 
 #[test]
 fn tilde_rule_resolves_to_home() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     // Unmount, write config with ~ rule, remount
     session.cli(&["unmount"]).unwrap();
     std::fs::write(
-        session.root.join("agfs.toml"),
+        session.root.join("yolofs.toml"),
         "permission = false\n\n[rules]\n\"~\" = \"allow-rw\"\n",
     )
     .unwrap();
 
-    let output = std::process::Command::new(AGFS_BIN)
+    let output = std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&session.root)
         .env("NO_COLOR", "1")
         .output()
-        .expect("running agfs mount");
+        .expect("running yolofs mount");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let home = std::env::var("HOME").unwrap();
@@ -113,21 +113,21 @@ fn tilde_rule_resolves_to_home() {
 
 #[test]
 fn nonexistent_rule_path_warns() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     session.cli(&["unmount"]).unwrap();
     std::fs::write(
-        session.root.join("agfs.toml"),
-        "permission = false\n\n[rules]\n\"/nonexistent_agfs_xyz\" = \"allow-rw\"\n",
+        session.root.join("yolofs.toml"),
+        "permission = false\n\n[rules]\n\"/nonexistent_yolo_xyz\" = \"allow-rw\"\n",
     )
     .unwrap();
 
-    let output = std::process::Command::new(AGFS_BIN)
+    let output = std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&session.root)
         .env("NO_COLOR", "1")
         .output()
-        .expect("running agfs mount");
+        .expect("running yolofs mount");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

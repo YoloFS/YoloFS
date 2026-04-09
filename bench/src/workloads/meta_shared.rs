@@ -57,7 +57,7 @@ pub fn source_group_name(workload: &str) -> Option<&str> {
 }
 
 pub const COLD_MOUNT_CAVEAT: &str = "\
-Mounted backends (agfs, overlayfs, branchfs) pin ancestor\n\
+Mounted backends (yolo, overlayfs, branchfs) pin ancestor\n\
 directory inodes along the path to the mount point.\n\
 These pinned inodes survive drop_caches, giving mounted\n\
 backends a head start on cold path resolution compared\n\

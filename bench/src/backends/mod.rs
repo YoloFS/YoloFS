@@ -1,4 +1,4 @@
-pub mod agfs;
+pub mod yolofs;
 pub mod branchfs;
 pub mod native;
 pub mod overlayfs;
@@ -10,8 +10,8 @@ use crate::backend::Backend;
 pub fn all() -> Vec<Box<dyn Backend>> {
     vec![
         Box::new(native::Native),
-        Box::new(agfs::AgfsNoPerm),
-        Box::new(agfs::AgfsRealistic),
+        Box::new(yolofs::YoloNoPerm),
+        Box::new(yolofs::YoloRealistic),
         Box::new(overlayfs::Overlayfs),
         Box::new(branchfs::BranchFs),
     ]

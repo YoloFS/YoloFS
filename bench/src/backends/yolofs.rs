@@ -1,6 +1,6 @@
 use crate::backend::{self, Backend, CheckpointController, CheckpointOutcome};
 use crate::workload::{CacheMode, IterResult, Workload, WorkloadKind};
-use agfs::config::{Config, Perm};
+use yolofs::config::{Config, Perm};
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::os::unix::io::AsRawFd;
@@ -15,22 +15,22 @@ struct Session {
 }
 
 impl Session {
-    /// Set up the session: write config, populate base, `agfs mount`.
+    /// Set up the session: write config, populate base, `yolofs mount`.
     /// Returns (session, init_ms) where init_ms is the wall time of mount.
     fn setup(config: Config, workload: &dyn Workload) -> Result<(Self, u64)> {
         let cache = dirs_next::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("agfs-bench");
-        std::fs::create_dir_all(&cache).context("creating agfs-bench cache dir")?;
+            .join("yolofs-bench");
+        std::fs::create_dir_all(&cache).context("creating yolofs-bench cache dir")?;
 
         let root = tempfile::Builder::new()
-            .prefix("agfs-bench-")
+            .prefix("yolofs-bench-")
             .tempdir_in(&cache)
             .context("creating session tempdir")?;
 
         config
-            .save(&root.path().join("agfs.toml"))
-            .context("writing agfs.toml")?;
+            .save(&root.path().join("yolofs.toml"))
+            .context("writing yolofs.toml")?;
 
         // Populate base directory before mounting (not timed).
         let base_work = root.path().join(workload.work_dir());
@@ -38,17 +38,17 @@ impl Session {
         workload.populate_base(&base_work)?;
 
         let t = Instant::now();
-        let out = Command::new("agfs")
+        let out = Command::new("yolofs")
             .arg("mount")
             .current_dir(root.path())
             .env("NO_COLOR", "1")
             .output()
-            .context("running agfs mount")?;
+            .context("running yolofs mount")?;
         let init_ms = t.elapsed().as_millis() as u64;
 
         if !out.status.success() {
             bail!(
-                "agfs mount failed: {}",
+                "yolofs mount failed: {}",
                 String::from_utf8_lossy(&out.stderr)
             );
         }
@@ -58,22 +58,22 @@ impl Session {
 
     fn mnt_path(&self, rel: &str) -> PathBuf {
         let root = self.root.path();
-        root.join(".agfs/mnt")
+        root.join(".yolofs/mnt")
             .join(root.strip_prefix("/").unwrap_or(root))
             .join(rel)
     }
 
     fn checkpoint_named(&self, name: &str) -> Result<()> {
-        let out = Command::new("agfs")
+        let out = Command::new("yolofs")
             .arg("checkpoint")
             .arg(name)
             .current_dir(self.root.path())
             .env("NO_COLOR", "1")
             .output()
-            .context("running agfs checkpoint")?;
+            .context("running yolofs checkpoint")?;
         if !out.status.success() {
             bail!(
-                "agfs checkpoint failed: {}",
+                "yolofs checkpoint failed: {}",
                 String::from_utf8_lossy(&out.stderr)
             );
         }
@@ -82,7 +82,7 @@ impl Session {
 
     fn commit(&self, verbose: bool) -> Result<u64> {
         let t = Instant::now();
-        let out = Command::new("agfs")
+        let out = Command::new("yolofs")
             .arg("commit")
             .current_dir(self.root.path())
             .env("NO_COLOR", "1")
@@ -92,11 +92,11 @@ impl Session {
                 Stdio::null()
             })
             .output()
-            .context("running agfs commit")?;
+            .context("running yolofs commit")?;
         let ms = t.elapsed().as_millis() as u64;
         if !out.status.success() {
             bail!(
-                "agfs commit failed: {}",
+                "yolofs commit failed: {}",
                 String::from_utf8_lossy(&out.stderr)
             );
         }
@@ -104,7 +104,7 @@ impl Session {
     }
 
     fn status_time(&self) -> Result<u64> {
-        // Run the same logic as `agfs status` in-process:
+        // Run the same logic as `yolofs status` in-process:
         // read journal → resolve segments → build tree → classify + print each entry.
         // Output goes to /dev/null to avoid I/O noise.
         let t = Instant::now();
@@ -114,23 +114,23 @@ impl Session {
         nix::unistd::dup2(devnull.as_raw_fd(), 1)?;
         drop(devnull);
 
-        // Set cwd so session_dir() finds .agfs/.
+        // Set cwd so session_dir() finds .yolofs/.
         let saved_cwd = std::env::current_dir()?;
         std::env::set_current_dir(self.root.path())?;
-        let result = agfs::cmd::diff::run_status(None, None, None);
+        let result = yolofs::cmd::diff::run_status(None, None, None);
         std::env::set_current_dir(saved_cwd)?;
 
         // Restore stdout.
         nix::unistd::dup2(saved_stdout, 1)?;
         nix::unistd::close(saved_stdout)?;
 
-        result.context("in-process agfs status")?;
+        result.context("in-process yolofs status")?;
         Ok(t.elapsed().as_micros() as u64)
     }
 
     fn journal_debug(&self) -> String {
-        let agfs_dir = self.root.path().join(".agfs");
-        match agfs::journal::Journal::read(&agfs_dir) {
+        let yolo_dir = self.root.path().join(".yolofs");
+        match yolofs::journal::Journal::read(&yolo_dir) {
             Ok(journal) => journal
                 .segments
                 .iter()
@@ -155,7 +155,7 @@ impl CheckpointController for Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = Command::new("agfs")
+        let _ = Command::new("yolofs")
             .arg("unmount")
             .current_dir(self.root.path())
             .env("NO_COLOR", "1")
@@ -165,15 +165,15 @@ impl Drop for Session {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Build an exec-workload command wrapped in `agfs exec --` so the subprocess
-/// runs inside the agfs sandbox (proper process tracking, permission gating).
-/// Build an exec-workload command wrapped in `agfs exec --` so the subprocess
-/// runs inside the agfs sandbox (proper process tracking, permission gating).
+/// Build an exec-workload command wrapped in `yolofs exec --` so the subprocess
+/// runs inside the yolofs sandbox (proper process tracking, permission gating).
+/// Build an exec-workload command wrapped in `yolofs exec --` so the subprocess
+/// runs inside the yolofs sandbox (proper process tracking, permission gating).
 ///
-/// `agfs exec` needs cwd = session root to find `.agfs/`. The inner
+/// `yolofs exec` needs cwd = session root to find `.yolofs/`. The inner
 /// `exec-workload` receives an absolute `--dest` path so it doesn't
 /// depend on cwd.
-fn agfs_exec_workload_cmd(
+fn yolo_exec_workload_cmd(
     session: &Session,
     workload_name: &str,
     dest: &std::path::Path,
@@ -181,7 +181,7 @@ fn agfs_exec_workload_cmd(
     wait_after_ready: bool,
 ) -> Result<Command> {
     let self_exe = std::env::current_exe().context("resolving current executable")?;
-    let mut cmd = Command::new("agfs");
+    let mut cmd = Command::new("yolofs");
     cmd.arg("exec")
         .arg("--")
         .arg(self_exe)
@@ -196,12 +196,12 @@ fn agfs_exec_workload_cmd(
     if wait_after_ready {
         cmd.arg("--wait-after-ready");
     }
-    // agfs exec finds the session from cwd.
+    // yolofs exec finds the session from cwd.
     cmd.current_dir(session.root.path());
     Ok(cmd)
 }
 
-fn run_agfs_iteration(
+fn run_yolo_iteration(
     config: Config,
     workload: &dyn Workload,
     verbose: bool,
@@ -211,7 +211,7 @@ fn run_agfs_iteration(
     let dest = session.mnt_path(workload.work_dir());
     // For cold+base workloads, skip create_dir_all on the mounted path —
     // the directory already exists in the lower fs via populate_base().
-    // Traversing the agfs mount here would warm kernel state that
+    // Traversing the yolofs mount here would warm kernel state that
     // drop_caches cannot flush (igrab'd directory inodes).
     let cold = workload.cache_mode() == CacheMode::DropPageCache;
     if !cold || workload.needs_prepare_workdir() {
@@ -229,15 +229,15 @@ fn run_agfs_iteration(
     // For cold workloads, page caches are dropped after READY (inside
     // run_workload_subprocess). The mount-point dentry chain stays pinned
     // in the VFS — that's inherent to any mounted filesystem and means
-    // cold stat through agfs will always be faster than cold stat on native
+    // cold stat through yolofs will always be faster than cold stat on native
     // (fewer unpinned path components to read from disk).
     let cold = workload.cache_mode() == CacheMode::DropPageCache;
     let mut cmd = if workload.kind() == WorkloadKind::Macro {
-        // Inside the agfs exec chroot, the root is .agfs/mnt which mirrors /.
+        // Inside the yolofs exec chroot, the root is .yolofs/mnt which mirrors /.
         // Use the session root path (not the mount path) so we don't
         // double-traverse the mount.
         let chroot_dest = session.root.path().join(workload.work_dir());
-        agfs_exec_workload_cmd(&session, workload.name(), &chroot_dest, verbose, cold)?
+        yolo_exec_workload_cmd(&session, workload.name(), &chroot_dest, verbose, cold)?
     } else {
         let mut c =
             backend::exec_workload_cmd(workload.name(), std::path::Path::new("."), verbose, cold)?;
@@ -260,14 +260,14 @@ fn run_agfs_iteration(
         Err(e) => {
             let journal = session.journal_debug();
             if !journal.is_empty() {
-                eprintln!("    agfs journal at failure:\n{journal}");
+                eprintln!("    yolofs journal at failure:\n{journal}");
             }
             return Err(e);
         }
     };
     let result = result?;
 
-    // Measure status query time (agfs status).
+    // Measure status query time (yolofs status).
     let status_us = session.status_time()?;
 
     let commit_ms = match session.commit(verbose) {
@@ -275,7 +275,7 @@ fn run_agfs_iteration(
         Err(e) => {
             let journal = session.journal_debug();
             if !journal.is_empty() {
-                eprintln!("    agfs journal at failure:\n{journal}");
+                eprintln!("    yolofs journal at failure:\n{journal}");
             }
             return Err(e);
         }
@@ -296,9 +296,9 @@ fn run_agfs_iteration(
     ))
 }
 
-// ── agfs-no-perm ─────────────────────────────────────────────────────────────
+// ── yolo-no-perm ─────────────────────────────────────────────────────────────
 
-pub struct AgfsNoPerm;
+pub struct YoloNoPerm;
 
 fn cold_staged_reason(workload: &dyn Workload) -> Option<&'static str> {
     let cold_staged_metadata = workload.name().starts_with("meta-")
@@ -306,7 +306,7 @@ fn cold_staged_reason(workload: &dyn Workload) -> Option<&'static str> {
         && workload.needs_prepare_workdir();
     if cold_staged_metadata {
         Some(
-            "cold metadata on staged/checkpoint files cannot be measured on agfs: \
+            "cold metadata on staged/checkpoint files cannot be measured on yolofs: \
               flushing the kernel dirent table requires unmounting, which loses staging state",
         )
     } else {
@@ -314,9 +314,9 @@ fn cold_staged_reason(workload: &dyn Workload) -> Option<&'static str> {
     }
 }
 
-impl Backend for AgfsNoPerm {
+impl Backend for YoloNoPerm {
     fn name(&self) -> &'static str {
-        "agfs-no-perm"
+        "yolo-no-perm"
     }
 
     fn unsupported_reason(&self, workload: &dyn Workload) -> Option<&'static str> {
@@ -326,7 +326,7 @@ impl Backend for AgfsNoPerm {
     fn default_skip_reason(&self, workload: &dyn Workload) -> Option<&'static str> {
         if workload.name() == "dev-workflow" {
             Some(
-                "dev-workflow only runs agfs-realistic by default; use --backend agfs-no-perm to include",
+                "dev-workflow only runs yolo-realistic by default; use --backend yolo-no-perm to include",
             )
         } else {
             None
@@ -340,17 +340,17 @@ impl Backend for AgfsNoPerm {
             rules: BTreeMap::new(),
             ..Default::default()
         };
-        run_agfs_iteration(config, workload, verbose)
+        run_yolo_iteration(config, workload, verbose)
     }
 }
 
-// ── agfs-realistic ───────────────────────────────────────────────────────────
+// ── yolo-realistic ───────────────────────────────────────────────────────────
 
-pub struct AgfsRealistic;
+pub struct YoloRealistic;
 
-impl Backend for AgfsRealistic {
+impl Backend for YoloRealistic {
     fn name(&self) -> &'static str {
-        "agfs-realistic"
+        "yolo-realistic"
     }
 
     fn unsupported_reason(&self, workload: &dyn Workload) -> Option<&'static str> {
@@ -360,21 +360,21 @@ impl Backend for AgfsRealistic {
     fn run_one(&self, workload: &dyn Workload, verbose: bool) -> Result<(IterResult, Vec<String>)> {
         let cache = dirs_next::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("agfs-bench");
+            .join("yolofs-bench");
         std::fs::create_dir_all(&cache)?;
         let root = tempfile::Builder::new()
-            .prefix("agfs-bench-")
+            .prefix("yolofs-bench-")
             .tempdir_in(&cache)?;
 
         let mut rules = BTreeMap::new();
         for (path, perm) in workload.realistic_rules(root.path()) {
             rules.insert(path, perm);
         }
-        // Macro workloads run via `agfs exec` which chroots into the mount.
+        // Macro workloads run via `yolofs exec` which chroots into the mount.
         // The subprocess needs read access to the bench binary, system
         // libraries, and common tool paths.
         if workload.kind() == WorkloadKind::Macro {
-            // agfs exec chroots into the mount; the subprocess needs
+            // yolofs exec chroots into the mount; the subprocess needs
             // read+execute access to the bench binary, system libraries,
             // linker, and tools (tar, xz, etc.).
             if let Ok(exe) = std::env::current_exe() {
@@ -392,7 +392,7 @@ impl Backend for AgfsRealistic {
             rules,
             ..Default::default()
         };
-        config.save(&root.path().join("agfs.toml"))?;
+        config.save(&root.path().join("yolofs.toml"))?;
 
         // Populate base directory before mounting (not timed).
         let base_work = root.path().join(workload.work_dir());
@@ -400,17 +400,17 @@ impl Backend for AgfsRealistic {
         workload.populate_base(&base_work)?;
 
         let t_init = Instant::now();
-        let out = Command::new("agfs")
+        let out = Command::new("yolofs")
             .arg("mount")
             .current_dir(root.path())
             .env("NO_COLOR", "1")
             .output()
-            .context("running agfs mount")?;
+            .context("running yolofs mount")?;
         let init_ms = t_init.elapsed().as_millis() as u64;
 
         if !out.status.success() {
             bail!(
-                "agfs mount failed: {}",
+                "yolofs mount failed: {}",
                 String::from_utf8_lossy(&out.stderr)
             );
         }
@@ -432,7 +432,7 @@ impl Backend for AgfsRealistic {
         }
         let mut cmd = if workload.kind() == WorkloadKind::Macro {
             let chroot_dest = session.root.path().join(workload.work_dir());
-            agfs_exec_workload_cmd(&session, workload.name(), &chroot_dest, verbose, cold)?
+            yolo_exec_workload_cmd(&session, workload.name(), &chroot_dest, verbose, cold)?
         } else {
             let mut c = backend::exec_workload_cmd(
                 workload.name(),
@@ -459,7 +459,7 @@ impl Backend for AgfsRealistic {
             Err(e) => {
                 let journal = session.journal_debug();
                 if !journal.is_empty() {
-                    eprintln!("    agfs journal at failure:\n{journal}");
+                    eprintln!("    yolofs journal at failure:\n{journal}");
                 }
                 return Err(e);
             }
@@ -472,7 +472,7 @@ impl Backend for AgfsRealistic {
             Err(e) => {
                 let journal = session.journal_debug();
                 if !journal.is_empty() {
-                    eprintln!("    agfs journal at failure:\n{journal}");
+                    eprintln!("    yolofs journal at failure:\n{journal}");
                 }
                 return Err(e);
             }

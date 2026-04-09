@@ -1,6 +1,6 @@
-// agfs CLI — abort.rs
+// yolo CLI — abort.rs
 //
-// `agfs abort` — discard staged changes.
+// `yolo abort` — discard staged changes.
 
 use crate::journal::Journal;
 use anyhow::{Context, Result};
@@ -10,8 +10,8 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 /// Clear inode store, truncate journal, and reset kernel staging state.
-pub fn reset_staging(agfs: &Path) -> Result<()> {
-    let inodes_dir = agfs.join("inodes");
+pub fn reset_staging(yolofs: &Path) -> Result<()> {
+    let inodes_dir = yolofs.join("inodes");
     if inodes_dir.exists() {
         // Remove each shard subdirectory but keep the inodes/ directory itself.
         // The kernel module caches the inodes_dir dentry at mount time, so
@@ -21,7 +21,7 @@ pub fn reset_staging(agfs: &Path) -> Result<()> {
             fs::remove_dir_all(&path).context("removing shard directory")?;
         }
     }
-    let journal_path = agfs.join("journal");
+    let journal_path = yolofs.join("journal");
     if journal_path.exists() {
         // OpenOptions with truncate(true) clears the file to zero length
         // while keeping the inode, so the kernel's O_APPEND fd stays valid.
@@ -31,15 +31,15 @@ pub fn reset_staging(agfs: &Path) -> Result<()> {
             .open(&journal_path)
             .context("truncating journal")?;
     }
-    let ctl_file = crate::ioctl::open(agfs).context("opening ctl for jump")?;
+    let ctl_file = crate::ioctl::open(yolofs).context("opening ctl for jump")?;
     crate::ioctl::jump(&ctl_file, 0, &[]).context("ioctl JUMP")?;
     Ok(())
 }
 
 pub fn run(force: bool) -> Result<()> {
-    let agfs = crate::utils::session_dir()?;
+    let yolofs = crate::utils::session_dir()?;
 
-    let journal = Journal::read(&agfs)?;
+    let journal = Journal::read(&yolofs)?;
     let tree = journal.into_tree();
     if tree.is_empty() {
         println!("{}", "Nothing to discard.".yellow());
@@ -66,7 +66,7 @@ pub fn run(force: bool) -> Result<()> {
         }
     }
 
-    reset_staging(&agfs)?;
+    reset_staging(&yolofs)?;
 
     println!("{}", "Staging discarded.".yellow().bold());
 

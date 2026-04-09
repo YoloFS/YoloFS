@@ -1,14 +1,14 @@
-use crate::helpers::AgfsSession;
-use agfs::config::{Config, Perm};
+use crate::helpers::YoloSession;
+use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
 
-// ── ask_default variants (perm.c: agfs_ask_userspace no-daemon path) ──
+// ── ask_default variants (perm.c: yolo_ask_userspace no-daemon path) ──
 
 /// ask_default=allow-ro: read OK, write denied.
 #[test]
 fn ask_default_allow_ro() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::AllowRo),
         rules: BTreeMap::new(),
         ..Default::default()
@@ -29,7 +29,7 @@ fn ask_default_allow_ro() {
 /// ask_default=allow-rw: read OK, write OK.
 #[test]
 fn ask_default_allow_rw() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::AllowRw),
         rules: BTreeMap::new(),
         ..Default::default()
@@ -47,7 +47,7 @@ fn ask_default_allow_rw() {
 /// ask_default=allow-rx: read OK, write denied.
 #[test]
 fn ask_default_allow_rx() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::AllowRx),
         rules: BTreeMap::new(),
         ..Default::default()
@@ -71,7 +71,7 @@ fn ask_default_allow_rx() {
 /// apply the ask_default.
 #[test]
 fn ask_timeout_applies_default() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_timeout: Some(1),
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
@@ -90,7 +90,7 @@ fn ask_timeout_applies_default() {
 /// With ask_timeout and ask_default=allow, timed out ask should allow.
 #[test]
 fn ask_timeout_applies_allow_default() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_timeout: Some(1),
         ask_default: Some(Perm::Allow),
         rules: BTreeMap::new(),

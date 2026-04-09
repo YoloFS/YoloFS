@@ -1,10 +1,10 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn commit_modified_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "committed\n").unwrap();
 
@@ -20,7 +20,7 @@ fn commit_modified_file() {
 
 #[test]
 fn commit_new_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("brandnew.txt"), "new\n").unwrap();
 
@@ -36,7 +36,7 @@ fn commit_new_file() {
 
 #[test]
 fn commit_multiple_changes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
     fs::write(s.mnt_path("newfile.txt"), "new\n").unwrap();
@@ -56,7 +56,7 @@ fn commit_multiple_changes() {
 
 #[test]
 fn commit_nothing() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let output = s.cli(&["commit"]).expect("commit");
     assert!(output.contains("Nothing to commit"), "output: {output}");
@@ -66,7 +66,7 @@ fn commit_nothing() {
 /// The commit should replace the directory with the file in base.
 #[test]
 fn commit_replace_dir_with_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // subdir/ exists in base as a directory
     assert!(s.base_path("subdir").is_dir());
@@ -95,7 +95,7 @@ fn commit_replace_dir_with_file() {
 /// Commit after rename: the renamed file should appear at its new location in base.
 #[test]
 fn commit_rename_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Rename an existing base file through the mount
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("greeting.txt")).expect("rename");
@@ -117,7 +117,7 @@ fn commit_rename_file() {
 /// Commit after renaming a directory: children should follow.
 #[test]
 fn commit_rename_directory() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // subdir/ exists in base with subdir/deep.txt
     fs::rename(s.mnt_path("subdir"), s.mnt_path("renamed_dir")).expect("rename dir");
@@ -142,7 +142,7 @@ fn commit_rename_directory() {
 /// Commit after deleting a directory: the directory and its children should be removed from base.
 #[test]
 fn commit_delete_directory() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // subdir/ exists in base with subdir/deep.txt
     fs::remove_dir_all(s.mnt_path("subdir")).expect("rmdir");
@@ -164,7 +164,7 @@ fn commit_delete_directory() {
 fn commit_preserves_readonly_mode() {
     use std::os::unix::fs::MetadataExt;
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let base = s.base_path("hello.txt");
     fs::set_permissions(&base, fs::Permissions::from_mode(0o444)).expect("chmod");
@@ -187,7 +187,7 @@ fn commit_preserves_readonly_mode() {
 fn commit_preserves_executable_mode() {
     use std::os::unix::fs::MetadataExt;
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // test.sh is seeded with mode 0o755
     fs::write(s.mnt_path("test.sh"), "#!/bin/sh\necho committed\n").expect("write");
@@ -209,7 +209,7 @@ fn commit_preserves_executable_mode() {
 fn commit_new_file_has_default_mode() {
     use std::os::unix::fs::MetadataExt;
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("brand_new.txt"), "new\n").expect("write");
     s.cli(&["commit"]).expect("commit");
@@ -229,7 +229,7 @@ fn commit_new_file_has_default_mode() {
 /// The destination should be overwritten with the source content.
 #[test]
 fn commit_rename_overwrite() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // hello.txt and multi.txt both exist in base
     assert!(s.base_path("hello.txt").exists());
@@ -255,7 +255,7 @@ fn commit_rename_overwrite() {
 /// Children from both should be merged.
 #[test]
 fn commit_rename_dir_onto_dir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create a second directory with content
     fs::create_dir_all(s.mnt_path("otherdir")).expect("mkdir");
@@ -279,7 +279,7 @@ fn commit_rename_dir_onto_dir() {
 /// Create a symlink through the mount, commit, verify it appears in base.
 #[test]
 fn commit_symlink() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
 
@@ -305,7 +305,7 @@ fn commit_symlink() {
 /// Modify a symlink's target, commit, verify the new target in base.
 #[test]
 fn commit_modified_symlink() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create and commit an initial symlink
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
@@ -338,7 +338,7 @@ fn commit_modified_symlink() {
 fn commit_new_file_with_chmod() {
     use std::os::unix::fs::MetadataExt;
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("script.sh"), "#!/bin/sh\necho hi\n").expect("write");
     fs::set_permissions(s.mnt_path("script.sh"), fs::Permissions::from_mode(0o755)).expect("chmod");
@@ -368,7 +368,7 @@ fn commit_new_file_with_chmod() {
 fn commit_new_file_with_restrictive_chmod() {
     use std::os::unix::fs::MetadataExt;
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("secret.txt"), "secret\n").expect("write");
     fs::set_permissions(s.mnt_path("secret.txt"), fs::Permissions::from_mode(0o600))
@@ -390,7 +390,7 @@ fn commit_new_file_with_restrictive_chmod() {
 fn commit_chmod_existing_file() {
     use std::os::unix::fs::MetadataExt;
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // hello.txt exists in base with default mode.
     // Modify content (triggers COW) and change mode.
@@ -420,7 +420,7 @@ fn commit_chmod_existing_file() {
 fn commit_new_file_preserves_ownership() {
     use std::os::unix::fs::MetadataExt;
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let uid = nix::unistd::getuid().as_raw();
     let gid = nix::unistd::getgid().as_raw();
 
@@ -447,7 +447,7 @@ fn commit_new_file_preserves_ownership() {
 fn commit_cow_file_preserves_ownership() {
     use std::os::unix::fs::MetadataExt;
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let uid = nix::unistd::getuid().as_raw();
     let gid = nix::unistd::getgid().as_raw();
 
@@ -475,7 +475,7 @@ fn commit_cow_file_preserves_ownership() {
 fn commit_new_dir_with_chmod() {
     use std::os::unix::fs::MetadataExt;
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("restricted")).expect("mkdir");
     fs::set_permissions(s.mnt_path("restricted"), fs::Permissions::from_mode(0o700))
@@ -502,7 +502,7 @@ fn commit_new_dir_with_chmod() {
 /// Create a new file, rename it, commit — the renamed file should appear in base.
 #[test]
 fn commit_rename_staged_only_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("staged.txt"), "staged\n").expect("write");
     fs::rename(s.mnt_path("staged.txt"), s.mnt_path("moved.txt")).expect("rename");
@@ -526,7 +526,7 @@ fn commit_rename_staged_only_file() {
 fn commit_preserves_directory_mode() {
     use std::os::unix::fs::MetadataExt;
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Set restricted permissions on the base directory
     let base_subdir = s.base_path("subdir");
@@ -553,7 +553,7 @@ fn commit_preserves_directory_mode() {
 /// excluding dead-zone mutations.
 #[test]
 fn commit_after_restore_excludes_dead_zone() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "wanted\n").unwrap();
     fs::write(s.mnt_path("keep.txt"), "keep\n").unwrap();
@@ -589,7 +589,7 @@ fn commit_after_restore_excludes_dead_zone() {
 /// Create a file, modify it, commit. DirTree collapses to single Stage.
 #[test]
 fn commit_create_then_modify_collapses() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("new.txt"), "v1\n").unwrap();
     fs::write(s.mnt_path("new.txt"), "v2\n").unwrap();
@@ -607,7 +607,7 @@ fn commit_create_then_modify_collapses() {
 /// the file never existed in base, the delete is a no-op.
 #[test]
 fn commit_create_then_delete_noop() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let orig_hello = fs::read_to_string(s.base_path("hello.txt")).unwrap();
 
@@ -630,7 +630,7 @@ fn commit_create_then_delete_noop() {
 /// Rename chain: a → b → c. DirTree collapses to single redirect c → a.
 #[test]
 fn commit_rename_chain() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("step1.txt")).unwrap();
     fs::rename(s.mnt_path("step1.txt"), s.mnt_path("step2.txt")).unwrap();
@@ -655,7 +655,7 @@ fn commit_rename_chain() {
 /// Swap two files: a ↔ b using a temp.
 #[test]
 fn commit_swap_files() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let orig_hello = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
     let orig_multi = fs::read_to_string(s.mnt_path("multi.txt")).unwrap();
@@ -681,7 +681,7 @@ fn commit_swap_files() {
 /// 3-way rotation: a → b → c → a using a temp.
 #[test]
 fn commit_three_way_rotation() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create a third file
     fs::write(s.mnt_path("third.txt"), "third\n").unwrap();
@@ -717,7 +717,7 @@ fn commit_three_way_rotation() {
 /// Tests source-prefix dependency ordering.
 #[test]
 fn commit_extract_child_then_rename_parent() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir/deep.txt"), s.mnt_path("extracted.txt")).unwrap();
     fs::rename(s.mnt_path("subdir"), s.mnt_path("newdir")).unwrap();
@@ -735,7 +735,7 @@ fn commit_extract_child_then_rename_parent() {
 /// Rename a directory, then create a file inside the renamed dir.
 #[test]
 fn commit_rename_dir_then_create_child() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir"), s.mnt_path("moved")).unwrap();
     fs::write(s.mnt_path("moved/new_child.txt"), "child\n").unwrap();
@@ -759,7 +759,7 @@ fn commit_rename_dir_then_create_child() {
 /// Delete a directory tree, recreate it with different content.
 #[test]
 fn commit_delete_and_recreate_dir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_dir_all(s.mnt_path("subdir")).unwrap();
     fs::create_dir(s.mnt_path("subdir")).unwrap();
@@ -781,7 +781,7 @@ fn commit_delete_and_recreate_dir() {
 /// Create nested directories and files, commit all at once.
 #[test]
 fn commit_deep_nested_creation() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir_all(s.mnt_path("a/b/c")).unwrap();
     fs::write(s.mnt_path("a/top.txt"), "top\n").unwrap();
@@ -807,7 +807,7 @@ fn commit_deep_nested_creation() {
 /// Rename into a new nested directory path.
 #[test]
 fn commit_rename_into_new_dir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir_all(s.mnt_path("newdir")).unwrap();
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("newdir/hello.txt")).unwrap();
@@ -824,7 +824,7 @@ fn commit_rename_into_new_dir() {
 /// Multiple independent renames that don't conflict.
 #[test]
 fn commit_independent_renames() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("greeting.txt")).unwrap();
     fs::rename(s.mnt_path("multi.txt"), s.mnt_path("lines.txt")).unwrap();
@@ -846,7 +846,7 @@ fn commit_independent_renames() {
 /// Rename a base file onto a newly staged file (overwrite staged with base).
 #[test]
 fn commit_rename_base_over_staged() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("target.txt"), "staged content\n").unwrap();
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("target.txt")).unwrap();
@@ -864,7 +864,7 @@ fn commit_rename_base_over_staged() {
 /// Mix of all operation types in one commit.
 #[test]
 fn commit_mixed_create_rename_delete() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create
     fs::write(s.mnt_path("new.txt"), "new\n").unwrap();
@@ -902,7 +902,7 @@ fn commit_mixed_create_rename_delete() {
 /// Commit twice in a row — second commit should work on a clean state.
 #[test]
 fn commit_twice() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "round1\n").unwrap();
     s.cli(&["commit"]).expect("commit 1");
@@ -922,7 +922,7 @@ fn commit_twice() {
 /// Commit with symlinks in a renamed directory.
 #[test]
 fn commit_rename_dir_with_symlink() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     std::os::unix::fs::symlink("deep.txt", s.mnt_path("subdir/link")).unwrap();
     fs::rename(s.mnt_path("subdir"), s.mnt_path("moved")).unwrap();
@@ -947,7 +947,7 @@ fn commit_rename_dir_with_symlink() {
 /// Commit, then commit again with no changes — should report nothing.
 #[test]
 fn commit_then_noop_commit() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
     s.cli(&["commit"]).expect("first commit");
@@ -961,7 +961,7 @@ fn commit_then_noop_commit() {
 
 #[test]
 fn commit_delete_dir_with_renamed_child() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Rename a file out of subdir, then remove the subdir.
     fs::rename(s.mnt_path("subdir/deep.txt"), s.mnt_path("extracted.txt")).unwrap();
@@ -985,7 +985,7 @@ fn commit_rename_through_redirect() {
     // mv /subdir /other, then mv /other/deep.txt /out.txt.
     // The source /other/deep.txt is an overlay path that resolves to
     // base /subdir/deep.txt.  Commit must handle this correctly.
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir"), s.mnt_path("other")).unwrap();
     fs::rename(s.mnt_path("other/deep.txt"), s.mnt_path("out.txt")).unwrap();
@@ -1015,7 +1015,7 @@ fn commit_rename_through_redirect() {
 fn commit_rename_into_redirected_dir() {
     // mv /subdir /other, then mv /hello.txt /other/new.txt.
     // Commit must place both the renamed dir and the new child correctly.
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir"), s.mnt_path("other")).unwrap();
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("other/new.txt")).unwrap();
@@ -1046,7 +1046,7 @@ fn commit_rename_into_redirected_dir() {
 fn commit_rename_dir_then_stage_child() {
     // mv /subdir /other, then create a new file in /other.
     // Rename must commit before the stage (phase ordering).
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir"), s.mnt_path("other")).unwrap();
     fs::write(s.mnt_path("other/new.txt"), "fresh\n").unwrap();
@@ -1070,7 +1070,7 @@ fn commit_rename_dir_then_stage_child() {
 fn commit_rename_dir_delete_child_stage_child() {
     // mv /subdir /other, rm /other/deep.txt, create /other/replacement.txt.
     // Exercises all three phases on one redirected directory.
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir"), s.mnt_path("other")).unwrap();
     fs::remove_file(s.mnt_path("other/deep.txt")).unwrap();
@@ -1095,7 +1095,7 @@ fn commit_cross_rename_between_dirs() {
     // Move a file from one dir to another, and vice versa.
     // mv /hello.txt /subdir/moved_in.txt
     // mv /subdir/deep.txt /extracted.txt
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("subdir/moved_in.txt")).unwrap();
     fs::rename(s.mnt_path("subdir/deep.txt"), s.mnt_path("extracted.txt")).unwrap();
@@ -1118,7 +1118,7 @@ fn commit_cross_rename_between_dirs() {
 fn commit_multiple_renames_into_redirected_dir() {
     // mv /subdir /other, then mv multiple files into /other.
     // All destination-prefix orderings must be correct.
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir"), s.mnt_path("other")).unwrap();
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("other/a.txt")).unwrap();
@@ -1147,7 +1147,7 @@ fn commit_multiple_renames_into_redirected_dir() {
 fn commit_rename_child_within_redirected_dir() {
     // mv /subdir /other, then mv /other/deep.txt /other/renamed.txt.
     // Creates a src-prefix vs dst-prefix cycle → needs temp rename.
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir"), s.mnt_path("other")).unwrap();
     fs::rename(
@@ -1170,7 +1170,7 @@ fn commit_rename_child_within_redirected_dir() {
 fn commit_deep_rename_chain_with_extraction() {
     // mv /subdir /a, mv /a /b, then mv /b/deep.txt /out.txt.
     // Chain collapses to /b ← /subdir. Source resolves /b/deep.txt ← /subdir/deep.txt.
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir"), s.mnt_path("a")).unwrap();
     fs::rename(s.mnt_path("a"), s.mnt_path("b")).unwrap();
@@ -1196,7 +1196,7 @@ fn commit_roundtrip_rename_preserves_content() {
     // mv /hello.txt /tmp, mv /tmp /hello.txt — file ends up unchanged.
     // The intermediate /tmp path produces a spurious tombstone, but
     // hello.txt's content is preserved.
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("tmp")).unwrap();
     fs::rename(s.mnt_path("tmp"), s.mnt_path("hello.txt")).unwrap();

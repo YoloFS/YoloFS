@@ -1,54 +1,54 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * agfs — dentry operations.
+ * yolofs — dentry operations.
  */
 
-#include "agfs.h"
+#include "yolofs.h"
 
-static struct kmem_cache *agfs_dentry_cachep;
+static struct kmem_cache *yolo_dentry_cachep;
 
 /* ── Dentry lifecycle ──────────────────────────────────────────────── */
 
 /*
- * d_init callback — auto-initialize agfs_dentry_info on every dentry
+ * d_init callback — auto-initialize yolo_dentry_info on every dentry
  * at allocation time.  This replaces the manual
- * agfs_new_dentry_private_data() call and ensures negative dentries
+ * yolo_new_dentry_private_data() call and ensures negative dentries
  * created via d_alloc() have d_fsdata ready.
  */
-static int agfs_d_init(struct dentry *dentry)
+static int yolo_d_init(struct dentry *dentry)
 {
-	struct agfs_dentry_info *info;
+	struct yolo_dentry_info *info;
 
-	info = kmem_cache_zalloc(agfs_dentry_cachep, GFP_KERNEL);
+	info = kmem_cache_zalloc(yolo_dentry_cachep, GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
 	spin_lock_init(&info->lock);
 	/* Ground state: unpinned, following base filesystem */
-	info->target = AGFS_TARGET_PATH;
-	info->perm = AGFS_PERM_NONE;
+	info->target = YOLO_TARGET_PATH;
+	info->perm = YOLO_PERM_NONE;
 	INIT_LIST_HEAD(&info->rule_pin);
 	info->rule_dentry = NULL;
 	dentry->d_fsdata = info;
 	return 0;
 }
 
-static void agfs_d_release(struct dentry *dentry)
+static void yolo_d_release(struct dentry *dentry)
 {
-	struct agfs_dentry_info *info = AGFS_D(dentry);
+	struct yolo_dentry_info *info = YOLO_D(dentry);
 
 	if (!info)
 		return;
 
-	agfs_put_reset_lower_path(dentry);
-	kmem_cache_free(agfs_dentry_cachep, info);
+	yolo_put_reset_lower_path(dentry);
+	kmem_cache_free(yolo_dentry_cachep, info);
 	dentry->d_fsdata = NULL;
 }
 
 /* ── Dentry state API ──────────────────────────────────────────────── */
 
 /*
- * Interpose the agfs layer on @dentry: wrap the lower inode with an agfs
+ * Interpose the yolofs layer on @dentry: wrap the lower inode with an yolofs
  * inode, store the lower path, and splice into dcache.
  *
  * Three entry scenarios:
@@ -65,11 +65,11 @@ static void agfs_d_release(struct dentry *dentry)
  *
  * Consumes @lower_path in all cases (puts on negative/error, stores on
  * success).  Today the negative/tombstone outcomes only come from
- * agfs_lookup() lookup misses and agfs_dentry_create(..., NULL), both of
+ * yolo_lookup() lookup misses and yolo_dentry_create(..., NULL), both of
  * which start from fresh negative dentries, so those branches do not need to
  * rewrite lower_path.
  */
-int agfs_dentry_interpose(struct dentry *dentry, struct path *lower_path)
+int yolo_dentry_interpose(struct dentry *dentry, struct path *lower_path)
 {
 	struct inode *inode = NULL;
 	bool unhashed = d_unhashed(dentry);
@@ -97,17 +97,17 @@ int agfs_dentry_interpose(struct dentry *dentry, struct path *lower_path)
 	} else {
 		/*
 		 * Positive lower — either a base lookup hit or a newly created
-		 * staged inode.  Wrap the lower inode in an agfs inode, then
+		 * staged inode.  Wrap the lower inode in an yolofs inode, then
 		 * transfer the owned lower_path ref onto this dentry so later
 		 * opens/attrs resolve through the chosen backing object.
 		 */
-		inode = agfs_iget(dentry->d_sb, d_inode(lower_path->dentry));
+		inode = yolo_iget(dentry->d_sb, d_inode(lower_path->dentry));
 		if (IS_ERR(inode)) {
 			path_put(lower_path);
 			return PTR_ERR(inode);
 		}
 
-		agfs_replace_lower_path(dentry, lower_path);
+		yolo_replace_lower_path(dentry, lower_path);
 	}
 
 	/*
@@ -129,9 +129,9 @@ int agfs_dentry_interpose(struct dentry *dentry, struct path *lower_path)
  * On success the caller loses ownership of @lower_path (if non-NULL).
  * Caller must hold i_rwsem exclusive on the parent directory.
  */
-struct dentry *agfs_dentry_create(struct dentry *parent,
+struct dentry *yolo_dentry_create(struct dentry *parent,
 				  const char *name, unsigned int len,
-				  enum agfs_target target,
+				  enum yolo_target target,
 				  struct path *lower_path)
 {
 	struct qstr qname;
@@ -148,10 +148,10 @@ struct dentry *agfs_dentry_create(struct dentry *parent,
 		return ERR_PTR(-ENOMEM);
 	}
 
-	AGFS_D(child)->pinned = true;	/* d_alloc ref counts as pin */
-	AGFS_D(child)->target = target;
+	YOLO_D(child)->pinned = true;	/* d_alloc ref counts as pin */
+	YOLO_D(child)->target = target;
 
-	err = agfs_dentry_interpose(child, lower_path);
+	err = yolo_dentry_interpose(child, lower_path);
 	if (err) {
 		dput(child);
 		return ERR_PTR(err);
@@ -162,12 +162,12 @@ struct dentry *agfs_dentry_create(struct dentry *parent,
 
 /*
  * Set a dentry's overlay target and pin it.  The only unpinned state
- * is ground state, reached via agfs_dentry_unpin().
+ * is ground state, reached via yolo_dentry_unpin().
  * Caller must hold i_rwsem exclusive on the parent directory.
  */
-void agfs_dentry_pin(struct dentry *dentry, enum agfs_target target)
+void yolo_dentry_pin(struct dentry *dentry, enum yolo_target target)
 {
-	struct agfs_dentry_info *di = AGFS_D(dentry);
+	struct yolo_dentry_info *di = YOLO_D(dentry);
 	bool was_pinned = di->pinned;
 
 	di->target = target;
@@ -183,12 +183,12 @@ void agfs_dentry_pin(struct dentry *dentry, enum agfs_target target)
  * through to base as if staging never touched this entry.
  * Caller must hold i_rwsem exclusive on the parent directory.
  */
-void agfs_dentry_unpin(struct dentry *dentry)
+void yolo_dentry_unpin(struct dentry *dentry)
 {
-	struct agfs_dentry_info *di = AGFS_D(dentry);
+	struct yolo_dentry_info *di = YOLO_D(dentry);
 	bool was_pinned = di->pinned;
 
-	di->target = AGFS_TARGET_PATH;
+	di->target = YOLO_TARGET_PATH;
 	di->pinned = false;
 
 	if (was_pinned) {
@@ -204,7 +204,7 @@ void agfs_dentry_unpin(struct dentry *dentry)
  * Iteratively unpin all pinned child dentries via depth-first walk.
  *
  * The hlist traversal is lockless — holding d_lock across the loop is
- * not possible because agfs_dentry_unpin() calls dput(), which may
+ * not possible because yolo_dentry_unpin() calls dput(), which may
  * re-acquire d_lock and deadlock.  To make the lockless walk safe we call
  * shrink_dcache_sb() first: this evicts every unreferenced (unpinned)
  * dentry, so every entry still in d_children has a positive refcount
@@ -216,9 +216,9 @@ void agfs_dentry_unpin(struct dentry *dentry)
  * were just unpinned (dput drops their refcount but leaves them cached
  * on the LRU), so subsequent VFS lookups go through the module again.
  */
-void agfs_dentry_unpin_all(struct super_block *sb)
+void yolo_dentry_unpin_all(struct super_block *sb)
 {
-	struct hlist_node *pos[AGFS_JUMP_MAX_DEPTH];
+	struct hlist_node *pos[YOLO_JUMP_MAX_DEPTH];
 	struct dentry *cur;
 	int depth = 0;
 
@@ -243,31 +243,31 @@ void agfs_dentry_unpin_all(struct super_block *sb)
 
 		/* Descend into children before unpinning this entry */
 		if (!hlist_empty(&cur->d_children) &&
-		    depth + 1 < AGFS_JUMP_MAX_DEPTH)
+		    depth + 1 < YOLO_JUMP_MAX_DEPTH)
 			pos[++depth] = cur->d_children.first;
 
-		if (AGFS_D(cur) && AGFS_D(cur)->pinned)
-			agfs_dentry_unpin(cur);
+		if (YOLO_D(cur) && YOLO_D(cur)->pinned)
+			yolo_dentry_unpin(cur);
 	}
 
 	shrink_dcache_sb(sb);
 }
 
-const struct dentry_operations agfs_dops = {
-	.d_init		= agfs_d_init,
-	.d_release	= agfs_d_release,
+const struct dentry_operations yolo_dops = {
+	.d_init		= yolo_d_init,
+	.d_release	= yolo_d_release,
 };
 
-int agfs_init_dentry_cache(void)
+int yolo_init_dentry_cache(void)
 {
-	agfs_dentry_cachep = kmem_cache_create("agfs_dentry_cache",
-					       sizeof(struct agfs_dentry_info),
+	yolo_dentry_cachep = kmem_cache_create("yolo_dentry_cache",
+					       sizeof(struct yolo_dentry_info),
 					       0, SLAB_RECLAIM_ACCOUNT, NULL);
-	return agfs_dentry_cachep ? 0 : -ENOMEM;
+	return yolo_dentry_cachep ? 0 : -ENOMEM;
 }
 
-void agfs_destroy_dentry_cache(void)
+void yolo_destroy_dentry_cache(void)
 {
-	if (agfs_dentry_cachep)
-		kmem_cache_destroy(agfs_dentry_cachep);
+	if (yolo_dentry_cachep)
+		kmem_cache_destroy(yolo_dentry_cachep);
 }

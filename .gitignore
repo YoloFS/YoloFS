@@ -1,6 +1,6 @@
 /data/*
 !/data/README.md
-.agfs
+.yolofs
 
 # clangd
 compile_commands.json

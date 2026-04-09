@@ -1,4 +1,4 @@
-// agfs CLI — journal/types.rs
+// yolo CLI — journal/types.rs
 //
 // Pure data types for journal records. No I/O dependencies.
 

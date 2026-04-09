@@ -9,8 +9,8 @@ pub struct Native;
 fn cache_base() -> Result<PathBuf> {
     let base = dirs_next::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("agfs-bench");
-    std::fs::create_dir_all(&base).context("creating agfs-bench cache dir")?;
+        .join("yolofs-bench");
+    std::fs::create_dir_all(&base).context("creating yolofs-bench cache dir")?;
     Ok(base)
 }
 
@@ -21,7 +21,7 @@ impl Backend for Native {
 
     fn run_one(&self, workload: &dyn Workload, verbose: bool) -> Result<(IterResult, Vec<String>)> {
         let root = tempfile::Builder::new()
-            .prefix("agfs-bench-")
+            .prefix("yolofs-bench-")
             .tempdir_in(cache_base()?)
             .context("creating session tempdir")?;
 

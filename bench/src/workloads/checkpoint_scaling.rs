@@ -14,7 +14,7 @@
 // measured operations without inflating per-layer state.
 
 use crate::workload::{Workload, WorkloadKind};
-use agfs::config::Perm;
+use yolofs::config::Perm;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::Instant;

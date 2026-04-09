@@ -2,7 +2,7 @@
 
 ## Problem
 
-`agfs commit` currently replays every live journal record in chronological
+`yolo commit` currently replays every live journal record in chronological
 order. The journal `[S /a 1, D /a, S /a 2]` emits three filesystem operations
 when only one is needed (stage inode 2 at `/a`). Worse, redundant renames can
 fail if intermediate base state doesn't support them (e.g. renaming a base path
@@ -93,7 +93,7 @@ Topological sort with **general cycle detection** (Kahn's algorithm).
 1. Find any cycle (via Kahn's — nodes with no in-edges are emitted; remaining
    nodes form cycles).
 2. Pick any Link `L` in the cycle with `src = S`.
-3. Generate a temp path: `<parent_of_S>/.agfs-commit-tmp-<n>` (same parent dir
+3. Generate a temp path: `<parent_of_S>/.yolofs-commit-tmp-<n>` (same parent dir
    ensures same filesystem for `rename`).
 4. Emit a preliminary `rename(base/S, base/tmp)`.
 5. Rewrite `L.src = tmp_path`.
@@ -135,11 +135,11 @@ Topological sort with **general cycle detection** (Kahn's algorithm).
   Handles exact-match, prefix, and source-prefix deps.
 
 ### `user/cmd/commit.rs`
-- `fn apply_plan(agfs, plan) -> Result<usize>` — iterates plan fields
+- `fn apply_plan(yolofs, plan) -> Result<usize>` — iterates plan fields
   directly: renames, then deletes, then stages.
 - Replace `apply_records()` call in `run()` with:
   1. `Journal::read().into_tree().into_plan()`
-  2. `apply_plan(&agfs, &plan)`
+  2. `apply_plan(&yolofs, &plan)`
 - Keep existing `ensure_parent`, `apply_stage`, `remove_existing` helpers.
 
 ### `docs/staging.md`

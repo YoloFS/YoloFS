@@ -1,13 +1,13 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 
-// ── super.c: agfs_statfs ──
+// ── super.c: yolo_statfs ──
 
-/// statfs through the mount should return AGFS_SUPER_MAGIC.
+/// statfs through the mount should return YOLO_SUPER_MAGIC.
 #[test]
-fn statfs_reports_agfs_magic() {
-    let s = AgfsSession::new().expect("session setup");
+fn statfs_reports_yolo_magic() {
+    let s = YoloSession::new().expect("session setup");
 
     // Use nix::sys::statfs or just verify the mount is functional
     // by checking that stat works and the filesystem has non-zero space.
@@ -15,12 +15,12 @@ fn statfs_reports_agfs_magic() {
     assert!(meta.len() > 0, "statfs should report non-zero file size");
 }
 
-// ── file.c: agfs_llseek ──
+// ── file.c: yolo_llseek ──
 
 /// Seek to a position and read partial content.
 #[test]
 fn seek_and_read_partial() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // multi.txt = "line1\nline2\n" (12 bytes)
     let mut f = fs::File::open(s.mnt_path("multi.txt")).expect("open");
@@ -33,16 +33,16 @@ fn seek_and_read_partial() {
     assert_eq!(buf, "line2\n", "should read from seek position");
 }
 
-// ── file.c: agfs_write_iter → fsstack_copy_inode_size ──
-// ── inode.c: agfs_getattr ──
+// ── file.c: yolo_write_iter → fsstack_copy_inode_size ──
+// ── inode.c: yolo_getattr ──
 
 /// After writing, file size (as reported by stat) reflects the new content.
-/// Note: agfs_getattr reads from the lower path. After COW, the file data
+/// Note: yolo_getattr reads from the lower path. After COW, the file data
 /// lives in the inode store, but the dentry's lower_path may still reference the
 /// base. We verify size through reading, not stat.
 #[test]
 fn file_size_after_write() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "short\n").expect("write");
 
@@ -56,7 +56,7 @@ fn file_size_after_write() {
 /// stat may report base size (getattr uses dentry lower_path).
 #[test]
 fn getattr_staged_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Original: "base content\n" = 13 bytes
     assert_eq!(

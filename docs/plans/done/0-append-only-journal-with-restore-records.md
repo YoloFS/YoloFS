@@ -8,7 +8,7 @@ truth written exclusively by the kernel.
 
 ## 1. Motivation
 
-`agfs restore` currently truncates the journal to the target checkpoint,
+`yolo restore` currently truncates the journal to the target checkpoint,
 destroying the history of post-checkpoint work. This loses the audit trail
 (what was tried, what was undone) and requires byte-offset tracking in the
 parser solely for truncation.
@@ -31,7 +31,7 @@ S\0<gen>\0<target_gen>\n
 | `gen` | The new generation assigned to this restore (monotonically increasing) |
 | `target_gen` | The checkpoint being restored to |
 
-Written by the kernel during `AGFS_IOC_RESTORE` (when `entry_count > 0`).
+Written by the kernel during `YOLO_IOC_RESTORE` (when `entry_count > 0`).
 The `S` record acts as both a restore marker and a segment boundary.
 
 ### 2.2 Generation stays monotonic
@@ -74,16 +74,16 @@ identifier and the re-COW generation. Unify the naming:
 
 ```c
 // Before (write-only)
-#define AGFS_IOC_RESTORE  _IOW('A', 41, struct agfs_ioc_restore)
-struct agfs_ioc_restore {
+#define YOLO_IOC_RESTORE  _IOW('A', 41, struct yolo_ioc_restore)
+struct yolo_ioc_restore {
     __u64 checkpoint_gen;     // in: set gen to this value
     __u64 entry_count;
     __u64 entries_ptr;
 };
 
 // After (read-write, to return new_gen)
-#define AGFS_IOC_RESTORE  _IOWR('A', 41, struct agfs_ioc_restore)
-struct agfs_ioc_restore {
+#define YOLO_IOC_RESTORE  _IOWR('A', 41, struct yolo_ioc_restore)
+struct yolo_ioc_restore {
     __u64 target_gen;         // in: checkpoint gen to restore to (0 = reset)
     __u64 new_gen;            // out: new generation assigned
     __u64 entry_count;
@@ -161,9 +161,9 @@ and resolves the result.
 For `--at`/`--from`/`--to` (used by status/diff), checkpoints are searched
 in reachable records only. Unreachable checkpoints are not addressable for display.
 
-### 2.7 `agfs log` — full audit trail
+### 2.7 `yolofs log` — full audit trail
 
-`agfs log` reads **all** records (no `reachable`) and displays events
+`yolofs log` reads **all** records (no `reachable`) and displays events
 chronologically:
 
 ```
@@ -192,7 +192,7 @@ boundaries that clear everything (journal + inodes + caches).
 The core design works without caching. These optimizations avoid re-processing
 the full journal on each CLI invocation.
 
-### What to cache (in `.agfs/cache/`)
+### What to cache (in `.yolofs/cache/`)
 
 | Cache | Key | Value | Benefit |
 |-------|-----|-------|---------|
@@ -206,16 +206,16 @@ the full journal on each CLI invocation.
   checkpoint = no mutations can slip in).
 - **No invalidation needed for RST records**: unreachable caches just go unused.
 - **Commit/abort clears all caches** (session boundary).
-- **Eager build**: compute and persist caches right after `agfs checkpoint`
+- **Eager build**: compute and persist caches right after `yolo checkpoint`
   returns.
 
 ### With warm caches
 
 | Operation | Work (no cache) | Work (warm cache) |
 |-----------|----------------|-------------------|
-| `agfs status` / `agfs diff` | O(N) parse + extract + resolve | O(trailing segment only) |
-| `agfs commit` | O(N) parse + extract + resolve | O(unsaved records only) |
-| `agfs restore` | O(target prefix) parse + extract + resolve | O(1) load cached state |
+| `yolo status` / `yolo diff` | O(N) parse + extract + resolve | O(trailing segment only) |
+| `yolo commit` | O(N) parse + extract + resolve | O(unsaved records only) |
+| `yolo restore` | O(target prefix) parse + extract + resolve | O(1) load cached state |
 
 ---
 
@@ -227,16 +227,16 @@ the full journal on each CLI invocation.
 |----|------|-------|
 | docs-staging | RST record format, append-only semantics, `reachable` algorithm, gen naming | `docs/staging.md` |
 | docs-internals | RESTORE ioctl changes (`_IOWR`, `target_gen`/`new_gen`, RST record write), gen naming | `docs/internals.md` |
-| docs-cli | `agfs log` shows restore events, gen naming | `docs/cli.md` |
+| docs-cli | `yolofs log` shows restore events, gen naming | `docs/cli.md` |
 | docs-architecture | Lifecycle example with restore | `docs/architecture.md` |
 
 ### Phase 2: Kernel module
 
 | ID | Task | Files | Depends on |
 |----|------|-------|------------|
-| kmod-rename-gen | Rename `checkpoint_gen` → `gen` | `kmod/agfs.h`, `kmod/*.c` | docs-staging, docs-internals |
-| kmod-journal-restore | Add `agfs_journal_restore()` for RST records | `kmod/journal.c` | docs-staging, docs-internals |
-| kmod-ioctl-restore | Modify RESTORE handler: `_IOWR`, increment gen, write S, return `new_gen` | `kmod/ioctl.c`, `kmod/agfs.h` | kmod-rename-gen, kmod-journal-restore |
+| kmod-rename-gen | Rename `checkpoint_gen` → `gen` | `kmod/yolofs.h`, `kmod/*.c` | docs-staging, docs-internals |
+| kmod-journal-restore | Add `yolo_journal_restore()` for RST records | `kmod/journal.c` | docs-staging, docs-internals |
+| kmod-ioctl-restore | Modify RESTORE handler: `_IOWR`, increment gen, write S, return `new_gen` | `kmod/ioctl.c`, `kmod/yolofs.h` | kmod-rename-gen, kmod-journal-restore |
 | kmod-ioctl-checkpoint | Update CHECKPOINT for gen naming | `kmod/ioctl.c` | kmod-rename-gen |
 
 ### Phase 3: CLI core
@@ -246,7 +246,7 @@ the full journal on each CLI invocation.
 | cli-rename-gen | Rename `checkpoint_gen` → `gen` in CLI | `cli/*.rs` | kmod-rename-gen |
 | cli-journal-parse-S | Add `Record::Restore`, parse S tag, remove offset tracking | `cli/journal.rs` | kmod-journal-restore |
 | cli-reachable | Add `reachable()` — O(N) unreachable record removal | `cli/resolve.rs` | cli-journal-parse-S |
-| cli-ioctl-struct | Update `AgfsIocRestore` struct, `_IOWR`, return `new_gen` | `cli/ioctl.rs` | kmod-ioctl-restore |
+| cli-ioctl-struct | Update `YoloIocRestore` struct, `_IOWR`, return `new_gen` | `cli/ioctl.rs` | kmod-ioctl-restore |
 
 ### Phase 4: CLI commands
 
@@ -255,7 +255,7 @@ the full journal on each CLI invocation.
 | cli-restore | Remove truncation, use `reachable` on prefix, pass `target_gen` | `cli/restore.rs` | cli-reachable, cli-ioctl-struct |
 | cli-commit | Call `reachable` before `resolve` | `cli/commit.rs` | cli-reachable |
 | cli-diff-status | Call `reachable` before `slice_records`/`resolve_segments` | `cli/diff.rs` | cli-reachable |
-| cli-log | Show RST records in `agfs log` | `cli/checkpoint.rs` | cli-journal-parse-S |
+| cli-log | Show RST records in `yolofs log` | `cli/checkpoint.rs` | cli-journal-parse-S |
 | cli-find-checkpoint | All records for restore targets, reachable records for `--at`/`--from`/`--to` | `cli/resolve.rs` | cli-reachable |
 
 ### Phase 5: Tests
@@ -265,13 +265,13 @@ the full journal on each CLI invocation.
 | test-reachable | Unit tests: no S, single restore, multiple restores, unreachable S, undo restore | cli-reachable |
 | test-resolve-with-S | Unit tests: `resolve()` produces correct changes with RST records in input | cli-reachable |
 | test-segments-with-S | Unit tests: `resolve_segments` correct segment boundaries after `reachable` | cli-reachable |
-| test-e2e-restore | E2E: restore + work + commit, multiple restores, undo restore, `agfs log` audit trail | cli-restore, cli-commit, cli-diff-status, cli-log |
+| test-e2e-restore | E2E: restore + work + commit, multiple restores, undo restore, `yolofs log` audit trail | cli-restore, cli-commit, cli-diff-status, cli-log |
 
 ### Phase 6: Caching (deferred)
 
 | ID | Task | Depends on |
 |----|------|------------|
-| cache-infrastructure | `.agfs/cache/` directory, read/write helpers | test-e2e-restore |
+| cache-infrastructure | `.yolofs/cache/` directory, read/write helpers | test-e2e-restore |
 | cache-positions | Cache S/K positions for incremental reachable range computation | cache-infrastructure |
 | cache-resolver-state | Cache resolver `BTreeMap` at checkpoint boundaries | cache-infrastructure |
 | cache-segments | Cache per-segment `Vec<Change>` | cache-infrastructure |

@@ -20,9 +20,9 @@
 5. Fix branchfs checkpoint parent tracking to follow the currently active
    checkpoint branch across requests.
 6. Validate with bounded-step benchmark runs (timeouts + small step count)
-   across agfs/overlayfs/branchfs.
+   across yolofs/overlayfs/branchfs.
 
 ## Validation
 
-- `cargo build -p agfs-bench`
-- `AGFS_BENCH_CHECKPOINT_STEPS=20 timeout ... agfs-bench --micro --workload checkpoint-scalability --backend <backend> --runs 1`
+- `cargo build -p yolofs-bench`
+- `YOLO_BENCH_CHECKPOINT_STEPS=20 timeout ... yolofs-bench --micro --workload checkpoint-scalability --backend <backend> --runs 1`

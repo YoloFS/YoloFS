@@ -820,8 +820,8 @@ fn avg_latency_stddev_us(mean_iops: f64, stddev_iops: f64) -> f64 {
 
 fn backend_color(backend: &str) -> &'static str {
     match backend {
-        "agfs-no-perm" => "#2E86AB",
-        "agfs-realistic" => "#4F772D",
+        "yolo-no-perm" => "#2E86AB",
+        "yolo-realistic" => "#4F772D",
         "overlayfs" => "#C1666B",
         "branchfs" => "#D17B0F",
         _ => "#4C6EF5",
@@ -998,7 +998,7 @@ fn repo_state_drift(recorded: &RepoState, current: &RepoState) -> Vec<String> {
 
 pub fn report_backend_visible(name: &str) -> bool {
     // Hide stale pre-rename results from report plots/tables.
-    name != "agfs-allow-all"
+    name != "yolo-allow-all"
 }
 
 pub fn report_backend_visible_for_workload(workload: &str, backend: &str) -> bool {
@@ -1750,7 +1750,7 @@ pub fn render_index(
     let mut html = String::new();
     html.push_str("<!DOCTYPE html>\n<html><head>\n");
     html.push_str("<meta charset=\"utf-8\">\n");
-    html.push_str(&format!("<title>agfs-bench — {}</title>\n", e.hostname));
+    html.push_str(&format!("<title>yolo-bench — {}</title>\n", e.hostname));
     html.push_str("<style>\n");
     html.push_str(
         "  body { font-family: system-ui, sans-serif; margin: 2em; background: #fafafa; }\n",
@@ -1785,7 +1785,7 @@ pub fn render_index(
         (Some(hw), Some(cluster)) => format!("{hw} @ {cluster}"),
         _ => e.hostname.clone(),
     };
-    html.push_str(&format!("<h1>agfs-bench &mdash; {title}</h1>\n"));
+    html.push_str(&format!("<h1>yolo-bench &mdash; {title}</h1>\n"));
 
     html.push_str("<div class=\"env\"><table>\n");
     if let (Some(hw), Some(cluster)) = (&e.cloudlab_hardware, &e.cloudlab_cluster) {

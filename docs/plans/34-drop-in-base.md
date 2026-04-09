@@ -4,7 +4,7 @@
 
 `in_base` tracks per-dentry whether a path position had content in the base
 filesystem. It is used to decide tombstone-vs-cancel on delete, select journal
-tags (A/M, R/P), and classify entries for `agfs status`/`agfs diff`.
+tags (A/M, R/P), and classify entries for `yolo status`/`yolo diff`.
 
 This tracking is fragile for directory renames: the kernel cannot efficiently
 update `in_base` on all cached children when a directory moves, leaving stale
@@ -24,7 +24,7 @@ do not affect commit correctness.
 
 ## Approach
 
-- **Kernel**: remove `in_base` from `agfs_dentry_info`. Always tombstone on
+- **Kernel**: remove `in_base` from `yolo_dentry_info`. Always tombstone on
   delete. Always use a single journal tag for create (`A`) and rename (`R`).
   Merge A/M → `A`, R/P → `R`. Simplify the restore wire format (drop the
   `in_base` byte).
@@ -49,47 +49,47 @@ do not affect commit correctness.
 
 ### 2. Kernel — `kmod/`
 
-#### 2a. `agfs.h` — drop field and update setter signature
-- Remove `in_base` from `struct agfs_dentry_info`.
-- Change `agfs_dentry_set` signature: drop `in_base` parameter. The function
-  always pins unless `target == AGFS_TARGET_NONE && !tombstone`. Actually
+#### 2a. `yolofs.h` — drop field and update setter signature
+- Remove `in_base` from `struct yolo_dentry_info`.
+- Change `yolo_dentry_set` signature: drop `in_base` parameter. The function
+  always pins unless `target == YOLO_TARGET_NONE && !tombstone`. Actually
   simpler: any staged entry is pinned; the only unpinned state is ground
   state (`NONE`, not a tombstone). Introduce a boolean `tombstone` parameter
-  or use a separate `agfs_dentry_set_tombstone` helper if clearer.
+  or use a separate `yolo_dentry_set_tombstone` helper if clearer.
 
-#### 2b. `dentry.c` — simplify `agfs_dentry_set`
+#### 2b. `dentry.c` — simplify `yolo_dentry_set`
 - Remove `in_base` storage and the `should_pin` logic that depends on it.
-- New pinning rule: pin if `target != AGFS_TARGET_NONE` **or** if this is a
+- New pinning rule: pin if `target != YOLO_TARGET_NONE` **or** if this is a
   tombstone. Ground state (`NONE`, not tombstone) unpins.
-- `agfs_dentry_reset` remains the same — sets to ground state.
+- `yolo_dentry_reset` remains the same — sets to ground state.
 
 #### 2c. `lookup.c` — remove `in_base = true` on base hit
-- Remove `AGFS_D(dentry)->in_base = true` (line 140). Not needed — lookup
+- Remove `YOLO_D(dentry)->in_base = true` (line 140). Not needed — lookup
   doesn't need to mark base-ness anymore.
 
 #### 2d. `inode.c` — simplify create, delete, rename
 
-**Create** (`agfs_create_staged`):
-- Remove `in_base = AGFS_D(dentry)->pinned` logic.
-- Always use `agfs_journal_add()`. Remove `agfs_journal_modify()`.
+**Create** (`yolo_create_staged`):
+- Remove `in_base = YOLO_D(dentry)->pinned` logic.
+- Always use `yolo_journal_add()`. Remove `yolo_journal_modify()`.
 
-**Delete** (`agfs_delete_entry`):
-- Remove the `if (AGFS_D(dentry)->in_base)` branch. Always create a
+**Delete** (`yolo_delete_entry`):
+- Remove the `if (YOLO_D(dentry)->in_base)` branch. Always create a
   tombstone (allocate negative dentry, set to tombstone state).
 - Journal record is always `D` (unchanged).
 
-**Rename** (`agfs_rename`):
-- Remove `dst_in_base = AGFS_D(new_dentry)->in_base`.
+**Rename** (`yolo_rename`):
+- Remove `dst_in_base = YOLO_D(new_dentry)->in_base`.
 - Always create a tombstone at the old name (remove the
-  `if (AGFS_D(old_dentry)->in_base)` guard).
-- Always use `agfs_journal_rename()`. Remove `agfs_journal_replace()`.
+  `if (YOLO_D(old_dentry)->in_base)` guard).
+- Always use `yolo_journal_rename()`. Remove `yolo_journal_replace()`.
 - Update the moved dentry without `in_base`: just set target.
 
-#### 2e. `journal.c` — remove `agfs_journal_modify` and `agfs_journal_replace`
-- Delete `agfs_journal_modify()`. All creates use `agfs_journal_add()` (`A`).
-- Delete `agfs_journal_replace()`. All renames use `agfs_journal_rename()`
+#### 2e. `journal.c` — remove `yolo_journal_modify` and `yolo_journal_replace`
+- Delete `yolo_journal_modify()`. All creates use `yolo_journal_add()` (`A`).
+- Delete `yolo_journal_replace()`. All renames use `yolo_journal_rename()`
   (`R`).
-- Remove declarations from `agfs.h`.
+- Remove declarations from `yolofs.h`.
 
 #### 2f. `dir.c` — simplify tombstone check
 - The tombstone check `target == NONE && in_base` becomes just
@@ -99,13 +99,13 @@ do not affect commit correctness.
 - Remove `in_base` byte from the restore tree parser. The wire format
   becomes: `tag:u8 [payload]` (no `in_base:u8` between tag and payload).
 - `restore_add_dentry` drops `in_base` parameter. Tombstones are identified
-  by `target == AGFS_TARGET_NONE`.
+  by `target == YOLO_TARGET_NONE`.
 
 #### 2h. `staging.c`
-- Update `agfs_dentry_set` call (line ~149) to drop `in_base` argument.
-- `agfs_do_cow` (line ~127–177) currently calls `agfs_journal_modify()` and
-  passes `in_base: true` to `agfs_dentry_set`. Switch to
-  `agfs_journal_add()` and drop the `in_base` argument. COW is semantically
+- Update `yolo_dentry_set` call (line ~149) to drop `in_base` argument.
+- `yolo_do_cow` (line ~127–177) currently calls `yolo_journal_modify()` and
+  passes `in_base: true` to `yolo_dentry_set`. Switch to
+  `yolo_journal_add()` and drop the `in_base` argument. COW is semantically
   a create (staged content replaces base content), so `A` is the correct
   tag once the kernel no longer distinguishes add/modify.
 

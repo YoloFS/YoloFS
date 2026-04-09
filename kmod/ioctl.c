@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * agfs — control interface via .ctl control file.
+ * yolofs — control interface via .ctl control file.
  *
  * All ioctl operations go through the synthetic .ctl file at the mount
  * root.  The permission daemon claims exclusive daemon status on its
@@ -11,24 +11,24 @@
  * get the default decision.
  */
 
-#include "agfs.h"
+#include "yolofs.h"
 #include <linux/file.h>
 #include <linux/vmalloc.h>
 #include <asm/unaligned.h>
 
 /* ── .ctl open/release ──────────────────────────────────────────────── */
 
-static int agfs_ctl_open(struct inode *inode, struct file *file)
+static int yolo_ctl_open(struct inode *inode, struct file *file)
 {
 	return 0;
 }
 
-static int agfs_ctl_release(struct inode *inode, struct file *file)
+static int yolo_ctl_release(struct inode *inode, struct file *file)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
+	struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
 
 	if (file->private_data) {
-		agfs_daemon_cleanup(sbi);
+		yolo_daemon_cleanup(sbi);
 		atomic_set(&sbi->ask_engine.has_daemon, 0);
 	}
 	return 0;
@@ -36,12 +36,12 @@ static int agfs_ctl_release(struct inode *inode, struct file *file)
 
 /* ── GET_REQUEST: dequeue pending request ──────────────────────────── */
 
-static long agfs_get_request_ioctl(struct file *file, unsigned long arg)
+static long yolo_get_request_ioctl(struct file *file, unsigned long arg)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
-	struct agfs_ask_engine *eng = &sbi->ask_engine;
-	struct agfs_perm_request *req;
-	struct agfs_ctl_request out;
+	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
+	struct yolo_ask_engine *eng = &sbi->ask_engine;
+	struct yolo_perm_request *req;
+	struct yolo_ctl_request out;
 	int err;
 	__u16 path_len;
 
@@ -76,7 +76,7 @@ static long agfs_get_request_ioctl(struct file *file, unsigned long arg)
 	}
 
 	req = list_first_entry(&eng->pending_reqs,
-			       struct agfs_perm_request, list);
+			       struct yolo_perm_request, list);
 	list_del_init(&req->list);
 	kref_get(&req->ref); /* daemon takes a reference */
 	spin_unlock(&eng->pending_lock);
@@ -121,29 +121,29 @@ requeue_pending:
 	list_add_tail(&req->list, &eng->pending_reqs);
 	spin_unlock(&eng->pending_lock);
 	wake_up_interruptible(&eng->request_waitq);
-	kref_put(&req->ref, agfs_perm_request_release);
+	kref_put(&req->ref, yolo_perm_request_release);
 	return err;
 }
 
 /* ── PUT_RESPONSE: submit decision ─────────────────────────────────── */
 
-static long agfs_put_response_ioctl(struct file *file, unsigned long arg)
+static long yolo_put_response_ioctl(struct file *file, unsigned long arg)
 {
-	struct agfs_ask_engine *eng = &AGFS_SB(file_inode(file)->i_sb)->ask_engine;
-	struct agfs_ctl_response in;
-	struct agfs_perm_request *req, *tmp;
+	struct yolo_ask_engine *eng = &YOLO_SB(file_inode(file)->i_sb)->ask_engine;
+	struct yolo_ctl_response in;
+	struct yolo_perm_request *req, *tmp;
 	bool found = false;
 
 	if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
 		return -EFAULT;
 
-	if (in.decision > AGFS_PERM_HIDE)
+	if (in.decision > YOLO_PERM_HIDE)
 		return -EINVAL;
 
 	spin_lock(&eng->dispatch_lock);
 	list_for_each_entry_safe(req, tmp, &eng->dispatched, list) {
 		if (req->id == in.id) {
-			req->decision = (enum agfs_perm)in.decision;
+			req->decision = (enum yolo_perm)in.decision;
 			list_del_init(&req->list);
 			found = true;
 			break;
@@ -155,33 +155,33 @@ static long agfs_put_response_ioctl(struct file *file, unsigned long arg)
 		return -ENOENT;
 
 	complete(&req->done);
-	kref_put(&req->ref, agfs_perm_request_release);
+	kref_put(&req->ref, yolo_perm_request_release);
 	return 0;
 }
 
 /* ── Cleanup dispatched requests on daemon fd close ────────────────── */
 
-void agfs_daemon_cleanup(struct agfs_sb_info *sbi)
+void yolo_daemon_cleanup(struct yolo_sb_info *sbi)
 {
-	struct agfs_ask_engine *eng = &sbi->ask_engine;
-	struct agfs_perm_request *req, *tmp;
+	struct yolo_ask_engine *eng = &sbi->ask_engine;
+	struct yolo_perm_request *req, *tmp;
 
 	spin_lock(&eng->dispatch_lock);
 	list_for_each_entry_safe(req, tmp, &eng->dispatched, list) {
 		req->decision = eng->default_perm;
 		list_del_init(&req->list);
 		complete(&req->done);
-		kref_put(&req->ref, agfs_perm_request_release);
+		kref_put(&req->ref, yolo_perm_request_release);
 	}
 	spin_unlock(&eng->dispatch_lock);
 }
 
 /* ── Release all rule-pinned dentries ───────────────────────────────── */
 
-void agfs_release_pinned_rules(struct agfs_sb_info *sbi)
+void yolo_release_pinned_rules(struct yolo_sb_info *sbi)
 {
 	LIST_HEAD(local);
-	struct agfs_dentry_info *di, *tmp;
+	struct yolo_dentry_info *di, *tmp;
 
 	spin_lock(&sbi->pinned_rules_lock);
 	list_splice_init(&sbi->pinned_rules, &local);
@@ -192,7 +192,7 @@ void agfs_release_pinned_rules(struct agfs_sb_info *sbi)
 
 		list_del_init(&di->rule_pin);
 		spin_lock(&di->lock);
-		di->perm = AGFS_PERM_NONE;
+		di->perm = YOLO_PERM_NONE;
 		di->rule_dentry = NULL;
 		spin_unlock(&di->lock);
 		dput(dentry);
@@ -203,12 +203,12 @@ void agfs_release_pinned_rules(struct agfs_sb_info *sbi)
 
 /*
  * Copy a variable-length path from userspace into a caller-provided buffer.
- * The buffer must be at least AGFS_PATH_MAX bytes.
- * Paths are limited to AGFS_PATH_MAX-1 bytes (same as internal buffers).
+ * The buffer must be at least YOLO_PATH_MAX bytes.
+ * Paths are limited to YOLO_PATH_MAX-1 bytes (same as internal buffers).
  */
-static int agfs_copy_user_path(__u64 ptr, __u16 len, char *buf)
+static int yolo_copy_user_path(__u64 ptr, __u16 len, char *buf)
 {
-	if (!ptr || len == 0 || len >= AGFS_PATH_MAX)
+	if (!ptr || len == 0 || len >= YOLO_PATH_MAX)
 		return -EINVAL;
 
 	if (copy_from_user(buf, (const void __user *)ptr, len))
@@ -218,18 +218,18 @@ static int agfs_copy_user_path(__u64 ptr, __u16 len, char *buf)
 	return 0;
 }
 
-static int agfs_resolve_rule(struct file *file, unsigned long arg,
-			     struct agfs_ioc_rule *rule,
+static int yolo_resolve_rule(struct file *file, unsigned long arg,
+			     struct yolo_ioc_rule *rule,
 			     struct path *rule_path,
-			     struct agfs_dentry_info **di_out)
+			     struct yolo_dentry_info **di_out)
 {
-	char path_buf[AGFS_PATH_MAX];
+	char path_buf[YOLO_PATH_MAX];
 	int err;
 
 	if (copy_from_user(rule, (void __user *)arg, sizeof(*rule)))
 		return -EFAULT;
 
-	err = agfs_copy_user_path(rule->path_ptr, rule->path_len, path_buf);
+	err = yolo_copy_user_path(rule->path_ptr, rule->path_len, path_buf);
 	if (err)
 		return err;
 
@@ -242,7 +242,7 @@ static int agfs_resolve_rule(struct file *file, unsigned long arg,
 		return -EXDEV;
 	}
 
-	*di_out = AGFS_D(rule_path->dentry);
+	*di_out = YOLO_D(rule_path->dentry);
 	if (!*di_out) {
 		path_put(rule_path);
 		return -ENOENT;
@@ -253,31 +253,31 @@ static int agfs_resolve_rule(struct file *file, unsigned long arg,
 
 /* ── Rule / mark ioctl handlers ─────────────────────────────────── */
 
-static long agfs_rule_add_ioctl(struct file *file, unsigned long arg)
+static long yolo_rule_add_ioctl(struct file *file, unsigned long arg)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
-	struct agfs_ioc_rule rule;
+	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
+	struct yolo_ioc_rule rule;
 	struct path rule_path;
-	struct agfs_dentry_info *di;
+	struct yolo_dentry_info *di;
 	bool first;
 	int err;
 
-	err = agfs_resolve_rule(file, arg, &rule, &rule_path, &di);
+	err = yolo_resolve_rule(file, arg, &rule, &rule_path, &di);
 	if (err)
 		return err;
 
-	if (rule.perm > AGFS_PERM_HIDE) {
+	if (rule.perm > YOLO_PERM_HIDE) {
 		path_put(&rule_path);
 		return -EINVAL;
 	}
 
 	spin_lock(&di->lock);
-	first = (di->perm == AGFS_PERM_NONE);
+	first = (di->perm == YOLO_PERM_NONE);
 	if (first) {
 		dget(rule_path.dentry);
 		di->rule_dentry = rule_path.dentry;
 	}
-	di->perm = (enum agfs_perm)rule.perm;
+	di->perm = (enum yolo_perm)rule.perm;
 	spin_unlock(&di->lock);
 
 	if (first) {
@@ -292,23 +292,23 @@ static long agfs_rule_add_ioctl(struct file *file, unsigned long arg)
 	return 0;
 }
 
-static long agfs_rule_remove_ioctl(struct file *file, unsigned long arg)
+static long yolo_rule_remove_ioctl(struct file *file, unsigned long arg)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
-	struct agfs_ioc_rule rule;
+	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
+	struct yolo_ioc_rule rule;
 	struct path rule_path;
-	struct agfs_dentry_info *di;
+	struct yolo_dentry_info *di;
 	bool had_rule;
 	int err;
 
-	err = agfs_resolve_rule(file, arg, &rule, &rule_path, &di);
+	err = yolo_resolve_rule(file, arg, &rule, &rule_path, &di);
 	if (err)
 		return err;
 
 	spin_lock(&di->lock);
-	had_rule = (di->perm != AGFS_PERM_NONE);
+	had_rule = (di->perm != YOLO_PERM_NONE);
 	if (had_rule) {
-		di->perm = AGFS_PERM_NONE;
+		di->perm = YOLO_PERM_NONE;
 		di->rule_dentry = NULL;
 	}
 	spin_unlock(&di->lock);
@@ -326,11 +326,11 @@ static long agfs_rule_remove_ioctl(struct file *file, unsigned long arg)
 	return 0;
 }
 
-static long agfs_mark_ioctl(struct file *file, unsigned long arg)
+static long yolo_mark_ioctl(struct file *file, unsigned long arg)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
-	struct agfs_ioc_mark mrk;
-	char name_buf[AGFS_PATH_MAX];
+	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
+	struct yolo_ioc_mark mrk;
+	char name_buf[YOLO_PATH_MAX];
 	u16 gen;
 	int err;
 
@@ -340,7 +340,7 @@ static long agfs_mark_ioctl(struct file *file, unsigned long arg)
 	if (copy_from_user(&mrk, (void __user *)arg, sizeof(mrk)))
 		return -EFAULT;
 
-	err = agfs_copy_user_path(mrk.name_ptr, mrk.name_len, name_buf);
+	err = yolo_copy_user_path(mrk.name_ptr, mrk.name_len, name_buf);
 	if (err)
 		return err;
 
@@ -349,7 +349,7 @@ static long agfs_mark_ioctl(struct file *file, unsigned long arg)
 		up_write(&sbi->staging_sem);
 		return -EBUSY;
 	}
-	if ((mrk.flags & AGFS_MARK_IF_CHANGED) && !READ_ONCE(sbi->dirty)) {
+	if ((mrk.flags & YOLO_MARK_IF_CHANGED) && !READ_ONCE(sbi->dirty)) {
 		up_write(&sbi->staging_sem);
 		mrk.gen = 0;
 		if (copy_to_user((void __user *)arg, &mrk, sizeof(mrk)))
@@ -361,7 +361,7 @@ static long agfs_mark_ioctl(struct file *file, unsigned long arg)
 		return -EOVERFLOW;
 	}
 	gen = (u16)atomic_inc_return(&sbi->gen);
-	agfs_journal_mark(sbi, gen, name_buf);
+	yolo_journal_mark(sbi, gen, name_buf);
 	WRITE_ONCE(sbi->dirty, false);
 	up_write(&sbi->staging_sem);
 
@@ -428,7 +428,7 @@ struct dir_frame {
  * dentry under @parent.  Scaffold (tag 0) entries have no payload.
  */
 static int jump_inject_entry(struct tree_cursor *cur,
-				struct agfs_sb_info *sbi,
+				struct yolo_sb_info *sbi,
 				struct dentry *parent,
 				const u8 *name_ptr, u16 name_len,
 				u8 target, u16 gen)
@@ -438,32 +438,32 @@ static int jump_inject_entry(struct tree_cursor *cur,
 	int err;
 
 	switch (target) {
-	case AGFS_TARGET_NONE: { /* tombstone */
-		child = agfs_dentry_create(parent, (const char *)name_ptr,
-					   name_len, AGFS_TARGET_NONE, NULL);
+	case YOLO_TARGET_NONE: { /* tombstone */
+		child = yolo_dentry_create(parent, (const char *)name_ptr,
+					   name_len, YOLO_TARGET_NONE, NULL);
 		return IS_ERR(child) ? PTR_ERR(child) : 0;
 	}
 
-	case AGFS_TARGET_INODE: { /* staged inode */
+	case YOLO_TARGET_INODE: { /* staged inode */
 		u32 ino;
 
 		err = read_le32(cur, &ino);
 		if (err)
 			return err;
-		err = agfs_inode_path(sbi, ino, &lower_path);
+		err = yolo_inode_path(sbi, ino, &lower_path);
 		if (err)
 			return err;
-		child = agfs_dentry_create(parent, (const char *)name_ptr,
-					   name_len, AGFS_TARGET_INODE,
+		child = yolo_dentry_create(parent, (const char *)name_ptr,
+					   name_len, YOLO_TARGET_INODE,
 					   &lower_path);
 		if (IS_ERR(child))
 			return PTR_ERR(child);
-		AGFS_I(d_inode(child))->staging_gen = gen;
+		YOLO_I(d_inode(child))->staging_gen = gen;
 		return 0;
 	}
 
-	case AGFS_TARGET_PATH: { /* redirect, or passthrough if path_len == 0 */
-		char path_buf[AGFS_PATH_MAX];
+	case YOLO_TARGET_PATH: { /* redirect, or passthrough if path_len == 0 */
+		char path_buf[YOLO_PATH_MAX];
 		const u8 *base_ptr;
 		u16 base_len;
 
@@ -474,7 +474,7 @@ static int jump_inject_entry(struct tree_cursor *cur,
 		if (base_len == 0) /* passthrough — no state to set */
 			return 0;
 
-		if (base_len >= AGFS_PATH_MAX)
+		if (base_len >= YOLO_PATH_MAX)
 			return -EINVAL;
 		err = read_bytes(cur, base_len, &base_ptr);
 		if (err)
@@ -485,8 +485,8 @@ static int jump_inject_entry(struct tree_cursor *cur,
 		err = kern_path(path_buf, LOOKUP_FOLLOW, &lower_path);
 		if (err)
 			return err;
-		child = agfs_dentry_create(parent, (const char *)name_ptr,
-					   name_len, AGFS_TARGET_PATH,
+		child = yolo_dentry_create(parent, (const char *)name_ptr,
+					   name_len, YOLO_TARGET_PATH,
 					   &lower_path);
 		return IS_ERR(child) ? PTR_ERR(child) : 0;
 	}
@@ -496,17 +496,17 @@ static int jump_inject_entry(struct tree_cursor *cur,
 	}
 }
 
-static int agfs_jump_inject(struct file *file, struct agfs_sb_info *sbi,
-			    struct agfs_ioc_jump *hdr, u16 gen)
+static int yolo_jump_inject(struct file *file, struct yolo_sb_info *sbi,
+			    struct yolo_ioc_jump *hdr, u16 gen)
 {
-	struct dir_frame stack[AGFS_JUMP_MAX_DEPTH];
+	struct dir_frame stack[YOLO_JUMP_MAX_DEPTH];
 	struct tree_cursor cur;
 	u8 *kbuf;
 	int depth;
 	int err = 0;
 	u16 root_count;
 
-	if (hdr->tree_len > AGFS_JUMP_MAX_TREE_LEN)
+	if (hdr->tree_len > YOLO_JUMP_MAX_TREE_LEN)
 		return -EINVAL;
 
 	kbuf = vmalloc(hdr->tree_len);
@@ -579,7 +579,7 @@ static int agfs_jump_inject(struct file *file, struct agfs_sb_info *sbi,
 		{
 			struct dentry *child;
 
-			if (depth + 1 >= AGFS_JUMP_MAX_DEPTH) {
+			if (depth + 1 >= YOLO_JUMP_MAX_DEPTH) {
 				err = -EINVAL;
 				goto out_unwind;
 			}
@@ -612,11 +612,11 @@ out_free:
 	return err;
 }
 
-static long agfs_jump_ioctl(struct file *file, unsigned long arg)
+static long yolo_jump_ioctl(struct file *file, unsigned long arg)
 {
 	struct super_block *sb = file_inode(file)->i_sb;
-	struct agfs_sb_info *sbi = AGFS_SB(sb);
-	struct agfs_ioc_jump hdr;
+	struct yolo_sb_info *sbi = YOLO_SB(sb);
+	struct yolo_ioc_jump hdr;
 	u16 new_gen;
 	int err = 0;
 
@@ -637,7 +637,7 @@ static long agfs_jump_ioctl(struct file *file, unsigned long arg)
 
 	/* Wipe perm caches, pinned dentries, dentry cache */
 	atomic64_inc(&sbi->perm_gen);
-	agfs_dentry_unpin_all(sb);
+	yolo_dentry_unpin_all(sb);
 
 	if (hdr.target_gen == 0) {
 		/* Reset mode (commit/abort): no entries, no journal write */
@@ -665,9 +665,9 @@ static long agfs_jump_ioctl(struct file *file, unsigned long arg)
 	}
 	new_gen = (u16)atomic_inc_return(&sbi->gen);
 
-	err = agfs_jump_inject(file, sbi, &hdr, new_gen);
+	err = yolo_jump_inject(file, sbi, &hdr, new_gen);
 	if (!err)
-		err = agfs_journal_jump(sbi, new_gen, hdr.target_gen);
+		err = yolo_journal_jump(sbi, new_gen, hdr.target_gen);
 	/* Don't rollback gen on failure — dirents may already be injected
 	 * with new_gen.  Rolling back would leave those dirents with a gen
 	 * higher than sbi->gen, breaking COW checks.  The CLI can retry
@@ -690,36 +690,36 @@ static long agfs_jump_ioctl(struct file *file, unsigned long arg)
 
 /* ── .ctl ioctl handler (all operations) ────────────────────────────── */
 
-static long agfs_ctl_ioctl(struct file *file, unsigned int cmd,
+static long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
 			   unsigned long arg)
 {
 	switch (cmd) {
-	case AGFS_IOC_GET_REQUEST:
-		return agfs_get_request_ioctl(file, arg);
+	case YOLO_IOC_GET_REQUEST:
+		return yolo_get_request_ioctl(file, arg);
 
-	case AGFS_IOC_PUT_RESPONSE:
-		return agfs_put_response_ioctl(file, arg);
+	case YOLO_IOC_PUT_RESPONSE:
+		return yolo_put_response_ioctl(file, arg);
 
-	case AGFS_IOC_RULE_ADD:
-		return agfs_rule_add_ioctl(file, arg);
+	case YOLO_IOC_RULE_ADD:
+		return yolo_rule_add_ioctl(file, arg);
 
-	case AGFS_IOC_RULE_REMOVE:
-		return agfs_rule_remove_ioctl(file, arg);
+	case YOLO_IOC_RULE_REMOVE:
+		return yolo_rule_remove_ioctl(file, arg);
 
-	case AGFS_IOC_MARK:
-		return agfs_mark_ioctl(file, arg);
+	case YOLO_IOC_MARK:
+		return yolo_mark_ioctl(file, arg);
 
-	case AGFS_IOC_JUMP:
-		return agfs_jump_ioctl(file, arg);
+	case YOLO_IOC_JUMP:
+		return yolo_jump_ioctl(file, arg);
 
 	default:
 		return -ENOTTY;
 	}
 }
 
-const struct file_operations agfs_ctl_fops = {
-	.open		= agfs_ctl_open,
-	.release	= agfs_ctl_release,
-	.unlocked_ioctl	= agfs_ctl_ioctl,
-	.compat_ioctl	= agfs_ctl_ioctl,
+const struct file_operations yolo_ctl_fops = {
+	.open		= yolo_ctl_open,
+	.release	= yolo_ctl_release,
+	.unlocked_ioctl	= yolo_ctl_ioctl,
+	.compat_ioctl	= yolo_ctl_ioctl,
 };

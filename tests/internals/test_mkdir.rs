@@ -1,6 +1,6 @@
 use super::helpers::{actions, ino_for, inode_path, inos, journal, tree};
-use crate::helpers::AgfsSession;
-use agfs::journal::Action;
+use crate::helpers::YoloSession;
+use yolofs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -8,7 +8,7 @@ use std::fs;
 /// Creating a directory produces an Entry record with dtype=Dir.
 #[test]
 fn mkdir_produces_add_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
@@ -24,7 +24,7 @@ fn mkdir_produces_add_record() {
 /// Removing a directory produces a Delete record.
 #[test]
 fn rmdir_produces_delete_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create through mount then remove
     fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
@@ -42,7 +42,7 @@ fn rmdir_produces_delete_record() {
 /// Removing a base directory produces a Delete record.
 #[test]
 fn rmdir_base_dir_produces_delete_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // subdir/ is seeded in base
     fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("unlink nested file");
@@ -60,7 +60,7 @@ fn rmdir_base_dir_produces_delete_record() {
 /// Renaming a staged directory produces a single R record.
 #[test]
 fn rename_dir_produces_rename_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("olddir")).expect("mkdir");
     fs::rename(s.mnt_path("olddir"), s.mnt_path("newdir")).expect("rename dir");
@@ -80,7 +80,7 @@ fn rename_dir_produces_rename_record() {
 /// mkdir creates an empty directory inode in inode store.
 #[test]
 fn mkdir_creates_directory_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
@@ -99,7 +99,7 @@ fn mkdir_creates_directory_inode() {
 /// mkdir -p with a file inside: both directory and file get inodes.
 #[test]
 fn mkdir_with_file_creates_separate_inodes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir_all(s.mnt_path("parent/child")).expect("mkdir -p");
     fs::write(s.mnt_path("parent/child/data.txt"), "nested\n").expect("write");
@@ -133,7 +133,7 @@ fn mkdir_with_file_creates_separate_inodes() {
 /// rmdir does NOT create a staged inode (only journal DEL record).
 #[test]
 fn rmdir_creates_no_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("tmpdir")).expect("mkdir");
     let inos_before = inos(&s);
@@ -152,7 +152,7 @@ fn rmdir_creates_no_inode() {
 /// Pure directory rename creates no new inode (only journal RDR record).
 #[test]
 fn rename_dir_creates_no_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("olddir")).expect("mkdir");
     let inos_after_mkdir = inos(&s);

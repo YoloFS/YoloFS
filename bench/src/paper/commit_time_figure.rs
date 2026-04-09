@@ -23,9 +23,9 @@ const NATIVE_BASELINES: &[(&str, &str)] = &[
     ("unlink", "meta-unlink-base"),
 ];
 
-/// Backends to show (no native — no commit; no agfs-no-perm).
+/// Backends to show (no native — no commit; no yolo-no-perm).
 const BACKENDS: &[(&str, &str)] = &[
-    ("agfs-realistic", "AgFS"),
+    ("yolo-realistic", "YoloFS"),
     ("overlayfs", "OverlayFS"),
     ("branchfs", "BranchFS"),
 ];
@@ -142,7 +142,7 @@ for r in rows:
     lookup[(r['op'], r['backend'], r['metric'])] = float(r['us_per_op'])
 
 backend_colors = {{
-    'AgFS':       S.TABLEAU10['blue'],
+    'YoloFS':       S.TABLEAU10['blue'],
     'OverlayFS':  S.TABLEAU10['green'],
     'BranchFS':   S.TABLEAU10['orange'],
 }}

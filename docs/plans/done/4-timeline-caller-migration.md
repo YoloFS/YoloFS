@@ -26,12 +26,12 @@ methods instead of calling flat functions. After migration, the flat
 
 | ID | Task | Files |
 |----|------|-------|
-| tl-journal-cmd | Use `Timeline` in `agfs journal` instead of `reachable_indices()` | `cli/journal_cmd.rs` |
-| tl-timeline-cmd | Use `Timeline` in `agfs timeline` instead of `reachable_indices()` | `cli/timeline_cmd.rs` |
-| tl-diff | Use `Timeline::slice()` + resolve in `agfs diff`/`agfs status` | `cli/diff.rs` |
-| tl-commit | Use `Timeline` in `agfs commit` — `reachable_records()` + `resolve()` | `cli/commit.rs` |
-| tl-restore | Use `Timeline::find_checkpoint()` + reachable prefix in `agfs restore` | `cli/restore.rs` |
-| tl-abort | Use `Timeline` in `agfs abort` — `all_records()` + `resolve()` (needs all records incl. dead zones) | `cli/abort.rs` |
+| tl-journal-cmd | Use `Timeline` in `yolofs journal` instead of `reachable_indices()` | `cli/journal_cmd.rs` |
+| tl-timeline-cmd | Use `Timeline` in `yolo timeline` instead of `reachable_indices()` | `cli/timeline_cmd.rs` |
+| tl-diff | Use `Timeline::slice()` + resolve in `yolo diff`/`yolo status` | `cli/diff.rs` |
+| tl-commit | Use `Timeline` in `yolo commit` — `reachable_records()` + `resolve()` | `cli/commit.rs` |
+| tl-restore | Use `Timeline::find_checkpoint()` + reachable prefix in `yolo restore` | `cli/restore.rs` |
+| tl-abort | Use `Timeline` in `yolo abort` — `all_records()` + `resolve()` (needs all records incl. dead zones) | `cli/abort.rs` |
 | tl-mount | Use `Timeline` in mount prompt — `all_records()` + `resolve()` (needs all records incl. dead zones) | `cli/mount.rs` |
 | tl-cleanup | Remove or reduce visibility of flat `reachable()`, `reachable_indices()`, `find_checkpoint_index()`, `slice_records()` | `cli/journal/timeline.rs` |
 

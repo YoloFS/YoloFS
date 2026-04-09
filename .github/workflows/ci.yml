@@ -60,7 +60,7 @@ jobs:
             url=$(git config -f .gitmodules "submodule.$name.url")
             repo=$(echo "$url" | sed 's|.*github.com/||;s|\.git$||')
             # Skip third-party submodules
-            case "$repo" in ShawnZhong/*) ;; *) continue ;; esac
+            case "$repo" in YoloFS/*) ;; *) continue ;; esac
             sha=$(gh api "repos/$repo/commits/HEAD" --jq .sha)
             if [ -n "$sha" ]; then
               git update-index --cacheinfo 160000,"$sha","$path"

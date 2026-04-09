@@ -1,10 +1,10 @@
-use crate::helpers::{AGFS_BIN, AgfsSession};
-use agfs::config::{Config, Perm};
+use crate::helpers::{YOLO_BIN, YoloSession};
+use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
 
 /// Helper: create a session with a hide rule on a subdirectory.
-fn hide_session() -> AgfsSession {
+fn hide_session() -> YoloSession {
     // Create base with a "secret" subdirectory.
     let root = tempfile::tempdir().unwrap().keep();
     fs::write(root.join("hello.txt"), "visible\n").unwrap();
@@ -27,9 +27,9 @@ fn hide_session() -> AgfsSession {
         rules,
         ..Default::default()
     };
-    config.save(&root.join("agfs.toml")).unwrap();
+    config.save(&root.join("yolofs.toml")).unwrap();
 
-    let output = std::process::Command::new(AGFS_BIN)
+    let output = std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&root)
         .env("NO_COLOR", "1")
@@ -37,8 +37,8 @@ fn hide_session() -> AgfsSession {
         .unwrap();
     assert!(output.status.success(), "mount failed: {:?}", output);
 
-    // Construct an AgfsSession manually so Drop unmounts.
-    AgfsSession::from_existing_root(root).expect("session from root")
+    // Construct an YoloSession manually so Drop unmounts.
+    YoloSession::from_existing_root(root).expect("session from root")
 }
 
 /// stat on a hidden path should return ENOENT.
@@ -136,9 +136,9 @@ fn hide_single_file() {
         rules,
         ..Default::default()
     };
-    config.save(&root.join("agfs.toml")).unwrap();
+    config.save(&root.join("yolofs.toml")).unwrap();
 
-    let output = std::process::Command::new(AGFS_BIN)
+    let output = std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&root)
         .env("NO_COLOR", "1")
@@ -146,7 +146,7 @@ fn hide_single_file() {
         .unwrap();
     assert!(output.status.success(), "mount failed");
 
-    let s = AgfsSession::from_existing_root(root).expect("session");
+    let s = YoloSession::from_existing_root(root).expect("session");
 
     // hidden.txt should not appear in readdir.
     let entries: Vec<String> = fs::read_dir(s.mnt_path("."))

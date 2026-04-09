@@ -6,8 +6,8 @@ PAPER_DIR ?= $(REPO_ROOT)/paper
 .PHONY: install-paper
 
 install-paper:
-	cargo build --release --manifest-path $(REPO_ROOT)/Cargo.toml -p agfs-bench
-	$(REPO_ROOT)/local/target/release/agfs-bench install-paper --paper-dir $(PAPER_DIR)
+	cargo build --release --manifest-path $(REPO_ROOT)/Cargo.toml -p yolo-bench
+	$(REPO_ROOT)/local/target/release/yolo-bench install-paper --paper-dir $(PAPER_DIR)
 
 # ── Third-party backends ──────────────────────────────────────────────
 

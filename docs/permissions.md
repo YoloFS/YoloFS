@@ -16,17 +16,17 @@ ENOENT).  `deny` and `ask` have no effect on directory read-like ops.
 ## Permission States
 
 ```c
-enum agfs_perm {
-    AGFS_PERM_NONE,        // No rule on this dentry (walk up to find one).
-    AGFS_PERM_ASK,         // Default. Block thread, ask userspace.
-    AGFS_PERM_ALLOW,       // Read + write + execute allowed.
-    AGFS_PERM_ALLOW_RW,    // Read + write. No execute.
-    AGFS_PERM_ALLOW_RO,    // Read only. No write, no execute.
-    AGFS_PERM_ALLOW_RX,    // Read + execute. No write.
-    AGFS_PERM_DENY,        // Files: all access denied.
+enum yolo_perm {
+    YOLO_PERM_NONE,        // No rule on this dentry (walk up to find one).
+    YOLO_PERM_ASK,         // Default. Block thread, ask userspace.
+    YOLO_PERM_ALLOW,       // Read + write + execute allowed.
+    YOLO_PERM_ALLOW_RW,    // Read + write. No execute.
+    YOLO_PERM_ALLOW_RO,    // Read only. No write, no execute.
+    YOLO_PERM_ALLOW_RX,    // Read + execute. No write.
+    YOLO_PERM_DENY,        // Files: all access denied.
                            // Dirs: traversal/readdir/stat still work,
                            //       but mutations are denied.
-    AGFS_PERM_HIDDEN,      // Like deny, but the path itself is invisible.
+    YOLO_PERM_HIDDEN,      // Like deny, but the path itself is invisible.
                            // Parent's readdir skips it; stat returns -ENOENT.
 };
 ```
@@ -34,10 +34,10 @@ enum agfs_perm {
 Operations passed in ask requests:
 
 ```c
-enum agfs_op {
-    AGFS_OP_READ  = 1,    // File opened for reading.
-    AGFS_OP_WRITE = 2,    // File opened for writing (includes append/truncate).
-    AGFS_OP_EXEC  = 3,    // File opened for execution.
+enum yolo_op {
+    YOLO_OP_READ  = 1,    // File opened for reading.
+    YOLO_OP_WRITE = 2,    // File opened for writing (includes append/truncate).
+    YOLO_OP_EXEC  = 3,    // File opened for execution.
 };
 ```
 
@@ -50,20 +50,20 @@ per-inode state, and the ask protocol engine.
 
 Rules live directly on dentries. One field, one structure.
 
-**Per-dentry** (`agfs_dentry_info`) — one per cached dentry:
+**Per-dentry** (`yolo_dentry_info`) — one per cached dentry:
 
 | Field | Purpose |
 |-------|---------|
-| `perm` | `AGFS_PERM_NONE` unless this dentry has an explicit rule. Set by `AGFS_IOC_RULE_ADD`, cleared by `AGFS_IOC_RULE_REMOVE`. The dentry is pinned (via `dget`) while a rule is attached to prevent eviction. |
+| `perm` | `YOLO_PERM_NONE` unless this dentry has an explicit rule. Set by `YOLO_IOC_RULE_ADD`, cleared by `YOLO_IOC_RULE_REMOVE`. The dentry is pinned (via `dget`) while a rule is attached to prevent eviction. |
 
-### Per-Superblock (`agfs_sb_info`)
+### Per-Superblock (`yolo_sb_info`)
 
 | Field | Purpose |
 |-------|---------|
 | `permission` | Bool — whether permission gating is enabled. When false, all checks are skipped. |
 | `perm_gen` | Atomic generation counter, starts at 1. Bumped on every rule add/remove/invalidation. Compared against per-inode `perm_gen` for O(1) staleness check. |
 
-### Per-Inode (`agfs_inode_info`)
+### Per-Inode (`yolo_inode_info`)
 
 | Field | Purpose |
 |-------|---------|
@@ -74,29 +74,29 @@ Rules live directly on dentries. One field, one structure.
 
 The ask protocol handles paths with no matching rule. A thread accessing
 an `ask` path sleeps until a userspace daemon decides. All ask state is
-grouped into `struct agfs_ask_engine` (embedded in `agfs_sb_info` as
+grouped into `struct yolo_ask_engine` (embedded in `yolo_sb_info` as
 `ask_engine`), plus per-connection and per-request structures.
 
-**Ask engine** (`agfs_ask_engine`) — embedded in `agfs_sb_info`:
+**Ask engine** (`yolo_ask_engine`) — embedded in `yolo_sb_info`:
 
 | Field | Purpose |
 |-------|---------|
-| `pending_reqs` | Linked list of `agfs_perm_request` structs waiting for a daemon decision |
+| `pending_reqs` | Linked list of `yolo_perm_request` structs waiting for a daemon decision |
 | `pending_lock` | Spinlock protecting `pending_reqs` |
 | `request_waitq` | Wait queue — daemon's `GET_REQUEST` ioctl blocks here |
 | `next_req_id` | Atomic counter for unique request IDs |
 | `timeout_s` | Seconds before an unanswered ask applies the default |
 | `default_perm` | Default decision (`deny` or `allow-ro`) when no daemon or timeout |
-| `daemon_file` | Pointer to the daemon's open `struct file` (the `.ctl` control file); NULL if no daemon connected. Set atomically on the first `GET_REQUEST` ioctl, cleared in `agfs_ctl_release()`. Only one daemon allowed — a second `GET_REQUEST` from a different fd returns `-EBUSY`. |
+| `daemon_file` | Pointer to the daemon's open `struct file` (the `.ctl` control file); NULL if no daemon connected. Set atomically on the first `GET_REQUEST` ioctl, cleared in `yolo_ctl_release()`. Only one daemon allowed — a second `GET_REQUEST` from a different fd returns `-EBUSY`. |
 | `dispatched` | Linked list of requests sent to daemon but not yet answered |
 | `dispatch_lock` | Spinlock protecting `dispatched` and `daemon_file` |
 
-The daemon connects by opening `.agfs/mnt/.ctl` and issuing its first
+The daemon connects by opening `.yolofs/mnt/.ctl` and issuing its first
 `GET_REQUEST` ioctl to claim exclusive daemon status. On close, all
 dispatched-but-unanswered
 requests receive `default_perm` and `daemon_file` is reset to NULL.
 
-**Per-request** (`agfs_perm_request`) — one per in-flight ask:
+**Per-request** (`yolo_perm_request`) — one per in-flight ask:
 
 | Field | Purpose |
 |-------|---------|
@@ -113,14 +113,14 @@ inodes** with a **generation counter** for cheap invalidation.
 
 Two levels:
 - **Dentry**: `perm` field — only set on dentries that have an explicit rule
-  (`AGFS_PERM_NONE` otherwise). Rules are pinned so the dentry is never evicted.
+  (`YOLO_PERM_NONE` otherwise). Rules are pinned so the dentry is never evicted.
 - **Inode**: `cached_perm` + `perm_gen` — resolved permission cached during
   `lookup()` by inheriting from the nearest ancestor dentry with a rule.
   Checked in `permission()` with O(1) cost.
 
-**Setting a rule** (`agfs rule add src allow-rw`):
+**Setting a rule** (`yolo rule add src allow-rw`):
 
-1. Write the rule to `agfs.toml` (source of truth on disk):
+1. Write the rule to `yolofs.toml` (source of truth on disk):
   ```toml
    ask_timeout = 30
    ask_default = "deny"
@@ -134,112 +134,112 @@ Two levels:
   ```
 
    Paths can be **absolute** (`/etc`) or **relative** to the session root:
-   the directory containing `.agfs/` (equivalently, the CWD where `agfs`
+   the directory containing `.yolofs/` (equivalently, the CWD where `yolo`
    was launched). For example, `src` resolves to
    `/home/user/project/src`.
-2. If a mount exists (`.agfs/mnt` is mounted), also apply live:
-   `ioctl(AGFS_IOC_RULE_ADD)` -> kernel resolves the normalized absolute path
-   to a dentry, sets `AGFS_D(dentry)->perm`, pins the dentry, and bumps
+2. If a mount exists (`.yolofs/mnt` is mounted), also apply live:
+   `ioctl(YOLO_IOC_RULE_ADD)` -> kernel resolves the normalized absolute path
+   to a dentry, sets `YOLO_D(dentry)->perm`, pins the dentry, and bumps
    `perm_gen` to invalidate all cached inode perms.
 
-If no mount exists, the rule is persisted to `agfs.toml` only. It will be
-applied on the next `agfs mount`.
+If no mount exists, the rule is persisted to `yolofs.toml` only. It will be
+applied on the next `yolo mount`.
 
-On mount, the CLI reads `agfs.toml` and applies all `[rules]` via ioctl.
+On mount, the CLI reads `yolofs.toml` and applies all `[rules]` via ioctl.
 
 **Changing a rule**: just set it again + bump generation.
 
-**Removing a rule** (`agfs rule remove /foo/bar`):
+**Removing a rule** (`yolo rule remove /foo/bar`):
 
-1. Remove the rule from `agfs.toml`.
+1. Remove the rule from `yolofs.toml`.
 2. If a mount exists, also apply live:
-   `ioctl(AGFS_IOC_RULE_REMOVE)` -> kernel sets `AGFS_D(dentry)->perm = NONE`,
+   `ioctl(YOLO_IOC_RULE_REMOVE)` -> kernel sets `YOLO_D(dentry)->perm = NONE`,
    unpins the dentry, and bumps `perm_gen`.
 
 **Permission resolution — cached on inode, resolved lazily**:
 
 ```c
 // Resolve by walking up dentry chain (only called on cache miss).
-enum agfs_perm agfs_resolve_perm(struct dentry *dentry)
+enum yolo_perm yolo_resolve_perm(struct dentry *dentry)
 {
     struct dentry *cur = dentry;
     while (cur) {
-        struct agfs_dentry_info *di = AGFS_D(cur);
-        if (di && di->perm != AGFS_PERM_NONE)
+        struct yolo_dentry_info *di = YOLO_D(cur);
+        if (di && di->perm != YOLO_PERM_NONE)
             return di->perm;
         if (cur == cur->d_parent)
             break;              // reached root dentry
         cur = cur->d_parent;
     }
-    return AGFS_PERM_ASK;
+    return YOLO_PERM_ASK;
 }
 
 // Called during lookup() -- cache the resolved perm on the inode.
-void agfs_cache_perm(struct inode *inode, struct dentry *dentry)
+void yolo_cache_perm(struct inode *inode, struct dentry *dentry)
 {
-    struct agfs_inode_info *info = AGFS_I(inode);
-    struct agfs_sb_info *sb = AGFS_SB(inode->i_sb);
+    struct yolo_inode_info *info = YOLO_I(inode);
+    struct yolo_sb_info *sb = YOLO_SB(inode->i_sb);
 
-    info->cached_perm = agfs_resolve_perm(dentry);
+    info->cached_perm = yolo_resolve_perm(dentry);
     info->perm_gen = atomic64_read(&sb->perm_gen);
 }
 
 // Shared permission check: resolve, ask if needed, check the requested op.
-// Used by agfs_open (for file access) and agfs_check_mutate_perm (for
+// Used by yolo_open (for file access) and yolo_check_mutate_perm (for
 // metadata ops).  Lives in perm.c.
-int agfs_check_dentry_perm(struct agfs_sb_info *sbi,
+int yolo_check_dentry_perm(struct yolo_sb_info *sbi,
                            struct dentry *dentry,
                            int f_flags, fmode_t f_mode)
 {
-    struct agfs_inode_info *ii = AGFS_I(d_inode(dentry));
-    enum agfs_perm perm;
+    struct yolo_inode_info *ii = YOLO_I(d_inode(dentry));
+    enum yolo_perm perm;
 
     if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
-        agfs_cache_perm(d_inode(dentry), dentry);
+        yolo_cache_perm(d_inode(dentry), dentry);
     perm = ii->cached_perm;
 
-    if (perm == AGFS_PERM_ASK) {
+    if (perm == YOLO_PERM_ASK) {
         // ... ask daemon or apply default_perm ...
     }
-    return agfs_check_perm(perm, f_flags);
+    return yolo_check_perm(perm, f_flags);
 }
 
 // Metadata ops check write permission on the parent directory.
-static int agfs_check_mutate_perm(struct dentry *dentry)
+static int yolo_check_mutate_perm(struct dentry *dentry)
 {
-    struct agfs_sb_info *sbi = AGFS_SB(dentry->d_sb);
+    struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
     if (!sbi->permission)
         return 0;
-    return agfs_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY, 0);
+    return yolo_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY, 0);
 }
 
-// agfs_permission() for VFS MAY_READ/MAY_WRITE/MAY_EXEC checks.
+// yolo_permission() for VFS MAY_READ/MAY_WRITE/MAY_EXEC checks.
 // Directories do not sleep here; ask handling for directory read-like ops
-// lives in agfs_lookup/agfs_getattr/agfs_dir_open.
-static int agfs_permission(struct mnt_idmap *idmap,
+// lives in yolo_lookup/yolo_getattr/yolo_dir_open.
+static int yolo_permission(struct mnt_idmap *idmap,
                            struct inode *inode, int mask)
 {
     // ... regular files enforce allow/deny here ...
 }
 ```
 
-The root dentry has `perm = AGFS_PERM_ASK`. In steady state (no rule
+The root dentry has `perm = YOLO_PERM_ASK`. In steady state (no rule
 changes), `permission()` is a single generation compare + switch — O(1).
 On rule change, the generation bumps and inodes re-resolve lazily on
 next access.
 
 The `ask` path is handled in operations that have a stable dentry and may
-sleep: `agfs_open()` for regular-file opens.  Directory read-like
+sleep: `yolo_open()` for regular-file opens.  Directory read-like
 operations (readdir, lookup/traversal, stat) are **not** gated by ask —
 they only check for `hide`:
 
 ```c
-static int agfs_open(struct inode *inode, struct file *file)
+static int yolo_open(struct inode *inode, struct file *file)
 {
     struct dentry *dentry = file->f_path.dentry;
 
     if (sbi->permission) {
-        err = agfs_check_dentry_perm(sbi, dentry, file->f_flags, file->f_mode);
+        err = yolo_check_dentry_perm(sbi, dentry, file->f_flags, file->f_mode);
         if (err)
             return err;
     }
@@ -251,24 +251,24 @@ Metadata operations (create, mkdir, unlink, rmdir, rename, symlink) use
 the same check on the **parent directory** to verify write permission:
 
 ```c
-static int agfs_create(struct mnt_idmap *idmap, struct inode *dir,
+static int yolo_create(struct mnt_idmap *idmap, struct inode *dir,
                        struct dentry *dentry, umode_t mode, bool excl)
 {
-    int err = agfs_check_mutate_perm(dentry);  // checks parent for write
+    int err = yolo_check_mutate_perm(dentry);  // checks parent for write
     if (err)
         return err;
-    return agfs_create_staged(dir, dentry, mode, NULL);
+    return yolo_create_staged(dir, dentry, mode, NULL);
 }
 ```
 
 **Example**:
 
 ```bash
- agfs rule add src          allow-rw
- agfs rule add /etc         deny
- agfs rule add /etc/hosts   allow-ro
- agfs rule add /usr/bin     allow-rx
- agfs rule add ~/.mozilla   hidden
+ yolo rule add src          allow-rw
+ yolo rule add /etc         deny
+ yolo rule add /etc/hosts   allow-ro
+ yolo rule add /usr/bin     allow-rx
+ yolo rule add ~/.mozilla   hidden
 ```
 
 - `permission("src/main.rs")` -> cached_perm=ALLOW_RW (from lookup) -> **pass**
@@ -285,8 +285,8 @@ When a thread accesses a file whose effective permission is `ask`:
 ```
   Thread (kernel)                          Daemon (userspace)
   ──────────────                           ──────────────────
-  1. agfs_check_perm() -> perm == ASK
-  2. Allocate agfs_perm_request {
+  1. yolo_check_perm() -> perm == ASK
+  2. Allocate yolo_perm_request {
        id, path, op, pid, comm
      }
   3. Enqueue request on sb->pending_reqs
@@ -295,11 +295,11 @@ When a thread accesses a file whose effective permission is `ask`:
        req->done,                            until request is available
        req->decision != UNDECIDED            |
      )                                      dequeue request
-     ...thread sleeps...                     -> struct agfs_ctl_request { id, path, op, ... }
+     ...thread sleeps...                     -> struct yolo_ctl_request { id, path, op, ... }
                                              |
                                             Daemon shows prompt / applies policy
                                              |
-                                             ioctl(PUT_RESPONSE) -> struct agfs_ctl_response {
+                                             ioctl(PUT_RESPONSE) -> struct yolo_ctl_response {
                                                          id: 42, decision: ALLOW_RW }
                                               |
    6. req->decision = ALLOW_RW               ioctl handler:
@@ -317,11 +317,11 @@ Key properties:
 - **Timeout**: Configurable via mount option `ask_timeout=<seconds>`.
   If the daemon doesn't respond, the default action (configurable:
   `deny` or `allow-ro`) is applied.
-- **Minimal response**: `agfs_ctl_response` only carries `{ id, decision }`.
-  Persisting policy is always a separate `ioctl(AGFS_IOC_RULE_ADD)`.
+- **Minimal response**: `yolo_ctl_response` only carries `{ id, decision }`.
+  Persisting policy is always a separate `ioctl(YOLO_IOC_RULE_ADD)`.
 - **One-time by default**: The decision applies to this single access only.
   Next access to the same file triggers ask again. To persist a decision,
-  the daemon separately calls `ioctl(AGFS_IOC_RULE_ADD)` to install a rule
+  the daemon separately calls `ioctl(YOLO_IOC_RULE_ADD)` to install a rule
   on the dentry.
 
 ## Why Dentry Walk-Up?
@@ -358,11 +358,11 @@ longest-prefix-match for free. This satisfies all three principles:
 - On rule add/remove: `atomic_inc(&sb->perm_gen)`. All inode caches go
   stale; next `permission()` call re-resolves lazily via `d_find_alias()` +
   walk up. O(1) invalidation.
-- On `AGFS_IOC_JUMP` (after userspace commit/abort/jump): bumps perm_gen
+- On `YOLO_IOC_JUMP` (after userspace commit/abort/jump): bumps perm_gen
   and shrinks the dentry cache, so permission re-resolution picks up changes.
 - On `rename`: pure renames do **not** bump `perm_gen`. The inode keeps its
   `cached_perm` until some later invalidation event (rule add/remove or
-  `AGFS_IOC_JUMP`). This is intentional: rename is treated as a path
+  `YOLO_IOC_JUMP`). This is intentional: rename is treated as a path
   move, not an immediate permission re-resolution point. A file moved from
   `src` under `/etc` may therefore continue to use its pre-rename effective
   permission until the next generation bump. This trades strict
@@ -372,13 +372,13 @@ longest-prefix-match for free. This satisfies all three principles:
 
 | Operation | Check | Gate point |
 |-----------|-------|------------|
-| open (read/write/exec) | file's own perm | `agfs_open` → `agfs_check_dentry_perm` |
-| readdir | hide only | `agfs_dir_open` (inline hide check) |
-| stat | hide only | `agfs_getattr` (inline hide check) |
+| open (read/write/exec) | file's own perm | `yolo_open` → `yolo_check_dentry_perm` |
+| readdir | hide only | `yolo_dir_open` (inline hide check) |
+| stat | hide only | `yolo_getattr` (inline hide check) |
 | lookup / traversal | not gated | — |
-| create, mkdir, symlink | parent dir's perm (write) | `agfs_check_mutate_perm` |
-| unlink, rmdir | parent dir's perm (write) | `agfs_check_mutate_perm` |
-| rename | both parents' perm (write) | `agfs_check_mutate_perm` × 2 |
+| create, mkdir, symlink | parent dir's perm (write) | `yolo_check_mutate_perm` |
+| unlink, rmdir | parent dir's perm (write) | `yolo_check_mutate_perm` |
+| rename | both parents' perm (write) | `yolo_check_mutate_perm` × 2 |
 
 **What is NOT gated**:
 
@@ -413,7 +413,7 @@ exist from the agent's perspective.
 | `deny` | Directories the agent knows about but shouldn't modify (e.g., system config). Structure is visible for context. |
 | `hidden` | Personal data the agent has no reason to access (e.g., `~/tax2025`, `~/.mozilla`, `~/.local/share/keyrings`, medical records, financial documents). |
 
-In `agfs.toml`:
+In `yolofs.toml`:
 
 ```toml
 [rules]
@@ -432,12 +432,12 @@ significantly in design.
 **Rule interface**: Landlock uses file descriptors to identify paths. The
 userspace process opens a path with `O_PATH`, passes the fd to
 `landlock_add_rule()`, and the kernel resolves it to an inode. Rules follow
-the inode, not the name — immune to rename attacks. AgFS uses path strings
+the inode, not the name — immune to rename attacks. YoloFS uses path strings
 resolved to dentries; rules are name-based and stay on the dentry.
 
 **Rule storage**: Landlock stores rules in an rb-tree keyed by inode object
 pointer, one tree per ruleset. On access, it walks up every ancestor of the
-target path and does an rb-tree lookup for each — O(depth x log n). AgFS
+target path and does an rb-tree lookup for each — O(depth x log n). YoloFS
 stores rules directly on dentries and caches the resolved permission on
 inodes with a generation counter — O(1) in steady state.
 
@@ -445,25 +445,25 @@ inodes with a generation counter — O(1) in steady state.
 If `/foo` has no rule and `/foo/bar` has `READ`, then `/foo/bar` is
 readable but `/foo/baz` is denied. However, you **cannot** deny a child
 when a parent is allowed: if `/foo` grants `READ`, then `/foo/bar` also
-gets `READ` and there is no way to revoke it. AgFS uses nearest-ancestor
+gets `READ` and there is no way to revoke it. YoloFS uses nearest-ancestor
 wins: `/foo = allow-rw` + `/foo/bar = deny` works because the walk-up
 finds `/foo/bar`'s rule first. Both directions (allow parent deny child,
 deny parent allow child) are supported.
 
 **Dynamic rules**: Landlock rulesets are immutable once enforced via
 `landlock_restrict_self()`. You cannot add or remove rules at runtime.
-AgFS rules can be added, changed, or removed at any time via ioctl, with
+YoloFS rules can be added, changed, or removed at any time via ioctl, with
 O(1) invalidation via generation counter.
 
 **Default policy**: Landlock is deny-by-default for "handled" access rights.
-AgFS is ask-by-default — unmatched paths trigger the ask protocol, which
+YoloFS is ask-by-default — unmatched paths trigger the ask protocol, which
 blocks the thread until a daemon decides.
 
 **Scope**: Landlock is per-process (attached to credentials, inherited by
-children). AgFS is per-mount (all processes inside the mount share the same
+children). YoloFS is per-mount (all processes inside the mount share the same
 rules and staging area).
 
-| Aspect | Landlock | AgFS |
+| Aspect | Landlock | YoloFS |
 |---|---|---|
 | Rule target | fd -> inode (follows renames) | path -> dentry (name-based) |
 | Rule storage | rb-tree per ruleset | `perm` field on dentry |

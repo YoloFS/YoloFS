@@ -13,30 +13,30 @@ replaced by VFS-native structures:
 
 2. **`pinned_dirs` / `de_pin` / `pinned_dirs_lock`** — global list of
    directories with staged children.  Only used for cleanup during restore
-   and unmount (`agfs_release_pinned_dirs()`).  Can be replaced by a
+   and unmount (`yolo_release_pinned_dirs()`).  Can be replaced by a
    recursive dentry tree walk from `sb->s_root`, checking `d_children`
    for staged entries.
 
 This removes five struct fields, one spinlock, one function
-(`agfs_pin_dir_if_first()`), and simplifies six call-sites.
+(`yolo_pin_dir_if_first()`), and simplifies six call-sites.
 
 ## Approach
 
 - Replace `!list_empty(&di->de_node)` "is staged" test with
-  `!agfs_dstate_is_passthrough(di->dstate)` (equivalently `di->dstate.val != 0`).
+  `!yolo_dstate_is_passthrough(di->dstate)` (equivalently `di->dstate.val != 0`).
 - Readdir emit (phase 1): walk `d_children` + `dstate.val != 0` filter.
 - Readdir dedup (phase 2): use `d_lookup()` per base entry — O(1) dcache
   hash lookup, strictly better than the current O(staged) `de_list` scan.
 - Bulk cleanup: replace `pinned_dirs` iteration with a recursive dentry
   tree walk from `sb->s_root`.
-- Drop unused `dir` parameter from `agfs_stage_dentry()` and
-  `agfs_remove_tombstone()`.
+- Drop unused `dir` parameter from `yolo_stage_dentry()` and
+  `yolo_remove_tombstone()`.
 - Drop the readdir fast-path `de_list` emptiness check — the remaining
   `!sbi->staging || !sbi->inodes_dir.dentry` check handles the common
   case.  The slow path is already efficient for dirs with no staged entries.
 - Locking: `d_children` is an `hlist_head` protected by `dentry->d_lock`.
   `libfs.c:dcache_readdir()` and `afs/dynroot.c` walk it under `i_rwsem`.
-  AgFS readdir already holds `i_rwsem` (shared) via VFS `iterate_shared`,
+  YoloFS readdir already holds `i_rwsem` (shared) via VFS `iterate_shared`,
   so the pattern is compatible.  To be safe, acquire `d_lock` around
   `d_children` traversals.
 
@@ -56,105 +56,105 @@ entries with no ambiguity.
 
 | Struct | Field | Purpose |
 |---|---|---|
-| `agfs_sb_info` | `pinned_dirs` | Global list of dirs with staged children |
-| `agfs_sb_info` | `pinned_dirs_lock` | Spinlock protecting above |
-| `agfs_inode_info` | `de_list` | Per-dir list of staged children |
-| `agfs_inode_info` | `de_pin` | Node in `sbi->pinned_dirs` |
-| `agfs_dentry_info` | `de_node` | Node in parent's `de_list` |
+| `yolo_sb_info` | `pinned_dirs` | Global list of dirs with staged children |
+| `yolo_sb_info` | `pinned_dirs_lock` | Spinlock protecting above |
+| `yolo_inode_info` | `de_list` | Per-dir list of staged children |
+| `yolo_inode_info` | `de_pin` | Node in `sbi->pinned_dirs` |
+| `yolo_dentry_info` | `de_node` | Node in parent's `de_list` |
 
 ## Functions removed
 
-- `agfs_pin_dir_if_first()` (dentry.c) — no longer needed; nothing to pin to.
+- `yolo_pin_dir_if_first()` (dentry.c) — no longer needed; nothing to pin to.
 
 ## Signature changes
 
-- `agfs_stage_dentry()`: drop `dir` parameter (was only used for
-  `list_add` and `agfs_pin_dir_if_first`).  Becomes a 2-liner: set
+- `yolo_stage_dentry()`: drop `dir` parameter (was only used for
+  `list_add` and `yolo_pin_dir_if_first`).  Becomes a 2-liner: set
   dstate + `dget()`.
-- `agfs_add_tombstone()`: drop `dir` parameter (was only used for
-  `list_add` to `de_list` and `agfs_pin_dir_if_first`).
-- `agfs_remove_tombstone()`: drop `dir` parameter (was only used for
+- `yolo_add_tombstone()`: drop `dir` parameter (was only used for
+  `list_add` to `de_list` and `yolo_pin_dir_if_first`).
+- `yolo_remove_tombstone()`: drop `dir` parameter (was only used for
   `list_del_init`).
-- `agfs_emit_dirents()`: change from `struct inode *dir` to
+- `yolo_emit_dirents()`: change from `struct inode *dir` to
   `struct dentry *parent` (needs dentry for `d_children` walk; caller
   passes `file_dentry(file)`).
-- `agfs_release_pinned_dirs()`: change from `(struct agfs_sb_info *sbi)`
+- `yolo_release_pinned_dirs()`: change from `(struct yolo_sb_info *sbi)`
   to `(struct super_block *sb)`.
 
 ## Changes
 
-### 1. agfs.h — struct changes and declarations
+### 1. yolofs.h — struct changes and declarations
 
-- Remove `de_list` from `agfs_inode_info` (line 356).
-- Remove `de_pin` from `agfs_inode_info` (line 357).
-- Remove `de_node` from `agfs_dentry_info` (line 368).
-- Remove `pinned_dirs` from `agfs_sb_info` (line 335).
-- Remove `pinned_dirs_lock` from `agfs_sb_info` (line 336).
-- Remove `agfs_pin_dir_if_first()` declaration (lines 513–514).
+- Remove `de_list` from `yolo_inode_info` (line 356).
+- Remove `de_pin` from `yolo_inode_info` (line 357).
+- Remove `de_node` from `yolo_dentry_info` (line 368).
+- Remove `pinned_dirs` from `yolo_sb_info` (line 335).
+- Remove `pinned_dirs_lock` from `yolo_sb_info` (line 336).
+- Remove `yolo_pin_dir_if_first()` declaration (lines 513–514).
 
 ### 2. super.c — init and eviction
 
-- `agfs_alloc_inode()`: remove `INIT_LIST_HEAD(&i->de_list)` (line 51) and
+- `yolo_alloc_inode()`: remove `INIT_LIST_HEAD(&i->de_list)` (line 51) and
   `INIT_LIST_HEAD(&i->de_pin)` (line 52).
-- `agfs_evict_inode()`: remove `WARN_ON_ONCE(!list_empty(&ii->de_list))`
+- `yolo_evict_inode()`: remove `WARN_ON_ONCE(!list_empty(&ii->de_list))`
   (line 70).
-- `agfs_init_sbi()`: remove `INIT_LIST_HEAD(&sbi->pinned_dirs)` (line 163)
+- `yolo_init_sbi()`: remove `INIT_LIST_HEAD(&sbi->pinned_dirs)` (line 163)
   and `spin_lock_init(&sbi->pinned_dirs_lock)` (line 164).
 
 ### 3. dentry.c — staging helpers
 
-- `agfs_d_init()`: remove `INIT_LIST_HEAD(&info->de_node)` (line 33).
-- `agfs_d_release()`: remove `WARN_ON_ONCE(!list_empty(&info->de_node))`
+- `yolo_d_init()`: remove `INIT_LIST_HEAD(&info->de_node)` (line 33).
+- `yolo_d_release()`: remove `WARN_ON_ONCE(!list_empty(&info->de_node))`
   (line 103).
-- `agfs_stage_dentry()` (lines 131–141): remove `list_add(&di->de_node,
-  &dii->de_list)`, `agfs_pin_dir_if_first()` call, and `dir` parameter.
+- `yolo_stage_dentry()` (lines 131–141): remove `list_add(&di->de_node,
+  &dii->de_list)`, `yolo_pin_dir_if_first()` call, and `dir` parameter.
   Becomes:
   ```c
-  void agfs_stage_dentry(struct dentry *dentry, struct agfs_dstate dstate)
+  void yolo_stage_dentry(struct dentry *dentry, struct yolo_dstate dstate)
   {
-      AGFS_D(dentry)->dstate = dstate;
+      YOLO_D(dentry)->dstate = dstate;
       dget(dentry);    /* pin in dcache so it stays in d_children */
   }
   ```
   Update call sites: inode.c:46, inode.c:271, staging.c:157.
-- `agfs_unstage_dentry()` (lines 149–155): remove `list_del_init(
+- `yolo_unstage_dentry()` (lines 149–155): remove `list_del_init(
   &di->de_node)`.  Becomes:
   ```c
-  void agfs_unstage_dentry(struct agfs_dentry_info *di)
+  void yolo_unstage_dentry(struct yolo_dentry_info *di)
   {
-      agfs_dstate_free(di->dstate);
-      di->dstate = (struct agfs_dstate){0};
+      yolo_dstate_free(di->dstate);
+      di->dstate = (struct yolo_dstate){0};
       dput(di->dentry);
   }
   ```
-- `agfs_add_tombstone()` (lines 165–183): remove `list_add` to `de_list`
-  (line 180) and `agfs_pin_dir_if_first()` call (line 181).  Drop `dir`
+- `yolo_add_tombstone()` (lines 165–183): remove `list_add` to `de_list`
+  (line 180) and `yolo_pin_dir_if_first()` call (line 181).  Drop `dir`
   parameter (was only used for those two calls).  Update call sites:
   inode.c:95, inode.c:190.
-- `agfs_remove_tombstone()` (lines 190–195): remove `list_del_init` of
+- `yolo_remove_tombstone()` (lines 190–195): remove `list_del_init` of
   `de_node` (line 192).  Drop `dir` parameter (unused after removal).
   Add `dstate = {0}` clear before `d_drop` so the dentry is no longer
   identified as staged if it lingers in `d_children`:
   ```c
-  void agfs_remove_tombstone(struct dentry *tomb)
+  void yolo_remove_tombstone(struct dentry *tomb)
   {
-      AGFS_D(tomb)->dstate = (struct agfs_dstate){0};
+      YOLO_D(tomb)->dstate = (struct yolo_dstate){0};
       d_drop(tomb);
       dput(tomb);
   }
   ```
   Update call sites: inode.c:107, inode.c:289.
-- Remove `agfs_pin_dir_if_first()` function entirely (lines 116–125).
+- Remove `yolo_pin_dir_if_first()` function entirely (lines 116–125).
 
 ### 4. file.c — readdir
 
-- `agfs_fill_base()` (lines 351–378): replace `de_list` iteration with
+- `yolo_fill_base()` (lines 351–378): replace `de_list` iteration with
   `d_children` walk.  For each base entry name, look up in parent's
   `d_children` via `d_lookup()` and check `dstate.val != 0`:
   ```c
   child = d_lookup(dentry, &qstr);
   if (child) {
-      overridden = !agfs_dstate_is_passthrough(AGFS_D(child)->dstate);
+      overridden = !yolo_dstate_is_passthrough(YOLO_D(child)->dstate);
       dput(child);
       if (overridden) return true;   /* skip base entry */
   }
@@ -162,7 +162,7 @@ entries with no ambiguity.
   This is O(1) per base entry via dcache hash, same as Plan 22's Phase 2
   design (no `d_children` scan needed here).
 
-- `agfs_emit_dirents()` (lines 385–413): change parameter from
+- `yolo_emit_dirents()` (lines 385–413): change parameter from
   `struct inode *dir` to `struct dentry *parent` (caller passes
   `file_dentry(file)`).  Replace `de_list` iteration with `d_children`
   walk.  `dir_emit()` copies to userspace and can page-fault, so we
@@ -171,37 +171,37 @@ entries with no ambiguity.
   `spin_lock(&parent->d_lock)`, `dget_dlock(child)` to pin,
   `spin_unlock(&parent->d_lock)`, emit, `dput(child)`, re-acquire lock
   to advance.
-  Filter: emit if `!agfs_dstate_is_passthrough(AGFS_D(child)->dstate)` and
-  `!agfs_dstate_is_tombstone(AGFS_D(child)->dstate)`.
+  Filter: emit if `!yolo_dstate_is_passthrough(YOLO_D(child)->dstate)` and
+  `!yolo_dstate_is_tombstone(YOLO_D(child)->dstate)`.
 
-- `agfs_readdir()` fast-path (line 430): drop the
-  `list_empty(&AGFS_I(file_inode(file))->de_list)` check entirely.
+- `yolo_readdir()` fast-path (line 430): drop the
+  `list_empty(&YOLO_I(file_inode(file))->de_list)` check entirely.
   Keep only `!sbi->staging || !sbi->inodes_dir.dentry`.  The slow path
-  handles dirs with no staged entries efficiently: `agfs_emit_dirents`
-  walks `d_children`, finds nothing staged, returns false; `agfs_fill_base`
+  handles dirs with no staged entries efficiently: `yolo_emit_dirents`
+  walks `d_children`, finds nothing staged, returns false; `yolo_fill_base`
   does `d_lookup` per base entry which misses or finds passthrough entries
   — O(1) each.
 
 ### 5. inode.c — create, delete, rename
 
-- `agfs_create_staged()` (line 40): replace `!list_empty(&di->de_node)`
-  with `!agfs_dstate_is_passthrough(di->dstate)`.
+- `yolo_create_staged()` (line 40): replace `!list_empty(&di->de_node)`
+  with `!yolo_dstate_is_passthrough(di->dstate)`.
 
-- `agfs_delete_entry()` (lines 85, 111): replace `!list_empty(&di->de_node)`
-  with `!agfs_dstate_is_passthrough(di->dstate)`.
+- `yolo_delete_entry()` (lines 85, 111): replace `!list_empty(&di->de_node)`
+  with `!yolo_dstate_is_passthrough(di->dstate)`.
 
-- `agfs_rename()` (lines 168, 177, 255, 261): replace all
+- `yolo_rename()` (lines 168, 177, 255, 261): replace all
   `!list_empty(&…->de_node)` checks with
-  `!agfs_dstate_is_passthrough(…->dstate)`.  Remove `list_del_init(
+  `!yolo_dstate_is_passthrough(…->dstate)`.  Remove `list_del_init(
   &old_di->de_node)` at line 261 (unstaging now handled by
-  `agfs_unstage_dentry()` which clears dstate and calls dput).
+  `yolo_unstage_dentry()` which clears dstate and calls dput).
 
 ### 6. staging.c — COW and bulk cleanup
 
 - COW path (line 156): replace `list_empty(&di->de_node)` with
-  `agfs_dstate_is_passthrough(di->dstate)`.
+  `yolo_dstate_is_passthrough(di->dstate)`.
 
-- `agfs_release_pinned_dirs()` (lines 192–210): rewrite as a lockless
+- `yolo_release_pinned_dirs()` (lines 192–210): rewrite as a lockless
   recursive dentry tree walk from `sb->s_root`.  This function is only
   called during restore (ioctl.c, line 702) and unmount (super.c,
   line 349) — both are exclusive contexts with no concurrent VFS
@@ -227,13 +227,13 @@ entries with no ambiguity.
       hlist_for_each_entry_safe(child, tmp, &parent->d_children, d_sib) {
           if (!hlist_empty(&child->d_children))
               release_staged_children(child);
-          if (AGFS_D(child) &&
-              !agfs_dstate_is_passthrough(AGFS_D(child)->dstate))
-              agfs_unstage_dentry(AGFS_D(child));
+          if (YOLO_D(child) &&
+              !yolo_dstate_is_passthrough(YOLO_D(child)->dstate))
+              yolo_unstage_dentry(YOLO_D(child));
       }
   }
 
-  void agfs_release_pinned_dirs(struct super_block *sb)
+  void yolo_release_pinned_dirs(struct super_block *sb)
   {
       if (sb->s_root)
           release_staged_children(sb->s_root);
@@ -246,16 +246,16 @@ entries with no ambiguity.
 
 ### 7. ioctl.c — restore path
 
-- Remove `list_add(&AGFS_D(child)->de_node, &dii->de_list)` (line 627).
+- Remove `list_add(&YOLO_D(child)->de_node, &dii->de_list)` (line 627).
   The child is already pinned with `dget()` (or equivalent) by the
   restore code and is in `d_children` after `d_add()`.
-- Remove `agfs_pin_dir_if_first(dii, sbi)` call (line 628).
-- Update `agfs_release_pinned_dirs()` call (line 702) to pass `sb`
+- Remove `yolo_pin_dir_if_first(dii, sbi)` call (line 628).
+- Update `yolo_release_pinned_dirs()` call (line 702) to pass `sb`
   instead of `sbi`.
 
 ### 8. super.c — unmount
 
-- Update `agfs_kill_super()` call to `agfs_release_pinned_dirs()` (line 349)
+- Update `yolo_kill_super()` call to `yolo_release_pinned_dirs()` (line 349)
   to pass `sb` instead of `sbi`.
 
 ### 9. Docs and tests
@@ -268,7 +268,7 @@ entries with no ambiguity.
 
 - `d_children` is a stable public VFS API (`hlist_head`) in Linux 6.8.
   Used by afs, coda, ceph, fsnotify, and libfs in-tree.
-- `agfs_fill_base()` uses `d_lookup()` (O(1) dcache hash) which is
+- `yolo_fill_base()` uses `d_lookup()` (O(1) dcache hash) which is
   strictly better than the current `de_list` linear scan (O(staged) per
   base entry).
 - If readdir performance on dirs with many cached-but-unstaged children

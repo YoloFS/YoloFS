@@ -1,6 +1,6 @@
 use super::helpers::{actions, ino_for, inode_path, journal, tree};
-use crate::helpers::AgfsSession;
-use agfs::journal::Action;
+use crate::helpers::YoloSession;
+use yolofs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -8,7 +8,7 @@ use std::fs;
 /// Creating a brand-new file produces an Entry record with dtype=File.
 #[test]
 fn create_produces_add_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
 
@@ -26,7 +26,7 @@ fn create_produces_add_record() {
 /// Creating a new file produces a staged inode.
 #[test]
 fn create_file_produces_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("brandnew.txt"), "fresh content\n").expect("create");
 
@@ -41,7 +41,7 @@ fn create_file_produces_inode() {
 /// An empty file (touch) creates an empty inode.
 #[test]
 fn empty_file_creates_empty_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("empty.txt"), "").expect("touch");
 

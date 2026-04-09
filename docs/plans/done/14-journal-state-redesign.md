@@ -70,8 +70,8 @@ children's paths are always up to date.
 
 ## Journal Format
 
-Append-only file at `.agfs/journal`. NUL-separated fields, newline-terminated
-records. Each operation record corresponds to one `agfs_dirent` mutation —
+Append-only file at `.yolofs/journal`. NUL-separated fields, newline-terminated
+records. Each operation record corresponds to one `yolo_dirent` mutation —
 replaying the journal reconstructs the full dirent table.
 
 Records are either operations (A/M/D/R/P) or markers (K/T):
@@ -105,7 +105,7 @@ with "Staging" / "Snapshot" terminology. T stands for "Time-travel."
 | `dst`    | UTF-8 str   | Destination overlay path (e.g. `/dir/file`)        |
 | `src`    | UTF-8 str   | Source overlay path before the rename (R/P only)   |
 | `dtype`  | char        | `f` (file), `d` (dir), `l` (symlink)               |
-| `ino`    | ASCII u64   | Inode store ID in `.agfs/inodes/` (A/M only)       |
+| `ino`    | ASCII u64   | Inode store ID in `.yolofs/inodes/` (A/M only)       |
 | `gen`    | ASCII u64   | Generation / checkpoint ID                         |
 | `name`   | UTF-8 str   | Checkpoint name (K only)                           |
 | `target_gen` | ASCII u64 | Target checkpoint generation (T only)            |
@@ -113,7 +113,7 @@ with "Staging" / "Snapshot" terminology. T stands for "Time-travel."
 ## Dir Tree Builder
 
 The dir tree is a directory tree. Internal nodes are directories; leaves are
-**dirents** — a 1:1 representation of the kernel's `agfs_dirent` table.
+**dirents** — a 1:1 representation of the kernel's `yolo_dirent` table.
 
 Journal record tags are **verbs** (Add, Modify, Delete, Rename) — they describe
 operations. Dirent variants are **nouns** (Inode, Link, Tombstone) — they
@@ -142,12 +142,12 @@ walking, not part of the output.
 
 This maps directly to kernel dirent states:
 
-| Dirent variant | Journal tag | Kernel `agfs_dirent` state |
+| Dirent variant | Journal tag | Kernel `yolo_dirent` state |
 |---|---|---|
 | Inode, in_base=false | A | `ino > 0`, `in_base=false` |
 | Inode, in_base=true | M | `ino > 0`, `in_base=true` |
-| Link, in_base=* | R/P | `ino = AGFS_INO_REDIRECT`, `base` set |
-| Tombstone | D | `ino = AGFS_INO_DELETED` |
+| Link, in_base=* | R/P | `ino = YOLO_INO_REDIRECT`, `base` set |
+| Tombstone | D | `ino = YOLO_INO_DELETED` |
 
 Nodes with a `Dirent` are part of the dir tree. `Dir(None, ..)` nodes are
 intermediate directories created during path walking.
@@ -303,7 +303,7 @@ After replay: truncate journal, wipe `inodes/`, reset kernel via ioctl.
 
 1. Build dir tree from live segments up to checkpoint N
 2. Walk tree — pass dirents directly to kernel via `ioctl(RESTORE)`. Each
-   dirent maps 1:1 to a kernel `agfs_dirent`: Inode carries `ino` and
+   dirent maps 1:1 to a kernel `yolo_dirent`: Inode carries `ino` and
    `in_base`, Link carries `base_path`, Tombstone carries `ino=0`. No
    translation needed — the dir tree IS the dirent table.
 3. Kernel clears dirent table, installs the received dirents, bumps gen to
@@ -331,7 +331,7 @@ Same algorithm as current design.
 target, send only changed entries via ioctl.
 
 **Future work — tree cache:** Cache the serialized tree at each checkpoint
-(e.g. `.agfs/cache/{gen}.tree`). Subsequent reads load the nearest cached tree
+(e.g. `.yolofs/cache/{gen}.tree`). Subsequent reads load the nearest cached tree
 instead of replaying from scratch. Cache is invalidated by restore (which
 changes liveness). Bounds read cost to O(|cached tree| + |segments since cache|).
 
@@ -383,14 +383,14 @@ already moved from /a) to /c.
 
 ## Kernel Changes
 
-- **`agfs_dirent.overwrites`** renamed to **`in_base`**. Semantics unchanged —
+- **`yolo_dirent.overwrites`** renamed to **`in_base`**. Semantics unchanged —
   the kernel still tracks whether the path existed in base to determine A vs M
   journal tag. The field name now matches the `Dirent::Inode { in_base }` type
   in userspace.
-- **`agfs_dirent` states** renamed to match userspace terminology:
+- **`yolo_dirent` states** renamed to match userspace terminology:
   - `ino > 0` → **Inode** (was "staged")
-  - `ino = AGFS_INO_REDIRECT` → **Link** (was "redirect")
-  - `ino = AGFS_INO_DELETED` → **Tombstone** (was "deleted")
+  - `ino = YOLO_INO_REDIRECT` → **Link** (was "redirect")
+  - `ino = YOLO_INO_DELETED` → **Tombstone** (was "deleted")
 - **Journal tags**: A/M replace ADD/MOD. D replaces DEL. R/P keep the same
   letters but now apply to all renames (staged + redirect), not just redirects.
   K stays. S renamed to T (avoid ambiguity with "staging").

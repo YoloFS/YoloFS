@@ -1,9 +1,9 @@
-// agfs-bench — benchmark suite for the agfs filesystem.
+// yolo-bench — benchmark suite for the YoloFS filesystem.
 //
 // Usage:
-//   agfs-bench [--workload <name> ...] [--backend <name>] [--verbose] [--timestamped-results]
-//   agfs-bench rerender
-//   agfs-bench exec-workload --name <name> --dest <path>
+//   yolo-bench [--workload <name> ...] [--backend <name>] [--verbose] [--timestamped-results]
+//   yolo-bench rerender
+//   yolo-bench exec-workload --name <name> --dest <path>
 
 mod backend;
 mod backends;
@@ -27,7 +27,7 @@ use workload::{IterResult, Workload};
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "agfs-bench", about = "agfs benchmark suite")]
+#[command(name = "yolo-bench", about = "YoloFS benchmark suite")]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -107,7 +107,7 @@ enum Cmd {
         /// Workload to profile (required)
         #[arg(long)]
         workload: String,
-        /// Backend to profile (default: agfs-no-perm + agfs-realistic)
+        /// Backend to profile (default: yolo-no-perm + yolo-realistic)
         #[arg(long)]
         backend: Option<String>,
         /// Enable bpftrace op-latency histograms (default: perf flamegraph only)
@@ -116,7 +116,7 @@ enum Cmd {
     },
     /// Measure op latency vs checkpoint depth (default: all three backends)
     CheckpointScaling {
-        /// Backend to test (default: all three: agfs-realistic, overlayfs, branchfs)
+        /// Backend to test (default: all three: yolo-realistic, overlayfs, branchfs)
         #[arg(long)]
         backend: Option<String>,
         /// Mode to run: create, read, commit (default: all three)
@@ -139,7 +139,7 @@ enum Cmd {
     },
     /// Install preferred paper artifacts (tables + figures) into the paper repo
     InstallPaper {
-        /// Path to the paper repository root (default: ../AgFS-paper)
+        /// Path to the paper repository root (default: ../YoloFS-paper)
         #[arg(long, default_value = "paper")]
         paper_dir: PathBuf,
     },
@@ -1280,7 +1280,7 @@ fn main() -> Result<()> {
     {
         let backends: Vec<&str> = match bname.as_deref() {
             Some(b) => vec![b],
-            None => vec!["agfs-no-perm", "agfs-realistic"],
+            None => vec!["yolo-no-perm", "yolo-realistic"],
         };
         for bname in backends {
             run_profile(&env, &wname, bname, bpftrace)?;
@@ -1572,7 +1572,7 @@ fn main() -> Result<()> {
 
 const CHECKPOINT_DEPTHS: &[usize] = &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
-const CHECKPOINT_SCALING_BACKENDS: &[&str] = &["agfs-realistic", "overlayfs", "branchfs"];
+const CHECKPOINT_SCALING_BACKENDS: &[&str] = &["yolo-realistic", "overlayfs", "branchfs"];
 const CHECKPOINT_SCALING_MODES: &[&str] = &["create", "read", "commit", "status"];
 
 fn run_checkpoint_scaling(
@@ -1749,7 +1749,7 @@ fn run_checkpoint_scaling(
 
 fn ensure_release_build() -> Result<()> {
     if cfg!(debug_assertions) {
-        bail!("agfs-bench must be built with --release; debug builds are refused");
+        bail!("yolo-bench must be built with --release; debug builds are refused");
     }
     Ok(())
 }
@@ -1761,15 +1761,15 @@ fn ensure_release_build() -> Result<()> {
 fn cleanup_stale_tempdirs() {
     let cache = dirs_next::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("agfs-bench");
+        .join("yolo-bench");
     if !cache.is_dir() {
         return;
     }
-    // Only clean up temp session dirs (agfs-bench-*), not fixture dirs (e.g. linux-tar).
+    // Only clean up temp session dirs (yolo-bench-*), not fixture dirs (e.g. linux-tar).
     let entries: Vec<_> = match fs::read_dir(&cache) {
         Ok(rd) => rd
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with("agfs-bench-"))
+            .filter(|e| e.file_name().to_string_lossy().starts_with("yolo-bench-"))
             .collect(),
         Err(_) => return,
     };

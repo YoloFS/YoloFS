@@ -1,11 +1,11 @@
 {
   "search.exclude": {
-    "**/.agfs": true
+    "**/.yolofs": true
   },
   "files.watcherExclude": {
-    "**/.agfs/**": true
+    "**/.yolofs/**": true
   },
-  "rust-analyzer.files.excludeDirs": [".agfs"],
+  "rust-analyzer.files.excludeDirs": [".yolofs"],
   "[c]": {
     "editor.tabSize": 8
   },

@@ -1,4 +1,4 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
 // ── Base rename + staged create at old name ─────────────────────────
@@ -7,7 +7,7 @@ use std::fs;
 /// Both the renamed base file and the new staged file should coexist.
 #[test]
 fn rename_base_then_create_staged_at_old_name() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename base");
     fs::write(s.mnt_path("hello.txt"), "staged content\n").expect("create staged");
@@ -42,7 +42,7 @@ fn rename_base_then_create_staged_at_old_name() {
 /// Create a staged file, then rename it over an existing base file.
 #[test]
 fn rename_staged_over_base() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("new.txt"), "staged\n").expect("create staged");
     fs::rename(s.mnt_path("new.txt"), s.mnt_path("hello.txt")).expect("rename staged over base");
@@ -68,7 +68,7 @@ fn rename_staged_over_base() {
 /// Rename a base file over another base file.
 #[test]
 fn rename_base_over_base() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("multi.txt")).expect("rename base over base");
 
@@ -95,7 +95,7 @@ fn rename_base_over_base() {
 /// Delete a base file, then create a staged file at the same path.
 #[test]
 fn delete_base_then_create_staged() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete base");
     assert!(fs::read_to_string(s.mnt_path("hello.txt")).is_err());
@@ -121,7 +121,7 @@ fn delete_base_then_create_staged() {
 /// should be independently visible and committable.
 #[test]
 fn mixed_rename_create_modify() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Rename base file to new name
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename base");
@@ -167,7 +167,7 @@ fn mixed_rename_create_modify() {
 /// After mixed operations, readdir should show the correct set of entries.
 #[test]
 fn readdir_mixed_base_and_staged() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Delete a base file
     fs::remove_file(s.mnt_path("multi.txt")).expect("delete base");
@@ -220,7 +220,7 @@ fn readdir_mixed_base_and_staged() {
 /// Mixed operations then abort: base should be completely untouched.
 #[test]
 fn mixed_operations_abort() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
     fs::write(s.mnt_path("brand_new.txt"), "staged\n").expect("create");
@@ -251,7 +251,7 @@ fn mixed_operations_abort() {
 /// Create a staged file, then rename it into a subdirectory.
 #[test]
 fn rename_staged_into_subdir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("top.txt"), "staged top\n").expect("create");
     fs::rename(s.mnt_path("top.txt"), s.mnt_path("subdir/top.txt")).expect("rename into subdir");
@@ -274,7 +274,7 @@ fn rename_staged_into_subdir() {
 /// Rename a base file out of a subdirectory to the top level.
 #[test]
 fn rename_base_out_of_subdir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir/deep.txt"), s.mnt_path("promoted.txt"))
         .expect("rename out of subdir");
@@ -300,7 +300,7 @@ fn rename_base_out_of_subdir() {
 /// The staged inode should follow the rename.
 #[test]
 fn modify_base_then_rename() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("modify base (COW)");
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename staged inode");

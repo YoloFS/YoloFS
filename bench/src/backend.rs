@@ -9,15 +9,15 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::Instant;
 
 /// Marker printed by `exec-workload` to stdout right before the workload runs.
-pub const READY_MARKER: &str = "AGFS_BENCH_READY";
+pub const READY_MARKER: &str = "YOLO_BENCH_READY";
 
 /// Marker printed by Op workloads to stdout after the workload finishes,
 /// followed by a JSON line containing the `OpResult`.
-pub const RESULTS_MARKER: &str = "AGFS_BENCH_RESULTS";
+pub const RESULTS_MARKER: &str = "YOLO_BENCH_RESULTS";
 
 /// Marker printed by workloads that need a backend-managed checkpoint.
 /// The next line is a JSON object with `step`.
-pub const CHECKPOINT_MARKER: &str = "AGFS_BENCH_CHECKPOINT";
+pub const CHECKPOINT_MARKER: &str = "YOLO_BENCH_CHECKPOINT";
 
 #[derive(serde::Deserialize)]
 struct CheckpointRequest {
@@ -109,7 +109,7 @@ impl CheckpointController for NoopCheckpointController {
 }
 
 /// Build the base `Command` for `exec-workload`. Backends that run the
-/// workload directly (native, agfs, overlayfs, branchfs) use this as-is.
+/// workload directly (native, yolo, overlayfs, branchfs) use this as-is.
 pub fn exec_workload_cmd(
     workload_name: &str,
     dest: &Path,

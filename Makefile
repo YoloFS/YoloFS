@@ -1,7 +1,7 @@
 # ── Variables ─────────────────────────────────────────────────────────
 
 KDIR             := /lib/modules/$(shell uname -r)
-KMOD_OUT         := local/kmod/agfs.ko
+KMOD_OUT         := local/kmod/yolofs.ko
 KMOD_INSTALL_DIR := $(KDIR)/extra
 LOCAL_DIR        := $(CURDIR)-local
 
@@ -15,7 +15,7 @@ $(LOCAL_DIR):
 	mkdir -p $@
 
 user: | $(LOCAL_DIR)
-	cargo build --release -p agfs
+	cargo build --release -p yolofs
 
 kmod: $(KMOD_OUT)
 
@@ -40,13 +40,13 @@ clean-kmod:
 .PHONY: install uninstall
 
 install: user kmod
-	sudo install -m 4755 -o root local/target/release/agfs /usr/local/bin/agfs
+	sudo install -m 4755 -o root local/target/release/yolo /usr/local/bin/yolo
 	sudo install -d $(KMOD_INSTALL_DIR)
-	sudo install -m 644 $(KMOD_OUT) $(KMOD_INSTALL_DIR)/agfs.ko
+	sudo install -m 644 $(KMOD_OUT) $(KMOD_INSTALL_DIR)/yolofs.ko
 
 uninstall:
-	sudo rm -f /usr/local/bin/agfs
-	sudo rm -f $(KMOD_INSTALL_DIR)/agfs.ko
+	sudo rm -f /usr/local/bin/yolo
+	sudo rm -f $(KMOD_INSTALL_DIR)/yolofs.ko
 
 # ── Test ──────────────────────────────────────────────────────────────
 
@@ -55,12 +55,12 @@ uninstall:
 test: test-unit test-e2e
 
 test-unit: | $(LOCAL_DIR)
-	cargo test --release -p agfs --lib
+	cargo test --release -p yolofs --lib
 
 test-e2e: install | $(LOCAL_DIR)
-	agfs reload
-	cargo test --release -p agfs --test e2e -- --test-threads=1
-	agfs unload
+	yolo reload
+	cargo test --release -p yolofs --test e2e -- --test-threads=1
+	yolo unload
 
 # ── Lint ──────────────────────────────────────────────────────────────
 
@@ -79,22 +79,22 @@ fix: | $(LOCAL_DIR)
 .PHONY: bench bench-micro bench-macro
 
 bench: install | $(LOCAL_DIR)
-	agfs reload
-	cargo build --release -p agfs-bench
-	./local/target/release/agfs-bench
-	agfs unload
+	yolo reload
+	cargo build --release -p yolo-bench
+	./local/target/release/yolo-bench
+	yolo unload
 
 bench-micro: install | $(LOCAL_DIR)
-	agfs reload
-	cargo build --release -p agfs-bench
-	./local/target/release/agfs-bench --micro
-	agfs unload
+	yolo reload
+	cargo build --release -p yolo-bench
+	./local/target/release/yolo-bench --micro
+	yolo unload
 
 bench-macro: install | $(LOCAL_DIR)
-	agfs reload
-	cargo build --release -p agfs-bench
-	./local/target/release/agfs-bench --macro
-	agfs unload
+	yolo reload
+	cargo build --release -p yolo-bench
+	./local/target/release/yolo-bench --macro
+	yolo unload
 
 # ── VM ────────────────────────────────────────────────────────────────
 

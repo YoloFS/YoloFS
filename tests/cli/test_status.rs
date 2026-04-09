@@ -1,9 +1,9 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
 #[test]
 fn status_empty() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let output = s.cli(&["status"]).expect("status");
     assert!(output.contains("No changes staged"), "output: {output}");
@@ -11,7 +11,7 @@ fn status_empty() {
 
 #[test]
 fn status_modified() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
 
@@ -23,7 +23,7 @@ fn status_modified() {
 
 #[test]
 fn status_multiple_changes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
     fs::write(s.mnt_path("newfile.txt"), "new\n").unwrap();
@@ -36,7 +36,7 @@ fn status_multiple_changes() {
 
 #[test]
 fn status_deleted() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).unwrap();
 
@@ -51,7 +51,7 @@ fn status_deleted() {
 
 #[test]
 fn status_renamed() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).unwrap();
 
@@ -67,7 +67,7 @@ fn status_renamed() {
 /// not post-checkpoint mutations (which are in the dead zone).
 #[test]
 fn status_after_restore_excludes_dead_zone() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Modify before checkpoint
     fs::write(s.mnt_path("hello.txt"), "wanted\n").unwrap();
@@ -93,7 +93,7 @@ fn status_after_restore_excludes_dead_zone() {
 /// should show only changes at that checkpoint.
 #[test]
 fn status_at_checkpoint_after_restore() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint 1");

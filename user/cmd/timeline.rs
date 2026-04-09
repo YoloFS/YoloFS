@@ -1,14 +1,14 @@
-// agfs CLI — timeline.rs
+// yolo CLI — timeline.rs
 //
-// `agfs timeline` — show checkpoint/restore DAG with unreachable branches dimmed.
+// `yolo timeline` — show checkpoint/restore DAG with unreachable branches dimmed.
 
 use crate::journal::{self, Journal};
 use colored::Colorize;
 
 /// Display the checkpoint/restore timeline (full DAG, unreachable dimmed).
 pub fn run() -> anyhow::Result<()> {
-    let agfs = crate::utils::session_dir()?;
-    let journal = Journal::read(&agfs)?;
+    let yolofs = crate::utils::session_dir()?;
+    let journal = Journal::read(&yolofs)?;
 
     if journal.metas.len() <= 1 {
         println!("{}", "No checkpoints.".yellow());

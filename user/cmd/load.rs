@@ -1,17 +1,17 @@
-// agfs CLI — load.rs
+// yolo CLI — load.rs
 //
-// `agfs load`   — load the kernel module.
-// `agfs unload` — unmount all sessions and unload the kernel module.
-// `agfs reload` — unload then reload the kernel module.
+// `yolo load`   — load the kernel module.
+// `yolo unload` — unmount all sessions and unload the kernel module.
+// `yolo reload` — unload then reload the kernel module.
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Check if the agfs kernel module is loaded.
+/// Check if the YoloFS kernel module is loaded.
 pub fn is_loaded() -> bool {
-    Path::new("/sys/module/agfs").exists()
+    Path::new("/sys/module/yolofs").exists()
 }
 
 /// Load the kernel module if not already loaded. Returns `true` if freshly loaded.
@@ -20,11 +20,11 @@ pub fn load() -> Result<bool> {
         return Ok(false);
     }
 
-    let ko_path = find_ko().context("cannot find agfs.ko — build it with `make kmod`")?;
+    let ko_path = find_ko().context("cannot find yolofs.ko — build it with `make kmod`")?;
 
     eprintln!(
         "{} {}",
-        "agfs: loading kernel module".green(),
+        "yolo: loading kernel module".green(),
         ko_path.display()
     );
 
@@ -41,19 +41,19 @@ pub fn load() -> Result<bool> {
     Ok(true)
 }
 
-/// Unmount all agfs sessions and unload the kernel module.
+/// Unmount all YoloFS sessions and unload the kernel module.
 pub fn unload() -> Result<()> {
     unmount_all()?;
 
     if !is_loaded() {
-        eprintln!("{} kernel module not loaded", "agfs:".green());
+        eprintln!("{} kernel module not loaded", "yolo:".green());
         return Ok(());
     }
 
-    eprintln!("{}", "agfs: unloading kernel module".green());
+    eprintln!("{}", "yolo: unloading kernel module".green());
 
     let output = Command::new("sudo")
-        .args(["rmmod", "agfs"])
+        .args(["rmmod", "yolofs"])
         .output()
         .context("running sudo rmmod")?;
 
@@ -74,7 +74,7 @@ pub fn reload() -> Result<()> {
 
 /// Find the .ko file: dev build directory, then system install path.
 fn find_ko() -> Option<PathBuf> {
-    let cwd_path = Path::new("local/kmod/agfs.ko");
+    let cwd_path = Path::new("local/kmod/yolofs.ko");
     if cwd_path.exists() {
         return Some(cwd_path.to_path_buf());
     }
@@ -86,7 +86,7 @@ fn find_ko() -> Option<PathBuf> {
     let release = unsafe { std::ffi::CStr::from_ptr(uts.release.as_ptr()) }
         .to_str()
         .ok()?;
-    let system_path = PathBuf::from(format!("/lib/modules/{release}/extra/agfs.ko"));
+    let system_path = PathBuf::from(format!("/lib/modules/{release}/extra/yolofs.ko"));
     if system_path.exists() {
         return Some(system_path);
     }
@@ -94,29 +94,29 @@ fn find_ko() -> Option<PathBuf> {
     None
 }
 
-/// Find all active agfs session directories by reading /proc/mounts.
-fn find_agfs_dirs() -> Vec<String> {
+/// Find all active YoloFS session directories by reading /proc/mounts.
+fn find_yolo_dirs() -> Vec<String> {
     let Ok(content) = std::fs::read_to_string("/proc/mounts") else {
         return Vec::new();
     };
     parse_mounts(&content)
 }
 
-/// Parse /proc/mounts content and return the source column for agfs entries.
+/// Parse /proc/mounts content and return the source column for YoloFS entries.
 fn parse_mounts(content: &str) -> Vec<String> {
     content
         .lines()
-        .filter(|line| line.contains(" agfs "))
+        .filter(|line| line.contains(" yolofs "))
         .filter_map(|line| line.split_whitespace().next())
         .map(String::from)
         .collect()
 }
 
-/// Unmount all active agfs sessions.
+/// Unmount all active YoloFS sessions.
 fn unmount_all() -> Result<()> {
-    for agfs_dir in find_agfs_dirs() {
-        eprintln!("{} {}", "agfs: unmounting".green(), agfs_dir);
-        crate::cmd::mount::unmount_at(Path::new(&agfs_dir))?;
+    for yolo_dir in find_yolo_dirs() {
+        eprintln!("{} {}", "yolo: unmounting".green(), yolo_dir);
+        crate::cmd::mount::unmount_at(Path::new(&yolo_dir))?;
     }
     Ok(())
 }
@@ -134,7 +134,7 @@ mod tests {
                 path.display()
             );
             assert!(
-                path.to_string_lossy().ends_with("agfs.ko"),
+                path.to_string_lossy().ends_with("yolofs.ko"),
                 "find_ko returned unexpected file: {}",
                 path.display()
             );
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn find_ko_prefers_build_dir() {
-        let cwd_path = Path::new("local/kmod/agfs.ko");
+        let cwd_path = Path::new("local/kmod/yolofs.ko");
         if cwd_path.exists() {
             let found = find_ko().expect("find_ko should succeed when build dir exists");
             assert_eq!(
@@ -155,15 +155,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_mounts_extracts_agfs_sources() {
+    fn parse_mounts_extracts_yolo_sources() {
         let content = "\
 /dev/sda1 / ext4 rw,relatime 0 0
-/home/user/.agfs/abc /.agfs/abc/mnt agfs rw 0 0
+/home/user/.yolofs/abc /.yolofs/abc/mnt yolofs rw 0 0
 proc /proc proc rw,nosuid 0 0
-/tmp/project/.agfs /.agfs/mnt agfs rw 0 0
+/tmp/project/.yolofs /.yolofs/mnt yolofs rw 0 0
 ";
         let dirs = parse_mounts(content);
-        assert_eq!(dirs, vec!["/home/user/.agfs/abc", "/tmp/project/.agfs",]);
+        assert_eq!(dirs, vec!["/home/user/.yolofs/abc", "/tmp/project/.yolofs",]);
     }
 
     #[test]
@@ -172,7 +172,7 @@ proc /proc proc rw,nosuid 0 0
     }
 
     #[test]
-    fn parse_mounts_no_agfs_entries() {
+    fn parse_mounts_no_yolo_entries() {
         let content = "\
 /dev/sda1 / ext4 rw,relatime 0 0
 proc /proc proc rw,nosuid 0 0
@@ -182,14 +182,14 @@ proc /proc proc rw,nosuid 0 0
 
     #[test]
     fn parse_mounts_ignores_substring_matches() {
-        // "magfs" contains "agfs" but should not match " agfs "
-        let content = "src /mnt magfs rw 0 0\n";
+        // "myolofs" contains "yolofs" but should not match " yolofs "
+        let content = "src /mnt myolofs rw 0 0\n";
         assert!(parse_mounts(content).is_empty());
     }
 
     #[test]
-    fn find_agfs_dirs_matches_proc_mounts() {
-        let dirs = find_agfs_dirs();
+    fn find_yolo_dirs_matches_proc_mounts() {
+        let dirs = find_yolo_dirs();
         let content = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
         let expected = parse_mounts(&content);
         assert_eq!(dirs, expected);

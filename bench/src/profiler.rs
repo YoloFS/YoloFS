@@ -1,7 +1,7 @@
-// agfs-bench profiler: bpftrace op latency + perf flamegraph.
+// yolofs-bench profiler: bpftrace op latency + perf flamegraph.
 //
 // Profiler::start() spawns bpftrace (with a generated kfunc script for the
-// interesting agfs_* functions) and perf record. The bpftrace script uses
+// interesting yolo_* functions) and perf record. The bpftrace script uses
 // bpftrace's built-in hist() aggregation: entry stores nsecs in @start[tid],
 // return accumulates the elapsed time into @latency[func]. On SIGINT bpftrace
 // flushes all maps, producing per-op latency histograms in bpftrace.txt.
@@ -73,9 +73,9 @@ impl Profiler {
         std::thread::sleep(Duration::from_millis(300));
 
         let (bpftrace, bpf_output) = if run_bpftrace {
-            let funcs = discover_agfs_funcs().context("discovering agfs kfuncs")?;
+            let funcs = discover_yolo_funcs().context("discovering yolofs kfuncs")?;
             if funcs.is_empty() {
-                bail!("no agfs_* kfuncs found — is the kernel module loaded?");
+                bail!("no yolo_* kfuncs found — is the kernel module loaded?");
             }
 
             let script = generate_script(&funcs);
@@ -227,32 +227,32 @@ impl Drop for Profiler {
 /// Hot-path functions worth tracing. We take the intersection with whatever
 /// the loaded kmod actually exposes, so this list can be a superset.
 const INTERESTING: &[&str] = &[
-    "agfs_lookup",
-    "agfs_d_revalidate",
-    "agfs_permission",
-    "agfs_resolve_perm",
-    "agfs_open",
-    "agfs_read_iter",
-    "agfs_write_iter",
-    "agfs_create",
-    "agfs_create_staged",
-    "agfs_cow_if_needed",
-    "agfs_do_cow",
-    "agfs_staging_alloc",
-    "agfs_readdir",
-    "agfs_journal_add",
-    "agfs_journal_modify",
-    "agfs_journal_delete",
-    "agfs_journal_rename",
-    "agfs_journal_replace",
-    "agfs_journal_mark",
-    "agfs_release",
-    "agfs_find_dirent",
+    "yolo_lookup",
+    "yolo_d_revalidate",
+    "yolo_permission",
+    "yolo_resolve_perm",
+    "yolo_open",
+    "yolo_read_iter",
+    "yolo_write_iter",
+    "yolo_create",
+    "yolo_create_staged",
+    "yolo_cow_if_needed",
+    "yolo_do_cow",
+    "yolo_staging_alloc",
+    "yolo_readdir",
+    "yolo_journal_add",
+    "yolo_journal_modify",
+    "yolo_journal_delete",
+    "yolo_journal_rename",
+    "yolo_journal_replace",
+    "yolo_journal_mark",
+    "yolo_release",
+    "yolo_find_dirent",
 ];
 
-fn discover_agfs_funcs() -> Result<Vec<String>> {
+fn discover_yolo_funcs() -> Result<Vec<String>> {
     let out = Command::new("sudo")
-        .args(["bpftrace", "-l", "kfunc:agfs_*"])
+        .args(["bpftrace", "-l", "kfunc:yolo_*"])
         .output()
         .context("running bpftrace -l")?;
     if !out.status.success() {
@@ -261,10 +261,10 @@ fn discover_agfs_funcs() -> Result<Vec<String>> {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    // Lines are "kfunc:agfs:agfs_foo" — strip the "kfunc:agfs:" prefix.
+    // Lines are "kfunc:yolofs:yolo_foo" — strip the "kfunc:yolofs:" prefix.
     let available: std::collections::HashSet<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter_map(|l| l.strip_prefix("kfunc:agfs:"))
+        .filter_map(|l| l.strip_prefix("kfunc:yolofs:"))
         .map(|s| s.to_string())
         .collect();
     Ok(INTERESTING
@@ -282,11 +282,11 @@ fn generate_script(funcs: &[String]) -> String {
     // between interesting functions don't clobber each other's entry timestamp.
     let mut s = String::from("BEGIN { printf(\"READY\\n\"); }\n");
     for func in funcs {
-        // Strip "agfs_" prefix for the map name to stay under BPF name limits.
-        let short = func.strip_prefix("agfs_").unwrap_or(func);
+        // Strip "yolo_" prefix for the map name to stay under BPF name limits.
+        let short = func.strip_prefix("yolo_").unwrap_or(func);
         s.push_str(&format!(
-            "kfunc:agfs:{func} {{ @s_{short}[tid] = nsecs; }}\n\
-             kretfunc:agfs:{func} {{ if (@s_{short}[tid] != 0) {{\
+            "kfunc:yolofs:{func} {{ @s_{short}[tid] = nsecs; }}\n\
+             kretfunc:yolofs:{func} {{ if (@s_{short}[tid] != 0) {{\
                @{func} = hist((nsecs - @s_{short}[tid]) / 1000);\
                delete(@s_{short}[tid]); }} }}\n"
         ));
@@ -303,7 +303,7 @@ struct Bucket {
     count: u64,
 }
 
-// One histogram (one agfs function) parsed from bpftrace output.
+// One histogram (one yolofs function) parsed from bpftrace output.
 struct Histogram {
     name: String,
     buckets: Vec<Bucket>,
@@ -326,14 +326,14 @@ fn parse_bpf_int(s: &str) -> u64 {
 ///
 /// Expected format (emitted on SIGINT map flush):
 /// ```
-/// @latency["agfs_permission"]:
+/// @latency["yolo_permission"]:
 /// [0]                  892 |@@...    |
 /// [1]                 3421 |@@...    |
 /// [2, 4)               234 |@...     |
 /// [4, 8)               156 |         |
 /// ...
 ///
-/// @latency["agfs_lookup"]:
+/// @latency["yolo_lookup"]:
 /// ...
 /// ```
 fn parse_histograms(raw: &str) -> Vec<Histogram> {
@@ -341,7 +341,7 @@ fn parse_histograms(raw: &str) -> Vec<Histogram> {
     let mut current: Option<Histogram> = None;
 
     for line in raw.lines() {
-        // New histogram header: @agfs_foo:
+        // New histogram header: @yolo_foo:
         if let Some(rest) = line.strip_prefix('@')
             && let Some(name) = rest.trim_end().strip_suffix(':')
             && !name.is_empty()
@@ -473,7 +473,7 @@ fn write_summary(out_dir: &Path, ops: &[OpStats], wall_ms: u64) -> Result<()> {
         ));
         buf.push_str(&format!("  {}\n", "-".repeat(76)));
         for op in ops {
-            let short = op.name.strip_prefix("agfs_").unwrap_or(&op.name);
+            let short = op.name.strip_prefix("yolo_").unwrap_or(&op.name);
             buf.push_str(&format!(
                 "  {:<32}  {:>8}  {:>9}  {:>6}  {:>10.1}\n",
                 short, op.count, op.median_us, op.p99_us, op.total_ms
@@ -498,7 +498,7 @@ fn generate_flamegraph(out_dir: &Path) -> Result<()> {
 
     // perf.data is owned by root (system-wide recording with sudo).
     // For fio workloads, include child fio process samples; for all other
-    // workloads, keep agfs-bench only.
+    // workloads, keep yolofs-bench only.
     let workload_name = out_dir
         .parent()
         .and_then(|p| p.file_name())
@@ -506,13 +506,13 @@ fn generate_flamegraph(out_dir: &Path) -> Result<()> {
         .unwrap_or("");
     // Include the bench process plus any child processes that do real work.
     let comms = if workload_name.starts_with("fio-") {
-        "agfs-bench,fio"
+        "yolofs-bench,fio"
     } else if workload_name == "dev-workflow" {
-        "agfs-bench,bash,python3,grep,git,make,cc1,ld"
+        "yolofs-bench,bash,python3,grep,git,make,cc1,ld"
     } else if workload_name == "linux-untar" {
-        "agfs-bench,tar,xz"
+        "yolofs-bench,tar,xz"
     } else {
-        "agfs-bench"
+        "yolofs-bench"
     };
     let script = Command::new("sudo")
         .args(["perf", "script", "--comms", comms, "-i"])
@@ -560,7 +560,7 @@ fn workload_run_patterns(out_dir: &Path) -> Vec<String> {
         crate::workloads::meta_shared::source_group_name(workload_name).unwrap_or(workload_name);
     let snake = base.replace('-', "_");
     vec![
-        // Shared helper: agfs_bench::workloads::meta_shared::run_meta_open_warm
+        // Shared helper: yolo_bench::workloads::meta_shared::run_meta_open_warm
         format!("run_{snake}"),
         // Trait impl: <...::MetaCreate as ...::Workload>::run
         "::Workload>::run".to_string(),
@@ -712,7 +712,7 @@ fn generate_breakdown(out_dir: &Path, wall_ms: u64, iters: u32) -> Result<()> {
     let is_fio_workload = workload_name.starts_with("fio-");
 
     let skip = |func: &str| -> bool {
-        func == "agfs-bench"
+        func == "yolofs-bench"
             || func == "fio"
             || func == "_start"
             || func == "main"
@@ -744,12 +744,12 @@ fn generate_breakdown(out_dir: &Path, wall_ms: u64, iters: u32) -> Result<()> {
         let Ok(count) = count_str.parse::<u64>() else {
             continue;
         };
-        // For fio workloads, include both agfs-bench and fio process stacks.
-        // For all others, only agfs-bench.
+        // For fio workloads, include both yolofs-bench and fio process stacks.
+        // For all others, only yolofs-bench.
         let dominated = if is_fio_workload {
-            stack.starts_with("agfs-bench") || stack.starts_with("fio")
+            stack.starts_with("yolofs-bench") || stack.starts_with("fio")
         } else {
-            stack.contains("agfs-bench")
+            stack.contains("yolofs-bench")
         };
         if !dominated {
             continue;

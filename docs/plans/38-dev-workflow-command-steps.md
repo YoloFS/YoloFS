@@ -60,7 +60,7 @@ commands.
 
 - Add a small bench-side test that fixture parsing succeeds and each commit has
   non-empty `search`, `read`, and `edit` command lists.
-- Validate with `cargo test -p agfs-bench --no-run`.
+- Validate with `cargo test -p yolofs-bench --no-run`.
 - Re-run the pinned Linux replay from `c2c54b5f34f6^` and confirm that the
   command lists still reproduce each upstream commit exactly.
 

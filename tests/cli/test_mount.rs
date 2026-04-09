@@ -1,10 +1,10 @@
-use crate::helpers::{AGFS_BIN, AgfsSession};
-use agfs::config::{Config, Perm};
+use crate::helpers::{YOLO_BIN, YoloSession};
+use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 
 #[test]
 fn mount_and_unmount() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     // Verify mount point exists and is accessible
     assert!(session.mnt.exists(), "mount point exists");
@@ -22,10 +22,10 @@ fn mount_and_unmount() {
 
 #[test]
 fn mount_creates_layout() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
-    assert!(session.root.join(".agfs").exists());
-    assert!(session.root.join(".agfs/inodes").exists());
+    assert!(session.root.join(".yolofs").exists());
+    assert!(session.root.join(".yolofs/inodes").exists());
     assert!(session.mnt.exists());
 
     drop(session);
@@ -33,7 +33,7 @@ fn mount_creates_layout() {
 
 #[test]
 fn remount_picks_up_new_rules() {
-    let session = AgfsSession::new_with_config(Config {
+    let session = YoloSession::new_with_config(Config {
         permission: false,
         ..Default::default()
     })
@@ -49,7 +49,7 @@ fn remount_picks_up_new_rules() {
         rules: BTreeMap::from([("/etc".into(), Perm::AllowRo)]),
         ..Default::default()
     }
-    .save(&session.root.join("agfs.toml"))
+    .save(&session.root.join("yolofs.toml"))
     .unwrap();
 
     let (ok, _, stderr) = session.cli_output(&["remount"]).unwrap();
@@ -62,10 +62,10 @@ fn remount_picks_up_new_rules() {
 
 #[test]
 fn unknown_subcommand_shows_help() {
-    let output = std::process::Command::new(AGFS_BIN)
+    let output = std::process::Command::new(YOLO_BIN)
         .arg("notarealcommand")
         .output()
-        .expect("running agfs");
+        .expect("running yolofs");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -81,48 +81,48 @@ fn unknown_subcommand_shows_help() {
 // Mount error-path tests
 // ---------------------------------------------------------------------------
 
-/// Without an agfs.toml, mount should still succeed using default options.
+/// Without an yolofs.toml, mount should still succeed using default options.
 #[test]
 fn mount_no_config_uses_defaults() {
     let tmp = tempfile::tempdir().expect("creating temp dir");
 
-    let output = std::process::Command::new(AGFS_BIN)
+    let output = std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(tmp.path())
         .env("NO_COLOR", "1")
         .output()
-        .expect("running agfs mount");
+        .expect("running yolofs mount");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "agfs mount should succeed even without agfs.toml (uses defaults): {stderr}"
+        "yolofs mount should succeed even without yolofs.toml (uses defaults): {stderr}"
     );
 
     // Clean up — unmount the session we just created
-    let _ = std::process::Command::new(AGFS_BIN)
+    let _ = std::process::Command::new(YOLO_BIN)
         .args(["unmount", "--force"])
         .current_dir(tmp.path())
         .env("NO_COLOR", "1")
         .output();
 }
 
-/// Invalid agfs.toml should cause `agfs mount` to fail (at the apply_rules step).
+/// Invalid yolofs.toml should cause `yolofs mount` to fail (at the apply_rules step).
 #[test]
 fn mount_invalid_config_fails() {
     let tmp = tempfile::tempdir().expect("creating temp dir");
-    std::fs::write(tmp.path().join("agfs.toml"), "{{invalid toml").expect("writing invalid config");
+    std::fs::write(tmp.path().join("yolofs.toml"), "{{invalid toml").expect("writing invalid config");
 
-    let output = std::process::Command::new(AGFS_BIN)
+    let output = std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(tmp.path())
         .env("NO_COLOR", "1")
         .output()
-        .expect("running agfs mount");
+        .expect("running yolofs mount");
 
     assert!(
         !output.status.success(),
-        "agfs mount should fail with an invalid agfs.toml"
+        "yolofs mount should fail with an invalid yolofs.toml"
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -135,7 +135,7 @@ fn mount_invalid_config_fails() {
     );
 
     // Clean up — mount may have partially succeeded before apply_rules failed
-    let _ = std::process::Command::new(AGFS_BIN)
+    let _ = std::process::Command::new(YOLO_BIN)
         .args(["unmount", "--force"])
         .current_dir(tmp.path())
         .env("NO_COLOR", "1")
@@ -144,11 +144,11 @@ fn mount_invalid_config_fails() {
 
 #[test]
 fn mount_nonexistent_dir_fails() {
-    let bad_path = std::path::PathBuf::from("/tmp/agfs_nonexistent_dir_that_does_not_exist");
+    let bad_path = std::path::PathBuf::from("/tmp/yolo_nonexistent_dir_that_does_not_exist");
     // Ensure it really does not exist.
     assert!(!bad_path.exists(), "sanity: path should not exist");
 
-    let result = std::process::Command::new(AGFS_BIN)
+    let result = std::process::Command::new(YOLO_BIN)
         .arg("mount")
         .current_dir(&bad_path)
         .env("NO_COLOR", "1")

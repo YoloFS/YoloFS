@@ -1,6 +1,6 @@
 use super::helpers::{ino_for, inode_path, inos, journal, records, tree};
-use crate::helpers::AgfsSession;
-use agfs::journal::{Meta, Record};
+use crate::helpers::YoloSession;
+use yolofs::journal::{Meta, Record};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
@@ -9,7 +9,7 @@ use std::os::unix::fs::MetadataExt;
 /// Restore to a checkpoint appends a J record (append-only journal).
 #[test]
 fn restore_to_checkpoint_appends_jmp_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
@@ -42,7 +42,7 @@ fn restore_to_checkpoint_appends_jmp_record() {
 /// Commit clears the journal.
 #[test]
 fn commit_clears_journal() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     assert!(
@@ -63,7 +63,7 @@ fn commit_clears_journal() {
 /// Abort clears the journal.
 #[test]
 fn abort_clears_journal() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     assert!(
@@ -85,8 +85,8 @@ fn abort_clears_journal() {
 /// The kernel holds an O_APPEND fd to the journal; deleting would make it stale.
 #[test]
 fn commit_preserves_journal_inode() {
-    let s = AgfsSession::new().expect("session setup");
-    let journal_path = s.root.join(".agfs/journal");
+    let s = YoloSession::new().expect("session setup");
+    let journal_path = s.root.join(".yolofs/journal");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     let ino_before = fs::metadata(&journal_path).expect("stat before").ino();
@@ -106,8 +106,8 @@ fn commit_preserves_journal_inode() {
 /// The kernel holds an O_APPEND fd to the journal; deleting would make it stale.
 #[test]
 fn abort_preserves_journal_inode() {
-    let s = AgfsSession::new().expect("session setup");
-    let journal_path = s.root.join(".agfs/journal");
+    let s = YoloSession::new().expect("session setup");
+    let journal_path = s.root.join(".yolofs/journal");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     let ino_before = fs::metadata(&journal_path).expect("stat before").ino();
@@ -128,7 +128,7 @@ fn abort_preserves_journal_inode() {
 /// After commit, the inode store is empty.
 #[test]
 fn commit_empties_inode_store() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
@@ -148,7 +148,7 @@ fn commit_empties_inode_store() {
 /// After abort, the inode store is empty.
 #[test]
 fn abort_empties_inode_store() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     assert!(
@@ -168,8 +168,8 @@ fn abort_empties_inode_store() {
 /// doesn't rm -rf + mkdir). This keeps the directory inode stable.
 #[test]
 fn commit_preserves_inodes_dir_inode() {
-    let s = AgfsSession::new().expect("session setup");
-    let inodes_dir = s.root.join(".agfs/inodes");
+    let s = YoloSession::new().expect("session setup");
+    let inodes_dir = s.root.join(".yolofs/inodes");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     let ino_before = fs::metadata(&inodes_dir).expect("stat before").ino();
@@ -189,8 +189,8 @@ fn commit_preserves_inodes_dir_inode() {
 /// doesn't rm -rf + mkdir). This keeps the directory inode stable.
 #[test]
 fn abort_preserves_inodes_dir_inode() {
-    let s = AgfsSession::new().expect("session setup");
-    let inodes_dir = s.root.join(".agfs/inodes");
+    let s = YoloSession::new().expect("session setup");
+    let inodes_dir = s.root.join(".yolofs/inodes");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     let ino_before = fs::metadata(&inodes_dir).expect("stat before").ino();
@@ -209,7 +209,7 @@ fn abort_preserves_inodes_dir_inode() {
 /// Restore to a checkpoint preserves all inodes (orphans cleaned up on commit/abort).
 #[test]
 fn restore_preserves_all_inodes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "pre-chk\n").expect("write pre");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");

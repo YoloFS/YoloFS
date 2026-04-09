@@ -1,14 +1,14 @@
-use crate::helpers::AgfsSession;
-use agfs::config::{Config, Perm};
+use crate::helpers::YoloSession;
+use yolofs::config::{Config, Perm};
 use std::collections::BTreeMap;
 use std::fs;
 
-// ── allow-ro tests (perm.c: agfs_check_perm, inode.c: agfs_permission) ──
+// ── allow-ro tests (perm.c: yolo_check_perm, inode.c: yolo_permission) ──
 
 /// allow-ro should permit reads but deny writes.
 #[test]
 fn allow_ro_permits_read_denies_write() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
         ..Default::default()
@@ -25,12 +25,12 @@ fn allow_ro_permits_read_denies_write() {
     assert!(result.is_err(), "write should be denied with allow-ro rule");
 }
 
-// ── allow-rw tests (perm.c: agfs_check_perm, inode.c: agfs_permission) ──
+// ── allow-rw tests (perm.c: yolo_check_perm, inode.c: yolo_permission) ──
 
 /// allow-rw should permit reads.
 #[test]
 fn allow_rw_permits_read() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
         ..Default::default()
@@ -45,7 +45,7 @@ fn allow_rw_permits_read() {
 /// allow-rw should permit writes.
 #[test]
 fn allow_rw_permits_write() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
         ..Default::default()
@@ -55,10 +55,10 @@ fn allow_rw_permits_write() {
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write should succeed with allow-rw");
 }
 
-/// allow-rw should deny exec (MAY_EXEC check in agfs_permission).
+/// allow-rw should deny exec (MAY_EXEC check in yolo_permission).
 #[test]
 fn allow_rw_denies_exec() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
         ..Default::default()
@@ -73,12 +73,12 @@ fn allow_rw_denies_exec() {
     );
 }
 
-// ── allow-rx tests (perm.c: agfs_check_perm, inode.c: agfs_permission) ──
+// ── allow-rx tests (perm.c: yolo_check_perm, inode.c: yolo_permission) ──
 
 /// allow-rx should permit reads.
 #[test]
 fn allow_rx_permits_read() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRx)]),
         ..Default::default()
@@ -93,7 +93,7 @@ fn allow_rx_permits_read() {
 /// allow-rx should deny writes.
 #[test]
 fn allow_rx_denies_write() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRx)]),
         ..Default::default()
@@ -107,7 +107,7 @@ fn allow_rx_denies_write() {
 /// allow-rx should permit exec.
 #[test]
 fn allow_rx_permits_exec() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::AllowRx)]),
         ..Default::default()
@@ -125,7 +125,7 @@ fn allow_rx_permits_exec() {
 /// allow should permit exec.
 #[test]
 fn allow_permits_exec() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
@@ -143,7 +143,7 @@ fn allow_permits_exec() {
 /// deny should block writes (not just reads).
 #[test]
 fn deny_blocks_write() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Allow),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
@@ -157,7 +157,7 @@ fn deny_blocks_write() {
 /// deny should block exec.
 #[test]
 fn deny_blocks_exec() {
-    let s = AgfsSession::new_with_config(Config {
+    let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Allow),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()

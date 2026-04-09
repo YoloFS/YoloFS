@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * agfs — superblock operations and module init/exit.
+ * yolofs — superblock operations and module init/exit.
  */
 
-#include "agfs.h"
+#include "yolofs.h"
 #include <linux/fs_context.h>
 #include <linux/fs_parser.h>
 #include <linux/statfs.h>
@@ -11,14 +11,14 @@
 
 /* ── Mount Options ─────────────────────────────────────────────────── */
 
-enum agfs_param {
+enum yolo_param {
 	Opt_permission,
 	Opt_staging,
 	Opt_ask_timeout,
 	Opt_ask_default,
 };
 
-static const struct fs_parameter_spec agfs_fs_parameters[] = {
+static const struct fs_parameter_spec yolo_fs_parameters[] = {
 	fsparam_bool("permission",	Opt_permission),
 	fsparam_bool("staging",		Opt_staging),
 	fsparam_u32("ask_timeout",	Opt_ask_timeout),
@@ -26,7 +26,7 @@ static const struct fs_parameter_spec agfs_fs_parameters[] = {
 	{}
 };
 
-struct agfs_fs_opts {
+struct yolo_fs_opts {
 	bool		permission;
 	bool		staging;
 	unsigned int	ask_timeout_s;
@@ -35,45 +35,45 @@ struct agfs_fs_opts {
 
 /* ── Inode Slab Cache ──────────────────────────────────────────────── */
 
-struct kmem_cache *agfs_inode_cachep;
+struct kmem_cache *yolo_inode_cachep;
 
-static struct inode *agfs_alloc_inode(struct super_block *sb)
+static struct inode *yolo_alloc_inode(struct super_block *sb)
 {
-	struct agfs_inode_info *i;
+	struct yolo_inode_info *i;
 
-	i = alloc_inode_sb(sb, agfs_inode_cachep, GFP_KERNEL);
+	i = alloc_inode_sb(sb, yolo_inode_cachep, GFP_KERNEL);
 	if (!i)
 		return NULL;
 
 	i->lower_inode = NULL;
-	i->cached_perm = AGFS_PERM_NONE;
+	i->cached_perm = YOLO_PERM_NONE;
 	i->perm_gen = 0;
 	i->staging_gen = 0;
 	return &i->vfs_inode;
 }
 
-static void agfs_free_inode(struct inode *inode)
+static void yolo_free_inode(struct inode *inode)
 {
-	kmem_cache_free(agfs_inode_cachep, AGFS_I(inode));
+	kmem_cache_free(yolo_inode_cachep, YOLO_I(inode));
 }
 
-static void agfs_evict_inode(struct inode *inode)
+static void yolo_evict_inode(struct inode *inode)
 {
 	struct inode *lower_inode;
 
 	truncate_inode_pages(&inode->i_data, 0);
 	clear_inode(inode);
 
-	lower_inode = agfs_lower_inode(inode);
+	lower_inode = yolo_lower_inode(inode);
 	if (lower_inode)
 		iput(lower_inode);
 }
 
 /* ── Superblock Ops ────────────────────────────────────────────────── */
 
-static void agfs_put_super(struct super_block *sb)
+static void yolo_put_super(struct super_block *sb)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(sb);
+	struct yolo_sb_info *sbi = YOLO_SB(sb);
 
 	if (!sbi)
 		return;
@@ -97,23 +97,23 @@ static void agfs_put_super(struct super_block *sb)
 	sb->s_fs_info = NULL;
 }
 
-static int agfs_statfs(struct dentry *dentry, struct kstatfs *buf)
+static int yolo_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
 	struct path lower_path;
 	int err;
 
-	agfs_get_lower_path(dentry, &lower_path);
+	yolo_get_lower_path(dentry, &lower_path);
 	err = vfs_statfs(&lower_path, buf);
-	agfs_put_lower_path(dentry, &lower_path);
+	yolo_put_lower_path(dentry, &lower_path);
 
 	if (!err)
-		buf->f_type = AGFS_SUPER_MAGIC;
+		buf->f_type = YOLO_SUPER_MAGIC;
 	return err;
 }
 
-static int agfs_show_options(struct seq_file *m, struct dentry *root)
+static int yolo_show_options(struct seq_file *m, struct dentry *root)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(root->d_sb);
+	struct yolo_sb_info *sbi = YOLO_SB(root->d_sb);
 
 	seq_printf(m, ",permission=%d", sbi->permission);
 	seq_printf(m, ",staging=%d", sbi->staging);
@@ -122,13 +122,13 @@ static int agfs_show_options(struct seq_file *m, struct dentry *root)
 	return 0;
 }
 
-const struct super_operations agfs_sops = {
-	.alloc_inode	= agfs_alloc_inode,
-	.free_inode	= agfs_free_inode,
-	.evict_inode	= agfs_evict_inode,
-	.put_super	= agfs_put_super,
-	.statfs		= agfs_statfs,
-	.show_options	= agfs_show_options,
+const struct super_operations yolo_sops = {
+	.alloc_inode	= yolo_alloc_inode,
+	.free_inode	= yolo_free_inode,
+	.evict_inode	= yolo_evict_inode,
+	.put_super	= yolo_put_super,
+	.statfs		= yolo_statfs,
+	.show_options	= yolo_show_options,
 };
 
 /* ── Fill Superblock helpers ────────────────────────────────────────── */
@@ -137,9 +137,9 @@ const struct super_operations agfs_sops = {
  * Create the synthetic .ctl control file inode and pin its dentry
  * in the dcache.  Must be called after sb->s_root is set up.
  */
-static int agfs_init_ctl(struct super_block *sb)
+static int yolo_init_ctl(struct super_block *sb)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(sb);
+	struct yolo_sb_info *sbi = YOLO_SB(sb);
 	struct inode *ctl;
 	struct dentry *ctl_dentry;
 	struct qstr ctl_name = QSTR_INIT(".ctl", 4);
@@ -152,7 +152,7 @@ static int agfs_init_ctl(struct super_block *sb)
 	ctl->i_mode = S_IFREG | 0600;
 	ctl->i_uid = current_uid();
 	ctl->i_gid = current_gid();
-	ctl->i_fop = &agfs_ctl_fops;
+	ctl->i_fop = &yolo_ctl_fops;
 	simple_inode_init_ts(ctl);
 	sbi->ctl_inode = ctl;
 
@@ -168,8 +168,8 @@ static int agfs_init_ctl(struct super_block *sb)
 	return 0;
 }
 
-static void agfs_init_sbi(struct agfs_sb_info *sbi,
-			   const struct agfs_fs_opts *opts)
+static void yolo_init_sbi(struct yolo_sb_info *sbi,
+			   const struct yolo_fs_opts *opts)
 {
 	sbi->permission = opts->permission;
 	sbi->staging = opts->staging;
@@ -184,7 +184,7 @@ static void agfs_init_sbi(struct agfs_sb_info *sbi,
 	spin_lock_init(&sbi->ask_engine.dispatch_lock);
 	sbi->ask_engine.timeout_s = opts->ask_timeout_s;
 	sbi->ask_engine.default_perm = opts->ask_default
-		? opts->ask_default : AGFS_PERM_DENY;
+		? opts->ask_default : YOLO_PERM_DENY;
 	INIT_LIST_HEAD(&sbi->pinned_rules);
 	spin_lock_init(&sbi->pinned_rules_lock);
 
@@ -195,7 +195,7 @@ static void agfs_init_sbi(struct agfs_sb_info *sbi,
 	atomic_set(&sbi->staging_fd_count, 0);
 }
 
-static int agfs_resolve_paths(struct agfs_sb_info *sbi,
+static int yolo_resolve_paths(struct yolo_sb_info *sbi,
 			      struct super_block *sb,
 			      struct fs_context *fc)
 {
@@ -217,7 +217,7 @@ static int agfs_resolve_paths(struct agfs_sb_info *sbi,
 
 	/* Resolve storage path from mount source (required) */
 	if (!fc->source || !fc->source[0]) {
-		pr_err("agfs: source path is required\n");
+		pr_err("yolofs: source path is required\n");
 		return -EINVAL;
 	}
 
@@ -239,7 +239,7 @@ static int agfs_resolve_paths(struct agfs_sb_info *sbi,
 	}
 
 	/* Open the journal file */
-	err = agfs_journal_open(sbi);
+	err = yolo_journal_open(sbi);
 	if (err)
 		return err;
 
@@ -248,10 +248,10 @@ static int agfs_resolve_paths(struct agfs_sb_info *sbi,
 
 /* ── Fill Superblock (mount) ───────────────────────────────────────── */
 
-static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
+static int yolo_fill_super(struct super_block *sb, struct fs_context *fc)
 {
-	struct agfs_fs_opts *opts = fc->fs_private;
-	struct agfs_sb_info *sbi;
+	struct yolo_fs_opts *opts = fc->fs_private;
+	struct yolo_sb_info *sbi;
 	struct inode *inode;
 	int err;
 
@@ -260,31 +260,31 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		return -ENOMEM;
 
 	sb->s_fs_info = sbi;
-	sb->s_op = &agfs_sops;
-	sb->s_magic = AGFS_SUPER_MAGIC;
+	sb->s_op = &yolo_sops;
+	sb->s_magic = YOLO_SUPER_MAGIC;
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
 	sb->s_stack_depth = 0;
 
-	agfs_init_sbi(sbi, opts);
+	yolo_init_sbi(sbi, opts);
 
-	err = agfs_resolve_paths(sbi, sb, fc);
+	err = yolo_resolve_paths(sbi, sb, fc);
 	if (err)
 		goto out_put;
 
 	/*
 	 * Reject lower filesystems that need d_revalidate (e.g. NFS).
-	 * AgFS only supports local filesystems (ext4, xfs, btrfs, …).
+	 * YoloFS only supports local filesystems (ext4, xfs, btrfs, …).
 	 */
 	if (sbi->base_path.dentry->d_flags & DCACHE_OP_REVALIDATE) {
-		pr_err("agfs: lower filesystem requires d_revalidate; "
+		pr_err("yolofs: lower filesystem requires d_revalidate; "
 		       "only local filesystems are supported\n");
 		err = -EINVAL;
 		goto out_put;
 	}
-	sb->s_d_op = &agfs_dops;
+	sb->s_d_op = &yolo_dops;
 
 	/* Create root inode from lower root */
-	inode = agfs_iget(sb, d_inode(sbi->base_path.dentry));
+	inode = yolo_iget(sb, d_inode(sbi->base_path.dentry));
 	if (IS_ERR(inode)) {
 		err = PTR_ERR(inode);
 		goto out_put;
@@ -299,30 +299,30 @@ static int agfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	/* d_init already allocated d_fsdata for the root dentry */
 
 	path_get(&sbi->base_path);
-	agfs_set_lower_path(sb->s_root, &sbi->base_path);
+	yolo_set_lower_path(sb->s_root, &sbi->base_path);
 
-	AGFS_D(sb->s_root)->perm = AGFS_PERM_ASK;
+	YOLO_D(sb->s_root)->perm = YOLO_PERM_ASK;
 
-	err = agfs_init_ctl(sb);
+	err = yolo_init_ctl(sb);
 	if (err)
 		goto out_put;
 
 	return 0;
 
 out_put:
-	agfs_put_super(sb);
+	yolo_put_super(sb);
 	return err;
 }
 
 /* ── fs_context operations ─────────────────────────────────────────── */
 
-static int agfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
+static int yolo_parse_param(struct fs_context *fc, struct fs_parameter *param)
 {
-	struct agfs_fs_opts *opts = fc->fs_private;
+	struct yolo_fs_opts *opts = fc->fs_private;
 	struct fs_parse_result result;
 	int opt;
 
-	opt = fs_parse(fc, agfs_fs_parameters, param, &result);
+	opt = fs_parse(fc, yolo_fs_parameters, param, &result);
 	if (opt < 0)
 		return opt;
 
@@ -345,46 +345,46 @@ static int agfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	return 0;
 }
 
-static int agfs_get_tree(struct fs_context *fc)
+static int yolo_get_tree(struct fs_context *fc)
 {
-	return get_tree_nodev(fc, agfs_fill_super);
+	return get_tree_nodev(fc, yolo_fill_super);
 }
 
-static void agfs_free_fc(struct fs_context *fc)
+static void yolo_free_fc(struct fs_context *fc)
 {
 	kfree(fc->fs_private);
 }
 
-static const struct fs_context_operations agfs_context_ops = {
-	.parse_param	= agfs_parse_param,
-	.get_tree	= agfs_get_tree,
-	.free		= agfs_free_fc,
+static const struct fs_context_operations yolo_context_ops = {
+	.parse_param	= yolo_parse_param,
+	.get_tree	= yolo_get_tree,
+	.free		= yolo_free_fc,
 };
 
-static int agfs_init_fs_context(struct fs_context *fc)
+static int yolo_init_fs_context(struct fs_context *fc)
 {
-	struct agfs_fs_opts *opts;
+	struct yolo_fs_opts *opts;
 
 	opts = kzalloc(sizeof(*opts), GFP_KERNEL);
 	if (!opts)
 		return -ENOMEM;
 
 	fc->fs_private = opts;
-	fc->ops = &agfs_context_ops;
+	fc->ops = &yolo_context_ops;
 	return 0;
 }
 
-static void agfs_kill_super(struct super_block *sb)
+static void yolo_kill_super(struct super_block *sb)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(sb);
+	struct yolo_sb_info *sbi = YOLO_SB(sb);
 
 	if (sbi) {
-		agfs_release_pinned_rules(sbi);
+		yolo_release_pinned_rules(sbi);
 		if (sbi->ctl_dentry) {
 			dput(sbi->ctl_dentry);
 			sbi->ctl_dentry = NULL;
 		}
-		agfs_dentry_unpin_all(sb);
+		yolo_dentry_unpin_all(sb);
 	}
 
 	kill_anon_super(sb);
@@ -392,68 +392,68 @@ static void agfs_kill_super(struct super_block *sb)
 
 /* ── Filesystem Type & Module ──────────────────────────────────────── */
 
-static struct file_system_type agfs_fs_type = {
+static struct file_system_type yolo_fs_type = {
 	.owner			= THIS_MODULE,
-	.name			= "agfs",
-	.init_fs_context	= agfs_init_fs_context,
-	.kill_sb		= agfs_kill_super,
+	.name			= "yolofs",
+	.init_fs_context	= yolo_init_fs_context,
+	.kill_sb		= yolo_kill_super,
 	.fs_flags		= FS_USERNS_MOUNT,
 };
-MODULE_ALIAS_FS("agfs");
+MODULE_ALIAS_FS("yolofs");
 
-static void agfs_inode_init_once(void *obj)
+static void yolo_inode_init_once(void *obj)
 {
-	struct agfs_inode_info *i = obj;
+	struct yolo_inode_info *i = obj;
 	inode_init_once(&i->vfs_inode);
 }
 
-static int __init agfs_init(void)
+static int __init yolo_init(void)
 {
 	int err;
 
 	BUILD_BUG_ON(ARCH_KMALLOC_MINALIGN < 8);
 	BUILD_BUG_ON(!IS_ENABLED(CONFIG_X86_64));
 
-	agfs_inode_cachep = kmem_cache_create("agfs_inode_cache",
-					      sizeof(struct agfs_inode_info), 0,
+	yolo_inode_cachep = kmem_cache_create("yolo_inode_cache",
+					      sizeof(struct yolo_inode_info), 0,
 					      SLAB_RECLAIM_ACCOUNT | SLAB_ACCOUNT,
-					      agfs_inode_init_once);
-	if (!agfs_inode_cachep)
+					      yolo_inode_init_once);
+	if (!yolo_inode_cachep)
 		return -ENOMEM;
 
-	err = agfs_init_dentry_cache();
+	err = yolo_init_dentry_cache();
 	if (err)
 		goto out_inode;
 
-	err = register_filesystem(&agfs_fs_type);
+	err = register_filesystem(&yolo_fs_type);
 	if (err)
 		goto out_dentry;
 
-	pr_info("agfs: module loaded\n");
+	pr_info("yolofs: module loaded\n");
 	return 0;
 
 out_dentry:
-	agfs_destroy_dentry_cache();
+	yolo_destroy_dentry_cache();
 out_inode:
-	kmem_cache_destroy(agfs_inode_cachep);
+	kmem_cache_destroy(yolo_inode_cachep);
 	return err;
 }
 
-static void __exit agfs_exit(void)
+static void __exit yolo_exit(void)
 {
-	unregister_filesystem(&agfs_fs_type);
+	unregister_filesystem(&yolo_fs_type);
 
 	/* Wait for all pending RCU callbacks (the VFS defers free_inode
 	 * via call_rcu, so slabs may still be in use until those fire). */
 	rcu_barrier();
 
-	agfs_destroy_dentry_cache();
-	kmem_cache_destroy(agfs_inode_cachep);
-	pr_info("agfs: module unloaded\n");
+	yolo_destroy_dentry_cache();
+	kmem_cache_destroy(yolo_inode_cachep);
+	pr_info("yolofs: module unloaded\n");
 }
 
-module_init(agfs_init);
-module_exit(agfs_exit);
+module_init(yolo_init);
+module_exit(yolo_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("agfs — agentic filesystem with staging-commit and permission gating");
+MODULE_DESCRIPTION("yolofs — agentic filesystem with staging-commit and permission gating");

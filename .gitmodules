@@ -1,24 +1,32 @@
 [submodule "bench-results"]
 	path = bench-results
-	url = https://github.com/ShawnZhong/Agfs-Bench-Results.git
+	url = https://github.com/YoloFS/bench-results.git
+	branch = main
 [submodule "bench/third_party/branchfs"]
 	path = bench/third_party/branchfs
 	url = https://github.com/multikernel/branchfs
+	branch = main
 [submodule "bench/third_party/try"]
 	path = bench/third_party/try
 	url = https://github.com/binpash/try
+	branch = main
 [submodule "paper-study"]
 	path = paper-study
-	url = https://github.com/ShawnZhong/AgFS-Paper-Study.git
+	url = https://github.com/YoloFS/paper-study.git
+	branch = main
 [submodule "paper-plan"]
 	path = paper-plan
-	url = https://github.com/ShawnZhong/AgFS-Paper-Plan.git
+	url = https://github.com/YoloFS/paper-plan.git
+	branch = main
 [submodule "paper"]
 	path = paper
-	url = https://github.com/ShawnZhong/AgFS-Paper.git
+	url = https://github.com/YoloFS/paper.git
+	branch = main
 [submodule "agent-eval"]
 	path = agent-eval
-	url = https://github.com/ShawnZhong/AgFS-Agent-Bench.git
+	url = https://github.com/YoloFS/agent-bench.git
+	branch = main
 [submodule "agent-results"]
 	path = agent-results
-	url = https://github.com/ShawnZhong/AgFS-Agent-Results.git
+	url = https://github.com/YoloFS/agent-results.git
+	branch = main

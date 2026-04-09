@@ -30,7 +30,7 @@ pub mod write_files;
 use crate::backend;
 use crate::workload::{MacroStepSeries, OpResult};
 use crate::workload::{Workload, WorkloadKind};
-use agfs::config::Perm;
+use yolofs::config::Perm;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::fs::File;

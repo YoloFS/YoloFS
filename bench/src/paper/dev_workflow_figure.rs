@@ -39,7 +39,7 @@ const FACETS: &[(&str, &[&str])] = &[
     ),
 ];
 
-const BACKENDS: &[(&str, &str)] = &[("agfs-realistic", "AgFS"), ("overlayfs", "OverlayFS")];
+const BACKENDS: &[(&str, &str)] = &[("yolo-realistic", "YoloFS"), ("overlayfs", "OverlayFS")];
 
 pub fn artifact_meta(paper_dir: &Path) -> Artifact {
     let tex_path = paper_dir.join("dev-workflow-figure.tex");
@@ -134,7 +134,7 @@ rows = list(csv.DictReader(StringIO(DATA.strip())))
 facets = {facets}
 backends = {backends}
 colors = {{
-    'AgFS': S.BACKEND_COLORS['AgFS'],
+    'YoloFS': S.BACKEND_COLORS['YoloFS'],
     'OverlayFS': S.BACKEND_COLORS['OverlayFS'],
 }}
 native_line_kw = dict(S.NATIVE_LINE_KW)
@@ -214,7 +214,7 @@ for ax in axes + [ax_total]:
 
 legend_handles = [
     native_handle,
-    S.backend_legend_handle('AgFS'),
+    S.backend_legend_handle('YoloFS'),
     S.backend_legend_handle('OverlayFS'),
     mpatches.Patch(facecolor='#666', edgecolor='#666', label='run'),
     mpatches.Patch(facecolor='white', edgecolor='#666', hatch='////', label='snapshot'),

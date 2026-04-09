@@ -1,4 +1,4 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
@@ -8,7 +8,7 @@ use super::helpers::{ino_for, inode_path, tree};
 /// calling user, not root.
 #[test]
 fn staged_file_owned_by_caller() {
-    let s = AgfsSession::new().expect("session");
+    let s = YoloSession::new().expect("session");
     let uid = nix::unistd::getuid().as_raw();
 
     fs::write(s.mnt_path("owned.txt"), "mine").expect("create");
@@ -28,7 +28,7 @@ fn staged_file_owned_by_caller() {
 /// calling user, not root.
 #[test]
 fn staged_dir_owned_by_caller() {
-    let s = AgfsSession::new().expect("session");
+    let s = YoloSession::new().expect("session");
     let uid = nix::unistd::getuid().as_raw();
 
     fs::create_dir(s.mnt_path("owneddir")).expect("mkdir");
@@ -48,7 +48,7 @@ fn staged_dir_owned_by_caller() {
 /// not root.
 #[test]
 fn cow_file_owned_by_caller() {
-    let s = AgfsSession::new().expect("session");
+    let s = YoloSession::new().expect("session");
     let uid = nix::unistd::getuid().as_raw();
 
     fs::write(s.mnt_path("hello.txt"), "cow data").expect("COW write");

@@ -61,7 +61,7 @@ impl Workload for MetaRename {
     fn ensure_fixture(&self) -> Result<()> {
         Ok(())
     }
-    fn realistic_rules(&self, session_root: &Path) -> Vec<(String, agfs::config::Perm)> {
+    fn realistic_rules(&self, session_root: &Path) -> Vec<(String, yolofs::config::Perm)> {
         workloads::allow_rw_rules(session_root)
     }
     fn populate_base(&self, base_work_dir: &Path) -> Result<()> {

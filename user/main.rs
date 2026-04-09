@@ -1,16 +1,16 @@
-// agfs CLI — main.rs
+// yolo CLI — main.rs
 
-use agfs::cmd::{
+use yolofs::cmd::{
     abort, audit, checkpoint, commit, diff, exec, load, mount, restore, timeline, watch,
 };
-use agfs::config;
+use yolofs::config;
 use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
 
 #[derive(Parser)]
 #[command(
-    name = "agfs",
+    name = "yolo",
     about = "Agentic filesystem — staging-commit + permission gating"
 )]
 struct Cli {
@@ -34,9 +34,9 @@ enum Command {
     Unload,
     /// Unload then reload the kernel module
     Reload,
-    /// Create agfs.toml with default config
+    /// Create yolofs.toml with default config
     Init,
-    /// Create .agfs/ layout and mount the filesystem
+    /// Create .yolofs/ layout and mount the filesystem
     Mount,
     /// Unmount and clean up the session
     Unmount {
@@ -44,7 +44,7 @@ enum Command {
         #[arg(long, short)]
         force: bool,
     },
-    /// Unmount then remount (picks up new agfs.toml mount options)
+    /// Unmount then remount (picks up new yolofs.toml mount options)
     Remount {
         /// Skip staged-changes prompt
         #[arg(long, short)]
@@ -155,7 +155,7 @@ fn run_cli() -> anyhow::Result<u8> {
     match cli.command {
         Some(Command::Load) => {
             if !load::load()? {
-                eprintln!("{} kernel module already loaded", "agfs:".green());
+                eprintln!("{} kernel module already loaded", "yolofs:".green());
             }
         }
         Some(Command::Unload) => load::unload()?,
@@ -236,7 +236,7 @@ fn run(exec_args: &[String], allow_all: bool) -> anyhow::Result<u8> {
         _ => {
             eprintln!(
                 "{}",
-                "Changes kept staged. Run `agfs status` or `agfs diff` to review, `agfs commit` to apply, `agfs abort` to discard.".cyan()
+                "Changes kept staged. Run `yolo status` or `yolo diff` to review, `yolo commit` to apply, `yolo abort` to discard.".cyan()
             );
         }
     }

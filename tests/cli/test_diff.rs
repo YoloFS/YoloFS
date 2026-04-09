@@ -1,9 +1,9 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
 #[test]
 fn diff_empty() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let output = s.cli(&["diff"]).expect("diff");
     assert!(output.contains("No changes staged"), "output: {output}");
@@ -11,7 +11,7 @@ fn diff_empty() {
 
 #[test]
 fn diff_modified_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "new content\n").unwrap();
 
@@ -23,7 +23,7 @@ fn diff_modified_file() {
 
 #[test]
 fn diff_new_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("added.txt"), "brand new\n").unwrap();
 
@@ -34,7 +34,7 @@ fn diff_new_file() {
 
 #[test]
 fn diff_deleted_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).unwrap();
 
@@ -48,7 +48,7 @@ fn diff_deleted_file() {
 
 #[test]
 fn diff_renamed_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).unwrap();
 
@@ -65,7 +65,7 @@ fn diff_renamed_file() {
 
 #[test]
 fn diff_single_file_shows_only_that_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
     fs::write(s.mnt_path("other.txt"), "also changed\n").unwrap();
@@ -83,7 +83,7 @@ fn diff_single_file_shows_only_that_file() {
 
 #[test]
 fn diff_single_file_not_changed() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
 
@@ -96,7 +96,7 @@ fn diff_single_file_not_changed() {
 
 #[test]
 fn diff_single_file_with_absolute_path() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
 
@@ -112,7 +112,7 @@ fn diff_single_file_with_absolute_path() {
 /// output (the tombstone is spurious — nothing in base to hide).
 #[test]
 fn diff_spurious_tombstone_skipped() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("ephemeral.txt"), "temporary\n").unwrap();
     fs::remove_file(s.mnt_path("ephemeral.txt")).unwrap();
@@ -129,7 +129,7 @@ fn diff_spurious_tombstone_skipped() {
 /// as modified.
 #[test]
 fn diff_add_vs_modify_classification() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // hello.txt exists in base → overwrite is a modification
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
@@ -151,7 +151,7 @@ fn diff_add_vs_modify_classification() {
 /// not post-checkpoint mutations (which are in the dead zone).
 #[test]
 fn diff_after_restore_excludes_dead_zone() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "wanted\n").unwrap();
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
@@ -175,7 +175,7 @@ fn diff_after_restore_excludes_dead_zone() {
 /// Diff should indicate binary files instead of showing garbled content.
 #[test]
 fn diff_new_binary_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Write a file with non-UTF-8 content (null bytes, high bytes).
     let binary_data: Vec<u8> = (0..256).map(|i| i as u8).collect();
@@ -195,7 +195,7 @@ fn diff_new_binary_file() {
 /// Diff of a modified binary base file should indicate binary change.
 #[test]
 fn diff_modified_binary_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // test.sh exists in base. Overwrite with binary content.
     let binary_data = vec![0u8, 1, 2, 0xFF, 0xFE, 0, 0, 3];
@@ -215,7 +215,7 @@ fn diff_modified_binary_file() {
 /// Diff between two checkpoints that span a restore should still work.
 #[test]
 fn diff_between_checkpoints_spanning_restore() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint 1");

@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * agfs — directory file operations.
+ * yolofs — directory file operations.
  *
  * dir_open, dir_release, readdir (merged iterate_shared).
  */
 
-#include "agfs.h"
+#include "yolofs.h"
 #include <linux/file.h>
 #include <linux/dcache.h>
 
 extern struct dentry *file_dentry(const struct file *file);
 
-static struct dentry *agfs_alloc_cursor(struct dentry *parent)
+static struct dentry *yolo_alloc_cursor(struct dentry *parent)
 {
 	struct dentry *cursor = d_alloc_anon(parent->d_sb);
 
@@ -24,10 +24,10 @@ static struct dentry *agfs_alloc_cursor(struct dentry *parent)
 
 /* ── dir_open ──────────────────────────────────────────────────────── */
 
-static int agfs_dir_open(struct inode *inode, struct file *file)
+static int yolo_dir_open(struct inode *inode, struct file *file)
 {
-	struct agfs_sb_info *sbi = AGFS_SB(inode->i_sb);
-	struct agfs_dir_info *di;
+	struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
+	struct yolo_dir_info *di;
 	struct file *lower_file;
 	struct path lower_path;
 
@@ -35,10 +35,10 @@ static int agfs_dir_open(struct inode *inode, struct file *file)
 	 * All other perms (including deny) allow readdir. */
 	if (sbi->permission) {
 		struct dentry *dentry = file->f_path.dentry;
-		struct agfs_inode_info *ii = AGFS_I(d_inode(dentry));
+		struct yolo_inode_info *ii = YOLO_I(d_inode(dentry));
 		if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
-			agfs_cache_perm(d_inode(dentry), dentry);
-		if (ii->cached_perm == AGFS_PERM_HIDE)
+			yolo_cache_perm(d_inode(dentry), dentry);
+		if (ii->cached_perm == YOLO_PERM_HIDE)
 			return -ENOENT;
 	}
 
@@ -46,16 +46,16 @@ static int agfs_dir_open(struct inode *inode, struct file *file)
 	if (!di)
 		return -ENOMEM;
 
-	agfs_get_lower_path(file->f_path.dentry, &lower_path);
+	yolo_get_lower_path(file->f_path.dentry, &lower_path);
 	lower_file = dentry_open(&lower_path, file->f_flags, current_cred());
-	agfs_put_lower_path(file->f_path.dentry, &lower_path);
+	yolo_put_lower_path(file->f_path.dentry, &lower_path);
 	if (IS_ERR(lower_file)) {
 		kfree(di);
 		return PTR_ERR(lower_file);
 	}
 
 	di->fi.lower_file = lower_file;
-	di->phase1_cursor = agfs_alloc_cursor(file_dentry(file));
+	di->phase1_cursor = yolo_alloc_cursor(file_dentry(file));
 	if (!di->phase1_cursor) {
 		fput(lower_file);
 		kfree(di);
@@ -67,9 +67,9 @@ static int agfs_dir_open(struct inode *inode, struct file *file)
 
 /* ── dir_release ───────────────────────────────────────────────────── */
 
-static int agfs_dir_release(struct inode *inode, struct file *file)
+static int yolo_dir_release(struct inode *inode, struct file *file)
 {
-	struct agfs_dir_info *di = AGFS_DI(file);
+	struct yolo_dir_info *di = YOLO_DI(file);
 
 	if (di) {
 		if (di->phase1_cursor) {
@@ -96,14 +96,14 @@ static int agfs_dir_release(struct inode *inode, struct file *file)
 
 /* ── filldir callback for base directory reading ───────────────────── */
 
-struct agfs_readdir_data {
+struct yolo_readdir_data {
 	struct dir_context	ctx;
 	struct dentry		*dentry;	/* parent dentry for d_lookup */
 	struct dir_context	*caller_ctx;
 	loff_t			*off;
 };
 
-static bool agfs_base_entry_overridden(struct dentry *parent,
+static bool yolo_base_entry_overridden(struct dentry *parent,
 				       const char *name, int namelen)
 {
 	struct qstr qname = QSTR_INIT(name, namelen);
@@ -115,34 +115,34 @@ static bool agfs_base_entry_overridden(struct dentry *parent,
 	if (!child)
 		return false;
 
-	overridden = AGFS_D(child)->pinned;
+	overridden = YOLO_D(child)->pinned;
 	dput(child);
 	return overridden;
 }
 
-static bool agfs_fill_base(struct dir_context *ctx, const char *name,
+static bool yolo_fill_base(struct dir_context *ctx, const char *name,
 			   int namelen, loff_t offset, u64 ino,
 			   unsigned int d_type)
 {
-	struct agfs_readdir_data *rdd =
-		container_of(ctx, struct agfs_readdir_data, ctx);
+	struct yolo_readdir_data *rdd =
+		container_of(ctx, struct yolo_readdir_data, ctx);
 
 	/* Check if this base entry is overridden by a pinned entry */
-	if (agfs_base_entry_overridden(rdd->dentry, name, namelen))
+	if (yolo_base_entry_overridden(rdd->dentry, name, namelen))
 		return true; /* skip — overridden */
 
 	/* Check if this entry is hidden by permission rules.
 	 * Scan the parent's pinned rule dentries for a matching name
-	 * with AGFS_PERM_HIDE. Rule dentries are pinned (dget'd) so
+	 * with YOLO_PERM_HIDE. Rule dentries are pinned (dget'd) so
 	 * they're always in the dcache as children of the parent. */
-	if (AGFS_SB(rdd->dentry->d_sb)->permission) {
+	if (YOLO_SB(rdd->dentry->d_sb)->permission) {
 		struct dentry *child;
 		bool is_hidden = false;
 
 		spin_lock(&rdd->dentry->d_lock);
 		hlist_for_each_entry(child, &rdd->dentry->d_children, d_sib) {
-			struct agfs_dentry_info *cdi = AGFS_D(child);
-			if (cdi && cdi->perm == AGFS_PERM_HIDE &&
+			struct yolo_dentry_info *cdi = YOLO_D(child);
+			if (cdi && cdi->perm == YOLO_PERM_HIDE &&
 			    child->d_name.len == namelen &&
 			    !memcmp(child->d_name.name, name, namelen)) {
 				is_hidden = true;
@@ -171,17 +171,17 @@ static bool agfs_fill_base(struct dir_context *ctx, const char *name,
  * Caller holds inode_lock_shared(dir) via VFS iterate_shared.
  * Returns true if the dir_emit buffer filled up.
  */
-static bool agfs_should_emit_staged_child(const struct dentry *child)
+static bool yolo_should_emit_staged_child(const struct dentry *child)
 {
 	/*
 	 * Tombstones (NONE + pinned) stay pinned in dcache so lookup/readdir
 	 * can hide the base name, but phase 1 must not emit them as dirents.
 	 */
-	return AGFS_D(child)->pinned &&
-	       !(AGFS_D(child)->target == AGFS_TARGET_NONE);
+	return YOLO_D(child)->pinned &&
+	       !(YOLO_D(child)->target == YOLO_TARGET_NONE);
 }
 
-static struct dentry *agfs_next_staged_child(struct dentry *parent,
+static struct dentry *yolo_next_staged_child(struct dentry *parent,
 					     struct hlist_node **p,
 					     struct dentry *last)
 {
@@ -203,7 +203,7 @@ static struct dentry *agfs_next_staged_child(struct dentry *parent,
 		 * not contribute a visible phase-1 dirent. Re-checked below
 		 * under d_lock to close the TOCTOU window.
 		 */
-		if (!agfs_should_emit_staged_child(child))
+		if (!yolo_should_emit_staged_child(child))
 			continue;
 		/*
 		 * Take a stable ref before dropping parent->d_lock.  child->d_lock
@@ -212,7 +212,7 @@ static struct dentry *agfs_next_staged_child(struct dentry *parent,
 		 * a child that stopped being visible between the pre-check and ref.
 		 */
 		spin_lock_nested(&child->d_lock, DENTRY_D_LOCK_NESTED);
-		if (!agfs_should_emit_staged_child(child)) {
+		if (!yolo_should_emit_staged_child(child)) {
 			spin_unlock(&child->d_lock);
 			continue;
 		}
@@ -227,7 +227,7 @@ static struct dentry *agfs_next_staged_child(struct dentry *parent,
 	return NULL;
 }
 
-static void agfs_readdir_update_cursor(struct dentry *parent,
+static void yolo_readdir_update_cursor(struct dentry *parent,
 				       struct dentry *cursor,
 				       struct dentry *next)
 {
@@ -238,8 +238,8 @@ static void agfs_readdir_update_cursor(struct dentry *parent,
 	spin_unlock(&parent->d_lock);
 }
 
-static bool agfs_emit_dirents(struct dentry *parent, struct dir_context *ctx,
-			      loff_t *off, struct agfs_dir_info *di)
+static bool yolo_emit_dirents(struct dentry *parent, struct dir_context *ctx,
+			      loff_t *off, struct yolo_dir_info *di)
 {
 	struct dentry *cursor = di->phase1_cursor;
 	struct dentry *next = NULL;
@@ -254,7 +254,7 @@ static bool agfs_emit_dirents(struct dentry *parent, struct dir_context *ctx,
 		p = cursor->d_sib.next;
 
 	*off = ctx->pos;
-	while ((next = agfs_next_staged_child(parent, &p, next)) != NULL) {
+	while ((next = yolo_next_staged_child(parent, &p, next)) != NULL) {
 		if (!dir_emit(ctx, next->d_name.name,
 			      next->d_name.len,
 			      d_inode(next)->i_ino,
@@ -266,7 +266,7 @@ static bool agfs_emit_dirents(struct dentry *parent, struct dir_context *ctx,
 	}
 
 	/* parent->d_lock protects the saved cursor's position in d_children. */
-	agfs_readdir_update_cursor(parent, cursor, next);
+	yolo_readdir_update_cursor(parent, cursor, next);
 
 	dput(next);
 
@@ -275,12 +275,12 @@ static bool agfs_emit_dirents(struct dentry *parent, struct dir_context *ctx,
 
 /* ── readdir entry point ───────────────────────────────────────────── */
 
-static int agfs_readdir(struct file *file, struct dir_context *ctx)
+static int yolo_readdir(struct file *file, struct dir_context *ctx)
 {
-	struct agfs_dir_info *di = AGFS_DI(file);
-	struct agfs_sb_info *sbi = AGFS_SB(file_inode(file)->i_sb);
+	struct yolo_dir_info *di = YOLO_DI(file);
+	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
 	struct file *lower_file = di->fi.lower_file;
-	struct agfs_readdir_data rdd;
+	struct yolo_readdir_data rdd;
 	loff_t off = 0;
 	int err = 0;
 
@@ -301,20 +301,20 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	 * If ctx->pos >= di->dirent_off we have already emitted all
 	 * dirents in a previous getdents64 call — skip phase 1 and
 	 * resume phase 2 from the saved lower f_pos.  Set off = ctx->pos
-	 * so the skip logic in agfs_fill_base is a no-op (the lower file
+	 * so the skip logic in yolo_fill_base is a no-op (the lower file
 	 * already resumes at the right position).
 	 */
 	if (di->dirent_off && ctx->pos >= di->dirent_off) {
 		off = ctx->pos;
 	} else {
 		/* Phase 1: emit non-deleted dirent entries */
-		if (agfs_emit_dirents(file_dentry(file), ctx, &off, di))
+		if (yolo_emit_dirents(file_dentry(file), ctx, &off, di))
 			return 0;
 		di->dirent_off = off;
 		/*
 		 * If no staged entries were emitted (off == 0), sync off
 		 * with the caller's position so the skip logic in
-		 * agfs_fill_base does not double-skip base entries on
+		 * yolo_fill_base does not double-skip base entries on
 		 * resumed getdents64 calls.
 		 */
 		if (!off)
@@ -322,7 +322,7 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 	}
 
 	/* Phase 2: read base directory, skip overridden names */
-	rdd.ctx.actor = agfs_fill_base;
+	rdd.ctx.actor = yolo_fill_base;
 	rdd.ctx.pos = 0;
 	rdd.dentry = file_dentry(file);
 	rdd.caller_ctx = ctx;
@@ -337,10 +337,10 @@ static int agfs_readdir(struct file *file, struct dir_context *ctx)
 
 /* ── Dir Ops Table ─────────────────────────────────────────────────── */
 
-const struct file_operations agfs_dir_fops = {
-	.open		= agfs_dir_open,
-	.release	= agfs_dir_release,
-	.iterate_shared	= agfs_readdir,
+const struct file_operations yolo_dir_fops = {
+	.open		= yolo_dir_open,
+	.release	= yolo_dir_release,
+	.iterate_shared	= yolo_readdir,
 	.llseek		= no_llseek,
 	.fsync		= noop_fsync,
 };

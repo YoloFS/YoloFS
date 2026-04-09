@@ -1,4 +1,4 @@
-// agfs CLI — journal/metas.rs
+// yolo CLI — journal/metas.rs
 //
 // The M/J skeleton: mark and jump records extracted from the journal.
 // Provides lookup by gen_id or name, and segment range computation.

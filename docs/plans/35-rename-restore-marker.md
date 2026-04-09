@@ -10,8 +10,8 @@ terms: "mark" (M) for checkpoint records and "jump" (J) for restore records.
 
 | | User-facing (CLI) | Internal (code/journal) |
 |---|---|---|
-| Bookmark a point | `agfs checkpoint` | Mark (`M` tag, `Meta::Mark`) |
-| Return to a point | `agfs restore` | Jump (`J` tag, `Meta::Jump`) |
+| Bookmark a point | `yolo checkpoint` | Mark (`M` tag, `Meta::Mark`) |
+| Return to a point | `yolo restore` | Jump (`J` tag, `Meta::Jump`) |
 
 CLI commands, help text, and general user-visible output use "checkpoint" and
 "restore". Internal types, journal tags, kernel functions, and ioctl names
@@ -38,11 +38,11 @@ labels such as "snapshot" and "Base" when that improves figure readability.
 |---|---|---|
 | Journal tag | `K` | `M` |
 | Enum variant | `Marker::Checkpoint` | `Meta::Mark` |
-| Kernel ioctl | `AGFS_IOC_CHECKPOINT` | `AGFS_IOC_MARK` |
-| Kernel struct | `agfs_ioc_checkpoint` | `agfs_ioc_mark` |
-| Kernel fn | `agfs_journal_checkpoint` | `agfs_journal_mark` |
+| Kernel ioctl | `YOLO_IOC_CHECKPOINT` | `YOLO_IOC_MARK` |
+| Kernel struct | `yolo_ioc_checkpoint` | `yolo_ioc_mark` |
+| Kernel fn | `yolo_journal_checkpoint` | `yolo_journal_mark` |
 | Rust ioctl | `ioctl::create_checkpoint()` | `ioctl::mark()` |
-| Rust struct | `AgfsIocCheckpoint` | `AgfsIocMark` |
+| Rust struct | `YoloIocCheckpoint` | `YoloIocMark` |
 
 ### 3. `Restore` → `Jump`, `T` → `J`
 
@@ -50,13 +50,13 @@ labels such as "snapshot" and "Base" when that improves figure readability.
 |---|---|---|
 | Journal tag | `T` | `J` |
 | Enum variant | `Marker::Restore` | `Meta::Jump` |
-| Kernel ioctl | `AGFS_IOC_RESTORE` | `AGFS_IOC_JUMP` |
-| Kernel struct | `agfs_ioc_restore` | `agfs_ioc_jump` |
-| Kernel fn | `agfs_journal_restore` | `agfs_journal_jump` |
+| Kernel ioctl | `YOLO_IOC_RESTORE` | `YOLO_IOC_JUMP` |
+| Kernel struct | `yolo_ioc_restore` | `yolo_ioc_jump` |
+| Kernel fn | `yolo_journal_restore` | `yolo_journal_jump` |
 | Rust ioctl | `ioctl::restore()` | `ioctl::jump()` |
-| Rust struct | `AgfsIocRestore` | `AgfsIocJump` |
+| Rust struct | `YoloIocRestore` | `YoloIocJump` |
 
-CLI command stays as `agfs restore`, file renamed to `cmd/restore.rs`.
+CLI command stays as `yolo restore`, file renamed to `cmd/restore.rs`.
 
 ### 4. Legacy `M` tag removed
 

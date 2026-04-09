@@ -32,7 +32,7 @@ Two changes, one in the kernel and one in userspace.
 
 ### 1. Kernel: emit dentry path, fuse D+R/P into single record
 
-In `agfs_rename`, two changes:
+In `yolo_rename`, two changes:
 
 **a) Stop resolving redirect chains** — always use `old_buf` (the
 dentry-relative path) for the base field:
@@ -95,7 +95,7 @@ pub struct ActionList(Vec<Action>);
 
 impl ActionList {
     /// Apply actions sequentially to the base filesystem.
-    pub fn apply(&self, agfs: &Path) -> Result<()> { ... }
+    pub fn apply(&self, yolofs: &Path) -> Result<()> { ... }
 
     /// Derive the state summary for display commands.
     pub fn collapse(&self) -> Changeset { ... }
@@ -178,8 +178,8 @@ No temp files.  No ordering logic.  No conflict detection.
 
 | ID | Task | Files |
 |----|------|-------|
-| kmod-dentry-path | Stop resolving redirect chain in `agfs_rename`: always use `old_buf` for the journal base field. Remove the `redirect`/`redirect_path` logic. Rename `in_base` to `overwrites` on `agfs_dirent` and in comments (semantic clarification, no behavior change). | `kmod/inode.c`, `kmod/agfs.h`, `kmod/staging.c` |
-| kmod-fuse-records | Fuse `D` + `R`/`P` into a single rename record carrying both old and new paths. Update `agfs_journal_redirect` and `agfs_journal_replace` to accept old path. Remove the separate `agfs_journal_delete` call for renames. | `kmod/inode.c`, `kmod/journal.c` |
+| kmod-dentry-path | Stop resolving redirect chain in `yolo_rename`: always use `old_buf` for the journal base field. Remove the `redirect`/`redirect_path` logic. Rename `in_base` to `overwrites` on `yolo_dirent` and in comments (semantic clarification, no behavior change). | `kmod/inode.c`, `kmod/yolofs.h`, `kmod/staging.c` |
+| kmod-fuse-records | Fuse `D` + `R`/`P` into a single rename record carrying both old and new paths. Update `yolo_journal_redirect` and `yolo_journal_replace` to accept old path. Remove the separate `yolo_journal_delete` call for renames. | `kmod/inode.c`, `kmod/journal.c` |
 
 ### Userspace (`cli/`)
 

@@ -1,6 +1,6 @@
 use super::helpers::{actions, journal};
-use crate::helpers::AgfsSession;
-use agfs::journal::Action;
+use crate::helpers::YoloSession;
+use yolofs::journal::Action;
 use std::fs;
 use std::os::unix::fs::DirEntryExt;
 
@@ -15,7 +15,7 @@ use std::os::unix::fs::DirEntryExt;
 /// Both creates should produce Stage records.
 #[test]
 fn staged_only_delete_recreate_emits_add() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("ephemeral.txt"), "v1\n").expect("create");
     fs::remove_file(s.mnt_path("ephemeral.txt")).expect("delete");
@@ -39,7 +39,7 @@ fn staged_only_delete_recreate_emits_add() {
 /// The recreate should produce Add.
 #[test]
 fn staged_only_rename_recreate_emits_add() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("orig.txt"), "v1\n").expect("create");
     fs::rename(s.mnt_path("orig.txt"), s.mnt_path("moved.txt")).expect("rename");
@@ -62,7 +62,7 @@ fn staged_only_rename_recreate_emits_add() {
 /// Deleting a staged-only file hides it from readdir.
 #[test]
 fn staged_only_delete_hides_from_readdir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("vanish.txt"), "gone\n").expect("create");
     fs::remove_file(s.mnt_path("vanish.txt")).expect("delete");
@@ -81,7 +81,7 @@ fn staged_only_delete_hides_from_readdir() {
 /// Deleting a staged-only file makes stat return ENOENT.
 #[test]
 fn staged_only_delete_returns_enoent() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("ghost.txt"), "boo\n").expect("create");
     fs::remove_file(s.mnt_path("ghost.txt")).expect("delete");
@@ -98,7 +98,7 @@ fn staged_only_delete_returns_enoent() {
 /// Create multiple staged-only files, delete some, verify exact readdir.
 #[test]
 fn cancel_no_readdir_leak_multiple() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("canceldir")).expect("mkdir");
     fs::write(s.mnt_path("canceldir/keep.txt"), "keep\n").expect("create");
@@ -123,7 +123,7 @@ fn cancel_no_readdir_leak_multiple() {
 /// non-zero ino.
 #[test]
 fn cancel_recreate_has_valid_ino() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("ino_check.txt"), "v1\n").expect("create");
     fs::remove_file(s.mnt_path("ino_check.txt")).expect("delete");

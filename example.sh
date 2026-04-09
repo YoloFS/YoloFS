@@ -1,5 +1,5 @@
 #!/bin/bash
-# AgFS CLI walkthrough — stages, checkpoints, and restore.
+# YoloFS CLI walkthrough — stages, checkpoints, and restore.
 set -euo pipefail
 
 section() { echo; echo "════════════════════════════════════════════════════════════"; echo "  $1"; echo "════════════════════════════════════════════════════════════"; echo; }
@@ -8,44 +8,44 @@ run()     { echo "\$ $*"; "$@"; echo; }
 # ─── Setup ──────────────────────────────────────────────────────────
 
 section "Setup: load kernel module, init config, mount filesystem"
-run agfs reload
-run agfs init
-run agfs mount
+run yolo reload
+run yolo init
+run yolo mount
 
 # ─── Stage a change, inspect it, then discard ──────────────────────
 
 section "Stage a change, inspect it, then discard"
-run agfs exec -- sh -c 'echo hello > greeting.txt'
-run agfs status
-run agfs diff
-run agfs abort --force
+run yolo exec -- sh -c 'echo hello > greeting.txt'
+run yolo status
+run yolo diff
+run yolo abort --force
 
 # ─── Build up checkpoints ──────────────────────────────────────────
 
 section "Build up checkpoints (each exec auto-creates one)"
-run agfs exec -- sh -c 'echo step1 > step1.txt'
-run agfs exec -- sh -c 'echo step2 > step2.txt'
-run agfs exec -- sh -c 'echo step3 > step3.txt'
-run agfs audit
+run yolo exec -- sh -c 'echo step1 > step1.txt'
+run yolo exec -- sh -c 'echo step2 > step2.txt'
+run yolo exec -- sh -c 'echo step3 > step3.txt'
+run yolo audit
 
 # ─── Query across checkpoints ──────────────────────────────────────
 
 section "Query across checkpoints"
-run agfs status --at 2
-run agfs diff   --from 1 --to 3
+run yolo status --at 2
+run yolo diff   --from 1 --to 3
 
 # ─── Restore to an earlier checkpoint ──────────────────────────────
 
 section "Restore to checkpoint 1"
-run agfs exec -- sh -c 'ls step*.txt'
-run agfs restore 1
-run agfs exec -- sh -c 'ls step*.txt'
-run agfs exec -- sh -c 'echo step2_new > step2_new.txt'
-run agfs audit
+run yolo exec -- sh -c 'ls step*.txt'
+run yolo restore 1
+run yolo exec -- sh -c 'ls step*.txt'
+run yolo exec -- sh -c 'echo step2_new > step2_new.txt'
+run yolo audit
 
 # ─── Teardown ───────────────────────────────────────────────────────
 
 section "Teardown"
-run agfs abort --force
-run agfs unmount
-run agfs unload
+run yolo abort --force
+run yolo unmount
+run yolo unload

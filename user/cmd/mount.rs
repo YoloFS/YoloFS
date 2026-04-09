@@ -1,8 +1,8 @@
-// agfs CLI — mount.rs
+// yolo CLI — mount.rs
 //
-// `agfs mount`    — create .agfs/ layout and mount the filesystem.
-// `agfs unmount`  — unmount and clean up .agfs/.
-// `agfs remount`  — unmount then mount again (picks up new agfs.toml options).
+// `yolo mount`    — create .yolofs/ layout and mount the filesystem.
+// `yolo unmount`  — unmount and clean up .yolofs/.
+// `yolo remount`  — unmount then mount again (picks up new yolofs.toml options).
 
 use crate::journal::Journal;
 use anyhow::{Context, Result};
@@ -13,7 +13,7 @@ use std::io::{self, BufRead, Write};
 use std::os::unix;
 use std::path::Path;
 
-/// Bind-mount host pseudo filesystems into the agfs mount so they're visible inside the chroot.
+/// Bind-mount host pseudo filesystems into the YoloFS mount so they're visible inside the chroot.
 const BIND_MOUNTS: &[&str] = &["/proc", "/sys", "/dev"];
 
 /// Try to unmount a path. If busy, show blocking processes and offer to kill them.
@@ -37,7 +37,7 @@ fn umount_or_prompt(target: &Path) -> Result<()> {
 
     eprintln!(
         "{} {} is busy, blocked by:",
-        "agfs:".red(),
+        "yolo:".red(),
         target.display()
     );
     for &pid in &pids {
@@ -150,79 +150,79 @@ fn unbind_mount_pseudofs(mnt: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Full teardown of an agfs session directory: unbind pseudofs, unmount, remove symlinks, clean up.
-pub fn unmount_at(agfs_dir: &Path) -> Result<()> {
-    let mnt = agfs_dir.join("mnt");
+/// Full teardown of a YoloFS session directory: unbind pseudofs, unmount, remove symlinks, clean up.
+pub fn unmount_at(yolo_dir: &Path) -> Result<()> {
+    let mnt = yolo_dir.join("mnt");
 
     // Remove symlinks first (they point into the mount)
-    let _ = fs::remove_file(agfs_dir.join("cwd"));
+    let _ = fs::remove_file(yolo_dir.join("cwd"));
 
-    // Unbind pseudo filesystems, then unmount agfs
+    // Unbind pseudo filesystems, then unmount YoloFS
     unbind_mount_pseudofs(&mnt)?;
     if mnt.exists() && is_mountpoint(&mnt) {
         umount_or_prompt(&mnt).with_context(|| format!("unmounting {}", mnt.display()))?;
     }
 
-    // Remove the .agfs/ directory
-    let _ = fs::remove_dir_all(agfs_dir);
+    // Remove the .yolofs/ directory
+    let _ = fs::remove_dir_all(yolo_dir);
     Ok(())
 }
 
-/// Create .agfs/ layout, mount, and apply rules.
-/// If already mounted, re-applies rules from agfs.toml.
+/// Create .yolofs/ layout, mount, and apply rules.
+/// If already mounted, re-applies rules from yolofs.toml.
 pub fn mount() -> Result<()> {
     let cwd = env::current_dir().context("getting cwd")?;
-    let agfs_dir = cwd.join(".agfs");
-    let mnt = agfs_dir.join("mnt");
+    let yolo_dir = cwd.join(".yolofs");
+    let mnt = yolo_dir.join("mnt");
 
     if mnt.exists() && is_mountpoint(&mnt) {
-        let opts = crate::config::mount_options(&agfs_dir);
+        let opts = crate::config::mount_options(&yolo_dir);
         eprintln!(
             "{} {} ({})",
-            "agfs: mounted at".green(),
+            "yolo: mounted at".green(),
             mnt.display(),
             opts
         );
         return Ok(());
     }
 
-    setup_agfs_dir(&agfs_dir)?;
+    setup_yolo_dir(&yolo_dir)?;
     super::load::load()?;
-    do_mount(&agfs_dir)?;
+    do_mount(&yolo_dir)?;
     bind_mount_pseudofs(&mnt)?;
-    create_cwd_symlink(&agfs_dir, &cwd)?;
-    crate::config::apply_rules(&agfs_dir)?;
+    create_cwd_symlink(&yolo_dir, &cwd)?;
+    crate::config::apply_rules(&yolo_dir)?;
     Ok(())
 }
 
-/// Unmount the agfs filesystem and remove the .agfs/ directory.
+/// Unmount the yolofs filesystem and remove the .yolofs/ directory.
 pub fn unmount(force: bool) -> Result<()> {
-    let agfs_dir = crate::utils::session_dir()?;
+    let yolo_dir = crate::utils::session_dir()?;
     if !force {
-        prompt_if_staged(&agfs_dir)?;
+        prompt_if_staged(&yolo_dir)?;
     }
-    unmount_at(&agfs_dir)?;
+    unmount_at(&yolo_dir)?;
     eprintln!(
         "{} {}",
-        "agfs: unmounted".green(),
-        agfs_dir.join("mnt").display()
+        "yolo: unmounted".green(),
+        yolo_dir.join("mnt").display()
     );
     Ok(())
 }
 
-/// Unmount then mount again. Picks up new mount options from agfs.toml.
+/// Unmount then mount again. Picks up new mount options from yolofs.toml.
 pub fn remount(force: bool) -> Result<()> {
-    let agfs_dir = crate::utils::session_dir()?;
+    let yolo_dir = crate::utils::session_dir()?;
     if !force {
-        prompt_if_staged(&agfs_dir)?;
+        prompt_if_staged(&yolo_dir)?;
     }
-    unmount_at(&agfs_dir)?;
+    unmount_at(&yolo_dir)?;
     mount()
 }
 
 /// If there are staged changes, ask the user to commit or abort before proceeding.
-fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
-    let journal = Journal::read(agfs_dir).unwrap_or_else(|_| Journal::new(vec![]));
+fn prompt_if_staged(yolo_dir: &Path) -> Result<()> {
+    let journal = Journal::read(yolo_dir).unwrap_or_else(|_| Journal::new(vec![]));
     let tree = journal.into_tree();
     if tree.is_empty() {
         return Ok(());
@@ -249,7 +249,7 @@ fn prompt_if_staged(agfs_dir: &Path) -> Result<()> {
 
     match line.trim().to_ascii_lowercase().as_str() {
         "c" | "commit" => super::commit::run()?,
-        "a" | "abort" => super::abort::reset_staging(agfs_dir)?,
+        "a" | "abort" => super::abort::reset_staging(yolo_dir)?,
         _ => anyhow::bail!("unmount cancelled"),
     }
     Ok(())
@@ -267,17 +267,17 @@ fn is_mountpoint(path: &Path) -> bool {
     meta.dev() != parent_meta.dev()
 }
 
-pub fn setup_agfs_dir(agfs_dir: &Path) -> Result<()> {
-    fs::create_dir_all(agfs_dir.join("inodes")).context("creating .agfs/inodes/")?;
-    fs::create_dir_all(agfs_dir.join("mnt")).context("creating .agfs/mnt/")?;
+pub fn setup_yolo_dir(yolo_dir: &Path) -> Result<()> {
+    fs::create_dir_all(yolo_dir.join("inodes")).context("creating .yolofs/inodes/")?;
+    fs::create_dir_all(yolo_dir.join("mnt")).context("creating .yolofs/mnt/")?;
 
     // Create the journal file; the kernel module expects it to exist.
-    let journal = agfs_dir.join("journal");
+    let journal = yolo_dir.join("journal");
     if !journal.exists() {
-        fs::File::create(&journal).context("creating .agfs/journal")?;
+        fs::File::create(&journal).context("creating .yolofs/journal")?;
     }
 
-    // Chown .agfs/ and its contents to the real user. The CLI runs setuid
+    // Chown .yolofs/ and its contents to the real user. The CLI runs setuid
     // root, so dirs/files created above are root-owned. After exec drops
     // privileges, the real user needs write access to inodes/ (for staging
     // blobs) and journal (for appends). Skip when not setuid (euid == uid).
@@ -286,9 +286,9 @@ pub fn setup_agfs_dir(agfs_dir: &Path) -> Result<()> {
         let uid = Some(uid);
         let gid = Some(nix::unistd::getgid());
         for path in [
-            agfs_dir.to_path_buf(),
-            agfs_dir.join("inodes"),
-            agfs_dir.join("mnt"),
+            yolo_dir.to_path_buf(),
+            yolo_dir.join("inodes"),
+            yolo_dir.join("mnt"),
             journal,
         ] {
             if let Err(e) = nix::unistd::chown(&path, uid, gid) {
@@ -302,7 +302,7 @@ pub fn setup_agfs_dir(agfs_dir: &Path) -> Result<()> {
                 if writable {
                     eprintln!(
                         "{} chown {}: {} (directory already accessible, continuing)",
-                        "agfs: warning:".yellow(),
+                        "yolo: warning:".yellow(),
                         path.display(),
                         e,
                     );
@@ -316,14 +316,14 @@ pub fn setup_agfs_dir(agfs_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn do_mount(agfs_dir: &Path) -> Result<()> {
-    let mnt = agfs_dir.join("mnt");
-    let mount_data = crate::config::mount_options(agfs_dir);
-    let source = agfs_dir.to_string_lossy();
+pub fn do_mount(yolo_dir: &Path) -> Result<()> {
+    let mnt = yolo_dir.join("mnt");
+    let mount_data = crate::config::mount_options(yolo_dir);
+    let source = yolo_dir.to_string_lossy();
 
     eprintln!(
         "{} {} ({})",
-        "agfs: mounting".green(),
+        "yolo: mounting".green(),
         mnt.display(),
         mount_data
     );
@@ -331,25 +331,25 @@ pub fn do_mount(agfs_dir: &Path) -> Result<()> {
     nix::mount::mount(
         Some(source.as_ref()),
         &mnt,
-        Some("agfs"),
+        Some("yolofs"),
         nix::mount::MsFlags::empty(),
         Some(mount_data.as_str()),
     )
-    .context("mounting agfs (is the kernel module loaded?)")?;
+    .context("mounting YoloFS (is the kernel module loaded?)")?;
 
     Ok(())
 }
 
-/// Create .agfs/cwd symlink pointing to the cwd inside the mount.
-fn create_cwd_symlink(agfs_dir: &Path, cwd: &Path) -> Result<()> {
-    let link = agfs_dir.join("cwd");
-    let target = agfs_dir
+/// Create .yolofs/cwd symlink pointing to the cwd inside the mount.
+fn create_cwd_symlink(yolo_dir: &Path, cwd: &Path) -> Result<()> {
+    let link = yolo_dir.join("cwd");
+    let target = yolo_dir
         .join("mnt")
         .join(cwd.strip_prefix("/").unwrap_or(cwd));
     if link.exists() || link.symlink_metadata().is_ok() {
-        fs::remove_file(&link).context("removing old .agfs/cwd symlink")?;
+        fs::remove_file(&link).context("removing old .yolofs/cwd symlink")?;
     }
-    unix::fs::symlink(&target, &link).context("creating .agfs/cwd symlink")?;
+    unix::fs::symlink(&target, &link).context("creating .yolofs/cwd symlink")?;
     Ok(())
 }
 
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn is_mountpoint_returns_false_for_nonexistent() {
-        assert!(!is_mountpoint(Path::new("/nonexistent_agfs_test_path")));
+        assert!(!is_mountpoint(Path::new("/nonexistent_yolo_test_path")));
     }
 
     #[test]
@@ -378,21 +378,21 @@ mod tests {
     }
 
     #[test]
-    fn setup_agfs_dir_creates_layout() {
+    fn setup_yolo_dir_creates_layout() {
         let tmp = tempfile::tempdir().unwrap();
-        let agfs = tmp.path().join(".agfs");
-        setup_agfs_dir(&agfs).unwrap();
-        assert!(agfs.join("inodes").is_dir());
-        assert!(agfs.join("mnt").is_dir());
+        let yolofs = tmp.path().join(".yolofs");
+        setup_yolo_dir(&yolofs).unwrap();
+        assert!(yolofs.join("inodes").is_dir());
+        assert!(yolofs.join("mnt").is_dir());
     }
 
     #[test]
-    fn setup_agfs_dir_idempotent() {
+    fn setup_yolo_dir_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        let agfs = tmp.path().join(".agfs");
-        setup_agfs_dir(&agfs).unwrap();
-        setup_agfs_dir(&agfs).unwrap(); // second call should not fail
-        assert!(agfs.join("inodes").is_dir());
+        let yolofs = tmp.path().join(".yolofs");
+        setup_yolo_dir(&yolofs).unwrap();
+        setup_yolo_dir(&yolofs).unwrap(); // second call should not fail
+        assert!(yolofs.join("inodes").is_dir());
     }
 
     #[test]
@@ -441,34 +441,34 @@ mod tests {
 
     #[test]
     fn get_blocking_pids_returns_empty_for_nonexistent() {
-        let pids = get_blocking_pids(Path::new("/nonexistent_agfs_test_path"));
+        let pids = get_blocking_pids(Path::new("/nonexistent_yolo_test_path"));
         assert!(pids.is_empty());
     }
 
     #[test]
     fn create_cwd_symlink_creates_link() {
         let tmp = tempfile::tempdir().unwrap();
-        let agfs = tmp.path().join(".agfs");
-        fs::create_dir_all(agfs.join("mnt")).unwrap();
+        let yolofs = tmp.path().join(".yolofs");
+        fs::create_dir_all(yolofs.join("mnt")).unwrap();
         let cwd = PathBuf::from("/some/work/dir");
-        create_cwd_symlink(&agfs, &cwd).unwrap();
+        create_cwd_symlink(&yolofs, &cwd).unwrap();
 
-        let link = agfs.join("cwd");
+        let link = yolofs.join("cwd");
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
         let target = fs::read_link(&link).unwrap();
-        assert_eq!(target, agfs.join("mnt/some/work/dir"));
+        assert_eq!(target, yolofs.join("mnt/some/work/dir"));
     }
 
     #[test]
     fn create_cwd_symlink_replaces_existing() {
         let tmp = tempfile::tempdir().unwrap();
-        let agfs = tmp.path().join(".agfs");
-        fs::create_dir_all(agfs.join("mnt")).unwrap();
+        let yolofs = tmp.path().join(".yolofs");
+        fs::create_dir_all(yolofs.join("mnt")).unwrap();
 
-        create_cwd_symlink(&agfs, &PathBuf::from("/old/dir")).unwrap();
-        create_cwd_symlink(&agfs, &PathBuf::from("/new/dir")).unwrap();
+        create_cwd_symlink(&yolofs, &PathBuf::from("/old/dir")).unwrap();
+        create_cwd_symlink(&yolofs, &PathBuf::from("/new/dir")).unwrap();
 
-        let target = fs::read_link(agfs.join("cwd")).unwrap();
-        assert_eq!(target, agfs.join("mnt/new/dir"));
+        let target = fs::read_link(yolofs.join("cwd")).unwrap();
+        assert_eq!(target, yolofs.join("mnt/new/dir"));
     }
 }

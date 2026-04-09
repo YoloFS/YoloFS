@@ -1,6 +1,6 @@
-// agfs CLI — checkpoint.rs
+// yolo CLI — checkpoint.rs
 //
-// `agfs checkpoint [name]` — create a checkpoint.
+// `yolo checkpoint [name]` — create a checkpoint.
 
 use crate::ioctl;
 use anyhow::{Context, Result};
@@ -8,13 +8,13 @@ use colored::Colorize;
 
 /// Create a checkpoint with the given name (or a timestamp if empty).
 pub fn create(name: Option<&str>) -> Result<()> {
-    let agfs = crate::utils::session_dir()?;
+    let yolofs = crate::utils::session_dir()?;
     let chk_name = match name {
         Some(n) if !n.is_empty() => n.to_string(),
         _ => default_name(),
     };
 
-    let ctl_file = ioctl::open(&agfs).context("opening ctl for mark")?;
+    let ctl_file = ioctl::open(&yolofs).context("opening ctl for mark")?;
     let gen_id = ioctl::mark(&ctl_file, &chk_name, 0)?;
 
     eprintln!(

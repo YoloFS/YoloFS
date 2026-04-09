@@ -1,6 +1,6 @@
 // Workload trait and shared iteration result type.
 
-use agfs::config::Perm;
+use yolofs::config::Perm;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -17,7 +17,7 @@ use std::path::Path;
 pub struct IterResult {
     pub init_ms: Option<u64>,
     pub staging_ms: Option<u64>,
-    /// Time to query staged changes in microseconds (agfs status, overlayfs upper walk, etc.)
+    /// Time to query staged changes in microseconds (yolo status, overlayfs upper walk, etc.)
     #[serde(skip_serializing_if = "Option::is_none", alias = "status_ms")]
     pub status_us: Option<u64>,
     pub commit_ms: Option<u64>,
@@ -175,8 +175,8 @@ pub trait Workload: Send + Sync {
         false
     }
 
-    /// Perform the workload. `dest` is the target path — inside the agfs mount
-    /// for agfs scenarios, or a direct base path for native.
+    /// Perform the workload. `dest` is the target path — inside the YoloFS mount
+    /// for yolo scenarios, or a direct base path for native.
     ///
     /// For Op workloads, `run` is responsible for printing the results marker
     /// and JSON to stdout (see `backend::RESULTS_MARKER`).

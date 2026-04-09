@@ -1,6 +1,6 @@
-// agfs CLI — exec.rs
+// yolo CLI — exec.rs
 //
-// `agfs exec [-- cmd]` — chroot into .agfs/mnt and exec a command,
+// `yolo exec [-- cmd]` — chroot into .yolofs/mnt and exec a command,
 // preserving the caller's working directory.
 // When config.checkpoint=true, a checkpoint is created after the command
 // finishes, capturing what the command did.
@@ -49,18 +49,18 @@ unsafe fn chroot_pre_exec(mnt: &Path, cwd: &Path) -> Result<(), std::io::Error> 
 /// Spawn a command in the sandbox and wait for it to exit.
 /// Returns the process exit code (0 = success).
 pub fn run(exec_args: &[String]) -> Result<u8> {
-    let agfs_dir = crate::utils::session_dir()?;
-    let mnt = agfs_dir.join("mnt");
+    let yolo_dir = crate::utils::session_dir()?;
+    let mnt = yolo_dir.join("mnt");
     let cwd = env::current_dir().context("getting cwd")?;
 
     if !mnt.exists() {
-        bail!("mount point .agfs/mnt/ does not exist — run `agfs mount` first");
+        bail!("mount point .yolofs/mnt/ does not exist — run `yolo mount` first");
     }
 
     let default_shell = "sh".to_string();
 
     let (cmd, args) = if exec_args.is_empty() {
-        eprintln!("{}", "agfs: entering sandbox (exit to return)".cyan());
+        eprintln!("{}", "yolo: entering sandbox (exit to return)".cyan());
         (default_shell.clone(), vec![])
     } else {
         (exec_args[0].clone(), exec_args[1..].to_vec())
@@ -69,7 +69,7 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
     let status = unsafe {
         process::Command::new(&cmd)
             .args(&args)
-            .env("AGFS_SESSION", agfs_dir.to_string_lossy().as_ref())
+            .env("YOLO_SESSION", yolo_dir.to_string_lossy().as_ref())
             .pre_exec(move || chroot_pre_exec(&mnt, &cwd))
             .status()
             .with_context(|| format!("spawning {cmd}"))?
@@ -77,7 +77,7 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
 
     let code = status.code().unwrap_or(1) as u8;
     if code != 0 {
-        eprintln!("{} {}", "agfs: command exited with".red(), code);
+        eprintln!("{} {}", "yolo: command exited with".red(), code);
     }
 
     // Checkpoint after the command so the checkpoint captures what the command did.
@@ -93,10 +93,10 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         match auto_checkpoint(&chk_name) {
             Ok(true) => {} // checkpoint created (message printed by checkpoint::create path)
             Ok(false) => {
-                eprintln!("{}", "agfs: no changes, skipping checkpoint".dimmed());
+                eprintln!("{}", "yolo: no changes, skipping checkpoint".dimmed());
             }
             Err(e) => {
-                eprintln!("{} {:#}", "agfs: checkpoint failed:".yellow(), e);
+                eprintln!("{} {:#}", "yolo: checkpoint failed:".yellow(), e);
             }
         }
     }
@@ -106,9 +106,9 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
 
 /// Create a checkpoint only if there are staged changes (kernel-side check).
 fn auto_checkpoint(name: &str) -> Result<bool> {
-    let agfs = crate::utils::session_dir()?;
-    let ctl_file = ioctl::open(&agfs).context("opening ctl for mark")?;
-    let gen_id = ioctl::mark(&ctl_file, name, ioctl::AGFS_MARK_IF_CHANGED)?;
+    let yolofs = crate::utils::session_dir()?;
+    let ctl_file = ioctl::open(&yolofs).context("opening ctl for mark")?;
+    let gen_id = ioctl::mark(&ctl_file, name, ioctl::YOLO_MARK_IF_CHANGED)?;
     if gen_id == 0 {
         return Ok(false);
     }

@@ -1,6 +1,6 @@
-// agfs CLI — watch.rs
+// yolo CLI — watch.rs
 //
-// `agfs watch` — daemon mode: read ask requests via blocking ioctl,
+// `yolo watch` — daemon mode: read ask requests via blocking ioctl,
 // prompt the user, and write decisions back.
 //
 // `run_background()` — spawns a watch thread for the default workflow.
@@ -105,18 +105,18 @@ fn prompt_decision(req: &PermRequest) -> Perm {
 
 /// Interactive watch — blocks on ioctl read for each ask request.
 pub fn run(allow_all: bool) -> Result<()> {
-    let agfs = crate::utils::session_dir()?;
+    let yolofs = crate::utils::session_dir()?;
 
-    let ctl_file = ioctl::open(&agfs)?;
+    let ctl_file = ioctl::open(&yolofs)?;
     if allow_all {
         eprintln!(
             "{}",
-            "agfs: watching for permission requests — allowing all (Ctrl-C to stop)".cyan()
+            "yolo: watching for permission requests — allowing all (Ctrl-C to stop)".cyan()
         );
     } else {
         eprintln!(
             "{}",
-            "agfs: watching for permission requests (Ctrl-C to stop)".cyan()
+            "yolo: watching for permission requests (Ctrl-C to stop)".cyan()
         );
     }
 
@@ -128,7 +128,7 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
         let req = match ioctl::read_request(ctl_file) {
             Ok(r) => r,
             Err(nix::errno::Errno::EBUSY) => {
-                anyhow::bail!("another agfs watch is already running");
+                anyhow::bail!("another yolo watch is already running");
             }
             Err(_) => return Ok(()),
         };
@@ -147,7 +147,7 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
         };
 
         if let Err(e) = ioctl::write_response(ctl_file, req.id, decision.to_ioctl()) {
-            eprintln!("agfs watch: write error: {e}");
+            eprintln!("yolo watch: write error: {e}");
         } else {
             // claim_tty/release_tty is not needed here because TOSTOP
             // is normally unset, so background stderr writes succeed.
@@ -175,12 +175,12 @@ fn parse_input(input: &str) -> Perm {
 /// The thread runs until the process exits (it cannot be stopped early
 /// because it blocks on a kernel ioctl).
 pub fn run_background(allow_all: bool) -> Result<()> {
-    let agfs = crate::utils::session_dir()?;
-    let ctl_file = ioctl::open(&agfs)?;
+    let yolofs = crate::utils::session_dir()?;
+    let ctl_file = ioctl::open(&yolofs)?;
 
     std::thread::spawn(move || {
         if let Err(e) = watch_loop(&ctl_file, allow_all) {
-            eprintln!("{} {e}", "agfs watch:".red());
+            eprintln!("{} {e}", "yolo watch:".red());
         }
     });
 

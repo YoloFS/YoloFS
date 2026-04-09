@@ -1,11 +1,11 @@
 use super::helpers::{actions, ino_for, inode_path, inos, journal, tree};
-use crate::helpers::AgfsSession;
-use agfs::journal::Action;
+use crate::helpers::YoloSession;
+use yolofs::journal::Action;
 use std::fs;
 
 #[test]
 fn lookup_miss_creates_no_staging_state() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let missing = s.mnt_path("missing.txt");
     let inos_before = inos(&s);
     let action_count_before = actions(&journal(&s)).len();
@@ -31,7 +31,7 @@ fn lookup_miss_creates_no_staging_state() {
 
 #[test]
 fn lookup_miss_then_create_produces_single_add() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let created = s.mnt_path("after-miss.txt");
     let inos_before = inos(&s);
 
@@ -72,7 +72,7 @@ fn lookup_miss_then_create_produces_single_add() {
 
 #[test]
 fn tombstone_lookup_then_recreate_gets_fresh_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let path = s.mnt_path("hello.txt");
     let inos_before = inos(&s);
 

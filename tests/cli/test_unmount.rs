@@ -1,21 +1,21 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::process::{Command, Stdio};
 
 #[test]
 fn unmount_command_cleans_up() {
-    let session = AgfsSession::new().expect("session setup");
-    let agfs_dir = session.root.join(".agfs");
+    let session = YoloSession::new().expect("session setup");
+    let yolo_dir = session.root.join(".yolofs");
 
-    assert!(agfs_dir.join("mnt").exists(), "mnt exists before unmount");
+    assert!(yolo_dir.join("mnt").exists(), "mnt exists before unmount");
 
     let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
     assert!(ok, "unmount should succeed: {stderr}");
-    assert!(!agfs_dir.exists(), ".agfs/ should be removed after unmount");
+    assert!(!yolo_dir.exists(), ".yolofs/ should be removed after unmount");
 }
 
 #[test]
 fn double_mount_is_idempotent() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     let (ok, _, stderr) = session.cli_output(&["mount"]).unwrap();
     assert!(ok, "second mount should succeed (idempotent): {stderr}");
@@ -23,8 +23,8 @@ fn double_mount_is_idempotent() {
 
 #[test]
 fn cwd_symlink_created() {
-    let session = AgfsSession::new().expect("session setup");
-    let cwd_link = session.root.join(".agfs/cwd");
+    let session = YoloSession::new().expect("session setup");
+    let cwd_link = session.root.join(".yolofs/cwd");
 
     assert!(
         cwd_link
@@ -32,7 +32,7 @@ fn cwd_symlink_created() {
             .unwrap()
             .file_type()
             .is_symlink(),
-        ".agfs/cwd should be a symlink"
+        ".yolofs/cwd should be a symlink"
     );
 
     let target = std::fs::read_link(&cwd_link).unwrap();
@@ -45,7 +45,7 @@ fn cwd_symlink_created() {
 
 #[test]
 fn pseudofs_bind_mounted() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
     // /proc, /sys, /dev should be visible inside the mount
     for name in &["proc", "sys", "dev"] {
@@ -64,8 +64,8 @@ fn pseudofs_bind_mounted() {
 
 #[test]
 fn unmount_cleans_up_pseudofs() {
-    let session = AgfsSession::new().expect("session setup");
-    let mnt = session.root.join(".agfs/mnt");
+    let session = YoloSession::new().expect("session setup");
+    let mnt = session.root.join(".yolofs/mnt");
 
     // Verify bind-mounts are present
     assert!(
@@ -76,8 +76,8 @@ fn unmount_cleans_up_pseudofs() {
     let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
     assert!(ok, "unmount should succeed with bind-mounts: {stderr}");
     assert!(
-        !session.root.join(".agfs").exists(),
-        ".agfs/ should be removed"
+        !session.root.join(".yolofs").exists(),
+        ".yolofs/ should be removed"
     );
 }
 
@@ -86,9 +86,9 @@ fn unmount_cleans_up_pseudofs() {
 /// so the interactive kill-prompt is auto-declined).
 #[test]
 fn unmount_reports_blocking_process() {
-    let session = AgfsSession::new().expect("session setup");
+    let session = YoloSession::new().expect("session setup");
 
-    // Spawn a child that holds a file on the agfs mount open.
+    // Spawn a child that holds a file on the yolofs mount open.
     let file_in_mount = session.mnt_path("hello.txt");
     let mut child = Command::new("bash")
         .args([

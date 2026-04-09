@@ -1,9 +1,9 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
 #[test]
 fn read_base_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read hello.txt");
     assert_eq!(content, "base content\n");
@@ -11,7 +11,7 @@ fn read_base_file() {
 
 #[test]
 fn read_multiline_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let content = fs::read_to_string(s.mnt_path("multi.txt")).expect("read multi.txt");
     assert_eq!(content, "line1\nline2\n");
@@ -19,7 +19,7 @@ fn read_multiline_file() {
 
 #[test]
 fn read_nested_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let content = fs::read_to_string(s.mnt_path("subdir/deep.txt")).expect("read deep.txt");
     assert_eq!(content, "nested\n");
@@ -27,14 +27,14 @@ fn read_nested_file() {
 
 #[test]
 fn read_nonexistent_fails() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     assert!(fs::read_to_string(s.mnt_path("nonexistent.txt")).is_err());
 }
 
 #[test]
 fn stat_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let meta = fs::metadata(s.mnt_path("hello.txt")).expect("stat hello.txt");
     assert!(meta.is_file());
@@ -43,7 +43,7 @@ fn stat_file() {
 
 #[test]
 fn deeply_nested_path() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let mut path = String::new();
     for i in 0..10 {

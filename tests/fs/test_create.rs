@@ -1,9 +1,9 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
 #[test]
 fn create_new_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("brandnew.txt"), "new content\n").expect("create new file");
 
@@ -14,7 +14,7 @@ fn create_new_file() {
 
 #[test]
 fn create_file_in_new_subdir() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create a nested file in a new directory through the mount
     fs::create_dir_all(s.mnt_path("newdir")).expect("mkdir");
@@ -28,7 +28,7 @@ fn create_file_in_new_subdir() {
 
 /// Creating a file must work even when the caller's umask is 022.
 ///
-/// umask 022 causes `agfs mount` to create .agfs/inodes/ as 0755.
+/// umask 022 causes `yolofs mount` to create .yolofs/inodes/ as 0755.
 /// After the CLI drops euid to the real user, vfs_create inside the
 /// inode store directory requires write permission. If the inodes dir
 /// is root-owned 0755, the non-root user cannot create blobs and file
@@ -37,7 +37,7 @@ fn create_file_in_new_subdir() {
 fn create_file_under_umask_022() {
     let old = unsafe { libc::umask(0o022) };
 
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let result = fs::write(s.mnt_path("umask-test.txt"), "data");
 
     unsafe { libc::umask(old) };
@@ -45,12 +45,12 @@ fn create_file_under_umask_022() {
     result.expect("create file should succeed under umask 022");
 }
 
-// ── Staging / base verification (staging.c: agfs_create → inode store) ──
+// ── Staging / base verification (staging.c: yolo_create → inode store) ──
 
 /// New file goes to inode store, not base.
 #[test]
 fn create_lands_in_inode_store() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
 
@@ -71,7 +71,7 @@ fn create_lands_in_inode_store() {
 /// Commit moves newly created file from inode store to base.
 #[test]
 fn create_commit_moves_to_base() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
     s.cli(&["commit"]).expect("commit");
@@ -86,7 +86,7 @@ fn create_commit_moves_to_base() {
 /// Abort after creating a new file leaves base clean.
 #[test]
 fn create_abort_leaves_base_clean() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
     s.cli(&["abort"]).expect("abort");

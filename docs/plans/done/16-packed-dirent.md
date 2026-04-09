@@ -1,8 +1,8 @@
-# Plan: Pack `agfs_dirent` fields into a single `u64`
+# Plan: Pack `yolo_dirent` fields into a single `u64`
 
 ## Problem
 
-`agfs_dirent` currently stores five separate fields (`ino`, `base`, `gen`,
+`yolo_dirent` currently stores five separate fields (`ino`, `base`, `gen`,
 `d_type`, `in_base`) using 32 bytes (u64 + ptr + u64 + u8 + bool + padding).
 These can be packed into a single `u64 packed` field, saving ~20 bytes per
 dirent (from 48 → 28 bytes fixed overhead before `name[]`).
@@ -17,8 +17,8 @@ Align kernel terminology with the CLI's `Dirent` enum:
 | `Link`       | redirect         | link             |
 | `Tombstone`  | deleted          | tombstone        |
 
-Helper names follow: `agfs_de_inode(...)`, `agfs_de_link(...)`,
-`agfs_de_is_inode()`, `agfs_de_is_link()`, `agfs_de_is_tombstone()`.
+Helper names follow: `yolo_de_inode(...)`, `yolo_de_link(...)`,
+`yolo_de_is_inode()`, `yolo_de_is_link()`, `yolo_de_is_tombstone()`.
 Tombstone is simply `packed == 0` — no constant needed.
 
 ## Cancelled-entry removal
@@ -60,11 +60,11 @@ encode/decode boundaries. `11` is reserved as a bug sentinel.
 | `10`        | symlink  | `DT_LNK` (10) |
 | `11`        | invalid  | — (bug check) |
 
-Conversion helpers: `agfs_dtype_pack(unsigned char libc_dt)` → 2-bit value,
-`agfs_dtype_unpack(u64 packed_dt)` → libc value. Both are small switch/lookup.
-`agfs_dtype_pack` should `WARN_ON_ONCE` and return `11` for unrecognised
+Conversion helpers: `yolo_dtype_pack(unsigned char libc_dt)` → 2-bit value,
+`yolo_dtype_unpack(u64 packed_dt)` → libc value. Both are small switch/lookup.
+`yolo_dtype_pack` should `WARN_ON_ONCE` and return `11` for unrecognised
 input (e.g. `DT_UNKNOWN` from a buggy ioctl caller).
-`agfs_dtype_unpack` should `WARN_ON_ONCE` and return `DT_UNKNOWN` if it
+`yolo_dtype_unpack` should `WARN_ON_ONCE` and return `DT_UNKNOWN` if it
 sees `11`.
 
 ## Encoding
@@ -87,9 +87,9 @@ Tombstone carries no `d_type` — no kernel code reads `d_type` from
 tombstones (readdir skips them, rename rejects them). The CLI sends
 `d_type` during restore but the kernel ignores it for tombstones.
 
-`agfs_del_dirent` stays as the clean `&(struct agfs_dirent){0}` (zero-init).
+`yolo_del_dirent` stays as the clean `&(struct yolo_dirent){0}` (zero-init).
 
-`agfs_read_dirent` returns 0 when no dirent is found. Callers treat both
+`yolo_read_dirent` returns 0 when no dirent is found. Callers treat both
 "no entry" and "tombstone" identically: `is_inode` → false, fall through
 to the slow path. This is safe because VFS lookup prevents opening a
 tombstoned file.
@@ -105,7 +105,7 @@ tombstoned file.
 [15:0]   gen      16 bits  (max 65535)
 ```
 
-`agfs_de_inode` must `WARN_ON_ONCE` if `ino == 0` or `gen` exceeds 16
+`yolo_de_inode` must `WARN_ON_ONCE` if `ino == 0` or `gen` exceeds 16
 bits — these indicate bugs in the caller.
 
 ### Link (odd)
@@ -119,7 +119,7 @@ Add `BUILD_BUG_ON(ARCH_KMALLOC_MINALIGN < 8)` to validate the alignment
 assumption.  Add `BUILD_BUG_ON(!IS_ENABLED(CONFIG_X86_64))` since the
 link encoding relies on x86_64 canonical-form sign extension.
 
-`agfs_de_link` must `WARN_ON_ONCE` if the pointer's bits [63:57] are not
+`yolo_de_link` must `WARN_ON_ONCE` if the pointer's bits [63:57] are not
 all 1s (validating the sign-extension assumption at runtime, not just the
 alignment `BUILD_BUG_ON`).
 
@@ -139,7 +139,7 @@ Pointer recovery: `packed | 0x7000000000000000`
 is_tombstone = !packed
 is_link      = (s64)packed < 0
 is_inode     = (s64)packed > 0
-d_type       = agfs_dtype_unpack((packed >> 61) & 3)   // inode + link
+d_type       = yolo_dtype_unpack((packed >> 61) & 3)   // inode + link
 in_base      = (packed >> 60) & 1                       // inode + link
 ino          = (packed >> 16) & 0xFFFFFFFF              // inode only (32 bits)
 gen          = (u16)packed                              // inode only
@@ -148,15 +148,15 @@ base         = packed | 0x7000000000000000              // link only
 
 ### `dir_emit` inode number
 
-`dir_emit` needs a VFS ino for all non-tombstone entries. `agfs_de_ino()`
-only works for inode entries. Add `agfs_de_emit_ino(packed)`: returns the
+`dir_emit` needs a VFS ino for all non-tombstone entries. `yolo_de_ino()`
+only works for inode entries. Add `yolo_de_emit_ino(packed)`: returns the
 real ino for inode entries, `(u64)-1` for links (preserving the current
-`AGFS_INO_REDIRECT` behavior so readdir output is unchanged).
+`YOLO_INO_REDIRECT` behavior so readdir output is unchanged).
 
 ## Resulting struct layout
 
 ```c
-struct agfs_dirent {
+struct yolo_dirent {
 	struct hlist_node	node;       /* 16 bytes */
 	u64			packed;     /*  8 bytes */
 	unsigned int		name_len;   /*  4 bytes */
@@ -166,7 +166,7 @@ struct agfs_dirent {
 
 ## Call-site changes
 
-### `agfs_add_dirent` (staging.c)
+### `yolo_add_dirent` (staging.c)
 
 When transitioning to tombstone (`de->packed == 0`):
 - If existing entry has `in_base=true`: free any link pointer, set
@@ -176,61 +176,61 @@ When transitioning to tombstone (`de->packed == 0`):
 - If no existing entry (deleting a base-only file): allocate new entry with
   `packed = 0`.
 
-### `agfs_del_dirent` (staging.c)
+### `yolo_del_dirent` (staging.c)
 
-Zero-init naturally produces tombstone: `agfs_add_dirent(dir, name, len, &(struct agfs_dirent){0})`.
+Zero-init naturally produces tombstone: `yolo_add_dirent(dir, name, len, &(struct yolo_dirent){0})`.
 
-### `agfs_free_de_buckets_locked` (staging.c)
+### `yolo_free_de_buckets_locked` (staging.c)
 
-Replace `kfree(de->base)` with `agfs_de_free_base(de->packed)`.
+Replace `kfree(de->base)` with `yolo_de_free_base(de->packed)`.
 
-### `agfs_do_cow` (staging.c)
+### `yolo_do_cow` (staging.c)
 
-Replace field-by-field init with `agfs_de_inode(ino, gen, DT_REG, true)`.
+Replace field-by-field init with `yolo_de_inode(ino, gen, DT_REG, true)`.
 
 ### Lookup (lookup.c)
 
-Replace `agfs_ino_is_staged(de->ino)` → `agfs_de_is_inode(de->packed)`,
-`agfs_ino_is_redirect(de->ino)` → `agfs_de_is_link(de->packed)`.
-Extract ino via `agfs_de_ino(de->packed)`, base via `agfs_de_base(de->packed)`.
+Replace `yolo_ino_is_staged(de->ino)` → `yolo_de_is_inode(de->packed)`,
+`yolo_ino_is_redirect(de->ino)` → `yolo_de_is_link(de->packed)`.
+Extract ino via `yolo_de_ino(de->packed)`, base via `yolo_de_base(de->packed)`.
 
-### `agfs_read_dirent` / `agfs_emit_dirents` (file.c)
+### `yolo_read_dirent` / `yolo_emit_dirents` (file.c)
 
-`agfs_read_dirent` returns a single `u64 packed` (replaces two out-params
+`yolo_read_dirent` returns a single `u64 packed` (replaces two out-params
 `*ino, *gen`). Returns 0 when no dirent exists (= tombstone, safe).
 
-In `agfs_open_staged`, the caller transformation:
-- `agfs_ino_is_staged(ino)` → `agfs_de_is_inode(packed)`
-- `ino` for `agfs_open_staged_ino()` → `agfs_de_ino(packed)`
-- `gen` for COW check → `agfs_de_gen(packed)`
+In `yolo_open_staged`, the caller transformation:
+- `yolo_ino_is_staged(ino)` → `yolo_de_is_inode(packed)`
+- `ino` for `yolo_open_staged_ino()` → `yolo_de_ino(packed)`
+- `gen` for COW check → `yolo_de_gen(packed)`
 
-`agfs_emit_dirents`: skip tombstones via `agfs_de_is_tombstone(de->packed)`,
-emit via `agfs_de_emit_ino(de->packed)` and `agfs_de_d_type(de->packed)`.
+`yolo_emit_dirents`: skip tombstones via `yolo_de_is_tombstone(de->packed)`,
+emit via `yolo_de_emit_ino(de->packed)` and `yolo_de_d_type(de->packed)`.
 
 ### Create / rename (inode.c)
 
-- Create: `old_de->in_base` → `agfs_de_in_base(old_de->packed)`.
-  Construct via `agfs_de_inode(ino, gen, dt, in_base)`.
+- Create: `old_de->in_base` → `yolo_de_in_base(old_de->packed)`.
+  Construct via `yolo_de_inode(ino, gen, dt, in_base)`.
 - Rename: read src fields via decode helpers. Tombstone check at
-  inode.c:154 (`agfs_ino_is_deleted(ino)`) → `agfs_de_is_tombstone(src_de->packed)`.
-  Destination dirent via `agfs_de_inode(...)` or `agfs_de_link(...)`.
+  inode.c:154 (`yolo_ino_is_deleted(ino)`) → `yolo_de_is_tombstone(src_de->packed)`.
+  Destination dirent via `yolo_de_inode(...)` or `yolo_de_link(...)`.
 
 ### Restore inject (ioctl.c)
 
 Map UAPI `ent.ino` (0 / -1 / >0) to the packed encoding:
 - `ent.ino == 0` → `0` (tombstone)
-- `ent.ino == AGFS_INO_REDIRECT` → `agfs_de_link(bp, d_type, in_base)`
-- otherwise → `agfs_de_inode(ent.ino, gen, d_type, in_base)`
+- `ent.ino == YOLO_INO_REDIRECT` → `yolo_de_link(bp, d_type, in_base)`
+- otherwise → `yolo_de_inode(ent.ino, gen, d_type, in_base)`
 
 ## Todos
 
 | ID | Task | Depends on |
 |----|------|------------|
-| doc-update | Update `docs/staging.md`, `docs/internals.md`, and `docs/architecture.md`: replace dirent struct (5 fields) with `u64 packed` encoding layout, document `d_type` 2-bit private encoding and conversion helpers, replace terminology (staged→inode, redirect→link, deleted→tombstone), describe cancelled-entry removal, and update all pseudocode/helper references (`agfs_ino_is_staged` → `agfs_de_is_inode`, etc.) | — |
-| struct-helpers | Replace five fields with `u64 packed` in `struct agfs_dirent`. Add encoders (`agfs_de_inode`, `agfs_de_link`) with `WARN_ON_ONCE` for out-of-range ino/gen/pointer, predicates (`agfs_de_is_inode`, `agfs_de_is_link`, `agfs_de_is_tombstone`), decoders (`agfs_de_ino`, `agfs_de_gen`, `agfs_de_base`, `agfs_de_d_type`, `agfs_de_in_base`, `agfs_de_emit_ino`), cleanup (`agfs_de_free_base`), `d_type` pack/unpack with WARN_ON for invalid values, and `BUILD_BUG_ON(ARCH_KMALLOC_MINALIGN < 8)` in `agfs.h`. Tombstone is just `packed == 0` (no constant needed). Remove old `agfs_ino_is_*` helpers. Keep `AGFS_INO_DELETED`/`AGFS_INO_REDIRECT` for UAPI only. | doc-update |
+| doc-update | Update `docs/staging.md`, `docs/internals.md`, and `docs/architecture.md`: replace dirent struct (5 fields) with `u64 packed` encoding layout, document `d_type` 2-bit private encoding and conversion helpers, replace terminology (staged→inode, redirect→link, deleted→tombstone), describe cancelled-entry removal, and update all pseudocode/helper references (`yolo_ino_is_staged` → `yolo_de_is_inode`, etc.) | — |
+| struct-helpers | Replace five fields with `u64 packed` in `struct yolo_dirent`. Add encoders (`yolo_de_inode`, `yolo_de_link`) with `WARN_ON_ONCE` for out-of-range ino/gen/pointer, predicates (`yolo_de_is_inode`, `yolo_de_is_link`, `yolo_de_is_tombstone`), decoders (`yolo_de_ino`, `yolo_de_gen`, `yolo_de_base`, `yolo_de_d_type`, `yolo_de_in_base`, `yolo_de_emit_ino`), cleanup (`yolo_de_free_base`), `d_type` pack/unpack with WARN_ON for invalid values, and `BUILD_BUG_ON(ARCH_KMALLOC_MINALIGN < 8)` in `yolofs.h`. Tombstone is just `packed == 0` (no constant needed). Remove old `yolo_ino_is_*` helpers. Keep `YOLO_INO_DELETED`/`YOLO_INO_REDIRECT` for UAPI only. | doc-update |
 | staging-update | Update `staging.c`: `add_dirent` (cancelled-entry removal + packed ops), `del_dirent` (use tombstone constant), `free_de_buckets` (free link pointer), `do_cow` (packed init) | struct-helpers |
 | lookup-update | Update `lookup.c`: inode/link/tombstone dispatch using packed helpers | struct-helpers |
-| file-update | Update `file.c`: `read_dirent` returns packed, `emit_dirents` uses `agfs_de_emit_ino` + `agfs_de_d_type`. Gen comparison in `agfs_open_staged` masks `sbi->gen` to 15 bits. | struct-helpers |
+| file-update | Update `file.c`: `read_dirent` returns packed, `emit_dirents` uses `yolo_de_emit_ino` + `yolo_de_d_type`. Gen comparison in `yolo_open_staged` masks `sbi->gen` to 15 bits. | struct-helpers |
 | inode-update | Update `inode.c`: create and rename use packed encode/decode with new names | struct-helpers |
 | ioctl-update | Update `ioctl.c`: restore inject maps UAPI ino to packed encoding | struct-helpers |
 | test-encode | Add encode/decode round-trip tests: max ino (45-bit), max gen (15-bit), all `d_type` values, `in_base` true/false, link pointer recovery, tombstone zero-value, and `WARN_ON` triggers for out-of-range values | struct-helpers |

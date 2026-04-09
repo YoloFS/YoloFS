@@ -2,7 +2,7 @@
 
 ## Problem
 
-`agfs restore` only accepts checkpoint markers. You cannot jump to a
+`yolo restore` only accepts checkpoint markers. You cannot jump to a
 restore marker by gen_id. Jumping to a restore marker is meaningful
 because it produces a narrower set of unreachable markers than jumping
 to the restore's target checkpoint — it preserves more history.
@@ -90,7 +90,7 @@ for restore markers.
 
 ### 6. `docs/cli.md` — Update documentation
 
-- `agfs restore <name|gen>` accepts any marker (checkpoint or restore),
+- `yolo restore <name|gen>` accepts any marker (checkpoint or restore),
   not just checkpoints.
 - `--at`, `--from`, `--to` accept any marker gen_id.
 
@@ -99,5 +99,5 @@ for restore markers.
 - **Unit test** (`markers.rs`): `find_marker` with a restore marker gen_id.
 - **Unit test** (`markers.rs`): liveness with restore-to-restore chain.
 - **Unit test** (`core.rs`): `into_tree_at` with a restore marker gen_id.
-- **E2E test** (`tests/cli/`): `agfs restore <restore_gen_id>` succeeds
+- **E2E test** (`tests/cli/`): `yolo restore <restore_gen_id>` succeeds
   and produces the correct state.

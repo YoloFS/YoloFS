@@ -96,11 +96,11 @@ impl Backend for BranchFs {
     fn run_one(&self, workload: &dyn Workload, verbose: bool) -> Result<(IterResult, Vec<String>)> {
         let cache = dirs_next::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("agfs-bench");
+            .join("yolo-bench");
         std::fs::create_dir_all(&cache)?;
 
         let root = tempfile::Builder::new()
-            .prefix("agfs-bench-branchfs-")
+            .prefix("yolo-bench-branchfs-")
             .tempdir_in(&cache)
             .context("creating branchfs session tempdir")?;
 

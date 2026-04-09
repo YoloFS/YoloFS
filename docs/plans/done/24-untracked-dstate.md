@@ -2,14 +2,14 @@
 
 ## Problem
 
-The kernel `agfs_dstate` uses `val == 0` for tombstone, which collides with the
+The kernel `yolo_dstate` uses `val == 0` for tombstone, which collides with the
 zero-initialized default.  There is no representation for "this dentry is
 passthrough" (follows base state).  Additionally, tombstones lack a `d_type`
 field, requiring callers to infer it from other sources.
 
 ## Design
 
-Add a fourth state to `agfs_dstate`:
+Add a fourth state to `yolo_dstate`:
 
 | State     | Condition                      | Meaning                         |
 |-----------|--------------------------------|---------------------------------|
@@ -28,29 +28,29 @@ Tombstone layout:
 Key properties:
 - Zero-initialized dentries are now "passthrough" (correct default semantics).
 - Tombstones carry d_type and always have in_base=true by construction.
-- `agfs_dstate_in_base()` simplifies to `(val >> 59) & 1` for all states
+- `yolo_dstate_in_base()` simplifies to `(val >> 59) & 1` for all states
   (passthrough gives 0, tombstone gives 1, inode/link read the bit).
 
 ## Changes
 
-### kmod/agfs.h
+### kmod/yolofs.h
 1. Update encoding comment (four states).
-2. Add `agfs_dstate_is_passthrough()` predicate.
-3. Change `agfs_dstate_is_tombstone()`: `(s64)val > 0 && ino-bits == 0`.
-4. Change `agfs_dstate_is_staged_inode()`: `(s64)val > 0 && ino-bits != 0`.
-5. Simplify `agfs_dstate_in_base()`: just `(val >> 59) & 1`.
-6. Add `agfs_dstate_tombstone(unsigned char d_type)` encoder.
-7. Update `agfs_add_tombstone` declaration to take `d_type`.
+2. Add `yolo_dstate_is_passthrough()` predicate.
+3. Change `yolo_dstate_is_tombstone()`: `(s64)val > 0 && ino-bits == 0`.
+4. Change `yolo_dstate_is_staged_inode()`: `(s64)val > 0 && ino-bits != 0`.
+5. Simplify `yolo_dstate_in_base()`: just `(val >> 59) & 1`.
+6. Add `yolo_dstate_tombstone(unsigned char d_type)` encoder.
+7. Update `yolo_add_tombstone` declaration to take `d_type`.
 
 ### kmod/dentry.c
-1. Update comments in `agfs_d_init` and `agfs_unstage_dentry` (packed=0 is
+1. Update comments in `yolo_d_init` and `yolo_unstage_dentry` (packed=0 is
    passthrough).
-2. `agfs_add_tombstone`: add `d_type` parameter, set
-   `packed = agfs_dstate_tombstone(d_type)`.
+2. `yolo_add_tombstone`: add `d_type` parameter, set
+   `packed = yolo_dstate_tombstone(d_type)`.
 
 ### kmod/inode.c
-1. `agfs_delete_entry`: pass `d_type` to `agfs_add_tombstone`.
-2. `agfs_rename`: pass `d_type` to `agfs_add_tombstone`.
+1. `yolo_delete_entry`: pass `d_type` to `yolo_add_tombstone`.
+2. `yolo_rename`: pass `d_type` to `yolo_add_tombstone`.
 
 ### kmod/ioctl.c
 1. Restore parsing: `packed == 0` → passthrough (skip staging packed);

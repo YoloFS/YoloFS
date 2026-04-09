@@ -1,11 +1,11 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 use std::fs::OpenOptions;
 
 /// Checkpoint must fail with EBUSY while a staged file is held open.
 #[test]
 fn checkpoint_rejects_while_staging_fd_open() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Write creates a staged file (inode store copy).
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
@@ -32,7 +32,7 @@ fn checkpoint_rejects_while_staging_fd_open() {
 /// Abort must fail with EBUSY while a staged file is held open.
 #[test]
 fn abort_rejects_while_staging_fd_open() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
@@ -56,7 +56,7 @@ fn abort_rejects_while_staging_fd_open() {
 /// Restore must fail with EBUSY while a staged file is held open.
 #[test]
 fn restore_rejects_while_staging_fd_open() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     s.cli(&["checkpoint", "v1"]).expect("checkpoint v1");
@@ -83,7 +83,7 @@ fn restore_rejects_while_staging_fd_open() {
 /// Commit must fail with EBUSY while a staged file is held open.
 #[test]
 fn commit_rejects_while_staging_fd_open() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 

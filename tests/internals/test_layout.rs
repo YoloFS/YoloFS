@@ -1,6 +1,6 @@
 use super::helpers::{ino_for, inode_path, inos, tree};
-use crate::helpers::AgfsSession;
-use agfs::utils;
+use crate::helpers::YoloSession;
+use yolofs::utils;
 use std::fs;
 
 // ── Inode store structure and properties ───────────────────────────────
@@ -8,7 +8,7 @@ use std::fs;
 /// Inode store is flat: all entries are numeric at the top level.
 #[test]
 fn inode_store_is_flat() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create a mix of operations
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
@@ -31,7 +31,7 @@ fn inode_store_is_flat() {
 /// Each inode has a unique ID — no duplicates.
 #[test]
 fn inos_are_unique() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "a\n").expect("write 1");
     fs::write(s.mnt_path("multi.txt"), "b\n").expect("write 2");
@@ -49,7 +49,7 @@ fn inos_are_unique() {
 /// Staged inodes are created with the calling user's credentials.
 #[test]
 fn staged_inode_owned_by_caller() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
@@ -69,15 +69,15 @@ fn staged_inode_owned_by_caller() {
 /// utils::inode_path() returns the correct inode store path.
 #[test]
 fn inode_path_matches_library_api() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
     let ch = tree(&s);
     let ino = ino_for(&ch, "/hello.txt");
 
-    let agfs_dir = s.root.join(".agfs");
-    let lib_path = utils::inode_path(&agfs_dir, ino);
+    let yolo_dir = s.root.join(".yolofs");
+    let lib_path = utils::inode_path(&yolo_dir, ino);
     let manual_path = s
         .inodes_dir()
         .join((ino / 100).to_string())

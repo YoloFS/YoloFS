@@ -1,10 +1,10 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 /// SEEK_CUR after write should use the updated file position.
 #[test]
 fn seek_cur_after_write() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let path = s.mnt_path("seek_test.bin");
 
     let mut f = std::fs::File::options()
@@ -31,7 +31,7 @@ fn seek_cur_after_write() {
 /// write header, then seek backwards from current position.
 #[test]
 fn seek_cur_after_rewind_and_write() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let path = s.mnt_path("seek_rewind.bin");
 
     let mut f = std::fs::File::options()
@@ -62,7 +62,7 @@ fn seek_cur_after_rewind_and_write() {
 /// SEEK_SET and SEEK_END should work on staged files.
 #[test]
 fn seek_set_and_end() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let path = s.mnt_path("seek_ends.bin");
 
     let mut f = std::fs::File::options()
@@ -87,7 +87,7 @@ fn seek_set_and_end() {
 /// SEEK_CUR after read should also track the position correctly.
 #[test]
 fn seek_cur_after_read() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let path = s.mnt_path("seek_read.bin");
 
     // Write 100 bytes.
@@ -109,7 +109,7 @@ fn seek_cur_after_read() {
 /// SEEK_CUR on a COW file (modified base file) should work.
 #[test]
 fn seek_cur_on_cow_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let path = s.mnt_path("hello.txt"); // base file, will COW on write
 
     let mut f = std::fs::File::options()

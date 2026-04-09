@@ -1,4 +1,4 @@
-// agfs CLI — journal/parse.rs
+// yolo CLI — journal/parse.rs
 //
 // Parse the append-only journal file.
 //
@@ -19,8 +19,8 @@ fn field_str(field: &[u8]) -> String {
 }
 
 /// Read and parse the journal file.
-pub(super) fn read(agfs_dir: &Path) -> Result<Vec<Record>> {
-    let journal_path = agfs_dir.join("journal");
+pub(super) fn read(yolo_dir: &Path) -> Result<Vec<Record>> {
+    let journal_path = yolo_dir.join("journal");
     if !journal_path.exists() {
         return Ok(Vec::new());
     }

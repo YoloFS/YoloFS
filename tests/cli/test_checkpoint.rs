@@ -1,10 +1,10 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
-/// Creating a checkpoint is visible via `agfs timeline`.
+/// Creating a checkpoint is visible via `yolofs timeline`.
 #[test]
 fn checkpoint_visible_in_timeline() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     s.cli(&["checkpoint", "build"]).expect("checkpoint");
@@ -12,14 +12,14 @@ fn checkpoint_visible_in_timeline() {
     let timeline = s.cli(&["timeline"]).expect("timeline");
     assert!(
         timeline.contains("build"),
-        "agfs timeline should list the 'build' checkpoint: {timeline}"
+        "yolofs timeline should list the 'build' checkpoint: {timeline}"
     );
 }
 
 /// Checkpoint list shows created checkpoints.
 #[test]
 fn checkpoint_list() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "first"]).expect("checkpoint 1");
@@ -35,7 +35,7 @@ fn checkpoint_list() {
 /// Status --at shows state at a checkpoint, not the current state.
 #[test]
 fn status_at_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Modify hello.txt, checkpoint, then create another file
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
@@ -72,7 +72,7 @@ fn status_at_checkpoint() {
 /// Re-COW: writing after a checkpoint preserves the old inode.
 #[test]
 fn recow_preserves_checkpoint_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Write v1
     fs::write(s.mnt_path("hello.txt"), "version1\n").expect("write v1");
@@ -100,7 +100,7 @@ fn recow_preserves_checkpoint_inode() {
 /// Restore to a checkpoint reverts the mount to the checkpoint state.
 #[test]
 fn restore_to_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Write a file, checkpoint, write another
     fs::write(s.mnt_path("hello.txt"), "committed version\n").expect("write hello");
@@ -126,7 +126,7 @@ fn restore_to_checkpoint() {
 /// Checkpoint with no name uses a timestamp.
 #[test]
 fn checkpoint_default_name() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
     s.cli(&["checkpoint"]).expect("checkpoint with no name");
@@ -141,7 +141,7 @@ fn checkpoint_default_name() {
 /// Two handles writing the same file: second handle sees the first handle's writes.
 #[test]
 fn two_handles_same_file_no_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Handle A writes v1
     fs::write(s.mnt_path("hello.txt"), "handleA\n").expect("write A");
@@ -173,7 +173,7 @@ fn two_handles_same_file_no_checkpoint() {
 /// preserving the checkpoint inode while both handles produce correct reads.
 #[test]
 fn two_handles_recow_after_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Handle A writes v1
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
@@ -208,7 +208,7 @@ fn two_handles_recow_after_checkpoint() {
 /// trigger a redundant re-COW (per-inode cow_checkpoint_gen optimization).
 #[test]
 fn second_handle_skips_redundant_recow() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Handle A writes, checkpoint, Handle A re-COWs
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
@@ -238,7 +238,7 @@ fn second_handle_skips_redundant_recow() {
 /// the correct inode state.
 #[test]
 fn multiple_checkpoints_interleaved_writes() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // v1 → checkpoint s1 → v2 → checkpoint s2 → v3
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
@@ -291,7 +291,7 @@ fn multiple_checkpoints_interleaved_writes() {
 /// `--from` shows changes after a checkpoint to end.
 #[test]
 fn status_from_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
@@ -314,7 +314,7 @@ fn status_from_checkpoint() {
 /// `--to` shows changes from start up to a checkpoint.
 #[test]
 fn status_to_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
@@ -337,7 +337,7 @@ fn status_to_checkpoint() {
 /// `--from A --to B` shows changes between two checkpoints.
 #[test]
 fn status_from_to_range() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
@@ -366,7 +366,7 @@ fn status_from_to_range() {
 /// `diff --at` shows diff for a single checkpoint segment.
 #[test]
 fn diff_at_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
@@ -389,7 +389,7 @@ fn diff_at_checkpoint() {
 /// `diff --from` shows diff from a checkpoint to end.
 #[test]
 fn diff_from_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
@@ -414,7 +414,7 @@ fn diff_from_checkpoint() {
 /// `diff --from A --to B` shows diff between two checkpoints.
 #[test]
 fn diff_from_to_range() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
@@ -445,7 +445,7 @@ fn diff_from_to_range() {
 /// `diff --to` shows diff up to a checkpoint.
 #[test]
 fn diff_to_checkpoint() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "early content\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
@@ -472,7 +472,7 @@ fn diff_to_checkpoint() {
 /// `--from` after the last checkpoint with no trailing changes → "No changes".
 #[test]
 fn status_from_last_checkpoint_empty() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
@@ -488,7 +488,7 @@ fn status_from_last_checkpoint_empty() {
 /// `diff --from` after the last checkpoint with no trailing changes → "No changes".
 #[test]
 fn diff_from_last_checkpoint_empty() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
@@ -503,7 +503,7 @@ fn diff_from_last_checkpoint_empty() {
 /// `--from` and `--to` pointing to the same checkpoint → empty range.
 #[test]
 fn status_from_to_same_checkpoint_empty() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
@@ -524,7 +524,7 @@ fn status_from_to_same_checkpoint_empty() {
 /// Path filter combined with `--from` range flag.
 #[test]
 fn diff_from_with_path_filter() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
@@ -553,7 +553,7 @@ fn diff_from_with_path_filter() {
 /// `--at` conflicts with `--from`/`--to` (clap enforces this).
 #[test]
 fn at_conflicts_with_from_to() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let (ok, _, stderr) = s
         .cli_output(&["status", "--at", "x", "--from", "y"])
@@ -580,7 +580,7 @@ fn at_conflicts_with_from_to() {
 /// append should trigger re-COW, preserving the pre-checkpoint content.
 #[test]
 fn append_after_checkpoint_triggers_recow() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "line1\n").expect("write");
     s.cli(&["checkpoint", "s1"]).expect("checkpoint");
@@ -610,10 +610,10 @@ fn append_after_checkpoint_triggers_recow() {
     );
 }
 
-/// `agfs timeline` shows both checkpoint and restore events.
+/// `yolofs timeline` shows both checkpoint and restore events.
 #[test]
 fn timeline_shows_restore_events() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
     s.cli(&["checkpoint", "build"]).expect("checkpoint");
@@ -633,10 +633,10 @@ fn timeline_shows_restore_events() {
     );
 }
 
-/// `agfs timeline` interleaves checkpoints and restores in chronological order.
+/// `yolofs timeline` interleaves checkpoints and restores in chronological order.
 #[test]
 fn timeline_interleaves_checkpoints_and_restores() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
     s.cli(&["checkpoint", "chk1"]).expect("checkpoint 1");

@@ -1,7 +1,7 @@
 // unlink-files workload: delete N pre-existing files.
 
 use crate::workload::{Workload, WorkloadKind};
-use agfs::config::Perm;
+use yolofs::config::Perm;
 use anyhow::{Context, Result};
 use std::path::Path;
 

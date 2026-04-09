@@ -13,7 +13,7 @@ This makes the tests:
 - **Noisy** — `setup_test_dir()`, `fs::create_dir_all`, `fs::write`
   boilerplate obscures what's being tested.
 - **Over-coupled** — every parse test depends on the `read()` function's
-  file-path convention (`agfs_dir.join("journal")`), when they only care
+  file-path convention (`yolo_dir.join("journal")`), when they only care
   about byte→Record conversion.
 
 ## Approach
@@ -23,8 +23,8 @@ Extract the byte-parsing loop from `read()` into a standalone
 a thin wrapper:
 
 ```rust
-pub fn read(agfs_dir: &Path) -> Result<Journal> {
-    let journal_path = agfs_dir.join("journal");
+pub fn read(yolo_dir: &Path) -> Result<Journal> {
+    let journal_path = yolo_dir.join("journal");
     if !journal_path.exists() {
         return Ok(Journal { records: Vec::new() });
     }

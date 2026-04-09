@@ -63,7 +63,7 @@ show how that total breaks down by step category.
   - `git-add`
   - `git-commit`
 - Emit a final `MacroStepSeries` payload through the existing
-  `AGFS_BENCH_RESULTS` channel.
+  `YOLO_BENCH_RESULTS` channel.
 
 ### 5. Aggregation and reporting
 
@@ -80,7 +80,7 @@ show how that total breaks down by step category.
   - aggregation of identical step sequences
   - `dev-workflow` fixture parsing remaining intact
 - Verify with:
-  - `cargo test -p agfs-bench --no-run`
+  - `cargo test -p yolofs-bench --no-run`
   - targeted unit tests for the new aggregation/parser code
-  - one `native` and one `agfs-realistic` `dev-workflow` run producing the new
+  - one `native` and one `yolofs-realistic` `dev-workflow` run producing the new
     report output

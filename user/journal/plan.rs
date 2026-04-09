@@ -1,4 +1,4 @@
-// agfs CLI — journal/plan.rs
+// yolo CLI — journal/plan.rs
 //
 // DirTree → Actions: convert the collapsed overlay state back into a
 // minimal ordered list of filesystem mutations for commit.
@@ -177,7 +177,7 @@ fn process_renames(renames: Vec<Action>) -> (Vec<Action>, Vec<Action>) {
 }
 
 fn temp_path(n: usize) -> String {
-    format!("/.agfs-commit-tmp-{}", n)
+    format!("/.yolofs-commit-tmp-{}", n)
 }
 
 #[cfg(test)]

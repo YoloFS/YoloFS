@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * agfs — staging layer helpers.
+ * yolofs — staging layer helpers.
  *
  * Sharded inode store, directory pinning, COW.
  */
 
-#include "agfs.h"
+#include "yolofs.h"
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/namei.h>
 
-#define AGFS_SHARD_SIZE	100
+#define YOLO_SHARD_SIZE	100
 
 /* ── Shard Helpers ─────────────────────────────────────────────────── */
 
@@ -22,9 +22,9 @@
  * The last shard dentry is cached in sbi to avoid repeated lookups
  * (sequential inos hit the same shard ~1000 times in a row).
  */
-static struct dentry *get_shard_dir(struct agfs_sb_info *sbi, u32 ino)
+static struct dentry *get_shard_dir(struct yolo_sb_info *sbi, u32 ino)
 {
-	u32 shard = ino / AGFS_SHARD_SIZE;
+	u32 shard = ino / YOLO_SHARD_SIZE;
 	char shard_name[11];
 	struct dentry *shard_dentry;
 	struct inode *dir;
@@ -67,7 +67,7 @@ static struct dentry *get_shard_dir(struct agfs_sb_info *sbi, u32 ino)
 
 /* ── Public Helpers ────────────────────────────────────────────────── */
 
-int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,
+int yolo_inode_path(struct yolo_sb_info *sbi, u32 ino,
 		    struct path *result)
 {
 	char rel[24]; /* "<shard>/<ino>" */
@@ -75,7 +75,7 @@ int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,
 	if (!sbi->inodes_dir.dentry)
 		return -ENOENT;
 
-	snprintf(rel, sizeof(rel), "%u/%u", ino / AGFS_SHARD_SIZE, ino);
+	snprintf(rel, sizeof(rel), "%u/%u", ino / YOLO_SHARD_SIZE, ino);
 	/* No LOOKUP_FOLLOW — symlink inodes must not be dereferenced */
 	return vfs_path_lookup(sbi->inodes_dir.dentry, sbi->inodes_dir.mnt,
 			       rel, 0, result);
@@ -87,7 +87,7 @@ int agfs_inode_path(struct agfs_sb_info *sbi, u32 ino,
  * Allocate a new inode ID, create the inode in the sharded store.
  * Regular files get vfs_create; dirs get vfs_mkdir; symlinks get vfs_symlink.
  */
-int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,
+int yolo_inode_alloc(struct yolo_sb_info *sbi, u32 *out_ino,
 		     struct path *inode_path, umode_t mode,
 		     const char *symname)
 {
@@ -146,7 +146,7 @@ int agfs_inode_alloc(struct agfs_sb_info *sbi, u32 *out_ino,
 
 /* ── Copy File Content to Inode Store ──────────────────────────────── */
 
-static int agfs_copy_to_inode(struct dentry *dentry,
+static int yolo_copy_to_inode(struct dentry *dentry,
 			      const struct path *inode_path)
 {
 	struct file *src, *dst;
@@ -155,9 +155,9 @@ static int agfs_copy_to_inode(struct dentry *dentry,
 	ssize_t copied;
 	int err = 0;
 
-	agfs_get_lower_path(dentry, &lower_path);
+	yolo_get_lower_path(dentry, &lower_path);
 	src = dentry_open(&lower_path, O_RDONLY, current_cred());
-	agfs_put_lower_path(dentry, &lower_path);
+	yolo_put_lower_path(dentry, &lower_path);
 	if (IS_ERR(src))
 		return PTR_ERR(src);
 
@@ -188,7 +188,7 @@ static int agfs_copy_to_inode(struct dentry *dentry,
 
 /* ── Copy-on-Write to Inode Store ──────────────────────────────────── */
 
-int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
+int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 		struct file **new_file, int flags, bool truncate)
 {
 	struct inode *parent = d_inode(dentry->d_parent);
@@ -196,14 +196,14 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	u32 ino;
 	int err;
 
-	err = agfs_inode_alloc(sbi, &ino, &inode_path,
+	err = yolo_inode_alloc(sbi, &ino, &inode_path,
 			       d_inode(dentry)->i_mode & ~S_IFMT, NULL);
 	if (err)
 		return err;
 
 	/* Copy base content (skip when truncating — inode stays empty) */
 	if (!truncate) {
-		err = agfs_copy_to_inode(dentry, &inode_path);
+		err = yolo_copy_to_inode(dentry, &inode_path);
 		if (err) {
 			path_put(&inode_path);
 			return err;
@@ -216,17 +216,17 @@ int agfs_do_cow(struct agfs_sb_info *sbi, struct dentry *dentry,
 	 * create/unlink/rename on the same directory.
 	 */
 	inode_lock(parent);
-	agfs_dentry_pin(dentry, AGFS_TARGET_INODE);
-	AGFS_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->gen);
+	yolo_dentry_pin(dentry, YOLO_TARGET_INODE);
+	YOLO_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->gen);
 	inode_unlock(parent);
 
 	path_get(&inode_path); /* extra ref for reopen below */
 
 	/* Update dentry lower_path to point at the inode (consumes original ref) */
-	agfs_replace_lower_path(dentry, &inode_path);
+	yolo_replace_lower_path(dentry, &inode_path);
 
 	/* Append journal record (best-effort — target is already set) */
-	agfs_journal_stage(sbi, dentry, ino);
+	yolo_journal_stage(sbi, dentry, ino);
 
 	/* Reopen with requested flags */
 	err = 0;

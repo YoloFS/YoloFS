@@ -1,9 +1,9 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
 #[test]
 fn create_after_lookup_miss() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let path = s.mnt_path("brandnew-after-miss.txt");
 
     let err = fs::metadata(&path).unwrap_err();
@@ -24,7 +24,7 @@ fn create_after_lookup_miss() {
 
 #[test]
 fn recreate_after_tombstone_lookup() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
     let path = s.mnt_path("hello.txt");
 
     fs::remove_file(&path).expect("delete base file");

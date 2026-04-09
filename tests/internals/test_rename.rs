@@ -1,6 +1,6 @@
 use super::helpers::{actions, ino_for, inode_path, inos, journal, tree};
-use crate::helpers::AgfsSession;
-use agfs::journal::Action;
+use crate::helpers::YoloSession;
+use yolofs::journal::Action;
 use std::fs;
 
 // ── Journal ──────────────────────────────────────────────────────────────────
@@ -8,7 +8,7 @@ use std::fs;
 /// Renaming a file produces a Redirect record with dtype=File.
 #[test]
 fn rename_produces_rename_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
@@ -27,7 +27,7 @@ fn rename_produces_rename_record() {
 /// Pure rename of a base file creates no new inode (only journal RDR record).
 #[test]
 fn pure_rename_creates_no_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let inos_before = inos(&s);
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
@@ -42,7 +42,7 @@ fn pure_rename_creates_no_inode() {
 /// Rename + modify (write after rename) produces an inode at the new path.
 #[test]
 fn rename_then_write_produces_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
     fs::write(s.mnt_path("moved.txt"), "new content\n").expect("write renamed file");
@@ -59,7 +59,7 @@ fn rename_then_write_produces_inode() {
 /// Write then rename: inode content still correct under the new path.
 #[test]
 fn write_then_rename_inode_content() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "written first\n").expect("write");
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("final.txt")).expect("rename");
@@ -81,7 +81,7 @@ fn write_then_rename_inode_content() {
 /// Each carries the dentry path as old (no chain resolution in kernel).
 #[test]
 fn rename_chain_journal_records() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("step1.txt")).expect("a→b");
     fs::rename(s.mnt_path("step1.txt"), s.mnt_path("step2.txt")).expect("b→c");
@@ -106,7 +106,7 @@ fn rename_chain_journal_records() {
 /// — the rename dirent overwrites whatever was there.
 #[test]
 fn rename_overwrite_journal() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // hello.txt overwrites subdir/deep.txt
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("subdir/deep.txt")).expect("overwrite");
@@ -131,7 +131,7 @@ fn rename_overwrite_journal() {
 /// never existed in base).
 #[test]
 fn rename_back_and_forth_spurious_tombstone() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp.txt")).expect("a→b");
     fs::rename(s.mnt_path("temp.txt"), s.mnt_path("hello.txt")).expect("b→a");
@@ -150,7 +150,7 @@ fn rename_back_and_forth_spurious_tombstone() {
 /// spurious tombstones remain at each intermediate name.
 #[test]
 fn rename_three_step_roundtrip_spurious_tombstones() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("temp1.txt")).expect("a→b");
     fs::rename(s.mnt_path("temp1.txt"), s.mnt_path("temp2.txt")).expect("b→c");
@@ -168,7 +168,7 @@ fn rename_three_step_roundtrip_spurious_tombstones() {
 /// The kernel emits an R (Rename) record.
 #[test]
 fn rename_staged_file_to_base_path() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // Create a new staged file
     fs::write(s.mnt_path("brand_new.txt"), "staged content\n").expect("create");

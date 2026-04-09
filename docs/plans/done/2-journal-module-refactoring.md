@@ -19,9 +19,9 @@ journal::parse::read()  →  Timeline::new()  →  timeline.resolve()
 
 | Level | Internal type | CLI command | What it shows |
 |-------|--------------|-------------|---------------|
-| Raw records | `Vec<Record>` | `agfs journal` | Every ADD/MOD/DEL/RDR/REP/CKP/RST record |
-| Structured segments | `Timeline` | `agfs timeline` | Checkpoints + restores (DAG, unreachable dimmed) |
-| Collapsed changes | `Vec<Change>` | `agfs status` / `agfs diff` | Final effect per path |
+| Raw records | `Vec<Record>` | `yolofs journal` | Every ADD/MOD/DEL/RDR/REP/CKP/RST record |
+| Structured segments | `Timeline` | `yolo timeline` | Checkpoints + restores (DAG, unreachable dimmed) |
+| Collapsed changes | `Vec<Change>` | `yolo status` / `yolo diff` | Final effect per path |
 
 ### Module layout
 
@@ -34,12 +34,12 @@ cli/
 │   ├── timeline.rs     # Timeline, Segment
 │   └── resolve.rs      # Resolver, Change, ResolvedSegment
 │
-├── checkpoint.rs       # agfs checkpoint (create only)
-├── journal_cmd.rs      # agfs journal (raw record display)
-├── timeline_cmd.rs     # agfs timeline (DAG display)
-├── diff.rs             # agfs status / agfs diff (resolved changes)
-├── commit.rs           # agfs commit
-├── restore.rs          # agfs restore
+├── checkpoint.rs       # yolo checkpoint (create only)
+├── journal_cmd.rs      # yolofs journal (raw record display)
+├── timeline_cmd.rs     # yolo timeline (DAG display)
+├── diff.rs             # yolo status / yolo diff (resolved changes)
+├── commit.rs           # yolo commit
+├── restore.rs          # yolo restore
 ├── ...                 # other commands unchanged
 ```
 
@@ -86,13 +86,13 @@ impl Timeline {
 
 | Current | New | Notes |
 |---------|-----|-------|
-| `agfs log` | *(removed)* | Merged into `agfs timeline` |
-| `agfs tree` | *(removed)* | Merged into `agfs timeline` |
-| `agfs audit` | `agfs journal` | Shows every record, unreachable dimmed |
-| `agfs audit --path X` | `agfs journal --path X` | Filter to one file |
-| *(new)* | `agfs timeline` | Shows K+S events, unreachable dimmed |
-| `agfs status` | `agfs status` | Unchanged (resolved) |
-| `agfs diff` | `agfs diff` | Unchanged (resolved) |
+| `yolofs log` | *(removed)* | Merged into `yolo timeline` |
+| `yolofs tree` | *(removed)* | Merged into `yolo timeline` |
+| `yolo audit` | `yolofs journal` | Shows every record, unreachable dimmed |
+| `yolo audit --path X` | `yolofs journal --path X` | Filter to one file |
+| *(new)* | `yolo timeline` | Shows K+S events, unreachable dimmed |
+| `yolo status` | `yolo status` | Unchanged (resolved) |
+| `yolo diff` | `yolo diff` | Unchanged (resolved) |
 
 ## Todos
 
@@ -104,7 +104,7 @@ impl Timeline {
 
 2. **journal-parse** — Create `cli/journal/parse.rs` with `read()`,
    `inode_path()`, `truncate()`. These are the I/O functions that
-   operate on `.agfs/` files.
+   operate on `.yolofs/` files.
 
 3. **journal-mod** — Create `cli/journal/mod.rs` that re-exports
    everything from types.rs and parse.rs. Delete old `cli/journal.rs`.
@@ -157,10 +157,10 @@ impl Timeline {
 
 ## Notes
 
-- `agfs checkpoint` (create) stays in checkpoint.rs — it's a command,
+- `yolo checkpoint` (create) stays in checkpoint.rs — it's a command,
   not a journal query.
 - `Segment` (timeline.rs) holds raw records + reachable flag.
   `ResolvedSegment` (resolve.rs) holds collapsed `Vec<Change>`.
 - `Timeline::new()` replaces the scattered `reachable()` +
   `resolve_segments()` setup — all consumers start with a Timeline.
-- `--path` filter on `agfs journal` stays — it's a query on raw records.
+- `--path` filter on `yolofs journal` stays — it's a query on raw records.

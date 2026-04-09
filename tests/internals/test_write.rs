@@ -1,6 +1,6 @@
 use super::helpers::{actions, ino_for, inode_path, inos, journal, tree};
-use crate::helpers::AgfsSession;
-use agfs::journal::Action;
+use crate::helpers::YoloSession;
+use yolofs::journal::Action;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -10,7 +10,7 @@ use std::io::Write;
 /// Modifying an existing file produces a Stage record.
 #[test]
 fn modify_produces_add_record() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
@@ -27,7 +27,7 @@ fn modify_produces_add_record() {
 /// (the kernel doesn't coalesce; the CLI resolver handles that).
 #[test]
 fn multiple_writes_produce_multiple_adds() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
@@ -52,7 +52,7 @@ fn multiple_writes_produce_multiple_adds() {
 /// Writing to an existing file creates a staged inode with the new content.
 #[test]
 fn modify_creates_inode_with_content() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
 
@@ -71,7 +71,7 @@ fn modify_creates_inode_with_content() {
 /// Overwriting a file multiple times updates the inode content in-place.
 #[test]
 fn overwrite_updates_inode_content() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     fs::write(s.mnt_path("hello.txt"), "v2 is longer\n").expect("write v2");
@@ -90,7 +90,7 @@ fn overwrite_updates_inode_content() {
 /// Appending to a file updates the inode content.
 #[test]
 fn append_updates_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "line1\n").expect("write");
 
@@ -113,7 +113,7 @@ fn append_updates_inode() {
 /// Without a checkpoint, rewriting a file reuses the same inode (no new allocation).
 #[test]
 fn rewrite_without_checkpoint_reuses_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     let inos_after_v1 = inos(&s);
@@ -135,7 +135,7 @@ fn rewrite_without_checkpoint_reuses_inode() {
 /// the kernel's view of the file.
 #[test]
 fn truncate_rewrite_overwrites_from_start() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "this is a long string\n").expect("write long");
     fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
@@ -151,7 +151,7 @@ fn truncate_rewrite_overwrites_from_start() {
 /// only the new (shorter) data — no leftover bytes from the previous write.
 #[test]
 fn truncate_rewrite_inode_has_exact_content() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "this is a long string\n").expect("write long");
     fs::write(s.mnt_path("hello.txt"), "short\n").expect("write short");
@@ -173,7 +173,7 @@ fn truncate_rewrite_inode_has_exact_content() {
 /// Opening with O_TRUNC and writing nothing: the inode must be empty (0 bytes).
 #[test]
 fn truncate_only_produces_empty_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // First write to stage the file
     fs::write(s.mnt_path("hello.txt"), "some content\n").expect("initial write");
@@ -206,7 +206,7 @@ fn truncate_only_produces_empty_inode() {
 /// A large file write produces an inode with the correct size.
 #[test]
 fn large_file_inode_size() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let data = "x".repeat(1024 * 1024); // 1 MiB
     fs::write(s.mnt_path("big.txt"), &data).expect("write large file");
@@ -222,7 +222,7 @@ fn large_file_inode_size() {
 /// Binary (non-UTF8) content is preserved exactly in the inode.
 #[test]
 fn binary_content_preserved() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let data: Vec<u8> = (0..=255).collect();
     fs::write(s.mnt_path("binary.bin"), &data).expect("write binary");
@@ -239,7 +239,7 @@ fn binary_content_preserved() {
 /// Inode preserves NUL bytes and other control characters.
 #[test]
 fn nul_bytes_preserved() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     let data = b"before\0middle\0after\n";
     fs::write(s.mnt_path("nulls.txt"), data).expect("write with NULs");
@@ -253,7 +253,7 @@ fn nul_bytes_preserved() {
 /// Writing multiple files produces one inode per file, each with correct content.
 #[test]
 fn multiple_files_each_get_correct_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "aaa\n").expect("write 1");
     fs::write(s.mnt_path("multi.txt"), "bbb\n").expect("write 2");
@@ -281,7 +281,7 @@ fn multiple_files_each_get_correct_inode() {
 /// Writing to a deeply nested path produces an inode with correct content.
 #[test]
 fn deep_nested_file_inode() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     fs::create_dir_all(s.mnt_path("a/b/c")).expect("mkdir -p");
     fs::write(s.mnt_path("a/b/c/leaf.txt"), "deep content\n").expect("write nested");
@@ -297,7 +297,7 @@ fn deep_nested_file_inode() {
 /// Modifying a pre-existing nested file creates an inode.
 #[test]
 fn modify_nested_base_file() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     // subdir/deep.txt is seeded in base
     fs::write(s.mnt_path("subdir/deep.txt"), "updated nested\n").expect("write");

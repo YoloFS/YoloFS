@@ -45,7 +45,7 @@ impl Workload for FioSeqWrite {
         Ok(())
     }
 
-    fn realistic_rules(&self, session_root: &Path) -> Vec<(String, agfs::config::Perm)> {
+    fn realistic_rules(&self, session_root: &Path) -> Vec<(String, yolofs::config::Perm)> {
         workloads::allow_rw_rules(session_root)
     }
 

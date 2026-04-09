@@ -1,12 +1,12 @@
-use crate::helpers::AgfsSession;
+use crate::helpers::YoloSession;
 use std::fs;
 
-// ── inode.c: agfs_symlink + agfs_get_link ──
+// ── inode.c: yolo_symlink + yolo_get_link ──
 
 /// Create a symlink through the mount.
 #[test]
 fn create_symlink() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink creation");
 
@@ -17,7 +17,7 @@ fn create_symlink() {
 /// Follow a symlink to read the target file.
 #[test]
 fn follow_symlink_reads_target() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink creation");
 
@@ -29,7 +29,7 @@ fn follow_symlink_reads_target() {
 /// Symlink lands in inode store and can be committed to base.
 #[test]
 fn symlink_commit_to_base() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink creation");
 
@@ -59,7 +59,7 @@ fn symlink_commit_to_base() {
 /// A dangling symlink (target doesn't exist) should be visible via lstat.
 #[test]
 fn dangling_symlink_stat_succeeds() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     std::os::unix::fs::symlink("nonexistent.txt", s.mnt_path("dangle.txt")).expect("symlink");
 
@@ -71,7 +71,7 @@ fn dangling_symlink_stat_succeeds() {
 /// Reading through a dangling symlink should fail (target doesn't exist).
 #[test]
 fn read_dangling_symlink_fails() {
-    let s = AgfsSession::new().expect("session setup");
+    let s = YoloSession::new().expect("session setup");
 
     std::os::unix::fs::symlink("nonexistent.txt", s.mnt_path("dangle.txt")).expect("symlink");
 

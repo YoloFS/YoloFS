@@ -1,4 +1,4 @@
-// agfs — kernel log capture via /dev/kmsg.
+// yolo — kernel log capture via /dev/kmsg.
 //
 // Reads kernel messages directly from the ring buffer without requiring
 // systemd.  Used by both the integration test helpers and the bench binary
