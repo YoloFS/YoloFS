@@ -74,17 +74,17 @@ jobs:
           git config -f .gitmodules --get-regexp '^submodule\..*\.url$' | while read -r key url; do
             name=${key#submodule.}; name=${name%.url}
             path=$(git config -f .gitmodules "submodule.$name.path")
-            if ! ls_out=$(git ls-remote "$url" HEAD 2>&1); then
-              echo "::warning::git ls-remote failed for $url (submodule $name at $path): $ls_out; skipping"
-              continue
+            if ! sha=$(git ls-remote "$url" HEAD | cut -f1); then
+              echo "::error::git ls-remote failed for $url (submodule $name at $path)"
+              exit 1
             fi
-            sha=$(printf '%s\n' "$ls_out" | cut -f1)
             if [ -z "$sha" ]; then
-              echo "::warning::empty sha from $url (submodule $name at $path); skipping"
-              continue
+              echo "::error::empty sha from $url (submodule $name at $path)"
+              exit 1
             fi
+            echo "updating submodule $name at $path to $sha"
             git update-index --cacheinfo 160000,"$sha","$path"
-          done || true
+          done
           git diff --cached --quiet || git commit -m "chore: update submodules [skip ci]"
 
       - name: Push changes
