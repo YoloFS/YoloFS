@@ -4,7 +4,7 @@ use std::fs;
 use yolofs::config::{Config, Perm};
 
 // ── Directory read-like ops (stat, readdir, lookup/traversal) are NOT
-// permission-gated — only hide applies.  Mutations (mkdir, unlink,
+// permission-gated — only hidden applies.  Mutations (mkdir, unlink,
 // rmdir, rename, symlink) ARE gated via the parent directory's perm. ──
 
 /// mkdir should fail under deny.
@@ -21,18 +21,18 @@ fn mkdir_denied_under_deny() {
     assert!(result.is_err(), "mkdir should be denied");
 }
 
-/// unlink should fail under allow-ro (needs write on parent dir).
+/// unlink should fail under ro (needs write on parent dir).
 #[test]
-fn unlink_denied_under_allow_ro() {
+fn unlink_denied_under_ro() {
     let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
-        rules: BTreeMap::from([("/".into(), Perm::AllowRo)]),
+        rules: BTreeMap::from([("/".into(), Perm::Ro)]),
         ..Default::default()
     })
     .expect("session setup");
 
     let result = fs::remove_file(s.mnt_path("hello.txt"));
-    assert!(result.is_err(), "unlink should be denied under allow-ro");
+    assert!(result.is_err(), "unlink should be denied under ro");
 }
 
 /// symlink creation should fail under deny.

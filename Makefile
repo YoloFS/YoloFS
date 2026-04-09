@@ -1,7 +1,7 @@
 # ── Variables ─────────────────────────────────────────────────────────
 
 KDIR             := /lib/modules/$(shell uname -r)
-BUILD_DIR        := $(CURDIR)/build/$(shell uname -r)
+BUILD_DIR        := $(CURDIR)/build
 KMOD_OUT         := $(BUILD_DIR)/yolofs.ko
 KMOD_INSTALL_DIR := $(KDIR)/extra
 USER_BIN         := $(CURDIR)/target/release/yolo
@@ -30,10 +30,10 @@ $(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(BUILD_DIR)
 clean: clean-user clean-kmod
 
 clean-user:
-	cargo clean
+	rm -rf "$(CURDIR)/target"/*
 
 clean-kmod:
-	rm -rf $(BUILD_DIR)
+	rm -rf "$(BUILD_DIR)"/*
 
 # ── Install ───────────────────────────────────────────────────────────
 

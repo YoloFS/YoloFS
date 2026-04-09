@@ -198,7 +198,7 @@ D(/b)            →  dirent has in_base=false → remove node (cancel)
 ```
 
 Result: Tombstone at /a, nothing at /b. Base /a is hidden; /b has no base
-content to hide. Commit replays both records in order: rename base /a → /b,
+content to hidden. Commit replays both records in order: rename base /a → /b,
 then remove base /b.
 
 ### Directory Rename Handling
@@ -233,7 +233,7 @@ R(/c, src=/b, f)    →  move /b node to /c; no Tombstone at /b (not in base)
 
 No separate chain resolution step. The second R finds the node where the
 first R left it and moves it again. Only base paths get Tombstones — `/b`
-was never in base so moving away from it leaves nothing to hide.
+was never in base so moving away from it leaves nothing to hidden.
 For diff/restore, each node records its original base path (set when first
 moved from a base-only position). Subsequent moves don't change it.
 

@@ -79,11 +79,10 @@ fn prompt_decision(req: &PermRequest) -> Perm {
         format!("(pid={} {})", req.pid, req.comm_str()).dimmed(),
     );
     eprint!(
-        "  [{}]llow allow-[{}] allow-[{}] allow-[{}] [{}]eny (enter = allow): ",
+        "  [{}]llow [{}]ead-only [{}]idden [{}]eny (enter = allow): ",
         "a".blue().bold(),
-        "rw".blue().bold(),
-        "ro".blue().bold(),
-        "rx".blue().bold(),
+        "r".blue().bold(),
+        "h".blue().bold(),
         "d".blue().bold(),
     );
     io::stderr().flush().ok();
@@ -163,10 +162,9 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
 fn parse_input(input: &str) -> Perm {
     match input {
         "" | "a" | "allow" => Perm::Allow,
+        "r" | "ro" | "read-only" | "readonly" => Perm::Ro,
+        "h" | "hidden" => Perm::Hidden,
         "d" | "deny" => Perm::Deny,
-        "rw" | "allow-rw" => Perm::AllowRw,
-        "ro" | "allow-ro" => Perm::AllowRo,
-        "rx" | "allow-rx" => Perm::AllowRx,
         _ => Perm::Deny,
     }
 }
@@ -217,33 +215,23 @@ mod tests {
     }
 
     #[test]
-    fn rw_is_allow_rw() {
-        assert_eq!(parse_input("rw"), Perm::AllowRw);
+    fn r_is_ro() {
+        assert_eq!(parse_input("r"), Perm::Ro);
     }
 
     #[test]
-    fn allow_rw_is_allow_rw() {
-        assert_eq!(parse_input("allow-rw"), Perm::AllowRw);
+    fn ro_is_ro() {
+        assert_eq!(parse_input("ro"), Perm::Ro);
     }
 
     #[test]
-    fn ro_is_allow_ro() {
-        assert_eq!(parse_input("ro"), Perm::AllowRo);
+    fn h_is_hidden() {
+        assert_eq!(parse_input("h"), Perm::Hidden);
     }
 
     #[test]
-    fn allow_ro_is_allow_ro() {
-        assert_eq!(parse_input("allow-ro"), Perm::AllowRo);
-    }
-
-    #[test]
-    fn rx_is_allow_rx() {
-        assert_eq!(parse_input("rx"), Perm::AllowRx);
-    }
-
-    #[test]
-    fn allow_rx_is_allow_rx() {
-        assert_eq!(parse_input("allow-rx"), Perm::AllowRx);
+    fn hidden_is_hidden() {
+        assert_eq!(parse_input("hidden"), Perm::Hidden);
     }
 
     #[test]

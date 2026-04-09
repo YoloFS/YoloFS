@@ -113,7 +113,7 @@ struct dentry *yolo_lookup(struct inode *dir, struct dentry *dentry,
 
 		/* Hidden entries appear as if they don't exist. */
 		if (YOLO_SB(dentry->d_sb)->permission &&
-		    YOLO_I(d_inode(dentry))->cached_perm == YOLO_PERM_HIDE) {
+		    YOLO_I(d_inode(dentry))->cached_perm == YOLO_PERM_HIDDEN) {
 			d_drop(dentry);
 			return ERR_PTR(-ENOENT);
 		}

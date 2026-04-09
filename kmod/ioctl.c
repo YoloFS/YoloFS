@@ -137,7 +137,7 @@ static long yolo_put_response_ioctl(struct file *file, unsigned long arg)
 	if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
 		return -EFAULT;
 
-	if (in.decision > YOLO_PERM_HIDE)
+	if (in.decision > YOLO_PERM_HIDDEN)
 		return -EINVAL;
 
 	spin_lock(&eng->dispatch_lock);
@@ -266,7 +266,7 @@ static long yolo_rule_add_ioctl(struct file *file, unsigned long arg)
 	if (err)
 		return err;
 
-	if (rule.perm > YOLO_PERM_HIDE) {
+	if (rule.perm > YOLO_PERM_HIDDEN) {
 		path_put(&rule_path);
 		return -EINVAL;
 	}

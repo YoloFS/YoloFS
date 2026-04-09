@@ -47,15 +47,11 @@ int yolo_check_perm(enum yolo_perm perm, int f_flags)
 	switch (perm) {
 	case YOLO_PERM_ALLOW:
 		return 0;
-	case YOLO_PERM_ALLOW_RW:
-		return 0;
-	case YOLO_PERM_ALLOW_RO:
-		return wants_write ? -EACCES : 0;
-	case YOLO_PERM_ALLOW_RX:
+	case YOLO_PERM_RO:
 		return wants_write ? -EACCES : 0;
 	case YOLO_PERM_DENY:
 		return -EACCES;
-	case YOLO_PERM_HIDE:
+	case YOLO_PERM_HIDDEN:
 		return -ENOENT;	/* path doesn't exist from agent's perspective */
 	case YOLO_PERM_ASK:
 		return 0; /* ask is handled by caller (yolo_open) */

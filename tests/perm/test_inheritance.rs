@@ -6,7 +6,7 @@ use yolofs::config::{Config, Perm};
 // ── Rule inheritance (perm.c: yolo_resolve_perm walks dentry chain) ──
 
 /// A more specific (child) rule should override a broader (parent) rule.
-/// "/" = deny, but session root = allow-rw → files in session are accessible.
+/// "/" = deny, but session root = allow → files in session are accessible.
 #[test]
 fn child_rule_overrides_parent() {
     let s = YoloSession::new_with_config(Config {
@@ -21,7 +21,7 @@ fn child_rule_overrides_parent() {
     let root_path = s.root.display().to_string();
     Config {
         ask_default: Some(Perm::Deny),
-        rules: BTreeMap::from([("/".into(), Perm::Deny), (root_path, Perm::AllowRw)]),
+        rules: BTreeMap::from([("/".into(), Perm::Deny), (root_path, Perm::Allow)]),
         ..Default::default()
     }
     .save(&s.root.join("yolofs.toml"))
@@ -34,12 +34,12 @@ fn child_rule_overrides_parent() {
         .expect("remount");
 
     let content = fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("child allow-rw should override parent deny");
+        .expect("child allow should override parent deny");
     assert_eq!(content, "base content\n");
 }
 
-/// Rules resolve to the closest ancestor: / = deny, root/a/b = allow-rw.
-/// Files under a/b/c inherit allow-rw; files at top level get denied.
+/// Rules resolve to the closest ancestor: / = deny, root/a/b = allow.
+/// Files under a/b/c inherit allow; files at top level get denied.
 #[test]
 fn deep_nested_rules_closest_wins() {
     let s = YoloSession::new_with_config(Config {
@@ -59,7 +59,7 @@ fn deep_nested_rules_closest_wins() {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([
             ("/".into(), Perm::Deny),
-            (s.root.join("a/b").display().to_string(), Perm::AllowRw),
+            (s.root.join("a/b").display().to_string(), Perm::Allow),
         ]),
         ..Default::default()
     }
@@ -73,7 +73,7 @@ fn deep_nested_rules_closest_wins() {
         .expect("remount");
 
     let content = fs::read_to_string(s.mnt_path("a/b/c/deep.txt"))
-        .expect("deep file should be readable via inherited allow-rw");
+        .expect("deep file should be readable via inherited allow");
     assert_eq!(content, "deep content\n");
 
     let result = fs::read_to_string(s.mnt_path("hello.txt"));
@@ -103,8 +103,8 @@ fn different_paths_different_rules() {
     Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([
-            (s.root.join("readonly").display().to_string(), Perm::AllowRo),
-            (s.root.join("writable").display().to_string(), Perm::AllowRw),
+            (s.root.join("readonly").display().to_string(), Perm::Ro),
+            (s.root.join("writable").display().to_string(), Perm::Allow),
         ]),
         ..Default::default()
     }
@@ -119,13 +119,13 @@ fn different_paths_different_rules() {
 
     // Read should work in both.
     fs::read_to_string(s.mnt_path("readonly/data.txt"))
-        .expect("read should succeed in allow-ro dir");
+        .expect("read should succeed in ro dir");
     fs::read_to_string(s.mnt_path("writable/data.txt"))
-        .expect("read should succeed in allow-rw dir");
+        .expect("read should succeed in allow dir");
 
     // Write should fail in readonly, succeed in writable.
     let result = fs::write(s.mnt_path("readonly/data.txt"), "modified\n");
-    assert!(result.is_err(), "write should fail in allow-ro dir");
+    assert!(result.is_err(), "write should fail in ro dir");
     fs::write(s.mnt_path("writable/data.txt"), "modified\n")
-        .expect("write should succeed in allow-rw dir");
+        .expect("write should succeed in allow dir");
 }

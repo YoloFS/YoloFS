@@ -2,7 +2,7 @@
 
 The permission gating layer controls which files an agent can access and how.
 Every path starts in the `ask` state. A rule engine promotes matching paths
-to `allow`, `allow-rw`, `allow-ro`, `allow-rx`, or `deny`. When a thread touches an `ask` file,
+to `allow`, `ro`, `deny`, or `hidden`. When a thread touches an `ask` file,
 the thread is put to sleep; a userspace daemon receives the request and
 writes back a decision that wakes the thread.
 
@@ -10,7 +10,7 @@ Permission gating applies to **file access** (open for read/write/exec)
 and **metadata mutations** (create, mkdir, unlink, rmdir, rename,
 symlink).  Directory mutations use the permission of the parent
 directory.  Directory read-like operations (lookup/traversal, readdir,
-stat) are **not** permission-gated — only `hide` applies (returns
+stat) are **not** permission-gated — only `hidden` applies (returns
 ENOENT).  `deny` and `ask` have no effect on directory read-like ops.
 
 ## Permission States
@@ -20,9 +20,7 @@ enum yolo_perm {
     YOLO_PERM_NONE,        // No rule on this dentry (walk up to find one).
     YOLO_PERM_ASK,         // Default. Block thread, ask userspace.
     YOLO_PERM_ALLOW,       // Read + write + execute allowed.
-    YOLO_PERM_ALLOW_RW,    // Read + write. No execute.
-    YOLO_PERM_ALLOW_RO,    // Read only. No write, no execute.
-    YOLO_PERM_ALLOW_RX,    // Read + execute. No write.
+    YOLO_PERM_RO,          // Read + execute. No write.
     YOLO_PERM_DENY,        // Files: all access denied.
                            // Dirs: traversal/readdir/stat still work,
                            //       but mutations are denied.
@@ -86,7 +84,7 @@ grouped into `struct yolo_ask_engine` (embedded in `yolo_sb_info` as
 | `request_waitq` | Wait queue — daemon's `GET_REQUEST` ioctl blocks here |
 | `next_req_id` | Atomic counter for unique request IDs |
 | `timeout_s` | Seconds before an unanswered ask applies the default |
-| `default_perm` | Default decision (`deny` or `allow-ro`) when no daemon or timeout |
+| `default_perm` | Default decision (`deny` or `ro`) when no daemon or timeout |
 | `daemon_file` | Pointer to the daemon's open `struct file` (the `.ctl` control file); NULL if no daemon connected. Set atomically on the first `GET_REQUEST` ioctl, cleared in `yolo_ctl_release()`. Only one daemon allowed — a second `GET_REQUEST` from a different fd returns `-EBUSY`. |
 | `dispatched` | Linked list of requests sent to daemon but not yet answered |
 | `dispatch_lock` | Spinlock protecting `dispatched` and `daemon_file` |
@@ -118,7 +116,7 @@ Two levels:
   `lookup()` by inheriting from the nearest ancestor dentry with a rule.
   Checked in `permission()` with O(1) cost.
 
-**Setting a rule** (`yolo rule add src allow-rw`):
+**Setting a rule** (`yolo rule add src allow`):
 
 1. Write the rule to `yolofs.toml` (source of truth on disk):
   ```toml
@@ -126,11 +124,11 @@ Two levels:
    ask_default = "deny"
 
    [rules]
-   "src"        = "allow-rw"
+   "src"        = "allow"
    "/etc"       = "deny"
-   "/etc/hosts" = "allow-ro"
-   "/usr/bin"   = "allow-rx"
-   "/opt/bin"   = "allow"
+   "/etc/hosts" = "ro"
+   "/usr/bin"   = "ro"
+   "/secret"    = "hidden"
   ```
 
    Paths can be **absolute** (`/etc`) or **relative** to the session root:
@@ -231,7 +229,7 @@ next access.
 The `ask` path is handled in operations that have a stable dentry and may
 sleep: `yolo_open()` for regular-file opens.  Directory read-like
 operations (readdir, lookup/traversal, stat) are **not** gated by ask —
-they only check for `hide`:
+they only check for `hidden`:
 
 ```c
 static int yolo_open(struct inode *inode, struct file *file)
@@ -264,16 +262,16 @@ static int yolo_create(struct mnt_idmap *idmap, struct inode *dir,
 **Example**:
 
 ```bash
- yolo rule add src          allow-rw
+ yolo rule add src          allow
  yolo rule add /etc         deny
- yolo rule add /etc/hosts   allow-ro
- yolo rule add /usr/bin     allow-rx
+ yolo rule add /etc/hosts   ro
+ yolo rule add /usr/bin     ro
  yolo rule add ~/.mozilla   hidden
 ```
 
-- `permission("src/main.rs")` -> cached_perm=ALLOW_RW (from lookup) -> **pass**
+- `permission("src/main.rs")` -> cached_perm=ALLOW (from lookup) -> **pass**
 - `permission("etc/passwd")` -> cached_perm=DENY -> **-EACCES**
-- `permission("etc/hosts")` -> cached_perm=ALLOW_RO -> **pass for read, deny write**
+- `permission("etc/hosts")` -> cached_perm=RO -> **pass for read/exec, deny write**
 - `readdir("etc")` -> cached_perm=DENY -> **pass** (dir read-like ops not gated)
 - `stat("etc")` -> cached_perm=ASK -> **pass** (dir read-like ops not gated)
 - `open("tmp/foo")` -> cached_perm=ASK -> ask daemon -> **sleeps until decision**
@@ -300,9 +298,9 @@ When a thread accesses a file whose effective permission is `ask`:
                                             Daemon shows prompt / applies policy
                                              |
                                              ioctl(PUT_RESPONSE) -> struct yolo_ctl_response {
-                                                         id: 42, decision: ALLOW_RW }
+                                                         id: 42, decision: ALLOW }
                                               |
-   6. req->decision = ALLOW_RW               ioctl handler:
+   6. req->decision = ALLOW                  ioctl handler:
    7. complete(&req->done)                     find request by id
      ...thread wakes...                       set decision
   8. Proceed with operation                  complete(&req->done)
@@ -316,7 +314,7 @@ Key properties:
   request is removed from the pending list and `-EINTR` is returned.
 - **Timeout**: Configurable via mount option `ask_timeout=<seconds>`.
   If the daemon doesn't respond, the default action (configurable:
-  `deny` or `allow-ro`) is applied.
+  `deny` or `ro`) is applied.
 - **Minimal response**: `yolo_ctl_response` only carries `{ id, decision }`.
   Persisting policy is always a separate `ioctl(YOLO_IOC_RULE_ADD)`.
 - **One-time by default**: The decision applies to this single access only.
@@ -331,7 +329,7 @@ The rule engine must satisfy these design principles:
 1. **Fast checks** — permission resolution must not scale with the number of
    rules. O(n) scanning per access is unacceptable.
 2. **Hierarchical rules** — a single rule on a directory applies to all files
-   underneath. Rules can overlap (e.g., `/etc` = deny, `/etc/hosts` = allow-ro)
+   underneath. Rules can overlap (e.g., `/etc` = deny, `/etc/hosts` = ro)
    and the most specific path always wins, regardless of insertion order.
 3. **Dynamic rules** — adding, changing, or removing a rule must take effect
    immediately without expensive cache invalidation.
@@ -373,8 +371,8 @@ longest-prefix-match for free. This satisfies all three principles:
 | Operation | Check | Gate point |
 |-----------|-------|------------|
 | open (read/write/exec) | file's own perm | `yolo_open` → `yolo_check_dentry_perm` |
-| readdir | hide only | `yolo_dir_open` (inline hide check) |
-| stat | hide only | `yolo_getattr` (inline hide check) |
+| readdir | hidden only | `yolo_dir_open` (inline hidden check) |
+| stat | hidden only | `yolo_getattr` (inline hidden check) |
 | lookup / traversal | not gated | — |
 | create, mkdir, symlink | parent dir's perm (write) | `yolo_check_mutate_perm` |
 | unlink, rmdir | parent dir's perm (write) | `yolo_check_mutate_perm` |
@@ -417,8 +415,8 @@ In `yolofs.toml`:
 
 ```toml
 [rules]
-"/usr"           = "allow-rx"
-"/home/user/src" = "allow-rw"
+"/usr"           = "ro"
+"/home/user/src" = "allow"
 "/home/user/tax2025"          = "hidden"
 "/home/user/.mozilla"         = "hidden"
 ```
@@ -446,7 +444,7 @@ If `/foo` has no rule and `/foo/bar` has `READ`, then `/foo/bar` is
 readable but `/foo/baz` is denied. However, you **cannot** deny a child
 when a parent is allowed: if `/foo` grants `READ`, then `/foo/bar` also
 gets `READ` and there is no way to revoke it. YoloFS uses nearest-ancestor
-wins: `/foo = allow-rw` + `/foo/bar = deny` works because the walk-up
+wins: `/foo = allow` + `/foo/bar = deny` works because the walk-up
 finds `/foo/bar`'s rule first. Both directions (allow parent deny child,
 deny parent allow child) are supported.
 

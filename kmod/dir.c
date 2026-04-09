@@ -38,7 +38,7 @@ static int yolo_dir_open(struct inode *inode, struct file *file)
 		struct yolo_inode_info *ii = YOLO_I(d_inode(dentry));
 		if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
 			yolo_cache_perm(d_inode(dentry), dentry);
-		if (ii->cached_perm == YOLO_PERM_HIDE)
+		if (ii->cached_perm == YOLO_PERM_HIDDEN)
 			return -ENOENT;
 	}
 
@@ -133,7 +133,7 @@ static bool yolo_fill_base(struct dir_context *ctx, const char *name,
 
 	/* Check if this entry is hidden by permission rules.
 	 * Scan the parent's pinned rule dentries for a matching name
-	 * with YOLO_PERM_HIDE. Rule dentries are pinned (dget'd) so
+	 * with YOLO_PERM_HIDDEN. Rule dentries are pinned (dget'd) so
 	 * they're always in the dcache as children of the parent. */
 	if (YOLO_SB(rdd->dentry->d_sb)->permission) {
 		struct dentry *child;
@@ -142,7 +142,7 @@ static bool yolo_fill_base(struct dir_context *ctx, const char *name,
 		spin_lock(&rdd->dentry->d_lock);
 		hlist_for_each_entry(child, &rdd->dentry->d_children, d_sib) {
 			struct yolo_dentry_info *cdi = YOLO_D(child);
-			if (cdi && cdi->perm == YOLO_PERM_HIDE &&
+			if (cdi && cdi->perm == YOLO_PERM_HIDDEN &&
 			    child->d_name.len == namelen &&
 			    !memcmp(child->d_name.name, name, namelen)) {
 				is_hidden = true;

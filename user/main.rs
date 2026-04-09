@@ -127,7 +127,7 @@ enum RuleAction {
     Add {
         /// Path (relative to session root or absolute)
         path: String,
-        /// Permission: allow, allow-rw, allow-ro, allow-rx, deny, ask
+        /// Permission: allow, ro, deny, hidden, ask
         perm: String,
     },
     /// Remove a permission rule

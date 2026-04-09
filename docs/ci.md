@@ -1,8 +1,15 @@
 ## CI behavior
 
 Build artifacts now use the normal in-tree Cargo `target/` directory. Kernel
-module build output lives under `build/<kernel-version>/`, and VM state lives
-under `vm/`. All three directories are git-ignored.
+module build output lives under `build/`, and VM state lives under `vm/`. All
+three directories are git-ignored.
+
+Inside the VM, `setup.sh` bind-mounts guest-local `target/` and `build/`
+directories over the shared repo paths so builds do not write back through the
+9p-mounted checkout. Those guest-local directories live under the VM user's
+home directory as `~/<repo>-local/`. Because those repo paths are bind-mount
+targets in the VM, `make clean` clears their contents instead of removing the
+mount points themselves.
 
 The GitHub Actions `CI` workflow includes a chore job that may update tracked
 submodule SHAs automatically. The updater scans `.gitmodules` for configured

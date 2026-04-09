@@ -6,6 +6,26 @@ set -euo pipefail
 info() { echo -e "\033[1;34m==>\033[0m $*"; }
 
 is_vm() { systemd-detect-virt -q 2>/dev/null; }
+ensure_vm_local_build_dirs() {
+    local repo_dir local_root
+    repo_dir=$(pwd -P)
+    local_root="${HOME}/$(basename "$repo_dir")-local"
+
+    info "Setting up guest-local build directories at ${local_root}"
+    mkdir -p "${local_root}/target" "${local_root}/build"
+
+    # The VM-local directory lives on the guest filesystem and can stay
+    # user-owned. The bind mounts themselves require CAP_SYS_ADMIN, so use sudo
+    # only for the mountpoint creation/remount step on the shared repo path.
+    sudo mkdir -p "${repo_dir}/target" "${repo_dir}/build"
+
+    if ! mountpoint -q "${repo_dir}/target"; then
+        sudo mount --bind "${local_root}/target" "${repo_dir}/target"
+    fi
+    if ! mountpoint -q "${repo_dir}/build"; then
+        sudo mount --bind "${local_root}/build" "${repo_dir}/build"
+    fi
+}
 
 # ── Package lists ─────────────────────────────────────────────────────
 
@@ -29,6 +49,7 @@ pkgs=("${BUILD_PKGS[@]}")
 
 if is_vm; then
     info "Detected VM environment, skipping QEMU packages"
+    ensure_vm_local_build_dirs
 else
     info "Detected host environment, including QEMU packages"
     pkgs+=("${QEMU_PKGS[@]}")

@@ -21,11 +21,9 @@ pub const YOLO_OP_EXEC: u32 = 3;
 pub const YOLO_PERM_NONE: u8 = 0;
 pub const YOLO_PERM_ASK: u8 = 1;
 pub const YOLO_PERM_ALLOW: u8 = 2;
-pub const YOLO_PERM_ALLOW_RW: u8 = 3;
-pub const YOLO_PERM_ALLOW_RO: u8 = 4;
-pub const YOLO_PERM_ALLOW_RX: u8 = 5;
-pub const YOLO_PERM_DENY: u8 = 6;
-pub const YOLO_PERM_HIDE: u8 = 7;
+pub const YOLO_PERM_RO: u8 = 3;
+pub const YOLO_PERM_DENY: u8 = 4;
+pub const YOLO_PERM_HIDDEN: u8 = 5;
 
 // Ioctl command numbers — must match kmod/yolofs.h
 nix::ioctl_write_ptr!(ioctl_rule_add, b'A', 10, YoloIocRule);

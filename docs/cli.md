@@ -78,7 +78,7 @@ new restore become unreachable, preserving earlier history.
 **Permission rules and diagnostics:**
 
 ```bash
-$ yolo rule add src allow-rw
+$ yolo rule add src allow
 $ yolo rule remove src
 $ yolo watch             # handle ask requests (daemon mode)
 ```
@@ -104,7 +104,7 @@ chroots into `.yolofs/mnt` and sets the working directory to
 `/home/user/project` — same absolute path, but now resolved through the
 YoloFS mount. That is why runtime examples use absolute paths like `/src` and
 `/etc` even when a rule was added as the relative path `src` from the
-session root. Files under that session root are typically ruled `allow-rw`;
+session root. Files under that session root are typically ruled `allow`;
 everything else defaults to `ask`.
 
 ## Privilege Model

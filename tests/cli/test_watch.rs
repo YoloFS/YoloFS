@@ -189,13 +189,13 @@ fn interactive_watch_deny_blocks_read() {
     assert!(result.is_err(), "read should fail after interactive 'deny'");
 }
 
-/// Interactive `yolofs watch` — daemon reads "ro\n" → AllowRo.
+/// Interactive `yolofs watch` — daemon reads "r\n" and responds `ro`.
 /// Read succeeds, but write is denied.
 #[test]
-fn interactive_watch_allow_ro_permits_read_denies_write() {
+fn interactive_watch_ro_permits_read_denies_write() {
     let (s, _path) = session_with_ask_file();
 
-    // Pre-fill two responses: "ro\n" for the read open, "ro\n" for the write open.
+    // Pre-fill two responses: "r\n" for the read open, "r\n" for the write open.
     let mut watch = Command::new(YOLO_BIN)
         .args(["watch"])
         .current_dir(&s.root)
@@ -212,17 +212,17 @@ fn interactive_watch_allow_ro_permits_read_denies_write() {
         .stdin
         .as_mut()
         .unwrap()
-        .write_all(b"ro\nro\n")
+        .write_all(b"r\nr\n")
         .unwrap();
 
-    // Read should succeed (AllowRo permits reads).
+    // Read should succeed (`ro` permits reads).
     let content = std::fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("read should succeed with allow-ro");
+        .expect("read should succeed with ro");
     assert_eq!(content, "base content\n");
 
-    // Write should fail (AllowRo denies writes).
+    // Write should fail (`ro` denies writes).
     let result = std::fs::write(s.mnt_path("hello.txt"), "overwritten\n");
-    assert!(result.is_err(), "write should fail with allow-ro");
+    assert!(result.is_err(), "write should fail with ro");
 
     watch.kill().ok();
     let _ = watch.wait();

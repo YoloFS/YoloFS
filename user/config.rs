@@ -20,11 +20,9 @@ use std::str::FromStr;
 pub enum Perm {
     Ask,
     Allow,
-    AllowRw,
-    AllowRo,
-    AllowRx,
+    Ro,
     Deny,
-    Hide,
+    Hidden,
 }
 
 impl Perm {
@@ -32,11 +30,9 @@ impl Perm {
         match self {
             Perm::Ask => ioctl::YOLO_PERM_ASK,
             Perm::Allow => ioctl::YOLO_PERM_ALLOW,
-            Perm::AllowRw => ioctl::YOLO_PERM_ALLOW_RW,
-            Perm::AllowRo => ioctl::YOLO_PERM_ALLOW_RO,
-            Perm::AllowRx => ioctl::YOLO_PERM_ALLOW_RX,
+            Perm::Ro => ioctl::YOLO_PERM_RO,
             Perm::Deny => ioctl::YOLO_PERM_DENY,
-            Perm::Hide => ioctl::YOLO_PERM_HIDE,
+            Perm::Hidden => ioctl::YOLO_PERM_HIDDEN,
         }
     }
 }
@@ -46,11 +42,9 @@ impl fmt::Display for Perm {
         f.write_str(match self {
             Perm::Ask => "ask",
             Perm::Allow => "allow",
-            Perm::AllowRw => "allow-rw",
-            Perm::AllowRo => "allow-ro",
-            Perm::AllowRx => "allow-rx",
+            Perm::Ro => "ro",
             Perm::Deny => "deny",
-            Perm::Hide => "hide",
+            Perm::Hidden => "hidden",
         })
     }
 }
@@ -61,11 +55,9 @@ impl FromStr for Perm {
         match s {
             "ask" => Ok(Perm::Ask),
             "allow" => Ok(Perm::Allow),
-            "allow-rw" => Ok(Perm::AllowRw),
-            "allow-ro" => Ok(Perm::AllowRo),
-            "allow-rx" => Ok(Perm::AllowRx),
+            "ro" => Ok(Perm::Ro),
             "deny" => Ok(Perm::Deny),
-            "hide" => Ok(Perm::Hide),
+            "hidden" => Ok(Perm::Hidden),
             _ => anyhow::bail!("unknown permission: {s}"),
         }
     }
@@ -96,14 +88,14 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         let rules = BTreeMap::from([
-            ("/usr".into(), Perm::AllowRx),
-            ("/lib".into(), Perm::AllowRx),
-            ("/lib64".into(), Perm::AllowRx),
-            ("/etc".into(), Perm::AllowRo),
-            ("/bin".into(), Perm::AllowRx),
-            ("/sbin".into(), Perm::AllowRx),
-            ("$HOME/.local".into(), Perm::AllowRo),
-            ("$HOME/.claude.json".into(), Perm::AllowRo),
+            ("/usr".into(), Perm::Ro),
+            ("/lib".into(), Perm::Ro),
+            ("/lib64".into(), Perm::Ro),
+            ("/etc".into(), Perm::Ro),
+            ("/bin".into(), Perm::Ro),
+            ("/sbin".into(), Perm::Ro),
+            ("$HOME/.local".into(), Perm::Ro),
+            ("$HOME/.claude.json".into(), Perm::Ro),
         ]);
         Config {
             ask_default: Some(Perm::Deny),
@@ -335,13 +327,17 @@ mod tests {
 
     #[test]
     fn perm_display() {
-        assert_eq!(Perm::AllowRw.to_string(), "allow-rw");
+        assert_eq!(Perm::Allow.to_string(), "allow");
+        assert_eq!(Perm::Ro.to_string(), "ro");
+        assert_eq!(Perm::Hidden.to_string(), "hidden");
         assert_eq!(Perm::Deny.to_string(), "deny");
     }
 
     #[test]
     fn perm_parse() {
-        assert_eq!("allow-rw".parse::<Perm>().unwrap(), Perm::AllowRw);
+        assert_eq!("allow".parse::<Perm>().unwrap(), Perm::Allow);
+        assert_eq!("ro".parse::<Perm>().unwrap(), Perm::Ro);
+        assert_eq!("hidden".parse::<Perm>().unwrap(), Perm::Hidden);
         assert_eq!("deny".parse::<Perm>().unwrap(), Perm::Deny);
         assert!("bogus".parse::<Perm>().is_err());
     }
@@ -354,10 +350,10 @@ mod tests {
             perm: Perm,
         }
         let w = Wrapper {
-            perm: Perm::AllowRx,
+            perm: Perm::Ro,
         };
         let s = toml::to_string(&w).unwrap();
-        assert!(s.contains("allow-rx"), "s = {s}");
+        assert!(s.contains("ro"), "s = {s}");
         let w2: Wrapper = toml::from_str(&s).unwrap();
         assert_eq!(w, w2);
     }
@@ -402,8 +398,8 @@ mod tests {
     #[test]
     fn config_default_has_expected_rules() {
         let config = Config::default();
-        assert_eq!(config.rules["/usr"], Perm::AllowRx);
-        assert_eq!(config.rules["/etc"], Perm::AllowRo);
+        assert_eq!(config.rules["/usr"], Perm::Ro);
+        assert_eq!(config.rules["/etc"], Perm::Ro);
         assert_eq!(config.ask_default, Some(Perm::Deny));
     }
 
@@ -498,11 +494,11 @@ mod tests {
         .unwrap();
 
         let mut config = Config::load(&path).unwrap();
-        config.rules.insert("/tmp".to_string(), Perm::AllowRw);
+        config.rules.insert("/tmp".to_string(), Perm::Allow);
         config.save(&path).unwrap();
 
         let loaded = Config::load(&path).unwrap();
-        assert_eq!(loaded.rules["/tmp"], Perm::AllowRw);
+        assert_eq!(loaded.rules["/tmp"], Perm::Allow);
     }
 
     #[test]
@@ -513,8 +509,8 @@ mod tests {
             rules: BTreeMap::new(),
             ..Default::default()
         };
-        config.rules.insert("/tmp".to_string(), Perm::AllowRw);
-        config.rules.insert("/etc".to_string(), Perm::AllowRo);
+        config.rules.insert("/tmp".to_string(), Perm::Allow);
+        config.rules.insert("/etc".to_string(), Perm::Ro);
         config.save(&path).unwrap();
 
         let mut loaded = Config::load(&path).unwrap();

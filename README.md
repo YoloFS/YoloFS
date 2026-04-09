@@ -14,7 +14,7 @@ before the agent proceeds.
 | Capability            | Summary |
 | --------------------- | ------- |
 | **Staging-commit**    | Every write goes to a staging layer. Changes are invisible to the lower FS until an explicit `commit`. An `abort` discards them instantly. |
-| **Permission gating** | Every file starts in the `ask` state. A rule engine promotes matching paths to `allow`, `allow-rw`, `allow-ro`, `allow-rx`, or `deny`. When a thread touches an `ask` file, the thread is put to sleep; a userspace daemon receives the request and writes back a decision that wakes the thread. |
+| **Permission gating** | Every file starts in the `ask` state. A rule engine promotes matching paths to `allow`, `ro`, `deny`, or `hidden`. When a thread touches an `ask` file, the thread is put to sleep; a userspace daemon receives the request and writes back a decision that wakes the thread. |
 
 Design goals:
 
@@ -56,10 +56,10 @@ cd /home/user/project
 yolo init
 
 # Configure rules (or edit yolofs.toml directly)
-yolo rule add .         allow-rw    # project files: full access
+yolo rule add .         allow       # project files: full access
 yolo rule add /etc      deny        # system config: blocked
-yolo rule add /etc/hosts allow-ro   # except hosts: read-only
-yolo rule add /usr/bin  allow-rx    # binaries: run but not modify
+yolo rule add /etc/hosts ro         # except hosts: read+execute, not write
+yolo rule add /usr/bin  ro          # binaries and shared files: read+execute
 
 # Launch an interactive sandbox (mount + watch + shell)
 yolo
@@ -120,10 +120,10 @@ ask_timeout = 30        # seconds before ask request times out (0 = infinite)
 checkpoint = true         # auto-checkpoint after each `yolo exec`
 
 [rules]
-"."          = "allow-rw"
+"."          = "allow"
 "/etc"       = "deny"
-"/etc/hosts" = "allow-ro"
-"/usr/bin"   = "allow-rx"
+"/etc/hosts" = "ro"
+"/usr/bin"   = "ro"
 ```
 
 Paths in `[rules]` can be **absolute** (`/etc`) or **relative** to the session

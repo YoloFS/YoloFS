@@ -102,7 +102,7 @@ fn rmdir_denied_without_rule() {
     );
 }
 
-/// With allow-rw rule on session root, create should succeed.
+/// With allow rule on session root, create should succeed.
 #[test]
 fn create_allowed_with_rw_rule() {
     // Use the default session which has permission=false, then we can't
@@ -115,7 +115,7 @@ fn create_allowed_with_rw_rule() {
     assert!(s.mnt_path("allowed.txt").exists());
 }
 
-/// With allow-ro rule, create should fail (read-only).
+/// With ro rule, create should fail (read-only).
 #[test]
 fn create_denied_with_ro_rule() {
     // Build config with session root in rules after session is created.
@@ -128,7 +128,7 @@ fn create_denied_with_ro_rule() {
     fs::write(root.join("test.sh"), "#!/bin/sh\n").ok();
 
     let mut rules = BTreeMap::new();
-    rules.insert(root.to_string_lossy().into_owned(), Perm::AllowRo);
+    rules.insert(root.to_string_lossy().into_owned(), Perm::Ro);
 
     let config = Config {
         permission: true,
@@ -153,7 +153,7 @@ fn create_denied_with_ro_rule() {
     let result = fs::write(mnt.join("denied.txt"), "data");
     assert!(
         result.is_err(),
-        "create should be denied with allow-ro rule"
+        "create should be denied with ro rule"
     );
 
     let _ = std::process::Command::new(YOLO_BIN)

@@ -12,8 +12,8 @@ fn apply_rules_shows_results() {
     Config {
         permission: false,
         rules: BTreeMap::from([
-            ("/etc".into(), Perm::AllowRo),
-            ("/usr".into(), Perm::AllowRx),
+            ("/etc".into(), Perm::Ro),
+            ("/usr".into(), Perm::Ro),
         ]),
         ..Default::default()
     }
@@ -29,8 +29,8 @@ fn apply_rules_shows_results() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("applying 2 rule(s)"), "stderr = {stderr}");
-    assert!(stderr.contains("/etc = allow-ro"), "stderr = {stderr}");
-    assert!(stderr.contains("/usr = allow-rx"), "stderr = {stderr}");
+    assert!(stderr.contains("/etc = ro"), "stderr = {stderr}");
+    assert!(stderr.contains("/usr = ro"), "stderr = {stderr}");
 }
 
 #[test]
@@ -72,13 +72,13 @@ fn rule_add_persists_offline() {
     .unwrap();
 
     let (ok, _, stderr) = session
-        .cli_output(&["rule", "add", "/tmp", "allow-rw"])
+        .cli_output(&["rule", "add", "/tmp", "allow"])
         .unwrap();
     assert!(ok, "rule add should succeed: {stderr}");
 
     let content = std::fs::read_to_string(session.root.join("yolofs.toml")).unwrap();
     assert!(
-        content.contains("allow-rw"),
+        content.contains("allow"),
         "rule should be in yolofs.toml: {content}"
     );
 }
@@ -91,7 +91,7 @@ fn tilde_rule_resolves_to_home() {
     session.cli(&["unmount"]).unwrap();
     std::fs::write(
         session.root.join("yolofs.toml"),
-        "permission = false\n\n[rules]\n\"~\" = \"allow-rw\"\n",
+        "permission = false\n\n[rules]\n\"~\" = \"allow\"\n",
     )
     .unwrap();
 
@@ -118,7 +118,7 @@ fn nonexistent_rule_path_warns() {
     session.cli(&["unmount"]).unwrap();
     std::fs::write(
         session.root.join("yolofs.toml"),
-        "permission = false\n\n[rules]\n\"/nonexistent_yolo_xyz\" = \"allow-rw\"\n",
+        "permission = false\n\n[rules]\n\"/nonexistent_yolo_xyz\" = \"allow\"\n",
     )
     .unwrap();
 

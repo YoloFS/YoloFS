@@ -79,7 +79,13 @@ fn find_ko() -> Option<PathBuf> {
         return Some(build_path);
     }
 
-    let release = current_kernel_release()?;
+    let mut uts = unsafe { std::mem::zeroed::<libc::utsname>() };
+    if unsafe { libc::uname(&mut uts) } != 0 {
+        return None;
+    }
+    let release = unsafe { std::ffi::CStr::from_ptr(uts.release.as_ptr()) }
+        .to_str()
+        .ok()?;
     let system_path = PathBuf::from(format!("/lib/modules/{release}/extra/yolofs.ko"));
     if system_path.exists() {
         return Some(system_path);
@@ -90,19 +96,7 @@ fn find_ko() -> Option<PathBuf> {
 
 fn dev_ko_path() -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
-    let release = current_kernel_release()?;
-    Some(cwd.join("build").join(release).join("yolofs.ko"))
-}
-
-fn current_kernel_release() -> Option<String> {
-    let mut uts = unsafe { std::mem::zeroed::<libc::utsname>() };
-    if unsafe { libc::uname(&mut uts) } != 0 {
-        return None;
-    }
-    unsafe { std::ffi::CStr::from_ptr(uts.release.as_ptr()) }
-        .to_str()
-        .ok()
-        .map(str::to_owned)
+    Some(cwd.join("build").join("yolofs.ko"))
 }
 
 /// Find all active YoloFS session directories by reading /proc/mounts.
@@ -159,7 +153,7 @@ mod tests {
             let found = find_ko().expect("find_ko should succeed when build dir exists");
             assert_eq!(
                 found, build_path,
-                "should prefer build/<kernel-version>/ over system path"
+                "should prefer build/yolofs.ko over system path"
             );
         }
     }

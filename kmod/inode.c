@@ -211,7 +211,7 @@ static int yolo_permission(struct mnt_idmap *idmap,
 	perm = info->cached_perm;
 
 	/* Hidden paths return ENOENT regardless of type */
-	if (perm == YOLO_PERM_HIDE)
+	if (perm == YOLO_PERM_HIDDEN)
 		return -ENOENT;
 
 	/* Directories: delegate to lower FS (deny still allows traversal) */
@@ -225,11 +225,7 @@ static int yolo_permission(struct mnt_idmap *idmap,
 	switch (perm) {
 	case YOLO_PERM_ALLOW:
 		return 0;
-	case YOLO_PERM_ALLOW_RW:
-		return (mask & MAY_EXEC) ? -EACCES : 0;
-	case YOLO_PERM_ALLOW_RO:
-		return (mask & (MAY_WRITE | MAY_EXEC)) ? -EACCES : 0;
-	case YOLO_PERM_ALLOW_RX:
+	case YOLO_PERM_RO:
 		return (mask & MAY_WRITE) ? -EACCES : 0;
 	case YOLO_PERM_DENY:
 		return -EACCES;
@@ -307,7 +303,7 @@ static int yolo_getattr(struct mnt_idmap *idmap,
 		struct yolo_inode_info *ii = YOLO_I(inode);
 		if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
 			yolo_cache_perm(inode, dentry);
-		if (ii->cached_perm == YOLO_PERM_HIDE)
+		if (ii->cached_perm == YOLO_PERM_HIDDEN)
 			return -ENOENT;
 	}
 

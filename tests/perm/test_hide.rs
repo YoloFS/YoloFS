@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use yolofs::config::{Config, Perm};
 
-/// Helper: create a session with a hide rule on a subdirectory.
+/// Helper: create a session with a hidden rule on a subdirectory.
 fn hide_session() -> YoloSession {
     // Create base with a "secret" subdirectory.
     let root = tempfile::tempdir().unwrap().keep();
@@ -18,7 +18,7 @@ fn hide_session() -> YoloSession {
     let mut rules = BTreeMap::new();
     rules.insert(
         root.join("secret").to_string_lossy().into_owned(),
-        Perm::Hide,
+        Perm::Hidden,
     );
 
     let config = Config {
@@ -127,7 +127,7 @@ fn hide_single_file() {
     let mut rules = BTreeMap::new();
     rules.insert(
         root.join("hidden.txt").to_string_lossy().into_owned(),
-        Perm::Hide,
+        Perm::Hidden,
     );
 
     let config = Config {

@@ -6,7 +6,7 @@ interposition. It adds two orthogonal capabilities:
 | Capability            | Summary |
 | --------------------- | ------- |
 | **Staging-commit**    | Every write goes to a staging layer. Changes are invisible to the lower FS until an explicit `commit`. An `abort` discards them instantly. |
-| **Permission gating** | Every file starts in the `ask` state. A rule engine promotes matching paths to `allow`, `allow-rw`, `allow-ro`, `allow-rx`, or `deny`. When a thread touches an `ask` file, the thread is put to sleep; a userspace daemon receives the request and writes back a decision that wakes the thread. |
+| **Permission gating** | Every file starts in the `ask` state. A rule engine promotes matching paths to `allow`, `ro`, `deny`, or `hidden`. When a thread touches an `ask` file, the thread is put to sleep; a userspace daemon receives the request and writes back a decision that wakes the thread. |
 
 ## Design Goals
 
@@ -52,7 +52,7 @@ The two layers execute in order for every VFS operation:
    Regular-file opens use the file's own permission. Directory
    mutations use the parent directory's permission. If `ask`, the
    thread sleeps until userspace decides. Directory read-like ops
-   (lookup, traversal, readdir, stat) are **not** gated — only `hide`
+   (lookup, traversal, readdir, stat) are **not** gated — only `hidden`
    returns `-ENOENT`; `deny`/`ask` have no effect on them.
 2. **Staging Layer** — routes reads to the staged inode if the file has been
    modified, otherwise to the base. Ensures writes go to staged inodes.
@@ -126,17 +126,17 @@ $ yolo commit
 
 # 1c. Install rules via CLI from the session root (attaches perm directly
 #     to dentries)
-$ yolo rule add src allow-rw
+$ yolo rule add src allow
 $ yolo rule add /etc deny
-$ yolo rule add /etc/hosts allow-ro
+$ yolo rule add /etc/hosts ro
 
-# 2. Agent writes to a file matching an allow-rw rule
+# 2. Agent writes to a file matching an allow rule
 $ echo "hello" > /src/main.rs
-   -> kernel: yolo_lookup("src") -> explicit rule on dentry -> perm=ALLOW_RW
+   -> kernel: yolo_lookup("src") -> explicit rule on dentry -> perm=ALLOW
    -> kernel: yolo_lookup("main.rs") -> no rule on dentry (NONE)
-              -> yolo_cache_perm() walks up: main.rs(NONE) -> src(ALLOW_RW)
-              -> caches ALLOW_RW on main.rs inode
-   -> kernel: yolo_open() -> cached_perm=ALLOW_RW, O_WRONLY -> pass
+              -> yolo_cache_perm() walks up: main.rs(NONE) -> src(ALLOW)
+              -> caches ALLOW on main.rs inode
+   -> kernel: yolo_open() -> cached_perm=ALLOW, O_WRONLY -> pass
    -> kernel: yolo_write_iter() -> pass-through to staged inode
 
 # 3. Agent reads /etc/passwd (denied -- /etc has deny rule)
@@ -147,11 +147,11 @@ $ cat /etc/passwd
               -> caches DENY on passwd inode
    -> kernel: yolo_open("passwd") -> cached_perm=DENY -> -EACCES
 
-# 4. Agent reads /etc/hosts (explicit override -> allow-ro)
+# 4. Agent reads /etc/hosts (explicit override -> ro)
 $ cat /etc/hosts
-   -> kernel: yolo_lookup("hosts") -> explicit rule on dentry -> perm=ALLOW_RO
-              -> yolo_cache_perm() -> caches ALLOW_RO on hosts inode
-   -> kernel: yolo_open() -> cached_perm=ALLOW_RO -> pass
+   -> kernel: yolo_lookup("hosts") -> explicit rule on dentry -> perm=RO
+              -> yolo_cache_perm() -> caches RO on hosts inode
+   -> kernel: yolo_open() -> cached_perm=RO -> pass
 
 # 5. Agent reads /tmp/secrets (no rule anywhere -> walk up reaches root -> ask)
 $ cat /tmp/secrets
@@ -162,14 +162,14 @@ $ cat /tmp/secrets
    -> kernel: yolo_open() -> cached_perm=ASK
    -> kernel: enqueue request, thread sleeps
    -> daemon: ioctl(GET_REQUEST) -> yolo_ctl_request { id:1, path:"/tmp/secrets", ... }
-   -> daemon: decision: allow-ro
-   -> daemon: ioctl(PUT_RESPONSE, yolo_ctl_response { id:1, decision:ALLOW_RO })
-   -> kernel: wake thread, apply one-shot ALLOW_RO to this open
+   -> daemon: decision: ro
+   -> daemon: ioctl(PUT_RESPONSE, yolo_ctl_response { id:1, decision:RO })
+   -> kernel: wake thread, apply one-shot RO to this open
    -> kernel: open base/tmp/secrets read-only, proceed
 
-# 6. Agent tries to write /etc/hosts (walk up finds ALLOW_RO)
+# 6. Agent tries to write /etc/hosts (walk up finds RO)
 $ echo x >> /etc/hosts
-   -> kernel: yolo_open() -> ALLOW_RO, O_WRONLY -> -EACCES
+   -> kernel: yolo_open() -> RO, O_WRONLY -> -EACCES
 
 # 7. Commit all staged changes to the real filesystem (userspace)
 $ yolo commit

@@ -11,7 +11,7 @@ use yolofs::config::{Config, Perm};
 fn newly_created_file_checked_on_reopen() {
     let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
-        rules: BTreeMap::from([("/".into(), Perm::AllowRw)]),
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
     })
     .expect("session setup");
@@ -59,7 +59,7 @@ fn live_rule_change_takes_effect() {
     assert!(result.is_err(), "read should fail under deny");
 
     // `rule add` takes a host path and resolves it through the mount internally.
-    s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"])
+    s.cli(&["rule", "add", &s.root.display().to_string(), "allow"])
         .unwrap();
 
     let content = fs::read_to_string(s.mnt_path("hello.txt"))
@@ -77,9 +77,9 @@ fn live_rule_remove_reapplies_gating() {
     })
     .expect("session setup");
 
-    s.cli(&["rule", "add", &s.root.display().to_string(), "allow-rw"])
+    s.cli(&["rule", "add", &s.root.display().to_string(), "allow"])
         .unwrap();
-    fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with allow-rw rule");
+    fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with allow rule");
 
     s.cli(&["rule", "remove", &s.root.display().to_string()])
         .unwrap();
@@ -111,7 +111,7 @@ fn rename_across_permission_boundary() {
     Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([
-            (s.root.join("allowed").display().to_string(), Perm::AllowRw),
+            (s.root.join("allowed").display().to_string(), Perm::Allow),
             (s.root.join("denied").display().to_string(), Perm::Deny),
         ]),
         ..Default::default()

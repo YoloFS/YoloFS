@@ -5,13 +5,13 @@ ask_timeout = 30
 checkpoint = true
 
 [rules]
-"/etc" = "allow-ro"
-"/usr/bin" = "allow-rx"
-"/usr/lib" = "allow-rx"
-"/usr/share" = "allow-ro"
+"/etc" = "ro"
+"/usr/bin" = "ro"
+"/usr/lib" = "ro"
+"/usr/share" = "ro"
 "/usr/bin/git" = "ask"
-"$HOME/.bash_history" = "allow-rw"
+"$HOME/.bash_history" = "allow"
 "$HOME/.ssh/id_ed25519" = "ask"
-"." = "allow-rw"
-".yolofs" = "hide"
-"yolofs.toml" = "hide"
+"." = "allow"
+".yolofs" = "hidden"
+"yolofs.toml" = "hidden"
