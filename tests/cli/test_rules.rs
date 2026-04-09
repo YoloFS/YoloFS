@@ -11,10 +11,7 @@ fn apply_rules_shows_results() {
     session.cli(&["unmount"]).unwrap();
     Config {
         permission: false,
-        rules: BTreeMap::from([
-            ("/etc".into(), Perm::Ro),
-            ("/usr".into(), Perm::Ro),
-        ]),
+        rules: BTreeMap::from([("/etc".into(), Perm::Ro), ("/usr".into(), Perm::Ro)]),
         ..Default::default()
     }
     .save(&session.root.join("yolofs.toml"))

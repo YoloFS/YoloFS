@@ -118,10 +118,8 @@ fn different_paths_different_rules() {
         .expect("remount");
 
     // Read should work in both.
-    fs::read_to_string(s.mnt_path("readonly/data.txt"))
-        .expect("read should succeed in ro dir");
-    fs::read_to_string(s.mnt_path("writable/data.txt"))
-        .expect("read should succeed in allow dir");
+    fs::read_to_string(s.mnt_path("readonly/data.txt")).expect("read should succeed in ro dir");
+    fs::read_to_string(s.mnt_path("writable/data.txt")).expect("read should succeed in allow dir");
 
     // Write should fail in readonly, succeed in writable.
     let result = fs::write(s.mnt_path("readonly/data.txt"), "modified\n");

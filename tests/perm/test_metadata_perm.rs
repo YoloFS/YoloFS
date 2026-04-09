@@ -151,10 +151,7 @@ fn create_denied_with_ro_rule() {
         .join(".yolofs/mnt")
         .join(root.strip_prefix("/").unwrap());
     let result = fs::write(mnt.join("denied.txt"), "data");
-    assert!(
-        result.is_err(),
-        "create should be denied with ro rule"
-    );
+    assert!(result.is_err(), "create should be denied with ro rule");
 
     let _ = std::process::Command::new(YOLO_BIN)
         .args(["unmount", "--force"])

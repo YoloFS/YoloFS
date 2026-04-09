@@ -16,8 +16,7 @@ fn ro_permits_read_denies_write() {
     .expect("session setup");
 
     // Read should succeed
-    let content =
-        fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with ro");
+    let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with ro");
     assert_eq!(content, "base content\n");
 
     // Write should fail

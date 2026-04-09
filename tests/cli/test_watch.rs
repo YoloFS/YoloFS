@@ -208,16 +208,11 @@ fn interactive_watch_ro_permits_read_denies_write() {
 
     std::thread::sleep(Duration::from_millis(200));
 
-    watch
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(b"r\nr\n")
-        .unwrap();
+    watch.stdin.as_mut().unwrap().write_all(b"r\nr\n").unwrap();
 
     // Read should succeed (`ro` permits reads).
-    let content = std::fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("read should succeed with ro");
+    let content =
+        std::fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with ro");
     assert_eq!(content, "base content\n");
 
     // Write should fail (`ro` denies writes).

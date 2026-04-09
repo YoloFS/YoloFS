@@ -349,9 +349,7 @@ mod tests {
         struct Wrapper {
             perm: Perm,
         }
-        let w = Wrapper {
-            perm: Perm::Ro,
-        };
+        let w = Wrapper { perm: Perm::Ro };
         let s = toml::to_string(&w).unwrap();
         assert!(s.contains("ro"), "s = {s}");
         let w2: Wrapper = toml::from_str(&s).unwrap();
