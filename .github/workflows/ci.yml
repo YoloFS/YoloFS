@@ -75,8 +75,12 @@ jobs:
             name=${key#submodule.}; name=${name%.path}
             url=$(git config -f .gitmodules "submodule.$name.url")
             case "$url" in *github.com/YoloFS/*) ;; *) continue ;; esac
-            sha=$(git ls-remote "$url" HEAD 2>/dev/null | cut -f1) || continue
-            [ -n "$sha" ] && git update-index --cacheinfo 160000,"$sha","$path"
+            sha=$(git ls-remote "$url" HEAD | cut -f1)
+            if [ -z "$sha" ]; then
+              echo "::error::git ls-remote failed for $url (submodule $name at $path)"
+              exit 1
+            fi
+            git update-index --cacheinfo 160000,"$sha","$path"
           done
           git diff --cached --quiet || git commit -m "chore: update submodules"
 
