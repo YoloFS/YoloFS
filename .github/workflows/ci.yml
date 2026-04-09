@@ -89,4 +89,4 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: update submodules"
 
       - name: Push changes
-        run: git diff --cached --quiet || git push
+        run: git push
