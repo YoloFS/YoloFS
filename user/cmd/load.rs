@@ -74,24 +74,35 @@ pub fn reload() -> Result<()> {
 
 /// Find the .ko file: dev build directory, then system install path.
 fn find_ko() -> Option<PathBuf> {
-    let cwd_path = Path::new("local/kmod/yolofs.ko");
-    if cwd_path.exists() {
-        return Some(cwd_path.to_path_buf());
+    let build_path = dev_ko_path()?;
+    if build_path.exists() {
+        return Some(build_path);
     }
 
-    let mut uts = unsafe { std::mem::zeroed::<libc::utsname>() };
-    if unsafe { libc::uname(&mut uts) } != 0 {
-        return None;
-    }
-    let release = unsafe { std::ffi::CStr::from_ptr(uts.release.as_ptr()) }
-        .to_str()
-        .ok()?;
+    let release = current_kernel_release()?;
     let system_path = PathBuf::from(format!("/lib/modules/{release}/extra/yolofs.ko"));
     if system_path.exists() {
         return Some(system_path);
     }
 
     None
+}
+
+fn dev_ko_path() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let release = current_kernel_release()?;
+    Some(cwd.join("build").join(release).join("yolofs.ko"))
+}
+
+fn current_kernel_release() -> Option<String> {
+    let mut uts = unsafe { std::mem::zeroed::<libc::utsname>() };
+    if unsafe { libc::uname(&mut uts) } != 0 {
+        return None;
+    }
+    unsafe { std::ffi::CStr::from_ptr(uts.release.as_ptr()) }
+        .to_str()
+        .ok()
+        .map(str::to_owned)
 }
 
 /// Find all active YoloFS session directories by reading /proc/mounts.
@@ -143,13 +154,13 @@ mod tests {
 
     #[test]
     fn find_ko_prefers_build_dir() {
-        let cwd_path = Path::new("local/kmod/yolofs.ko");
-        if cwd_path.exists() {
+        let build_path = dev_ko_path().expect("dev ko path should resolve");
+        if build_path.exists() {
             let found = find_ko().expect("find_ko should succeed when build dir exists");
             assert_eq!(
                 found,
-                cwd_path.to_path_buf(),
-                "should prefer local/kmod/ over system path"
+                build_path,
+                "should prefer build/<kernel-version>/ over system path"
             );
         }
     }

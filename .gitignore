@@ -1,6 +1,8 @@
-/data/*
-!/data/README.md
 .yolofs
+
+build/
+target/
+vm/
 
 # clangd
 compile_commands.json

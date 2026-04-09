@@ -1,9 +1,10 @@
 # ── Variables ─────────────────────────────────────────────────────────
 
 KDIR             := /lib/modules/$(shell uname -r)
-KMOD_OUT         := local/kmod/yolofs.ko
+BUILD_DIR        := $(CURDIR)/build/$(shell uname -r)
+KMOD_OUT         := $(BUILD_DIR)/yolofs.ko
 KMOD_INSTALL_DIR := $(KDIR)/extra
-LOCAL_DIR        := $(CURDIR)-local
+USER_BIN         := $(CURDIR)/target/release/yolo
 
 # ── Build ─────────────────────────────────────────────────────────────
 
@@ -11,18 +12,17 @@ LOCAL_DIR        := $(CURDIR)-local
 
 build: user kmod
 
-$(LOCAL_DIR):
+$(BUILD_DIR):
 	mkdir -p $@
 
-user: | $(LOCAL_DIR)
+user: | $(BUILD_DIR)
 	cargo build --release -p yolofs
 
 kmod: $(KMOD_OUT)
 
-$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(LOCAL_DIR)
-	mkdir -p $(LOCAL_DIR)/kmod
-	cp kmod/Kbuild $(LOCAL_DIR)/kmod/Kbuild
-	$(MAKE) -j$(nproc) -C $(KDIR)/build M=$(LOCAL_DIR)/kmod KBUILD_KMOD_SRC=$(CURDIR)/kmod \
+$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(BUILD_DIR)
+	cp kmod/Kbuild $(BUILD_DIR)/Kbuild
+	$(MAKE) -j$(nproc) -C $(KDIR)/build M=$(BUILD_DIR) KBUILD_KMOD_SRC=$(CURDIR)/kmod \
 		CONFIG_DEBUG_INFO_BTF_MODULES= modules
 
 .PHONY: clean clean-user clean-kmod
@@ -33,14 +33,14 @@ clean-user:
 	cargo clean
 
 clean-kmod:
-	rm -rf $(LOCAL_DIR)/kmod
+	rm -rf $(BUILD_DIR)
 
 # ── Install ───────────────────────────────────────────────────────────
 
 .PHONY: install uninstall
 
 install: user kmod
-	sudo install -m 4755 -o root local/target/release/yolo /usr/local/bin/yolo
+	sudo install -m 4755 -o root $(USER_BIN) /usr/local/bin/yolo
 	sudo install -d $(KMOD_INSTALL_DIR)
 	sudo install -m 644 $(KMOD_OUT) $(KMOD_INSTALL_DIR)/yolofs.ko
 
@@ -54,10 +54,10 @@ uninstall:
 
 test: test-unit test-e2e
 
-test-unit: | $(LOCAL_DIR)
+test-unit: | $(BUILD_DIR)
 	cargo test --release -p yolofs --lib
 
-test-e2e: install | $(LOCAL_DIR)
+test-e2e: install | $(BUILD_DIR)
 	yolo reload
 	cargo test --release -p yolofs --test e2e -- --test-threads=1
 	yolo unload
@@ -66,11 +66,11 @@ test-e2e: install | $(LOCAL_DIR)
 
 .PHONY: lint fix
 
-lint: | $(LOCAL_DIR)
+lint: | $(BUILD_DIR)
 	cargo fmt --check
 	cargo clippy --release -- -D warnings
 
-fix: | $(LOCAL_DIR)
+fix: | $(BUILD_DIR)
 	cargo fmt
 	cargo clippy --release --fix --allow-dirty
 

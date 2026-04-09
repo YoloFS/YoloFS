@@ -11,7 +11,8 @@ import textwrap
 import time
 from pathlib import Path
 
-DATA_DIR = (Path(__file__).resolve().parent / "local").resolve() / "vm"
+REPO_DIR = Path(__file__).resolve().parent
+DATA_DIR = REPO_DIR / "vm"
 IMAGE_NAME = "ubuntu-24.04-minimal-cloudimg-amd64.img"
 IMAGE_PATH = DATA_DIR / IMAGE_NAME
 IMAGE_URL = f"https://cloud-images.ubuntu.com/minimal/releases/noble/release/{IMAGE_NAME}"
