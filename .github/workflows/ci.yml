@@ -67,14 +67,13 @@ jobs:
         run: |
           make fix
           git add -A
-          git diff --cached --quiet || git commit -m "chore: auto-fix lint"
+          git diff --cached --quiet || git commit -m "chore: auto-fix lint [skip ci]"
 
       - name: Update submodules
         run: |
-          git config -f .gitmodules --get-regexp 'submodule\..*\.path' | while read key path; do
-            name=${key#submodule.}; name=${name%.path}
-            url=$(git config -f .gitmodules "submodule.$name.url")
-            case "$url" in *github.com/YoloFS/*) ;; *) continue ;; esac
+          git config -f .gitmodules --get-regexp '^submodule\..*\.url$' | while read -r key url; do
+            name=${key#submodule.}; name=${name%.url}
+            path=$(git config -f .gitmodules "submodule.$name.path")
             if ! ls_out=$(git ls-remote "$url" HEAD 2>&1); then
               echo "::warning::git ls-remote failed for $url (submodule $name at $path): $ls_out; skipping"
               continue
@@ -86,7 +85,7 @@ jobs:
             fi
             git update-index --cacheinfo 160000,"$sha","$path"
           done || true
-          git diff --cached --quiet || git commit -m "chore: update submodules"
+          git diff --cached --quiet || git commit -m "chore: update submodules [skip ci]"
 
       - name: Push changes
         run: git push
