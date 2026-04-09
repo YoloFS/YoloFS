@@ -80,19 +80,19 @@ fix: | $(LOCAL_DIR)
 
 bench: install | $(LOCAL_DIR)
 	yolo reload
-	cargo build --release -p yolo-bench
+	cd bench && cargo build --release
 	./local/target/release/yolo-bench
 	yolo unload
 
 bench-micro: install | $(LOCAL_DIR)
 	yolo reload
-	cargo build --release -p yolo-bench
+	cd bench && cargo build --release
 	./local/target/release/yolo-bench --micro
 	yolo unload
 
 bench-macro: install | $(LOCAL_DIR)
 	yolo reload
-	cargo build --release -p yolo-bench
+	cd bench && cargo build --release
 	./local/target/release/yolo-bench --macro
 	yolo unload
 
