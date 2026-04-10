@@ -70,6 +70,17 @@ else
     info "All APT packages already installed: ${pkgs[*]}"
 fi
 
+# ── uv (Python package manager, host only) ───────────────────────────
+
+if ! is_vm; then
+    if command -v uv &>/dev/null; then
+        info "uv already installed: $(uv --version)"
+    else
+        info "Installing uv"
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+    fi
+fi
+
 # ── Rust toolchain ────────────────────────────────────────────────────
 
 if command -v rustc &>/dev/null; then
