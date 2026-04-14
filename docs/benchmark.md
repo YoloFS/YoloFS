@@ -24,24 +24,22 @@ it against alternative staging/sandboxing approaches.
 
 ### Publication artifacts
 
-The report pipeline can emit a publication-oriented **data-op (fio)** summary
-table under `bench-results/<host>/paper/`:
+The paper pipeline can emit a publication-oriented **data-op (fio)** summary
+table under `paper/generated/`:
 
-- `op-data-summary.tex` — compact LaTeX table source,
-- `op-data-summary.pdf` — compiled table PDF (if `pdflatex` is available),
-- `op-data-summary.svg` — vector SVG rendered from the PDF (if `pdftocairo`
+- `ops-data.tex` — compact LaTeX table source,
+- `fio.pdf` — compiled table PDF (if `pdflatex` is available),
+- `fio.svg` — vector SVG rendered from the PDF (if `pdftocairo`
   is available).
 
 The table reports throughput in MB/s and compares each backend to native. If
 the difference from native is under 5%, the cell is rendered as
 `same as baseline`.
 
-A dedicated `paper-report.html` page links these artifacts.
-
-For HTML report-only regeneration, `yolo-bench rerender --workload <name>`
-regenerates a single workload page (and refreshes the index) without
-re-rendering every workload. For the paper-oriented developer-workflow plot,
-`yolo-bench rerender --paper dev-workflow` is accepted as a convenience alias.
+For report-only generation, `yolo-bench report --workload <name>` regenerates
+a single workload page (and refreshes the index) without rebuilding every
+workload page. For paper artifacts, `yolo-bench paper --artifact dev-workflow`
+regenerates just that output into `paper/generated/`.
 
 The `commit-time` paper figure uses the native `10,000`-file metadata-op time
 as its baseline reference instead of the session-micro backends, so the figure
@@ -49,8 +47,8 @@ keeps a Base anchor even though native has no backend commit phase. The
 published figure now shows only the commit panel, with the x-axis labeled
 `commit time (μs/file)`.
 
-The metadata-ops paper figure keeps only the capped/annotated paper variant,
-and that preferred artifact now shows only the `100 files` row instead of both
+The metadata-ops paper figure keeps only the capped/annotated rendering,
+and that artifact now shows only the `100 files` row instead of both
 `100 files` and `10K files`. This keeps the paper figure focused on the small
 directory case without carrying the extra comparison row, and because that is
 now the only row in the figure, it does not repeat `100 files` as a left-side
@@ -812,7 +810,8 @@ Each backend implements `available()`, `unavailable_reason()`, and `hidden()`.
 yolo-bench [--workload <name> ...] [--backend <name>] [--micro] [--macro] [--op]
            [--op-group <meta|fio>]
            [--runs N] [--verbose] [--timestamped-results]
-yolo-bench rerender
+yolo-bench report
+yolo-bench paper
 yolo-bench list
 yolo-bench profile [--workload <name>] [--scenario <name>] [--no-bpftrace]
 yolo-bench exec-workload --name <name> --dest <path> [--verbose]
@@ -833,8 +832,9 @@ yolo-bench exec-workload --name <name> --dest <path> [--verbose]
 - `--runs N`: number of timed iterations (default 3).
 - `--verbose`: capture detailed logs for all runs, not just failures.
 - `--timestamped-results`: write results into a timestamped subdirectory
-  (`bench-results/<hostname>/<timestamp>/`) instead of overwriting.
-- `rerender`: regenerate HTML reports from existing `results.json`.
+  (`bench-results/<timestamp>/`) instead of overwriting.
+- `report`: regenerate HTML reports from existing `results.json`.
+- `paper`: generate paper artifacts into `paper/generated/`.
 - `list`: print all registered workloads and backends with availability.
 - `profile`: run the profiling mode (see §7).
 - `exec-workload`: internal subcommand used by all backends to run a
@@ -855,9 +855,14 @@ with verbose logging enabled. Verbose logs include:
 
 ### Results
 
-Results are written to `bench-results/<hostname>/`. By default the previous
-result for that host is overwritten; pass `--timestamped-results` to retain
-multiple runs.
+Results are written under `bench-results/`. By default the previous run is
+overwritten; pass `--timestamped-results` to retain multiple runs.
+
+Each run root uses this layout:
+
+- `report/` — HTML reports plus their local JSON inputs such as `index.html`,
+  workload pages, `results.json`, and `checkpoint-scaling.json`
+- `profiling/` — profiling artifacts grouped by workload and backend
 
 Each result records environment metadata (CPU, memory, storage device and model,
 filesystem type, kernel version, distro) so results from different machines are
@@ -866,12 +871,12 @@ re-run entries into the existing `results.json`, preserving results for
 workloads and backends that were not part of the current run.
 
 Persistence is incremental: after each completed `(workload, backend)`
-combination, the bench runner rewrites `results.json` immediately. Report
-generation is incremental too: it rerenders only `report-<workload>.html` for
-the workload that changed, plus the index page, instead of rebuilding every
-workload report on every update.
+combination, the bench runner rewrites `report/results.json` immediately. Report
+generation is incremental too: it rewrites only
+`report/<workload>.html` for the workload that changed, plus the index
+page, instead of rebuilding every workload report on every update.
 
-An HTML report (`report-<workload>.html`) is generated per workload using the
+An HTML report (`report/<workload>.html`) is generated per workload using the
 [`plotly`](https://crates.io/crates/plotly) crate:
 
 - **Session workloads**: stacked bar charts showing backend × (init, staging,
@@ -949,7 +954,7 @@ need to run as root.
 
 ### Output
 
-Artifacts are saved to `bench-results/<hostname>/profiling/<workload>/<scenario>/`:
+Artifacts are saved to `bench-results/profiling/<workload>/<scenario>/`:
 
 - `summary.txt` — ranked op table (printed to stdout and saved)
 - `bpftrace.txt` — raw per-op latency histograms
