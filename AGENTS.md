@@ -7,7 +7,9 @@
 - It does **not** apply to the paper-related directories (`paper/`,
   `paper-plan/`, `paper-study/`) or the evaluation/result directories
   (`agent-eval/`, `agent-results/`, `bench`, `bench-results/`).
-- If one of those directories has its own `AGENTS.md`, follow that file instead.
+- When working in `paper/` or `paper-plan/`, follow `paper-plan/AGENTS.md`.
+- When working in `paper-study/`, follow `paper-study/AGENTS.md`.
+- When working in `agent-eval/`, follow `agent-eval/AGENTS.md`.
 
 ## Principles
 
