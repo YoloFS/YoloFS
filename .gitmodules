@@ -26,3 +26,6 @@
 	path = paper-study
 	url = https://github.com/YoloFS/paper-study.git
 	branch = main
+[submodule "website"]
+	path = website
+	url = https://github.com/YoloFS/yolofs.github.io.git
