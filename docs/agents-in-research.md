@@ -35,23 +35,23 @@ shorter sessions, and outputs that can be checked.
 I use agents a lot for literature search, but with caution. I have
 two patterns that work for me.
 
-The first is a **targeted lookup** on a topic I already know
-something about. In YoloFS I asked the agent about the implementation
-details of Linux landlock and seccomp, and how btrfs and zfs implement
-snapshots, mostly to compare with my own design. I had the background
-already; I just wanted detail. I still verify: I read the source the
-agent cites if available, otherwise I re-search online. This is faster
-than searching from scratch.
+**Targeted lookup.** I use this when I already know the topic. In
+YoloFS I asked the agent about the implementation details of Linux
+landlock and seccomp, and how btrfs and zfs implement snapshots,
+mostly to compare with my own design. I had the background already;
+I just wanted detail. I still verify: I read the source the agent
+cites if available, otherwise I re-search online. This is faster than
+searching from scratch.
 
-The second is a **broad survey** of a field I am only partly familiar
-with. In a recent project I wanted to know how different languages and
-frameworks expose asynchrony. Instead of asking "tell me about async,"
-I gave the agent the explicit matrix to cover: how `{C++, Python, Go,
-Java, JavaScript}` each expose asynchrony. I asked it to write the
-result to `docs/background/*.md` with references, and I checked whether
-the result matched my expectation. When it did not, I went back and
-did the research myself. I have found this to be a very effective way
-to fill in gaps in my own knowledge.
+**Broad survey.** I use this when I am only partly familiar with the
+field. In a recent project I wanted to know how different languages
+and frameworks expose asynchrony. Instead of asking "tell me about
+async," I gave the agent the explicit matrix to cover: how `{C++,
+Python, Go, Java, JavaScript}` each expose asynchrony. I asked it to
+write the result to `docs/background/*.md` with references, and I
+checked whether the result matched my expectation. When it did not,
+I went back and did the research myself. I have found this to be a
+very effective way to fill in gaps in my own knowledge.
 
 **Takeaway.** Agents search and summarize fast. Ask things you can
 verify. Checking the answer is itself a good way to learn the
@@ -62,7 +62,7 @@ material.
 ## 2. Empirical study
 
 Agents are very good at empirical study. One example is the misuse
-study in YoloFS. We started with a Google Sheet of about 100
+study in YoloFS. I started with a Google Sheet of about 100
 manually-collected and labeled reports of agent filesystem misuse.
 From there I used agents in several stages, each producing output I
 could verify.
@@ -113,8 +113,8 @@ it later.
 ## 3. Design
 
 Design is one of the most important parts of research, and the part
-where the human stays most in the loop to guide the direction and
-make the architectural calls.
+where the researcher stays most in the loop to guide the direction
+and make the architectural calls.
 
 **Division of labor.** The architectural calls are mine: picking the
 abstractions, the interface boundaries, the on-disk format, deciding
@@ -275,7 +275,7 @@ want. *Corrective and preventive control* is another phrase that came
 from the agent.
 
 **Takeaway.** Build a writing guide before drafting. Feed the agent
-design docs and the narrative arc, not raw code.
+design docs and the narrative arc.
 
 ---
 
@@ -283,9 +283,9 @@ design docs and the narrative arc, not raw code.
 
 - **Everything is a file.** Files are the universal interface agents
   already know: read, write, grep, list, diff. Structuring research
-  artifacts (literature notes, corpus, plans, paper sections, working
-  rules, generated stats) as files lets the agent operate without
-  bespoke databases, proprietary UIs, or APIs to learn.
+  artifacts (literature notes, data sets, plans, paper sections,
+  working rules, generated stats) as files lets the agent operate
+  without bespoke databases, proprietary UIs, or APIs to learn.
 
 - **Make agent output human-verifiable.** Agents fabricate plausibly.
   Each load-bearing claim should point back to something a human can
