@@ -2,14 +2,8 @@
 
 ## Scope
 
-- This file applies to the YoloFS implementation work: `kmod/`, `user/`, `tests/`,
-  `docs/`, and related implementation and benchmark code.
-- It does **not** apply to the paper-related directories (`paper/`,
-  `paper-plan/`, `paper-study/`) or the evaluation/result directories
-  (`agent-eval/`, `agent-results/`, `bench`, `bench-results/`).
-- When working in `paper/` or `paper-plan/`, follow `paper-plan/AGENTS.md`.
-- When working in `paper-study/`, follow `paper-study/AGENTS.md`.
-- When working in `agent-eval/`, follow `agent-eval/AGENTS.md`.
+- This file applies to the YoloFS filesystem implementation: `kmod/`, `user/`,
+  `tests/`, and `docs/`.
 
 ## Principles
 
