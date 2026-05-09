@@ -1,12 +1,7 @@
 # AGENTS.md — Coding Guidelines for YoloFS Filesystem
 
-See [`../AGENTS.md`](../AGENTS.md) for cross-repo principles and the code
-review discipline. The rules below are filesystem-specific and stack on top.
-
-## Scope
-
-- This file applies to the YoloFS filesystem implementation: `kmod/`, `user/`,
-  `tests/`, and `docs/`.
+See [`../AGENTS.md`](../AGENTS.md) for cross-repo principles. The rules
+below are filesystem-specific and stack on top.
 
 ## Principles
 
@@ -22,7 +17,7 @@ review discipline. The rules below are filesystem-specific and stack on top.
 - Do not use git (commit, push, rebase, etc.) unless explicitly asked.
 - For refactoring, save a plan under `docs/plans/` (numbered: `0-name.md`, `1-name.md`, ...) before implementing. When the plan is fully implemented, move it to `docs/plans/done/`.
 - Do not read or maintain old plans in `docs/plans/done/`. They are kept for historical reference only.
-- Before finalizing changes, run the code review described in [`../AGENTS.md`](../AGENTS.md).
+- Before finalizing changes, run a code review (see **Code Review** section below).
 
 ## Project Structure
 
@@ -44,4 +39,16 @@ make vm-test      # unit + e2e tests (auto-starts VM if needed)
 make vm-test-unit # unit tests only
 make vm-test-e2e  # e2e tests only
 ```
+
+## Code Review
+
+Before finalizing any change set, run a full review of the current changes. Launch all review checks **in parallel as separate sub-agents**. If the user specifies a commit to review, use `git show <commit>` for the diff; otherwise, use `git diff` for unstaged changes. Each sub-agent examines the diff for one category:
+
+1. **Bugs & correctness** — logic errors, off-by-one, unhandled errors, null/unwrap panics, race conditions, use-after-free, unsafe code, unchecked inputs.
+2. **Code quality** — unnecessary allocations/clones, redundant operations, overly complex logic, code that could be simplified or deduplicated, more idiomatic Rust/C patterns.
+3. **Doc consistency** — do `docs/` files accurately describe the new behavior? Do they contradict each other or the code?
+4. **Missing tests** — new code paths, features, or edge cases without test coverage; existing tests that need updating.
+5. **Plan adherence** — if a corresponding plan exists in `docs/plans/`, verify the changes follow the plan and flag anything specified in the plan that has not been implemented yet.
+
+Each sub-agent reports findings with file paths and line references. After all agents finish, triage the results and address issues.
 
