@@ -8,39 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  test:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          submodules: false
-
-      - uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-test-
-
-      - name: Setup environment
-        run: ./setup.sh
-
-      - name: Build and install
-        run: make install
-
-      - name: Unit tests
-        run: make test-unit
-
-      - name: Integration tests
-        run: make test-e2e
-
-      - name: Example script
-        run: ./example.sh
-
-  chore:
+  ci:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
@@ -55,19 +23,33 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-chore-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-chore-
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Configure git
+      - name: Setup environment
+        run: ./setup.sh
+
+      - name: Auto-fix lint
+        run: make fix
+
+      - name: Build and install
+        run: make install
+
+      - name: Unit tests
+        run: make test-unit
+
+      - name: Integration tests
+        run: make test-e2e
+
+      - name: Example script
+        run: ./example.sh
+
+      - name: Push lint fixes (only after tests pass)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Auto-fix lint
-        run: |
-          make fix
           git add -A
-          git diff --cached --quiet || git commit -m "chore: auto-fix lint [skip ci]"
-
-      - name: Push changes
-        run: git push
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: auto-fix lint [skip ci]"
+            git push
+          fi
