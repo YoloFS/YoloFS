@@ -7,7 +7,8 @@ interactively prompt. Stacks on any lower filesystem (ext4, xfs, NFS, …)
 via VFS interposition with a zero-copy data path.
 
 See the [website](https://yolofs.github.io/) for an overview and the
-[paper](https://arxiv.org/abs/2604.13536) for details.
+[paper](https://arxiv.org/abs/2604.13536) for details. Part of the
+[YoloFS](https://github.com/YoloFS/YoloFS) umbrella project.
 
 ## Quick start
 
