@@ -11,8 +11,5 @@
   },
   "[cpp]": {
     "editor.tabSize": 8
-  },
-  "[latex]": {
-    "editor.wordWrap": "on"
   }
 }
