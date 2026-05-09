@@ -871,9 +871,9 @@ re-run entries into the existing `results.json`, preserving results for
 workloads and backends that were not part of the current run.
 
 Persistence is incremental: after each completed `(workload, backend)`
-combination, the bench runner rewrites `report/results.json` immediately. Report
-generation is incremental too: it rewrites only
-`report/<workload>.html` for the workload that changed, plus the index
+combination, the bench runner rewrites `bench-results/results.json` immediately.
+Report generation is incremental too: it rewrites only
+`<report-dir>/<workload>.html` for the workload that changed, plus the index
 page, instead of rebuilding every workload report on every update.
 
 An HTML report (`report/<workload>.html`) is generated per workload using the
