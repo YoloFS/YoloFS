@@ -29,7 +29,7 @@ below are filesystem-specific and stack on top.
   - `tests/cli/` — black-box; run `yolo <subcommand>` and assert on stdout/stderr/exit-code.
   - `tests/perm/` — black-box permission rule enforcement.
   - `tests/internals/` — white-box; inspect `.yolofs/inodes/` and `.yolofs/journal` directly.
-- **docs/** — Design documents (architecture.md, cli.md, internals.md, permissions.md, staging.md, benchmark.md). Keep in sync with code.
+- **docs/** — Design documents (architecture.md, cli.md, internals.md, permissions.md, staging.md). Keep in sync with code.
 
 ## Build & Test
 
