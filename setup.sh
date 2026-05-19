@@ -33,7 +33,6 @@ QEMU_PKGS=(
     qemu-system-x86   # VM emulation (vm.py)
     qemu-utils        # qemu-img for disk image management
     cloud-image-utils  # cloud-localds for VM cloud-init
-    wget              # download Ubuntu cloud images
 )
 
 BUILD_PKGS=(
@@ -68,17 +67,6 @@ if (( ${#missing[@]} > 0 )); then
     sudo apt-get install -y --no-install-recommends "${missing[@]}"
 else
     info "All APT packages already installed: ${pkgs[*]}"
-fi
-
-# ── uv (Python package manager, host only) ───────────────────────────
-
-if ! is_vm; then
-    if command -v uv &>/dev/null; then
-        info "uv already installed: $(uv --version)"
-    else
-        info "Installing uv"
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-    fi
 fi
 
 # ── Rust toolchain ────────────────────────────────────────────────────

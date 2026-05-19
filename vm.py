@@ -38,7 +38,7 @@ def download_image():
         return
     print(f"Downloading Ubuntu 24.04 cloud image...")
     subprocess.run(
-        ["wget", "-q", "--show-progress", "-O", str(IMAGE_PATH), IMAGE_URL],
+        ["curl", "-fL", "--progress-bar", "-o", str(IMAGE_PATH), IMAGE_URL],
         check=True,
     )
     print(f"Downloaded to {IMAGE_PATH}")
