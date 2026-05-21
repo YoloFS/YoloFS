@@ -39,7 +39,7 @@ yolo commit                      # apply, or `yolo abort` to discard
 ```bash
 make build                       # CLI (cargo) + kernel module
 make install                     # install to /usr/local/bin and /lib/modules
-make vm-test                     # run unit + e2e tests in a VM (recommended)
+make test-vm                     # run unit + e2e tests in a VM (recommended)
 ```
 
 ## Configuration

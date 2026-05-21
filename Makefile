@@ -58,16 +58,18 @@ test-unit:
 	cargo test --release --lib
 
 test-e2e: install
+	sudo sysctl -w kernel.dmesg_restrict=0 >/dev/null
 	yolo reload
+	trap 'yolo unload' EXIT; \
 	cargo test --release --test e2e -- --test-threads=1
-	yolo unload
 
 test-e2e-vm: $(USER_OUT)
 	./vm.py -- make kmod install
+	./vm.py -- sudo sysctl -w kernel.dmesg_restrict=0 >/dev/null
 	./vm.py -- yolo reload
+	trap './vm.py -- yolo unload' EXIT; \
 	cargo --config 'target."cfg(all())".runner = "./vm.py --"' \
 		test --release --test e2e -- --test-threads=1
-	./vm.py -- yolo unload
 
 # ── Lint ──────────────────────────────────────────────────────────────
 

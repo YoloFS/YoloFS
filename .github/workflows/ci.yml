@@ -23,9 +23,6 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Setup environment
-        run: ./setup.sh
-
       - name: Auto-fix lint
         run: make fix
 
