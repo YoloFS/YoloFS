@@ -1,10 +1,9 @@
 # ── Variables ─────────────────────────────────────────────────────────
 
-KDIR             := /lib/modules/$(shell uname -r)
-BUILD_DIR        := $(CURDIR)/build
-KMOD_OUT         := $(BUILD_DIR)/yolofs.ko
-KMOD_INSTALL_DIR := $(KDIR)/extra
-USER_BIN         := $(CURDIR)/target/release/yolo
+KVER             := $(shell uname -r)
+KDIR             := /lib/modules/$(KVER)
+KMOD_OUT         := $(CURDIR)/build/$(KVER)/yolofs.ko
+USER_OUT         := $(CURDIR)/target/release/yolo
 
 # ── Build ─────────────────────────────────────────────────────────────
 
@@ -12,71 +11,72 @@ USER_BIN         := $(CURDIR)/target/release/yolo
 
 build: user kmod
 
-$(BUILD_DIR):
-	mkdir -p $@
-
-user: | $(BUILD_DIR)
-	cargo build --release -p yolofs
+user: $(USER_OUT)
+$(USER_OUT): $(shell find user -name '*.rs' -type f 2>/dev/null) Cargo.toml Cargo.lock
+	cargo build --release
 
 kmod: $(KMOD_OUT)
-
-$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild) | $(BUILD_DIR)
-	cp kmod/Kbuild $(BUILD_DIR)/Kbuild
-	$(MAKE) -j$(nproc) -C $(KDIR)/build M=$(BUILD_DIR) KBUILD_KMOD_SRC=$(CURDIR)/kmod \
+$(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild)
+	mkdir -p $(@D)
+	ln -sf $(CURDIR)/kmod/Kbuild $(@D)/Kbuild
+	$(MAKE) -j$$(nproc) -C $(KDIR)/build M=$(@D) KBUILD_KMOD_SRC=$(CURDIR)/kmod \
 		CONFIG_DEBUG_INFO_BTF_MODULES= modules
+
+# ── Install ───────────────────────────────────────────────────────────
+
+.PHONY: install install-user install-kmod
+
+install: install-user install-kmod
+
+install-user: $(USER_OUT)
+	sudo install -m 4755 -o root $(USER_OUT) /usr/local/bin/yolo
+
+install-kmod: $(KMOD_OUT)
+	sudo install -d $(KDIR)/extra
+	sudo install -m 644 $(KMOD_OUT) $(KDIR)/extra/yolofs.ko
+
+# ── Clean ─────────────────────────────────────────────────────────────
 
 .PHONY: clean clean-user clean-kmod
 
 clean: clean-user clean-kmod
 
 clean-user:
-	rm -rf "$(CURDIR)/target"/*
+	rm -rf "$(CURDIR)/target"
 
 clean-kmod:
-	rm -rf "$(BUILD_DIR)"/*
-
-# ── Install ───────────────────────────────────────────────────────────
-
-.PHONY: install uninstall
-
-install: user kmod
-	sudo install -m 4755 -o root $(USER_BIN) /usr/local/bin/yolo
-	sudo install -d $(KMOD_INSTALL_DIR)
-	sudo install -m 644 $(KMOD_OUT) $(KMOD_INSTALL_DIR)/yolofs.ko
-
-uninstall:
-	sudo rm -f /usr/local/bin/yolo
-	sudo rm -f $(KMOD_INSTALL_DIR)/yolofs.ko
+	rm -rf "$(CURDIR)/build"
 
 # ── Test ──────────────────────────────────────────────────────────────
 
-.PHONY: test test-unit test-e2e
+.PHONY: test test-vm test-unit test-e2e test-e2e-vm
 
 test: test-unit test-e2e
+test-vm: test-unit test-e2e-vm
 
-test-unit: | $(BUILD_DIR)
-	cargo test --release -p yolofs --lib
+test-unit:
+	cargo test --release --lib
 
-test-e2e: install | $(BUILD_DIR)
+test-e2e: install
 	yolo reload
-	cargo test --release -p yolofs --test e2e -- --test-threads=1
+	cargo test --release --test e2e -- --test-threads=1
 	yolo unload
+
+test-e2e-vm: $(USER_OUT)
+	./vm.py -- make kmod install
+	./vm.py -- yolo reload
+	cargo --config 'target."cfg(all())".runner = "./vm.py --"' \
+		test --release --test e2e -- --test-threads=1
+	./vm.py -- yolo unload
 
 # ── Lint ──────────────────────────────────────────────────────────────
 
 .PHONY: lint fix
 
-lint: | $(BUILD_DIR)
+lint:
 	cargo fmt --check
 	cargo clippy --release -- -D warnings
 
-fix: | $(BUILD_DIR)
+fix:
 	cargo fmt
 	cargo clippy --release --fix --allow-dirty
-
-# ── VM ────────────────────────────────────────────────────────────────
-
-.PHONY: vm-%
-
-vm-%:
-	./vm.py -- make $*

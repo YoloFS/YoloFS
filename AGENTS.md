@@ -10,7 +10,7 @@ below are filesystem-specific and stack on top.
 ## Workflow
 
 - Always update documentation (`docs/`) before implementation.
-- Always run tests in vm to verify changes.
+- Always verify changes with `make test-vm` (unit tests on host, e2e tests in VM).
 - To fix a bug, first write a failing test, then fix it.
 - Do not modify existing tests when fixing a bug. If you are unsure, ask.
 - When adding new features or making changes, add tests if applicable: unit tests (inline `#[cfg(test)]`), white-box tests (`tests/internals/`), and black-box tests (`tests/fs/`, `tests/cli/`, `tests/perm/`).
@@ -34,10 +34,10 @@ below are filesystem-specific and stack on top.
 ## Build & Test
 
 ```bash
-make vm-build     # build user + kmod
-make vm-test      # unit + e2e tests (auto-starts VM if needed)
-make vm-test-unit # unit tests only
-make vm-test-e2e  # e2e tests only
+make user         # build userspace binary (host)
+make test-unit    # unit tests (host; pure userspace)
+make test-e2e-vm  # build + install + run e2e tests in VM
+make test-vm      # test-unit + test-e2e-vm
 ```
 
 ## Code Review
