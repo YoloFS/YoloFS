@@ -6,6 +6,7 @@ vm/
 
 # clangd
 compile_commands.json
+compile_commands.events.json
 .cache/
 
 # Python
