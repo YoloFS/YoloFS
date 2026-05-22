@@ -4,7 +4,7 @@ KVER             := $(shell uname -r)
 KDIR             := /lib/modules/$(KVER)
 KMOD_OUT         := $(CURDIR)/build/$(KVER)/yolofs.ko
 USER_OUT         := $(CURDIR)/target/release/yolo
-BEAR             := $(shell command -v bear >/dev/null 2>&1 && printf 'bear --output "%s/compile_commands.json" --' '$(CURDIR)')
+BEAR             := $(shell command -v bear >/dev/null 2>&1 && echo bear --)
 
 # ── Build ─────────────────────────────────────────────────────────────
 
@@ -13,15 +13,14 @@ BEAR             := $(shell command -v bear >/dev/null 2>&1 && printf 'bear --ou
 build: user kmod
 
 user: $(USER_OUT)
-$(USER_OUT): $(shell find user -name '*.rs' -type f 2>/dev/null) Cargo.toml Cargo.lock
+$(USER_OUT): $(shell find user -type f -name '*.rs' 2>/dev/null) Cargo.toml Cargo.lock
 	cargo build --release
 
 kmod: $(KMOD_OUT)
 $(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild)
 	mkdir -p $(@D)
 	ln -sf $(CURDIR)/kmod/Kbuild $(@D)/Kbuild
-	$(BEAR) $(MAKE) \
-		-j$$(nproc) \
+	$(BEAR) $(MAKE) -j$$(nproc) \
 		-C $(KDIR)/build \
 		M=$(@D) \
 		KBUILD_KMOD_SRC=$(CURDIR)/kmod \
