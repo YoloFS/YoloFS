@@ -37,7 +37,7 @@ fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
 
     // touch creates a new file — the kernel must ask the daemon and receive
     // an allow response for this to succeed.
-    let code = s.run_in_sandbox(&["touch", "a"]).unwrap_or(1);
+    let code = s.run_in_yolofs(&["touch", "a"]).unwrap_or(1);
 
     watch.kill().ok();
     let output = watch.wait_with_output().expect("collecting watch output");

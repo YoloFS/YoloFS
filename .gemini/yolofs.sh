@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # BeforeTool hook for run_shell_command: rewrites commands to run through
-# the yolofs sandbox.
+# yolofs.
 #
 # Input (stdin): JSON with tool_input.command
 # Output (stdout): JSON with hookSpecificOutput.tool_input rewriting the command

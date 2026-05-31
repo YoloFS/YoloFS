@@ -1,9 +1,19 @@
 #!/bin/bash
-# YoloFS CLI walkthrough — stages, snapshots, and travel.
+# YoloFS CLI walkthrough — stages, snapshots, travel, and permission rules.
+# Runs inside example/ so it uses that directory's yolofs.toml.
 set -euo pipefail
 
+cd "$(dirname "$0")/example"
+
 section() { echo; echo "════════════════════════════════════════════════════════════"; echo "  $1"; echo "════════════════════════════════════════════════════════════"; echo; }
-run()     { echo "\$ $*"; "$@"; echo; }
+# Echo the command (quoting args with spaces so it reads as typed), then run it.
+run() {
+  local shown="" a
+  for a in "$@"; do
+    case "$a" in *" "*) shown+=" '$a'" ;; *) shown+=" $a" ;; esac
+  done
+  echo "\$${shown}"; "$@"; echo
+}
 
 # ─── Setup ──────────────────────────────────────────────────────────
 
@@ -43,9 +53,25 @@ run yolo exec -- sh -c 'ls step*.txt'
 run yolo exec -- sh -c 'echo step2_new > step2_new.txt'
 run yolo audit
 
+# ─── Permission rules: blocked + ask are recorded in the audit ──────
+
+section "Permission rules: blocked and ask accesses are recorded"
+# Two files to restrict (rules can only target paths that exist).
+echo "secret"  > secret.txt
+echo "k = v"   > config.ini
+run yolo rule deny secret.txt
+run yolo rule ask  config.ini
+# A denied read and an ask (no daemon → resolved by ask_default = deny) both
+# fail with EACCES but leave observational notes in the journal; '|| true'
+# keeps the walkthrough going.
+run yolo exec -- sh -c 'cat secret.txt' || true
+run yolo exec -- sh -c 'cat config.ini' || true
+run yolo audit
+
 # ─── Teardown ───────────────────────────────────────────────────────
 
 section "Teardown"
 run yolo abort --force
 run yolo unmount
 run yolo unload
+rm -f secret.txt config.ini

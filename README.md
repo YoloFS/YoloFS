@@ -1,6 +1,6 @@
 # YoloFS
 
-A Linux kernel stackable filesystem for AI-agent sandboxing. Every write
+A Linux kernel stackable filesystem for AI coding agents. Every write
 goes to a staging area (commit when satisfied, abort to discard); every
 file access is gated by a path-based rule engine that can allow, deny, or
 interactively prompt. Stacks on any lower filesystem (ext4, xfs, NFS, …)
@@ -26,7 +26,7 @@ Non-interactive control:
 ```bash
 yolo mount
 yolo watch &                     # permission prompt daemon
-yolo exec -- make build          # run a command in the sandbox
+yolo exec -- make build          # run a command under yolofs
 yolo status                      # show staged changes
 yolo diff                        # git-style diff vs base
 yolo commit                      # apply, or `yolo abort` to discard

@@ -1,4 +1,4 @@
-# yolofs.toml — sandbox configuration for this directory.
+# yolofs.toml — yolofs configuration for this directory.
 #
 # This file is the built-in default: `yolo init` writes a copy of it, and a
 # `yolo mount` with no yolofs.toml falls back to these settings. Edit freely.

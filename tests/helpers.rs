@@ -160,8 +160,8 @@ impl YoloSession {
         Ok(output.status.code().unwrap_or(-1))
     }
 
-    /// Run a command inside the sandbox via `yolo exec --` and return exit code.
-    pub fn run_in_sandbox(&self, cmd: &[&str]) -> Result<i32> {
+    /// Run a command under yolofs via `yolo exec --` and return exit code.
+    pub fn run_in_yolofs(&self, cmd: &[&str]) -> Result<i32> {
         let mut args = vec!["exec", "--"];
         args.extend_from_slice(cmd);
         self.cli_exit_code(&args)

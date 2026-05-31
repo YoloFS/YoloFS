@@ -46,7 +46,7 @@ unsafe fn chroot_pre_exec(mnt: &Path, cwd: &Path) -> Result<(), std::io::Error> 
     Ok(())
 }
 
-/// Spawn a command in the sandbox and wait for it to exit.
+/// Spawn a command under yolofs and wait for it to exit.
 /// Returns the process exit code (0 = success).
 pub fn run(exec_args: &[String]) -> Result<u8> {
     let yolo_dir = crate::utils::session_dir()?;
@@ -60,7 +60,7 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
     let default_shell = "sh".to_string();
 
     let (cmd, args) = if exec_args.is_empty() {
-        eprintln!("{}", "yolo: entering sandbox (exit to return)".cyan());
+        eprintln!("{}", "yolo: entering yolofs (exit to return)".cyan());
         (default_shell.clone(), vec![])
     } else {
         (exec_args[0].clone(), exec_args[1..].to_vec())

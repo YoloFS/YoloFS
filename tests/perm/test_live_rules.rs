@@ -6,7 +6,7 @@ use yolofs::perm::Perm;
 
 // ── Newly created files respect permissions ──
 
-/// A file created inside the sandbox should still be subject to perm gating
+/// A file created under yolofs should still be subject to perm gating
 /// when reopened. The perm_gen fix ensures new inodes get re-resolved.
 #[test]
 fn newly_created_file_checked_on_reopen() {

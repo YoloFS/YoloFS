@@ -20,8 +20,9 @@ fn default_true() -> bool {
 
 /// The built-in default config, single source of truth. `yolo init` writes
 /// this verbatim (comments and all) and `Config::default()` parses it, so the
-/// two never drift. Lives at the repo root so it doubles as the example file.
-pub const DEFAULT_CONFIG: &str = include_str!("../yolofs.toml");
+/// two never drift. Lives in `example/` alongside the agent-hook templates that
+/// `yolo init` also scaffolds.
+pub const DEFAULT_CONFIG: &str = include_str!("../example/yolofs.toml");
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {

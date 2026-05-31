@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # preToolUse hook for Copilot CLI's bash tool: rewrites commands to run
-# through the yolofs sandbox.
+# through yolofs.
 #
 # Input (stdin): JSON with toolName, toolArgs (toolArgs is a JSON-encoded string).
 # Output (stdout): JSON with permissionDecision + modifiedArgs.command.
@@ -31,5 +31,5 @@ fi
 jq -n --arg cmd "$updated_command" '{
   permissionDecision: "allow",
   modifiedArgs: { command: $cmd },
-  permissionDecisionReason: "Wrapped in yolofs sandbox for visibility and reversal"
+  permissionDecisionReason: "Wrapped in yolofs for visibility and reversal"
 }'

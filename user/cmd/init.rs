@@ -1,9 +1,9 @@
 // yolo CLI — init.rs
 //
 // `yolo init [--agents <name>...]` — write a default yolofs.toml and optionally
-// scaffold agent pre-tool-use hook templates that wrap shell commands in the
-// sandbox. The templates are embedded from `agents/` at compile time so the
-// installed binary works anywhere; `agents/` stays the single source of truth.
+// scaffold agent pre-tool-use hook templates that wrap shell commands so they
+// run through yolofs. The templates are embedded from `example/` at compile time so the
+// installed binary works anywhere; `example/` stays the single source of truth.
 
 use crate::config;
 use anyhow::{Context, Result};
@@ -40,9 +40,9 @@ impl AgentChoice {
                 files: &[
                     (
                         "settings.json",
-                        include_str!("../../agents/.claude/settings.json"),
+                        include_str!("../../example/.claude/settings.json"),
                     ),
-                    ("yolofs.sh", include_str!("../../agents/.claude/yolofs.sh")),
+                    ("yolofs.sh", include_str!("../../example/.claude/yolofs.sh")),
                 ],
             },
             AgentChoice::Gemini => AgentTemplate {
@@ -50,9 +50,9 @@ impl AgentChoice {
                 files: &[
                     (
                         "settings.json",
-                        include_str!("../../agents/.gemini/settings.json"),
+                        include_str!("../../example/.gemini/settings.json"),
                     ),
-                    ("yolofs.sh", include_str!("../../agents/.gemini/yolofs.sh")),
+                    ("yolofs.sh", include_str!("../../example/.gemini/yolofs.sh")),
                 ],
             },
             AgentChoice::Copilot => AgentTemplate {
@@ -60,11 +60,11 @@ impl AgentChoice {
                 files: &[
                     (
                         "yolofs.json",
-                        include_str!("../../agents/.github/hooks/yolofs.json"),
+                        include_str!("../../example/.github/hooks/yolofs.json"),
                     ),
                     (
                         "yolofs.sh",
-                        include_str!("../../agents/.github/hooks/yolofs.sh"),
+                        include_str!("../../example/.github/hooks/yolofs.sh"),
                     ),
                 ],
             },

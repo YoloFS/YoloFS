@@ -1,0 +1,176 @@
+
+════════════════════════════════════════════════════════════
+  Setup: load kernel module, init config, mount filesystem
+════════════════════════════════════════════════════════════
+
+$ yolo reload
+yolo: kernel module not loaded
+yolo: loading kernel module /lib/modules/6.8.0-117-generic/extra/yolofs.ko
+
+$ yolo init
+yolofs.toml already exists
+exists .claude/settings.json
+exists .claude/yolofs.sh
+exists .gemini/settings.json
+exists .gemini/yolofs.sh
+exists .github/hooks/yolofs.json
+exists .github/hooks/yolofs.sh
+
+$ yolo mount
+yolo: mounting ~/project/.yolofs/mnt (permission=1,staging=1,ask_timeout=30,ask_default=4)
+yolofs: applying 10 rule(s) from yolofs.toml
+  ✓ ~/.ssh/id_ed25519 = ask
+  ✓ ~/project = allow
+  ✓ ~/project/.yolofs = hide
+  ✓ /usr/bin = read
+  ✓ /etc = read
+  ✓ /usr/lib = read
+  ✓ /usr/lib64 = read
+  ✓ /usr/sbin = read
+  ✓ /usr = read
+  ✓ ~/project/yolofs.toml = hide
+
+
+════════════════════════════════════════════════════════════
+  Stage a change, inspect it, then discard
+════════════════════════════════════════════════════════════
+
+$ yolo exec -- sh -c 'echo hello > greeting.txt'
+snapshot [1] after sh -c echo hello > greeting.txt
+
+$ yolo status
+~/project/greeting.txt (added)
+snapshot [1] after sh -c echo hello > greeting.txt
+
+1 staged change
+
+$ yolo diff
+~/project/greeting.txt (added)
++hello
+snapshot [1] after sh -c echo hello > greeting.txt
+
+$ yolo abort --force
+Staging discarded.
+
+
+════════════════════════════════════════════════════════════
+  Build up snapshots (each exec auto-creates one)
+════════════════════════════════════════════════════════════
+
+$ yolo exec -- sh -c 'echo step1 > step1.txt'
+snapshot [1] after sh -c echo step1 > step1.txt
+
+$ yolo exec -- sh -c 'echo step2 > step2.txt'
+snapshot [2] after sh -c echo step2 > step2.txt
+
+$ yolo exec -- sh -c 'echo step3 > step3.txt'
+snapshot [3] after sh -c echo step3 > step3.txt
+
+$ yolo audit
+  staged     ~/project/step1.txt  (ino 2)
+  [1] after sh -c echo step1 > step1.txt
+  staged     ~/project/step2.txt  (ino 3)
+  [2] after sh -c echo step2 > step2.txt
+  staged     ~/project/step3.txt  (ino 4)
+  [3] after sh -c echo step3 > step3.txt
+
+
+════════════════════════════════════════════════════════════
+  Query across snapshots
+════════════════════════════════════════════════════════════
+
+$ yolo status --at 2
+~/project/step2.txt (added)
+snapshot [1] after sh -c echo step1 > step1.txt
+
+1 staged change
+
+$ yolo diff --from 1 --to 3
+~/project/step2.txt (added)
++step2
+snapshot [1] after sh -c echo step1 > step1.txt
+~/project/step3.txt (added)
++step3
+snapshot [2] after sh -c echo step2 > step2.txt
+
+
+════════════════════════════════════════════════════════════
+  Travel to snapshot 1
+════════════════════════════════════════════════════════════
+
+$ yolo exec -- sh -c 'ls step*.txt'
+step1.txt
+step2.txt
+step3.txt
+yolo: no changes, skipping snapshot
+
+$ yolo travel 1
+Traveled to snapshot "after sh -c echo step1 > step1.txt" (1 staged change).
+
+$ yolo exec -- sh -c 'ls step*.txt'
+step1.txt
+yolo: no changes, skipping snapshot
+
+$ yolo exec -- sh -c 'echo step2_new > step2_new.txt'
+snapshot [5] after sh -c echo step2_new > step2_new.txt
+
+$ yolo audit
+  staged     ~/project/step1.txt  (ino 2)
+  [1] after sh -c echo step1 > step1.txt
+  staged     ~/project/step2.txt  (ino 3) (unreachable)
+  [2] after sh -c echo step2 > step2.txt (unreachable)
+  staged     ~/project/step3.txt  (ino 4) (unreachable)
+  [3] after sh -c echo step3 > step3.txt (unreachable)
+  [4] traveled to [1] (unreachable)
+  staged     ~/project/step2_new.txt  (ino 5)
+  [5] after sh -c echo step2_new > step2_new.txt
+
+
+════════════════════════════════════════════════════════════
+  Permission rules: blocked and ask accesses are recorded
+════════════════════════════════════════════════════════════
+
+$ yolo rule deny secret.txt
+rule set: secret.txt = deny (live)
+
+$ yolo rule ask config.ini
+rule set: config.ini = ask (live)
+
+$ yolo exec -- sh -c 'cat secret.txt'
+cat: secret.txt: Permission denied
+yolo: command exited with 1
+yolo: no changes, skipping snapshot
+
+$ yolo exec -- sh -c 'cat config.ini'
+cat: config.ini: Permission denied
+yolo: command exited with 1
+yolo: no changes, skipping snapshot
+
+$ yolo audit
+  staged     ~/project/step1.txt  (ino 2)
+  [1] after sh -c echo step1 > step1.txt
+  staged     ~/project/step2.txt  (ino 3) (unreachable)
+  [2] after sh -c echo step2 > step2.txt (unreachable)
+  staged     ~/project/step3.txt  (ino 4) (unreachable)
+  [3] after sh -c echo step3 > step3.txt (unreachable)
+  [4] traveled to [1] (unreachable)
+  staged     ~/project/step2_new.txt  (ino 5)
+  [5] after sh -c echo step2_new > step2_new.txt
+  blocked    read  ~/project/secret.txt
+  ask        read  ~/project/config.ini → deny
+  blocked    read  ~/project/config.ini
+
+
+════════════════════════════════════════════════════════════
+  Teardown
+════════════════════════════════════════════════════════════
+
+$ yolo abort --force
+Staging discarded.
+
+$ yolo unmount
+yolo: unmounted ~/project/.yolofs/mnt
+
+$ yolo unload
+yolo: unloading kernel module
+

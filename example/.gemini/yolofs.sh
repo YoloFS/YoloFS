@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Bash: rewrites commands to run through yolofs sandbox.
+# BeforeTool hook for run_shell_command: rewrites commands to run through
+# yolofs.
 #
 # Input (stdin): JSON with tool_input.command
-# Output (stdout): JSON with updatedInput to rewrite the command
-#
-# This wraps every Bash command in yolofs so the agent can see filesystem
-# changes and decide whether to leave them for human approval or abort them.
+# Output (stdout): JSON with hookSpecificOutput.tool_input rewriting the command
 set -euo pipefail
 
 input=$(cat)
@@ -22,9 +20,6 @@ fi
 
 jq -n --arg cmd "$updated_command" '{
   hookSpecificOutput: {
-    hookEventName: "PreToolUse",
-    permissionDecision: "allow",
-    updatedInput: { command: $cmd },
-    permissionDecisionReason: "Wrapped in yolofs sandbox for visibility and reversal"
+    tool_input: { command: $cmd }
   }
 }'

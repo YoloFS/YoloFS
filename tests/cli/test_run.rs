@@ -4,7 +4,7 @@ use crate::helpers::YoloSession;
 fn run_success_exit_code_zero() {
     let session = YoloSession::new().expect("session setup");
 
-    let code = session.run_in_sandbox(&["true"]).unwrap();
+    let code = session.run_in_yolofs(&["true"]).unwrap();
     assert_eq!(code, 0, "successful command should return exit code 0");
 }
 
@@ -12,7 +12,7 @@ fn run_success_exit_code_zero() {
 fn run_failure_exit_code_propagated() {
     let session = YoloSession::new().expect("session setup");
 
-    let code = session.run_in_sandbox(&["false"]).unwrap();
+    let code = session.run_in_yolofs(&["false"]).unwrap();
     assert_eq!(code, 1, "`false` should return exit code 1");
 }
 
@@ -20,7 +20,7 @@ fn run_failure_exit_code_propagated() {
 fn run_custom_exit_code() {
     let session = YoloSession::new().expect("session setup");
 
-    let code = session.run_in_sandbox(&["sh", "-c", "exit 42"]).unwrap();
+    let code = session.run_in_yolofs(&["sh", "-c", "exit 42"]).unwrap();
     assert_eq!(code, 42, "exit 42 should propagate as exit code 42");
 }
 
@@ -28,7 +28,7 @@ fn run_custom_exit_code() {
 fn run_command_not_found() {
     let session = YoloSession::new().expect("session setup");
 
-    let code = session.run_in_sandbox(&["nonexistent_cmd_xyz"]).unwrap();
+    let code = session.run_in_yolofs(&["nonexistent_cmd_xyz"]).unwrap();
     assert_ne!(
         code, 0,
         "nonexistent command should return non-zero exit code"
@@ -41,7 +41,7 @@ fn run_shell_pipe() {
 
     let chroot_path = session.root.join("hello.txt");
     let code = session
-        .run_in_sandbox(&[
+        .run_in_yolofs(&[
             "sh",
             "-c",
             &format!("cat {} | grep base", chroot_path.display()),
@@ -56,7 +56,7 @@ fn run_shell_quotes() {
 
     let chroot_path = session.root.join("hello.txt");
     let code = session
-        .run_in_sandbox(&[
+        .run_in_yolofs(&[
             "sh",
             "-c",
             &format!("test \"$(cat {})\" = 'base content'", chroot_path.display()),
@@ -73,56 +73,56 @@ fn run_reads_file_through_mount() {
     // The test file lives at <root>/hello.txt, visible as <root>/hello.txt inside chroot
     let chroot_path = session.root.join("hello.txt");
     let code = session
-        .run_in_sandbox(&["cat", chroot_path.to_str().unwrap()])
+        .run_in_yolofs(&["cat", chroot_path.to_str().unwrap()])
         .unwrap();
     assert_eq!(
         code, 0,
-        "cat should succeed reading a file inside the sandbox"
+        "cat should succeed reading a file inside the yolofs"
     );
 }
 
-/// Writing to a file via absolute path inside the sandbox should succeed.
+/// Writing to a file via absolute path inside the yolofs should succeed.
 #[test]
 fn run_write_file_absolute_path() {
     let session = YoloSession::new().expect("session setup");
 
     let target = session.root.join("exec_output.txt");
     let code = session
-        .run_in_sandbox(&["sh", "-c", &format!("echo hello > {}", target.display())])
+        .run_in_yolofs(&["sh", "-c", &format!("echo hello > {}", target.display())])
         .unwrap();
     assert_eq!(code, 0, "writing to absolute path should succeed");
 }
 
-/// Writing to a file via relative path inside the sandbox should succeed.
+/// Writing to a file via relative path inside the yolofs should succeed.
 /// The cwd after chroot+chdir is the session root directory.
 #[test]
 fn run_write_file_relative_path() {
     let session = YoloSession::new().expect("session setup");
 
     let code = session
-        .run_in_sandbox(&["sh", "-c", "echo hello > relative_test.txt"])
+        .run_in_yolofs(&["sh", "-c", "echo hello > relative_test.txt"])
         .unwrap();
     assert_eq!(
         code, 0,
-        "writing to a relative path inside the sandbox should succeed"
+        "writing to a relative path inside the yolofs should succeed"
     );
 }
 
 #[test]
 fn run_env_var_propagated() {
     let session = YoloSession::new().expect("session setup");
-    // YOLO_SESSION is always set by exec.rs — verify the sandbox sees it
+    // YOLO_SESSION is always set by exec.rs — verify the yolofs sees it
     let code = session
-        .run_in_sandbox(&["sh", "-c", "test -n \"$YOLO_SESSION\""])
+        .run_in_yolofs(&["sh", "-c", "test -n \"$YOLO_SESSION\""])
         .unwrap();
-    assert_eq!(code, 0, "YOLO_SESSION env var should be set in sandbox");
+    assert_eq!(code, 0, "YOLO_SESSION env var should be set in yolofs");
 }
 
 #[test]
 fn run_stderr_output() {
     let session = YoloSession::new().expect("session setup");
     let code = session
-        .run_in_sandbox(&["sh", "-c", "echo err >&2"])
+        .run_in_yolofs(&["sh", "-c", "echo err >&2"])
         .unwrap();
     assert_eq!(code, 0, "writing to stderr should succeed");
 }
@@ -134,15 +134,15 @@ fn run_reads_modified_file() {
     // Modify through mount
     std::fs::write(session.mnt_path("hello.txt"), "modified\n").expect("write");
 
-    // Read inside sandbox — should see modified content
+    // Read inside yolofs — should see modified content
     let code = session
-        .run_in_sandbox(&[
+        .run_in_yolofs(&[
             "sh",
             "-c",
             &format!("grep -q modified {}", target.display()),
         ])
         .unwrap();
-    assert_eq!(code, 0, "sandbox should see modified file content");
+    assert_eq!(code, 0, "yolofs should see modified file content");
 }
 
 #[test]
@@ -151,12 +151,12 @@ fn run_multiple_commands_sequentially() {
     let target = session.root.join("seq_test.txt");
 
     let code1 = session
-        .run_in_sandbox(&["sh", "-c", &format!("echo first > {}", target.display())])
+        .run_in_yolofs(&["sh", "-c", &format!("echo first > {}", target.display())])
         .unwrap();
     assert_eq!(code1, 0);
 
     let code2 = session
-        .run_in_sandbox(&["sh", "-c", &format!("grep -q first {}", target.display())])
+        .run_in_yolofs(&["sh", "-c", &format!("grep -q first {}", target.display())])
         .unwrap();
     assert_eq!(code2, 0, "second command should see first command's output");
 }
@@ -170,7 +170,7 @@ fn run_no_changes_skips_snapshot() {
     let before_count = before.matches("snapshot").count();
 
     // Run a read-only command — no staged changes
-    let code = session.run_in_sandbox(&["true"]).unwrap();
+    let code = session.run_in_yolofs(&["true"]).unwrap();
     assert_eq!(code, 0);
 
     let after = session.cli(&["timeline"]).expect("timeline after");
@@ -192,7 +192,7 @@ fn run_with_changes_creates_snapshot() {
 
     let target = session.root.join("chk_test.txt");
     let code = session
-        .run_in_sandbox(&["sh", "-c", &format!("echo hello > {}", target.display())])
+        .run_in_yolofs(&["sh", "-c", &format!("echo hello > {}", target.display())])
         .unwrap();
     assert_eq!(code, 0);
 

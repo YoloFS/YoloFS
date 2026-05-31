@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Bash: rewrites commands to run through yolofs sandbox.
+# PreToolUse hook for Bash: rewrites commands to run through yolofs.
 #
 # Input (stdin): JSON with tool_input.command
 # Output (stdout): JSON with updatedInput to rewrite the command
@@ -25,6 +25,6 @@ jq -n --arg cmd "$updated_command" '{
     hookEventName: "PreToolUse",
     permissionDecision: "allow",
     updatedInput: { command: $cmd },
-    permissionDecisionReason: "Wrapped in yolofs sandbox for visibility and reversal"
+    permissionDecisionReason: "Wrapped in yolofs for visibility and reversal"
   }
 }'

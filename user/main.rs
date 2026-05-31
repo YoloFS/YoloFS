@@ -22,7 +22,7 @@ struct Cli {
     #[arg(long)]
     allow_all: bool,
 
-    /// Command to run inside the sandbox (after --)
+    /// Command to run under yolofs (after --)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     exec_args: Vec<String>,
 }
@@ -56,7 +56,7 @@ enum Command {
         #[arg(long, short)]
         force: bool,
     },
-    /// Execute a command inside the sandbox (requires existing mount)
+    /// Execute a command under yolofs (requires existing mount)
     Exec {
         /// Command to run (after --)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

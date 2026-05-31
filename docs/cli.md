@@ -17,8 +17,8 @@ $ yolo reload            # unload then reload the kernel module
 ```
 
 `yolo init` always writes a default `yolofs.toml` (skipped if one exists) and can
-scaffold pre-tool-use hook templates that wrap an agent's shell commands in the
-sandbox. Supported agents: `claude` (`.claude/`), `gemini` (`.gemini/`),
+scaffold pre-tool-use hook templates that wrap an agent's shell commands so they
+run through yolofs. Supported agents: `claude` (`.claude/`), `gemini` (`.gemini/`),
 `copilot` (`.github/hooks/`). Bare `yolo init` scaffolds all of them; pass
 `--agents <name>...` (repeatable) to scaffold only specific ones. Existing hook
 files are never overwritten.
@@ -26,7 +26,7 @@ files are never overwritten.
 **Full workflow** — mount, watch, exec, diff, and prompt to commit/abort in one command:
 
 ```bash
-$ yolo                   # launch sh inside the sandbox
+$ yolo                   # launch sh under yolofs
 $ yolo -- make build     # run a specific command instead of sh
 ```
 
