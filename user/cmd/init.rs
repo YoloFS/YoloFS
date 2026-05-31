@@ -38,22 +38,34 @@ impl AgentChoice {
             AgentChoice::Claude => AgentTemplate {
                 dir: ".claude",
                 files: &[
-                    ("settings.json", include_str!("../../agents/.claude/settings.json")),
+                    (
+                        "settings.json",
+                        include_str!("../../agents/.claude/settings.json"),
+                    ),
                     ("yolofs.sh", include_str!("../../agents/.claude/yolofs.sh")),
                 ],
             },
             AgentChoice::Gemini => AgentTemplate {
                 dir: ".gemini",
                 files: &[
-                    ("settings.json", include_str!("../../agents/.gemini/settings.json")),
+                    (
+                        "settings.json",
+                        include_str!("../../agents/.gemini/settings.json"),
+                    ),
                     ("yolofs.sh", include_str!("../../agents/.gemini/yolofs.sh")),
                 ],
             },
             AgentChoice::Copilot => AgentTemplate {
                 dir: ".github/hooks",
                 files: &[
-                    ("yolofs.json", include_str!("../../agents/.github/hooks/yolofs.json")),
-                    ("yolofs.sh", include_str!("../../agents/.github/hooks/yolofs.sh")),
+                    (
+                        "yolofs.json",
+                        include_str!("../../agents/.github/hooks/yolofs.json"),
+                    ),
+                    (
+                        "yolofs.sh",
+                        include_str!("../../agents/.github/hooks/yolofs.sh"),
+                    ),
                 ],
             },
         }
@@ -130,12 +142,18 @@ mod tests {
 
         // Empty selection scaffolds every agent.
         assert_eq!(
-            resolve_choices(&[]).iter().map(|t| t.dir).collect::<Vec<_>>(),
+            resolve_choices(&[])
+                .iter()
+                .map(|t| t.dir)
+                .collect::<Vec<_>>(),
             [".claude", ".gemini", ".github/hooks"]
         );
 
         let two = resolve_choices(&[Claude, Gemini]);
-        assert_eq!(two.iter().map(|t| t.dir).collect::<Vec<_>>(), [".claude", ".gemini"]);
+        assert_eq!(
+            two.iter().map(|t| t.dir).collect::<Vec<_>>(),
+            [".claude", ".gemini"]
+        );
 
         // Duplicates collapse.
         assert_eq!(resolve_choices(&[Claude, Claude]).len(), 1);
