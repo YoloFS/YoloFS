@@ -6,8 +6,9 @@ use crate::ioctl;
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-/// Create a snapshot with the given name (or a timestamp if empty).
-pub fn create(name: Option<&str>) -> Result<()> {
+/// Create a snapshot with the given name (or a timestamp if empty). With
+/// `if_changed`, the kernel skips the snapshot when nothing is staged.
+pub fn create(name: Option<&str>, if_changed: bool) -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
     let chk_name = match name {
         Some(n) if !n.is_empty() => n.to_string(),
@@ -15,7 +16,16 @@ pub fn create(name: Option<&str>) -> Result<()> {
     };
 
     let ctl_file = ioctl::open(&yolofs).context("opening ctl for snapshot")?;
-    let gen_id = ioctl::snapshot(&ctl_file, &chk_name, 0)?;
+    let flags = if if_changed {
+        ioctl::YOLO_SNAPSHOT_IF_CHANGED
+    } else {
+        0
+    };
+    let gen_id = ioctl::snapshot(&ctl_file, &chk_name, flags)?;
+    if if_changed && gen_id == 0 {
+        eprintln!("{}", "yolo: no changes, skipping snapshot".dimmed());
+        return Ok(());
+    }
 
     eprintln!(
         "{} {}",

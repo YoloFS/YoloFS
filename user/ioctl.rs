@@ -155,10 +155,17 @@ pub fn put_decision(fd: &File, id: u64, decision: u8) -> Result<()> {
 /// Open the .ctl control file for ioctl operations.
 pub fn open(yolo_dir: &Path) -> Result<File> {
     let ctl = yolo_dir.join("mnt").join(".ctl");
-    OpenOptions::new()
-        .read(true)
-        .open(&ctl)
-        .context("opening .yolofs/mnt/.ctl for ioctl")
+    match OpenOptions::new().read(true).open(&ctl) {
+        Ok(f) => Ok(f),
+        // Inside the mount, `<session>/mnt` is hidden and the control file is at
+        // the mount root — fall back to /.ctl so commands run from within the
+        // sandbox (e.g. an interactive shell's snapshot hook) still reach it.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => OpenOptions::new()
+            .read(true)
+            .open("/.ctl")
+            .context("opening /.ctl for ioctl (inside the mount)"),
+        Err(e) => Err(e).context("opening .yolofs/mnt/.ctl for ioctl"),
+    }
 }
 
 fn make_rule(path: &str, perm: u8) -> Result<YoloIocRule> {
