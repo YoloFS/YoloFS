@@ -166,7 +166,7 @@ fn run_cli() -> anyhow::Result<u8> {
     match cli.command {
         Some(Command::Load) => {
             if !load::load()? {
-                eprintln!("{} kernel module already loaded", "yolofs:".green());
+                eprintln!("{} kernel module already loaded", "yolo:".green());
             }
         }
         Some(Command::Unload) => load::unload()?,

@@ -7,17 +7,11 @@ $ yolo reload
 yolo: loading kernel module /lib/modules/6.8.0-117-generic/extra/yolofs.ko
 
 $ yolo init
-yolofs.toml already exists
-exists .claude/settings.json
-exists .claude/yolofs.sh
-exists .gemini/settings.json
-exists .gemini/yolofs.sh
-exists .github/hooks/yolofs.json
-exists .github/hooks/yolofs.sh
+yolo: already initialized
 
 $ yolo mount
 yolo: mounting ~/project/.yolofs/mnt (permission=1,staging=1,ask_timeout=30,ask_default=4)
-yolofs: applying 10 rule(s) from yolofs.toml
+yolo: applying 10 rule(s) from yolofs.toml
   ✓ ~/.ssh/id_ed25519 = ask
   ✓ ~/project = allow
   ✓ ~/project/.yolofs = hide

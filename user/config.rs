@@ -209,7 +209,7 @@ pub fn apply_rules(yolo_dir: &Path) -> Result<()> {
     eprintln!(
         "{}",
         format!(
-            "yolofs: applying {} rule(s) from yolofs.toml",
+            "yolo: applying {} rule(s) from yolofs.toml",
             config.rules.len()
         )
         .cyan()

@@ -75,8 +75,13 @@ impl AgentChoice {
 /// `yolo init`: write yolofs.toml, then scaffold the selected agents' hooks.
 /// An empty selection (no `--agents`) scaffolds every agent.
 pub fn run(dir: &Path, agents: &[AgentChoice]) -> Result<()> {
-    write_default_config(dir)?;
-    scaffold_agents(dir, &resolve_choices(agents))
+    let mut created = 0;
+    created += usize::from(write_default_config(dir)?);
+    created += scaffold_agents(dir, &resolve_choices(agents))?;
+    if created == 0 {
+        eprintln!("{} already initialized", "yolo:".green());
+    }
+    Ok(())
 }
 
 /// Map choices to templates, deduped and in order. Empty selects every agent.
@@ -96,27 +101,28 @@ fn resolve_choices(choices: &[AgentChoice]) -> Vec<AgentTemplate> {
 }
 
 /// Write the default yolofs.toml (the embedded template, verbatim) unless one
-/// already exists.
-fn write_default_config(dir: &Path) -> Result<()> {
+/// already exists. Returns `true` if it was created. Existing files are left
+/// untouched and unannounced.
+fn write_default_config(dir: &Path) -> Result<bool> {
     let cp = dir.join("yolofs.toml");
     if cp.exists() {
-        eprintln!("{}", "yolofs.toml already exists".yellow());
-    } else {
-        fs::write(&cp, config::DEFAULT_CONFIG).context("writing yolofs.toml")?;
-        eprintln!("{} {}", "created".green().bold(), cp.display());
+        return Ok(false);
     }
-    Ok(())
+    fs::write(&cp, config::DEFAULT_CONFIG).context("writing yolofs.toml")?;
+    eprintln!("{} {}", "created".green().bold(), cp.display());
+    Ok(true)
 }
 
 /// Write each selected agent's files, creating parent dirs and skipping any
-/// file that already exists. `.sh` hooks are made executable.
-fn scaffold_agents(dir: &Path, selected: &[AgentTemplate]) -> Result<()> {
+/// file that already exists. `.sh` hooks are made executable. Returns the
+/// number of files created; existing files are skipped silently.
+fn scaffold_agents(dir: &Path, selected: &[AgentTemplate]) -> Result<usize> {
+    let mut created = 0;
     for agent in selected {
         for (name, contents) in agent.files {
             let rel = format!("{}/{}", agent.dir, name);
             let path = dir.join(&rel);
             if path.exists() {
-                eprintln!("{} {}", "exists".yellow(), rel);
                 continue;
             }
             if let Some(parent) = path.parent() {
@@ -127,9 +133,10 @@ fn scaffold_agents(dir: &Path, selected: &[AgentTemplate]) -> Result<()> {
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
             }
             eprintln!("{} {}", "created".green().bold(), rel);
+            created += 1;
         }
     }
-    Ok(())
+    Ok(created)
 }
 
 #[cfg(test)]
@@ -162,7 +169,7 @@ mod tests {
     #[test]
     fn write_default_config_creates_file() {
         let tmp = tempfile::tempdir().unwrap();
-        write_default_config(tmp.path()).unwrap();
+        assert!(write_default_config(tmp.path()).unwrap(), "reports created");
 
         let path = tmp.path().join("yolofs.toml");
         assert!(path.exists(), "yolofs.toml should be created");
@@ -176,7 +183,10 @@ mod tests {
         let path = tmp.path().join("yolofs.toml");
         fs::write(&path, "permission = false\nstaging = false\n").unwrap();
 
-        write_default_config(tmp.path()).unwrap();
+        assert!(
+            !write_default_config(tmp.path()).unwrap(),
+            "reports not created when one already exists"
+        );
 
         let config = config::Config::load(&path).unwrap();
         assert!(!config.permission, "must not overwrite existing config");
@@ -188,7 +198,11 @@ mod tests {
         let dir = tmp.path();
         let claude = AgentChoice::Claude.template();
 
-        scaffold_agents(dir, &[claude]).unwrap();
+        assert_eq!(
+            scaffold_agents(dir, &[claude]).unwrap(),
+            2,
+            "two files created"
+        );
 
         let settings = dir.join(".claude/settings.json");
         let hook = dir.join(".claude/yolofs.sh");
@@ -200,9 +214,13 @@ mod tests {
         // Unselected agents are untouched.
         assert!(!dir.join(".gemini").exists());
 
-        // Re-running does not error and does not clobber an edited file.
+        // Re-running creates nothing and does not clobber an edited file.
         fs::write(&hook, "edited\n").unwrap();
-        scaffold_agents(dir, &[claude]).unwrap();
+        assert_eq!(
+            scaffold_agents(dir, &[claude]).unwrap(),
+            0,
+            "nothing re-created"
+        );
         assert_eq!(fs::read_to_string(&hook).unwrap(), "edited\n");
     }
 }
