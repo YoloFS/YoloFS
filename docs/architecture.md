@@ -126,9 +126,9 @@ $ yolo commit
 
 # 1c. Install rules via CLI from the session root (attaches perm directly
 #     to dentries)
-$ yolo rule add src allow
-$ yolo rule add /etc deny
-$ yolo rule add /etc/hosts read
+$ yolo rule allow src
+$ yolo rule deny /etc
+$ yolo rule read /etc/hosts
 
 # 2. Agent writes to a file matching an allow rule
 $ echo "hello" > /src/main.rs

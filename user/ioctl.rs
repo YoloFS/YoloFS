@@ -18,7 +18,7 @@ pub const YOLO_OP_WRITE: u32 = 2;
 pub const YOLO_OP_EXEC: u32 = 3;
 
 // Permission values
-pub const YOLO_PERM_NONE: u8 = 0;
+pub const YOLO_PERM_UNSET: u8 = 0;
 pub const YOLO_PERM_ASK: u8 = 1;
 pub const YOLO_PERM_ALLOW: u8 = 2;
 pub const YOLO_PERM_READ: u8 = 3;
@@ -184,7 +184,7 @@ pub fn add_rule(fd: &File, path: &str, perm: u8) -> Result<()> {
 
 /// Send YOLO_IOC_RULE_REMOVE ioctl.
 pub fn remove_rule(fd: &File, path: &str) -> Result<()> {
-    let rule = make_rule(path, YOLO_PERM_NONE)?;
+    let rule = make_rule(path, YOLO_PERM_UNSET)?;
     unsafe { ioctl_rule_remove(fd.as_raw_fd(), &rule) }
         .with_context(|| format!("ioctl RULE_REMOVE for {path}"))?;
     Ok(())

@@ -44,7 +44,7 @@ fn newly_created_file_checked_on_reopen() {
 
 // ── Rule change via live ioctl (cache invalidation) ──
 
-/// Changing rules at runtime via `yolofs rule add` should take effect
+/// Changing rules at runtime via `yolofs rule <verb>` should take effect
 /// on subsequent opens (perm_gen increment forces cache re-resolution).
 #[test]
 fn live_rule_change_takes_effect() {
@@ -58,12 +58,12 @@ fn live_rule_change_takes_effect() {
     let result = fs::read_to_string(s.mnt_path("hello.txt"));
     assert!(result.is_err(), "read should fail under deny");
 
-    // `rule add` takes a host path and resolves it through the mount internally.
-    s.cli(&["rule", "add", &s.root.display().to_string(), "allow"])
+    // `rule <verb>` takes a host path and resolves it through the mount internally.
+    s.cli(&["rule", "allow", &s.root.display().to_string()])
         .unwrap();
 
     let content = fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("read should succeed after live rule add");
+        .expect("read should succeed after a live rule change");
     assert_eq!(content, "base content\n");
 }
 
@@ -77,11 +77,11 @@ fn live_rule_remove_reapplies_gating() {
     })
     .expect("session setup");
 
-    s.cli(&["rule", "add", &s.root.display().to_string(), "allow"])
+    s.cli(&["rule", "allow", &s.root.display().to_string()])
         .unwrap();
     fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with allow rule");
 
-    s.cli(&["rule", "remove", &s.root.display().to_string()])
+    s.cli(&["rule", "unset", &s.root.display().to_string()])
         .unwrap();
     let result = fs::read_to_string(s.mnt_path("hello.txt"));
     assert!(result.is_err(), "read should fail after rule removal");

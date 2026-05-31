@@ -192,7 +192,7 @@ void yolo_release_pinned_rules(struct yolo_sb_info *sbi)
 
 		list_del_init(&di->rule_pin);
 		spin_lock(&di->lock);
-		di->perm = YOLO_PERM_NONE;
+		di->perm = YOLO_PERM_UNSET;
 		di->rule_dentry = NULL;
 		spin_unlock(&di->lock);
 		dput(dentry);
@@ -272,7 +272,7 @@ static long yolo_rule_add_ioctl(struct file *file, unsigned long arg)
 	}
 
 	spin_lock(&di->lock);
-	first = (di->perm == YOLO_PERM_NONE);
+	first = (di->perm == YOLO_PERM_UNSET);
 	if (first) {
 		dget(rule_path.dentry);
 		di->rule_dentry = rule_path.dentry;
@@ -306,9 +306,9 @@ static long yolo_rule_remove_ioctl(struct file *file, unsigned long arg)
 		return err;
 
 	spin_lock(&di->lock);
-	had_rule = (di->perm != YOLO_PERM_NONE);
+	had_rule = (di->perm != YOLO_PERM_UNSET);
 	if (had_rule) {
-		di->perm = YOLO_PERM_NONE;
+		di->perm = YOLO_PERM_UNSET;
 		di->rule_dentry = NULL;
 	}
 	spin_unlock(&di->lock);

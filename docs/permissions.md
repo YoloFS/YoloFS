@@ -17,7 +17,7 @@ ENOENT).  `deny` and `ask` have no effect on directory read-like ops.
 
 ```c
 enum yolo_perm {
-    YOLO_PERM_NONE,        // No rule on this dentry (walk up to find one).
+    YOLO_PERM_UNSET,       // No rule on this dentry (walk up to find one).
     YOLO_PERM_ASK,         // Default. Block thread, ask userspace.
     YOLO_PERM_ALLOW,       // Read + write + execute allowed.
     YOLO_PERM_READ,        // Read + execute. No write.
@@ -52,7 +52,7 @@ Rules live directly on dentries. One field, one structure.
 
 | Field | Purpose |
 |-------|---------|
-| `perm` | `YOLO_PERM_NONE` unless this dentry has an explicit rule. Set by `YOLO_IOC_RULE_ADD`, cleared by `YOLO_IOC_RULE_REMOVE`. The dentry is pinned (via `dget`) while a rule is attached to prevent eviction. |
+| `perm` | `YOLO_PERM_UNSET` unless this dentry has an explicit rule. Set by `YOLO_IOC_RULE_ADD`, cleared by `YOLO_IOC_RULE_REMOVE`. The dentry is pinned (via `dget`) while a rule is attached to prevent eviction. |
 
 ### Per-Superblock (`yolo_sb_info`)
 
@@ -111,12 +111,12 @@ inodes** with a **generation counter** for cheap invalidation.
 
 Two levels:
 - **Dentry**: `perm` field — only set on dentries that have an explicit rule
-  (`YOLO_PERM_NONE` otherwise). Rules are pinned so the dentry is never evicted.
+  (`YOLO_PERM_UNSET` otherwise). Rules are pinned so the dentry is never evicted.
 - **Inode**: `cached_perm` + `perm_gen` — resolved permission cached during
   `lookup()` by inheriting from the nearest ancestor dentry with a rule.
   Checked in `permission()` with O(1) cost.
 
-**Setting a rule** (`yolo rule add src allow`):
+**Setting a rule** (`yolo rule allow src`):
 
 1. Write the rule to `yolofs.toml` (source of truth on disk):
   ```toml
@@ -147,7 +147,7 @@ On mount, the CLI reads `yolofs.toml` and applies all `[rules]` via ioctl.
 
 **Changing a rule**: just set it again + bump generation.
 
-**Removing a rule** (`yolo rule remove /foo/bar`):
+**Removing a rule** (`yolo rule unset /foo/bar`):
 
 1. Remove the rule from `yolofs.toml`.
 2. If a mount exists, also apply live:
@@ -163,7 +163,7 @@ enum yolo_perm yolo_resolve_perm(struct dentry *dentry)
     struct dentry *cur = dentry;
     while (cur) {
         struct yolo_dentry_info *di = YOLO_D(cur);
-        if (di && di->perm != YOLO_PERM_NONE)
+        if (di && di->perm != YOLO_PERM_UNSET)
             return di->perm;
         if (cur == cur->d_parent)
             break;              // reached root dentry
@@ -262,11 +262,11 @@ static int yolo_create(struct mnt_idmap *idmap, struct inode *dir,
 **Example**:
 
 ```bash
- yolo rule add src          allow
- yolo rule add /etc         deny
- yolo rule add /etc/hosts   read
- yolo rule add /usr/bin     read
- yolo rule add ~/.mozilla   hide
+ yolo rule allow src
+ yolo rule deny  /etc
+ yolo rule read  /etc/hosts
+ yolo rule read  /usr/bin
+ yolo rule hide  ~/.mozilla
 ```
 
 - `permission("src/main.rs")` -> cached_perm=ALLOW (from lookup) -> **pass**

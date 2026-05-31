@@ -26,7 +26,7 @@ static int yolo_d_init(struct dentry *dentry)
 	spin_lock_init(&info->lock);
 	/* Ground state: unpinned, following base filesystem */
 	info->target = YOLO_TARGET_PATH;
-	info->perm = YOLO_PERM_NONE;
+	info->perm = YOLO_PERM_UNSET;
 	INIT_LIST_HEAD(&info->rule_pin);
 	info->rule_dentry = NULL;
 	dentry->d_fsdata = info;

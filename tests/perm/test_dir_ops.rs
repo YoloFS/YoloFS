@@ -144,7 +144,7 @@ fn readdir_on_ask_dir_still_succeeds_when_default_denies() {
         ..Default::default()
     })
     .expect("session setup");
-    s.cli(&["rule", "add", "subdir", "ask"]).unwrap();
+    s.cli(&["rule", "ask", "subdir"]).unwrap();
 
     let entries: Vec<_> = fs::read_dir(s.mnt_path("subdir"))
         .expect("readdir should succeed")

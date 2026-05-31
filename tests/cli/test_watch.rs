@@ -107,7 +107,7 @@ fn session_with_ask_file() -> (YoloSession, String) {
     .expect("session setup");
 
     let file_path = "hello.txt".to_string();
-    s.cli(&["rule", "add", &file_path, "ask"]).unwrap();
+    s.cli(&["rule", "ask", &file_path]).unwrap();
     (s, file_path)
 }
 

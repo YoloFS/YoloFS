@@ -86,8 +86,14 @@ new travel become unreachable, preserving earlier history.
 **Permission rules and diagnostics:**
 
 ```bash
-$ yolo rule add src allow
-$ yolo rule remove src
+$ yolo rule allow src    # set a rule (verb names the level)
+$ yolo rule read /usr
+$ yolo rule deny /etc
+$ yolo rule hide ~/.ssh
+$ yolo rule ask /etc/hosts   # force a prompt, overriding an inherited rule
+$ yolo rule unset src    # remove a rule (revert to inherited)
+$ yolo rule list         # list configured rules (bare `yolo rule` also lists)
+$ yolo rule show src     # effective level for a path + where it comes from
 $ yolo watch             # handle ask requests (daemon mode)
 ```
 

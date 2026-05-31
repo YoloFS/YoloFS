@@ -113,10 +113,10 @@ enum Command {
         #[arg(long)]
         path: Option<String>,
     },
-    /// Manage permission rules
+    /// Manage permission rules (no subcommand lists them)
     Rule {
         #[command(subcommand)]
-        action: RuleAction,
+        action: Option<RuleAction>,
     },
     /// Handle ask requests (daemon mode)
     Watch {
@@ -126,20 +126,25 @@ enum Command {
     },
 }
 
+/// Each mutating verb names a permission state; `list`/`show` are queries.
 #[derive(Subcommand)]
 enum RuleAction {
-    /// Add a permission rule
-    Add {
-        /// Path (relative to session root or absolute)
-        path: String,
-        /// Permission: allow, read, deny, hide, ask
-        perm: String,
-    },
-    /// Remove a permission rule
-    Remove {
-        /// Path to remove rule from
-        path: String,
-    },
+    /// Remove the rule on a path (revert to inheriting from ancestors)
+    Unset { path: String },
+    /// Prompt on access, overriding any inherited rule
+    Ask { path: String },
+    /// Allow read + write + execute
+    Allow { path: String },
+    /// Allow read + execute, deny write
+    Read { path: String },
+    /// Deny all access
+    Deny { path: String },
+    /// Deny access and hide the path (ENOENT)
+    Hide { path: String },
+    /// List all configured rules
+    List,
+    /// Show the effective permission for a path
+    Show { path: String },
 }
 
 fn main() -> ! {
@@ -190,8 +195,14 @@ fn run_cli() -> anyhow::Result<u8> {
         Some(Command::Timeline) => timeline::run()?,
         Some(Command::Audit { path }) => audit::run(path.as_deref())?,
         Some(Command::Rule { action }) => match action {
-            RuleAction::Add { path, perm } => config::add_rule(&path, &perm)?,
-            RuleAction::Remove { path } => config::remove_rule(&path)?,
+            None | Some(RuleAction::List) => config::list_rules()?,
+            Some(RuleAction::Show { path }) => config::show_rule(&path)?,
+            Some(RuleAction::Unset { path }) => config::unset_rule(&path)?,
+            Some(RuleAction::Ask { path }) => config::set_rule(&path, config::Perm::Ask)?,
+            Some(RuleAction::Allow { path }) => config::set_rule(&path, config::Perm::Allow)?,
+            Some(RuleAction::Read { path }) => config::set_rule(&path, config::Perm::Read)?,
+            Some(RuleAction::Deny { path }) => config::set_rule(&path, config::Perm::Deny)?,
+            Some(RuleAction::Hide { path }) => config::set_rule(&path, config::Perm::Hide)?,
         },
         Some(Command::Watch { allow_all }) => watch::run(allow_all)?,
         None => {

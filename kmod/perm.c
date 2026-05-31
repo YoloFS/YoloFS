@@ -18,7 +18,7 @@ enum yolo_perm yolo_resolve_perm(struct dentry *dentry)
 
 	while (cur) {
 		struct yolo_dentry_info *di = YOLO_D(cur);
-		if (di && di->perm != YOLO_PERM_NONE)
+		if (di && di->perm != YOLO_PERM_UNSET)
 			return di->perm;
 		if (cur == cur->d_parent)
 			break;
@@ -135,7 +135,7 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 	req->op = op;
 	req->pid = current->pid;
 	get_task_comm(req->comm, current);
-	req->decision = YOLO_PERM_NONE; /* undecided */
+	req->decision = YOLO_PERM_UNSET; /* undecided */
 	init_completion(&req->done);
 	INIT_LIST_HEAD(&req->list);
 
@@ -165,7 +165,7 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 		list_del_init(&req->list);
 	spin_unlock(&sbi->ask_engine.pending_lock);
 
-	if (!err && req->decision == YOLO_PERM_NONE) {
+	if (!err && req->decision == YOLO_PERM_UNSET) {
 		/* Shouldn't happen — treat as deny */
 		req->decision = YOLO_PERM_DENY;
 	}

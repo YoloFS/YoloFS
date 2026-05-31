@@ -122,27 +122,82 @@ fn is_mounted() -> bool {
     crate::utils::session_dir().is_ok_and(|d| d.join("mnt").exists())
 }
 
+/// Expand a leading `$HOME` or `~` to the home directory.
+fn expand_home(path: &str) -> Result<String> {
+    if path == "~" || path == "$HOME" {
+        Ok(env::var("HOME").context("$HOME not set")?)
+    } else if let Some(rest) = path
+        .strip_prefix("~/")
+        .or_else(|| path.strip_prefix("$HOME/"))
+    {
+        Ok(format!(
+            "{}/{rest}",
+            env::var("HOME").context("$HOME not set")?
+        ))
+    } else {
+        Ok(path.to_string())
+    }
+}
+
 /// Expand `$HOME`/`~`, then canonicalize (resolves relative paths, symlinks, `..`).
 /// Fails if the path doesn't exist — the kernel can only match rules against existing dentries.
 fn resolve_to_abs(path: &str) -> Result<String> {
-    let expanded = if path.starts_with("$HOME") || path.starts_with('~') {
-        let home = env::var("HOME").context("$HOME not set")?;
-        if path == "~" || path == "$HOME" {
-            home
-        } else if let Some(rest) = path.strip_prefix("~/") {
-            format!("{home}/{rest}")
-        } else if let Some(rest) = path.strip_prefix("$HOME/") {
-            format!("{home}/{rest}")
-        } else {
-            path.to_string()
-        }
-    } else {
-        path.to_string()
-    };
-
+    let expanded = expand_home(path)?;
     fs::canonicalize(&expanded)
         .map(|p| p.to_string_lossy().to_string())
         .with_context(|| format!("rule path does not exist: {expanded}"))
+}
+
+/// Lexically normalize a rule/query path to an absolute, `.`/`..`-resolved form
+/// *without* requiring it to exist (unlike [`resolve_to_abs`]). Used by `show`
+/// to resolve inheritance over the declared rules.
+fn normalize_lexical(path: &str) -> Result<String> {
+    let expanded = expand_home(path)?;
+    let base = if expanded.starts_with('/') {
+        expanded
+    } else {
+        format!(
+            "{}/{expanded}",
+            env::current_dir().context("getting cwd")?.to_string_lossy()
+        )
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for comp in base.split('/') {
+        match comp {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            c => parts.push(c.to_string()),
+        }
+    }
+    Ok(format!("/{}", parts.join("/")))
+}
+
+/// True if `ancestor` is `query` itself or a parent directory of it (both
+/// already lexically normalized).
+fn is_ancestor_or_self(ancestor: &str, query: &str) -> bool {
+    ancestor == query
+        || ancestor == "/"
+        || (query.starts_with(ancestor) && query.as_bytes().get(ancestor.len()) == Some(&b'/'))
+}
+
+/// Resolve the effective rule for `path`: the longest ancestor rule key, plus
+/// whether it matches the path exactly (explicit) or via inheritance. `None`
+/// means no rule applies (the `ask` default).
+fn resolve_rule<'a>(
+    rules: &'a BTreeMap<String, Perm>,
+    path: &str,
+) -> Result<Option<(&'a str, Perm, bool)>> {
+    let query = normalize_lexical(path)?;
+    let mut best: Option<(&str, Perm, usize, bool)> = None;
+    for (rule_path, perm) in rules {
+        let rp = normalize_lexical(rule_path)?;
+        if is_ancestor_or_self(&rp, &query) && best.is_none_or(|(_, _, len, _)| rp.len() > len) {
+            best = Some((rule_path.as_str(), *perm, rp.len(), rp == query));
+        }
+    }
+    Ok(best.map(|(rp, perm, _, explicit)| (rp, perm, explicit)))
 }
 
 fn resolve_through_mount(abs_path: &str, mnt: &Path) -> String {
@@ -229,12 +284,10 @@ pub fn apply_rules(yolo_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-// ── Rule add/remove ───────────────────────────────────────────────────
+// ── Rule management ───────────────────────────────────────────────────
 
-pub fn add_rule(path: &str, perm_str: &str) -> Result<()> {
-    let perm: Perm = perm_str.parse()?;
-
-    // Persist to yolofs.toml
+/// Set a rule on `path` to `perm`: persist to yolofs.toml and apply live if mounted.
+pub fn set_rule(path: &str, perm: Perm) -> Result<()> {
     let cp = config_path()?;
     let mut config = if cp.exists() {
         Config::load(&cp)?
@@ -247,7 +300,6 @@ pub fn add_rule(path: &str, perm_str: &str) -> Result<()> {
     config.rules.insert(path.to_string(), perm);
     config.save(&cp)?;
 
-    // Apply live if mounted
     if is_mounted() {
         let yolofs = crate::utils::session_dir()?;
         let mnt = yolofs.join("mnt");
@@ -257,20 +309,19 @@ pub fn add_rule(path: &str, perm_str: &str) -> Result<()> {
         ioctl::add_rule(&ctl_file, &resolved, perm.to_ioctl())?;
         eprintln!(
             "{} {} = {} {}",
-            "rule added:".green().bold(),
+            "rule set:".green().bold(),
             path,
             perm,
             "(live)".green()
         );
     } else {
-        eprintln!("{} {} = {}", "rule added:".green().bold(), path, perm);
+        eprintln!("{} {} = {}", "rule set:".green().bold(), path, perm);
     }
-
     Ok(())
 }
 
-pub fn remove_rule(path: &str) -> Result<()> {
-    // Update yolofs.toml
+/// Remove any rule on `path`; it reverts to inheriting from its ancestors.
+pub fn unset_rule(path: &str) -> Result<()> {
     let cp = config_path()?;
     if cp.exists() {
         let mut config = Config::load(&cp)?;
@@ -278,7 +329,6 @@ pub fn remove_rule(path: &str) -> Result<()> {
         config.save(&cp)?;
     }
 
-    // Apply live if mounted
     if is_mounted() {
         let yolofs = crate::utils::session_dir()?;
         let mnt = yolofs.join("mnt");
@@ -288,14 +338,37 @@ pub fn remove_rule(path: &str) -> Result<()> {
         ioctl::remove_rule(&ctl_file, &resolved)?;
         eprintln!(
             "{} {} {}",
-            "rule removed:".yellow().bold(),
+            "rule unset:".yellow().bold(),
             path,
             "(live)".yellow()
         );
     } else {
-        eprintln!("{} {}", "rule removed:".yellow().bold(), path);
+        eprintln!("{} {}", "rule unset:".yellow().bold(), path);
     }
+    Ok(())
+}
 
+/// Print all configured rules (paths sorted), or a notice if there are none.
+pub fn list_rules() -> Result<()> {
+    let config = load_config();
+    if config.rules.is_empty() {
+        eprintln!("{}", "no rules configured".dimmed());
+        return Ok(());
+    }
+    for (path, perm) in &config.rules {
+        println!("{path} = {perm}");
+    }
+    Ok(())
+}
+
+/// Print the effective permission for `path` and where it comes from.
+pub fn show_rule(path: &str) -> Result<()> {
+    let config = load_config();
+    match resolve_rule(&config.rules, path)? {
+        Some((_, perm, true)) => println!("{perm} (explicit)"),
+        Some((rule_path, perm, false)) => println!("{perm} (inherited from {rule_path})"),
+        None => println!("{} (default — no matching rule)", Perm::Ask),
+    }
     Ok(())
 }
 
@@ -333,6 +406,29 @@ mod tests {
         assert!(s.contains("read"), "s = {s}");
         let w2: Wrapper = toml::from_str(&s).unwrap();
         assert_eq!(w, w2);
+    }
+
+    #[test]
+    fn resolve_rule_explicit_inherited_default() {
+        // Absolute paths so resolution is independent of cwd.
+        let rules = BTreeMap::from([
+            ("/etc".to_string(), Perm::Deny),
+            ("/etc/hosts".to_string(), Perm::Read),
+        ]);
+
+        // Exact match → explicit.
+        let (rp, perm, explicit) = resolve_rule(&rules, "/etc/hosts").unwrap().unwrap();
+        assert_eq!((rp, perm, explicit), ("/etc/hosts", Perm::Read, true));
+
+        // Longest ancestor wins, marked inherited.
+        let (rp, perm, explicit) = resolve_rule(&rules, "/etc/passwd").unwrap().unwrap();
+        assert_eq!((rp, perm, explicit), ("/etc", Perm::Deny, false));
+
+        // No ancestor rule → default (ask).
+        assert!(resolve_rule(&rules, "/var/log").unwrap().is_none());
+
+        // Prefix-but-not-ancestor must NOT match (`/etc` is not a parent of `/etcfoo`).
+        assert!(resolve_rule(&rules, "/etcfoo").unwrap().is_none());
     }
 
     #[test]

@@ -56,7 +56,7 @@ fn apply_rules_rejects_invalid_toml() {
 }
 
 #[test]
-fn rule_add_persists_offline() {
+fn rule_set_persists_offline() {
     let session = YoloSession::new().expect("session setup");
 
     session.cli(&["unmount"]).unwrap();
@@ -68,10 +68,8 @@ fn rule_add_persists_offline() {
     .save(&session.root.join("yolofs.toml"))
     .unwrap();
 
-    let (ok, _, stderr) = session
-        .cli_output(&["rule", "add", "/tmp", "allow"])
-        .unwrap();
-    assert!(ok, "rule add should succeed: {stderr}");
+    let (ok, _, stderr) = session.cli_output(&["rule", "allow", "/tmp"]).unwrap();
+    assert!(ok, "rule allow should succeed: {stderr}");
 
     let content = std::fs::read_to_string(session.root.join("yolofs.toml")).unwrap();
     assert!(
