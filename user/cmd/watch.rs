@@ -124,7 +124,7 @@ pub fn run(allow_all: bool) -> Result<()> {
 
 fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
     loop {
-        let req = match ioctl::read_request(ctl_file) {
+        let req = match ioctl::get_request(ctl_file) {
             Ok(r) => r,
             Err(nix::errno::Errno::EBUSY) => {
                 anyhow::bail!("another yolo watch is already running");
@@ -145,7 +145,7 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
             prompt_decision(&req)
         };
 
-        if let Err(e) = ioctl::write_response(ctl_file, req.id, decision.to_ioctl()) {
+        if let Err(e) = ioctl::put_response(ctl_file, req.id, decision.to_ioctl()) {
             eprintln!("yolo watch: write error: {e}");
         } else {
             // claim_tty/release_tty is not needed here because TOSTOP

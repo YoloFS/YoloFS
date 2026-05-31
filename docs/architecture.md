@@ -161,9 +161,9 @@ $ cat /tmp/secrets
               -> caches ASK on secrets inode
    -> kernel: yolo_open() -> cached_perm=ASK
    -> kernel: enqueue request, thread sleeps
-   -> daemon: ioctl(GET_REQUEST) -> yolo_ctl_request { id:1, path:"/tmp/secrets", ... }
+   -> daemon: ioctl(GET_REQUEST) -> yolo_ioc_ask_request { id:1, path:"/tmp/secrets", ... }
    -> daemon: decision: read
-   -> daemon: ioctl(PUT_RESPONSE, yolo_ctl_response { id:1, decision:READ })
+   -> daemon: ioctl(PUT_RESPONSE, yolo_ioc_ask_response { id:1, decision:READ })
    -> kernel: wake thread, apply one-shot READ to this open
    -> kernel: open base/tmp/secrets read-only, proceed
 

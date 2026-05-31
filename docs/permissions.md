@@ -293,11 +293,11 @@ When a thread accesses a file whose effective permission is `ask`:
        req->done,                            until request is available
        req->decision != UNDECIDED            |
      )                                      dequeue request
-     ...thread sleeps...                     -> struct yolo_ctl_request { id, path, op, ... }
+     ...thread sleeps...                     -> struct yolo_ioc_ask_request { id, path, op, ... }
                                              |
                                             Daemon shows prompt / applies policy
                                              |
-                                             ioctl(PUT_RESPONSE) -> struct yolo_ctl_response {
+                                             ioctl(PUT_RESPONSE) -> struct yolo_ioc_ask_response {
                                                          id: 42, decision: ALLOW }
                                               |
    6. req->decision = ALLOW                  ioctl handler:
@@ -315,7 +315,7 @@ Key properties:
 - **Timeout**: Configurable via mount option `ask_timeout=<seconds>`.
   If the daemon doesn't respond, the default action (configurable:
   `deny` or `read`) is applied.
-- **Minimal response**: `yolo_ctl_response` only carries `{ id, decision }`.
+- **Minimal response**: `yolo_ioc_ask_response` only carries `{ id, decision }`.
   Persisting policy is always a separate `ioctl(YOLO_IOC_RULE_SET)`.
 - **One-time by default**: The decision applies to this single access only.
   Next access to the same file triggers ask again. To persist a decision,

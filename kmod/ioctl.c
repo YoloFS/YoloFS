@@ -41,7 +41,7 @@ static long yolo_get_request_ioctl(struct file *file, unsigned long arg)
 	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
 	struct yolo_ask_engine *eng = &sbi->ask_engine;
 	struct yolo_perm_request *req;
-	struct yolo_ctl_request out;
+	struct yolo_ioc_ask_request out;
 	int err;
 	__u16 path_len;
 
@@ -130,7 +130,7 @@ requeue_pending:
 static long yolo_put_response_ioctl(struct file *file, unsigned long arg)
 {
 	struct yolo_ask_engine *eng = &YOLO_SB(file_inode(file)->i_sb)->ask_engine;
-	struct yolo_ctl_response in;
+	struct yolo_ioc_ask_response in;
 	struct yolo_perm_request *req, *tmp;
 	bool found = false;
 
