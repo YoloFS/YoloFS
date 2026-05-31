@@ -10,25 +10,25 @@ pub fn run() -> anyhow::Result<()> {
     let yolofs = crate::utils::session_dir()?;
     let journal = Journal::read(&yolofs)?;
 
-    if journal.metas.len() <= 1 {
+    if journal.markers.len() <= 1 {
         println!("{}", "No snapshots.".yellow());
         return Ok(());
     }
 
-    for (m_idx, meta) in journal.metas.iter().enumerate() {
+    for (m_idx, marker) in journal.markers.iter().enumerate() {
         if m_idx == 0 {
             continue;
         }
         let reachable = journal.is_alive(m_idx - 1);
-        let line = match meta {
-            journal::Meta::Snapshot { gen_id, name } => {
+        let line = match marker {
+            journal::Marker::Snapshot { gen_id, name } => {
                 format!(
                     "{} {}",
                     format!("snapshot [{gen_id}]").cyan().bold(),
                     name.dimmed(),
                 )
             }
-            journal::Meta::Travel { gen_id, target_gen } => {
+            journal::Marker::Travel { gen_id, target_gen } => {
                 format!(
                     "{} {}",
                     format!("travel    [{gen_id}]").yellow().bold(),

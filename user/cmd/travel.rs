@@ -1,22 +1,22 @@
 // yolo CLI — travel.rs
 //
-// `yolo travel <name|id>` — travel to a previous meta.
+// `yolo travel <name|id>` — travel to a previous marker.
 
 use crate::ioctl;
-use crate::journal::{Journal, Meta};
+use crate::journal::{Journal, Marker};
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-pub fn run(meta_name: &str) -> Result<()> {
+pub fn run(marker_name: &str) -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
 
-    // Search all metas (including dead zones) for the target,
-    // so that undo-travel (traveling to a dead meta) works.
+    // Search all markers (including dead zones) for the target,
+    // so that undo-travel (traveling to a dead marker) works.
     let journal = Journal::read(&yolofs)?;
-    let target_gen = journal.metas.find_meta(meta_name)?;
-    let meta = journal.metas.get(target_gen as usize).cloned();
+    let target_gen = journal.markers.find_marker(marker_name)?;
+    let marker = journal.markers.get(target_gen as usize).cloned();
 
-    // Extract live records from the prefix up to the target meta,
+    // Extract live records from the prefix up to the target marker,
     // handling any T records within that prefix.
     let tree = journal.into_tree_at(target_gen);
     let count = tree.len();
@@ -27,16 +27,16 @@ pub fn run(meta_name: &str) -> Result<()> {
     let ctl_file = ioctl::open(&yolofs).context("opening ctl for travel")?;
     let _new_gen = ioctl::travel(&ctl_file, target_gen, &buf).context("ioctl TRAVEL")?;
 
-    let label = match &meta {
-        Some(Meta::Snapshot { name, .. }) => {
+    let label = match &marker {
+        Some(Marker::Snapshot { name, .. }) => {
             format!("snapshot \"{name}\"")
         }
-        Some(Meta::Travel {
+        Some(Marker::Travel {
             gen_id, target_gen, ..
         }) => {
             format!("travel [{gen_id}] (traveled to [{target_gen}])")
         }
-        None => format!("meta [{target_gen}]"),
+        None => format!("marker [{target_gen}]"),
     };
 
     println!(

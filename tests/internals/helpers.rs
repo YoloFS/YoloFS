@@ -1,7 +1,7 @@
 use crate::helpers::YoloSession;
 use std::fs;
 use std::path::PathBuf;
-use yolofs::journal::{self, Action, DirTree, Meta, Note, Record};
+use yolofs::journal::{self, Action, DirTree, Marker, Note, Record};
 
 /// Read the journal for a session.
 pub fn journal(s: &YoloSession) -> journal::Journal {
@@ -32,18 +32,18 @@ pub fn blocks(j: &journal::Journal) -> Vec<&Note> {
         .collect()
 }
 
-/// Collect all metas from the journal in order (including the phantom meta).
-pub fn metas(j: &journal::Journal) -> Vec<&Meta> {
-    j.metas.iter().collect()
+/// Collect all markers from the journal in order (including the phantom marker).
+pub fn markers(j: &journal::Journal) -> Vec<&Marker> {
+    j.markers.iter().collect()
 }
 
 /// Reconstruct the flat interleaved record stream (for positional assertions).
-/// Each meta precedes its corresponding segment's records, reflecting the
-/// phantom-meta model where meta[i] opens segment[i].
+/// Each marker precedes its corresponding segment's records, reflecting the
+/// phantom-marker model where marker[i] opens segment[i].
 pub fn records(j: &journal::Journal) -> Vec<Record> {
     let mut out = Vec::new();
-    for (seg, meta) in j.segments.iter().zip(j.metas.iter()) {
-        out.push(Record::Meta(meta.clone()));
+    for (seg, marker) in j.segments.iter().zip(j.markers.iter()) {
+        out.push(Record::Marker(marker.clone()));
         for record in &seg.records {
             out.push(record.clone());
         }

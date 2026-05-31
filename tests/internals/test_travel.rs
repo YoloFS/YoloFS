@@ -1,14 +1,14 @@
-use super::helpers::{ino_for, inode_path, inos, journal, metas, tree};
+use super::helpers::{ino_for, inode_path, inos, journal, markers, tree};
 use crate::helpers::YoloSession;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
-use yolofs::journal::Meta;
+use yolofs::journal::Marker;
 
 // ── Journal state after travel ──────────────────────────────────────────
 
-/// Travel keeps journal records up to and including the snapshot meta.
+/// Travel keeps journal records up to and including the snapshot marker.
 #[test]
-fn travel_journal_contains_snapshot_meta() {
+fn travel_journal_contains_snapshot_marker() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
@@ -18,11 +18,11 @@ fn travel_journal_contains_snapshot_meta() {
     s.cli(&["travel", "chk1"]).expect("travel");
 
     let j = journal(&s);
-    let mkrs = metas(&j);
+    let mkrs = markers(&j);
     assert!(
         mkrs.iter()
-            .any(|m| matches!(m, Meta::Snapshot { name, .. } if name == "chk1")),
-        "chk1 meta should be in journal: {mkrs:?}"
+            .any(|m| matches!(m, Marker::Snapshot { name, .. } if name == "chk1")),
+        "chk1 marker should be in journal: {mkrs:?}"
     );
 }
 
@@ -39,11 +39,11 @@ fn travel_journal_has_no_post_snapshot_records() {
     s.cli(&["travel", "chk1"]).expect("travel");
 
     let j = journal(&s);
-    let mkrs = metas(&j);
+    let mkrs = markers(&j);
 
     // J (Travel) record should be present in the raw journal.
     assert!(
-        mkrs.iter().any(|m| matches!(m, Meta::Travel { .. })),
+        mkrs.iter().any(|m| matches!(m, Marker::Travel { .. })),
         "Travel record should be in journal: {mkrs:?}"
     );
 
@@ -319,9 +319,9 @@ fn travel_renamed_directory_in_resolved_changes() {
     );
 
     // Verify the directory is accessible and d_type is dir via symlink_metadata
-    let meta = fs::symlink_metadata(s.mnt_path("new_dir")).expect("lstat new_dir");
+    let md = fs::symlink_metadata(s.mnt_path("new_dir")).expect("lstat new_dir");
     assert!(
-        meta.file_type().is_dir(),
+        md.file_type().is_dir(),
         "new_dir should be a directory after travel"
     );
     assert_eq!(
@@ -357,18 +357,18 @@ fn travel_renamed_symlink_in_resolved_changes() {
     );
 
     // Verify d_type is symlink via lstat through the mount
-    let meta = fs::symlink_metadata(s.mnt_path("new_link")).expect("lstat new_link");
+    let md = fs::symlink_metadata(s.mnt_path("new_link")).expect("lstat new_link");
     assert!(
-        meta.file_type().is_symlink(),
+        md.file_type().is_symlink(),
         "new_link should be a symlink after travel"
     );
 
-    // Journal should have the snapshot meta and records up to it
+    // Journal should have the snapshot marker and records up to it
     let j = journal(&s);
-    let mkrs = metas(&j);
+    let mkrs = markers(&j);
     assert!(
         mkrs.iter()
-            .any(|m| matches!(m, Meta::Snapshot { name, .. } if name == "chk1")),
+            .any(|m| matches!(m, Marker::Snapshot { name, .. } if name == "chk1")),
         "chk1 should be in journal: {mkrs:?}"
     );
 }
@@ -427,9 +427,9 @@ fn travel_journal_is_byte_prefix() {
 
     // Verify the J record is present.
     let j = journal(&s);
-    let mkrs = metas(&j);
+    let mkrs = markers(&j);
     assert!(
-        mkrs.iter().any(|m| matches!(m, Meta::Travel { .. })),
+        mkrs.iter().any(|m| matches!(m, Marker::Travel { .. })),
         "Travel record should be in journal: {mkrs:?}"
     );
 }
@@ -449,13 +449,13 @@ fn travel_j_record_has_correct_gen() {
     s.cli(&["travel", "chk1"]).expect("travel");
 
     let j = journal(&s);
-    let mkrs = metas(&j);
+    let mkrs = markers(&j);
 
     // Find the snapshot gen_ids and the travel record.
     let chk1_gen = mkrs
         .iter()
         .find_map(|m| match m {
-            Meta::Snapshot { gen_id, name } if name == "chk1" => Some(*gen_id),
+            Marker::Snapshot { gen_id, name } if name == "chk1" => Some(*gen_id),
             _ => None,
         })
         .expect("chk1 should exist");
@@ -463,7 +463,7 @@ fn travel_j_record_has_correct_gen() {
     let chk2_gen = mkrs
         .iter()
         .find_map(|m| match m {
-            Meta::Snapshot { gen_id, name } if name == "chk2" => Some(*gen_id),
+            Marker::Snapshot { gen_id, name } if name == "chk2" => Some(*gen_id),
             _ => None,
         })
         .expect("chk2 should exist");
@@ -471,7 +471,7 @@ fn travel_j_record_has_correct_gen() {
     let (s_gen, s_target) = mkrs
         .iter()
         .find_map(|m| match m {
-            Meta::Travel { gen_id, target_gen } => Some((*gen_id, *target_gen)),
+            Marker::Travel { gen_id, target_gen } => Some((*gen_id, *target_gen)),
             _ => None,
         })
         .expect("travel record should exist");

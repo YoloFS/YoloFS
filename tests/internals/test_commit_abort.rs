@@ -2,7 +2,7 @@ use super::helpers::{ino_for, inode_path, inos, journal, records, tree};
 use crate::helpers::YoloSession;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
-use yolofs::journal::{Meta, Record};
+use yolofs::journal::{Marker, Record};
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
@@ -28,13 +28,13 @@ fn travel_to_snapshot_appends_jmp_record() {
         "travel should append exactly one record: {recs:?}"
     );
     assert!(
-        matches!(recs.last(), Some(Record::Meta(Meta::Travel { .. }))),
+        matches!(recs.last(), Some(Record::Marker(Marker::Travel { .. }))),
         "last record should be Travel: {recs:?}"
     );
     // The s1 snapshot itself should still be present
     assert!(
         recs.iter()
-            .any(|r| matches!(r, Record::Meta(Meta::Snapshot { name, .. }) if name == "s1")),
+            .any(|r| matches!(r, Record::Marker(Marker::Snapshot { name, .. }) if name == "s1")),
         "s1 snapshot should be preserved: {recs:?}"
     );
 }
@@ -56,7 +56,7 @@ fn commit_clears_journal() {
     assert_eq!(
         recs.len(),
         1,
-        "journal should contain only the phantom meta after commit: {recs:?}"
+        "journal should contain only the phantom marker after commit: {recs:?}"
     );
 }
 
@@ -77,7 +77,7 @@ fn abort_clears_journal() {
     assert_eq!(
         recs.len(),
         1,
-        "journal should contain only the phantom meta after abort: {recs:?}"
+        "journal should contain only the phantom marker after abort: {recs:?}"
     );
 }
 
@@ -93,13 +93,13 @@ fn commit_preserves_journal_inode() {
 
     s.cli(&["commit"]).expect("commit");
 
-    let meta = fs::metadata(&journal_path).expect("journal file should still exist");
+    let md = fs::metadata(&journal_path).expect("journal file should still exist");
     assert_eq!(
-        meta.ino(),
+        md.ino(),
         ino_before,
         "journal inode must be preserved across commit"
     );
-    assert_eq!(meta.len(), 0, "journal should be truncated to zero length");
+    assert_eq!(md.len(), 0, "journal should be truncated to zero length");
 }
 
 /// Abort preserves the journal file inode (truncates, doesn't delete+recreate).
@@ -114,13 +114,13 @@ fn abort_preserves_journal_inode() {
 
     s.cli(&["abort", "--force"]).expect("abort");
 
-    let meta = fs::metadata(&journal_path).expect("journal file should still exist");
+    let md = fs::metadata(&journal_path).expect("journal file should still exist");
     assert_eq!(
-        meta.ino(),
+        md.ino(),
         ino_before,
         "journal inode must be preserved across abort"
     );
-    assert_eq!(meta.len(), 0, "journal should be truncated to zero length");
+    assert_eq!(md.len(), 0, "journal should be truncated to zero length");
 }
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────

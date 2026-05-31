@@ -66,7 +66,7 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
                 let gen_str = String::from_utf8_lossy(fields[1]);
                 let name = field_str(fields[2]);
                 if let Ok(gen_id) = gen_str.parse::<u64>() {
-                    records.push(Record::Meta(Meta::Snapshot { gen_id, name }));
+                    records.push(Record::Marker(Marker::Snapshot { gen_id, name }));
                 }
             }
             b"T" if fields.len() >= 3 => {
@@ -75,7 +75,7 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
                 if let (Ok(gen_id), Ok(target_gen)) =
                     (gen_str.parse::<u64>(), target_str.parse::<u64>())
                 {
-                    records.push(Record::Meta(Meta::Travel { gen_id, target_gen }));
+                    records.push(Record::Marker(Marker::Travel { gen_id, target_gen }));
                 }
             }
             b"B" if fields.len() >= 2 => {
@@ -119,7 +119,7 @@ mod tests {
         let records = parse(b"S\0/a\01\nP\01\0build\nS\0/a\02\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
-            matches!(&records[1], Record::Meta(Meta::Snapshot { gen_id, name }) if *gen_id == 1 && name == "build")
+            matches!(&records[1], Record::Marker(Marker::Snapshot { gen_id, name }) if *gen_id == 1 && name == "build")
         );
     }
 
@@ -128,7 +128,7 @@ mod tests {
         let records = parse(b"T\x004\x002\n").unwrap();
         assert_eq!(records.len(), 1);
         match &records[0] {
-            Record::Meta(Meta::Travel { gen_id, target_gen }) => {
+            Record::Marker(Marker::Travel { gen_id, target_gen }) => {
                 assert_eq!(*gen_id, 4);
                 assert_eq!(*target_gen, 2);
             }

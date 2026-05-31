@@ -66,8 +66,8 @@ impl DirTree {
                     Record::Action(action) => tree.apply(action),
                     // Notes are observational — no state change.
                     Record::Note(_) => {}
-                    // Metas split segments and never appear inside one.
-                    Record::Meta(_) => {}
+                    // Markers split segments and never appear inside one.
+                    Record::Marker(_) => {}
                 }
             }
         }

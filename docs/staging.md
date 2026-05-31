@@ -530,11 +530,11 @@ it needs. The kernel always uses `S` for creates/COW and `R` for renames:
 | `S` | `<path>`, `<ino>` | Staged content at path (create or COW) |
 | `D` | `<path>` | Entry deleted |
 | `R` | `<dst>`, `<src>` | Rename |
-| `P` | `<gen>`, `<name>` | Snapshot meta |
-| `T` | `<gen>`, `<target_gen>` | Travel meta |
+| `P` | `<gen>`, `<name>` | Snapshot marker |
+| `T` | `<gen>`, `<target_gen>` | Travel marker |
 | `B` | `<path>` | Access blocked by a rule (`-EACCES`) — observational |
 
-S/D/R are state mutations. P/T are control metas. **B is observational**:
+S/D/R are state mutations. P/T are control markers. **B is observational**:
 it records that a rule blocked the access at `<path>` but does not affect
 any state. The CLI's dir-tree builder, commit, abort, and diff ignore B
 records; only `yolo audit` surfaces them. B writes do not set
@@ -550,9 +550,9 @@ filesystem — it does not need the kernel to encode it in the tag.
 
 **Gen_id invariant.** The kernel increments `sbi->gen` via
 `atomic_inc_return()` on every P and T record. Gen_id values are
-strictly sequential: meta\[i\] has gen_id = i (meta\[0\] is a phantom
+strictly sequential: marker\[i\] has gen_id = i (marker\[0\] is a phantom
 `Snapshot { gen_id: 0, name: "(initial)" }` inserted by the CLI). The
-`MetaIndex` type relies on this for O(1) snapshot lookup by gen_id.
+`MarkerIndex` type relies on this for O(1) snapshot lookup by gen_id.
 
 `<path>` is the full overlay path (e.g. `/dir/file`).
 `<src>` is the overlay path before the rename (R only).
@@ -565,9 +565,9 @@ record. The tree builder always tombstones at the source path.
 
 The CLI resolves per-snapshot deltas by iterating over segments from the
 `Journal` pipeline. Each segment is resolved independently by
-building a dir tree from its records. Meta\[i\] opens segment\[i\]:
-segment\[i\] contains the records from meta\[i\] up to (but not
-including) meta\[i+1\]. The phantom meta at index 0 opens segment 0
+building a dir tree from its records. Marker\[i\] opens segment\[i\]:
+segment\[i\] contains the records from marker\[i\] up to (but not
+including) marker\[i+1\]. The phantom marker at index 0 opens segment 0
 (pre-first-snapshot records). This is O(N) total.
 
 A P record names a snapshot. The CLI can slice segments with
@@ -576,7 +576,7 @@ range of segments is resolved and displayed.
 
 Slicing semantics:
 - `--at <name>` — isolate the single segment opened by that snapshot
-  (records from that snapshot meta up to the next meta).
+  (records from that snapshot marker up to the next marker).
 - `--from <name>` — records from that snapshot to end.
 - `--to <name>` — records from start up to and including that snapshot's segment.
 - `--from <A> --to <B>` — records between the two snapshots.
@@ -642,7 +642,7 @@ diffing, and committing staged changes at specific points in time.
 states — old inodes are never deleted (only commit/abort removes the
 entire inode store). The journal records which ino was associated
 with each path at each mutation. Replaying the journal up to a snapshot
-meta reconstructs the staged state at that point.
+marker reconstructs the staged state at that point.
 
 The only kernel-side change is ensuring that writes after a snapshot create
 a **new** inode instead of overwriting the current one in place.
@@ -766,20 +766,20 @@ output always preserves snapshot boundaries within the requested range.
 - `--at` conflicts with `--from`/`--to`.
 
 **`yolo travel <name|gen>`**: Move the mounted view to the state at the
-named meta (snapshot or travel). The journal is **append-only** —
+named marker (snapshot or travel). The journal is **append-only** —
 travel appends a T record instead of truncating. T records create
-unreachable records — records between the target meta and the T record that no longer reflect
+unreachable records — records between the target marker and the T record that no longer reflect
 current state. All CLI consumers (commit, status, diff, travel) build a
 `Journal` to filter unreachable records before resolving.
 
 The reachability algorithm: O(N) single pass to collect P/T positions,
 O(R) backward walk to build reachable ranges, skip unreachable T records.
 
-1. CLI builds a `Journal` and finds the target meta via
-   `MetaIndex::find_meta()` (including unreachable regions, to support undo-travel).
+1. CLI builds a `Journal` and finds the target marker via
+   `MarkerIndex::find_marker()` (including unreachable regions, to support undo-travel).
 2. CLI calls `live_segments_at(gen_id)` (or `live_segments_at_name(name)` which
    resolves the name internally) to get an iterator over live segments in the
-   prefix up to the target meta, handling any T records in that
+   prefix up to the target marker, handling any T records in that
    prefix.
 3. CLI builds the dir tree from live records.
 4. CLI serializes the dir tree into a contiguous byte buffer (depth-first,

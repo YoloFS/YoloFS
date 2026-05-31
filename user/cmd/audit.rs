@@ -14,7 +14,7 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
 
     let journal = Journal::read(&yolofs)?;
 
-    if journal.segments.iter().all(|s| s.records.is_empty()) && journal.metas.len() <= 1 {
+    if journal.segments.iter().all(|s| s.records.is_empty()) && journal.markers.len() <= 1 {
         println!("{}", "No journal records.".yellow());
         return Ok(());
     }
@@ -40,8 +40,8 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
                     }
                     format_note(note)
                 }
-                // Metas never appear inside a segment (they split segments).
-                journal::Record::Meta(_) => continue,
+                // Markers never appear inside a segment (they split segments).
+                journal::Record::Marker(_) => continue,
             };
             if reachable {
                 println!("  {line}");
@@ -50,9 +50,9 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
             }
         }
 
-        // Print the meta after this segment (if any).
-        if let Some(meta) = journal.metas.get(seg_idx + 1) {
-            let line = format_meta(meta);
+        // Print the marker after this segment (if any).
+        if let Some(marker) = journal.markers.get(seg_idx + 1) {
+            let line = format_marker(marker);
             if reachable {
                 println!("  {line}");
             } else {
@@ -79,12 +79,12 @@ fn note_matches_path(note: &journal::Note, filter: &str) -> bool {
     }
 }
 
-fn format_meta(meta: &journal::Meta) -> String {
-    match meta {
-        journal::Meta::Snapshot { gen_id, name } => {
+fn format_marker(marker: &journal::Marker) -> String {
+    match marker {
+        journal::Marker::Snapshot { gen_id, name } => {
             format!("{} {}", format!("[{}]", gen_id).cyan().bold(), name)
         }
-        journal::Meta::Travel {
+        journal::Marker::Travel {
             gen_id, target_gen, ..
         } => {
             format!(
@@ -121,7 +121,7 @@ fn format_note(note: &journal::Note) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{Action, Meta, Note};
+    use crate::journal::{Action, Marker, Note};
 
     /// Strip ANSI escape codes for assertion matching.
     fn strip_ansi(s: &str) -> String {
@@ -143,22 +143,22 @@ mod tests {
 
     #[test]
     fn format_snapshot() {
-        let meta = Meta::Snapshot {
+        let marker = Marker::Snapshot {
             gen_id: 3,
             name: "build".into(),
         };
-        let s = strip_ansi(&format_meta(&meta));
+        let s = strip_ansi(&format_marker(&marker));
         assert!(s.contains("[3]"), "should contain gen_id: {s}");
         assert!(s.contains("build"), "should contain name: {s}");
     }
 
     #[test]
     fn format_travel() {
-        let meta = Meta::Travel {
+        let marker = Marker::Travel {
             gen_id: 5,
             target_gen: 2,
         };
-        let s = strip_ansi(&format_meta(&meta));
+        let s = strip_ansi(&format_marker(&marker));
         assert!(s.contains("[5]"), "should contain gen_id: {s}");
         assert!(
             s.contains("traveled to [2]"),

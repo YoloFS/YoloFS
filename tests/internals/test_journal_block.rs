@@ -156,7 +156,7 @@ fn block_records_do_not_contribute_to_tree() {
 }
 
 /// B records do not set sbi->dirty: an auto-snapshot (SNAPSHOT_IF_CHANGED)
-/// must be skipped if only B writes happened since the last meta.
+/// must be skipped if only B writes happened since the last marker.
 ///
 /// We check this indirectly via `yolo exec`: a denied-read command produces
 /// only B records, and the kernel's SNAPSHOT_IF_CHANGED auto-snapshot should
@@ -188,13 +188,13 @@ fn block_writes_do_not_set_dirty() {
         "expected B records from the denied cat invocation"
     );
 
-    // Phantom meta is index 0; if SNAPSHOT_IF_CHANGED skipped correctly, no
-    // real M record should exist.  metas.len() == 1 means only the phantom.
+    // Phantom marker is index 0; if SNAPSHOT_IF_CHANGED skipped correctly, no
+    // real M record should exist.  markers.len() == 1 means only the phantom.
     assert_eq!(
-        j.metas.len(),
+        j.markers.len(),
         1,
-        "SNAPSHOT_IF_CHANGED should skip auto-snapshot when only B records were written; metas={:?}",
-        j.metas.iter().collect::<Vec<_>>()
+        "SNAPSHOT_IF_CHANGED should skip auto-snapshot when only B records were written; markers={:?}",
+        j.markers.iter().collect::<Vec<_>>()
     );
 }
 
@@ -255,9 +255,9 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
     );
     // Auto-snapshot should fire because dirty was set by the S record.
     assert!(
-        j.metas.len() >= 2,
-        "expected auto-snapshot when mutations occur alongside blocks; metas={:?}",
-        j.metas.iter().collect::<Vec<_>>()
+        j.markers.len() >= 2,
+        "expected auto-snapshot when mutations occur alongside blocks; markers={:?}",
+        j.markers.iter().collect::<Vec<_>>()
     );
 }
 

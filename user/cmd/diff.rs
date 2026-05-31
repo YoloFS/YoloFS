@@ -2,12 +2,12 @@
 //
 // `yolo status` — one-line summary of staged changes.
 // `yolo diff`   — git-style unified diff of staged vs base.
-// `--at <name>` — show state at a meta (single segment).
-// `--from <name>` — diff changes since a meta.
-// `--to <name>` — diff changes up to a meta.
-// `--from <name> --to <name>` — diff changes between two metas.
+// `--at <name>` — show state at a marker (single segment).
+// `--from <name>` — diff changes since a marker.
+// `--to <name>` — diff changes up to a marker.
+// `--from <name> --to <name>` — diff changes between two markers.
 
-use crate::journal::{DirTree, Journal, Meta, Target};
+use crate::journal::{DirTree, Journal, Marker, Target};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -171,15 +171,15 @@ fn run(
     let yolofs = crate::utils::session_dir()?;
     let journal = Journal::read(&yolofs)?;
     let num = journal.segments.len();
-    let (start, end) = journal.metas.segment_range(at, from, to, num)?;
+    let (start, end) = journal.markers.segment_range(at, from, to, num)?;
 
-    // Precompute meta labels for live segments before consuming the journal.
+    // Precompute marker labels for live segments before consuming the journal.
     let labels: Vec<Option<(u64, String)>> = (start..end)
         .filter(|i| journal.is_alive(*i))
         .map(|i| {
-            journal.metas.meta_at(i).map(|m| match m {
-                Meta::Snapshot { gen_id, name } => (*gen_id, name.clone()),
-                Meta::Travel {
+            journal.markers.marker_at(i).map(|m| match m {
+                Marker::Snapshot { gen_id, name } => (*gen_id, name.clone()),
+                Marker::Travel {
                     gen_id, target_gen, ..
                 } => (*gen_id, format!("traveled to [{target_gen}]")),
             })

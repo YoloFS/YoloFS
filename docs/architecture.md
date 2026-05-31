@@ -178,9 +178,9 @@ $ yolo commit
    -> kernel: release staged dentries, invalidate dentry + inode caches
    -> umount .yolofs/mnt
 
-# 8. Travel to a previous meta (appends T record, no truncation)
+# 8. Travel to a previous marker (appends T record, no truncation)
 $ yolo travel "after make build"
-   -> CLI: Journal → find_meta → live_segments_at_name → build tree → serialize tree
+   -> CLI: Journal → find_marker → live_segments_at_name → build tree → serialize tree
    -> CLI: ioctl(YOLO_IOC_TRAVEL, { target_gen=2, tree_buf })
    -> kernel: release staged dentries, inject VFS dentries from tree, increment gen to 4,
       append T record to journal
@@ -230,9 +230,9 @@ yolofs/
 │   │   ├── timeline.rs        # `yolo timeline` command (snapshot/travel DAG)
 │   │   └── watch.rs           # permission prompt daemon (handles TTY ownership)
 │   ├── journal/               # journal parsing, timeline, and resolution
-│   │   ├── types.rs           # Action, Meta, Record, Segment
+│   │   ├── types.rs           # Action, Marker, Record, Segment
 │   │   ├── parse.rs           # parse()  (pub(super))
-│   │   ├── meta.rs            # MetaIndex (lookup + range + alive_segments + meta_at)
+│   │   ├── marker.rs            # MarkerIndex (lookup + range + alive_segments + marker_at)
 │   │   ├── journal.rs         # Journal (struct + new + read + live_segments_*)
 │   │   ├── tree.rs            # DirTree, DirNode
 │   │   └── dentry.rs          # Dentry, Target — dentry state types

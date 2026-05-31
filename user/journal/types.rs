@@ -43,9 +43,9 @@ pub enum Action {
     Rename { src: String, dst: String },
 }
 
-/// A control meta (P/T).
+/// A control marker (P/T).
 #[derive(Debug, Clone)]
-pub enum Meta {
+pub enum Marker {
     Snapshot { gen_id: u64, name: String },
     Travel { gen_id: u64, target_gen: u64 },
 }
@@ -59,18 +59,18 @@ pub enum Note {
     Block { path: String },
 }
 
-/// A parsed journal record (interleaved actions, metas, and notes).
+/// A parsed journal record (interleaved actions, markers, and notes).
 #[derive(Debug, Clone)]
 pub enum Record {
     Action(Action),
-    Meta(Meta),
+    Marker(Marker),
     Note(Note),
 }
 
 /// A group of records (S/D/R + B) between consecutive P/T boundaries.
 ///
-/// `Record::Meta` is never pushed into a segment by `Journal::new` —
-/// metas split segments. Only `Record::Action` and `Record::Note`
+/// `Record::Marker` is never pushed into a segment by `Journal::new` —
+/// markers split segments. Only `Record::Action` and `Record::Note`
 /// appear here.
 #[derive(Debug)]
 pub struct Segment {

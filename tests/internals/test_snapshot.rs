@@ -1,7 +1,7 @@
-use super::helpers::{ino_for, inode_path, journal, metas, records, tree};
+use super::helpers::{ino_for, inode_path, journal, markers, records, tree};
 use crate::helpers::YoloSession;
 use std::fs;
-use yolofs::journal::{Action, Meta, Record};
+use yolofs::journal::{Action, Marker, Record};
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
@@ -14,10 +14,10 @@ fn snapshot_produces_snapshot_record() {
     s.cli(&["snapshot", "build"]).expect("snapshot");
 
     let j = journal(&s);
-    let mkrs = metas(&j);
+    let mkrs = markers(&j);
     assert!(
         mkrs.iter()
-            .any(|m| matches!(m, Meta::Snapshot { name, .. } if name == "build")),
+            .any(|m| matches!(m, Marker::Snapshot { name, .. } if name == "build")),
         "journal should have a Snapshot record named 'build': {mkrs:?}"
     );
 }
@@ -53,7 +53,7 @@ fn recow_after_snapshot_produces_new_add() {
     // Snapshot "s1" should sit between the two adds.
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Meta(Meta::Snapshot { name, .. }) if name == "s1"))
+        .position(|r| matches!(r, Record::Marker(Marker::Snapshot { name, .. }) if name == "s1"))
         .unwrap();
     let first_add = recs
         .iter()
@@ -78,11 +78,11 @@ fn multiple_snapshots_have_distinct_ids() {
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
     let j = journal(&s);
-    let mkrs = metas(&j);
+    let mkrs = markers(&j);
     let snaps: Vec<_> = mkrs
         .iter()
         .filter_map(|m| match m {
-            Meta::Snapshot { gen_id, name } => Some((gen_id, name)),
+            Marker::Snapshot { gen_id, name } => Some((gen_id, name)),
             _ => None,
         })
         .collect();
@@ -110,7 +110,7 @@ fn rename_after_snapshot() {
     let recs = records(&journal(&s));
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Meta(Meta::Snapshot { name, .. }) if name == "s1"))
+        .position(|r| matches!(r, Record::Marker(Marker::Snapshot { name, .. }) if name == "s1"))
         .unwrap();
     // After COW, hello.txt has a staged ino — rename emits single R record
     let rename_pos = recs
@@ -135,7 +135,7 @@ fn delete_after_snapshot() {
     let recs = records(&journal(&s));
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Meta(Meta::Snapshot { name, .. }) if name == "s1"))
+        .position(|r| matches!(r, Record::Marker(Marker::Snapshot { name, .. }) if name == "s1"))
         .unwrap();
     let del_pos = recs
         .iter()

@@ -1,9 +1,9 @@
 // yolo CLI — journal/core.rs
 //
-// The Journal: segments + metas + precomputed liveness.
+// The Journal: segments + markers + precomputed liveness.
 // Borrowing filter methods — no moves, no collects, no intermediate allocations.
 
-use super::meta::MetaIndex;
+use super::marker::MarkerIndex;
 use super::parse;
 use super::tree::DirTree;
 use super::types::*;
@@ -13,7 +13,7 @@ use std::path::Path;
 /// All segments + P/T skeleton + precomputed alive mask.
 pub struct Journal {
     pub segments: Vec<Segment>,
-    pub metas: MetaIndex,
+    pub markers: MarkerIndex,
     alive: Vec<bool>,
 }
 
@@ -21,7 +21,7 @@ impl Journal {
     /// Build from parsed journal records.
     pub fn new(records: Vec<Record>) -> Self {
         let mut segments = Vec::new();
-        let mut metas_vec: Vec<Meta> = vec![Meta::Snapshot {
+        let mut markers_vec: Vec<Marker> = vec![Marker::Snapshot {
             gen_id: 0,
             name: "(initial)".into(),
         }];
@@ -30,20 +30,20 @@ impl Journal {
 
         for record in records.into_iter() {
             match record {
-                Record::Meta(meta @ Meta::Snapshot { gen_id, .. }) => {
+                Record::Marker(marker @ Marker::Snapshot { gen_id, .. }) => {
                     segments.push(Segment {
                         from: current_from,
                         records: std::mem::take(&mut current_records),
                     });
                     current_from = gen_id;
-                    metas_vec.push(meta);
+                    markers_vec.push(marker);
                 }
-                Record::Meta(meta @ Meta::Travel { target_gen, .. }) => {
+                Record::Marker(marker @ Marker::Travel { target_gen, .. }) => {
                     segments.push(Segment {
                         from: current_from,
                         records: std::mem::take(&mut current_records),
                     });
-                    metas_vec.push(meta);
+                    markers_vec.push(marker);
                     current_from = target_gen;
                 }
                 Record::Action(_) | Record::Note(_) => {
@@ -58,12 +58,12 @@ impl Journal {
             records: current_records,
         });
 
-        let metas = MetaIndex::new(metas_vec);
-        let alive = metas.alive_segments(segments.len());
+        let markers = MarkerIndex::new(markers_vec);
+        let alive = markers.alive_segments(segments.len());
 
         Journal {
             segments,
-            metas,
+            markers,
             alive,
         }
     }
@@ -112,10 +112,10 @@ impl Journal {
 
     fn into_live_segments_at(self, gen_id: u64) -> impl Iterator<Item = Segment> {
         let num_prefix = (gen_id as usize).min(self.segments.len());
-        // Include one extra meta so that a travel meta at gen_id
+        // Include one extra marker so that a travel marker at gen_id
         // participates in the dead-zone scan.
-        let meta_end = (gen_id as usize + 1).min(self.metas.len());
-        let alive = self.metas.alive_segments_range(0..meta_end, num_prefix);
+        let marker_end = (gen_id as usize + 1).min(self.markers.len());
+        let alive = self.markers.alive_segments_range(0..marker_end, num_prefix);
         self.segments
             .into_iter()
             .enumerate()
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn segmentation_basic() {
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -142,7 +142,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -150,7 +150,7 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn segmentation_splits_at_t_boundary() {
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -178,7 +178,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -186,11 +186,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 4,
                 target_gen: 2,
             }),
@@ -198,7 +198,7 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -219,7 +219,7 @@ mod tests {
                 path: "/orphan".into(),
                 ino: 999,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -227,7 +227,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -251,12 +251,12 @@ mod tests {
         assert_eq!(j.segments.len(), 1);
         assert_eq!(j.segments[0].from, 0);
         assert!(j.segments[0].records.is_empty());
-        assert_eq!(j.metas.len(), 1, "phantom meta only");
+        assert_eq!(j.markers.len(), 1, "phantom marker only");
     }
 
     #[test]
     fn segmentation_only_t_records() {
-        let records = vec![Record::Meta(Meta::Travel {
+        let records = vec![Record::Marker(Marker::Travel {
             gen_id: 1,
             target_gen: 99,
         })];
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(j.segments.len(), 2);
         assert_eq!(j.segments[0].from, 0);
         assert_eq!(j.segments[1].from, 99);
-        assert_eq!(j.metas.len(), 2);
+        assert_eq!(j.markers.len(), 2);
     }
 
     #[test]
@@ -279,7 +279,7 @@ mod tests {
             Record::Note(Note::Block {
                 path: "/etc/x".into(),
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "c1".into(),
             }),
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn live_segments_basic() {
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -320,7 +320,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -328,11 +328,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 4,
                 target_gen: 2,
             }),
@@ -340,7 +340,7 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn live_segments_at_basic() {
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -362,7 +362,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -370,11 +370,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 4,
                 target_gen: 1,
             }),
@@ -382,7 +382,7 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -405,7 +405,7 @@ mod tests {
                 Record::Action(Action::Stage { path, .. }) => Some(path),
                 Record::Action(Action::Delete { path, .. }) => Some(path),
                 Record::Action(Action::Rename { dst, .. }) => Some(dst),
-                Record::Note(_) | Record::Meta(_) => None,
+                Record::Note(_) | Record::Marker(_) => None,
             })
             .collect()
     }
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn reachable_no_travels() {
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -421,7 +421,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -435,7 +435,7 @@ mod tests {
     fn reachable_multiple_travels_last_wins() {
         // P1 [A] P2 [B] P3 T4(P2) [D] P5 T6(P1)
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -443,7 +443,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -451,11 +451,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 4,
                 target_gen: 2,
             }),
@@ -463,11 +463,11 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 6,
                 target_gen: 1,
             }),
@@ -483,7 +483,7 @@ mod tests {
     fn reachable_nested_t_in_dead_zone() {
         // P1 [A] P2 [B] P3 T4(P1) [D] P5 [E] P6 T7(P5)
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -491,7 +491,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -499,11 +499,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 4,
                 target_gen: 1,
             }),
@@ -511,7 +511,7 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -519,11 +519,11 @@ mod tests {
                 path: "/e".into(),
                 ino: 4,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 6,
                 name: "c6".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 7,
                 target_gen: 5,
             }),
@@ -536,7 +536,7 @@ mod tests {
     fn reachable_undo_travel() {
         // P1 [A] P2 [B] P3 T4(P1) [D] P5 T6(P3)
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -544,7 +544,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -552,11 +552,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 4,
                 target_gen: 1,
             }),
@@ -564,11 +564,11 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 6,
                 target_gen: 3,
             }),
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn reachable_travel_to_first_snapshot() {
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "c1".into(),
             }),
@@ -588,11 +588,11 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 3,
                 target_gen: 1,
             }),
@@ -608,7 +608,7 @@ mod tests {
     fn reachable_consecutive_t_records() {
         // P1 [A] P2 [B] P3 T4(P2) T5(P1)
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -616,7 +616,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -624,15 +624,15 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 5,
                 target_gen: 1,
             }),
@@ -648,7 +648,7 @@ mod tests {
     fn reachable_single_travel() {
         // P1 [A] P2 [B] P3 T4(P2) [D] P5
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -656,7 +656,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -664,11 +664,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 4,
                 target_gen: 2,
             }),
@@ -676,7 +676,7 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -696,7 +696,7 @@ mod tests {
         // P1 [A] T2(P99) [B]
         // T targets nonexistent P99 — skipped, all segments alive.
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -704,7 +704,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 2,
                 target_gen: 99,
             }),
@@ -722,7 +722,7 @@ mod tests {
     #[test]
     fn live_segments_slice_from_to() {
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -730,7 +730,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -738,7 +738,7 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
@@ -746,7 +746,7 @@ mod tests {
                 path: "/c".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 4,
                 name: "c4".into(),
             }),
@@ -754,7 +754,7 @@ mod tests {
         let j = Journal::new(records);
         let num = j.segments.len();
         let (start, end) = j
-            .metas
+            .markers
             .segment_range(None, Some("c2"), Some("c3"), num)
             .unwrap();
         let live: Vec<_> = j.segments[start..end]
@@ -772,13 +772,13 @@ mod tests {
 
     #[test]
     fn live_segments_slice_not_found() {
-        let records = vec![Record::Meta(Meta::Snapshot {
+        let records = vec![Record::Marker(Marker::Snapshot {
             gen_id: 1,
             name: "init".into(),
         })];
         let j = Journal::new(records);
         assert!(
-            j.metas
+            j.markers
                 .segment_range(Some("nonexistent"), None, None, j.segments.len())
                 .is_err()
         );
@@ -787,10 +787,10 @@ mod tests {
     #[test]
     fn live_segments_at_with_nested_travels() {
         // P1 [A] P2 [B] P3 T4(P1) [C] P5 [D] P6
-        // live_segments_at(P5): prefix metas P1,P2,P3,T4.
+        // live_segments_at(P5): prefix markers P1,P2,P3,T4.
         // T4(P1) kills seg1,seg2,seg3 → live: seg0 (empty) + seg4 ([C])
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -798,7 +798,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -806,11 +806,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 4,
                 target_gen: 1,
             }),
@@ -818,7 +818,7 @@ mod tests {
                 path: "/c".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -826,13 +826,13 @@ mod tests {
                 path: "/d".into(),
                 ino: 4,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 6,
                 name: "c6".into(),
             }),
         ];
         let j = Journal::new(records);
-        let gen_id = j.metas.find_meta("c5").unwrap();
+        let gen_id = j.markers.find_marker("c5").unwrap();
         let live: Vec<_> = j.into_live_segments_at(gen_id).collect();
         let actions: Vec<_> = live.iter().flat_map(|s| &s.records).collect();
         assert_eq!(actions.len(), 1);
@@ -842,7 +842,7 @@ mod tests {
     #[test]
     fn live_segments_at_clamps_invalid_gen_id() {
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "c1".into(),
             }),
@@ -850,7 +850,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -864,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn into_tree_at_travel_meta() {
+    fn into_tree_at_travel_marker() {
         // [A:/a] P1 [B:/b] P2 T3(→P1)
         // into_tree_at(3) should give the journal state at position 3.
         let records = vec![
@@ -872,7 +872,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "c1".into(),
             }),
@@ -880,11 +880,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 3,
                 target_gen: 1,
             }),
@@ -901,7 +901,7 @@ mod tests {
     #[test]
     fn is_alive_basic() {
         let records = vec![
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -909,7 +909,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -917,11 +917,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Snapshot {
+            Record::Marker(Marker::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Travel {
+            Record::Marker(Marker::Travel {
                 gen_id: 4,
                 target_gen: 2,
             }),
