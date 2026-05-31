@@ -503,6 +503,11 @@ mod tests {
         assert_eq!(config.rules["/usr"], Perm::Read);
         assert_eq!(config.rules["/etc"], Perm::Read);
         assert_eq!(config.ask_default, Some(Perm::Deny));
+        // Storage is readable from inside the mount (yolofs stacks over /), but
+        // the nested mountpoint is hidden to avoid recursion.
+        assert_eq!(config.rules[".yolofs"], Perm::Read);
+        assert_eq!(config.rules[".yolofs/mnt"], Perm::Hide);
+        assert_eq!(config.rules["yolofs.toml"], Perm::Read);
     }
 
     #[test]

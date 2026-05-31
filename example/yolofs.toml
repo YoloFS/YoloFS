@@ -22,7 +22,10 @@ ask_timeout = 30      # seconds to wait on an interactive ask before ask_default
 # Sensitive files: prompt before any access.
 "$HOME/.ssh/id_ed25519" = "ask"
 
-# Project tree and yolofs internals.
+# Project tree and yolofs internals. The storage dir is readable (yolofs stacks
+# over /, so tools can inspect staging from inside the mount) but its nested
+# mountpoint is hidden to avoid recursion.
 "." = "allow"
-".yolofs" = "hide"
-"yolofs.toml" = "hide"
+".yolofs" = "read"
+".yolofs/mnt" = "hide"
+"yolofs.toml" = "read"
