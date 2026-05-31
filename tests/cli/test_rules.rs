@@ -11,7 +11,7 @@ fn apply_rules_shows_results() {
     session.cli(&["unmount"]).unwrap();
     Config {
         permission: false,
-        rules: BTreeMap::from([("/etc".into(), Perm::Ro), ("/usr".into(), Perm::Ro)]),
+        rules: BTreeMap::from([("/etc".into(), Perm::Read), ("/usr".into(), Perm::Read)]),
         ..Default::default()
     }
     .save(&session.root.join("yolofs.toml"))
@@ -26,8 +26,8 @@ fn apply_rules_shows_results() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("applying 2 rule(s)"), "stderr = {stderr}");
-    assert!(stderr.contains("/etc = ro"), "stderr = {stderr}");
-    assert!(stderr.contains("/usr = ro"), "stderr = {stderr}");
+    assert!(stderr.contains("/etc = read"), "stderr = {stderr}");
+    assert!(stderr.contains("/usr = read"), "stderr = {stderr}");
 }
 
 #[test]

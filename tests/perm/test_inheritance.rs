@@ -103,7 +103,7 @@ fn different_paths_different_rules() {
     Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([
-            (s.root.join("readonly").display().to_string(), Perm::Ro),
+            (s.root.join("readonly").display().to_string(), Perm::Read),
             (s.root.join("writable").display().to_string(), Perm::Allow),
         ]),
         ..Default::default()

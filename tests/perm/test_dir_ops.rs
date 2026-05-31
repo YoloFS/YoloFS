@@ -26,7 +26,7 @@ fn mkdir_denied_under_deny() {
 fn unlink_denied_under_ro() {
     let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
-        rules: BTreeMap::from([("/".into(), Perm::Ro)]),
+        rules: BTreeMap::from([("/".into(), Perm::Read)]),
         ..Default::default()
     })
     .expect("session setup");

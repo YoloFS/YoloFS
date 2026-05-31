@@ -189,7 +189,7 @@ fn interactive_watch_deny_blocks_read() {
     assert!(result.is_err(), "read should fail after interactive 'deny'");
 }
 
-/// Interactive `yolofs watch` — daemon reads "r\n" and responds `ro`.
+/// Interactive `yolofs watch` — daemon reads "r\n" and responds `read`.
 /// Read succeeds, but write is denied.
 #[test]
 fn interactive_watch_ro_permits_read_denies_write() {
@@ -210,12 +210,12 @@ fn interactive_watch_ro_permits_read_denies_write() {
 
     watch.stdin.as_mut().unwrap().write_all(b"r\nr\n").unwrap();
 
-    // Read should succeed (`ro` permits reads).
+    // Read should succeed (`read` permits reads).
     let content =
         std::fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with ro");
     assert_eq!(content, "base content\n");
 
-    // Write should fail (`ro` denies writes).
+    // Write should fail (`read` denies writes).
     let result = std::fs::write(s.mnt_path("hello.txt"), "overwritten\n");
     assert!(result.is_err(), "write should fail with ro");
 

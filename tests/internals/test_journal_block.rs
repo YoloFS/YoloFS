@@ -23,7 +23,7 @@ fn deny_session() -> YoloSession {
 fn ro_session() -> YoloSession {
     YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
-        rules: BTreeMap::from([("/".into(), Perm::Ro)]),
+        rules: BTreeMap::from([("/".into(), Perm::Read)]),
         ..Default::default()
     })
     .expect("session setup")
@@ -76,7 +76,7 @@ fn denied_read_emits_block_for_file_path() {
     );
 }
 
-/// A denied write under an RO rule produces a B record.
+/// A denied write under a READ rule produces a B record.
 #[test]
 fn ro_write_emits_block() {
     let s = ro_session();
@@ -261,8 +261,8 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
     );
 }
 
-/// HIDDEN paths return -ENOENT, not -EACCES, and must NOT produce B records.
-/// This protects the "no logging for HIDDEN" non-goal from accidental
+/// HIDE paths return -ENOENT, not -EACCES, and must NOT produce B records.
+/// This protects the "no logging for HIDE" non-goal from accidental
 /// regressions.
 #[test]
 fn hidden_paths_do_not_log_block() {
@@ -276,7 +276,7 @@ fn hidden_paths_do_not_log_block() {
     let mut rules = BTreeMap::new();
     rules.insert(
         root.join("hello.txt").to_string_lossy().into_owned(),
-        Perm::Hidden,
+        Perm::Hide,
     );
     let config = Config {
         permission: true,
@@ -307,7 +307,7 @@ fn hidden_paths_do_not_log_block() {
     let bs = blocks(&j);
     assert!(
         bs.is_empty(),
-        "HIDDEN -> -ENOENT must not log any B record, got: {:?}",
+        "HIDE -> -ENOENT must not log any B record, got: {:?}",
         bs
     );
 }

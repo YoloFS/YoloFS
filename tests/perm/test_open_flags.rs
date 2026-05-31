@@ -10,7 +10,7 @@ use yolofs::config::{Config, Perm};
 fn truncate_denied_on_ro() {
     let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
-        rules: BTreeMap::from([("/".into(), Perm::Ro)]),
+        rules: BTreeMap::from([("/".into(), Perm::Read)]),
         ..Default::default()
     })
     .expect("session setup");
@@ -27,7 +27,7 @@ fn truncate_denied_on_ro() {
 fn append_denied_on_ro() {
     let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
-        rules: BTreeMap::from([("/".into(), Perm::Ro)]),
+        rules: BTreeMap::from([("/".into(), Perm::Read)]),
         ..Default::default()
     })
     .expect("session setup");
@@ -43,7 +43,7 @@ fn append_denied_on_ro() {
 fn rdwr_denied_on_ro() {
     let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
-        rules: BTreeMap::from([("/".into(), Perm::Ro)]),
+        rules: BTreeMap::from([("/".into(), Perm::Read)]),
         ..Default::default()
     })
     .expect("session setup");

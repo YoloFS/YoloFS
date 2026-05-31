@@ -20,9 +20,9 @@ use std::str::FromStr;
 pub enum Perm {
     Ask,
     Allow,
-    Ro,
+    Read,
     Deny,
-    Hidden,
+    Hide,
 }
 
 impl Perm {
@@ -30,9 +30,9 @@ impl Perm {
         match self {
             Perm::Ask => ioctl::YOLO_PERM_ASK,
             Perm::Allow => ioctl::YOLO_PERM_ALLOW,
-            Perm::Ro => ioctl::YOLO_PERM_RO,
+            Perm::Read => ioctl::YOLO_PERM_READ,
             Perm::Deny => ioctl::YOLO_PERM_DENY,
-            Perm::Hidden => ioctl::YOLO_PERM_HIDDEN,
+            Perm::Hide => ioctl::YOLO_PERM_HIDE,
         }
     }
 }
@@ -42,9 +42,9 @@ impl fmt::Display for Perm {
         f.write_str(match self {
             Perm::Ask => "ask",
             Perm::Allow => "allow",
-            Perm::Ro => "ro",
+            Perm::Read => "read",
             Perm::Deny => "deny",
-            Perm::Hidden => "hidden",
+            Perm::Hide => "hide",
         })
     }
 }
@@ -55,9 +55,9 @@ impl FromStr for Perm {
         match s {
             "ask" => Ok(Perm::Ask),
             "allow" => Ok(Perm::Allow),
-            "ro" => Ok(Perm::Ro),
+            "read" => Ok(Perm::Read),
             "deny" => Ok(Perm::Deny),
-            "hidden" => Ok(Perm::Hidden),
+            "hide" => Ok(Perm::Hide),
             _ => anyhow::bail!("unknown permission: {s}"),
         }
     }
@@ -307,16 +307,16 @@ mod tests {
     #[test]
     fn perm_display() {
         assert_eq!(Perm::Allow.to_string(), "allow");
-        assert_eq!(Perm::Ro.to_string(), "ro");
-        assert_eq!(Perm::Hidden.to_string(), "hidden");
+        assert_eq!(Perm::Read.to_string(), "read");
+        assert_eq!(Perm::Hide.to_string(), "hide");
         assert_eq!(Perm::Deny.to_string(), "deny");
     }
 
     #[test]
     fn perm_parse() {
         assert_eq!("allow".parse::<Perm>().unwrap(), Perm::Allow);
-        assert_eq!("ro".parse::<Perm>().unwrap(), Perm::Ro);
-        assert_eq!("hidden".parse::<Perm>().unwrap(), Perm::Hidden);
+        assert_eq!("read".parse::<Perm>().unwrap(), Perm::Read);
+        assert_eq!("hide".parse::<Perm>().unwrap(), Perm::Hide);
         assert_eq!("deny".parse::<Perm>().unwrap(), Perm::Deny);
         assert!("bogus".parse::<Perm>().is_err());
     }
@@ -328,9 +328,9 @@ mod tests {
         struct Wrapper {
             perm: Perm,
         }
-        let w = Wrapper { perm: Perm::Ro };
+        let w = Wrapper { perm: Perm::Read };
         let s = toml::to_string(&w).unwrap();
-        assert!(s.contains("ro"), "s = {s}");
+        assert!(s.contains("read"), "s = {s}");
         let w2: Wrapper = toml::from_str(&s).unwrap();
         assert_eq!(w, w2);
     }
@@ -375,8 +375,8 @@ mod tests {
     #[test]
     fn config_default_has_expected_rules() {
         let config = Config::default();
-        assert_eq!(config.rules["/usr"], Perm::Ro);
-        assert_eq!(config.rules["/etc"], Perm::Ro);
+        assert_eq!(config.rules["/usr"], Perm::Read);
+        assert_eq!(config.rules["/etc"], Perm::Read);
         assert_eq!(config.ask_default, Some(Perm::Deny));
     }
 
@@ -495,7 +495,7 @@ mod tests {
             ..Default::default()
         };
         config.rules.insert("/tmp".to_string(), Perm::Allow);
-        config.rules.insert("/etc".to_string(), Perm::Ro);
+        config.rules.insert("/etc".to_string(), Perm::Read);
         config.save(&path).unwrap();
 
         let mut loaded = Config::load(&path).unwrap();

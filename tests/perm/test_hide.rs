@@ -18,7 +18,7 @@ fn hide_session() -> YoloSession {
     let mut rules = BTreeMap::new();
     rules.insert(
         root.join("secret").to_string_lossy().into_owned(),
-        Perm::Hidden,
+        Perm::Hide,
     );
 
     let config = Config {
@@ -127,7 +127,7 @@ fn hide_single_file() {
     let mut rules = BTreeMap::new();
     rules.insert(
         root.join("hidden.txt").to_string_lossy().into_owned(),
-        Perm::Hidden,
+        Perm::Hide,
     );
 
     let config = Config {

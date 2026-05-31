@@ -56,8 +56,8 @@ snapshot     = true              # auto-snapshot after each `yolo exec`
 [rules]
 "."          = "allow"
 "/etc"       = "deny"
-"/etc/hosts" = "ro"
-"/usr/bin"   = "ro"
+"/etc/hosts" = "read"
+"/usr/bin"   = "read"
 ```
 
 Paths in `[rules]` can be absolute or relative to the session root.

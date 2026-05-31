@@ -9,7 +9,7 @@ use yolofs::config::{Config, Perm};
 #[test]
 fn ask_default_ro_read_ok_write_denied() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Ro),
+        ask_default: Some(Perm::Read),
         rules: BTreeMap::new(),
         ..Default::default()
     })

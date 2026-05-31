@@ -12,17 +12,17 @@ ask_timeout = 30      # seconds to wait on an interactive ask before ask_default
 
 [rules]
 # System locations: read-only so tools work but can't be modified.
-"/usr" = "ro"
-"/bin" = "ro"
-"/sbin" = "ro"
-"/lib" = "ro"
-"/lib64" = "ro"
-"/etc" = "ro"
+"/usr" = "read"
+"/bin" = "read"
+"/sbin" = "read"
+"/lib" = "read"
+"/lib64" = "read"
+"/etc" = "read"
 
 # Sensitive files: prompt before any access.
 "$HOME/.ssh/id_ed25519" = "ask"
 
 # Project tree and yolofs internals.
 "." = "allow"
-".yolofs" = "hidden"
-"yolofs.toml" = "hidden"
+".yolofs" = "hide"
+"yolofs.toml" = "hide"

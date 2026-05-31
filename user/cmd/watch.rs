@@ -79,7 +79,7 @@ fn prompt_decision(req: &PermRequest) -> Perm {
         format!("(pid={} {})", req.pid, req.comm_str()).dimmed(),
     );
     eprint!(
-        "  [{}]llow [{}]ead-only [{}]idden [{}]eny (enter = allow): ",
+        "  [{}]llow [{}]ead [{}]ide [{}]eny (enter = allow): ",
         "a".blue().bold(),
         "r".blue().bold(),
         "h".blue().bold(),
@@ -162,8 +162,8 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
 fn parse_input(input: &str) -> Perm {
     match input {
         "" | "a" | "allow" => Perm::Allow,
-        "r" | "ro" | "read-only" | "readonly" => Perm::Ro,
-        "h" | "hidden" => Perm::Hidden,
+        "r" | "read" | "read-only" | "readonly" => Perm::Read,
+        "h" | "hide" => Perm::Hide,
         "d" | "deny" => Perm::Deny,
         _ => Perm::Deny,
     }
@@ -215,23 +215,23 @@ mod tests {
     }
 
     #[test]
-    fn r_is_ro() {
-        assert_eq!(parse_input("r"), Perm::Ro);
+    fn r_is_read() {
+        assert_eq!(parse_input("r"), Perm::Read);
     }
 
     #[test]
-    fn ro_is_ro() {
-        assert_eq!(parse_input("ro"), Perm::Ro);
+    fn read_is_read() {
+        assert_eq!(parse_input("read"), Perm::Read);
     }
 
     #[test]
-    fn h_is_hidden() {
-        assert_eq!(parse_input("h"), Perm::Hidden);
+    fn h_is_hide() {
+        assert_eq!(parse_input("h"), Perm::Hide);
     }
 
     #[test]
-    fn hidden_is_hidden() {
-        assert_eq!(parse_input("hidden"), Perm::Hidden);
+    fn hide_is_hide() {
+        assert_eq!(parse_input("hide"), Perm::Hide);
     }
 
     #[test]

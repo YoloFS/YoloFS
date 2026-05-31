@@ -128,7 +128,7 @@ fn create_denied_with_ro_rule() {
     fs::write(root.join("test.sh"), "#!/bin/sh\n").ok();
 
     let mut rules = BTreeMap::new();
-    rules.insert(root.to_string_lossy().into_owned(), Perm::Ro);
+    rules.insert(root.to_string_lossy().into_owned(), Perm::Read);
 
     let config = Config {
         permission: true,

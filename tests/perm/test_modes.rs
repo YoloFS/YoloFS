@@ -10,7 +10,7 @@ use yolofs::config::{Config, Perm};
 fn ro_permits_read_denies_write() {
     let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
-        rules: BTreeMap::from([("/".into(), Perm::Ro)]),
+        rules: BTreeMap::from([("/".into(), Perm::Read)]),
         ..Default::default()
     })
     .expect("session setup");
@@ -77,7 +77,7 @@ fn allow_permits_exec() {
 fn ro_permits_exec() {
     let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
-        rules: BTreeMap::from([("/".into(), Perm::Ro)]),
+        rules: BTreeMap::from([("/".into(), Perm::Read)]),
         ..Default::default()
     })
     .expect("session setup");

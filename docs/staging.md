@@ -542,7 +542,7 @@ records; only `yolo audit` surfaces them. B writes do not set
 cause an auto-snapshot under `YOLO_MARK_IF_CHANGED`. B records ride
 within segments alongside S/D/R, so reachability and `--path` filtering
 apply identically (a B in an unreachable segment is dimmed in audit
-output). Current scope is `-EACCES` only; `HIDDEN`/`-ENOENT` paths are
+output). Current scope is `-EACCES` only; `HIDE`/`-ENOENT` paths are
 not logged.
 
 Userspace derives the stage/modify distinction by checking the base
