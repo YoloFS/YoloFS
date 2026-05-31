@@ -30,6 +30,7 @@ below are filesystem-specific and stack on top.
   - `tests/perm/` — black-box permission rule enforcement.
   - `tests/internals/` — white-box; inspect `.yolofs/inodes/` and `.yolofs/journal` directly.
 - **docs/** — Design documents (architecture.md, cli.md, internals.md, permissions.md, staging.md). Keep in sync with code.
+- **agents/** — Drop-in hook templates that wrap a coding agent's shell commands in the YoloFS sandbox.
 
 ## Build & Test
 

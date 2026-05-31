@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": "run_shell_command",
+        "command": "bash .gemini/yolofs.sh"
+      }
+    ]
+  }
+}
