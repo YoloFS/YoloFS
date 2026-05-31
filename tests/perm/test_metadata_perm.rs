@@ -1,7 +1,8 @@
 use crate::helpers::{YOLO_BIN, YoloSession};
 use std::collections::BTreeMap;
 use std::fs;
-use yolofs::config::{Config, Perm};
+use yolofs::config::Config;
+use yolofs::perm::Perm;
 
 /// Helper: create a session with deny-by-default and no rules on the session root.
 fn deny_session() -> YoloSession {

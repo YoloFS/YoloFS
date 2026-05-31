@@ -7,6 +7,7 @@ use yolofs::cmd::{
     abort, audit, commit, diff, exec, init, load, mount, snapshot, timeline, travel, watch,
 };
 use yolofs::config;
+use yolofs::perm;
 
 #[derive(Parser)]
 #[command(
@@ -198,11 +199,11 @@ fn run_cli() -> anyhow::Result<u8> {
             None | Some(RuleAction::List) => config::list_rules()?,
             Some(RuleAction::Resolve { path }) => config::resolve_rule(&path)?,
             Some(RuleAction::Unset { path }) => config::unset_rule(&path)?,
-            Some(RuleAction::Ask { path }) => config::set_rule(&path, config::Perm::Ask)?,
-            Some(RuleAction::Allow { path }) => config::set_rule(&path, config::Perm::Allow)?,
-            Some(RuleAction::Read { path }) => config::set_rule(&path, config::Perm::Read)?,
-            Some(RuleAction::Deny { path }) => config::set_rule(&path, config::Perm::Deny)?,
-            Some(RuleAction::Hide { path }) => config::set_rule(&path, config::Perm::Hide)?,
+            Some(RuleAction::Ask { path }) => config::set_rule(&path, perm::Perm::Ask)?,
+            Some(RuleAction::Allow { path }) => config::set_rule(&path, perm::Perm::Allow)?,
+            Some(RuleAction::Read { path }) => config::set_rule(&path, perm::Perm::Read)?,
+            Some(RuleAction::Deny { path }) => config::set_rule(&path, perm::Perm::Deny)?,
+            Some(RuleAction::Hide { path }) => config::set_rule(&path, perm::Perm::Hide)?,
         },
         Some(Command::Watch { allow_all }) => watch::run(allow_all)?,
         None => {

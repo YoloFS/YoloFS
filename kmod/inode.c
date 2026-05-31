@@ -25,9 +25,9 @@ static int yolo_check_mutate_perm(struct dentry *dentry)
 	if (!sbi->permission)
 		return 0;
 
-	err = yolo_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY, 0);
+	err = yolo_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY);
 	if (err == -EACCES)
-		yolo_journal_block(sbi, dentry);
+		yolo_journal_block(sbi, dentry, YOLO_OP_WRITE);
 	return err;
 }
 
@@ -239,10 +239,11 @@ static int yolo_permission(struct mnt_idmap *idmap,
 		break;
 	}
 
-	/* -EACCES path: log a block record against the inode's dentry. */
+	/* -EACCES path: log a block note against the inode's dentry. */
 	struct dentry *alias = d_find_alias(inode);
 	if (alias) {
-		yolo_journal_block(sbi, alias);
+		enum yolo_op op = (mask & MAY_WRITE) ? YOLO_OP_WRITE : YOLO_OP_READ;
+		yolo_journal_block(sbi, alias, op);
 		dput(alias);
 	}
 	return -EACCES;

@@ -50,13 +50,52 @@ pub enum Marker {
     Travel { gen_id: u64, target_gen: u64 },
 }
 
+/// The operation an access attempted, as recorded in a note's `op` field.
+/// Journal encoding: `r` / `w`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Op {
+    Read,
+    Write,
+}
+
+impl Op {
+    /// Parse the journal's single-letter op code.
+    pub fn from_byte(b: u8) -> Option<Op> {
+        match b {
+            b'r' => Some(Op::Read),
+            b'w' => Some(Op::Write),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Op::Read => "read",
+            Op::Write => "write",
+        }
+    }
+}
+
 /// An observational note — does not affect overlay state, only audit.
 ///
-/// `Note::Block` records that a yolofs rule returned `-EACCES` for the
-/// given path. The kernel emits these via `B\0<path>\n` in the journal.
+/// Emitted by the kernel and ignored by commit/abort/diff/replay; only
+/// `yolo audit` surfaces them. The `decision` is a [`Perm`](crate::perm::Perm)
+/// (the unified permission type); journal-encoded as a single letter.
+///
+/// - `Ask` — an `ask` path was resolved to `decision` (by the daemon or the
+///   timeout default). Wire: `A\0<path>\0<op>\0<decision>\n`.
+/// - `Block` — a rule returned `-EACCES`. Wire: `B\0<path>\0<op>\n`.
 #[derive(Debug, Clone)]
 pub enum Note {
-    Block { path: String },
+    Ask {
+        path: String,
+        op: Op,
+        decision: crate::perm::Perm,
+    },
+    Block {
+        path: String,
+        op: Op,
+    },
 }
 
 /// A parsed journal record (interleaved actions, markers, and notes).
@@ -79,4 +118,23 @@ pub struct Segment {
     pub from: u64,
     /// The S/D/R + B records in this segment (no P/T records).
     pub records: Vec<Record>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn op_byte_roundtrips() {
+        for op in [Op::Read, Op::Write] {
+            let letter = match op {
+                Op::Read => b'r',
+                Op::Write => b'w',
+            };
+            assert_eq!(Op::from_byte(letter), Some(op));
+        }
+        assert_eq!(Op::from_byte(b'x'), None);
+        assert_eq!(Op::Read.label(), "read");
+        assert_eq!(Op::Write.label(), "write");
+    }
 }

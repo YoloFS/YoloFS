@@ -21,7 +21,7 @@ pub fn actions(j: &journal::Journal) -> Vec<&Action> {
 }
 
 /// Collect all block notes from the journal in order (B records only).
-pub fn blocks(j: &journal::Journal) -> Vec<&Note> {
+pub fn notes(j: &journal::Journal) -> Vec<&Note> {
     j.segments
         .iter()
         .flat_map(|s| &s.records)

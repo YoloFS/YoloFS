@@ -519,7 +519,8 @@ D\0<path>\n                      — Delete
 R\0<dst>\0<src>\n                 — Rename
 P\0<gen>\0<name>\n                — Snapshot
 T\0<gen>\0<target_gen>\n          — Travel
-B\0<path>\n                      — Blocked (permission denied)
+A\0<path>\0<op>\0<decision>\n    — Ask resolved (records the decision)
+B\0<path>\0<op>\n                — Blocked by a rule (permission denied)
 ```
 
 Each mutation type has its own record tag and carries exactly the fields
@@ -532,15 +533,19 @@ it needs. The kernel always uses `S` for creates/COW and `R` for renames:
 | `R` | `<dst>`, `<src>` | Rename |
 | `P` | `<gen>`, `<name>` | Snapshot marker |
 | `T` | `<gen>`, `<target_gen>` | Travel marker |
-| `B` | `<path>` | Access blocked by a rule (`-EACCES`) — observational |
+| `A` | `<path>`, `<op>`, `<decision>` | An `ask` was resolved to `<decision>` — observational |
+| `B` | `<path>`, `<op>` | Access blocked by a rule (`-EACCES`) — observational |
 
-S/D/R are state mutations. P/T are control markers. **B is observational**:
-it records that a rule blocked the access at `<path>` but does not affect
-any state. The CLI's dir-tree builder, commit, abort, and diff ignore B
-records; only `yolo audit` surfaces them. B writes do not set
-`sbi->dirty`, so a read-only command that only triggers blocks does not
-cause an auto-snapshot under `YOLO_SNAPSHOT_IF_CHANGED`. B records ride
-within segments alongside S/D/R, so reachability and `--path` filtering
+`op` is a single letter (`r`/`w`); `decision` is a single letter
+(`a`/`y`/`r`/`d`/`h` — ask/allow/read/deny/hide).
+S/D/R are state mutations. P/T are control markers. **A and B are
+observational notes**: they record that a rule blocked an access (`B`) or
+that an `ask` was resolved (`A`, by the daemon or the timeout default) but
+do not affect any state. The CLI's dir-tree builder, commit, abort, and diff
+ignore them; only `yolo audit` surfaces them. A/B writes do not set
+`sbi->dirty`, so a command that only triggers blocks/asks does not cause an
+auto-snapshot under `YOLO_SNAPSHOT_IF_CHANGED`. They ride within segments
+alongside S/D/R, so reachability and `--path` filtering
 apply identically (a B in an unreachable segment is dimmed in audit
 output). Current scope is `-EACCES` only; `HIDE`/`-ENOENT` paths are
 not logged.

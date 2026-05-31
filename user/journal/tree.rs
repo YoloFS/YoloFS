@@ -1486,6 +1486,7 @@ mod tests {
             records: vec![
                 Record::Note(Note::Block {
                     path: "/etc/passwd".into(),
+                    op: Op::Write,
                 }),
                 Record::Action(Action::Stage {
                     path: "/a".into(),
@@ -1493,10 +1494,12 @@ mod tests {
                 }),
                 Record::Note(Note::Block {
                     path: "/etc/shadow".into(),
+                    op: Op::Write,
                 }),
                 Record::Action(Action::Delete { path: "/b".into() }),
                 Record::Note(Note::Block {
                     path: "/etc/group".into(),
+                    op: Op::Write,
                 }),
             ],
         }));

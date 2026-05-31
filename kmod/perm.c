@@ -60,6 +60,14 @@ int yolo_check_perm(enum yolo_perm perm, int f_flags)
 	}
 }
 
+/* Map open flags to the operation being attempted (read vs write). */
+enum yolo_op yolo_open_op(int f_flags)
+{
+	if (f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC))
+		return YOLO_OP_WRITE;
+	return YOLO_OP_READ;
+}
+
 /* ── Combined resolve + ask + check ───────────────────────────────── */
 
 /*
@@ -68,7 +76,7 @@ int yolo_check_perm(enum yolo_perm perm, int f_flags)
  * yolo_open (via file.c) and metadata ops (via inode.c).
  */
 int yolo_check_dentry_perm(struct yolo_sb_info *sbi, struct dentry *dentry,
-			   int f_flags, fmode_t f_mode)
+			   int f_flags)
 {
 	struct inode *inode = d_inode(dentry);
 	struct yolo_inode_info *ii = YOLO_I(inode);
@@ -80,16 +88,9 @@ int yolo_check_dentry_perm(struct yolo_sb_info *sbi, struct dentry *dentry,
 	perm = ii->cached_perm;
 
 	if (perm == YOLO_PERM_ASK) {
-		unsigned int op;
+		enum yolo_op op = yolo_open_op(f_flags);
 		char buf[YOLO_PATH_MAX];
 		char *relpath;
-
-		if (f_mode & FMODE_EXEC)
-			op = YOLO_OP_EXEC;
-		else if (f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC))
-			op = YOLO_OP_WRITE;
-		else
-			op = YOLO_OP_READ;
 
 		relpath = dentry_path_raw(dentry, buf, sizeof(buf));
 		if (IS_ERR(relpath))
@@ -122,6 +123,7 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 	/* No daemon connected — apply default immediately */
 	if (!atomic_read(&sbi->ask_engine.has_daemon)) {
 		*result = sbi->ask_engine.default_perm;
+		yolo_journal_ask(sbi, relpath, op, *result);
 		return 0;
 	}
 
@@ -170,8 +172,10 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 		req->decision = YOLO_PERM_DENY;
 	}
 
-	if (!err)
+	if (!err) {
 		*result = req->decision;
+		yolo_journal_ask(sbi, relpath, op, req->decision);
+	}
 
 	kref_put(&req->ref, yolo_perm_request_release);
 	return err;

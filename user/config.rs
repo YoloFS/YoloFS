@@ -3,77 +3,14 @@
 // Manages yolofs.toml: read, rule add/remove, apply rules on mount.
 
 use crate::ioctl;
+use crate::perm::Perm;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
-use std::fmt;
 use std::fs;
 use std::path::Path;
-use std::str::FromStr;
-
-// ── Perm enum ────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Perm {
-    Ask,
-    Allow,
-    Read,
-    Deny,
-    Hide,
-}
-
-impl Perm {
-    pub fn to_ioctl(self) -> u8 {
-        match self {
-            Perm::Ask => ioctl::YOLO_PERM_ASK,
-            Perm::Allow => ioctl::YOLO_PERM_ALLOW,
-            Perm::Read => ioctl::YOLO_PERM_READ,
-            Perm::Deny => ioctl::YOLO_PERM_DENY,
-            Perm::Hide => ioctl::YOLO_PERM_HIDE,
-        }
-    }
-
-    /// Inverse of [`to_ioctl`]. `None` for `UNSET` or any unknown value.
-    pub fn from_ioctl(v: u8) -> Option<Self> {
-        match v {
-            ioctl::YOLO_PERM_ASK => Some(Perm::Ask),
-            ioctl::YOLO_PERM_ALLOW => Some(Perm::Allow),
-            ioctl::YOLO_PERM_READ => Some(Perm::Read),
-            ioctl::YOLO_PERM_DENY => Some(Perm::Deny),
-            ioctl::YOLO_PERM_HIDE => Some(Perm::Hide),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for Perm {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Perm::Ask => "ask",
-            Perm::Allow => "allow",
-            Perm::Read => "read",
-            Perm::Deny => "deny",
-            Perm::Hide => "hide",
-        })
-    }
-}
-
-impl FromStr for Perm {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "ask" => Ok(Perm::Ask),
-            "allow" => Ok(Perm::Allow),
-            "read" => Ok(Perm::Read),
-            "deny" => Ok(Perm::Deny),
-            "hide" => Ok(Perm::Hide),
-            _ => anyhow::bail!("unknown permission: {s}"),
-        }
-    }
-}
 
 // ── Typed config ─────────────────────────────────────────────────────
 

@@ -1,7 +1,8 @@
 use crate::helpers::YoloSession;
 use std::collections::BTreeMap;
 use std::fs;
-use yolofs::config::{Config, Perm};
+use yolofs::config::Config;
+use yolofs::perm::Perm;
 
 // ── ask_default variants (perm.c: yolo_ask_userspace no-daemon path) ──
 

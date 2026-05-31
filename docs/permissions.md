@@ -35,7 +35,6 @@ Operations passed in ask requests:
 enum yolo_op {
     YOLO_OP_READ  = 1,    // File opened for reading.
     YOLO_OP_WRITE = 2,    // File opened for writing (includes append/truncate).
-    YOLO_OP_EXEC  = 3,    // File opened for execution.
 };
 ```
 
@@ -187,7 +186,7 @@ void yolo_cache_perm(struct inode *inode, struct dentry *dentry)
 // metadata ops).  Lives in perm.c.
 int yolo_check_dentry_perm(struct yolo_sb_info *sbi,
                            struct dentry *dentry,
-                           int f_flags, fmode_t f_mode)
+                           int f_flags)
 {
     struct yolo_inode_info *ii = YOLO_I(d_inode(dentry));
     enum yolo_perm perm;
@@ -208,7 +207,7 @@ static int yolo_check_mutate_perm(struct dentry *dentry)
     struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
     if (!sbi->permission)
         return 0;
-    return yolo_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY, 0);
+    return yolo_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY);
 }
 
 // yolo_permission() for VFS MAY_READ/MAY_WRITE/MAY_EXEC checks.
@@ -237,7 +236,7 @@ static int yolo_open(struct inode *inode, struct file *file)
     struct dentry *dentry = file->f_path.dentry;
 
     if (sbi->permission) {
-        err = yolo_check_dentry_perm(sbi, dentry, file->f_flags, file->f_mode);
+        err = yolo_check_dentry_perm(sbi, dentry, file->f_flags);
         if (err)
             return err;
     }
@@ -378,11 +377,14 @@ longest-prefix-match for free. This satisfies all three principles:
 | unlink, rmdir | parent dir's perm (write) | `yolo_check_mutate_perm` |
 | rename | both parents' perm (write) | `yolo_check_mutate_perm` × 2 |
 
-Whenever a gate returns `-EACCES`, the kernel appends a `B\0<path>\n`
+Whenever a gate returns `-EACCES`, the kernel appends a `B\0<path>\0<op>\n`
 record to the journal (the *target* path the agent tried to act on, not
-the parent whose perm was the source of denial). `yolo audit` surfaces
-these so the user can review what was blocked, in order, relative to
-snapshots. `HIDE` paths return `-ENOENT` and are not logged. See
+the parent whose perm was the source of denial; `op` is `r`/`w`). And
+whenever an `ask` is resolved — by the daemon or the timeout default — the
+kernel appends an `A\0<path>\0<op>\0<decision>\n` record capturing the
+verdict. `yolo audit` surfaces both so the user can review what was
+blocked or asked, in order, relative to snapshots. `HIDE` paths return
+`-ENOENT` and are not logged. See
 [staging.md §Journal Format](staging.md#journal-format) for the record
 shape and semantics.
 

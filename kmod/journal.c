@@ -11,8 +11,9 @@
  *   R\0<dst>\0<src>\n                  — Rename
  *   P\0<gen>\0<name>\n                — Snapshot
  *   T\0<gen>\0<target_gen>\n          — Travel
- *   B\0<path>\n                       — Blocked (permission denied;
- *                                       observational, does not set dirty)
+ *   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
+ *   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
+ *   (op = r/w; decision = a/y/r/d/h — ask/allow/read/deny/hide)
  */
 
 #include "yolofs.h"
@@ -72,7 +73,10 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 
 	pos = f->f_pos;
 	err = kernel_write(f, buf, off, &pos);
-	if (err >= 0 && tag != 'P' && tag != 'T' && tag != 'B')
+	/* Only data mutations (S/D/R) mark the session dirty. Markers (P/T) and
+	 * observational notes (A/B) are excluded — they must not trigger an
+	 * auto-snapshot under YOLO_SNAPSHOT_IF_CHANGED. */
+	if (err >= 0 && tag != 'P' && tag != 'T' && tag != 'B' && tag != 'A')
 		WRITE_ONCE(sbi->dirty, true);
 	return err < 0 ? err : 0;
 }
@@ -155,26 +159,68 @@ int yolo_journal_travel(struct yolo_sb_info *sbi, u16 gen, u16 target_gen)
 			     (const char *[]){ gen_str, target_str, NULL });
 }
 
+/* Single-letter journal encodings (self-describing, like the record tags). */
+static char op_char(enum yolo_op op)
+{
+	return op == YOLO_OP_WRITE ? 'w' : 'r';
+}
+
+static char perm_char(enum yolo_perm p)
+{
+	switch (p) {
+	case YOLO_PERM_ASK:	return 'a';
+	case YOLO_PERM_ALLOW:	return 'y';
+	case YOLO_PERM_READ:	return 'r';
+	case YOLO_PERM_DENY:	return 'd';
+	case YOLO_PERM_HIDE:	return 'h';
+	default:		return '?';
+	}
+}
+
 /**
- * yolo_journal_block - Append a "permission blocked" record to the journal.
+ * yolo_journal_ask - Append an "ask resolved" note recording the decision.
+ * @sbi: superblock info
+ * @path: the asked path (relative, as sent to the daemon)
+ * @op: the attempted operation (enum yolo_op)
+ * @decision: the resolved permission (enum yolo_perm) — from the daemon or
+ *            the timeout default
+ *
+ * Observational note (does not set sbi->dirty). Format:
+ *   A\0<path>\0<op>\0<decision>\n   (op = r/w; decision = a/y/r/d/h)
+ */
+int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
+		     enum yolo_op op, enum yolo_perm decision)
+{
+	char op_str[2] = { op_char(op), '\0' };
+	char dec_str[2] = { perm_char(decision), '\0' };
+
+	return journal_write(sbi, 'A',
+			     (const char *[]){ path, op_str, dec_str, NULL });
+}
+
+/**
+ * yolo_journal_block - Append a "permission blocked" note to the journal.
  * @sbi: superblock info (has journal_file)
  * @dentry: the target dentry whose access was denied
+ * @op: the attempted operation (enum yolo_op)
  *
- * Observational record: written when a yolofs rule causes the kernel to
+ * Observational note: written when a yolofs rule causes the kernel to
  * return -EACCES for an access. The path is the agent's intended target
  * (file for opens; child for parent-write-denied mutates), not the
  * parent dentry whose perm caused the denial. Does not set sbi->dirty
  * (see journal_write).
  *
- * Format: B\0<path>\n
+ * Format: B\0<path>\0<op>\n
  */
-int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *dentry)
+int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *dentry,
+		       enum yolo_op op)
 {
 	char path_buf[YOLO_PATH_MAX];
+	char op_str[2] = { op_char(op), '\0' };
 	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
 	if (IS_ERR(path))
 		return PTR_ERR(path);
 
 	return journal_write(sbi, 'B',
-			     (const char *[]){ path, NULL });
+			     (const char *[]){ path, op_str, NULL });
 }

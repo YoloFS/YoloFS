@@ -15,7 +15,6 @@ pub const YOLO_PATH_MAX: usize = 256;
 // Operation types
 pub const YOLO_OP_READ: u32 = 1;
 pub const YOLO_OP_WRITE: u32 = 2;
-pub const YOLO_OP_EXEC: u32 = 3;
 
 // Permission values
 pub const YOLO_PERM_UNSET: u8 = 0;
@@ -110,7 +109,6 @@ impl PermRequest {
         match self.op {
             YOLO_OP_READ => "read",
             YOLO_OP_WRITE => "write",
-            YOLO_OP_EXEC => "exec",
             _ => "unknown",
         }
     }
@@ -271,7 +269,6 @@ mod tests {
         };
         assert_eq!(mk(YOLO_OP_READ).op_str(), "read");
         assert_eq!(mk(YOLO_OP_WRITE).op_str(), "write");
-        assert_eq!(mk(YOLO_OP_EXEC).op_str(), "exec");
         assert_eq!(mk(99).op_str(), "unknown");
     }
 

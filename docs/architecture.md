@@ -232,7 +232,7 @@ yolofs/
 │   ├── journal/               # journal parsing, timeline, and resolution
 │   │   ├── types.rs           # Action, Marker, Record, Segment
 │   │   ├── parse.rs           # parse()  (pub(super))
-│   │   ├── marker.rs            # MarkerIndex (lookup + range + alive_segments + marker_at)
+│   │   ├── marker.rs          # MarkerIndex (lookup + range + alive_segments + marker_at)
 │   │   ├── journal.rs         # Journal (struct + new + read + live_segments_*)
 │   │   ├── tree.rs            # DirTree, DirNode
 │   │   └── dentry.rs          # Dentry, Target — dentry state types

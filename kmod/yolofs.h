@@ -38,7 +38,6 @@
 enum yolo_op {
 	YOLO_OP_READ		= 1,
 	YOLO_OP_WRITE		= 2,
-	YOLO_OP_EXEC		= 3,
 };
 
 /* ── Permission Enum ───────────────────────────────────────────────── */
@@ -103,7 +102,7 @@ struct yolo_ioc_travel {
  */
 struct yolo_ioc_ask {
 	__u64	id;
-	__u32	op;			/* YOLO_OP_READ / WRITE / EXEC */
+	__u32	op;			/* YOLO_OP_READ / WRITE */
 	__u32	pid;
 	char	comm[16];
 	__u64	path_ptr;		/* in: userspace buffer for path */
@@ -398,7 +397,11 @@ int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 			  struct dentry *new_dentry);
 int yolo_journal_snapshot(struct yolo_sb_info *sbi, u16 id, const char *name);
 int yolo_journal_travel(struct yolo_sb_info *sbi, u16 gen, u16 target_gen);
-int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *dentry);
+int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *dentry,
+		       enum yolo_op op);
+int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
+		     enum yolo_op op, enum yolo_perm decision);
+enum yolo_op yolo_open_op(int f_flags);
 
 /* perm.c */
 static inline void yolo_perm_request_release(struct kref *kref)
@@ -409,7 +412,7 @@ enum yolo_perm yolo_resolve_perm(struct dentry *dentry);
 void yolo_cache_perm(struct inode *inode, struct dentry *dentry);
 int yolo_check_perm(enum yolo_perm perm, int f_flags);
 int yolo_check_dentry_perm(struct yolo_sb_info *sbi, struct dentry *dentry,
-			   int f_flags, fmode_t f_mode);
+			   int f_flags);
 int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 		       const char *relpath, enum yolo_op op,
 		       enum yolo_perm *result);

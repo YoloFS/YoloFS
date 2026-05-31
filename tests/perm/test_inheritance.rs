@@ -1,7 +1,8 @@
 use crate::helpers::{YOLO_BIN, YoloSession};
 use std::collections::BTreeMap;
 use std::fs;
-use yolofs::config::{Config, Perm};
+use yolofs::config::Config;
+use yolofs::perm::Perm;
 
 // ── Rule inheritance (perm.c: yolo_resolve_perm walks dentry chain) ──
 

@@ -3,11 +3,12 @@
 //! set the dirty flag and they don't contribute to the dir tree.
 
 use crate::helpers::YoloSession;
-use crate::internals::helpers::{actions, blocks, journal};
+use crate::internals::helpers::{actions, journal, notes};
 use std::collections::BTreeMap;
 use std::fs;
-use yolofs::config::{Config, Perm};
-use yolofs::journal::Note;
+use yolofs::config::Config;
+use yolofs::journal::{Note, Op};
+use yolofs::perm::Perm;
 
 /// Build a session where the entire mount denies access.
 fn deny_session() -> YoloSession {
@@ -29,9 +30,9 @@ fn ro_session() -> YoloSession {
     .expect("session setup")
 }
 
-/// Block record format: B\0<path>\n (exactly 2 fields).
+/// Block record format: B\0<path>\0<op>\n (3 fields).
 #[test]
-fn block_record_format_is_minimal() {
+fn block_record_format() {
     let s = deny_session();
 
     let _ = fs::read_to_string(s.mnt_path("hello.txt"));
@@ -46,8 +47,8 @@ fn block_record_format_is_minimal() {
         let fields: Vec<&[u8]> = line.split(|&b| b == 0).collect();
         assert_eq!(
             fields.len(),
-            2,
-            "B record should be (B, path), got {} fields: {:?}",
+            3,
+            "B record should be (B, path, op), got {} fields: {:?}",
             fields.len(),
             fields
                 .iter()
@@ -56,7 +57,42 @@ fn block_record_format_is_minimal() {
         );
         assert_eq!(fields[0], b"B");
         assert!(!fields[1].is_empty(), "path field must be non-empty");
+        // op is a single letter: 'r' (read) or 'w' (write).
+        assert!(
+            fields[2] == b"r" || fields[2] == b"w",
+            "op should be r/w, got {:?}",
+            String::from_utf8_lossy(fields[2])
+        );
     }
+}
+
+/// An `ask` path resolved with no daemon connected emits an A (ask) note
+/// carrying the op and the applied default decision.
+#[test]
+fn ask_record_emitted_on_no_daemon() {
+    // No rules → everything resolves to `ask`; no `yolo watch` daemon is
+    // running, so the kernel applies ask_default (deny) and logs an A note.
+    let s = YoloSession::new_with_config(Config {
+        ask_default: Some(Perm::Deny),
+        rules: BTreeMap::new(),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let _ = fs::read_to_string(s.mnt_path("hello.txt"));
+
+    let j = journal(&s);
+    let ns = notes(&j);
+    assert!(
+        ns.iter().any(|n| matches!(
+            n,
+            Note::Ask { path, op, decision }
+                if path.ends_with("/hello.txt")
+                    && *op == Op::Read
+                    && *decision == Perm::Deny
+        )),
+        "expected an A note (read -> deny) for hello.txt, got: {ns:?}"
+    );
 }
 
 /// A denied read of a regular file produces a B record at the *target* path.
@@ -67,10 +103,10 @@ fn denied_read_emits_block_for_file_path() {
     let _ = fs::read_to_string(s.mnt_path("hello.txt"));
 
     let j = journal(&s);
-    let bs = blocks(&j);
+    let bs = notes(&j);
     assert!(
         bs.iter()
-            .any(|n| matches!(n, Note::Block { path } if path.ends_with("/hello.txt"))),
+            .any(|n| matches!(n, Note::Block { path, .. } if path.ends_with("/hello.txt"))),
         "expected B for hello.txt, got: {:?}",
         bs
     );
@@ -84,10 +120,10 @@ fn ro_write_emits_block() {
     let _ = fs::write(s.mnt_path("hello.txt"), "x");
 
     let j = journal(&s);
-    let bs = blocks(&j);
+    let bs = notes(&j);
     assert!(
         bs.iter()
-            .any(|n| matches!(n, Note::Block { path } if path.ends_with("/hello.txt"))),
+            .any(|n| matches!(n, Note::Block { path, .. } if path.ends_with("/hello.txt"))),
         "expected B for hello.txt under ro+write, got: {:?}",
         bs
     );
@@ -101,17 +137,17 @@ fn denied_create_emits_block_for_child_path() {
     let _ = fs::write(s.mnt_path("new_file.txt"), "x");
 
     let j = journal(&s);
-    let bs = blocks(&j);
+    let bs = notes(&j);
     assert!(
         bs.iter()
-            .any(|n| matches!(n, Note::Block { path } if path.ends_with("/new_file.txt"))),
+            .any(|n| matches!(n, Note::Block { path, .. } if path.ends_with("/new_file.txt"))),
         "expected B for new_file.txt (child), got: {:?}",
         bs
     );
     // The mutate-denial path must record the *child* target, never just
     // the parent directory. Confirm no record points at the parent only.
     assert!(
-        !bs.iter().any(|n| matches!(n, Note::Block { path }
+        !bs.iter().any(|n| matches!(n, Note::Block { path, .. }
             if !path.ends_with("/new_file.txt") && !path.ends_with(".txt"))),
         "should not log parent path for mutate denial: {:?}",
         bs
@@ -126,10 +162,10 @@ fn denied_unlink_emits_block_for_target_path() {
     let _ = fs::remove_file(s.mnt_path("hello.txt"));
 
     let j = journal(&s);
-    let bs = blocks(&j);
+    let bs = notes(&j);
     assert!(
         bs.iter()
-            .any(|n| matches!(n, Note::Block { path } if path.ends_with("/hello.txt"))),
+            .any(|n| matches!(n, Note::Block { path, .. } if path.ends_with("/hello.txt"))),
         "expected B for hello.txt, got: {:?}",
         bs
     );
@@ -145,7 +181,7 @@ fn block_records_do_not_contribute_to_tree() {
     }
 
     let j = journal(&s);
-    let bs = blocks(&j);
+    let bs = notes(&j);
     assert!(!bs.is_empty(), "expected B records");
     let acts = actions(&j);
     assert!(
@@ -182,7 +218,7 @@ fn block_writes_do_not_set_dirty() {
     let _ = status;
 
     let j = journal(&s);
-    let bs = blocks(&j);
+    let bs = notes(&j);
     assert!(
         !bs.is_empty(),
         "expected B records from the denied cat invocation"
@@ -246,7 +282,7 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
     let _ = status;
 
     let j = journal(&s);
-    let bs = blocks(&j);
+    let bs = notes(&j);
     let acts = actions(&j);
     assert!(!bs.is_empty(), "expected B from denied locked.txt read");
     assert!(
@@ -256,7 +292,7 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
     // Auto-snapshot should fire because dirty was set by the S record.
     assert!(
         j.markers.len() >= 2,
-        "expected auto-snapshot when mutations occur alongside blocks; markers={:?}",
+        "expected auto-snapshot when mutations occur alongside notes; markers={:?}",
         j.markers.iter().collect::<Vec<_>>()
     );
 }
@@ -304,7 +340,7 @@ fn hidden_paths_do_not_log_block() {
     let _ = fs::metadata(s.mnt_path("hello.txt"));
 
     let j = journal(&s);
-    let bs = blocks(&j);
+    let bs = notes(&j);
     assert!(
         bs.is_empty(),
         "HIDE -> -ENOENT must not log any B record, got: {:?}",
@@ -331,10 +367,10 @@ fn ask_resolved_to_default_deny_emits_block() {
     let _ = fs::read_to_string(s.mnt_path("hello.txt"));
 
     let j = journal(&s);
-    let bs = blocks(&j);
+    let bs = notes(&j);
     assert!(
         bs.iter()
-            .any(|n| matches!(n, Note::Block { path } if path.ends_with("/hello.txt"))),
+            .any(|n| matches!(n, Note::Block { path, .. } if path.ends_with("/hello.txt"))),
         "expected B for ask-resolved-deny on hello.txt, got: {:?}",
         bs
     );
@@ -352,7 +388,7 @@ fn block_records_invisible_in_status_and_diff() {
     }
     // Sanity: B records did get emitted.
     let j = journal(&s);
-    assert!(!blocks(&j).is_empty(), "expected B records to be emitted");
+    assert!(!notes(&j).is_empty(), "expected B records to be emitted");
 
     let status = std::process::Command::new(YOLO_BIN)
         .args(["status"])

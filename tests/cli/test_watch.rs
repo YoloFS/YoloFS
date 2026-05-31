@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
-use yolofs::config::{Config, Perm};
+use yolofs::config::Config;
+use yolofs::perm::Perm;
 
 /// `yolofs watch --allow-all` should answer every ask with allow, so
 /// `touch a` inside `yolofs exec` must succeed.

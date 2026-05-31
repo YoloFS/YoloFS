@@ -278,6 +278,7 @@ mod tests {
             }),
             Record::Note(Note::Block {
                 path: "/etc/x".into(),
+                op: Op::Write,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 1,
@@ -285,6 +286,7 @@ mod tests {
             }),
             Record::Note(Note::Block {
                 path: "/etc/y".into(),
+                op: Op::Write,
             }),
         ];
         let j = Journal::new(records);
@@ -297,13 +299,13 @@ mod tests {
         ));
         assert!(matches!(
             &j.segments[0].records[1],
-            Record::Note(Note::Block { path }) if path == "/etc/x"
+            Record::Note(Note::Block { path, .. }) if path == "/etc/x"
         ));
         // seg1: trailing note.
         assert_eq!(j.segments[1].records.len(), 1);
         assert!(matches!(
             &j.segments[1].records[0],
-            Record::Note(Note::Block { path }) if path == "/etc/y"
+            Record::Note(Note::Block { path, .. }) if path == "/etc/y"
         ));
     }
 

@@ -1,7 +1,8 @@
 use crate::helpers::YOLO_BIN;
 use crate::helpers::YoloSession;
 use std::collections::BTreeMap;
-use yolofs::config::{Config, Perm};
+use yolofs::config::Config;
+use yolofs::perm::Perm;
 
 #[test]
 fn apply_rules_shows_results() {

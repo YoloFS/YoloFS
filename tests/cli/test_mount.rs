@@ -1,6 +1,7 @@
 use crate::helpers::{YOLO_BIN, YoloSession};
 use std::collections::BTreeMap;
-use yolofs::config::{Config, Perm};
+use yolofs::config::Config;
+use yolofs::perm::Perm;
 
 #[test]
 fn mount_and_unmount() {

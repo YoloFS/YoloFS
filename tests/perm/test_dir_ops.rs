@@ -1,7 +1,8 @@
 use crate::helpers::YoloSession;
 use std::collections::BTreeMap;
 use std::fs;
-use yolofs::config::{Config, Perm};
+use yolofs::config::Config;
+use yolofs::perm::Perm;
 
 // ── Directory read-like ops (stat, readdir, lookup/traversal) are NOT
 // permission-gated — only hidden applies.  Mutations (mkdir, unlink,

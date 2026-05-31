@@ -10,8 +10,8 @@
 // claim the terminal (tcsetpgrp) so our stdin read succeeds, then hand
 // it back to the previous foreground group.
 
-use crate::config::Perm;
 use crate::ioctl::{self, PermRequest};
+use crate::perm::Perm;
 use anyhow::Result;
 use colored::Colorize;
 use nix::sys::signal::{SigHandler, Signal, signal};

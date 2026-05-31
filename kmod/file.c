@@ -28,7 +28,7 @@ static int yolo_check_open_perm(struct yolo_sb_info *sbi,
 				struct file *file, char *buf)
 {
 	(void)buf;
-	return yolo_check_dentry_perm(sbi, dentry, file->f_flags, file->f_mode);
+	return yolo_check_dentry_perm(sbi, dentry, file->f_flags);
 }
 
 /*
@@ -132,7 +132,8 @@ static int yolo_open(struct inode *inode, struct file *file)
 		err = yolo_check_open_perm(sbi, dentry, file, buf);
 		if (err) {
 			if (err == -EACCES)
-				yolo_journal_block(sbi, dentry);
+				yolo_journal_block(sbi, dentry,
+					yolo_open_op(file->f_flags));
 			goto out_free;
 		}
 	}

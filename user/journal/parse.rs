@@ -8,8 +8,9 @@
 //   R\0<dst>\0<src>\n                  — Rename
 //   P\0<gen>\0<name>\n                — Snapshot
 //   T\0<gen>\0<target_gen>\n          — Travel
-//   B\0<path>\n                       — Blocked (permission denied;
-//                                       observational, no state change)
+//   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
+//   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
+//   (op = r/w; decision = a/y/r/d/h — ask/allow/read/deny/hide)
 
 use super::types::*;
 use anyhow::{Context, Result};
@@ -78,9 +79,21 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
                     records.push(Record::Marker(Marker::Travel { gen_id, target_gen }));
                 }
             }
-            b"B" if fields.len() >= 2 => {
+            b"A" if fields.len() >= 4 => {
                 let path = field_str(fields[1]);
-                records.push(Record::Note(Note::Block { path }));
+                let op = fields[2].first().and_then(|&b| Op::from_byte(b));
+                let decision = fields[3]
+                    .first()
+                    .and_then(|&b| crate::perm::Perm::from_letter(b));
+                if let (Some(op), Some(decision)) = (op, decision) {
+                    records.push(Record::Note(Note::Ask { path, op, decision }));
+                }
+            }
+            b"B" if fields.len() >= 3 => {
+                let path = field_str(fields[1]);
+                if let Some(op) = fields[2].first().and_then(|&b| Op::from_byte(b)) {
+                    records.push(Record::Note(Note::Block { path, op }));
+                }
             }
             _ => {}
         }
@@ -204,22 +217,34 @@ mod tests {
         assert!(matches!(&records[0], Record::Action(Action::Delete { path }) if path == "/foo"));
     }
 
-    // ── Block (B) record tests ─────────────────────────────────────────
+    // ── Note (A/B) record tests ────────────────────────────────────────
 
     #[test]
-    fn parse_block_record() {
-        let records = parse(b"B\0/etc/passwd\n").unwrap();
+    fn parse_ask_record() {
+        // A\0<path>\0<op>\0<decision>  (op = r = read, decision = d = deny)
+        let records = parse(b"A\0/etc/hosts\0r\0d\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(matches!(
             &records[0],
-            Record::Note(Note::Block { path }) if path == "/etc/passwd"
+            Record::Note(Note::Ask { path, op: Op::Read, decision: crate::perm::Perm::Deny }) if path == "/etc/hosts"
+        ));
+    }
+
+    #[test]
+    fn parse_block_record() {
+        // B\0<path>\0<op>  (op = w = write)
+        let records = parse(b"B\0/etc/passwd\0w\n").unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(matches!(
+            &records[0],
+            Record::Note(Note::Block { path, op: Op::Write }) if path == "/etc/passwd"
         ));
     }
 
     #[test]
     fn parse_block_interleaved_with_actions() {
         // B records ride alongside S/D/R within a segment.
-        let records = parse(b"S\0/a\01\nB\0/etc/passwd\nD\0/a\n").unwrap();
+        let records = parse(b"S\0/a\01\nB\0/etc/passwd\0w\nD\0/a\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(matches!(
             &records[0],
@@ -227,7 +252,7 @@ mod tests {
         ));
         assert!(matches!(
             &records[1],
-            Record::Note(Note::Block { path }) if path == "/etc/passwd"
+            Record::Note(Note::Block { path, op: Op::Write }) if path == "/etc/passwd"
         ));
         assert!(matches!(
             &records[2],

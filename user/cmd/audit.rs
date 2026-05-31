@@ -75,7 +75,7 @@ fn action_matches_path(action: &journal::Action, filter: &str) -> bool {
 
 fn note_matches_path(note: &journal::Note, filter: &str) -> bool {
     match note {
-        journal::Note::Block { path } => path == filter,
+        journal::Note::Ask { path, .. } | journal::Note::Block { path, .. } => path == filter,
     }
 }
 
@@ -112,8 +112,17 @@ fn format_action(action: &journal::Action) -> String {
 
 fn format_note(note: &journal::Note) -> String {
     match note {
-        journal::Note::Block { path } => {
-            format!("{:10} {}", "blocked".yellow(), path)
+        journal::Note::Ask { path, op, decision } => {
+            format!(
+                "{:10} {:5} {} → {}",
+                "ask".yellow(),
+                op.label(),
+                path,
+                decision
+            )
+        }
+        journal::Note::Block { path, op } => {
+            format!("{:10} {:5} {}", "blocked".yellow(), op.label(), path)
         }
     }
 }
@@ -121,7 +130,7 @@ fn format_note(note: &journal::Note) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{Action, Marker, Note};
+    use crate::journal::{Action, Marker, Note, Op};
 
     /// Strip ANSI escape codes for assertion matching.
     fn strip_ansi(s: &str) -> String {
@@ -194,6 +203,7 @@ mod tests {
     fn format_blocked() {
         let note = Note::Block {
             path: "/etc/passwd".into(),
+            op: Op::Write,
         };
         let s = strip_ansi(&format_note(&note));
         assert!(s.contains("blocked"), "should say blocked: {s}");
@@ -204,6 +214,7 @@ mod tests {
     fn note_path_filter_matches() {
         let note = Note::Block {
             path: "/etc/passwd".into(),
+            op: Op::Write,
         };
         assert!(note_matches_path(&note, "/etc/passwd"));
         assert!(!note_matches_path(&note, "/etc/shadow"));
