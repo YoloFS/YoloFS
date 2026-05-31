@@ -4,7 +4,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
 use yolofs::cmd::{
-    abort, audit, checkpoint, commit, diff, exec, load, mount, restore, timeline, watch,
+    abort, audit, checkpoint, commit, diff, exec, init, load, mount, restore, timeline, watch,
 };
 use yolofs::config;
 
@@ -34,8 +34,13 @@ enum Command {
     Unload,
     /// Unload then reload the kernel module
     Reload,
-    /// Create yolofs.toml with default config
-    Init,
+    /// Create yolofs.toml and scaffold agent hook templates
+    Init {
+        /// Agent hooks to scaffold (e.g. `--agents claude gemini`). Repeatable.
+        /// Omit to scaffold every supported agent.
+        #[arg(long = "agents", num_args = 1.., ignore_case = true)]
+        agents: Vec<init::AgentChoice>,
+    },
     /// Create .yolofs/ layout and mount the filesystem
     Mount,
     /// Unmount and clean up the session
@@ -160,7 +165,7 @@ fn run_cli() -> anyhow::Result<u8> {
         }
         Some(Command::Unload) => load::unload()?,
         Some(Command::Reload) => load::reload()?,
-        Some(Command::Init) => config::init(&std::env::current_dir()?)?,
+        Some(Command::Init { agents }) => init::run(&std::env::current_dir()?, &agents)?,
         Some(Command::Mount) => mount::mount()?,
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,

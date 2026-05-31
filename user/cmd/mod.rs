@@ -4,6 +4,7 @@ pub mod checkpoint;
 pub mod commit;
 pub mod diff;
 pub mod exec;
+pub mod init;
 pub mod load;
 pub mod mount;
 pub mod restore;

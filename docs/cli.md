@@ -9,11 +9,19 @@ For protocol and restore/checkpoint details, see `docs/architecture.md` and
 **Setup**
 
 ```bash
-$ yolo init              # create a default yolofs.toml in the current directory
+$ yolo init              # create yolofs.toml + hooks for every supported agent
+$ yolo init --agents claude gemini   # scaffold only the named agent hooks
 $ yolo load              # load the kernel module
 $ yolo unload            # unmount all sessions and unload the kernel module
 $ yolo reload            # unload then reload the kernel module
 ```
+
+`yolo init` always writes a default `yolofs.toml` (skipped if one exists) and can
+scaffold pre-tool-use hook templates that wrap an agent's shell commands in the
+sandbox. Supported agents: `claude` (`.claude/`), `gemini` (`.gemini/`),
+`copilot` (`.github/hooks/`). Bare `yolo init` scaffolds all of them; pass
+`--agents <name>...` (repeatable) to scaffold only specific ones. Existing hook
+files are never overwritten.
 
 **Full workflow** — mount, watch, exec, diff, and prompt to commit/abort in one command:
 

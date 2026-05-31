@@ -69,6 +69,11 @@ fn default_true() -> bool {
     true
 }
 
+/// The built-in default config, single source of truth. `yolo init` writes
+/// this verbatim (comments and all) and `Config::default()` parses it, so the
+/// two never drift. Lives at the repo root so it doubles as the example file.
+pub const DEFAULT_CONFIG: &str = include_str!("../yolofs.toml");
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_true")]
@@ -87,24 +92,10 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let rules = BTreeMap::from([
-            ("/usr".into(), Perm::Ro),
-            ("/lib".into(), Perm::Ro),
-            ("/lib64".into(), Perm::Ro),
-            ("/etc".into(), Perm::Ro),
-            ("/bin".into(), Perm::Ro),
-            ("/sbin".into(), Perm::Ro),
-            ("$HOME/.local".into(), Perm::Ro),
-            ("$HOME/.claude.json".into(), Perm::Ro),
-        ]);
-        Config {
-            ask_default: Some(Perm::Deny),
-            permission: true,
-            staging: true,
-            ask_timeout: None,
-            checkpoint: true,
-            rules,
-        }
+        // Parse the embedded template so code and `yolo init` share one source.
+        // The template ships with the binary, so a parse failure is a build-time
+        // bug caught by `config_default_parses` below, never a runtime surprise.
+        toml::from_str(DEFAULT_CONFIG).expect("built-in DEFAULT_CONFIG must be valid TOML")
     }
 }
 
@@ -192,18 +183,6 @@ pub fn load_config() -> Config {
         Err(_) => return Config::default(),
     };
     Config::load(&cp).unwrap_or_default()
-}
-
-/// Create yolofs.toml with default config if it doesn't exist.
-pub fn init(dir: &Path) -> Result<()> {
-    let cp = dir.join("yolofs.toml");
-    if cp.exists() {
-        eprintln!("{}", "yolofs.toml already exists".yellow());
-    } else {
-        Config::default().save(&cp)?;
-        eprintln!("{} {}", "created".green().bold(), cp.display());
-    }
-    Ok(())
 }
 
 /// Read [rules] from yolofs.toml and apply via ioctl. Called during mount.
@@ -402,6 +381,14 @@ mod tests {
     }
 
     #[test]
+    fn config_default_parses() {
+        // Guards the `.expect()` in `Default`: the shipped template must be
+        // valid TOML, and what `yolo init` writes must round-trip to the default.
+        let parsed: Config = toml::from_str(DEFAULT_CONFIG).expect("template is valid");
+        assert_eq!(parsed.rules.len(), Config::default().rules.len());
+    }
+
+    #[test]
     fn config_save_load_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("yolofs.toml");
@@ -526,35 +513,5 @@ mod tests {
         let path = tmp.path().join("yolofs.toml");
         fs::write(&path, "[rules]\n\"/tmp\" = \"bogus\"\n").unwrap();
         assert!(Config::load(&path).is_err());
-    }
-
-    #[test]
-    fn init_creates_config() {
-        let tmp = tempfile::tempdir().unwrap();
-        super::init(tmp.path()).unwrap();
-
-        let path = tmp.path().join("yolofs.toml");
-        assert!(path.exists(), "yolofs.toml should be created");
-        let config = Config::load(&path).unwrap();
-        assert!(
-            config.permission,
-            "default config should have permission=true"
-        );
-        assert!(config.staging, "default config should have staging=true");
-    }
-
-    #[test]
-    fn init_does_not_overwrite() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("yolofs.toml");
-        fs::write(&path, "permission = false\nstaging = false\n").unwrap();
-
-        super::init(tmp.path()).unwrap();
-
-        let config = Config::load(&path).unwrap();
-        assert!(
-            !config.permission,
-            "init should not overwrite existing config"
-        );
     }
 }
