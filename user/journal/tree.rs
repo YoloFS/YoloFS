@@ -413,11 +413,7 @@ mod tests {
     fn build(actions: &[Action]) -> DirTree {
         DirTree::build(std::iter::once(Segment {
             from: 0,
-            records: actions
-                .iter()
-                .cloned()
-                .map(Record::Action)
-                .collect(),
+            records: actions.iter().cloned().map(Record::Action).collect(),
         }))
     }
 

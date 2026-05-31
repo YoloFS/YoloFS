@@ -207,7 +207,9 @@ mod tests {
         assert_eq!(j.segments.len(), 6);
         assert_eq!(j.segments[4].from, 2);
         assert_eq!(j.segments[4].records.len(), 1);
-        assert!(matches!(&j.segments[4].records[0], Record::Action(Action::Stage { path, .. }) if path == "/d"));
+        assert!(
+            matches!(&j.segments[4].records[0], Record::Action(Action::Stage { path, .. }) if path == "/d")
+        );
     }
 
     #[test]
@@ -238,7 +240,9 @@ mod tests {
             matches!(&j.segments[0].records[0], Record::Action(Action::Stage { path, .. }) if path == "/orphan")
         );
         assert_eq!(j.segments[1].records.len(), 1);
-        assert!(matches!(&j.segments[1].records[0], Record::Action(Action::Stage { path, .. }) if path == "/a"));
+        assert!(
+            matches!(&j.segments[1].records[0], Record::Action(Action::Stage { path, .. }) if path == "/a")
+        );
     }
 
     #[test]
@@ -758,7 +762,9 @@ mod tests {
             .collect();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].from, 2);
-        assert!(matches!(&live[0].records[0], Record::Action(Action::Stage { path, .. }) if path == "/b"));
+        assert!(
+            matches!(&live[0].records[0], Record::Action(Action::Stage { path, .. }) if path == "/b")
+        );
     }
 
     #[test]
