@@ -44,9 +44,14 @@ the journal/blobs but can't corrupt staging.
 
 - Bare `yolo` (no `--`, interactive) launches **bash** (hardcoded; today it's
   `sh`, which has no post-command hook).
-- Set `PROMPT_COMMAND` so that, after each command, it runs
-  `yolo snapshot --if-changed "<cmd>"` then `yolo status`, preserving `$?`
-  (`__rc=$?; …; (exit $__rc)`); name the snapshot from `fc -ln -1`.
+- Set `PROMPT_COMMAND` to a bootstrap that installs a precmd **function** plus a
+  `DEBUG` trap which records each command's `$BASH_COMMAND` at run time. The
+  function snapshots it (`--if-changed`, named after the command) then runs
+  `yolo status`, preserving `$?` via `return`. Using a function matters: bash
+  doesn't fire the `DEBUG` trap inside functions, so the trap captures only the
+  user's top-level command — never the hook's own commands. The trap also
+  ignores the `__yolo_precmd` invocation itself. (History/`fc` was tried first
+  but lags by one command in `PROMPT_COMMAND`, even on a real tty.)
 - `yolo -- <cmd>` and `yolo exec -- <cmd>` are unchanged (single command).
 - zsh/fish hooks (via a future `yolo shell-init <shell>`) are out of scope here.
 

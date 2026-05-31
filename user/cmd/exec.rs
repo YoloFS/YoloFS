@@ -14,6 +14,19 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process;
 
+/// bash `PROMPT_COMMAND` bootstrap for the interactive shell. A DEBUG trap
+/// records each command (`$BASH_COMMAND`, captured at run time — reliable,
+/// unlike history/`fc`), and a precmd *function* snapshots it (only if
+/// something changed) and shows status after it finishes. Because bash doesn't
+/// fire the DEBUG trap inside functions (no `functrace`), the trap never
+/// captures the hook's own commands — so no flag juggling is needed. `$?` is
+/// saved and restored so the hook doesn't clobber the command's exit status.
+/// This runs once on the first prompt, then replaces itself with the function.
+const PER_COMMAND_HOOK: &str = "\
+__yolo_precmd() { local rc=$?; [ -n \"$__yl\" ] && yolo snapshot --if-changed \"$__yl\"; __yl=; yolo status; return $rc; }; \
+trap '[ \"$BASH_COMMAND\" = __yolo_precmd ] || __yl=$BASH_COMMAND' DEBUG; \
+PROMPT_COMMAND=__yolo_precmd";
+
 /// Pre-exec hook: chroot into mnt, chdir back to the original cwd, then
 /// permanently drop root privileges to the invoking user's real uid/gid.
 /// Called after fork but before exec, so it only affects the child.
@@ -57,19 +70,26 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         bail!("mount point .yolofs/mnt/ does not exist — run `yolo mount` first");
     }
 
-    let default_shell = "sh".to_string();
-
-    let (cmd, args) = if exec_args.is_empty() {
+    // Interactive shell → bash, so the per-command hook below can run (sh has
+    // no PROMPT_COMMAND). A one-off command runs exactly as given.
+    let interactive = exec_args.is_empty();
+    let (cmd, args) = if interactive {
         eprintln!("{}", "yolo: entering yolofs (exit to return)".cyan());
-        (default_shell.clone(), vec![])
+        ("bash".to_string(), vec![])
     } else {
         (exec_args[0].clone(), exec_args[1..].to_vec())
     };
 
+    let mut command = process::Command::new(&cmd);
+    command
+        .args(&args)
+        .env("YOLO_SESSION", yolo_dir.to_string_lossy().as_ref());
+    if interactive {
+        command.env("PROMPT_COMMAND", PER_COMMAND_HOOK);
+    }
+
     let status = unsafe {
-        process::Command::new(&cmd)
-            .args(&args)
-            .env("YOLO_SESSION", yolo_dir.to_string_lossy().as_ref())
+        command
             .pre_exec(move || chroot_pre_exec(&mnt, &cwd))
             .status()
             .with_context(|| format!("spawning {cmd}"))?
@@ -83,8 +103,8 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
     // Snapshot after the command so the snapshot captures what the command did.
     // Skip if the command produced no staged changes to avoid empty snapshots.
     if config::load_config().snapshot {
-        let cmd_desc = if exec_args.is_empty() {
-            default_shell.clone()
+        let cmd_desc = if interactive {
+            cmd.clone()
         } else {
             exec_args.join(" ")
         };
