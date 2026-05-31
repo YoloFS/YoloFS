@@ -189,9 +189,17 @@ pub fn mount() -> Result<()> {
     setup_yolo_dir(&yolo_dir)?;
     super::load::load()?;
     do_mount(&yolo_dir)?;
-    bind_mount_pseudofs(&mnt)?;
-    create_cwd_symlink(&yolo_dir, &cwd)?;
-    crate::config::apply_rules(&yolo_dir)?;
+
+    // Everything below runs against a live mount. If any step fails, roll the
+    // mount back — yolofs stacks over /, so a dangling mount makes ordinary
+    // tools (cp, rm) walk the entire rootfs.
+    let finish = bind_mount_pseudofs(&mnt)
+        .and_then(|()| create_cwd_symlink(&yolo_dir, &cwd))
+        .and_then(|()| crate::config::apply_rules(&yolo_dir));
+    if let Err(e) = finish {
+        let _ = unmount_at(&yolo_dir);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -307,7 +315,14 @@ pub fn setup_yolo_dir(yolo_dir: &Path) -> Result<()> {
                         e,
                     );
                 } else {
-                    return Err(e).with_context(|| format!("chown {}", path.display()));
+                    return Err(e).with_context(|| {
+                        format!(
+                            "chown {} failed and it isn't writable by you — yolofs drops to \
+                             your uid after mounting and must own its storage, which this \
+                             filesystem (e.g. 9p / virtio-fs without uid mapping) doesn't allow",
+                            path.display()
+                        )
+                    });
                 }
             }
         }
