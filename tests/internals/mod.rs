@@ -1,7 +1,6 @@
 mod helpers;
 
 mod test_cancel;
-mod test_checkpoint;
 mod test_commit_abort;
 mod test_consistency;
 mod test_create;
@@ -14,6 +13,7 @@ mod test_mkdir;
 mod test_ownership;
 mod test_rename;
 mod test_resolution;
-mod test_restore;
+mod test_snapshot;
 mod test_symlink;
+mod test_travel;
 mod test_write;

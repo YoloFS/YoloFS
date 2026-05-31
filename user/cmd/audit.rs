@@ -88,7 +88,7 @@ fn format_meta(meta: &journal::Meta) -> String {
             gen_id, target_gen, ..
         } => {
             format!(
-                "{} restored to [{}]",
+                "{} traveled to [{}]",
                 format!("[{gen_id}]").yellow().bold(),
                 target_gen,
             )
@@ -142,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn format_checkpoint() {
+    fn format_snapshot() {
         let meta = Meta::Mark {
             gen_id: 3,
             name: "build".into(),
@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn format_restore() {
+    fn format_travel() {
         let meta = Meta::Jump {
             gen_id: 5,
             target_gen: 2,
@@ -161,7 +161,7 @@ mod tests {
         let s = strip_ansi(&format_meta(&meta));
         assert!(s.contains("[5]"), "should contain gen_id: {s}");
         assert!(
-            s.contains("restored to [2]"),
+            s.contains("traveled to [2]"),
             "should reference target: {s}"
         );
     }

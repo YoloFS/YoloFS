@@ -181,11 +181,11 @@ fn run(
                 Meta::Mark { gen_id, name } => (*gen_id, name.clone()),
                 Meta::Jump {
                     gen_id, target_gen, ..
-                } => (*gen_id, format!("restored to [{target_gen}]")),
+                } => (*gen_id, format!("traveled to [{target_gen}]")),
             })
         })
         .collect();
-    let has_checkpoints = labels.iter().any(|c| c.is_some());
+    let has_snapshots = labels.iter().any(|c| c.is_some());
 
     let mut total = 0usize;
     let mut base_exists_cache = std::collections::HashMap::new();
@@ -207,7 +207,7 @@ fn run(
             None => tree.len(),
         };
 
-        if has_checkpoints {
+        if has_snapshots {
             if count == 0 && path.is_some() {
                 continue;
             }
@@ -224,7 +224,7 @@ fn run(
         });
         total += count;
 
-        if has_checkpoints {
+        if has_snapshots {
             print_segment_footer(&label);
         }
     }
@@ -254,10 +254,10 @@ fn print_total(n: usize) {
 /// Human-readable label for the query range (empty string when no filter).
 fn range_label(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> String {
     match (at, from, to) {
-        (Some(name), _, _) => format!(" at checkpoint \"{name}\""),
+        (Some(name), _, _) => format!(" at snapshot \"{name}\""),
         (_, Some(f), Some(t)) => format!(" between \"{f}\" and \"{t}\""),
-        (_, Some(f), None) => format!(" since checkpoint \"{f}\""),
-        (_, None, Some(t)) => format!(" up to checkpoint \"{t}\""),
+        (_, Some(f), None) => format!(" since snapshot \"{f}\""),
+        (_, None, Some(t)) => format!(" up to snapshot \"{t}\""),
         _ => " staged".into(),
     }
 }
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn range_label_at() {
-        assert_eq!(range_label(Some("s1"), None, None), " at checkpoint \"s1\"");
+        assert_eq!(range_label(Some("s1"), None, None), " at snapshot \"s1\"");
     }
 
     #[test]
@@ -407,7 +407,7 @@ mod tests {
     fn range_label_from_only() {
         assert_eq!(
             range_label(None, Some("s1"), None),
-            " since checkpoint \"s1\""
+            " since snapshot \"s1\""
         );
     }
 
@@ -415,7 +415,7 @@ mod tests {
     fn range_label_to_only() {
         assert_eq!(
             range_label(None, None, Some("s2")),
-            " up to checkpoint \"s2\""
+            " up to snapshot \"s2\""
         );
     }
 

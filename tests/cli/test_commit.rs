@@ -549,38 +549,38 @@ fn commit_preserves_directory_mode() {
     );
 }
 
-/// Commit after restore should only apply live changes (checkpoint state),
+/// Commit after travel should only apply live changes (snapshot state),
 /// excluding dead-zone mutations.
 #[test]
-fn commit_after_restore_excludes_dead_zone() {
+fn commit_after_travel_excludes_dead_zone() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "wanted\n").unwrap();
     fs::write(s.mnt_path("keep.txt"), "keep\n").unwrap();
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
-    // Post-checkpoint changes (will be in dead zone after restore)
+    // Post-snapshot changes (will be in dead zone after travel)
     fs::write(s.mnt_path("hello.txt"), "unwanted\n").unwrap();
     fs::write(s.mnt_path("dead.txt"), "dead\n").unwrap();
     fs::remove_file(s.mnt_path("keep.txt")).unwrap();
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
     s.cli(&["commit"]).expect("commit");
 
-    // Base should have checkpoint state, not post-checkpoint mutations
+    // Base should have snapshot state, not post-snapshot mutations
     assert_eq!(
         fs::read_to_string(s.base_path("hello.txt")).unwrap(),
         "wanted\n",
-        "base should have checkpoint content"
+        "base should have snapshot content"
     );
     assert_eq!(
         fs::read_to_string(s.base_path("keep.txt")).unwrap(),
         "keep\n",
-        "deleted-after-checkpoint file should be in base"
+        "deleted-after-snapshot file should be in base"
     );
     assert!(
         !s.base_path("dead.txt").exists(),
-        "post-checkpoint file should NOT be in base"
+        "post-snapshot file should NOT be in base"
     );
 }
 

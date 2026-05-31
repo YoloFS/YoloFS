@@ -63,25 +63,25 @@ fn status_renamed() {
     assert!(output.contains("moved.txt"), "output: {output}");
 }
 
-/// After restore, status should only show checkpoint-state changes,
-/// not post-checkpoint mutations (which are in the dead zone).
+/// After travel, status should only show snapshot-state changes,
+/// not post-snapshot mutations (which are in the dead zone).
 #[test]
-fn status_after_restore_excludes_dead_zone() {
+fn status_after_travel_excludes_dead_zone() {
     let s = YoloSession::new().expect("session setup");
 
-    // Modify before checkpoint
+    // Modify before snapshot
     fs::write(s.mnt_path("hello.txt"), "wanted\n").unwrap();
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
-    // Create a new file after checkpoint (dead zone after restore)
+    // Create a new file after snapshot (dead zone after travel)
     fs::write(s.mnt_path("post_chk.txt"), "dead\n").unwrap();
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let output = s.cli(&["status"]).expect("status");
     assert!(
         output.contains("hello.txt"),
-        "checkpoint change should appear: {output}"
+        "snapshot change should appear: {output}"
     );
     assert!(
         !output.contains("post_chk.txt"),
@@ -89,19 +89,19 @@ fn status_after_restore_excludes_dead_zone() {
     );
 }
 
-/// Status with --at targeting a checkpoint before a restore
-/// should show only changes at that checkpoint.
+/// Status with --at targeting a snapshot before a travel
+/// should show only changes at that snapshot.
 #[test]
-fn status_at_checkpoint_after_restore() {
+fn status_at_snapshot_after_travel() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint 1");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot 1");
 
     fs::write(s.mnt_path("extra.txt"), "extra\n").unwrap();
-    s.cli(&["checkpoint", "chk2"]).expect("checkpoint 2");
+    s.cli(&["snapshot", "chk2"]).expect("snapshot 2");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let output = s.cli(&["status", "--at", "chk1"]).expect("status --at");
     assert!(

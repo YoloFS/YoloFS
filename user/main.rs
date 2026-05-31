@@ -4,7 +4,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
 use yolofs::cmd::{
-    abort, audit, checkpoint, commit, diff, exec, init, load, mount, restore, timeline, watch,
+    abort, audit, commit, diff, exec, init, load, mount, snapshot, timeline, travel, watch,
 };
 use yolofs::config;
 
@@ -63,25 +63,25 @@ enum Command {
     },
     /// Show staged changes
     Status {
-        /// Show state at a named checkpoint (single segment)
+        /// Show state at a named snapshot (single segment)
         #[arg(long)]
         at: Option<String>,
-        /// Start from a named checkpoint (inclusive)
+        /// Start from a named snapshot (inclusive)
         #[arg(long, conflicts_with = "at")]
         from: Option<String>,
-        /// End at a named checkpoint (inclusive)
+        /// End at a named snapshot (inclusive)
         #[arg(long, conflicts_with = "at")]
         to: Option<String>,
     },
     /// Git-style diff of staged vs base
     Diff {
-        /// Diff a single checkpoint segment
+        /// Diff a single snapshot segment
         #[arg(long)]
         at: Option<String>,
-        /// Diff changes since a named checkpoint
+        /// Diff changes since a named snapshot
         #[arg(long, conflicts_with = "at")]
         from: Option<String>,
-        /// Diff changes up to a named checkpoint
+        /// Diff changes up to a named snapshot
         #[arg(long, conflicts_with = "at")]
         to: Option<String>,
         /// Show diff for a single file
@@ -95,17 +95,17 @@ enum Command {
         #[arg(long, short)]
         force: bool,
     },
-    /// Create a checkpoint
-    Checkpoint {
-        /// Checkpoint name (defaults to timestamp)
+    /// Create a snapshot
+    Snapshot {
+        /// Snapshot name (defaults to timestamp)
         name: Option<String>,
     },
-    /// Restore to a previous checkpoint
-    Restore {
-        /// Checkpoint name or numeric ID
+    /// Travel to a previous snapshot
+    Travel {
+        /// Snapshot name or numeric ID
         name: String,
     },
-    /// Show checkpoint/restore timeline (unreachable branches dimmed)
+    /// Show snapshot/travel timeline (unreachable branches dimmed)
     Timeline,
     /// Show full session history (every operation, dead branches dimmed)
     Audit {
@@ -183,10 +183,10 @@ fn run_cli() -> anyhow::Result<u8> {
         }
         Some(Command::Commit) => commit::run()?,
         Some(Command::Abort { force }) => abort::run(force)?,
-        Some(Command::Checkpoint { name }) => {
-            checkpoint::create(name.as_deref())?;
+        Some(Command::Snapshot { name }) => {
+            snapshot::create(name.as_deref())?;
         }
-        Some(Command::Restore { name }) => restore::run(&name)?,
+        Some(Command::Travel { name }) => travel::run(&name)?,
         Some(Command::Timeline) => timeline::run()?,
         Some(Command::Audit { path }) => audit::run(path.as_deref())?,
         Some(Command::Rule { action }) => match action {

@@ -178,8 +178,8 @@ $ yolo commit
    -> kernel: release staged dentries, invalidate dentry + inode caches
    -> umount .yolofs/mnt
 
-# 8. Restore to a previous meta (appends J record, no truncation)
-$ yolo restore "after make build"
+# 8. Travel to a previous meta (appends J record, no truncation)
+$ yolo travel "after make build"
    -> CLI: Journal → find_meta → live_segments_at_name → build tree → serialize tree
    -> CLI: ioctl(YOLO_IOC_JUMP, { target_gen=2, tree_buf })
    -> kernel: release staged dentries, inject VFS dentries from tree, increment gen to 4,
@@ -195,7 +195,7 @@ yolofs/
 ├── README.md
 ├── docs/                      # Design documentation
 │   ├── architecture.md        # This file
-│   ├── staging.md             # Staging, restore, and VFS/ioctl behavior
+│   ├── staging.md             # Staging, travel, and VFS/ioctl behavior
 │   ├── permissions.md         # Permission gating layer
 │   └── cli.md                 # CLI reference
 ├── kmod/                      # Kernel module
@@ -220,14 +220,14 @@ yolofs/
 │   ├── cmd/                   # CLI subcommand implementations
 │   │   ├── abort.rs
 │   │   ├── audit.rs           # `yolo audit` command (raw record display, --path filter)
-│   │   ├── checkpoint.rs      # `yolo checkpoint` (create only)
+│   │   ├── snapshot.rs      # `yolo snapshot` (create only)
 │   │   ├── commit.rs
 │   │   ├── diff.rs            # `yolo status` + `yolo diff` (summary and verbose views)
 │   │   ├── exec.rs
 │   │   ├── load.rs            # `yolo load/unload/reload` -- kernel module management
 │   │   ├── mount.rs           # mount, unmount, remount (auto-loads kmod, prompts on staged changes)
-│   │   ├── restore.rs         # `yolo restore` -- restore to a previous checkpoint
-│   │   ├── timeline.rs        # `yolo timeline` command (checkpoint/restore DAG)
+│   │   ├── travel.rs         # `yolo travel` -- travel to a previous snapshot
+│   │   ├── timeline.rs        # `yolo timeline` command (snapshot/travel DAG)
 │   │   └── watch.rs           # permission prompt daemon (handles TTY ownership)
 │   ├── journal/               # journal parsing, timeline, and resolution
 │   │   ├── types.rs           # Action, Meta, Record, Segment

@@ -30,17 +30,17 @@ fn abort_when_nothing_staged() {
     assert!(output.contains("Nothing to discard"), "output: {output}");
 }
 
-/// Abort after restore discards all staging (including restored state).
+/// Abort after travel discards all staging (including traveled state).
 #[test]
-fn abort_after_restore_discards_all() {
+fn abort_after_travel_discards_all() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").unwrap();
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("hello.txt"), "v2\n").unwrap();
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     // Verify we're at chk1 state
     assert_eq!(fs::read_to_string(s.mnt_path("hello.txt")).unwrap(), "v1\n");

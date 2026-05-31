@@ -161,34 +161,34 @@ fn run_multiple_commands_sequentially() {
     assert_eq!(code2, 0, "second command should see first command's output");
 }
 
-/// Auto-checkpoint is skipped when the exec command produces no changes.
+/// Auto-snapshot is skipped when the exec command produces no changes.
 #[test]
-fn run_no_changes_skips_checkpoint() {
+fn run_no_changes_skips_snapshot() {
     let session = YoloSession::new().expect("session setup");
 
     let before = session.cli(&["timeline"]).expect("timeline before");
-    let before_count = before.matches("checkpoint").count();
+    let before_count = before.matches("snapshot").count();
 
     // Run a read-only command — no staged changes
     let code = session.run_in_sandbox(&["true"]).unwrap();
     assert_eq!(code, 0);
 
     let after = session.cli(&["timeline"]).expect("timeline after");
-    let after_count = after.matches("checkpoint").count();
+    let after_count = after.matches("snapshot").count();
 
     assert_eq!(
         before_count, after_count,
-        "no-op exec should not create a checkpoint.\nbefore:\n{before}\nafter:\n{after}"
+        "no-op exec should not create a snapshot.\nbefore:\n{before}\nafter:\n{after}"
     );
 }
 
-/// Auto-checkpoint is created when the exec command makes changes.
+/// Auto-snapshot is created when the exec command makes changes.
 #[test]
-fn run_with_changes_creates_checkpoint() {
+fn run_with_changes_creates_snapshot() {
     let session = YoloSession::new().expect("session setup");
 
     let before = session.cli(&["timeline"]).expect("timeline before");
-    let before_count = before.matches("checkpoint [").count();
+    let before_count = before.matches("snapshot [").count();
 
     let target = session.root.join("chk_test.txt");
     let code = session
@@ -197,10 +197,10 @@ fn run_with_changes_creates_checkpoint() {
     assert_eq!(code, 0);
 
     let after = session.cli(&["timeline"]).expect("timeline after");
-    let after_count = after.matches("checkpoint [").count();
+    let after_count = after.matches("snapshot [").count();
 
     assert!(
         after_count == before_count + 1,
-        "exec with changes should create exactly one checkpoint.\nbefore:\n{before}\nafter:\n{after}"
+        "exec with changes should create exactly one snapshot.\nbefore:\n{before}\nafter:\n{after}"
     );
 }

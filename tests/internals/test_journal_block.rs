@@ -155,11 +155,11 @@ fn block_records_do_not_contribute_to_tree() {
     );
 }
 
-/// B records do not set sbi->dirty: an auto-checkpoint (MARK_IF_CHANGED)
+/// B records do not set sbi->dirty: an auto-snapshot (MARK_IF_CHANGED)
 /// must be skipped if only B writes happened since the last meta.
 ///
 /// We check this indirectly via `yolo exec`: a denied-read command produces
-/// only B records, and the kernel's MARK_IF_CHANGED auto-checkpoint should
+/// only B records, and the kernel's MARK_IF_CHANGED auto-snapshot should
 /// be skipped, leaving the journal with no M record.
 #[test]
 fn block_writes_do_not_set_dirty() {
@@ -167,7 +167,7 @@ fn block_writes_do_not_set_dirty() {
     let s = YoloSession::new_with_config(Config {
         ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
-        checkpoint: true,
+        snapshot: true,
         ..Default::default()
     })
     .expect("session setup");
@@ -193,13 +193,13 @@ fn block_writes_do_not_set_dirty() {
     assert_eq!(
         j.metas.len(),
         1,
-        "MARK_IF_CHANGED should skip auto-checkpoint when only B records were written; metas={:?}",
+        "MARK_IF_CHANGED should skip auto-snapshot when only B records were written; metas={:?}",
         j.metas.iter().collect::<Vec<_>>()
     );
 }
 
 /// Inverse of the above: when real mutations occur, dirty IS set and the
-/// auto-checkpoint after `yolo exec` runs. B records in the same session
+/// auto-snapshot after `yolo exec` runs. B records in the same session
 /// must not cancel that out.
 #[test]
 fn mixed_mutations_and_blocks_still_set_dirty() {
@@ -217,7 +217,7 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
     let config = Config {
         permission: true,
         ask_default: Some(Perm::Allow),
-        checkpoint: true,
+        snapshot: true,
         rules,
         ..Default::default()
     };
@@ -253,10 +253,10 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
         !acts.is_empty(),
         "expected at least one S record from /new.txt write"
     );
-    // Auto-checkpoint should fire because dirty was set by the S record.
+    // Auto-snapshot should fire because dirty was set by the S record.
     assert!(
         j.metas.len() >= 2,
-        "expected auto-checkpoint when mutations occur alongside blocks; metas={:?}",
+        "expected auto-snapshot when mutations occur alongside blocks; metas={:?}",
         j.metas.iter().collect::<Vec<_>>()
     );
 }

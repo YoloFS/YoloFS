@@ -62,9 +62,9 @@ fn delete_commit_removes_from_base() {
     );
 }
 
-/// Abort after delete restores the file in the mount view.
+/// Abort after delete travels the file in the mount view.
 #[test]
-fn delete_abort_restores_file() {
+fn delete_abort_travels_file() {
     let s = YoloSession::new().expect("session setup");
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");

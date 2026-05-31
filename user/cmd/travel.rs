@@ -1,6 +1,6 @@
-// yolo CLI — restore.rs
+// yolo CLI — travel.rs
 //
-// `yolo restore <name|id>` — restore to a previous meta.
+// `yolo travel <name|id>` — travel to a previous meta.
 
 use crate::ioctl;
 use crate::journal::{Journal, Meta};
@@ -11,7 +11,7 @@ pub fn run(meta_name: &str) -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
 
     // Search all metas (including dead zones) for the target,
-    // so that undo-restore (restoring to a dead meta) works.
+    // so that undo-travel (traveling to a dead meta) works.
     let journal = Journal::read(&yolofs)?;
     let target_gen = journal.metas.find_meta(meta_name)?;
     let meta = journal.metas.get(target_gen as usize).cloned();
@@ -29,12 +29,12 @@ pub fn run(meta_name: &str) -> Result<()> {
 
     let label = match &meta {
         Some(Meta::Mark { name, .. }) => {
-            format!("checkpoint \"{name}\"")
+            format!("snapshot \"{name}\"")
         }
         Some(Meta::Jump {
             gen_id, target_gen, ..
         }) => {
-            format!("restore [{gen_id}] (restored to [{target_gen}])")
+            format!("travel [{gen_id}] (traveled to [{target_gen}])")
         }
         None => format!("meta [{target_gen}]"),
     };
@@ -42,7 +42,7 @@ pub fn run(meta_name: &str) -> Result<()> {
     println!(
         "{}",
         format!(
-            "Restored to {label} ({count} staged change{}).",
+            "Traveled to {label} ({count} staged change{}).",
             crate::utils::plural(count)
         )
         .green()

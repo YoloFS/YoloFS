@@ -2,9 +2,9 @@ use crate::helpers::YoloSession;
 use std::fs;
 use std::fs::OpenOptions;
 
-/// Checkpoint must fail with EBUSY while a staged file is held open.
+/// Snapshot must fail with EBUSY while a staged file is held open.
 #[test]
-fn checkpoint_rejects_while_staging_fd_open() {
+fn snapshot_rejects_while_staging_fd_open() {
     let s = YoloSession::new().expect("session setup");
 
     // Write creates a staged file (inode store copy).
@@ -16,17 +16,17 @@ fn checkpoint_rejects_while_staging_fd_open() {
         .open(s.mnt_path("hello.txt"))
         .expect("open staged file for write");
 
-    let (ok, _, stderr) = s.cli_output(&["checkpoint", "should-fail"]).unwrap();
-    assert!(!ok, "checkpoint should fail while staging fd is open");
+    let (ok, _, stderr) = s.cli_output(&["snapshot", "should-fail"]).unwrap();
+    assert!(!ok, "snapshot should fail while staging fd is open");
     assert!(
         stderr.contains("Device or resource busy"),
         "should report EBUSY: {stderr}"
     );
 
-    // After closing the fd, checkpoint should succeed.
+    // After closing the fd, snapshot should succeed.
     drop(_fd);
-    s.cli(&["checkpoint", "after-close"])
-        .expect("checkpoint should succeed after fd close");
+    s.cli(&["snapshot", "after-close"])
+        .expect("snapshot should succeed after fd close");
 }
 
 /// Abort must fail with EBUSY while a staged file is held open.
@@ -53,13 +53,13 @@ fn abort_rejects_while_staging_fd_open() {
         .expect("abort should succeed after fd close");
 }
 
-/// Restore must fail with EBUSY while a staged file is held open.
+/// Travel must fail with EBUSY while a staged file is held open.
 #[test]
-fn restore_rejects_while_staging_fd_open() {
+fn travel_rejects_while_staging_fd_open() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    s.cli(&["checkpoint", "v1"]).expect("checkpoint v1");
+    s.cli(&["snapshot", "v1"]).expect("snapshot v1");
 
     // Modify again and hold the fd open.
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
@@ -68,16 +68,16 @@ fn restore_rejects_while_staging_fd_open() {
         .open(s.mnt_path("hello.txt"))
         .expect("open staged file for write");
 
-    let (ok, _, stderr) = s.cli_output(&["restore", "v1"]).unwrap();
-    assert!(!ok, "restore should fail while staging fd is open");
+    let (ok, _, stderr) = s.cli_output(&["travel", "v1"]).unwrap();
+    assert!(!ok, "travel should fail while staging fd is open");
     assert!(
         stderr.contains("Device or resource busy"),
         "should report EBUSY: {stderr}"
     );
 
     drop(_fd);
-    s.cli(&["restore", "v1"])
-        .expect("restore should succeed after fd close");
+    s.cli(&["travel", "v1"])
+        .expect("travel should succeed after fd close");
 }
 
 /// Commit must fail with EBUSY while a staged file is held open.

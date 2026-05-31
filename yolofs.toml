@@ -6,7 +6,7 @@
 
 permission = true     # gate filesystem access through the [rules] below
 staging = true        # stage writes for review instead of applying directly
-checkpoint = true     # allow named checkpoints within a session
+snapshot = true       # allow named snapshots within a session
 ask_default = "deny"  # verdict for an "ask" rule whose prompt times out
 ask_timeout = 30      # seconds to wait on an interactive ask before ask_default
 

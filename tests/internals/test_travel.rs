@@ -4,18 +4,18 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use yolofs::journal::Meta;
 
-// ── Journal state after restore ──────────────────────────────────────────
+// ── Journal state after travel ──────────────────────────────────────────
 
-/// Restore keeps journal records up to and including the mark meta.
+/// Travel keeps journal records up to and including the mark meta.
 #[test]
-fn restore_journal_contains_checkpoint_meta() {
+fn travel_journal_contains_snapshot_meta() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let j = journal(&s);
     let mkrs = metas(&j);
@@ -26,17 +26,17 @@ fn restore_journal_contains_checkpoint_meta() {
     );
 }
 
-/// Restore appends a J record; reachable + resolve excludes post-checkpoint mutations.
+/// Travel appends a J record; reachable + resolve excludes post-snapshot mutations.
 #[test]
-fn restore_journal_has_no_post_checkpoint_records() {
+fn travel_journal_has_no_post_snapshot_records() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
     fs::remove_file(s.mnt_path("a.txt")).expect("rm a");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let j = journal(&s);
     let mkrs = metas(&j);
@@ -47,7 +47,7 @@ fn restore_journal_has_no_post_checkpoint_records() {
         "Jump record should be in journal: {mkrs:?}"
     );
 
-    // reachable + resolve should match the checkpoint state (only a.txt).
+    // reachable + resolve should match the snapshot state (only a.txt).
     let t = j.into_tree();
     let debug = format!("{t:?}");
     assert!(
@@ -60,43 +60,43 @@ fn restore_journal_has_no_post_checkpoint_records() {
     );
 }
 
-// ── Inode store after restore ────────────────────────────────────────────
+// ── Inode store after travel ────────────────────────────────────────────
 
-/// Pre-checkpoint inodes are preserved after restore.
+/// Pre-snapshot inodes are preserved after travel.
 #[test]
-fn restore_keeps_pre_checkpoint_inodes() {
+fn travel_keeps_pre_snapshot_inodes() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     let pre_ino = ino_for(&tree(&s), "/a.txt");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     assert!(
         inode_path(&s, pre_ino).exists(),
-        "pre-checkpoint inode {pre_ino} should still exist on disk"
+        "pre-snapshot inode {pre_ino} should still exist on disk"
     );
     assert_eq!(
         fs::read_to_string(inode_path(&s, pre_ino)).unwrap(),
         "a\n",
-        "pre-checkpoint inode content should be intact"
+        "pre-snapshot inode content should be intact"
     );
 }
 
-/// Post-checkpoint inodes are orphaned but still on disk after restore.
+/// Post-snapshot inodes are orphaned but still on disk after travel.
 #[test]
-fn restore_orphans_post_checkpoint_inodes() {
+fn travel_orphans_post_snapshot_inodes() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
     let post_ino = ino_for(&tree(&s), "/b.txt");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     // Inode file still on disk (orphaned)
     assert!(
@@ -112,16 +112,16 @@ fn restore_orphans_post_checkpoint_inodes() {
     );
 }
 
-/// Abort after restore cleans up all inodes including orphans.
+/// Abort after travel cleans up all inodes including orphans.
 #[test]
 fn abort_after_jump_cleans_orphans() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
     s.cli(&["abort", "--force"]).expect("abort");
 
     assert!(
@@ -130,30 +130,30 @@ fn abort_after_jump_cleans_orphans() {
     );
 }
 
-/// After a restore, newly created files must receive fresh (monotonically
-/// increasing) inode numbers — orphaned post-checkpoint inodes must never
+/// After a travel, newly created files must receive fresh (monotonically
+/// increasing) inode numbers — orphaned post-snapshot inodes must never
 /// be recycled.
 #[test]
-fn restore_new_files_get_fresh_inodes() {
+fn travel_new_files_get_fresh_inodes() {
     let s = YoloSession::new().expect("session setup");
 
-    // Create a file and checkpoint.
+    // Create a file and snapshot.
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
-    // Post-checkpoint: create another file.
+    // Post-snapshot: create another file.
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
     let inos_before = inos(&s);
     let max_ino_before = *inos_before.last().expect("should have inodes");
 
-    // Restore — b.txt's inode becomes orphaned.
-    s.cli(&["restore", "chk1"]).expect("restore");
+    // Travel — b.txt's inode becomes orphaned.
+    s.cli(&["travel", "chk1"]).expect("travel");
 
-    // Create new files after restore.
+    // Create new files after travel.
     fs::write(s.mnt_path("c.txt"), "c\n").expect("write c");
     fs::write(s.mnt_path("d.txt"), "d\n").expect("write d");
 
-    // Identify inodes allocated after restore.
+    // Identify inodes allocated after travel.
     let inos_after = inos(&s);
     let fresh: Vec<u32> = inos_after
         .iter()
@@ -167,7 +167,7 @@ fn restore_new_files_get_fresh_inodes() {
         "expected at least 2 fresh inodes, got {fresh:?}"
     );
 
-    // Every new inode must be strictly greater than any pre-restore inode.
+    // Every new inode must be strictly greater than any pre-travel inode.
     for ino in &fresh {
         assert!(
             *ino > max_ino_before,
@@ -176,24 +176,24 @@ fn restore_new_files_get_fresh_inodes() {
     }
 }
 
-// ── Re-COW behavior after restore ────────────────────────────────────────
+// ── Re-COW behavior after travel ────────────────────────────────────────
 
-/// Writing to a restored file without a new checkpoint reuses the inode.
+/// Writing to a traveled file without a new snapshot reuses the inode.
 #[test]
-fn write_after_jump_without_checkpoint_reuses_inode() {
+fn write_after_jump_without_snapshot_reuses_inode() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2");
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
-    // checkpoint_gen is now set to chk1's gen, and the dirent's
-    // checkpoint_gen matches. So writing should open the inode directly
+    // snapshot_gen is now set to chk1's gen, and the dirent's
+    // snapshot_gen matches. So writing should open the inode directly
     // (truncate in place), not allocate a new one.
     let inos_before = inos(&s);
-    fs::write(s.mnt_path("file.txt"), "v1-modified\n").expect("write after restore");
+    fs::write(s.mnt_path("file.txt"), "v1-modified\n").expect("write after travel");
     let inos_after = inos(&s);
 
     assert_eq!(
@@ -203,17 +203,17 @@ fn write_after_jump_without_checkpoint_reuses_inode() {
     );
 }
 
-/// Writing after restore + new checkpoint triggers re-COW (new inode).
+/// Writing after travel + new snapshot triggers re-COW (new inode).
 #[test]
-fn write_after_jump_and_checkpoint_triggers_recow() {
+fn write_after_jump_and_snapshot_triggers_recow() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
-    s.cli(&["checkpoint", "post-jump"]).expect("new checkpoint");
+    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["snapshot", "post-jump"]).expect("new snapshot");
 
     let inos_before = inos(&s);
     fs::write(s.mnt_path("file.txt"), "v3\n").expect("write triggers re-COW");
@@ -227,19 +227,19 @@ fn write_after_jump_and_checkpoint_triggers_recow() {
     assert_eq!(fs::read_to_string(s.mnt_path("file.txt")).unwrap(), "v3\n");
 }
 
-/// Re-COW after restore preserves the pre-checkpoint inode content.
+/// Re-COW after travel preserves the pre-snapshot inode content.
 #[test]
 fn recow_after_jump_preserves_old_inode() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
     let v1_ino = ino_for(&tree(&s), "/file.txt");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2 (re-COW)");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
-    s.cli(&["checkpoint", "post-jump"]).expect("new checkpoint");
+    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["snapshot", "post-jump"]).expect("new snapshot");
 
     fs::write(s.mnt_path("file.txt"), "v3\n").expect("write v3 (re-COW)");
 
@@ -251,21 +251,21 @@ fn recow_after_jump_preserves_old_inode() {
     );
 }
 
-// ── Resolved state correctness after restore ─────────────────────────────
+// ── Resolved state correctness after travel ─────────────────────────────
 
-/// Resolved dentries after restore exactly match the checkpoint state.
+/// Resolved dentries after travel exactly match the snapshot state.
 #[test]
-fn resolved_changes_match_checkpoint_state() {
+fn resolved_changes_match_snapshot_state() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("c.txt"), "c\n").expect("write c");
     fs::remove_file(s.mnt_path("a.txt")).expect("delete a");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let t = tree(&s);
     assert_eq!(t.len(), 2, "exactly 2 dentries: {t:?}");
@@ -285,11 +285,11 @@ fn resolved_changes_match_checkpoint_state() {
     );
 }
 
-// ── Renamed d_type correctness after restore ─────────────────────────────
+// ── Renamed d_type correctness after travel ─────────────────────────────
 
-/// Renamed directory resolves to a Renamed change after restore.
+/// Renamed directory resolves to a Renamed change after travel.
 #[test]
-fn restore_renamed_directory_in_resolved_changes() {
+fn travel_renamed_directory_in_resolved_changes() {
     let s = YoloSession::new().expect("session setup");
 
     // Create directory in base first via commit
@@ -299,30 +299,30 @@ fn restore_renamed_directory_in_resolved_changes() {
 
     // Now rename the base directory through the mount
     fs::rename(s.mnt_path("old_dir"), s.mnt_path("new_dir")).expect("rename dir");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write post");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let t = tree(&s);
     let debug = format!("{t:?}");
 
-    // The rename should survive restore
+    // The rename should survive travel
     assert!(
         debug.contains("new_dir"),
         "new_dir should be in dentries: {debug}"
     );
     assert!(
         !debug.contains("extra.txt"),
-        "post-checkpoint file should NOT be in dentries: {debug}"
+        "post-snapshot file should NOT be in dentries: {debug}"
     );
 
     // Verify the directory is accessible and d_type is dir via symlink_metadata
     let meta = fs::symlink_metadata(s.mnt_path("new_dir")).expect("lstat new_dir");
     assert!(
         meta.file_type().is_dir(),
-        "new_dir should be a directory after restore"
+        "new_dir should be a directory after travel"
     );
     assert_eq!(
         fs::read_to_string(s.mnt_path("new_dir/inner.txt")).unwrap(),
@@ -330,19 +330,19 @@ fn restore_renamed_directory_in_resolved_changes() {
     );
 }
 
-/// Renamed symlink resolves correctly after restore and inode store is consistent.
+/// Renamed symlink resolves correctly after travel and inode store is consistent.
 #[test]
-fn restore_renamed_symlink_in_resolved_changes() {
+fn travel_renamed_symlink_in_resolved_changes() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("target.txt"), "target\n").expect("write target");
     std::os::unix::fs::symlink("target.txt", s.mnt_path("old_link")).expect("symlink");
     fs::rename(s.mnt_path("old_link"), s.mnt_path("new_link")).expect("rename symlink");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("post.txt"), "post\n").expect("write post");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let t = tree(&s);
     let debug = format!("{t:?}");
@@ -353,14 +353,14 @@ fn restore_renamed_symlink_in_resolved_changes() {
     );
     assert!(
         !debug.contains("post.txt"),
-        "post-checkpoint file should NOT be in dentries: {debug}"
+        "post-snapshot file should NOT be in dentries: {debug}"
     );
 
     // Verify d_type is symlink via lstat through the mount
     let meta = fs::symlink_metadata(s.mnt_path("new_link")).expect("lstat new_link");
     assert!(
         meta.file_type().is_symlink(),
-        "new_link should be a symlink after restore"
+        "new_link should be a symlink after travel"
     );
 
     // Journal should have the mark meta and records up to it
@@ -375,47 +375,47 @@ fn restore_renamed_symlink_in_resolved_changes() {
 
 // ── Journal inode and byte-level invariants ──────────────────────────────
 
-/// The journal file inode must be preserved across restore (set_len, not replace).
+/// The journal file inode must be preserved across travel (set_len, not replace).
 #[test]
-fn restore_preserves_journal_inode() {
+fn travel_preserves_journal_inode() {
     let s = YoloSession::new().expect("session setup");
 
     let journal_path = s.root.join(".yolofs/journal");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
 
     let ino_before = fs::metadata(&journal_path).expect("stat before").ino();
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let ino_after = fs::metadata(&journal_path).expect("stat after").ino();
     assert_eq!(
         ino_before, ino_after,
-        "journal inode must be preserved across restore"
+        "journal inode must be preserved across travel"
     );
 }
 
-/// After restore, the journal grows (J record appended) and original bytes are preserved.
+/// After travel, the journal grows (J record appended) and original bytes are preserved.
 #[test]
-fn restore_journal_is_byte_prefix() {
+fn travel_journal_is_byte_prefix() {
     let s = YoloSession::new().expect("session setup");
 
     let journal_path = s.root.join(".yolofs/journal");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
 
     let bytes_before = fs::read(&journal_path).expect("read before");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let bytes_after = fs::read(&journal_path).expect("read after");
     assert!(
         bytes_after.len() > bytes_before.len(),
-        "journal should grow after restore (J record appended): before={} after={}",
+        "journal should grow after travel (J record appended): before={} after={}",
         bytes_before.len(),
         bytes_after.len()
     );
@@ -434,19 +434,19 @@ fn restore_journal_is_byte_prefix() {
     );
 }
 
-/// The J record written by restore should have a gen_id higher than the
-/// target checkpoint's gen_id (monotonically increasing).
+/// The J record written by travel should have a gen_id higher than the
+/// target snapshot's gen_id (monotonically increasing).
 #[test]
-fn restore_j_record_has_correct_gen() {
+fn travel_j_record_has_correct_gen() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
-    s.cli(&["checkpoint", "chk2"]).expect("checkpoint 2");
+    s.cli(&["snapshot", "chk2"]).expect("snapshot 2");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let j = journal(&s);
     let mkrs = metas(&j);
@@ -474,7 +474,7 @@ fn restore_j_record_has_correct_gen() {
             Meta::Jump { gen_id, target_gen } => Some((*gen_id, *target_gen)),
             _ => None,
         })
-        .expect("restore record should exist");
+        .expect("travel record should exist");
 
     assert_eq!(s_target, chk1_gen, "J record should target chk1");
     assert!(

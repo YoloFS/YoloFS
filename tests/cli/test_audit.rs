@@ -15,36 +15,36 @@ fn audit_shows_added_file() {
     );
 }
 
-/// `yolofs audit` shows checkpoint and restore records.
+/// `yolofs audit` shows snapshot and travel records.
 #[test]
-fn audit_shows_checkpoints_and_restores() {
+fn audit_shows_snapshots_and_travels() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "v2\n").expect("write");
-    s.cli(&["checkpoint", "chk2"]).expect("checkpoint");
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["snapshot", "chk2"]).expect("snapshot");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let output = s.cli(&["audit"]).expect("audit");
     assert!(output.contains("chk1"), "should show chk1: {output}");
     assert!(output.contains("chk2"), "should show chk2: {output}");
     assert!(
-        output.contains("restored to"),
-        "should show restore record: {output}"
+        output.contains("traveled to"),
+        "should show travel record: {output}"
     );
 }
 
-/// `yolofs audit` marks unreachable records with (unreachable) suffix after restore.
+/// `yolofs audit` marks unreachable records with (unreachable) suffix after travel.
 #[test]
-fn audit_dims_unreachable_after_restore() {
+fn audit_dims_unreachable_after_travel() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "v2\n").expect("write");
-    s.cli(&["checkpoint", "chk2"]).expect("checkpoint");
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["snapshot", "chk2"]).expect("snapshot");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let output = s.cli(&["audit"]).expect("audit");
     let unreachable: Vec<&str> = output
@@ -53,7 +53,7 @@ fn audit_dims_unreachable_after_restore() {
         .collect();
     assert!(
         !unreachable.is_empty(),
-        "should have (unreachable) lines after restore: {output}"
+        "should have (unreachable) lines after travel: {output}"
     );
     // The added b.txt record should be unreachable
     let has_unreachable_b = unreachable.iter().any(|l| l.contains("/b.txt"));

@@ -179,7 +179,7 @@ struct yolo_sb_info {
 	/* Inode store shard cache (avoids repeated lookups) */
 	struct dentry		*shard_dentry;	/* cached current shard dir dentry */
 	u32			shard_id;	/* which shard shard_dentry belongs to */
-	atomic_t		gen;		/* bumped on each checkpoint; triggers re-COW */
+	atomic_t		gen;		/* bumped on each snapshot; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
 	bool			dirty;		/* data records written since last M/J */
 

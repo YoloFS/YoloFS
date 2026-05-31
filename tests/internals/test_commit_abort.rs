@@ -6,26 +6,26 @@ use yolofs::journal::{Meta, Record};
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Restore to a checkpoint appends a J record (append-only journal).
+/// Travel to a snapshot appends a J record (append-only journal).
 #[test]
-fn restore_to_checkpoint_appends_jmp_record() {
+fn travel_to_snapshot_appends_jmp_record() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
-    fs::write(s.mnt_path("multi.txt"), "post-chk\n").expect("write after checkpoint");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    fs::write(s.mnt_path("multi.txt"), "post-chk\n").expect("write after snapshot");
 
     let count_before = records(&journal(&s)).len();
 
-    s.cli(&["restore", "s1"]).expect("restore");
+    s.cli(&["travel", "s1"]).expect("travel");
 
     let recs = records(&journal(&s));
 
-    // Restore appends exactly one J record.
+    // Travel appends exactly one J record.
     assert_eq!(
         recs.len(),
         count_before + 1,
-        "restore should append exactly one record: {recs:?}"
+        "travel should append exactly one record: {recs:?}"
     );
     assert!(
         matches!(recs.last(), Some(Record::Meta(Meta::Jump { .. }))),
@@ -35,7 +35,7 @@ fn restore_to_checkpoint_appends_jmp_record() {
     assert!(
         recs.iter()
             .any(|r| matches!(r, Record::Meta(Meta::Mark { name, .. }) if name == "s1")),
-        "s1 checkpoint should be preserved: {recs:?}"
+        "s1 snapshot should be preserved: {recs:?}"
     );
 }
 
@@ -206,30 +206,30 @@ fn abort_preserves_inodes_dir_inode() {
     );
 }
 
-/// Restore to a checkpoint preserves all inodes (orphans cleaned up on commit/abort).
+/// Travel to a snapshot preserves all inodes (orphans cleaned up on commit/abort).
 #[test]
-fn restore_preserves_all_inodes() {
+fn travel_preserves_all_inodes() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "pre-chk\n").expect("write pre");
-    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
     fs::write(s.mnt_path("multi.txt"), "post-chk\n").expect("write post");
 
-    // Grab the post-checkpoint inode id before restore
+    // Grab the post-snapshot inode id before travel
     let ch = tree(&s);
     let post_id = ino_for(&ch, "/multi.txt");
 
-    s.cli(&["restore", "s1"]).expect("restore");
+    s.cli(&["travel", "s1"]).expect("travel");
 
-    // Post-checkpoint inode should still exist on disk (orphaned)
+    // Post-snapshot inode should still exist on disk (orphaned)
     let remaining = inos(&s);
     assert!(
         remaining.contains(&post_id),
-        "post-checkpoint inode should survive restore: remaining={remaining:?}"
+        "post-snapshot inode should survive travel: remaining={remaining:?}"
     );
     assert_eq!(
         fs::read_to_string(inode_path(&s, post_id)).unwrap(),
         "post-chk\n",
-        "post-checkpoint inode content should be intact"
+        "post-snapshot inode content should be intact"
     );
 }

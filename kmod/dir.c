@@ -90,7 +90,7 @@ static int yolo_dir_release(struct inode *inode, struct file *file)
  * Merged readdir: dirents first, then base entries not overridden.
  *
  * The VFS holds inode_lock_shared(dir) for the duration of iterate_shared,
- * so the dirent table is stable — no checkpoint or temporary hash set needed.
+ * so the dirent table is stable — no snapshot or temporary hash set needed.
  * We iterate the dirent table directly for emission and dedup.
  */
 

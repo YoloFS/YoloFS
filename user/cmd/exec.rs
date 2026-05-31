@@ -2,7 +2,7 @@
 //
 // `yolo exec [-- cmd]` — chroot into .yolofs/mnt and exec a command,
 // preserving the caller's working directory.
-// When config.checkpoint=true, a checkpoint is created after the command
+// When config.snapshot=true, a snapshot is created after the command
 // finishes, capturing what the command did.
 
 use crate::config;
@@ -80,9 +80,9 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         eprintln!("{} {}", "yolo: command exited with".red(), code);
     }
 
-    // Checkpoint after the command so the checkpoint captures what the command did.
-    // Skip if the command produced no staged changes to avoid empty checkpoints.
-    if config::load_config().checkpoint {
+    // Snapshot after the command so the snapshot captures what the command did.
+    // Skip if the command produced no staged changes to avoid empty snapshots.
+    if config::load_config().snapshot {
         let cmd_desc = if exec_args.is_empty() {
             default_shell.clone()
         } else {
@@ -90,13 +90,13 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         };
         let chk_name = format!("after {cmd_desc}");
 
-        match auto_checkpoint(&chk_name) {
-            Ok(true) => {} // checkpoint created (message printed by checkpoint::create path)
+        match auto_snapshot(&chk_name) {
+            Ok(true) => {} // snapshot created (message printed by snapshot::create path)
             Ok(false) => {
-                eprintln!("{}", "yolo: no changes, skipping checkpoint".dimmed());
+                eprintln!("{}", "yolo: no changes, skipping snapshot".dimmed());
             }
             Err(e) => {
-                eprintln!("{} {:#}", "yolo: checkpoint failed:".yellow(), e);
+                eprintln!("{} {:#}", "yolo: snapshot failed:".yellow(), e);
             }
         }
     }
@@ -104,8 +104,8 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
     Ok(code)
 }
 
-/// Create a checkpoint only if there are staged changes (kernel-side check).
-fn auto_checkpoint(name: &str) -> Result<bool> {
+/// Create a snapshot only if there are staged changes (kernel-side check).
+fn auto_snapshot(name: &str) -> Result<bool> {
     let yolofs = crate::utils::session_dir()?;
     let ctl_file = ioctl::open(&yolofs).context("opening ctl for mark")?;
     let gen_id = ioctl::mark(&ctl_file, name, ioctl::YOLO_MARK_IF_CHANGED)?;
@@ -114,7 +114,7 @@ fn auto_checkpoint(name: &str) -> Result<bool> {
     }
     eprintln!(
         "{} {}",
-        format!("checkpoint [{gen_id}]").cyan().bold(),
+        format!("snapshot [{gen_id}]").cyan().bold(),
         name.dimmed()
     );
     Ok(true)

@@ -1,7 +1,7 @@
 # CLI Reference
 
 The CLI communicates with the kernel module via ioctls on `.yolofs/mnt/.ctl`.
-For protocol and restore/checkpoint details, see `docs/architecture.md` and
+For protocol and travel/snapshot details, see `docs/architecture.md` and
 `docs/staging.md`.
 
 ## Commands
@@ -36,52 +36,52 @@ $ yolo -- make build     # run a specific command instead of sh
 $ yolo mount             # create .yolofs/ layout and mount (auto-loads kmod if needed)
 $ yolo exec              # chroot $SHELL into .yolofs/mnt (requires existing mount)
 $ yolo exec -- make build
-$ yolo status            # show staged changes (grouped by checkpoint when present)
-$ yolo status --at <name|gen>           # show single checkpoint segment
-$ yolo status --from <name|gen>        # show changes since checkpoint
-$ yolo status --to <name|gen>          # show changes up to checkpoint
-$ yolo status --from <A> --to <B>      # show changes between two checkpoints
-$ yolo diff              # git-style diff of staged vs base (grouped by checkpoint)
+$ yolo status            # show staged changes (grouped by snapshot when present)
+$ yolo status --at <name|gen>           # show single snapshot segment
+$ yolo status --from <name|gen>        # show changes since snapshot
+$ yolo status --to <name|gen>          # show changes up to snapshot
+$ yolo status --from <A> --to <B>      # show changes between two snapshots
+$ yolo diff              # git-style diff of staged vs base (grouped by snapshot)
 $ yolo diff <path>       # diff a single file
-$ yolo diff --at <name|gen>             # diff single checkpoint segment
-$ yolo diff --from <name|gen>          # diff changes since checkpoint
-$ yolo diff --to <name|gen>            # diff changes up to checkpoint
-$ yolo diff --from <A> --to <B>        # diff changes between two checkpoints
-$ yolo diff --from <name|gen> <path>   # diff a single file since checkpoint
+$ yolo diff --at <name|gen>             # diff single snapshot segment
+$ yolo diff --from <name|gen>          # diff changes since snapshot
+$ yolo diff --to <name|gen>            # diff changes up to snapshot
+$ yolo diff --from <A> --to <B>        # diff changes between two snapshots
+$ yolo diff --from <name|gen> <path>   # diff a single file since snapshot
 $ yolo commit            # apply staged changes to base
 $ yolo abort             # discard staged changes (prompts for confirmation)
 $ yolo unmount           # tear down session (prompts if staged changes exist)
 $ yolo remount           # unmount then remount (prompts if staged changes exist)
 ```
 
-**Checkpoints:**
+**Snapshots:**
 
 ```bash
-$ yolo checkpoint              # checkpoint with timestamp as name
-$ yolo checkpoint "my label"   # checkpoint with explicit name
-$ yolo restore <name|gen>      # restore to a previous checkpoint or restore point
-$ yolo timeline                # show checkpoint/restore DAG (unreachable dimmed)
+$ yolo snapshot              # snapshot with timestamp as name
+$ yolo snapshot "my label"   # snapshot with explicit name
+$ yolo travel <name|gen>      # travel to a previous snapshot or travel point
+$ yolo timeline                # show snapshot/travel DAG (unreachable dimmed)
 $ yolo audit                 # show every raw journal record (unreachable dimmed)
 $ yolo audit --path /src/main.rs  # trace operations on a specific file
 ```
 
-The `--at`, `--from`, and `--to` flags accept a checkpoint name or
-generation number (of any type) and only address live checkpoints and restores
-(not unreachable ones created by restores).
+The `--at`, `--from`, and `--to` flags accept a snapshot name or
+generation number (of any type) and only address live snapshots and travels
+(not unreachable ones created by travels).
 
-`yolo timeline` shows the checkpoint/restore DAG with unreachable branches
+`yolo timeline` shows the snapshot/travel DAG with unreachable branches
 dimmed. Example `yolo timeline` output:
 
 ```
-checkpoint [1] after make build
-checkpoint [2] after make test
-restore    [3] restored to [1]
-checkpoint [4] after make fix
+snapshot [1] after make build
+snapshot [2] after make test
+travel    [3] traveled to [1]
+snapshot [4] after make fix
 ```
 
-Restoring to a restore point (`yolo restore 3` above) is valid — any
-gen_id is a valid restore target. Only entries between [3] and the
-new restore become unreachable, preserving earlier history.
+Traveling to an earlier point (`yolo travel 3` above) is valid — any
+gen_id is a valid travel target. Only entries between [3] and the
+new travel become unreachable, preserving earlier history.
 
 **Permission rules and diagnostics:**
 
@@ -101,7 +101,7 @@ Configured via top-level keys in `yolofs.toml`:
 | `ask_default` | `deny` | Fallback when no daemon is connected or on timeout |
 | `permission` | true | Enable permission gating |
 | `staging` | true | Enable staging area |
-| `checkpoint` | true | Auto-checkpoint after each `yolo exec` invocation (skipped when no changes) |
+| `snapshot` | true | Auto-snapshot after each `yolo exec` invocation (skipped when no changes) |
 
 ## Execution Environment
 
@@ -141,7 +141,7 @@ process credentials, not euid.
 |---|---|---|
 | `mount()`, bind-mounts, `chroot()` | 0 | Require `CAP_SYS_ADMIN` |
 | `exec` user command | real uid | User code must not run as root |
-| `commit`, `restore`, `status`, `diff` | 0 | Need root for ioctl on the mount |
+| `commit`, `travel`, `status`, `diff` | 0 | Need root for ioctl on the mount |
 | `load`/`unload` | delegates to `sudo` | Already handled correctly |
 
 ### `.yolofs/` directory ownership

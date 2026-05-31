@@ -201,8 +201,8 @@ fn write_to_readonly_base_triggers_cow() {
     let content = fs::read_to_string(s.mnt_path("hello.txt")).unwrap();
     assert_eq!(content, "overridden\n");
 
-    // Restore permissions for cleanup
-    fs::set_permissions(&base, fs::Permissions::from_mode(0o644)).expect("restore chmod");
+    // Travel permissions for cleanup
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o644)).expect("travel chmod");
 }
 
 /// COW should preserve the base file's permission mode, not reset to 0644.
@@ -225,7 +225,7 @@ fn cow_preserves_readonly_mode() {
         meta.mode() & 0o777
     );
 
-    fs::set_permissions(&base, fs::Permissions::from_mode(0o644)).expect("restore");
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o644)).expect("travel");
 }
 
 /// COW should preserve executable mode bits.

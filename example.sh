@@ -1,5 +1,5 @@
 #!/bin/bash
-# YoloFS CLI walkthrough — stages, checkpoints, and restore.
+# YoloFS CLI walkthrough — stages, snapshots, and travel.
 set -euo pipefail
 
 section() { echo; echo "════════════════════════════════════════════════════════════"; echo "  $1"; echo "════════════════════════════════════════════════════════════"; echo; }
@@ -20,25 +20,25 @@ run yolo status
 run yolo diff
 run yolo abort --force
 
-# ─── Build up checkpoints ──────────────────────────────────────────
+# ─── Build up snapshots ──────────────────────────────────────────
 
-section "Build up checkpoints (each exec auto-creates one)"
+section "Build up snapshots (each exec auto-creates one)"
 run yolo exec -- sh -c 'echo step1 > step1.txt'
 run yolo exec -- sh -c 'echo step2 > step2.txt'
 run yolo exec -- sh -c 'echo step3 > step3.txt'
 run yolo audit
 
-# ─── Query across checkpoints ──────────────────────────────────────
+# ─── Query across snapshots ──────────────────────────────────────
 
-section "Query across checkpoints"
+section "Query across snapshots"
 run yolo status --at 2
 run yolo diff   --from 1 --to 3
 
-# ─── Restore to an earlier checkpoint ──────────────────────────────
+# ─── Travel to an earlier snapshot ──────────────────────────────
 
-section "Restore to checkpoint 1"
+section "Travel to snapshot 1"
 run yolo exec -- sh -c 'ls step*.txt'
-run yolo restore 1
+run yolo travel 1
 run yolo exec -- sh -c 'ls step*.txt'
 run yolo exec -- sh -c 'echo step2_new > step2_new.txt'
 run yolo audit

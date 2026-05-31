@@ -10,9 +10,9 @@ instantly.
 Two invariants simplify the kernel-side design. Both are **enforced** in
 the kernel, not merely assumed.
 
-1. **No open file handles during checkpoint.** The checkpoint ioctl rejects
+1. **No open file handles during snapshot.** The snapshot ioctl rejects
    with `-EBUSY` if any staging fds are open (`sbi->staging_fd_count > 0`).
-   The CLI naturally satisfies this by taking checkpoints between `yolo exec`
+   The CLI naturally satisfies this by taking snapshots between `yolo exec`
    invocations, never while agent processes are running. This means
    `sbi->gen` cannot change while any staging fd is open, so the
    COW decision can be made once at `open()` time — the write and mmap
@@ -26,7 +26,7 @@ the kernel, not merely assumed.
    Pinned child dentries hold a ref on `dentry->d_parent`, which
    transitively keeps the parent inode alive through
    VFS refcounting — no `igrab()` is needed. Pins are released in bulk by
-   `YOLO_IOC_JUMP` (called by commit/abort/restore) and during
+   `YOLO_IOC_JUMP` (called by commit/abort/travel) and during
    `kill_sb` (unmount) via a recursive dentry tree walk from
    `sb->s_root`. Directories are never COW'd, so their inode
    identity (keyed by `lower_inode` in `iget5_locked`) is stable for
@@ -74,7 +74,7 @@ yolofs.toml                       # config file in CWD (mount options + rules)
 ## In-Kernel State
 
 All staging state lives in the structures below. Nothing is shared
-across mounts. The two design invariants (no open fds during checkpoint,
+across mounts. The two design invariants (no open fds during snapshot,
 staged child dentries pinned) keep the state minimal: the file struct carries
 zero staging-specific fields; all staging truth lives in the overlay
 state on pinned VFS dentries, identified by `pinned == true` in the
@@ -86,11 +86,11 @@ VFS `d_children` list.
 |-------|---------|
 | `inodes_dir` | Pinned path to `.yolofs/inodes/` |
 | `journal_file` | Open file handle to `.yolofs/journal` (`O_APPEND`). The kernel only appends; it never reads the journal back. |
-| `staging_sem` | rw\_semaphore serializing COW / re-COW, checkpoint, and journal writes |
+| `staging_sem` | rw\_semaphore serializing COW / re-COW, snapshot, and journal writes |
 | `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
-| `gen` | Atomic counter, starts at 1, bumped by each checkpoint and restore ioctl. Compared against `staging_gen` on the inode at open time to decide COW / re-COW. |
-| `staging_fd_count` | Atomic counter of open staging fds (opened for write). Checkpoint ioctl rejects with `-EBUSY` when > 0. |
-| `dirty` | Boolean flag set on every data journal write (S/D/R), cleared on checkpoint or restore. Used by `YOLO_MARK_IF_CHANGED` to skip empty auto-checkpoints. |
+| `gen` | Atomic counter, starts at 1, bumped by each snapshot and travel ioctl. Compared against `staging_gen` on the inode at open time to decide COW / re-COW. |
+| `staging_fd_count` | Atomic counter of open staging fds (opened for write). Snapshot ioctl rejects with `-EBUSY` when > 0. |
+| `dirty` | Boolean flag set on every data journal write (S/D/R), cleared on snapshot or travel. Used by `YOLO_MARK_IF_CHANGED` to skip empty auto-snapshots. |
 
 **Per-inode** (`yolo_inode_info`) — one per cached inode:
 
@@ -119,7 +119,7 @@ on the dentry.
 |-------|---------|
 | `lower_file` | Open file handle to the lower file. Always points at the correct inode (COW is resolved at open time, not deferred to write). |
 
-No staging-specific flags. Because no fd spans a checkpoint boundary
+No staging-specific flags. Because no fd spans a snapshot boundary
 (enforced by `staging_fd_count`), the file handle established at open
 time is valid for the lifetime of the fd.
 
@@ -155,12 +155,12 @@ state or the journal.
 
 Callers read `YOLO_D(d)->target` and `YOLO_D(d)->pinned` directly.
 
-**Wire format**: The restore ioctl serializes dentry state as a `tag:u8`
+**Wire format**: The travel ioctl serializes dentry state as a `tag:u8`
 followed by variant-specific payload. Tags match `yolo_target` values:
 INODE → `ino:le32`; PATH → `path_len:le16 path:u8[path_len]`;
 NONE → nothing. Tombstones are identified by `target == NONE`.
 Passthrough dirs are encoded as PATH with `path_len=0`.
-The full recursive restore tree format is documented in
+The full recursive travel tree format is documented in
 `docs/plans/33-dentry-state-redesign.md`.
 
 **Lookup** (`yolo_lookup`) — called by the VFS when no cached dentry
@@ -217,7 +217,7 @@ time via the dcache. `open()` receives a dentry already pointing at
 the right lower inode.
 
 COW and re-COW are resolved at **open time**, not deferred to the first
-write. Because no fd spans a checkpoint boundary (enforced by `staging_fd_count`),
+write. Because no fd spans a snapshot boundary (enforced by `staging_fd_count`),
 `sbi->gen` is stable for the lifetime of the fd, so the decision
 made at open time is final. This makes `write_iter` and `mmap` pure
 pass-throughs with zero staging logic.
@@ -539,7 +539,7 @@ it records that a rule blocked the access at `<path>` but does not affect
 any state. The CLI's dir-tree builder, commit, abort, and diff ignore B
 records; only `yolo audit` surfaces them. B writes do not set
 `sbi->dirty`, so a read-only command that only triggers blocks does not
-cause an auto-checkpoint under `YOLO_MARK_IF_CHANGED`. B records ride
+cause an auto-snapshot under `YOLO_MARK_IF_CHANGED`. B records ride
 within segments alongside S/D/R, so reachability and `--path` filtering
 apply identically (a B in an unreachable segment is dimmed in audit
 output). Current scope is `-EACCES` only; `HIDDEN`/`-ENOENT` paths are
@@ -561,25 +561,25 @@ strictly sequential: meta\[i\] has gen_id = i (meta\[0\] is a phantom
 All renames — staged or redirect, file or directory — emit a single R
 record. The tree builder always tombstones at the source path.
 
-### Checkpoint Segments
+### Snapshot Segments
 
-The CLI resolves per-checkpoint deltas by iterating over segments from the
+The CLI resolves per-snapshot deltas by iterating over segments from the
 `Journal` pipeline. Each segment is resolved independently by
 building a dir tree from its records. Meta\[i\] opens segment\[i\]:
 segment\[i\] contains the records from meta\[i\] up to (but not
 including) meta\[i+1\]. The phantom meta at index 0 opens segment 0
-(pre-first-checkpoint records). This is O(N) total.
+(pre-first-snapshot records). This is O(N) total.
 
-An M record marks a checkpoint. The CLI can slice segments with
+An M record marks a snapshot. The CLI can slice segments with
 `Journal::live_segments_slice(at, from, to)`, so that only the requested
 range of segments is resolved and displayed.
 
 Slicing semantics:
-- `--at <name>` — isolate the single segment opened by that checkpoint
-  (records from that checkpoint meta up to the next meta).
-- `--from <name>` — records from that checkpoint to end.
-- `--to <name>` — records from start up to and including that checkpoint's segment.
-- `--from <A> --to <B>` — records between the two checkpoints.
+- `--at <name>` — isolate the single segment opened by that snapshot
+  (records from that snapshot meta up to the next meta).
+- `--from <name>` — records from that snapshot to end.
+- `--to <name>` — records from start up to and including that snapshot's segment.
+- `--from <A> --to <B>` — records between the two snapshots.
 
 Written by the kernel (`kernel_write()` per mutation). Read by the CLI
 for commit/abort/status/diff. Never read by the kernel.
@@ -621,7 +621,7 @@ I/O redirection. The `yolo` CLI reads the journal and applies or discards.
 1. Build a `Journal` from the journal records and call `live_segments_slice()` to filter
    unreachable records and optionally narrow to a range (`--at`, `--from`, `--to`).
 2. Build a dir tree from each segment's records independently.
-3. Walk the tree for display: one-line summaries under checkpoint headers (and any trailing
+3. Walk the tree for display: one-line summaries under snapshot headers (and any trailing
    unsaved changes). Print total count.
 
 **Diff** (`yolo diff`):
@@ -631,28 +631,28 @@ I/O redirection. The `yolo` CLI reads the journal and applies or discards.
 2. Build a dir tree from each segment's records independently.
 3. For modified/added files, diff `inodes/<ino>` vs base.
    For renames, show rename metadata. For deletes, show as deleted file.
-4. Output in git-style unified diff format under checkpoint headers.
+4. Output in git-style unified diff format under snapshot headers.
 
-## Checkpoint Mechanism
+## Snapshot Mechanism
 
-Checkpoints are named bookmarks in the journal. They enable inspecting,
+Snapshots are named bookmarks in the journal. They enable inspecting,
 diffing, and committing staged changes at specific points in time.
 
 **Key insight**: the flat inode store already preserves all historical file
 states — old inodes are never deleted (only commit/abort removes the
 entire inode store). The journal records which ino was associated
-with each path at each mutation. Replaying the journal up to a checkpoint
+with each path at each mutation. Replaying the journal up to a snapshot
 meta reconstructs the staged state at that point.
 
-The only kernel-side change is ensuring that writes after a checkpoint create
+The only kernel-side change is ensuring that writes after a snapshot create
 a **new** inode instead of overwriting the current one in place.
 This is the re-COW mechanism.
 
-### Creating a Checkpoint
+### Creating a Snapshot
 
-`yolo checkpoint [name]` calls `ioctl(YOLO_IOC_MARK)`. The kernel:
+`yolo snapshot [name]` calls `ioctl(YOLO_IOC_MARK)`. The kernel:
 
-1. Returns `-ENOTSUP` if `staging` is disabled (checkpoints require staging).
+1. Returns `-ENOTSUP` if `staging` is disabled (snapshots require staging).
 2. Takes `staging_sem` write lock.
 3. If `staging_fd_count > 0`, releases sem and returns `-EBUSY`.
 4. Increments `sbi->gen` (atomic counter).
@@ -665,20 +665,20 @@ No staged dentries change. No caches invalidated. The write lock on
 is bumped (open-for-write holds at least a read lock while incrementing
 `staging_fd_count`).
 
-The name defaults to `"after <cmd>"` when auto-checkpointing via `yolo exec`
+The name defaults to `"after <cmd>"` when auto-snapshotting via `yolo exec`
 (e.g., `"after make build"`), or a human-readable timestamp like
-`chk-20260315-043807` when run via `yolo checkpoint` with no argument. Names need
-not be unique; checkpoints can also be addressed by their numeric gen. When
+`chk-20260315-043807` when run via `yolo snapshot` with no argument. Names need
+not be unique; snapshots can also be addressed by their numeric gen. When
 looking up by name, `--at` and `--from` match the latest one.
 
-Auto-checkpointing after `yolo exec` is skipped when the command produced no
+Auto-snapshotting after `yolo exec` is skipped when the command produced no
 staged changes. The kernel tracks a `dirty` flag on `yolo_sb_info` that is set
-on every data journal write (S/D/R) and cleared on checkpoint or restore.
-When the CLI passes the `YOLO_MARK_IF_CHANGED` flag in the checkpoint ioctl, the
+on every data journal write (S/D/R) and cleared on snapshot or travel.
+When the CLI passes the `YOLO_MARK_IF_CHANGED` flag in the snapshot ioctl, the
 kernel returns `gen = 0` (skipped) if the flag is clear, avoiding empty
-checkpoints from read-only or no-op commands.
+snapshots from read-only or no-op commands.
 
-### Re-COW on First Open-for-Write After Checkpoint
+### Re-COW on First Open-for-Write After Snapshot
 
 The COW check is per-inode: `YOLO_I(d_inode(dentry))->staging_gen`
 records the `sbi->gen` at which the current inode was staged or COW'd.
@@ -700,46 +700,46 @@ The same function handles both cases; no separate re-COW path.
 on the inode after a successful COW, and pins the dentry with `dget()`
 if not already staged.
 
-Because no fd spans a checkpoint boundary (enforced by `staging_fd_count`),
+Because no fd spans a snapshot boundary (enforced by `staging_fd_count`),
 the write and mmap paths need no COW checks — they are pure pass-throughs.
 
-**Multiple checkpoints between opens** work naturally: if N checkpoints occur
+**Multiple snapshots between opens** work naturally: if N snapshots occur
 without any open-for-write, the first open after them triggers one re-COW.
-The generation counter collapses consecutive checkpoints.
+The generation counter collapses consecutive snapshots.
 
-### Example Journal with Checkpoints
+### Example Journal with Snapshots
 
 ```
 S\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
 S\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
-M\01\0after make build\n                          # checkpoint 1
+M\01\0after make build\n                          # snapshot 1
 S\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
 D\0/src/lib.rs\0f\n                               # delete lib.rs
 S\0/src/new.rs\0f\04\n                           # create new.rs
-M\02\0after make test\n                           # checkpoint 2
+M\02\0after make test\n                           # snapshot 2
 S\0/src/new.rs\0f\05\n                           # re-COW: new.rs -> ino 5
 ```
 
 State at each point:
 
-| Checkpoint         | main.rs | lib.rs    | new.rs |
+| Snapshot         | main.rs | lib.rs    | new.rs |
 |--------------------|---------|-----------|--------|
 | "after make build" | ino 1   | ino 2     | --     |
 | "after make test"  | ino 3   | (deleted) | ino 4  |
 | current            | ino 3   | (deleted) | ino 5  |
 
-### Example Journal with Restore
+### Example Journal with Travel
 
 ```
 S\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
 S\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
-M\01\0after make build\n                          # checkpoint 1
+M\01\0after make build\n                          # snapshot 1
 S\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
 D\0/src/lib.rs\0f\n                               # delete lib.rs
-M\02\0after make test\n                           # checkpoint 2
-J\03\01\n                                         # restore to checkpoint 1 (gen bumped to 3)
+M\02\0after make test\n                           # snapshot 2
+J\03\01\n                                         # travel to snapshot 1 (gen bumped to 3)
 S\0/src/util.rs\0f\04\n                          # create util.rs -> ino 4
-M\04\0after make fix\n                            # checkpoint 4
+M\04\0after make fix\n                            # snapshot 4
 ```
 
 Reachable records (after `reachable`): S(main.rs→1), S(lib.rs→2), M1, S(util.rs→4), M4
@@ -747,36 +747,36 @@ Unreachable region: S(main.rs→3), D(lib.rs), M2, J3
 
 State at current:
 
-| Checkpoint         | main.rs | lib.rs | util.rs |
+| Snapshot         | main.rs | lib.rs | util.rs |
 |--------------------|---------|--------|---------|
 | "after make build" | ino 1   | ino 2  | --      |
 | "after make fix"   | ino 1   | ino 2  | ino 4   |
 
-### Checkpoint-Aware CLI Operations
+### Snapshot-Aware CLI Operations
 
-All checkpoint query flags (`--at`, `--from`, `--to`) work by slicing
+All snapshot query flags (`--at`, `--from`, `--to`) work by slicing
 the journal records before resolving into segments. This means the
-output always preserves checkpoint boundaries within the requested range.
+output always preserves snapshot boundaries within the requested range.
 
 **`yolo status`** / **`yolo diff`** support:
-- `--at <name|gen>` — show the single segment at that checkpoint.
-- `--from <name|gen>` — show changes from that checkpoint to end of journal.
-- `--to <name|gen>` — show changes from start of journal to that checkpoint.
-- `--from <A> --to <B>` — show changes between two checkpoints.
+- `--at <name|gen>` — show the single segment at that snapshot.
+- `--from <name|gen>` — show changes from that snapshot to end of journal.
+- `--to <name|gen>` — show changes from start of journal to that snapshot.
+- `--from <A> --to <B>` — show changes between two snapshots.
 - `--at` conflicts with `--from`/`--to`.
 
-**`yolo restore <name|gen>`**: Restore the mounted view to the state at the
-named meta (checkpoint or restore). The journal is **append-only** —
-restore appends a J record instead of truncating. J records create
+**`yolo travel <name|gen>`**: Move the mounted view to the state at the
+named meta (snapshot or travel). The journal is **append-only** —
+travel appends a J record instead of truncating. J records create
 unreachable records — records between the target meta and the J record that no longer reflect
-current state. All CLI consumers (commit, status, diff, restore) build a
+current state. All CLI consumers (commit, status, diff, travel) build a
 `Journal` to filter unreachable records before resolving.
 
 The reachability algorithm: O(N) single pass to collect J/M positions,
 O(R) backward walk to build reachable ranges, skip unreachable J records.
 
 1. CLI builds a `Journal` and finds the target meta via
-   `MetaIndex::find_meta()` (including unreachable regions, to support undo-restore).
+   `MetaIndex::find_meta()` (including unreachable regions, to support undo-travel).
 2. CLI calls `live_segments_at(gen_id)` (or `live_segments_at_name(name)` which
    resolves the name internally) to get an iterator over live segments in the
    prefix up to the target meta, handling any J records in that
@@ -795,14 +795,14 @@ O(R) backward walk to build reachable ranges, skip unreachable J records.
    of setting it to the target value — this avoids gen collisions.
    Injected inodes receive the new gen value in `staging_gen`.
 6. No journal truncation.
-7. Orphaned inodes (from post-checkpoint mutations) remain in the inode
+7. Orphaned inodes (from post-snapshot mutations) remain in the inode
    store — cleaned up on the next `commit` or `abort`.
 
-After restore, future writes trigger re-COW only if a new checkpoint is
-taken (since gen is bumped to a fresh value by the restore ioctl). Editing
-files without a new checkpoint reuses the existing inodes in place.
+After travel, future writes trigger re-COW only if a new snapshot is
+taken (since gen is bumped to a fresh value by the travel ioctl). Editing
+files without a new snapshot reuses the existing inodes in place.
 
-**`yolo timeline`**: Show the checkpoint/restore DAG in chronological
+**`yolo timeline`**: Show the snapshot/travel DAG in chronological
 order, with unreachable branches dimmed. **`yolo audit`**: Show every
 raw journal record (unreachable dimmed), with an optional `--path` filter
 to trace operations on a specific file.

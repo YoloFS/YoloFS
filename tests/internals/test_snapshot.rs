@@ -5,13 +5,13 @@ use yolofs::journal::{Action, Meta, Record};
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Creating a checkpoint produces a Mark record with the given name.
+/// Creating a snapshot produces a Mark record with the given name.
 #[test]
-fn checkpoint_produces_checkpoint_record() {
+fn snapshot_produces_snapshot_record() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    s.cli(&["checkpoint", "build"]).expect("checkpoint");
+    s.cli(&["snapshot", "build"]).expect("snapshot");
 
     let j = journal(&s);
     let mkrs = metas(&j);
@@ -22,13 +22,13 @@ fn checkpoint_produces_checkpoint_record() {
     );
 }
 
-/// Write after checkpoint produces a new Add (re-COW) with a different ino.
+/// Write after snapshot produces a new Add (re-COW) with a different ino.
 #[test]
-fn recow_after_checkpoint_produces_new_add() {
+fn recow_after_snapshot_produces_new_add() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 (re-COW)");
 
     let recs = records(&journal(&s));
@@ -67,15 +67,15 @@ fn recow_after_checkpoint_produces_new_add() {
     assert!(chk_pos < last_add, "Mark s1 should precede re-COW Add");
 }
 
-/// Multiple checkpoints interleaved with writes: each mark gets a unique id.
+/// Multiple snapshots interleaved with writes: each mark gets a unique id.
 #[test]
-fn multiple_checkpoints_have_distinct_ids() {
+fn multiple_snapshots_have_distinct_ids() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
-    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+    s.cli(&["snapshot", "s1"]).expect("snapshot s1");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write");
-    s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
+    s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
     let j = journal(&s);
     let mkrs = metas(&j);
@@ -97,14 +97,14 @@ fn multiple_checkpoints_have_distinct_ids() {
     assert_ne!(snaps[1].0, snaps[2].0, "user mark ids should differ");
 }
 
-/// Rename after checkpoint: the R record appears after the Mark record.
+/// Rename after snapshot: the R record appears after the Mark record.
 /// Writing to a base file triggers COW (staged inode), then renaming emits R.
 #[test]
-fn rename_after_checkpoint() {
+fn rename_after_snapshot() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
     let recs = records(&journal(&s));
@@ -120,13 +120,13 @@ fn rename_after_checkpoint() {
     assert!(chk_pos < rename_pos, "Mark should precede Rename: {recs:?}");
 }
 
-/// Delete after checkpoint: the DEL record appears after the Mark record.
+/// Delete after snapshot: the DEL record appears after the Mark record.
 #[test]
-fn delete_after_checkpoint() {
+fn delete_after_snapshot() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
-    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete");
 
     let recs = records(&journal(&s));
@@ -143,9 +143,9 @@ fn delete_after_checkpoint() {
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────
 
-/// After checkpoint + re-COW, the pre-checkpoint inode is preserved with old content.
+/// After snapshot + re-COW, the pre-snapshot inode is preserved with old content.
 #[test]
-fn recow_preserves_pre_checkpoint_inode() {
+fn recow_preserves_pre_snapshot_inode() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
@@ -153,14 +153,14 @@ fn recow_preserves_pre_checkpoint_inode() {
     let ch_v1 = tree(&s);
     let id_v1 = ino_for(&ch_v1, "/hello.txt");
 
-    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 (re-COW)");
 
     // v1 inode should still have old content
     assert_eq!(
         fs::read_to_string(inode_path(&s, id_v1)).unwrap(),
         "v1\n",
-        "pre-checkpoint inode should be preserved with v1 content"
+        "pre-snapshot inode should be preserved with v1 content"
     );
 
     // v2 should be in a different inode
@@ -174,20 +174,20 @@ fn recow_preserves_pre_checkpoint_inode() {
     );
 }
 
-/// Multiple checkpoints preserve each version's inode independently.
+/// Multiple snapshots preserve each version's inode independently.
 #[test]
-fn multiple_checkpoints_preserve_all_inodes() {
+fn multiple_snapshots_preserve_all_inodes() {
     let s = YoloSession::new().expect("session setup");
 
     // v1 → chk → v2 → chk → v3
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
     let id_v1 = ino_for(&tree(&s), "/hello.txt");
 
-    s.cli(&["checkpoint", "s1"]).expect("checkpoint s1");
+    s.cli(&["snapshot", "s1"]).expect("snapshot s1");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
     let id_v2 = ino_for(&tree(&s), "/hello.txt");
 
-    s.cli(&["checkpoint", "s2"]).expect("checkpoint s2");
+    s.cli(&["snapshot", "s2"]).expect("snapshot s2");
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
     let id_v3 = ino_for(&tree(&s), "/hello.txt");
 
@@ -202,17 +202,17 @@ fn multiple_checkpoints_preserve_all_inodes() {
     assert_eq!(fs::read_to_string(inode_path(&s, id_v3)).unwrap(), "v3\n");
 }
 
-/// Writing an untouched base file after checkpoint triggers COW correctly.
+/// Writing an untouched base file after snapshot triggers COW correctly.
 /// This exercises the path where the dentry's cached dirent pointer is NULL
 /// (no prior staged entry), so yolo_read_dirent returns packed=0 (tombstone)
 /// and the slow COW path runs.
 #[test]
-fn untouched_base_file_cow_after_checkpoint() {
+fn untouched_base_file_cow_after_snapshot() {
     let s = YoloSession::new().expect("session setup");
 
-    // Touch hello.txt to make the session dirty, then checkpoint.
+    // Touch hello.txt to make the session dirty, then snapshot.
     fs::write(s.mnt_path("hello.txt"), "dirty\n").expect("write");
-    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
 
     // multi.txt was never touched — its dirent pointer is NULL.
     fs::write(s.mnt_path("multi.txt"), "updated\n").expect("write untouched base file");

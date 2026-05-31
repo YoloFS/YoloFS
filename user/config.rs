@@ -85,7 +85,7 @@ pub struct Config {
     #[serde(default)]
     pub ask_default: Option<Perm>,
     #[serde(default)]
-    pub checkpoint: bool,
+    pub snapshot: bool,
     #[serde(default)]
     pub rules: BTreeMap<String, Perm>,
 }

@@ -110,9 +110,9 @@ fn append_updates_inode() {
     );
 }
 
-/// Without a checkpoint, rewriting a file reuses the same inode (no new allocation).
+/// Without a snapshot, rewriting a file reuses the same inode (no new allocation).
 #[test]
-fn rewrite_without_checkpoint_reuses_inode() {
+fn rewrite_without_snapshot_reuses_inode() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
@@ -123,7 +123,7 @@ fn rewrite_without_checkpoint_reuses_inode() {
 
     assert_eq!(
         inos_after_v1, inos_after_v2,
-        "rewrite without checkpoint should reuse the same inode"
+        "rewrite without snapshot should reuse the same inode"
     );
 
     let ch = tree(&s);

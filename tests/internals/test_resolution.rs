@@ -14,9 +14,9 @@ use yolofs::journal::{Action, Meta, Record};
 fn operations_produce_ordered_records() {
     let s = YoloSession::new().expect("session setup");
 
-    // write → checkpoint → delete → rename
+    // write → snapshot → delete → rename
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
-    s.cli(&["checkpoint", "s1"]).expect("checkpoint");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
     fs::remove_file(s.mnt_path("subdir/deep.txt")).expect("delete");
     fs::rename(s.mnt_path("multi.txt"), s.mnt_path("renamed.txt")).expect("rename");
 
@@ -44,7 +44,7 @@ fn operations_produce_ordered_records() {
         "missing RDR: {recs:?}"
     );
 
-    // Checkpoint "s1" should appear after the Add (write) and before the Delete.
+    // Snapshot "s1" should appear after the Add (write) and before the Delete.
     let chk_pos = recs
         .iter()
         .position(|r| matches!(r, Record::Meta(Meta::Mark { name, .. }) if name == "s1"))
@@ -57,8 +57,8 @@ fn operations_produce_ordered_records() {
         .iter()
         .position(|r| matches!(r, Record::Action(Action::Delete { .. })))
         .unwrap();
-    assert!(add_pos < chk_pos, "Add should precede Checkpoint s1");
-    assert!(chk_pos < del_pos, "Checkpoint s1 should precede Delete");
+    assert!(add_pos < chk_pos, "Add should precede Snapshot s1");
+    assert!(chk_pos < del_pos, "Snapshot s1 should precede Delete");
 }
 
 /// Writing to a renamed file: rename produces R, then write produces A at new path.

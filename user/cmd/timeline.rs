@@ -1,17 +1,17 @@
 // yolo CLI — timeline.rs
 //
-// `yolo timeline` — show checkpoint/restore DAG with unreachable branches dimmed.
+// `yolo timeline` — show snapshot/travel DAG with unreachable branches dimmed.
 
 use crate::journal::{self, Journal};
 use colored::Colorize;
 
-/// Display the checkpoint/restore timeline (full DAG, unreachable dimmed).
+/// Display the snapshot/travel timeline (full DAG, unreachable dimmed).
 pub fn run() -> anyhow::Result<()> {
     let yolofs = crate::utils::session_dir()?;
     let journal = Journal::read(&yolofs)?;
 
     if journal.metas.len() <= 1 {
-        println!("{}", "No checkpoints.".yellow());
+        println!("{}", "No snapshots.".yellow());
         return Ok(());
     }
 
@@ -24,15 +24,15 @@ pub fn run() -> anyhow::Result<()> {
             journal::Meta::Mark { gen_id, name } => {
                 format!(
                     "{} {}",
-                    format!("checkpoint [{gen_id}]").cyan().bold(),
+                    format!("snapshot [{gen_id}]").cyan().bold(),
                     name.dimmed(),
                 )
             }
             journal::Meta::Jump { gen_id, target_gen } => {
                 format!(
                     "{} {}",
-                    format!("restore    [{gen_id}]").yellow().bold(),
-                    format!("restored to [{target_gen}]").dimmed(),
+                    format!("travel    [{gen_id}]").yellow().bold(),
+                    format!("traveled to [{target_gen}]").dimmed(),
                 )
             }
         };

@@ -786,12 +786,12 @@ fn rename_chain_follows_link_base_path() {
     let content = fs::read_to_string(s.mnt_path("step2.txt")).expect("read step2");
     assert_eq!(content, "base content\n");
 
-    // Checkpoint + restore to verify the chain survives serialization
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    // Snapshot + travel to verify the chain survives serialization
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write post");
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
-    let content = fs::read_to_string(s.mnt_path("step2.txt")).expect("read after restore");
+    let content = fs::read_to_string(s.mnt_path("step2.txt")).expect("read after travel");
     assert_eq!(content, "base content\n");
     assert!(
         !s.mnt_path("hello.txt").exists(),
@@ -805,7 +805,7 @@ fn rename_chain_follows_link_base_path() {
 
 /// Rename /a → /b (overwrite) then delete /b. Both /a and /b had base
 /// content, so both must have tombstones. Without the tombstone at /b,
-/// the base content would reappear after restore.
+/// the base content would reappear after travel.
 #[test]
 fn replace_then_delete_tombstones_both() {
     let s = YoloSession::new().expect("session setup");
@@ -824,18 +824,18 @@ fn replace_then_delete_tombstones_both() {
         "multi.txt should be hidden"
     );
 
-    // Checkpoint + restore to verify tombstones survive serialization
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    // Snapshot + travel to verify tombstones survive serialization
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write post");
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     assert!(
         !s.mnt_path("hello.txt").exists(),
-        "hello.txt should be hidden after restore"
+        "hello.txt should be hidden after travel"
     );
     assert!(
         !s.mnt_path("multi.txt").exists(),
-        "multi.txt should be hidden after restore (tombstone must survive)"
+        "multi.txt should be hidden after travel (tombstone must survive)"
     );
 }
 

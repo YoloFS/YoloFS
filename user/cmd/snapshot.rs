@@ -1,12 +1,12 @@
-// yolo CLI — checkpoint.rs
+// yolo CLI — snapshot.rs
 //
-// `yolo checkpoint [name]` — create a checkpoint.
+// `yolo snapshot [name]` — create a snapshot.
 
 use crate::ioctl;
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-/// Create a checkpoint with the given name (or a timestamp if empty).
+/// Create a snapshot with the given name (or a timestamp if empty).
 pub fn create(name: Option<&str>) -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
     let chk_name = match name {
@@ -19,7 +19,7 @@ pub fn create(name: Option<&str>) -> Result<()> {
 
     eprintln!(
         "{} {}",
-        format!("checkpoint [{gen_id}]").cyan().bold(),
+        format!("snapshot [{gen_id}]").cyan().bold(),
         chk_name.dimmed()
     );
     Ok(())

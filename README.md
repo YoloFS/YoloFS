@@ -51,7 +51,7 @@ permission   = true              # enable permission gating
 staging      = true              # enable staging area
 ask_default  = "deny"            # fallback when no daemon or on timeout
 ask_timeout  = 30                # ask timeout (seconds; 0 = infinite)
-checkpoint   = true              # auto-checkpoint after each `yolo exec`
+snapshot     = true              # auto-snapshot after each `yolo exec`
 
 [rules]
 "."          = "allow"
@@ -65,7 +65,7 @@ Paths in `[rules]` can be absolute or relative to the session root.
 ## Documentation
 
 - [Architecture](docs/architecture.md) — high-level design, lifecycle, source layout
-- [Staging](docs/staging.md) — COW, journal, path resolution, checkpoints
+- [Staging](docs/staging.md) — COW, journal, path resolution, snapshots
 - [Permissions](docs/permissions.md) — rule engine, ask protocol
 - [Internals](docs/internals.md) — data structures, VFS map, ioctls, concurrency
 - [CLI](docs/cli.md) — commands, options, terminal handling

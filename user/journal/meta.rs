@@ -113,7 +113,7 @@ impl MetaIndex {
         };
 
         if start > end {
-            anyhow::bail!("invalid range: --from checkpoint comes after --to checkpoint");
+            anyhow::bail!("invalid range: --from snapshot comes after --to snapshot");
         }
 
         Ok((start, end))

@@ -517,22 +517,22 @@ fn swap_via_tmp() {
     );
 }
 
-// ── Checkpoint / Restore ─────────────────────────────────────────────
+// ── Snapshot / Travel ─────────────────────────────────────────────
 
-/// Checkpoint, add more changes, restore — state should match checkpoint.
+/// Snapshot, add more changes, travel — state should match snapshot.
 #[test]
-fn restore_state() {
+fn travel_state() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "aa\n").expect("create a");
     fs::write(s.mnt_path("hello.txt"), "mod\n").expect("modify");
-    s.cli(&["checkpoint", "snap"]).expect("checkpoint");
+    s.cli(&["snapshot", "snap"]).expect("snapshot");
 
-    // Dead zone: changes after checkpoint
+    // Dead zone: changes after snapshot
     fs::write(s.mnt_path("dead.txt"), "gone\n").expect("create dead");
     fs::remove_file(s.mnt_path("a.txt")).expect("delete a");
 
-    s.cli(&["restore", "snap"]).expect("restore");
+    s.cli(&["travel", "snap"]).expect("travel");
 
     assert_overlay_visible(&s);
     assert_dir_matches(&s, "");
@@ -540,18 +540,18 @@ fn restore_state() {
     assert!(!path_visible(&s.mnt_path("dead.txt")));
 }
 
-/// Two checkpoints, restore to the first one.
+/// Two snapshots, travel to the first one.
 #[test]
-fn restore_to_earlier_checkpoint() {
+fn travel_to_earlier_snapshot() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("create");
-    s.cli(&["checkpoint", "c1"]).expect("checkpoint 1");
+    s.cli(&["snapshot", "c1"]).expect("snapshot 1");
 
     fs::write(s.mnt_path("b.txt"), "v2\n").expect("create");
-    s.cli(&["checkpoint", "c2"]).expect("checkpoint 2");
+    s.cli(&["snapshot", "c2"]).expect("snapshot 2");
 
-    s.cli(&["restore", "c1"]).expect("restore to c1");
+    s.cli(&["travel", "c1"]).expect("travel to c1");
     assert_overlay_visible(&s);
     assert_dir_matches(&s, "");
 
@@ -559,19 +559,19 @@ fn restore_to_earlier_checkpoint() {
     assert!(!path_visible(&s.mnt_path("b.txt")));
 }
 
-/// Restore with renames: verify Link entries survive the round-trip.
+/// Travel with renames: verify Link entries survive the round-trip.
 #[test]
-fn restore_with_renames() {
+fn travel_with_renames() {
     let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
     fs::write(s.mnt_path("new.txt"), "new\n").expect("create");
-    s.cli(&["checkpoint", "snap"]).expect("checkpoint");
+    s.cli(&["snapshot", "snap"]).expect("snapshot");
 
     // Dead zone
     fs::remove_file(s.mnt_path("moved.txt")).expect("delete");
 
-    s.cli(&["restore", "snap"]).expect("restore");
+    s.cli(&["travel", "snap"]).expect("travel");
     assert_overlay_visible(&s);
     assert_dir_matches(&s, "");
 

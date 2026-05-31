@@ -1,12 +1,12 @@
 pub mod abort;
 pub mod audit;
-pub mod checkpoint;
 pub mod commit;
 pub mod diff;
 pub mod exec;
 pub mod init;
 pub mod load;
 pub mod mount;
-pub mod restore;
+pub mod snapshot;
 pub mod timeline;
+pub mod travel;
 pub mod watch;

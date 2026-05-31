@@ -1,163 +1,163 @@
 use crate::helpers::YoloSession;
 use std::fs;
 
-/// Restore to a checkpoint makes the mount reflect the checkpoint state.
+/// Travel to a snapshot makes the mount reflect the snapshot state.
 #[test]
-fn restore_shows_checkpoint_state() {
+fn travel_shows_snapshot_state() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "version 1\n").expect("write v1");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("hello.txt"), "version 2\n").expect("write v2");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
-    assert_eq!(content, "version 1\n", "should see checkpoint state");
+    assert_eq!(content, "version 1\n", "should see snapshot state");
 }
 
-/// Post-checkpoint created files are invisible after restore.
+/// Post-snapshot created files are invisible after travel.
 #[test]
-fn restore_hides_post_checkpoint_creates() {
+fn travel_hides_post_snapshot_creates() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("before.txt"), "before\n").expect("write before");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("after.txt"), "after\n").expect("write after");
     assert!(s.mnt_path("after.txt").exists());
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     assert!(
         s.mnt_path("before.txt").exists(),
-        "pre-checkpoint file should be visible"
+        "pre-snapshot file should be visible"
     );
     assert!(
         !s.mnt_path("after.txt").exists(),
-        "post-checkpoint file should be hidden"
+        "post-snapshot file should be hidden"
     );
 }
 
-/// Post-checkpoint deletes are undone after restore.
+/// Post-snapshot deletes are undone after travel.
 #[test]
-fn restore_undoes_post_checkpoint_deletes() {
+fn travel_undoes_post_snapshot_deletes() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("doomed.txt"), "keep me\n").expect("write");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::remove_file(s.mnt_path("doomed.txt")).expect("delete");
     assert!(!s.mnt_path("doomed.txt").exists());
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     assert!(
         s.mnt_path("doomed.txt").exists(),
-        "deleted file should reappear after restore"
+        "deleted file should reappear after travel"
     );
     let content = fs::read_to_string(s.mnt_path("doomed.txt")).expect("read");
     assert_eq!(content, "keep me\n");
 }
 
-/// COW works after restore — editing a restored file creates a new inode.
+/// COW works after travel — editing a traveled file creates a new inode.
 #[test]
-fn cow_works_after_restore() {
+fn cow_works_after_travel() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint 1");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot 1");
 
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
-    s.cli(&["checkpoint", "chk2"]).expect("checkpoint 2");
+    s.cli(&["snapshot", "chk2"]).expect("snapshot 2");
 
-    s.cli(&["restore", "chk1"]).expect("restore to chk1");
+    s.cli(&["travel", "chk1"]).expect("travel to chk1");
 
-    // Take a new checkpoint so writes trigger re-COW
-    s.cli(&["checkpoint", "post-jump"])
-        .expect("checkpoint after restore");
+    // Take a new snapshot so writes trigger re-COW
+    s.cli(&["snapshot", "post-jump"])
+        .expect("snapshot after travel");
 
-    // Write should work (triggers re-COW from the restored inode)
+    // Write should work (triggers re-COW from the traveled inode)
     fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3");
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
     assert_eq!(content, "v3\n");
 }
 
-/// Commit after restore applies the restored state to base.
+/// Commit after travel applies the traveled state to base.
 #[test]
-fn commit_after_restore() {
+fn commit_after_travel() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "wanted\n").expect("write");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("hello.txt"), "unwanted\n").expect("overwrite");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
     s.cli(&["commit"]).expect("commit");
 
     let base_content = fs::read_to_string(s.base_path("hello.txt")).expect("read base");
     assert_eq!(
         base_content, "wanted\n",
-        "base should have restored content"
+        "base should have traveled content"
     );
 }
 
-/// Restore with renames preserves the rename.
+/// Travel with renames preserves the rename.
 #[test]
-fn restore_preserves_renames() {
+fn travel_preserves_renames() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("old.txt"), "content\n").expect("write");
     fs::rename(s.mnt_path("old.txt"), s.mnt_path("new.txt")).expect("rename");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
-    // Do something after checkpoint
+    // Do something after snapshot
     fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write extra");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     assert!(!s.mnt_path("old.txt").exists(), "old name should not exist");
     assert!(s.mnt_path("new.txt").exists(), "new name should exist");
     assert!(
         !s.mnt_path("extra.txt").exists(),
-        "post-checkpoint file should be hidden"
+        "post-snapshot file should be hidden"
     );
 }
 
-/// Restore by numeric ID works.
+/// Travel by numeric ID works.
 #[test]
-fn restore_by_numeric_id() {
+fn travel_by_numeric_id() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
-    // Mark gets id=1 (first user checkpoint)
-    s.cli(&["checkpoint", "chk"]).expect("checkpoint");
+    // Mark gets id=1 (first user snapshot)
+    s.cli(&["snapshot", "chk"]).expect("snapshot");
 
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
 
-    s.cli(&["restore", "1"]).expect("restore by id");
+    s.cli(&["travel", "1"]).expect("travel by id");
 
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
     assert_eq!(content, "v1\n");
 }
 
-/// Restore CLI output includes checkpoint name and change count.
+/// Travel CLI output includes snapshot name and change count.
 #[test]
-fn restore_prints_summary() {
+fn travel_prints_summary() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
-    s.cli(&["checkpoint", "two-files"]).expect("checkpoint");
+    s.cli(&["snapshot", "two-files"]).expect("snapshot");
 
     fs::write(s.mnt_path("c.txt"), "c\n").expect("write c");
 
-    let output = s.cli(&["restore", "two-files"]).expect("restore");
+    let output = s.cli(&["travel", "two-files"]).expect("travel");
     assert!(
         output.contains("two-files"),
-        "output should mention checkpoint name: {output}"
+        "output should mention snapshot name: {output}"
     );
     assert!(
         output.contains("2"),
@@ -165,41 +165,41 @@ fn restore_prints_summary() {
     );
 }
 
-/// Restore to nonexistent checkpoint fails.
+/// Travel to nonexistent snapshot fails.
 #[test]
-fn restore_nonexistent_fails() {
+fn travel_nonexistent_fails() {
     let s = YoloSession::new().expect("session setup");
 
-    let result = s.cli(&["restore", "nonexistent"]);
+    let result = s.cli(&["travel", "nonexistent"]);
     assert!(
         result.is_err(),
-        "restoring to nonexistent checkpoint should fail"
+        "traveling to nonexistent snapshot should fail"
     );
 }
 
 // ── Complex multi-step scenarios ──────────────────────────────────────────
 
-/// Restore to chk2, then restore further back to chk1.
+/// Travel to chk2, then travel further back to chk1.
 #[test]
-fn restore_backward_through_checkpoints() {
+fn travel_backward_through_snapshots() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint 1");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot 1");
 
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2");
     fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write extra");
-    s.cli(&["checkpoint", "chk2"]).expect("checkpoint 2");
+    s.cli(&["snapshot", "chk2"]).expect("snapshot 2");
 
     fs::write(s.mnt_path("file.txt"), "v3\n").expect("write v3");
 
-    // Restore to chk2
-    s.cli(&["restore", "chk2"]).expect("restore to chk2");
+    // Travel to chk2
+    s.cli(&["travel", "chk2"]).expect("travel to chk2");
     assert_eq!(fs::read_to_string(s.mnt_path("file.txt")).unwrap(), "v2\n");
     assert!(s.mnt_path("extra.txt").exists());
 
-    // Restore further back to chk1
-    s.cli(&["restore", "chk1"]).expect("restore to chk1");
+    // Travel further back to chk1
+    s.cli(&["travel", "chk1"]).expect("travel to chk1");
     assert_eq!(fs::read_to_string(s.mnt_path("file.txt")).unwrap(), "v1\n");
     assert!(
         !s.mnt_path("extra.txt").exists(),
@@ -207,68 +207,68 @@ fn restore_backward_through_checkpoints() {
     );
 }
 
-/// Restore, make new changes, checkpoint, restore to the new checkpoint.
+/// Travel, make new changes, snapshot, travel to the new snapshot.
 #[test]
-fn restore_edit_checkpoint_restore_cycle() {
+fn travel_edit_snapshot_travel_cycle() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "original\n").expect("write");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint 1");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot 1");
 
     fs::write(s.mnt_path("file.txt"), "bad change\n").expect("overwrite");
-    s.cli(&["checkpoint", "chk2"]).expect("checkpoint 2");
+    s.cli(&["snapshot", "chk2"]).expect("snapshot 2");
 
-    // Restore to chk1
-    s.cli(&["restore", "chk1"]).expect("restore to chk1");
+    // Travel to chk1
+    s.cli(&["travel", "chk1"]).expect("travel to chk1");
     assert_eq!(
         fs::read_to_string(s.mnt_path("file.txt")).unwrap(),
         "original\n"
     );
 
-    // Make new edits and checkpoint
-    s.cli(&["checkpoint", "post-jump"])
-        .expect("checkpoint post-jump");
+    // Make new edits and snapshot
+    s.cli(&["snapshot", "post-jump"])
+        .expect("snapshot post-jump");
     fs::write(s.mnt_path("file.txt"), "new version\n").expect("write new");
-    s.cli(&["checkpoint", "chk3"]).expect("checkpoint 3");
+    s.cli(&["snapshot", "chk3"]).expect("snapshot 3");
 
     fs::write(s.mnt_path("file.txt"), "throwaway\n").expect("write throwaway");
 
-    // Restore to chk3
-    s.cli(&["restore", "chk3"]).expect("restore to chk3");
+    // Travel to chk3
+    s.cli(&["travel", "chk3"]).expect("travel to chk3");
     assert_eq!(
         fs::read_to_string(s.mnt_path("file.txt")).unwrap(),
         "new version\n"
     );
 }
 
-/// Restore with mkdir + files inside the directory.
+/// Travel with mkdir + files inside the directory.
 #[test]
-fn restore_with_nested_directory() {
+fn travel_with_nested_directory() {
     let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("mydir")).expect("mkdir");
     fs::write(s.mnt_path("mydir/a.txt"), "a\n").expect("write a");
     fs::write(s.mnt_path("mydir/b.txt"), "b\n").expect("write b");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
-    // Delete the directory contents after checkpoint
+    // Delete the directory contents after snapshot
     fs::remove_file(s.mnt_path("mydir/a.txt")).expect("rm a");
     fs::write(s.mnt_path("mydir/c.txt"), "c\n").expect("write c");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     assert!(s.mnt_path("mydir/a.txt").exists(), "a.txt should be back");
     assert!(s.mnt_path("mydir/b.txt").exists(), "b.txt should exist");
     assert!(
         !s.mnt_path("mydir/c.txt").exists(),
-        "c.txt was post-checkpoint"
+        "c.txt was post-snapshot"
     );
 }
 
-/// Restore preserves deep files whose parent directories are passthrough
+/// Travel preserves deep files whose parent directories are passthrough
 /// scaffolds rather than explicit staged dir nodes.
 #[test]
-fn restore_keeps_deep_file_through_passthrough_dirs() {
+fn travel_keeps_deep_file_through_passthrough_dirs() {
     let s = YoloSession::new().expect("session setup");
 
     fs::create_dir_all(s.mnt_path("base/a/b/c")).expect("mkdir base dirs");
@@ -276,12 +276,12 @@ fn restore_keeps_deep_file_through_passthrough_dirs() {
     s.cli(&["commit"]).expect("commit base dirs");
 
     fs::write(s.mnt_path("base/a/b/c/deep.txt"), "deep\n").expect("write deep");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::remove_file(s.mnt_path("base/a/b/c/deep.txt")).expect("remove deep");
     fs::write(s.mnt_path("base/a/b/c/post.txt"), "post\n").expect("write post");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     assert_eq!(
         fs::read_to_string(s.mnt_path("base/a/b/c/deep.txt")).unwrap(),
@@ -289,7 +289,7 @@ fn restore_keeps_deep_file_through_passthrough_dirs() {
     );
     assert!(
         !s.mnt_path("base/a/b/c/post.txt").exists(),
-        "post-checkpoint file should not survive restore"
+        "post-snapshot file should not survive travel"
     );
 
     let root_entries: Vec<String> = fs::read_dir(s.mnt_path("base"))
@@ -323,20 +323,20 @@ fn restore_keeps_deep_file_through_passthrough_dirs() {
     assert!(!c_entries.contains(&"post.txt".to_string()));
 }
 
-/// Restore with rename chain: mv a→b, mv b→c, checkpoint, then restore.
+/// Travel with rename chain: mv a→b, mv b→c, snapshot, then travel.
 #[test]
-fn restore_rename_chain() {
+fn travel_rename_chain() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "content\n").expect("write a");
     fs::rename(s.mnt_path("a.txt"), s.mnt_path("b.txt")).expect("rename a→b");
     fs::rename(s.mnt_path("b.txt"), s.mnt_path("c.txt")).expect("rename b→c");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
-    // Modify c after checkpoint
+    // Modify c after snapshot
     fs::write(s.mnt_path("c.txt"), "changed\n").expect("modify c");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     assert!(!s.mnt_path("a.txt").exists(), "a.txt renamed away");
     assert!(!s.mnt_path("b.txt").exists(), "b.txt renamed away");
@@ -345,24 +345,24 @@ fn restore_rename_chain() {
     assert_eq!(content, "content\n", "should have original content");
 }
 
-/// Restore then commit verifies the full round-trip: create → checkpoint →
-/// more changes → restore → commit applies only checkpoint state to base.
+/// Travel then commit verifies the full round-trip: create → snapshot →
+/// more changes → travel → commit applies only snapshot state to base.
 #[test]
-fn restore_then_commit_full_roundtrip() {
+fn travel_then_commit_full_roundtrip() {
     let s = YoloSession::new().expect("session setup");
 
     // Create multiple files
     fs::write(s.mnt_path("keep.txt"), "keep\n").expect("write keep");
     fs::write(s.mnt_path("modify.txt"), "v1\n").expect("write modify");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
-    // Post-checkpoint: modify one, delete another, create new
+    // Post-snapshot: modify one, delete another, create new
     fs::write(s.mnt_path("modify.txt"), "v2\n").expect("modify");
     fs::remove_file(s.mnt_path("keep.txt")).expect("delete keep");
     fs::write(s.mnt_path("new.txt"), "new\n").expect("create new");
 
-    // Restore to chk1 and commit
-    s.cli(&["restore", "chk1"]).expect("restore");
+    // Travel to chk1 and commit
+    s.cli(&["travel", "chk1"]).expect("travel");
     s.cli(&["commit"]).expect("commit");
 
     // Base should have chk1 state
@@ -376,26 +376,26 @@ fn restore_then_commit_full_roundtrip() {
     );
     assert!(
         !s.base_path("new.txt").exists(),
-        "post-checkpoint file should not be in base"
+        "post-snapshot file should not be in base"
     );
 }
 
-/// Symlink at checkpoint is preserved after restore.
+/// Symlink at snapshot is preserved after travel.
 #[test]
-fn restore_preserves_symlinks() {
+fn travel_preserves_symlinks() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("target.txt"), "target\n").expect("write target");
     std::os::unix::fs::symlink("target.txt", s.mnt_path("link.txt")).expect("symlink");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::remove_file(s.mnt_path("link.txt")).expect("remove link");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     assert!(
         s.mnt_path("link.txt").exists(),
-        "symlink should exist after restore"
+        "symlink should exist after travel"
     );
     let content = fs::read_to_string(s.mnt_path("link.txt")).expect("read through link");
     assert_eq!(content, "target\n");
@@ -403,7 +403,7 @@ fn restore_preserves_symlinks() {
 
 /// Many files across many directories — stress test for dirent injection.
 #[test]
-fn restore_many_files_across_dirs() {
+fn travel_many_files_across_dirs() {
     let s = YoloSession::new().expect("session setup");
 
     // Create a tree with 3 dirs × 5 files = 15 entries
@@ -415,14 +415,14 @@ fn restore_many_files_across_dirs() {
             fs::write(s.mnt_path(&path), format!("{dir_i}-{file_i}\n")).expect("write");
         }
     }
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
-    // Wreak havoc after checkpoint
+    // Wreak havoc after snapshot
     fs::remove_file(s.mnt_path("dir0/f0.txt")).expect("delete");
     fs::write(s.mnt_path("dir1/f1.txt"), "overwritten\n").expect("overwrite");
     fs::write(s.mnt_path("dir2/new.txt"), "new\n").expect("create");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     // Verify all 15 original files are intact
     for dir_i in 0..3 {
@@ -435,26 +435,26 @@ fn restore_many_files_across_dirs() {
     }
     assert!(
         !s.mnt_path("dir2/new.txt").exists(),
-        "post-checkpoint file should be hidden"
+        "post-snapshot file should be hidden"
     );
 }
 
 // ── Interaction with other CLI commands ───────────────────────────────────
 
-/// Readdir after restore shows the correct merged listing.
+/// Readdir after travel shows the correct merged listing.
 #[test]
-fn readdir_after_restore() {
+fn readdir_after_travel() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("staged.txt"), "staged\n").expect("write staged");
     fs::write(s.mnt_path("deleted_base.txt"), "to delete\n").expect("write base file");
     // base already has files; staged.txt is new, deleted_base.txt will be deleted
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::remove_file(s.mnt_path("staged.txt")).expect("remove staged");
     fs::write(s.mnt_path("post.txt"), "post\n").expect("write post");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let entries: Vec<String> = fs::read_dir(s.mnt_path("."))
         .expect("readdir")
@@ -472,16 +472,16 @@ fn readdir_after_restore() {
     );
 }
 
-/// `yolofs status` after restore shows only checkpoint-state changes.
+/// `yolofs status` after travel shows only snapshot-state changes.
 #[test]
-fn status_after_restore() {
+fn status_after_travel() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let status = s.cli(&["status"]).expect("status");
     assert!(
@@ -494,16 +494,16 @@ fn status_after_restore() {
     );
 }
 
-/// `yolofs diff` after restore shows only checkpoint-state diffs.
+/// `yolofs diff` after travel shows only snapshot-state diffs.
 #[test]
-fn diff_after_restore() {
+fn diff_after_travel() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     let diff = s.cli(&["diff"]).expect("diff");
     assert!(diff.contains("a.txt"), "a.txt should be in diff: {diff}");
@@ -513,24 +513,24 @@ fn diff_after_restore() {
     );
 }
 
-/// New mutations after restore append to the journal correctly.
+/// New mutations after travel append to the journal correctly.
 #[test]
-fn journal_appends_after_restore() {
+fn journal_appends_after_travel() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("old.txt"), "old\n").expect("write old");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("gone.txt"), "gone\n").expect("write gone");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
-    // New mutation after restore
-    fs::write(s.mnt_path("new.txt"), "new\n").expect("write new after restore");
+    // New mutation after travel
+    fs::write(s.mnt_path("new.txt"), "new\n").expect("write new after travel");
 
     let status = s.cli(&["status"]).expect("status");
     assert!(
         status.contains("old.txt"),
-        "pre-checkpoint file in status: {status}"
+        "pre-snapshot file in status: {status}"
     );
     assert!(
         status.contains("new.txt"),
@@ -542,29 +542,29 @@ fn journal_appends_after_restore() {
     );
 }
 
-/// Restoring to the same checkpoint twice is idempotent.
+/// Traveling to the same snapshot twice is idempotent.
 #[test]
-fn restore_idempotent() {
+fn travel_idempotent() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("overwrite");
 
-    s.cli(&["restore", "chk1"]).expect("restore 1");
+    s.cli(&["travel", "chk1"]).expect("travel 1");
     assert_eq!(fs::read_to_string(s.mnt_path("file.txt")).unwrap(), "v1\n");
 
-    s.cli(&["restore", "chk1"]).expect("restore 2");
+    s.cli(&["travel", "chk1"]).expect("travel 2");
     assert_eq!(
         fs::read_to_string(s.mnt_path("file.txt")).unwrap(),
         "v1\n",
-        "second restore should produce same state"
+        "second travel should produce same state"
     );
 }
 
-/// Deleting a base file before checkpoint; restore brings back the delete.
+/// Deleting a base file before snapshot; travel brings back the delete.
 #[test]
-fn restore_base_file_deletion() {
+fn travel_base_file_deletion() {
     let s = YoloSession::new().expect("session setup");
 
     // base_file.txt exists in the base FS (it was there before mount)
@@ -579,17 +579,17 @@ fn restore_base_file_deletion() {
     fs::remove_file(s.mnt_path("base_file.txt")).expect("delete base file");
     assert!(!s.mnt_path("base_file.txt").exists());
 
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
-    // Recreate it after checkpoint
+    // Recreate it after snapshot
     fs::write(s.mnt_path("base_file.txt"), "recreated\n").expect("recreate");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
-    // After restore, the delete should be active — file should be gone
+    // After travel, the delete should be active — file should be gone
     assert!(
         !s.mnt_path("base_file.txt").exists(),
-        "deleted base file should stay deleted after restore"
+        "deleted base file should stay deleted after travel"
     );
 }
 
@@ -597,41 +597,41 @@ fn restore_base_file_deletion() {
 
 /// Deeply nested new directories: mkdir -p a/b/c with a file inside.
 #[test]
-fn restore_deeply_nested_new_dirs() {
+fn travel_deeply_nested_new_dirs() {
     let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("a")).expect("mkdir a");
     fs::create_dir(s.mnt_path("a/b")).expect("mkdir a/b");
     fs::create_dir(s.mnt_path("a/b/c")).expect("mkdir a/b/c");
     fs::write(s.mnt_path("a/b/c/deep.txt"), "deep\n").expect("write deep");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("a/b/c/deep.txt"), "overwritten\n").expect("overwrite");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     assert_eq!(
         fs::read_to_string(s.mnt_path("a/b/c/deep.txt")).unwrap(),
         "deep\n",
-        "deeply nested file should have checkpoint content"
+        "deeply nested file should have snapshot content"
     );
 }
 
-/// Rename + recreate at the original name, then checkpoint and restore.
+/// Rename + recreate at the original name, then snapshot and travel.
 #[test]
-fn restore_rename_then_recreate() {
+fn travel_rename_then_recreate() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "original\n").expect("write a");
     fs::rename(s.mnt_path("a.txt"), s.mnt_path("b.txt")).expect("rename a→b");
     fs::write(s.mnt_path("a.txt"), "new a\n").expect("recreate a");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
-    // Mess things up after checkpoint
+    // Mess things up after snapshot
     fs::remove_file(s.mnt_path("a.txt")).expect("delete a");
     fs::remove_file(s.mnt_path("b.txt")).expect("delete b");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     // Both a.txt (new) and b.txt (renamed from original a) should exist
     assert_eq!(fs::read_to_string(s.mnt_path("a.txt")).unwrap(), "new a\n");
@@ -641,17 +641,17 @@ fn restore_rename_then_recreate() {
     );
 }
 
-/// `yolofs timeline` after restore shows all checkpoints and the restore record.
+/// `yolofs timeline` after travel shows all snapshots and the travel record.
 #[test]
-fn timeline_after_restore() {
+fn timeline_after_travel() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write");
-    s.cli(&["checkpoint", "first"]).expect("checkpoint 1");
+    s.cli(&["snapshot", "first"]).expect("snapshot 1");
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write");
-    s.cli(&["checkpoint", "second"]).expect("checkpoint 2");
+    s.cli(&["snapshot", "second"]).expect("snapshot 2");
 
-    s.cli(&["restore", "first"]).expect("restore");
+    s.cli(&["travel", "first"]).expect("travel");
 
     let timeline = s.cli(&["timeline"]).expect("timeline");
     assert!(
@@ -663,24 +663,24 @@ fn timeline_after_restore() {
         "second should still be in timeline (append-only journal): {timeline}"
     );
     assert!(
-        timeline.contains("restore"),
-        "restore record should be in timeline: {timeline}"
+        timeline.contains("travel"),
+        "travel record should be in timeline: {timeline}"
     );
 }
 
-/// Write after restore without new checkpoint modifies the file in place.
+/// Write after travel without new snapshot modifies the file in place.
 #[test]
-fn write_after_restore_modifies_in_place() {
+fn write_after_travel_modifies_in_place() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2");
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
-    // Write without taking a new checkpoint — should modify in place
-    fs::write(s.mnt_path("file.txt"), "v1-edited\n").expect("edit after restore");
+    // Write without taking a new snapshot — should modify in place
+    fs::write(s.mnt_path("file.txt"), "v1-edited\n").expect("edit after travel");
 
     let content = fs::read_to_string(s.mnt_path("file.txt")).expect("read");
     assert_eq!(content, "v1-edited\n");
@@ -691,9 +691,9 @@ fn write_after_restore_modifies_in_place() {
     assert_eq!(base, "v1-edited\n");
 }
 
-/// Renamed directory has correct d_type (DT_DIR) after restore.
+/// Renamed directory has correct d_type (DT_DIR) after travel.
 #[test]
-fn restore_renamed_directory_dtype() {
+fn travel_renamed_directory_dtype() {
     let s = YoloSession::new().expect("session setup");
 
     // Create directory in base first via commit
@@ -703,11 +703,11 @@ fn restore_renamed_directory_dtype() {
 
     // Now rename the base directory through the mount
     fs::rename(s.mnt_path("old_dir"), s.mnt_path("new_dir")).expect("rename dir");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("post.txt"), "post\n").expect("write post");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     assert!(!s.mnt_path("old_dir").exists(), "old dir gone");
     assert!(s.mnt_path("new_dir").exists(), "new dir exists");
@@ -728,19 +728,19 @@ fn restore_renamed_directory_dtype() {
     );
 }
 
-/// Renamed symlink has correct d_type (DT_LNK) after restore.
+/// Renamed symlink has correct d_type (DT_LNK) after travel.
 #[test]
-fn restore_renamed_symlink_dtype() {
+fn travel_renamed_symlink_dtype() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("target.txt"), "target\n").expect("write target");
     std::os::unix::fs::symlink("target.txt", s.mnt_path("old_link")).expect("symlink");
     fs::rename(s.mnt_path("old_link"), s.mnt_path("new_link")).expect("rename symlink");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("post.txt"), "post\n").expect("write post");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     assert!(!s.mnt_path("old_link").exists(), "old link gone");
     assert!(s.mnt_path("new_link").exists(), "new link exists");
@@ -761,26 +761,26 @@ fn restore_renamed_symlink_dtype() {
     assert_eq!(content, "target\n");
 }
 
-/// Writing after restore appends to the journal via the kernel's original
+/// Writing after travel appends to the journal via the kernel's original
 /// O_APPEND fd (which survived the set_len truncation without a reopen).
 #[test]
-fn kernel_appends_to_journal_after_restore() {
+fn kernel_appends_to_journal_after_travel() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("before.txt"), "before\n").expect("write before");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("discarded.txt"), "gone\n").expect("write discarded");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     // This write goes through the kernel, which appends to the journal
     // using the same O_APPEND fd that was open before the truncation.
-    fs::write(s.mnt_path("after.txt"), "after\n").expect("write after restore");
+    fs::write(s.mnt_path("after.txt"), "after\n").expect("write after travel");
 
     let status = s.cli(&["status"]).expect("status");
     assert!(
         status.contains("after.txt"),
-        "kernel journal append after restore should work: {status}"
+        "kernel journal append after travel should work: {status}"
     );
     assert!(
         !status.contains("discarded.txt"),
@@ -790,70 +790,70 @@ fn kernel_appends_to_journal_after_restore() {
 
 // ── Append-only journal / J-record tests ─────────────────────────────
 
-/// After restore, the journal is append-only (not truncated).
-/// Verify that `yolofs timeline` shows the restore event.
+/// After travel, the journal is append-only (not truncated).
+/// Verify that `yolofs timeline` shows the travel event.
 #[test]
-fn timeline_shows_restore_event() {
+fn timeline_shows_travel_event() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
-    s.cli(&["checkpoint", "build"]).expect("checkpoint");
+    s.cli(&["snapshot", "build"]).expect("snapshot");
 
     fs::write(s.mnt_path("a.txt"), "v2\n").expect("write v2");
-    s.cli(&["checkpoint", "test"]).expect("checkpoint");
+    s.cli(&["snapshot", "test"]).expect("snapshot");
 
-    s.cli(&["restore", "build"]).expect("restore");
+    s.cli(&["travel", "build"]).expect("travel");
 
     let timeline = s.cli(&["timeline"]).expect("timeline");
     assert!(
-        timeline.contains("restore"),
-        "timeline should show restore event: {timeline}"
+        timeline.contains("travel"),
+        "timeline should show travel event: {timeline}"
     );
     assert!(
         timeline.contains("build"),
-        "timeline should reference target checkpoint: {timeline}"
+        "timeline should reference target snapshot: {timeline}"
     );
 }
 
-/// Restore, make changes, checkpoint, then restore again (further back).
+/// Travel, make changes, snapshot, then travel again (further back).
 #[test]
-fn multiple_restores_in_session() {
+fn multiple_travels_in_session() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write v1");
-    s.cli(&["checkpoint", "c1"]).expect("checkpoint c1");
+    s.cli(&["snapshot", "c1"]).expect("snapshot c1");
 
     fs::write(s.mnt_path("a.txt"), "v2\n").expect("write v2");
-    s.cli(&["checkpoint", "c2"]).expect("checkpoint c2");
+    s.cli(&["snapshot", "c2"]).expect("snapshot c2");
 
-    // First restore: back to c1
-    s.cli(&["restore", "c1"]).expect("restore to c1");
+    // First travel: back to c1
+    s.cli(&["travel", "c1"]).expect("travel to c1");
 
     fs::write(s.mnt_path("b.txt"), "new\n").expect("write b");
-    s.cli(&["checkpoint", "c3"]).expect("checkpoint c3");
+    s.cli(&["snapshot", "c3"]).expect("snapshot c3");
 
-    // Second restore: back to c1 again (discards b.txt)
-    s.cli(&["restore", "c1"]).expect("restore to c1 again");
+    // Second travel: back to c1 again (discards b.txt)
+    s.cli(&["travel", "c1"]).expect("travel to c1 again");
 
     let status = s.cli(&["status"]).expect("status");
     assert!(
         !status.contains("b.txt"),
-        "b.txt should be gone after second restore: {status}"
+        "b.txt should be gone after second travel: {status}"
     );
 }
 
-/// Restore then commit applies only the live changes.
+/// Travel then commit applies only the live changes.
 #[test]
-fn commit_after_multiple_restores() {
+fn commit_after_multiple_travels() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write v1");
-    s.cli(&["checkpoint", "c1"]).expect("checkpoint c1");
+    s.cli(&["snapshot", "c1"]).expect("snapshot c1");
 
     fs::write(s.mnt_path("a.txt"), "v2\n").expect("write v2");
-    s.cli(&["checkpoint", "c2"]).expect("checkpoint c2");
+    s.cli(&["snapshot", "c2"]).expect("snapshot c2");
 
-    s.cli(&["restore", "c1"]).expect("restore to c1");
+    s.cli(&["travel", "c1"]).expect("travel to c1");
 
     fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write extra");
 
@@ -866,80 +866,80 @@ fn commit_after_multiple_restores() {
     assert_eq!(extra_content, "extra\n");
 }
 
-/// Undo-restore: restore forward to a checkpoint that was in a dead zone.
+/// Undo-travel: travel forward to a snapshot that was in a dead zone.
 #[test]
-fn undo_restore() {
+fn undo_travel() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write v1");
-    s.cli(&["checkpoint", "c1"]).expect("checkpoint c1");
+    s.cli(&["snapshot", "c1"]).expect("snapshot c1");
 
     fs::write(s.mnt_path("a.txt"), "v2\n").expect("write v2");
     fs::write(s.mnt_path("b.txt"), "new\n").expect("write b");
-    s.cli(&["checkpoint", "c2"]).expect("checkpoint c2");
+    s.cli(&["snapshot", "c2"]).expect("snapshot c2");
 
-    // Restore back to c1 — kills the c1→c2 segment (v2 and b.txt).
-    s.cli(&["restore", "c1"]).expect("restore to c1");
+    // Travel back to c1 — kills the c1→c2 segment (v2 and b.txt).
+    s.cli(&["travel", "c1"]).expect("travel to c1");
     let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
-    assert_eq!(content, "v1\n", "should see v1 after first restore");
+    assert_eq!(content, "v1\n", "should see v1 after first travel");
     assert!(!s.mnt_path("b.txt").exists(), "b.txt should be gone");
 
-    // Undo the restore — restore forward to c2 (which is in the dead zone).
-    s.cli(&["restore", "c2"]).expect("undo restore to c2");
+    // Undo the travel — travel forward to c2 (which is in the dead zone).
+    s.cli(&["travel", "c2"]).expect("undo travel to c2");
     let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
-    assert_eq!(content, "v2\n", "should see v2 after undo restore");
+    assert_eq!(content, "v2\n", "should see v2 after undo travel");
     assert!(s.mnt_path("b.txt").exists(), "b.txt should reappear");
 }
 
-/// Create a new file (not in base), checkpoint, write to it again
-/// (triggering re-COW), then restore to the checkpoint and commit.
-/// The file should appear in base — it was staged at checkpoint time.
+/// Create a new file (not in base), snapshot, write to it again
+/// (triggering re-COW), then travel to the snapshot and commit.
+/// The file should appear in base — it was staged at snapshot time.
 ///
 /// This exercises a bug where yolo_do_cow hardcodes overwrites=true,
-/// flipping the flag for staged-only files.  If restore uses the
+/// flipping the flag for staged-only files.  If travel uses the
 /// corrupted overwrites=true, the committed file might be missing or
 /// the abort path might leave a ghost entry.
 #[test]
-fn restore_created_file_after_recow_then_commit() {
+fn travel_created_file_after_recow_then_commit() {
     let s = YoloSession::new().expect("session setup");
 
-    // Create a brand-new file (not in base) and checkpoint.
+    // Create a brand-new file (not in base) and snapshot.
     fs::write(s.mnt_path("newfile.txt"), "v1\n").expect("create");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     // Write again — triggers re-COW (allocates new inode, may flip overwrites).
     fs::write(s.mnt_path("newfile.txt"), "v2\n").expect("write v2 (re-COW)");
 
-    // Restore to chk1 — should see v1 content.
-    s.cli(&["restore", "chk1"]).expect("restore");
+    // Travel to chk1 — should see v1 content.
+    s.cli(&["travel", "chk1"]).expect("travel");
     assert_eq!(
         fs::read_to_string(s.mnt_path("newfile.txt")).unwrap(),
         "v1\n",
-        "mount should show checkpoint content after restore"
+        "mount should show snapshot content after travel"
     );
 
-    // Commit the restored state.
+    // Commit the traveled state.
     s.cli(&["commit"]).expect("commit");
 
     // The file should appear in base with v1 content.
     assert_eq!(
         fs::read_to_string(s.base_path("newfile.txt")).unwrap(),
         "v1\n",
-        "committed file should have checkpoint content in base"
+        "committed file should have snapshot content in base"
     );
 }
 
 /// Same as above, but abort instead of commit.  The created file
 /// should NOT appear in base (it was never in base).
 #[test]
-fn restore_created_file_after_recow_then_abort() {
+fn travel_created_file_after_recow_then_abort() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("newfile.txt"), "v1\n").expect("create");
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("newfile.txt"), "v2\n").expect("write v2 (re-COW)");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
     s.cli(&["abort"]).expect("abort");
 
     assert!(
@@ -951,14 +951,14 @@ fn restore_created_file_after_recow_then_abort() {
 // ── Depth-limit and cleanup tests ────────────────────────────────────
 
 /// Create a directory tree near the YOLO_JUMP_MAX_DEPTH limit (32)
-/// with staged files at every level, checkpoint, modify, restore.
+/// with staged files at every level, snapshot, modify, travel.
 /// Exercises the iterative depth-first `yolo_unstage_all` walk at depth.
 #[test]
-fn restore_deep_tree_near_max_depth() {
+fn travel_deep_tree_near_max_depth() {
     let s = YoloSession::new().expect("session setup");
 
     // Build a 20-level deep directory tree with a file at each level.
-    // The restore ioctl depth limit (YOLO_JUMP_MAX_DEPTH=32) also
+    // The travel ioctl depth limit (YOLO_JUMP_MAX_DEPTH=32) also
     // counts intermediate unset dirs for the path from / to the
     // session root, so we stay under the budget.
     let depth = 20;
@@ -980,24 +980,24 @@ fn restore_deep_tree_near_max_depth() {
         );
     }
 
-    s.cli(&["checkpoint", "deep"]).expect("checkpoint");
+    s.cli(&["snapshot", "deep"]).expect("snapshot");
 
     // Modify files at the deepest and shallowest levels.
     fs::write(s.mnt_path("d0/f.txt"), "modified\n").expect("modify shallow");
     fs::write(s.mnt_path(&format!("{path}/f.txt")), "modified\n").expect("modify deep");
 
-    s.cli(&["restore", "deep"]).expect("restore");
+    s.cli(&["travel", "deep"]).expect("travel");
 
     // Verify files at both extremes reverted.
     assert_eq!(
         fs::read_to_string(s.mnt_path("d0/f.txt")).unwrap(),
         "depth-0\n",
-        "shallow file should be restored"
+        "shallow file should be traveled"
     );
     assert_eq!(
         fs::read_to_string(s.mnt_path(&format!("{path}/f.txt"))).unwrap(),
         format!("depth-{}\n", depth - 1),
-        "deep file should be restored"
+        "deep file should be traveled"
     );
 
     // Spot-check a middle level.
@@ -1009,17 +1009,17 @@ fn restore_deep_tree_near_max_depth() {
     assert_eq!(
         fs::read_to_string(s.mnt_path(&format!("{mid}/f.txt"))).unwrap(),
         format!("depth-{}\n", mid_depth - 1),
-        "mid-depth file should be restored"
+        "mid-depth file should be traveled"
     );
 }
 
-/// Restore a checkpoint with deeply nested staged entries, then
+/// Travel a snapshot with deeply nested staged entries, then
 /// immediately unmount (without reading files).  Verifies that
 /// `yolo_unstage_all` properly releases all pinned dentries during
 /// unmount — the YoloSession Drop handler will panic if the kernel
 /// produces any warnings (e.g. from leaked dentry refs).
 #[test]
-fn restore_then_immediate_unmount() {
+fn travel_then_immediate_unmount() {
     let s = YoloSession::new().expect("session setup");
 
     // Create a non-trivial tree across multiple directories.
@@ -1037,49 +1037,49 @@ fn restore_then_immediate_unmount() {
     fs::create_dir(s.mnt_path("ra/sub")).expect("mkdir sub");
     fs::write(s.mnt_path("ra/sub/nested.txt"), "nested\n").expect("write nested");
 
-    s.cli(&["checkpoint", "chk1"]).expect("checkpoint");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
-    // Post-checkpoint modifications.
+    // Post-snapshot modifications.
     fs::write(s.mnt_path("ra/f0.txt"), "changed\n").expect("modify");
     fs::remove_file(s.mnt_path("rb/f1.txt")).expect("delete");
     fs::write(s.mnt_path("rc/extra.txt"), "extra\n").expect("create extra");
 
-    s.cli(&["restore", "chk1"]).expect("restore");
+    s.cli(&["travel", "chk1"]).expect("travel");
 
     // Immediately unmount without reading any files.
     // YoloSession::drop checks for kernel warnings — if yolo_unstage_all
     // leaks dentry references, the kernel will WARN and this test fails.
     let (ok, _, stderr) = s.cli_output(&["unmount", "--force"]).unwrap();
-    assert!(ok, "unmount after restore should succeed: {stderr}");
+    assert!(ok, "unmount after travel should succeed: {stderr}");
 }
 
-/// Restore to a jump meta (not a checkpoint) by its numeric gen_id.
+/// Travel to a jump meta (not a snapshot) by its numeric gen_id.
 #[test]
-fn restore_to_restore_meta() {
+fn travel_to_travel_meta() {
     let s = YoloSession::new().expect("session setup");
 
     // v1 state
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write v1");
-    s.cli(&["checkpoint", "c1"]).expect("checkpoint c1");
+    s.cli(&["snapshot", "c1"]).expect("snapshot c1");
 
     // v2 state
     fs::write(s.mnt_path("a.txt"), "v2\n").expect("write v2");
     fs::write(s.mnt_path("b.txt"), "new\n").expect("write b");
-    s.cli(&["checkpoint", "c2"]).expect("checkpoint c2");
+    s.cli(&["snapshot", "c2"]).expect("snapshot c2");
 
-    // Restore to c1 — creates a jump meta (gen_id = 3).
-    s.cli(&["restore", "c1"]).expect("restore to c1");
+    // Travel to c1 — creates a jump meta (gen_id = 3).
+    s.cli(&["travel", "c1"]).expect("travel to c1");
     assert_eq!(fs::read_to_string(s.mnt_path("a.txt")).unwrap(), "v1\n");
     assert!(!s.mnt_path("b.txt").exists());
 
-    // Build on top of the restored state.
+    // Build on top of the traveled state.
     fs::write(s.mnt_path("c.txt"), "post-jump\n").expect("write c");
-    s.cli(&["checkpoint", "c3"]).expect("checkpoint c3");
+    s.cli(&["snapshot", "c3"]).expect("snapshot c3");
 
     // Now jump to the jump meta by its numeric gen_id ("3").
-    // This restores to position 3 in the timeline. Only metas between [3]
-    // and the new restore become unreachable — c1 and c2 are preserved.
-    s.cli(&["restore", "3"]).expect("restore to jump meta");
+    // This travels to position 3 in the timeline. Only metas between [3]
+    // and the new travel become unreachable — c1 and c2 are preserved.
+    s.cli(&["travel", "3"]).expect("travel to jump meta");
 
     let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
     assert_eq!(content, "v1\n", "should see state at gen 3");
@@ -1091,7 +1091,7 @@ fn restore_to_restore_meta() {
 
     // Verify we can still undo to c2 (it should still be reachable since
     // the unreachable region only starts at meta 3).
-    s.cli(&["restore", "c2"]).expect("undo to c2");
+    s.cli(&["travel", "c2"]).expect("undo to c2");
     let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
     assert_eq!(content, "v2\n", "should see v2 after undo to c2");
     assert!(s.mnt_path("b.txt").exists(), "b.txt should reappear");
