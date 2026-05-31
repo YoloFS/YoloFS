@@ -9,8 +9,8 @@
  *   S\0<path>\0<ino>\n                — Stage (staged content at path)
  *   D\0<path>\n                       — Delete
  *   R\0<dst>\0<src>\n                  — Rename
- *   M\0<gen>\0<name>\n                — Snapshot
- *   J\0<gen>\0<target_gen>\n          — Travel
+ *   P\0<gen>\0<name>\n                — Snapshot
+ *   T\0<gen>\0<target_gen>\n          — Travel
  *   B\0<path>\n                       — Blocked (permission denied;
  *                                       observational, does not set dirty)
  */
@@ -141,7 +141,7 @@ int yolo_journal_snapshot(struct yolo_sb_info *sbi, u16 id, const char *name)
  * @gen: new generation assigned to this travel
  * @target_gen: the snapshot gen being traveled to
  *
- * Format: J\0<gen>\0<target_gen>\n
+ * Format: T\0<gen>\0<target_gen>\n
  */
 int yolo_journal_travel(struct yolo_sb_info *sbi, u16 gen, u16 target_gen)
 {

@@ -81,16 +81,16 @@ grouped into `struct yolo_ask_engine` (embedded in `yolo_sb_info` as
 |-------|---------|
 | `pending_reqs` | Linked list of `yolo_perm_request` structs waiting for a daemon decision |
 | `pending_lock` | Spinlock protecting `pending_reqs` |
-| `request_waitq` | Wait queue — daemon's `GET_REQUEST` ioctl blocks here |
+| `request_waitq` | Wait queue — daemon's `GET_ASK` ioctl blocks here |
 | `next_req_id` | Atomic counter for unique request IDs |
 | `timeout_s` | Seconds before an unanswered ask applies the default |
 | `default_perm` | Default decision (`deny` or `read`) when no daemon or timeout |
-| `daemon_file` | Pointer to the daemon's open `struct file` (the `.ctl` control file); NULL if no daemon connected. Set atomically on the first `GET_REQUEST` ioctl, cleared in `yolo_ctl_release()`. Only one daemon allowed — a second `GET_REQUEST` from a different fd returns `-EBUSY`. |
+| `daemon_file` | Pointer to the daemon's open `struct file` (the `.ctl` control file); NULL if no daemon connected. Set atomically on the first `GET_ASK` ioctl, cleared in `yolo_ctl_release()`. Only one daemon allowed — a second `GET_ASK` from a different fd returns `-EBUSY`. |
 | `dispatched` | Linked list of requests sent to daemon but not yet answered |
 | `dispatch_lock` | Spinlock protecting `dispatched` and `daemon_file` |
 
 The daemon connects by opening `.yolofs/mnt/.ctl` and issuing its first
-`GET_REQUEST` ioctl to claim exclusive daemon status. On close, all
+`GET_ASK` ioctl to claim exclusive daemon status. On close, all
 dispatched-but-unanswered
 requests receive `default_perm` and `daemon_file` is reset to NULL.
 
@@ -100,7 +100,7 @@ requests receive `default_perm` and `daemon_file` is reset to NULL.
 |-------|---------|
 | `id` | Unique request ID (from `next_req_id`) |
 | `path`, `op`, `pid`, `comm` | Context sent to the daemon |
-| `decision` | Set by the daemon's `PUT_RESPONSE` ioctl |
+| `decision` | Set by the daemon's `PUT_DECISION` ioctl |
 | `done` | Completion — the blocked thread sleeps here |
 | `ref` | Refcount (kernel thread + daemon fd each hold a ref) |
 
@@ -289,15 +289,15 @@ When a thread accesses a file whose effective permission is `ask`:
      }
   3. Enqueue request on sb->pending_reqs
   4. wake_up(&sb->request_waitq)
-  5. wait_event_interruptible(              ioctl(GET_REQUEST) blocks
+  5. wait_event_interruptible(              ioctl(GET_ASK) blocks
        req->done,                            until request is available
        req->decision != UNDECIDED            |
      )                                      dequeue request
-     ...thread sleeps...                     -> struct yolo_ioc_ask_request { id, path, op, ... }
+     ...thread sleeps...                     -> struct yolo_ioc_ask { id, path, op, ... }
                                              |
                                             Daemon shows prompt / applies policy
                                              |
-                                             ioctl(PUT_RESPONSE) -> struct yolo_ioc_ask_response {
+                                             ioctl(PUT_DECISION) -> struct yolo_ioc_decision {
                                                          id: 42, decision: ALLOW }
                                               |
    6. req->decision = ALLOW                  ioctl handler:
@@ -315,7 +315,7 @@ Key properties:
 - **Timeout**: Configurable via mount option `ask_timeout=<seconds>`.
   If the daemon doesn't respond, the default action (configurable:
   `deny` or `read`) is applied.
-- **Minimal response**: `yolo_ioc_ask_response` only carries `{ id, decision }`.
+- **Minimal response**: `yolo_ioc_decision` only carries `{ id, decision }`.
   Persisting policy is always a separate `ioctl(YOLO_IOC_RULE_SET)`.
 - **One-time by default**: The decision applies to this single access only.
   Next access to the same file triggers ask again. To persist a decision,

@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn segmentation_splits_at_j_boundary() {
+    fn segmentation_splits_at_t_boundary() {
         let records = vec![
             Record::Meta(Meta::Snapshot {
                 gen_id: 1,
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn segmentation_only_j_records() {
+    fn segmentation_only_t_records() {
         let records = vec![Record::Meta(Meta::Travel {
             gen_id: 1,
             target_gen: 99,
@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn reachable_nested_j_in_dead_zone() {
+    fn reachable_nested_t_in_dead_zone() {
         // P1 [A] P2 [B] P3 T4(P1) [D] P5 [E] P6 T7(P5)
         let records = vec![
             Record::Meta(Meta::Snapshot {
@@ -605,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn reachable_consecutive_j_records() {
+    fn reachable_consecutive_t_records() {
         // P1 [A] P2 [B] P3 T4(P2) T5(P1)
         let records = vec![
             Record::Meta(Meta::Snapshot {
@@ -692,9 +692,9 @@ mod tests {
     }
 
     #[test]
-    fn reachable_corrupt_j_record_skipped() {
+    fn reachable_corrupt_t_record_skipped() {
         // P1 [A] T2(P99) [B]
-        // J targets nonexistent P99 — skipped, all segments alive.
+        // T targets nonexistent P99 — skipped, all segments alive.
         let records = vec![
             Record::Meta(Meta::Snapshot {
                 gen_id: 1,

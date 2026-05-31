@@ -28,8 +28,8 @@ pub const YOLO_PERM_HIDE: u8 = 5;
 // Ioctl command numbers — must match kmod/yolofs.h
 nix::ioctl_write_ptr!(ioctl_rule_set, b'A', 10, YoloIocRule);
 nix::ioctl_readwrite!(ioctl_rule_resolve, b'A', 11, YoloIocRule);
-nix::ioctl_readwrite!(ioctl_get_request, b'A', 30, YoloIocAskRequest);
-nix::ioctl_write_ptr!(ioctl_put_response, b'A', 31, YoloIocAskResponse);
+nix::ioctl_readwrite!(ioctl_get_ask, b'A', 30, YoloIocAsk);
+nix::ioctl_write_ptr!(ioctl_put_decision, b'A', 31, YoloIocDecision);
 nix::ioctl_readwrite!(ioctl_snapshot, b'A', 40, YoloIocSnapshot);
 nix::ioctl_readwrite!(ioctl_travel, b'A', 41, YoloIocTravel);
 
@@ -42,11 +42,11 @@ pub struct YoloIocRule {
     pub _pad: [u8; 5],
 }
 
-/// Matches `struct yolo_ioc_ask_request` in the kernel (kernel → userspace).
+/// Matches `struct yolo_ioc_ask` in the kernel (kernel → userspace).
 /// Userspace provides path_ptr + path_buf_len; kernel fills the rest.
 #[repr(C)]
 #[derive(Clone)]
-pub struct YoloIocAskRequest {
+pub struct YoloIocAsk {
     pub id: u64,
     pub op: u32,
     pub pid: u32,
@@ -57,9 +57,9 @@ pub struct YoloIocAskRequest {
     pub _pad: [u8; 4],
 }
 
-/// Matches `struct yolo_ioc_ask_response` in the kernel (userspace → kernel).
+/// Matches `struct yolo_ioc_decision` in the kernel (userspace → kernel).
 #[repr(C)]
-pub struct YoloIocAskResponse {
+pub struct YoloIocDecision {
     pub id: u64,
     pub decision: u8,
     pub _pad: [u8; 7],
@@ -118,9 +118,9 @@ impl PermRequest {
 
 /// Read one permission request via ioctl. Returns a `PermRequest` with
 /// owned path data.
-pub fn get_request(fd: &File) -> std::result::Result<PermRequest, nix::errno::Errno> {
+pub fn get_ask(fd: &File) -> std::result::Result<PermRequest, nix::errno::Errno> {
     let mut path_buf = [0u8; YOLO_PATH_MAX];
-    let mut req = YoloIocAskRequest {
+    let mut req = YoloIocAsk {
         id: 0,
         op: 0,
         pid: 0,
@@ -130,7 +130,7 @@ pub fn get_request(fd: &File) -> std::result::Result<PermRequest, nix::errno::Er
         path_len: 0,
         _pad: [0u8; 4],
     };
-    unsafe { ioctl_get_request(fd.as_raw_fd(), &mut req) }?;
+    unsafe { ioctl_get_ask(fd.as_raw_fd(), &mut req) }?;
     let path = std::str::from_utf8(&path_buf[..req.path_len as usize])
         .unwrap_or("<invalid>")
         .to_string();
@@ -143,14 +143,14 @@ pub fn get_request(fd: &File) -> std::result::Result<PermRequest, nix::errno::Er
     })
 }
 
-/// Write one `YoloIocAskResponse` via ioctl on a directory fd.
-pub fn put_response(fd: &File, id: u64, decision: u8) -> Result<()> {
-    let resp = YoloIocAskResponse {
+/// Write one `YoloIocDecision` via ioctl on a directory fd.
+pub fn put_decision(fd: &File, id: u64, decision: u8) -> Result<()> {
+    let resp = YoloIocDecision {
         id,
         decision,
         _pad: [0u8; 7],
     };
-    unsafe { ioctl_put_response(fd.as_raw_fd(), &resp) }.context("ioctl PUT_RESPONSE")?;
+    unsafe { ioctl_put_decision(fd.as_raw_fd(), &resp) }.context("ioctl PUT_DECISION")?;
     Ok(())
 }
 
@@ -235,8 +235,8 @@ mod tests {
     #[test]
     fn struct_sizes() {
         // Must match the kernel struct sizes for binary protocol compat
-        assert_eq!(size_of::<YoloIocAskRequest>(), 48);
-        assert_eq!(size_of::<YoloIocAskResponse>(), 16);
+        assert_eq!(size_of::<YoloIocAsk>(), 48);
+        assert_eq!(size_of::<YoloIocDecision>(), 16);
         assert_eq!(size_of::<YoloIocRule>(), 16);
         assert_eq!(size_of::<YoloIocSnapshot>(), 24);
         assert_eq!(size_of::<YoloIocTravel>(), 32);

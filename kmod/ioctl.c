@@ -4,8 +4,8 @@
  *
  * All ioctl operations go through the synthetic .ctl file at the mount
  * root.  The permission daemon claims exclusive daemon status on its
- * first GET_REQUEST call; only that fd may issue GET_REQUEST and
- * PUT_RESPONSE.  All other operations may be issued from any fd.
+ * first GET_ASK call; only that fd may issue GET_ASK and
+ * PUT_DECISION.  All other operations may be issued from any fd.
  *
  * On close of the daemon fd, any dispatched-but-unanswered requests
  * get the default decision.
@@ -34,14 +34,14 @@ static int yolo_ctl_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-/* ── GET_REQUEST: dequeue pending request ──────────────────────────── */
+/* ── GET_ASK: dequeue pending request ──────────────────────────── */
 
-static long yolo_get_request_ioctl(struct file *file, unsigned long arg)
+static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
 	struct yolo_ask_engine *eng = &sbi->ask_engine;
 	struct yolo_perm_request *req;
-	struct yolo_ioc_ask_request out;
+	struct yolo_ioc_ask out;
 	int err;
 	__u16 path_len;
 
@@ -125,12 +125,12 @@ requeue_pending:
 	return err;
 }
 
-/* ── PUT_RESPONSE: submit decision ─────────────────────────────────── */
+/* ── PUT_DECISION: submit decision ─────────────────────────────────── */
 
-static long yolo_put_response_ioctl(struct file *file, unsigned long arg)
+static long yolo_put_decision_ioctl(struct file *file, unsigned long arg)
 {
 	struct yolo_ask_engine *eng = &YOLO_SB(file_inode(file)->i_sb)->ask_engine;
-	struct yolo_ioc_ask_response in;
+	struct yolo_ioc_decision in;
 	struct yolo_perm_request *req, *tmp;
 	bool found = false;
 
@@ -710,11 +710,11 @@ static long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
 			   unsigned long arg)
 {
 	switch (cmd) {
-	case YOLO_IOC_GET_REQUEST:
-		return yolo_get_request_ioctl(file, arg);
+	case YOLO_IOC_GET_ASK:
+		return yolo_get_ask_ioctl(file, arg);
 
-	case YOLO_IOC_PUT_RESPONSE:
-		return yolo_put_response_ioctl(file, arg);
+	case YOLO_IOC_PUT_DECISION:
+		return yolo_put_decision_ioctl(file, arg);
 
 	case YOLO_IOC_RULE_SET:
 		return yolo_rule_set_ioctl(file, arg);

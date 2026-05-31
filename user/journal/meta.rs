@@ -125,8 +125,8 @@ impl MetaIndex {
 
     /// Compute alive flags for all segments.
     ///
-    /// Walks travel (J) metas right-to-left. Each J(target_gen) kills
-    /// segments between the target snapshot and the J meta.
+    /// Walks travel (T) metas right-to-left. Each T(target_gen) kills
+    /// segments between the target snapshot and the T meta.
     pub fn alive_segments(&self, num_segments: usize) -> Vec<bool> {
         self.alive_segments_range(0..self.len(), num_segments)
     }
@@ -337,7 +337,7 @@ mod tests {
             }),
         ];
         let j = Journal::new(records);
-        // metas: [phantom(0), M(1), M(2), J(3→0)]
+        // metas: [phantom(0), P(1), P(2), T(3→0)]
         // segments: [seg0, seg1, seg2, seg3]
         // Travel to 0 kills segments 0..3 → seg0, seg1, seg2 dead.
         let alive = j.metas.alive_segments(j.segments.len());
@@ -443,7 +443,7 @@ mod tests {
             }),
         ];
         let j = Journal::new(records);
-        // --at c2: prev M is meta 0 (P1), so start=1, end=2
+        // --at c2: prev P is meta 0 (P1), so start=1, end=2
         let (start, end) = j
             .metas
             .segment_range(Some("c2"), None, None, j.segments.len())
@@ -490,7 +490,7 @@ mod tests {
             }),
         ];
         let j = Journal::new(records);
-        // --at c5: prev M is meta[2] (P3), so start=3, end=5
+        // --at c5: prev P is meta[2] (P3), so start=3, end=5
         let (start, end) = j
             .metas
             .segment_range(Some("c5"), None, None, j.segments.len())
@@ -582,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_j_record_skipped_in_alive() {
+    fn corrupt_t_record_skipped_in_alive() {
         let records = vec![
             Record::Meta(Meta::Snapshot {
                 gen_id: 1,
@@ -693,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn alive_consecutive_j_records() {
+    fn alive_consecutive_t_records() {
         // P1 [A] P2 [B] P3 T4(P2) T5(P1)
         let records = vec![
             Record::Meta(Meta::Snapshot {
@@ -761,7 +761,7 @@ mod tests {
     }
 
     #[test]
-    fn alive_nested_j_in_dead_zone() {
+    fn alive_nested_t_in_dead_zone() {
         // P1 [A] P2 [B] P3 T4(P1) [D] P5 [E] P6 T7(P5)
         let records = vec![
             Record::Meta(Meta::Snapshot {

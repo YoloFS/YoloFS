@@ -517,8 +517,8 @@ sequence of NUL-separated fields terminated by a newline.
 S\0<path>\0<ino>\n                — Stage (staged content at path)
 D\0<path>\n                      — Delete
 R\0<dst>\0<src>\n                 — Rename
-M\0<gen>\0<name>\n                — Snapshot
-J\0<gen>\0<target_gen>\n          — Travel
+P\0<gen>\0<name>\n                — Snapshot
+T\0<gen>\0<target_gen>\n          — Travel
 B\0<path>\n                      — Blocked (permission denied)
 ```
 
@@ -656,7 +656,7 @@ This is the re-COW mechanism.
 2. Takes `staging_sem` write lock.
 3. If `staging_fd_count > 0`, releases sem and returns `-EBUSY`.
 4. Increments `sbi->gen` (atomic counter).
-5. Appends `M\0<gen>\0<name>\n` to the journal.
+5. Appends `P\0<gen>\0<name>\n` to the journal.
 6. Releases `staging_sem`.
 7. Returns the gen to userspace.
 
@@ -712,11 +712,11 @@ The generation counter collapses consecutive snapshots.
 ```
 S\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
 S\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
-M\01\0after make build\n                          # snapshot 1
+P\01\0after make build\n                          # snapshot 1
 S\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
 D\0/src/lib.rs\0f\n                               # delete lib.rs
 S\0/src/new.rs\0f\04\n                           # create new.rs
-M\02\0after make test\n                           # snapshot 2
+P\02\0after make test\n                           # snapshot 2
 S\0/src/new.rs\0f\05\n                           # re-COW: new.rs -> ino 5
 ```
 
@@ -733,13 +733,13 @@ State at each point:
 ```
 S\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
 S\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
-M\01\0after make build\n                          # snapshot 1
+P\01\0after make build\n                          # snapshot 1
 S\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
 D\0/src/lib.rs\0f\n                               # delete lib.rs
-M\02\0after make test\n                           # snapshot 2
-J\03\01\n                                         # travel to snapshot 1 (gen bumped to 3)
+P\02\0after make test\n                           # snapshot 2
+T\03\01\n                                         # travel to snapshot 1 (gen bumped to 3)
 S\0/src/util.rs\0f\04\n                          # create util.rs -> ino 4
-M\04\0after make fix\n                            # snapshot 4
+P\04\0after make fix\n                            # snapshot 4
 ```
 
 Reachable records (after `reachable`): S(main.rs→1), S(lib.rs→2), P1, S(util.rs→4), P4
@@ -790,7 +790,7 @@ O(R) backward walk to build reachable ranges, skip unreachable T records.
    `vmalloc`s + `copy_from_user`s the tree buffer, walks it iteratively
    with a directory stack to inject VFS dentries with new gen (via
    `d_alloc()`, set target/pinned, `d_add()`, `dget()` to pin), appends
-   `J\0<new_gen>\0<target_gen>\n`, returns new_gen.  The
+   `T\0<new_gen>\0<target_gen>\n`, returns new_gen.  The
    `YOLO_IOC_TRAVEL` ioctl **increments** gen (monotonically) instead
    of setting it to the target value — this avoids gen collisions.
    Injected inodes receive the new gen value in `staging_gen`.

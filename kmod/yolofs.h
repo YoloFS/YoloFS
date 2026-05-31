@@ -89,8 +89,8 @@ struct yolo_ioc_travel {
 
 #define YOLO_IOC_RULE_SET	_IOW('A', 10, struct yolo_ioc_rule)
 #define YOLO_IOC_RULE_RESOLVE	_IOWR('A', 11, struct yolo_ioc_rule)
-#define YOLO_IOC_GET_REQUEST	_IOWR('A', 30, struct yolo_ioc_ask_request)
-#define YOLO_IOC_PUT_RESPONSE	_IOW('A', 31, struct yolo_ioc_ask_response)
+#define YOLO_IOC_GET_ASK	_IOWR('A', 30, struct yolo_ioc_ask)
+#define YOLO_IOC_PUT_DECISION	_IOW('A', 31, struct yolo_ioc_decision)
 #define YOLO_IOC_SNAPSHOT		_IOWR('A', 40, struct yolo_ioc_snapshot)
 #define YOLO_IOC_TRAVEL		_IOWR('A', 41, struct yolo_ioc_travel)
 
@@ -101,7 +101,7 @@ struct yolo_ioc_travel {
  * Userspace provides path_ptr + path_buf_len; kernel writes path into
  * the buffer and sets path_len to the actual length.
  */
-struct yolo_ioc_ask_request {
+struct yolo_ioc_ask {
 	__u64	id;
 	__u32	op;			/* YOLO_OP_READ / WRITE / EXEC */
 	__u32	pid;
@@ -113,7 +113,7 @@ struct yolo_ioc_ask_request {
 };
 
 /* userspace → kernel: write() accepts one of these */
-struct yolo_ioc_ask_response {
+struct yolo_ioc_decision {
 	__u64	id;
 	__u8	decision;		/* enum yolo_perm value */
 	__u8	_pad[7];

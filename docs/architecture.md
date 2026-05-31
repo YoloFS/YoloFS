@@ -38,8 +38,8 @@ interposition. It adds two orthogonal capabilities:
 
  ┌──────────────────────────────────────────────────┐
  │  ioctl on .yolofs/mnt/.ctl control file            │
- │    ← YOLO_IOC_GET_REQUEST:  dequeue perm request │
- │    → YOLO_IOC_PUT_RESPONSE: post decision        │
+ │    ← YOLO_IOC_GET_ASK:  dequeue an ask           │
+ │    → YOLO_IOC_PUT_DECISION: post decision        │
  │    → YOLO_IOC_RULE_SET/RESOLVE: manage rules     │
  │    → YOLO_IOC_TRAVEL: reset/travel               │
  │    → YOLO_IOC_SNAPSHOT: create snapshot          │
@@ -161,9 +161,9 @@ $ cat /tmp/secrets
               -> caches ASK on secrets inode
    -> kernel: yolo_open() -> cached_perm=ASK
    -> kernel: enqueue request, thread sleeps
-   -> daemon: ioctl(GET_REQUEST) -> yolo_ioc_ask_request { id:1, path:"/tmp/secrets", ... }
+   -> daemon: ioctl(GET_ASK) -> yolo_ioc_ask { id:1, path:"/tmp/secrets", ... }
    -> daemon: decision: read
-   -> daemon: ioctl(PUT_RESPONSE, yolo_ioc_ask_response { id:1, decision:READ })
+   -> daemon: ioctl(PUT_DECISION, yolo_ioc_decision { id:1, decision:READ })
    -> kernel: wake thread, apply one-shot READ to this open
    -> kernel: open base/tmp/secrets read-only, proceed
 
