@@ -12,16 +12,6 @@ yolo: already initialized
 $ yolo mount
 yolo: mounting ~/project/.yolofs/mnt (permission=1,staging=1,ask_timeout=30,ask_default=4)
 yolo: applying 10 rule(s) from yolofs.toml
-  ✓ ~/.ssh/id_ed25519 = ask
-  ✓ ~/project = allow
-  ✓ ~/project/.yolofs = hide
-  ✓ /usr/bin = read
-  ✓ /etc = read
-  ✓ /usr/lib = read
-  ✓ /usr/lib64 = read
-  ✓ /usr/sbin = read
-  ✓ /usr = read
-  ✓ ~/project/yolofs.toml = hide
 
 
 ════════════════════════════════════════════════════════════

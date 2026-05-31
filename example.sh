@@ -74,4 +74,8 @@ section "Teardown"
 run yolo abort --force
 run yolo unmount
 run yolo unload
+# Undo the demo's edits so example/ stays pristine: drop the rules it added
+# (toml_edit makes set+unset byte-neutral) and remove the scratch files.
+yolo rule unset secret.txt >/dev/null 2>&1
+yolo rule unset config.ini >/dev/null 2>&1
 rm -f secret.txt config.ini
