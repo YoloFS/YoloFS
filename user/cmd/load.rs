@@ -67,7 +67,9 @@ pub fn unload() -> Result<()> {
 
 /// Unload then reload the kernel module.
 pub fn reload() -> Result<()> {
-    unload()?;
+    if is_loaded() {
+        unload()?;
+    }
     load()?;
     Ok(())
 }

@@ -4,7 +4,6 @@
 ════════════════════════════════════════════════════════════
 
 $ yolo reload
-yolo: kernel module not loaded
 yolo: loading kernel module /lib/modules/6.8.0-117-generic/extra/yolofs.ko
 
 $ yolo init
