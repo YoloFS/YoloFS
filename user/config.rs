@@ -99,8 +99,8 @@ fn resolve_to_abs(path: &str) -> Result<String> {
 }
 
 /// Lexically normalize a rule/query path to an absolute, `.`/`..`-resolved form
-/// *without* requiring it to exist (unlike [`resolve_to_abs`]). Used by `show`
-/// to resolve inheritance over the declared rules.
+/// *without* requiring it to exist (unlike [`resolve_to_abs`]). Used for rule
+/// matching and to display unambiguous paths in `yolo rule` / `rule resolve`.
 fn normalize_lexical(path: &str) -> Result<String> {
     let expanded = expand_home(path)?;
     let base = if expanded.starts_with('/') {
@@ -326,7 +326,21 @@ pub fn list_rules() -> Result<()> {
         eprintln!("{}", "no rules configured".dimmed());
         return Ok(());
     }
-    for (path, perm) in &config.rules {
+    // Show each rule's normalized target (`~`/`$HOME` expanded, made absolute,
+    // `.`/`..` resolved) so it's unambiguous — but lexically, so symlinks are
+    // left alone (`/bin` stays `/bin`). The file keeps the paths as written.
+    let mut rows: Vec<(String, Perm)> = config
+        .rules
+        .iter()
+        .map(|(path, perm)| {
+            (
+                normalize_lexical(path).unwrap_or_else(|_| path.clone()),
+                *perm,
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, perm) in rows {
         println!("{path} = {perm}");
     }
     Ok(())
@@ -340,6 +354,9 @@ pub fn list_rules() -> Result<()> {
 pub fn resolve_rule(path: &str) -> Result<()> {
     let config = load_config();
     let cfg = match_rule(&config.rules, path)?;
+    let shown = normalize_lexical(path).unwrap_or_else(|_| path.to_string());
+    // Normalize the parent rule a match inherits from, for a consistent display.
+    let from = |rp: &str| normalize_lexical(rp).unwrap_or_else(|_| rp.to_string());
 
     // When mounted, the kernel is authoritative; fall through to the config
     // resolver if the query fails (e.g. the path doesn't exist) or unmounted.
@@ -348,10 +365,10 @@ pub fn resolve_rule(path: &str) -> Result<()> {
     {
         let source = match cfg {
             Some((_, p, true)) if p == kperm => "explicit".to_string(),
-            Some((rp, p, false)) if p == kperm => format!("inherited from {rp}"),
+            Some((rp, p, false)) if p == kperm => format!("inherited from {}", from(rp)),
             _ => "live".to_string(),
         };
-        println!("{kperm} ({source})");
+        println!("{shown} → {kperm} ({source})");
         if let Some((_, p, _)) = cfg
             && p != kperm
         {
@@ -364,9 +381,11 @@ pub fn resolve_rule(path: &str) -> Result<()> {
     }
 
     match cfg {
-        Some((_, perm, true)) => println!("{perm} (explicit)"),
-        Some((rule_path, perm, false)) => println!("{perm} (inherited from {rule_path})"),
-        None => println!("{} (default — no matching rule)", Perm::Ask),
+        Some((_, perm, true)) => println!("{shown} → {perm} (explicit)"),
+        Some((rule_path, perm, false)) => {
+            println!("{shown} → {perm} (inherited from {})", from(rule_path))
+        }
+        None => println!("{shown} → {} (default — no matching rule)", Perm::Ask),
     }
     Ok(())
 }

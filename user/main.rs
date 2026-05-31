@@ -114,10 +114,11 @@ enum Command {
         #[arg(long)]
         path: Option<String>,
     },
-    /// Manage permission rules (no subcommand lists them)
+    /// Manage permission rules
+    #[command(arg_required_else_help = true)]
     Rule {
         #[command(subcommand)]
-        action: Option<RuleAction>,
+        action: RuleAction,
     },
     /// Handle ask requests (daemon mode)
     Watch {
@@ -196,14 +197,14 @@ fn run_cli() -> anyhow::Result<u8> {
         Some(Command::Timeline) => timeline::run()?,
         Some(Command::Audit { path }) => audit::run(path.as_deref())?,
         Some(Command::Rule { action }) => match action {
-            None | Some(RuleAction::List) => config::list_rules()?,
-            Some(RuleAction::Resolve { path }) => config::resolve_rule(&path)?,
-            Some(RuleAction::Unset { path }) => config::unset_rule(&path)?,
-            Some(RuleAction::Ask { path }) => config::set_rule(&path, perm::Perm::Ask)?,
-            Some(RuleAction::Allow { path }) => config::set_rule(&path, perm::Perm::Allow)?,
-            Some(RuleAction::Read { path }) => config::set_rule(&path, perm::Perm::Read)?,
-            Some(RuleAction::Deny { path }) => config::set_rule(&path, perm::Perm::Deny)?,
-            Some(RuleAction::Hide { path }) => config::set_rule(&path, perm::Perm::Hide)?,
+            RuleAction::List => config::list_rules()?,
+            RuleAction::Resolve { path } => config::resolve_rule(&path)?,
+            RuleAction::Unset { path } => config::unset_rule(&path)?,
+            RuleAction::Ask { path } => config::set_rule(&path, perm::Perm::Ask)?,
+            RuleAction::Allow { path } => config::set_rule(&path, perm::Perm::Allow)?,
+            RuleAction::Read { path } => config::set_rule(&path, perm::Perm::Read)?,
+            RuleAction::Deny { path } => config::set_rule(&path, perm::Perm::Deny)?,
+            RuleAction::Hide { path } => config::set_rule(&path, perm::Perm::Hide)?,
         },
         Some(Command::Watch { allow_all }) => watch::run(allow_all)?,
         None => {

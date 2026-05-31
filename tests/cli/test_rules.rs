@@ -29,8 +29,8 @@ fn apply_rules_reports_count_and_lists_via_rule() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("applying 2 rule(s)"), "stderr = {stderr}");
 
-    // The rules themselves are inspected via `yolo rule`.
-    let (_ok, stdout, _e) = session.cli_output(&["rule"]).unwrap();
+    // The rules themselves are inspected via `yolo rule list`.
+    let (_ok, stdout, _e) = session.cli_output(&["rule", "list"]).unwrap();
     assert!(stdout.contains("/etc = read"), "rule list: {stdout}");
     assert!(stdout.contains("/usr = read"), "rule list: {stdout}");
 }

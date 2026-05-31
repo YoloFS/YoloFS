@@ -92,7 +92,7 @@ $ yolo rule deny /etc
 $ yolo rule hide ~/.ssh
 $ yolo rule ask /etc/hosts   # force a prompt, overriding an inherited rule
 $ yolo rule unset src    # remove a rule (revert to inherited)
-$ yolo rule list         # list configured rules (bare `yolo rule` also lists)
+$ yolo rule list         # list configured rules (bare `yolo rule` prints the subcommands)
 $ yolo rule resolve src  # effective level for a path + where it comes from
 $ yolo watch             # handle ask requests (daemon mode)
 ```
