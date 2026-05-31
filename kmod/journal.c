@@ -11,6 +11,8 @@
  *   R\0<dst>\0<src>\n                  — Rename
  *   M\0<gen>\0<name>\n                — Mark
  *   J\0<gen>\0<target_gen>\n          — Jump
+ *   B\0<path>\n                       — Blocked (permission denied;
+ *                                       observational, does not set dirty)
  */
 
 #include "yolofs.h"
@@ -70,7 +72,7 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 
 	pos = f->f_pos;
 	err = kernel_write(f, buf, off, &pos);
-	if (err >= 0 && tag != 'M' && tag != 'J')
+	if (err >= 0 && tag != 'M' && tag != 'J' && tag != 'B')
 		WRITE_ONCE(sbi->dirty, true);
 	return err < 0 ? err : 0;
 }
@@ -151,4 +153,28 @@ int yolo_journal_jump(struct yolo_sb_info *sbi, u16 gen, u16 target_gen)
 		 (unsigned)target_gen);
 	return journal_write(sbi, 'J',
 			     (const char *[]){ gen_str, target_str, NULL });
+}
+
+/**
+ * yolo_journal_block - Append a "permission blocked" record to the journal.
+ * @sbi: superblock info (has journal_file)
+ * @dentry: the target dentry whose access was denied
+ *
+ * Observational record: written when a yolofs rule causes the kernel to
+ * return -EACCES for an access. The path is the agent's intended target
+ * (file for opens; child for parent-write-denied mutates), not the
+ * parent dentry whose perm caused the denial. Does not set sbi->dirty
+ * (see journal_write).
+ *
+ * Format: B\0<path>\n
+ */
+int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *dentry)
+{
+	char path_buf[YOLO_PATH_MAX];
+	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
+	if (IS_ERR(path))
+		return PTR_ERR(path);
+
+	return journal_write(sbi, 'B',
+			     (const char *[]){ path, NULL });
 }

@@ -378,6 +378,14 @@ longest-prefix-match for free. This satisfies all three principles:
 | unlink, rmdir | parent dir's perm (write) | `yolo_check_mutate_perm` |
 | rename | both parents' perm (write) | `yolo_check_mutate_perm` × 2 |
 
+Whenever a gate returns `-EACCES`, the kernel appends a `B\0<path>\n`
+record to the journal (the *target* path the agent tried to act on, not
+the parent whose perm was the source of denial). `yolo audit` surfaces
+these so the user can review what was blocked, in order, relative to
+checkpoints. `HIDDEN` paths return `-ENOENT` and are not logged. See
+[staging.md §Journal Format](staging.md#journal-format) for the record
+shape and semantics.
+
 **What is NOT gated**:
 
 | Operation | Reason |

@@ -130,8 +130,11 @@ static int yolo_open(struct inode *inode, struct file *file)
 		char buf[YOLO_PATH_MAX];
 
 		err = yolo_check_open_perm(sbi, dentry, file, buf);
-		if (err)
+		if (err) {
+			if (err == -EACCES)
+				yolo_journal_block(sbi, dentry);
 			goto out_free;
+		}
 	}
 
 	if (sbi->staging) {

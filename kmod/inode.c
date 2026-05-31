@@ -20,11 +20,15 @@
 static int yolo_check_mutate_perm(struct dentry *dentry)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
+	int err;
 
 	if (!sbi->permission)
 		return 0;
 
-	return yolo_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY, 0);
+	err = yolo_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY, 0);
+	if (err == -EACCES)
+		yolo_journal_block(sbi, dentry);
+	return err;
 }
 
 /* ── create/mkdir/symlink — allocate inode + set up dentry ────────── */
@@ -226,12 +230,22 @@ static int yolo_permission(struct mnt_idmap *idmap,
 	case YOLO_PERM_ALLOW:
 		return 0;
 	case YOLO_PERM_RO:
-		return (mask & MAY_WRITE) ? -EACCES : 0;
+		if (!(mask & MAY_WRITE))
+			return 0;
+		break;
 	case YOLO_PERM_DENY:
-		return -EACCES;
+		break;
 	default:
-		return -EACCES;
+		break;
 	}
+
+	/* -EACCES path: log a block record against the inode's dentry. */
+	struct dentry *alias = d_find_alias(inode);
+	if (alias) {
+		yolo_journal_block(sbi, alias);
+		dput(alias);
+	}
+	return -EACCES;
 }
 
 /* ── setattr ───────────────────────────────────────────────────────── */

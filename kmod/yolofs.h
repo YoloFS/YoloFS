@@ -398,6 +398,7 @@ int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 			  struct dentry *new_dentry);
 int yolo_journal_mark(struct yolo_sb_info *sbi, u16 id, const char *name);
 int yolo_journal_jump(struct yolo_sb_info *sbi, u16 gen, u16 target_gen);
+int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *dentry);
 
 /* perm.c */
 static inline void yolo_perm_request_release(struct kref *kref)

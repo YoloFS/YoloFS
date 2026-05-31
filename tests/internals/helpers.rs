@@ -1,16 +1,35 @@
 use crate::helpers::YoloSession;
 use std::fs;
 use std::path::PathBuf;
-use yolofs::journal::{self, Action, DirTree, Meta, Record};
+use yolofs::journal::{self, Action, DirTree, Meta, Note, Record};
 
 /// Read the journal for a session.
 pub fn journal(s: &YoloSession) -> journal::Journal {
     journal::Journal::read(&s.root.join(".yolofs")).expect("read journal")
 }
 
-/// Collect all actions from the journal in order.
+/// Collect all actions from the journal in order (S/D/R only).
 pub fn actions(j: &journal::Journal) -> Vec<&Action> {
-    j.segments.iter().flat_map(|s| &s.records).collect()
+    j.segments
+        .iter()
+        .flat_map(|s| &s.records)
+        .filter_map(|r| match r {
+            Record::Action(a) => Some(a),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Collect all block notes from the journal in order (B records only).
+pub fn blocks(j: &journal::Journal) -> Vec<&Note> {
+    j.segments
+        .iter()
+        .flat_map(|s| &s.records)
+        .filter_map(|r| match r {
+            Record::Note(n) => Some(n),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Collect all metas from the journal in order (including the phantom meta).
@@ -25,8 +44,8 @@ pub fn records(j: &journal::Journal) -> Vec<Record> {
     let mut out = Vec::new();
     for (seg, meta) in j.segments.iter().zip(j.metas.iter()) {
         out.push(Record::Meta(meta.clone()));
-        for action in &seg.records {
-            out.push(Record::Action(action.clone()));
+        for record in &seg.records {
+            out.push(record.clone());
         }
     }
     out

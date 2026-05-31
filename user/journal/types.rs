@@ -50,19 +50,33 @@ pub enum Meta {
     Jump { gen_id: u64, target_gen: u64 },
 }
 
-/// A parsed journal record (interleaved actions and metas).
+/// An observational note — does not affect overlay state, only audit.
+///
+/// `Note::Block` records that a yolofs rule returned `-EACCES` for the
+/// given path. The kernel emits these via `B\0<path>\n` in the journal.
+#[derive(Debug, Clone)]
+pub enum Note {
+    Block { path: String },
+}
+
+/// A parsed journal record (interleaved actions, metas, and notes).
 #[derive(Debug, Clone)]
 pub enum Record {
     Action(Action),
     Meta(Meta),
+    Note(Note),
 }
 
-/// A group of data records (S/D/R) between consecutive M/J boundaries.
+/// A group of records (S/D/R + B) between consecutive M/J boundaries.
+///
+/// `Record::Meta` is never pushed into a segment by `Journal::new` —
+/// metas split segments. Only `Record::Action` and `Record::Note`
+/// appear here.
 #[derive(Debug)]
 pub struct Segment {
     /// The gen_id of the mark this segment builds on.
     /// 0 for the 0-th segment (records before the first mark).
     pub from: u64,
-    /// The S/D/R records in this segment (no M/J records).
-    pub records: Vec<Action>,
+    /// The S/D/R + B records in this segment (no M/J records).
+    pub records: Vec<Record>,
 }

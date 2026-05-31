@@ -8,6 +8,8 @@
 //   R\0<dst>\0<src>\n                  — Rename
 //   M\0<gen>\0<name>\n                — Mark
 //   J\0<gen>\0<target_gen>\n          — Jump
+//   B\0<path>\n                       — Blocked (permission denied;
+//                                       observational, no state change)
 
 use super::types::*;
 use anyhow::{Context, Result};
@@ -75,6 +77,10 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
                 {
                     records.push(Record::Meta(Meta::Jump { gen_id, target_gen }));
                 }
+            }
+            b"B" if fields.len() >= 2 => {
+                let path = field_str(fields[1]);
+                records.push(Record::Note(Note::Block { path }));
             }
             _ => {}
         }
@@ -196,5 +202,52 @@ mod tests {
         let records = parse(b"D\0/foo\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(matches!(&records[0], Record::Action(Action::Delete { path }) if path == "/foo"));
+    }
+
+    // ── Block (B) record tests ─────────────────────────────────────────
+
+    #[test]
+    fn parse_block_record() {
+        let records = parse(b"B\0/etc/passwd\n").unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(matches!(
+            &records[0],
+            Record::Note(Note::Block { path }) if path == "/etc/passwd"
+        ));
+    }
+
+    #[test]
+    fn parse_block_interleaved_with_actions() {
+        // B records ride alongside S/D/R within a segment.
+        let records = parse(b"S\0/a\01\nB\0/etc/passwd\nD\0/a\n").unwrap();
+        assert_eq!(records.len(), 3);
+        assert!(matches!(
+            &records[0],
+            Record::Action(Action::Stage { path, ino: 1 }) if path == "/a"
+        ));
+        assert!(matches!(
+            &records[1],
+            Record::Note(Note::Block { path }) if path == "/etc/passwd"
+        ));
+        assert!(matches!(
+            &records[2],
+            Record::Action(Action::Delete { path }) if path == "/a"
+        ));
+    }
+
+    #[test]
+    fn malformed_b_record_too_few_fields_skipped() {
+        // B record with only the tag (needs path) — should be skipped.
+        let records = parse(b"B\nS\0/good\01\n").unwrap();
+        assert_eq!(
+            records.len(),
+            1,
+            "malformed B record should be skipped: {:?}",
+            records
+        );
+        assert!(matches!(
+            &records[0],
+            Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/good"
+        ));
     }
 }

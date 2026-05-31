@@ -22,14 +22,27 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
     for (seg_idx, segment) in journal.segments.iter().enumerate() {
         let reachable = journal.is_alive(seg_idx);
 
-        for action in &segment.records {
-            if let Some(filter) = path_filter.as_deref()
-                && !action_matches_path(action, filter)
-            {
-                continue;
-            }
-
-            let line = format_action(action);
+        for record in &segment.records {
+            let line = match record {
+                journal::Record::Action(action) => {
+                    if let Some(filter) = path_filter.as_deref()
+                        && !action_matches_path(action, filter)
+                    {
+                        continue;
+                    }
+                    format_action(action)
+                }
+                journal::Record::Note(note) => {
+                    if let Some(filter) = path_filter.as_deref()
+                        && !note_matches_path(note, filter)
+                    {
+                        continue;
+                    }
+                    format_note(note)
+                }
+                // Metas never appear inside a segment (they split segments).
+                journal::Record::Meta(_) => continue,
+            };
             if reachable {
                 println!("  {line}");
             } else {
@@ -57,6 +70,12 @@ fn action_matches_path(action: &journal::Action, filter: &str) -> bool {
             path == filter
         }
         journal::Action::Rename { dst, src, .. } => src == filter || dst == filter,
+    }
+}
+
+fn note_matches_path(note: &journal::Note, filter: &str) -> bool {
+    match note {
+        journal::Note::Block { path } => path == filter,
     }
 }
 
@@ -91,10 +110,18 @@ fn format_action(action: &journal::Action) -> String {
     }
 }
 
+fn format_note(note: &journal::Note) -> String {
+    match note {
+        journal::Note::Block { path } => {
+            format!("{:10} {}", "blocked".yellow(), path)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{Action, Meta};
+    use crate::journal::{Action, Meta, Note};
 
     /// Strip ANSI escape codes for assertion matching.
     fn strip_ansi(s: &str) -> String {
@@ -161,5 +188,24 @@ mod tests {
         assert!(s.contains("renamed"), "should say renamed: {s}");
         assert!(s.contains("/a"), "should contain old: {s}");
         assert!(s.contains("/b"), "should contain new: {s}");
+    }
+
+    #[test]
+    fn format_blocked() {
+        let note = Note::Block {
+            path: "/etc/passwd".into(),
+        };
+        let s = strip_ansi(&format_note(&note));
+        assert!(s.contains("blocked"), "should say blocked: {s}");
+        assert!(s.contains("/etc/passwd"), "should contain path: {s}");
+    }
+
+    #[test]
+    fn note_path_filter_matches() {
+        let note = Note::Block {
+            path: "/etc/passwd".into(),
+        };
+        assert!(note_matches_path(&note, "/etc/passwd"));
+        assert!(!note_matches_path(&note, "/etc/shadow"));
     }
 }

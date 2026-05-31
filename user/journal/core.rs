@@ -25,7 +25,7 @@ impl Journal {
             gen_id: 0,
             name: "(initial)".into(),
         }];
-        let mut current_records: Vec<Action> = Vec::new();
+        let mut current_records: Vec<Record> = Vec::new();
         let mut current_from: u64 = 0;
 
         for record in records.into_iter() {
@@ -46,8 +46,8 @@ impl Journal {
                     metas_vec.push(meta);
                     current_from = target_gen;
                 }
-                Record::Action(action) => {
-                    current_records.push(action);
+                Record::Action(_) | Record::Note(_) => {
+                    current_records.push(record);
                 }
             }
         }
@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(j.segments.len(), 6);
         assert_eq!(j.segments[4].from, 2);
         assert_eq!(j.segments[4].records.len(), 1);
-        assert!(matches!(&j.segments[4].records[0], Action::Stage { path, .. } if path == "/d"));
+        assert!(matches!(&j.segments[4].records[0], Record::Action(Action::Stage { path, .. }) if path == "/d"));
     }
 
     #[test]
@@ -235,10 +235,10 @@ mod tests {
         assert_eq!(j.segments[0].from, 0);
         assert_eq!(j.segments[0].records.len(), 1);
         assert!(
-            matches!(&j.segments[0].records[0], Action::Stage { path, .. } if path == "/orphan")
+            matches!(&j.segments[0].records[0], Record::Action(Action::Stage { path, .. }) if path == "/orphan")
         );
         assert_eq!(j.segments[1].records.len(), 1);
-        assert!(matches!(&j.segments[1].records[0], Action::Stage { path, .. } if path == "/a"));
+        assert!(matches!(&j.segments[1].records[0], Record::Action(Action::Stage { path, .. }) if path == "/a"));
     }
 
     #[test]
@@ -261,6 +261,46 @@ mod tests {
         assert_eq!(j.segments[0].from, 0);
         assert_eq!(j.segments[1].from, 99);
         assert_eq!(j.metas.len(), 2);
+    }
+
+    #[test]
+    fn segmentation_notes_ride_in_segments() {
+        // Notes are observational; they live in the same segment as the
+        // surrounding actions and do not split it.
+        let records = vec![
+            Record::Action(Action::Stage {
+                path: "/a".into(),
+                ino: 1,
+            }),
+            Record::Note(Note::Block {
+                path: "/etc/x".into(),
+            }),
+            Record::Meta(Meta::Mark {
+                gen_id: 1,
+                name: "c1".into(),
+            }),
+            Record::Note(Note::Block {
+                path: "/etc/y".into(),
+            }),
+        ];
+        let j = Journal::new(records);
+        assert_eq!(j.segments.len(), 2);
+        // seg0: action + note before the first mark.
+        assert_eq!(j.segments[0].records.len(), 2);
+        assert!(matches!(
+            &j.segments[0].records[0],
+            Record::Action(Action::Stage { path, .. }) if path == "/a"
+        ));
+        assert!(matches!(
+            &j.segments[0].records[1],
+            Record::Note(Note::Block { path }) if path == "/etc/x"
+        ));
+        // seg1: trailing note.
+        assert_eq!(j.segments[1].records.len(), 1);
+        assert!(matches!(
+            &j.segments[1].records[0],
+            Record::Note(Note::Block { path }) if path == "/etc/y"
+        ));
     }
 
     // ── Live segments tests (migrated from liveness.rs) ──────────────
@@ -348,7 +388,7 @@ mod tests {
         let live: Vec<_> = j.into_live_segments_at(2).collect();
         let actions: Vec<_> = live.iter().flat_map(|s| &s.records).collect();
         assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::Stage { path, .. } if path == "/a"));
+        assert!(matches!(actions[0], Record::Action(Action::Stage { path, .. }) if path == "/a"));
     }
 
     // ── Reachability tests (via live_segments, migrated from liveness.rs) ──
@@ -357,10 +397,11 @@ mod tests {
         let j = Journal::new(records);
         j.into_live_segments_range(0, usize::MAX)
             .flat_map(|s| s.records)
-            .map(|a| match a {
-                Action::Stage { path, .. } => path,
-                Action::Delete { path, .. } => path,
-                Action::Rename { dst, .. } => dst,
+            .filter_map(|r| match r {
+                Record::Action(Action::Stage { path, .. }) => Some(path),
+                Record::Action(Action::Delete { path, .. }) => Some(path),
+                Record::Action(Action::Rename { dst, .. }) => Some(dst),
+                Record::Note(_) | Record::Meta(_) => None,
             })
             .collect()
     }
@@ -717,7 +758,7 @@ mod tests {
             .collect();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].from, 2);
-        assert!(matches!(&live[0].records[0], Action::Stage { path, .. } if path == "/b"));
+        assert!(matches!(&live[0].records[0], Record::Action(Action::Stage { path, .. }) if path == "/b"));
     }
 
     #[test]
@@ -786,7 +827,7 @@ mod tests {
         let live: Vec<_> = j.into_live_segments_at(gen_id).collect();
         let actions: Vec<_> = live.iter().flat_map(|s| &s.records).collect();
         assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::Stage { path, .. } if path == "/c"));
+        assert!(matches!(actions[0], Record::Action(Action::Stage { path, .. }) if path == "/c"));
     }
 
     #[test]

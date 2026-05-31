@@ -3,7 +3,7 @@
 // Structured access to the append-only journal.
 //
 // Submodules:
-//   types     — Action, Meta, Record, Segment
+//   types     — Action, Meta, Note, Record, Segment
 //   parse     — read(), parse()  (pub(super) only)
 //   meta      — MetaIndex (M/J skeleton: lookup, range, liveness computation)
 //   journal   — Journal (segments + metas + precomputed liveness, borrowing filters)

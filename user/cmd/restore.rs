@@ -54,12 +54,12 @@ pub fn run(meta_name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::journal::{Action, DirTree, Segment, Target};
+    use crate::journal::{Action, DirTree, Record, Segment, Target};
 
     fn build(actions: &[Action]) -> DirTree {
         DirTree::build(std::iter::once(Segment {
             from: 0,
-            records: actions.to_vec(),
+            records: actions.iter().cloned().map(Record::Action).collect(),
         }))
     }
 

@@ -61,8 +61,14 @@ impl DirTree {
     pub fn build(segments: impl IntoIterator<Item = Segment>) -> Self {
         let mut tree = Self::new();
         for seg in segments {
-            for action in seg.records {
-                tree.apply(action);
+            for record in seg.records {
+                match record {
+                    Record::Action(action) => tree.apply(action),
+                    // Notes are observational — no state change.
+                    Record::Note(_) => {}
+                    // Metas split segments and never appear inside one.
+                    Record::Meta(_) => {}
+                }
             }
         }
         tree
@@ -407,7 +413,11 @@ mod tests {
     fn build(actions: &[Action]) -> DirTree {
         DirTree::build(std::iter::once(Segment {
             from: 0,
-            records: actions.to_vec(),
+            records: actions
+                .iter()
+                .cloned()
+                .map(Record::Action)
+                .collect(),
         }))
     }
 
@@ -1469,5 +1479,38 @@ mod tests {
             },
         );
         tree.serialize();
+    }
+
+    // ── Notes are no-ops for the tree ─────────────────────────────────
+
+    #[test]
+    fn notes_interleaved_with_actions_do_not_affect_tree() {
+        let with_notes = DirTree::build(std::iter::once(Segment {
+            from: 0,
+            records: vec![
+                Record::Note(Note::Block {
+                    path: "/etc/passwd".into(),
+                }),
+                Record::Action(Action::Stage {
+                    path: "/a".into(),
+                    ino: 1,
+                }),
+                Record::Note(Note::Block {
+                    path: "/etc/shadow".into(),
+                }),
+                Record::Action(Action::Delete { path: "/b".into() }),
+                Record::Note(Note::Block {
+                    path: "/etc/group".into(),
+                }),
+            ],
+        }));
+        let without_notes = build(&[
+            Action::Stage {
+                path: "/a".into(),
+                ino: 1,
+            },
+            Action::Delete { path: "/b".into() },
+        ]);
+        assert_eq!(with_notes, without_notes);
     }
 }

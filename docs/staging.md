@@ -519,6 +519,7 @@ D\0<path>\n                      — Delete
 R\0<dst>\0<src>\n                 — Rename
 M\0<gen>\0<name>\n                — Mark
 J\0<gen>\0<target_gen>\n          — Jump
+B\0<path>\n                      — Blocked (permission denied)
 ```
 
 Each mutation type has its own record tag and carries exactly the fields
@@ -531,6 +532,18 @@ it needs. The kernel always uses `S` for creates/COW and `R` for renames:
 | `R` | `<dst>`, `<src>` | Rename |
 | `M` | `<gen>`, `<name>` | Mark meta |
 | `J` | `<gen>`, `<target_gen>` | Jump meta |
+| `B` | `<path>` | Access blocked by a rule (`-EACCES`) — observational |
+
+S/D/R are state mutations. M/J are control metas. **B is observational**:
+it records that a rule blocked the access at `<path>` but does not affect
+any state. The CLI's dir-tree builder, commit, abort, and diff ignore B
+records; only `yolo audit` surfaces them. B writes do not set
+`sbi->dirty`, so a read-only command that only triggers blocks does not
+cause an auto-checkpoint under `YOLO_MARK_IF_CHANGED`. B records ride
+within segments alongside S/D/R, so reachability and `--path` filtering
+apply identically (a B in an unreachable segment is dimmed in audit
+output). Current scope is `-EACCES` only; `HIDDEN`/`-ENOENT` paths are
+not logged.
 
 Userspace derives the stage/modify distinction by checking the base
 filesystem — it does not need the kernel to encode it in the tag.
