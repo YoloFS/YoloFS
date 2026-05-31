@@ -215,6 +215,8 @@ pub fn apply_rules(yolo_dir: &Path) -> Result<()> {
         .cyan()
     );
 
+    // Apply silently; only surface rules that fail to apply (a deny that didn't
+    // take is worth knowing). Use `yolo rule` to inspect the full set.
     for (path, perm) in &config.rules {
         let abs_path = match resolve_to_abs(path) {
             Ok(p) => p,
@@ -226,8 +228,6 @@ pub fn apply_rules(yolo_dir: &Path) -> Result<()> {
         let resolved = resolve_through_mount(&abs_path, &mnt);
         if let Err(e) = ioctl::set_rule(&ctl_file, &resolved, perm.to_ioctl()) {
             eprintln!("  {} {} = {}: {:#}", "✗".red(), abs_path, perm, e);
-        } else {
-            eprintln!("  {} {} = {}", "✓".green(), abs_path, perm);
         }
     }
 
@@ -236,19 +236,40 @@ pub fn apply_rules(yolo_dir: &Path) -> Result<()> {
 
 // ── Rule management ───────────────────────────────────────────────────
 
+/// Read yolofs.toml as a format-preserving document, falling back to the
+/// built-in template if none exists. Edits via this document keep the file's
+/// comments, key order, and layout intact (unlike a serde round-trip).
+fn read_doc(cp: &Path) -> Result<toml_edit::DocumentMut> {
+    let text = if cp.exists() {
+        fs::read_to_string(cp).context("reading yolofs.toml")?
+    } else {
+        DEFAULT_CONFIG.to_string()
+    };
+    text.parse::<toml_edit::DocumentMut>()
+        .context("parsing yolofs.toml")
+}
+
+/// Set `[rules][path] = perm` in place, creating the table if absent.
+fn doc_set_rule(doc: &mut toml_edit::DocumentMut, path: &str, perm: Perm) {
+    if !doc.contains_key("rules") {
+        doc["rules"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    doc["rules"][path] = toml_edit::value(perm.to_string());
+}
+
+/// Remove `[rules][path]` if present.
+fn doc_unset_rule(doc: &mut toml_edit::DocumentMut, path: &str) {
+    if let Some(rules) = doc.get_mut("rules").and_then(|i| i.as_table_like_mut()) {
+        rules.remove(path);
+    }
+}
+
 /// Set a rule on `path` to `perm`: persist to yolofs.toml and apply live if mounted.
 pub fn set_rule(path: &str, perm: Perm) -> Result<()> {
     let cp = config_path()?;
-    let mut config = if cp.exists() {
-        Config::load(&cp)?
-    } else {
-        Config {
-            rules: BTreeMap::new(),
-            ..Default::default()
-        }
-    };
-    config.rules.insert(path.to_string(), perm);
-    config.save(&cp)?;
+    let mut doc = read_doc(&cp)?;
+    doc_set_rule(&mut doc, path, perm);
+    fs::write(&cp, doc.to_string()).context("writing yolofs.toml")?;
 
     if is_mounted() {
         let yolofs = crate::utils::session_dir()?;
@@ -274,9 +295,9 @@ pub fn set_rule(path: &str, perm: Perm) -> Result<()> {
 pub fn unset_rule(path: &str) -> Result<()> {
     let cp = config_path()?;
     if cp.exists() {
-        let mut config = Config::load(&cp)?;
-        config.rules.remove(path);
-        config.save(&cp)?;
+        let mut doc = read_doc(&cp)?;
+        doc_unset_rule(&mut doc, path);
+        fs::write(&cp, doc.to_string()).context("writing yolofs.toml")?;
     }
 
     if is_mounted() {
@@ -598,5 +619,40 @@ mod tests {
         let path = tmp.path().join("yolofs.toml");
         fs::write(&path, "[rules]\n\"/tmp\" = \"bogus\"\n").unwrap();
         assert!(Config::load(&path).is_err());
+    }
+
+    #[test]
+    fn doc_set_rule_preserves_comments() {
+        let mut doc = DEFAULT_CONFIG.parse::<toml_edit::DocumentMut>().unwrap();
+        doc_set_rule(&mut doc, "secret.txt", Perm::Deny);
+        let out = doc.to_string();
+        assert!(out.contains("# System locations"), "comments kept: {out}");
+        assert!(out.contains("\"/usr\" = \"read\""), "existing rule kept");
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(cfg.rules["secret.txt"], Perm::Deny);
+    }
+
+    #[test]
+    fn doc_unset_rule_removes_key_keeping_other_content() {
+        let mut doc = DEFAULT_CONFIG.parse::<toml_edit::DocumentMut>().unwrap();
+        doc_unset_rule(&mut doc, "/usr");
+        let out = doc.to_string();
+        // Unrelated content survives (the header comment, other rules). Note a
+        // leading comment owned by the removed key goes with it — that's fine.
+        assert!(out.contains("# yolofs.toml"), "header comment kept: {out}");
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert!(!cfg.rules.contains_key("/usr"));
+        assert!(cfg.rules.contains_key("/bin"), "sibling rules kept");
+    }
+
+    #[test]
+    fn doc_set_then_unset_restores_file_verbatim() {
+        // A rule added and then removed must leave the file byte-for-byte
+        // unchanged — this is what lets a demo set rules without dirtying the
+        // tracked template.
+        let mut doc = DEFAULT_CONFIG.parse::<toml_edit::DocumentMut>().unwrap();
+        doc_set_rule(&mut doc, "secret.txt", Perm::Deny);
+        doc_unset_rule(&mut doc, "secret.txt");
+        assert_eq!(doc.to_string(), DEFAULT_CONFIG);
     }
 }

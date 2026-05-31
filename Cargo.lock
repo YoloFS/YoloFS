@@ -734,6 +734,7 @@ dependencies = [
  "similar",
  "tempfile",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]

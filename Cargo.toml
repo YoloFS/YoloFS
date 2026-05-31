@@ -18,5 +18,6 @@ colored = "2"
 libc = "0.2"
 similar = "2"
 toml = "0.8"
+toml_edit = "0.22"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"
