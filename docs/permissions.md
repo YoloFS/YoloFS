@@ -52,7 +52,7 @@ Rules live directly on dentries. One field, one structure.
 
 | Field | Purpose |
 |-------|---------|
-| `perm` | `YOLO_PERM_UNSET` unless this dentry has an explicit rule. Set by `YOLO_IOC_RULE_ADD`, cleared by `YOLO_IOC_RULE_REMOVE`. The dentry is pinned (via `dget`) while a rule is attached to prevent eviction. |
+| `perm` | `YOLO_PERM_UNSET` unless this dentry has an explicit rule. Set or cleared by `YOLO_IOC_RULE_SET` (a perm of `UNSET` clears it). The dentry is pinned (via `dget`) while a rule is attached to prevent eviction. |
 
 ### Per-Superblock (`yolo_sb_info`)
 
@@ -136,7 +136,7 @@ Two levels:
    was launched). For example, `src` resolves to
    `/home/user/project/src`.
 2. If a mount exists (`.yolofs/mnt` is mounted), also apply live:
-   `ioctl(YOLO_IOC_RULE_ADD)` -> kernel resolves the normalized absolute path
+   `ioctl(YOLO_IOC_RULE_SET)` -> kernel resolves the normalized absolute path
    to a dentry, sets `YOLO_D(dentry)->perm`, pins the dentry, and bumps
    `perm_gen` to invalidate all cached inode perms.
 
@@ -151,8 +151,8 @@ On mount, the CLI reads `yolofs.toml` and applies all `[rules]` via ioctl.
 
 1. Remove the rule from `yolofs.toml`.
 2. If a mount exists, also apply live:
-   `ioctl(YOLO_IOC_RULE_REMOVE)` -> kernel sets `YOLO_D(dentry)->perm = NONE`,
-   unpins the dentry, and bumps `perm_gen`.
+   `ioctl(YOLO_IOC_RULE_SET)` with perm `UNSET` -> kernel sets
+   `YOLO_D(dentry)->perm = UNSET`, unpins the dentry, and bumps `perm_gen`.
 
 **Permission resolution — cached on inode, resolved lazily**:
 
@@ -305,7 +305,7 @@ When a thread accesses a file whose effective permission is `ask`:
      ...thread wakes...                       set decision
   8. Proceed with operation                  complete(&req->done)
      (one-time; daemon may separately
-      `ioctl(RULE_ADD)` to persist)
+      `ioctl(RULE_SET)` to persist)
 ```
 
 Key properties:
@@ -316,10 +316,10 @@ Key properties:
   If the daemon doesn't respond, the default action (configurable:
   `deny` or `read`) is applied.
 - **Minimal response**: `yolo_ctl_response` only carries `{ id, decision }`.
-  Persisting policy is always a separate `ioctl(YOLO_IOC_RULE_ADD)`.
+  Persisting policy is always a separate `ioctl(YOLO_IOC_RULE_SET)`.
 - **One-time by default**: The decision applies to this single access only.
   Next access to the same file triggers ask again. To persist a decision,
-  the daemon separately calls `ioctl(YOLO_IOC_RULE_ADD)` to install a rule
+  the daemon separately calls `ioctl(YOLO_IOC_RULE_SET)` to install a rule
   on the dentry.
 
 ## Why Dentry Walk-Up?

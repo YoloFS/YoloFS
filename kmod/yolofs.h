@@ -87,8 +87,8 @@ struct yolo_ioc_jump {
 	__u64	tree_ptr;		/* in: userspace pointer to tree buffer */
 };
 
-#define YOLO_IOC_RULE_ADD	_IOW('A', 10, struct yolo_ioc_rule)
-#define YOLO_IOC_RULE_REMOVE	_IOW('A', 11, struct yolo_ioc_rule)
+#define YOLO_IOC_RULE_SET	_IOW('A', 10, struct yolo_ioc_rule)
+#define YOLO_IOC_RULE_RESOLVE	_IOWR('A', 11, struct yolo_ioc_rule)
 #define YOLO_IOC_GET_REQUEST	_IOWR('A', 30, struct yolo_ctl_request)
 #define YOLO_IOC_PUT_RESPONSE	_IOW('A', 31, struct yolo_ctl_response)
 #define YOLO_IOC_MARK		_IOWR('A', 40, struct yolo_ioc_mark)

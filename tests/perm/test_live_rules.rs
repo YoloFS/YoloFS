@@ -87,6 +87,47 @@ fn live_rule_remove_reapplies_gating() {
     assert!(result.is_err(), "read should fail after rule removal");
 }
 
+/// `yolo rule resolve` must report the same permission the kernel enforces —
+/// it queries the kernel (YOLO_IOC_RULE_RESOLVE), not a userspace re-derivation.
+#[test]
+fn rule_resolve_matches_enforcement() {
+    let s = YoloSession::new_with_config(Config {
+        ask_default: Some(Perm::Deny),
+        rules: BTreeMap::new(),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let root = s.root.display().to_string();
+    s.cli(&["rule", "read", &root]).unwrap();
+
+    // Explicit rule on the root resolves to `read`.
+    let (ok, out, err) = s.cli_output(&["rule", "resolve", &root]).unwrap();
+    assert!(ok, "resolve failed: {err}");
+    assert!(
+        out.contains("read"),
+        "root should resolve to read, got: {out}"
+    );
+
+    // A child path inherits `read`.
+    let child = s.root.join("hello.txt").display().to_string();
+    let (ok, out, _) = s.cli_output(&["rule", "resolve", &child]).unwrap();
+    assert!(
+        ok && out.contains("read"),
+        "child should inherit read, got: {out}"
+    );
+
+    // Parity with enforcement: read is allowed, write is denied under `read`.
+    assert!(
+        fs::read_to_string(s.mnt_path("hello.txt")).is_ok(),
+        "read should be allowed under a read rule"
+    );
+    assert!(
+        fs::write(s.mnt_path("hello.txt"), "x").is_err(),
+        "write should be denied under a read rule"
+    );
+}
+
 // ── Rename across permission boundaries ──
 
 /// Renaming a file from an allowed dir to a denied dir should succeed (dir op),

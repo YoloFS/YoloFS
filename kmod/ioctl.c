@@ -253,13 +253,17 @@ static int yolo_resolve_rule(struct file *file, unsigned long arg,
 
 /* ── Rule / mark ioctl handlers ─────────────────────────────────── */
 
-static long yolo_rule_add_ioctl(struct file *file, unsigned long arg)
+/*
+ * YOLO_IOC_RULE_SET: attach a rule to a path's dentry. perm == YOLO_PERM_UNSET
+ * clears the rule (it reverts to inheriting from ancestors); any other perm
+ * sets it. Pins the dentry on first attach, unpins on clear.
+ */
+static long yolo_rule_set_ioctl(struct file *file, unsigned long arg)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
 	struct yolo_ioc_rule rule;
 	struct path rule_path;
 	struct yolo_dentry_info *di;
-	bool first;
 	int err;
 
 	err = yolo_resolve_rule(file, arg, &rule, &rule_path, &di);
@@ -271,20 +275,42 @@ static long yolo_rule_add_ioctl(struct file *file, unsigned long arg)
 		return -EINVAL;
 	}
 
-	spin_lock(&di->lock);
-	first = (di->perm == YOLO_PERM_UNSET);
-	if (first) {
-		dget(rule_path.dentry);
-		di->rule_dentry = rule_path.dentry;
-	}
-	di->perm = (enum yolo_perm)rule.perm;
-	spin_unlock(&di->lock);
+	if (rule.perm == YOLO_PERM_UNSET) {
+		bool had_rule;
 
-	if (first) {
-		spin_lock(&sbi->pinned_rules_lock);
-		if (list_empty(&di->rule_pin))
-			list_add(&di->rule_pin, &sbi->pinned_rules);
-		spin_unlock(&sbi->pinned_rules_lock);
+		spin_lock(&di->lock);
+		had_rule = (di->perm != YOLO_PERM_UNSET);
+		if (had_rule) {
+			di->perm = YOLO_PERM_UNSET;
+			di->rule_dentry = NULL;
+		}
+		spin_unlock(&di->lock);
+
+		if (had_rule) {
+			spin_lock(&sbi->pinned_rules_lock);
+			if (!list_empty(&di->rule_pin))
+				list_del_init(&di->rule_pin);
+			spin_unlock(&sbi->pinned_rules_lock);
+			dput(rule_path.dentry);
+		}
+	} else {
+		bool first;
+
+		spin_lock(&di->lock);
+		first = (di->perm == YOLO_PERM_UNSET);
+		if (first) {
+			dget(rule_path.dentry);
+			di->rule_dentry = rule_path.dentry;
+		}
+		di->perm = (enum yolo_perm)rule.perm;
+		spin_unlock(&di->lock);
+
+		if (first) {
+			spin_lock(&sbi->pinned_rules_lock);
+			if (list_empty(&di->rule_pin))
+				list_add(&di->rule_pin, &sbi->pinned_rules);
+			spin_unlock(&sbi->pinned_rules_lock);
+		}
 	}
 
 	atomic64_inc(&sbi->perm_gen);
@@ -292,37 +318,27 @@ static long yolo_rule_add_ioctl(struct file *file, unsigned long arg)
 	return 0;
 }
 
-static long yolo_rule_remove_ioctl(struct file *file, unsigned long arg)
+/*
+ * YOLO_IOC_RULE_RESOLVE: report the effective perm for a path by walking up to
+ * the nearest ancestor rule (the same resolution the kernel enforces). Writes
+ * the resolved perm back into rule.perm.
+ */
+static long yolo_rule_resolve_ioctl(struct file *file, unsigned long arg)
 {
-	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
 	struct yolo_ioc_rule rule;
 	struct path rule_path;
 	struct yolo_dentry_info *di;
-	bool had_rule;
 	int err;
 
 	err = yolo_resolve_rule(file, arg, &rule, &rule_path, &di);
 	if (err)
 		return err;
 
-	spin_lock(&di->lock);
-	had_rule = (di->perm != YOLO_PERM_UNSET);
-	if (had_rule) {
-		di->perm = YOLO_PERM_UNSET;
-		di->rule_dentry = NULL;
-	}
-	spin_unlock(&di->lock);
-
-	if (had_rule) {
-		spin_lock(&sbi->pinned_rules_lock);
-		if (!list_empty(&di->rule_pin))
-			list_del_init(&di->rule_pin);
-		spin_unlock(&sbi->pinned_rules_lock);
-		dput(rule_path.dentry);
-	}
-
-	atomic64_inc(&sbi->perm_gen);
+	rule.perm = (__u8)yolo_resolve_perm(rule_path.dentry);
 	path_put(&rule_path);
+
+	if (copy_to_user((void __user *)arg, &rule, sizeof(rule)))
+		return -EFAULT;
 	return 0;
 }
 
@@ -700,11 +716,11 @@ static long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
 	case YOLO_IOC_PUT_RESPONSE:
 		return yolo_put_response_ioctl(file, arg);
 
-	case YOLO_IOC_RULE_ADD:
-		return yolo_rule_add_ioctl(file, arg);
+	case YOLO_IOC_RULE_SET:
+		return yolo_rule_set_ioctl(file, arg);
 
-	case YOLO_IOC_RULE_REMOVE:
-		return yolo_rule_remove_ioctl(file, arg);
+	case YOLO_IOC_RULE_RESOLVE:
+		return yolo_rule_resolve_ioctl(file, arg);
 
 	case YOLO_IOC_MARK:
 		return yolo_mark_ioctl(file, arg);

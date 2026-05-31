@@ -143,8 +143,8 @@ enum RuleAction {
     Hide { path: String },
     /// List all configured rules
     List,
-    /// Show the effective permission for a path
-    Show { path: String },
+    /// Resolve the effective permission for a path (and where it comes from)
+    Resolve { path: String },
 }
 
 fn main() -> ! {
@@ -196,7 +196,7 @@ fn run_cli() -> anyhow::Result<u8> {
         Some(Command::Audit { path }) => audit::run(path.as_deref())?,
         Some(Command::Rule { action }) => match action {
             None | Some(RuleAction::List) => config::list_rules()?,
-            Some(RuleAction::Show { path }) => config::show_rule(&path)?,
+            Some(RuleAction::Resolve { path }) => config::resolve_rule(&path)?,
             Some(RuleAction::Unset { path }) => config::unset_rule(&path)?,
             Some(RuleAction::Ask { path }) => config::set_rule(&path, config::Perm::Ask)?,
             Some(RuleAction::Allow { path }) => config::set_rule(&path, config::Perm::Allow)?,

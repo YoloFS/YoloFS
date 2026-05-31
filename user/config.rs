@@ -35,6 +35,18 @@ impl Perm {
             Perm::Hide => ioctl::YOLO_PERM_HIDE,
         }
     }
+
+    /// Inverse of [`to_ioctl`]. `None` for `UNSET` or any unknown value.
+    pub fn from_ioctl(v: u8) -> Option<Self> {
+        match v {
+            ioctl::YOLO_PERM_ASK => Some(Perm::Ask),
+            ioctl::YOLO_PERM_ALLOW => Some(Perm::Allow),
+            ioctl::YOLO_PERM_READ => Some(Perm::Read),
+            ioctl::YOLO_PERM_DENY => Some(Perm::Deny),
+            ioctl::YOLO_PERM_HIDE => Some(Perm::Hide),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Perm {
@@ -182,10 +194,10 @@ fn is_ancestor_or_self(ancestor: &str, query: &str) -> bool {
         || (query.starts_with(ancestor) && query.as_bytes().get(ancestor.len()) == Some(&b'/'))
 }
 
-/// Resolve the effective rule for `path`: the longest ancestor rule key, plus
+/// Match `path` against the declared rules: the longest ancestor rule key, plus
 /// whether it matches the path exactly (explicit) or via inheritance. `None`
 /// means no rule applies (the `ask` default).
-fn resolve_rule<'a>(
+fn match_rule<'a>(
     rules: &'a BTreeMap<String, Perm>,
     path: &str,
 ) -> Result<Option<(&'a str, Perm, bool)>> {
@@ -274,7 +286,7 @@ pub fn apply_rules(yolo_dir: &Path) -> Result<()> {
             }
         };
         let resolved = resolve_through_mount(&abs_path, &mnt);
-        if let Err(e) = ioctl::add_rule(&ctl_file, &resolved, perm.to_ioctl()) {
+        if let Err(e) = ioctl::set_rule(&ctl_file, &resolved, perm.to_ioctl()) {
             eprintln!("  {} {} = {}: {:#}", "✗".red(), abs_path, perm, e);
         } else {
             eprintln!("  {} {} = {}", "✓".green(), abs_path, perm);
@@ -306,7 +318,7 @@ pub fn set_rule(path: &str, perm: Perm) -> Result<()> {
         let abs_path = resolve_to_abs(path)?;
         let resolved = resolve_through_mount(&abs_path, &mnt);
         let ctl_file = ioctl::open(&yolofs)?;
-        ioctl::add_rule(&ctl_file, &resolved, perm.to_ioctl())?;
+        ioctl::set_rule(&ctl_file, &resolved, perm.to_ioctl())?;
         eprintln!(
             "{} {} = {} {}",
             "rule set:".green().bold(),
@@ -335,7 +347,7 @@ pub fn unset_rule(path: &str) -> Result<()> {
         let abs_path = resolve_to_abs(path)?;
         let resolved = resolve_through_mount(&abs_path, &mnt);
         let ctl_file = ioctl::open(&yolofs)?;
-        ioctl::remove_rule(&ctl_file, &resolved)?;
+        ioctl::set_rule(&ctl_file, &resolved, ioctl::YOLO_PERM_UNSET)?;
         eprintln!(
             "{} {} {}",
             "rule unset:".yellow().bold(),
@@ -362,14 +374,53 @@ pub fn list_rules() -> Result<()> {
 }
 
 /// Print the effective permission for `path` and where it comes from.
-pub fn show_rule(path: &str) -> Result<()> {
+///
+/// When mounted, the perm is taken from the kernel (the ground truth it
+/// enforces) and the source is annotated from the declared config; a mismatch
+/// is surfaced as a warning. When unmounted, it's resolved from the config.
+pub fn resolve_rule(path: &str) -> Result<()> {
     let config = load_config();
-    match resolve_rule(&config.rules, path)? {
+    let cfg = match_rule(&config.rules, path)?;
+
+    // When mounted, the kernel is authoritative; fall through to the config
+    // resolver if the query fails (e.g. the path doesn't exist) or unmounted.
+    if is_mounted()
+        && let Ok(kperm) = kernel_resolve_perm(path)
+    {
+        let source = match cfg {
+            Some((_, p, true)) if p == kperm => "explicit".to_string(),
+            Some((rp, p, false)) if p == kperm => format!("inherited from {rp}"),
+            _ => "live".to_string(),
+        };
+        println!("{kperm} ({source})");
+        if let Some((_, p, _)) = cfg
+            && p != kperm
+        {
+            eprintln!(
+                "{} yolofs.toml says {p}, kernel enforces {kperm}",
+                "warning:".yellow().bold()
+            );
+        }
+        return Ok(());
+    }
+
+    match cfg {
         Some((_, perm, true)) => println!("{perm} (explicit)"),
         Some((rule_path, perm, false)) => println!("{perm} (inherited from {rule_path})"),
         None => println!("{} (default — no matching rule)", Perm::Ask),
     }
     Ok(())
+}
+
+/// Ask the kernel for the effective perm it enforces on `path` (authoritative).
+fn kernel_resolve_perm(path: &str) -> Result<Perm> {
+    let yolofs = crate::utils::session_dir()?;
+    let mnt = yolofs.join("mnt");
+    let abs_path = resolve_to_abs(path)?;
+    let through = resolve_through_mount(&abs_path, &mnt);
+    let ctl_file = ioctl::open(&yolofs)?;
+    let raw = ioctl::resolve_rule(&ctl_file, &through)?;
+    Perm::from_ioctl(raw).context("kernel returned an unknown perm value")
 }
 
 #[cfg(test)]
@@ -409,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_rule_explicit_inherited_default() {
+    fn match_rule_explicit_inherited_default() {
         // Absolute paths so resolution is independent of cwd.
         let rules = BTreeMap::from([
             ("/etc".to_string(), Perm::Deny),
@@ -417,18 +468,18 @@ mod tests {
         ]);
 
         // Exact match → explicit.
-        let (rp, perm, explicit) = resolve_rule(&rules, "/etc/hosts").unwrap().unwrap();
+        let (rp, perm, explicit) = match_rule(&rules, "/etc/hosts").unwrap().unwrap();
         assert_eq!((rp, perm, explicit), ("/etc/hosts", Perm::Read, true));
 
         // Longest ancestor wins, marked inherited.
-        let (rp, perm, explicit) = resolve_rule(&rules, "/etc/passwd").unwrap().unwrap();
+        let (rp, perm, explicit) = match_rule(&rules, "/etc/passwd").unwrap().unwrap();
         assert_eq!((rp, perm, explicit), ("/etc", Perm::Deny, false));
 
         // No ancestor rule → default (ask).
-        assert!(resolve_rule(&rules, "/var/log").unwrap().is_none());
+        assert!(match_rule(&rules, "/var/log").unwrap().is_none());
 
         // Prefix-but-not-ancestor must NOT match (`/etc` is not a parent of `/etcfoo`).
-        assert!(resolve_rule(&rules, "/etcfoo").unwrap().is_none());
+        assert!(match_rule(&rules, "/etcfoo").unwrap().is_none());
     }
 
     #[test]

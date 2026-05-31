@@ -26,8 +26,8 @@ pub const YOLO_PERM_DENY: u8 = 4;
 pub const YOLO_PERM_HIDE: u8 = 5;
 
 // Ioctl command numbers — must match kmod/yolofs.h
-nix::ioctl_write_ptr!(ioctl_rule_add, b'A', 10, YoloIocRule);
-nix::ioctl_write_ptr!(ioctl_rule_remove, b'A', 11, YoloIocRule);
+nix::ioctl_write_ptr!(ioctl_rule_set, b'A', 10, YoloIocRule);
+nix::ioctl_readwrite!(ioctl_rule_resolve, b'A', 11, YoloIocRule);
 nix::ioctl_readwrite!(ioctl_get_request, b'A', 30, YoloCtlRequest);
 nix::ioctl_write_ptr!(ioctl_put_response, b'A', 31, YoloCtlResponse);
 nix::ioctl_readwrite!(ioctl_mark, b'A', 40, YoloIocMark);
@@ -174,20 +174,21 @@ fn make_rule(path: &str, perm: u8) -> Result<YoloIocRule> {
     })
 }
 
-/// Send YOLO_IOC_RULE_ADD ioctl.
-pub fn add_rule(fd: &File, path: &str, perm: u8) -> Result<()> {
+/// Send YOLO_IOC_RULE_SET ioctl. `perm == YOLO_PERM_UNSET` clears the rule.
+pub fn set_rule(fd: &File, path: &str, perm: u8) -> Result<()> {
     let rule = make_rule(path, perm)?;
-    unsafe { ioctl_rule_add(fd.as_raw_fd(), &rule) }
-        .with_context(|| format!("ioctl RULE_ADD for {path}"))?;
+    unsafe { ioctl_rule_set(fd.as_raw_fd(), &rule) }
+        .with_context(|| format!("ioctl RULE_SET for {path}"))?;
     Ok(())
 }
 
-/// Send YOLO_IOC_RULE_REMOVE ioctl.
-pub fn remove_rule(fd: &File, path: &str) -> Result<()> {
-    let rule = make_rule(path, YOLO_PERM_UNSET)?;
-    unsafe { ioctl_rule_remove(fd.as_raw_fd(), &rule) }
-        .with_context(|| format!("ioctl RULE_REMOVE for {path}"))?;
-    Ok(())
+/// Send YOLO_IOC_RULE_RESOLVE ioctl. Returns the effective perm the kernel
+/// would enforce for `path` (resolved by walking up to the nearest rule).
+pub fn resolve_rule(fd: &File, path: &str) -> Result<u8> {
+    let mut rule = make_rule(path, YOLO_PERM_UNSET)?;
+    unsafe { ioctl_rule_resolve(fd.as_raw_fd(), &mut rule) }
+        .with_context(|| format!("ioctl RULE_RESOLVE for {path}"))?;
+    Ok(rule.perm)
 }
 
 /// Send YOLO_IOC_JUMP ioctl. Resets staging state and optionally injects

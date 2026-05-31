@@ -40,7 +40,7 @@ interposition. It adds two orthogonal capabilities:
  │  ioctl on .yolofs/mnt/.ctl control file            │
  │    ← YOLO_IOC_GET_REQUEST:  dequeue perm request │
  │    → YOLO_IOC_PUT_RESPONSE: post decision        │
- │    → YOLO_IOC_RULE_ADD/REMOVE: manage rules      │
+ │    → YOLO_IOC_RULE_SET/RESOLVE: manage rules     │
  │    → YOLO_IOC_JUMP: reset/jump                   │
  │    → YOLO_IOC_MARK: create mark                  │
  └──────────────────────────────────────────────────┘
