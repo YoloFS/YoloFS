@@ -21,14 +21,14 @@ pub fn run() -> anyhow::Result<()> {
         }
         let reachable = journal.is_alive(m_idx - 1);
         let line = match meta {
-            journal::Meta::Mark { gen_id, name } => {
+            journal::Meta::Snapshot { gen_id, name } => {
                 format!(
                     "{} {}",
                     format!("snapshot [{gen_id}]").cyan().bold(),
                     name.dimmed(),
                 )
             }
-            journal::Meta::Jump { gen_id, target_gen } => {
+            journal::Meta::Travel { gen_id, target_gen } => {
                 format!(
                     "{} {}",
                     format!("travel    [{gen_id}]").yellow().bold(),

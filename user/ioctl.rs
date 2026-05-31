@@ -30,8 +30,8 @@ nix::ioctl_write_ptr!(ioctl_rule_set, b'A', 10, YoloIocRule);
 nix::ioctl_readwrite!(ioctl_rule_resolve, b'A', 11, YoloIocRule);
 nix::ioctl_readwrite!(ioctl_get_request, b'A', 30, YoloIocAskRequest);
 nix::ioctl_write_ptr!(ioctl_put_response, b'A', 31, YoloIocAskResponse);
-nix::ioctl_readwrite!(ioctl_mark, b'A', 40, YoloIocMark);
-nix::ioctl_readwrite!(ioctl_jump, b'A', 41, YoloIocJump);
+nix::ioctl_readwrite!(ioctl_snapshot, b'A', 40, YoloIocSnapshot);
+nix::ioctl_readwrite!(ioctl_travel, b'A', 41, YoloIocTravel);
 
 /// Matches `struct yolo_ioc_rule` in the kernel.
 #[repr(C)]
@@ -65,12 +65,12 @@ pub struct YoloIocAskResponse {
     pub _pad: [u8; 7],
 }
 
-/// Mark ioctl flag: skip if no data records since last mark.
-pub const YOLO_MARK_IF_CHANGED: u8 = 1;
+/// Snapshot ioctl flag: skip if no data records since last snapshot.
+pub const YOLO_SNAPSHOT_IF_CHANGED: u8 = 1;
 
-/// Matches `struct yolo_ioc_mark` in the kernel.
+/// Matches `struct yolo_ioc_snapshot` in the kernel.
 #[repr(C)]
-pub struct YoloIocMark {
+pub struct YoloIocSnapshot {
     pub gen_id: u64,
     pub name_ptr: u64,
     pub name_len: u16,
@@ -78,9 +78,9 @@ pub struct YoloIocMark {
     pub _pad: [u8; 5],
 }
 
-/// Matches `struct yolo_ioc_jump` in the kernel.
+/// Matches `struct yolo_ioc_travel` in the kernel.
 #[repr(C)]
-pub struct YoloIocJump {
+pub struct YoloIocTravel {
     pub target_gen: u64,
     pub new_gen: u64,
     pub tree_len: u64,
@@ -191,11 +191,11 @@ pub fn resolve_rule(fd: &File, path: &str) -> Result<u8> {
     Ok(rule.perm)
 }
 
-/// Send YOLO_IOC_JUMP ioctl. Resets staging state and optionally injects
+/// Send YOLO_IOC_TRAVEL ioctl. Resets staging state and optionally injects
 /// a serialized DirTree. For commit/abort, pass an empty buffer with target_gen=0.
-/// For jump, pass target_gen > 0; returns the new generation assigned.
-pub fn jump(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
-    let mut hdr = YoloIocJump {
+/// For travel, pass target_gen > 0; returns the new generation assigned.
+pub fn travel(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
+    let mut hdr = YoloIocTravel {
         target_gen,
         new_gen: 0,
         tree_len: tree_buf.len() as u64,
@@ -205,23 +205,26 @@ pub fn jump(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
             tree_buf.as_ptr() as u64
         },
     };
-    unsafe { ioctl_jump(fd.as_raw_fd(), &mut hdr) }.context("ioctl JUMP")?;
+    unsafe { ioctl_travel(fd.as_raw_fd(), &mut hdr) }.context("ioctl TRAVEL")?;
     Ok(hdr.new_gen)
 }
 
-/// Send YOLO_IOC_MARK ioctl. Returns the assigned gen, or 0 if
-/// skipped due to `YOLO_MARK_IF_CHANGED` with no pending changes.
-pub fn mark(fd: &File, name: &str, flags: u8) -> Result<u64> {
+/// Send YOLO_IOC_SNAPSHOT ioctl. Returns the assigned gen, or 0 if
+/// skipped due to `YOLO_SNAPSHOT_IF_CHANGED` with no pending changes.
+pub fn snapshot(fd: &File, name: &str, flags: u8) -> Result<u64> {
     let name_bytes = name.as_bytes();
-    let name_len: u16 = name_bytes.len().try_into().context("mark name too long")?;
-    let mut mrk = YoloIocMark {
+    let name_len: u16 = name_bytes
+        .len()
+        .try_into()
+        .context("snapshot name too long")?;
+    let mut mrk = YoloIocSnapshot {
         gen_id: 0,
         name_ptr: name_bytes.as_ptr() as u64,
         name_len,
         flags,
         _pad: [0u8; 5],
     };
-    unsafe { ioctl_mark(fd.as_raw_fd(), &mut mrk) }.context("ioctl MARK")?;
+    unsafe { ioctl_snapshot(fd.as_raw_fd(), &mut mrk) }.context("ioctl SNAPSHOT")?;
     Ok(mrk.gen_id)
 }
 
@@ -235,8 +238,8 @@ mod tests {
         assert_eq!(size_of::<YoloIocAskRequest>(), 48);
         assert_eq!(size_of::<YoloIocAskResponse>(), 16);
         assert_eq!(size_of::<YoloIocRule>(), 16);
-        assert_eq!(size_of::<YoloIocMark>(), 24);
-        assert_eq!(size_of::<YoloIocJump>(), 32);
+        assert_eq!(size_of::<YoloIocSnapshot>(), 24);
+        assert_eq!(size_of::<YoloIocTravel>(), 32);
     }
 
     #[test]

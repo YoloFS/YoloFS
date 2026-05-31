@@ -75,7 +75,7 @@ fn cow_works_after_travel() {
     s.cli(&["travel", "chk1"]).expect("travel to chk1");
 
     // Take a new snapshot so writes trigger re-COW
-    s.cli(&["snapshot", "post-jump"])
+    s.cli(&["snapshot", "post-travel"])
         .expect("snapshot after travel");
 
     // Write should work (triggers re-COW from the traveled inode)
@@ -132,7 +132,7 @@ fn travel_by_numeric_id() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
-    // Mark gets id=1 (first user snapshot)
+    // Snapshot gets id=1 (first user snapshot)
     s.cli(&["snapshot", "chk"]).expect("snapshot");
 
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
@@ -226,8 +226,8 @@ fn travel_edit_snapshot_travel_cycle() {
     );
 
     // Make new edits and snapshot
-    s.cli(&["snapshot", "post-jump"])
-        .expect("snapshot post-jump");
+    s.cli(&["snapshot", "post-travel"])
+        .expect("snapshot post-travel");
     fs::write(s.mnt_path("file.txt"), "new version\n").expect("write new");
     s.cli(&["snapshot", "chk3"]).expect("snapshot 3");
 
@@ -534,7 +534,7 @@ fn journal_appends_after_travel() {
     );
     assert!(
         status.contains("new.txt"),
-        "post-jump file in status: {status}"
+        "post-travel file in status: {status}"
     );
     assert!(
         !status.contains("gone.txt"),
@@ -950,7 +950,7 @@ fn travel_created_file_after_recow_then_abort() {
 
 // ── Depth-limit and cleanup tests ────────────────────────────────────
 
-/// Create a directory tree near the YOLO_JUMP_MAX_DEPTH limit (32)
+/// Create a directory tree near the YOLO_TRAVEL_MAX_DEPTH limit (32)
 /// with staged files at every level, snapshot, modify, travel.
 /// Exercises the iterative depth-first `yolo_unstage_all` walk at depth.
 #[test]
@@ -958,7 +958,7 @@ fn travel_deep_tree_near_max_depth() {
     let s = YoloSession::new().expect("session setup");
 
     // Build a 20-level deep directory tree with a file at each level.
-    // The travel ioctl depth limit (YOLO_JUMP_MAX_DEPTH=32) also
+    // The travel ioctl depth limit (YOLO_TRAVEL_MAX_DEPTH=32) also
     // counts intermediate unset dirs for the path from / to the
     // session root, so we stay under the budget.
     let depth = 20;
@@ -1053,7 +1053,7 @@ fn travel_then_immediate_unmount() {
     assert!(ok, "unmount after travel should succeed: {stderr}");
 }
 
-/// Travel to a jump meta (not a snapshot) by its numeric gen_id.
+/// Travel to a travel meta (not a snapshot) by its numeric gen_id.
 #[test]
 fn travel_to_travel_meta() {
     let s = YoloSession::new().expect("session setup");
@@ -1067,19 +1067,19 @@ fn travel_to_travel_meta() {
     fs::write(s.mnt_path("b.txt"), "new\n").expect("write b");
     s.cli(&["snapshot", "c2"]).expect("snapshot c2");
 
-    // Travel to c1 — creates a jump meta (gen_id = 3).
+    // Travel to c1 — creates a travel meta (gen_id = 3).
     s.cli(&["travel", "c1"]).expect("travel to c1");
     assert_eq!(fs::read_to_string(s.mnt_path("a.txt")).unwrap(), "v1\n");
     assert!(!s.mnt_path("b.txt").exists());
 
     // Build on top of the traveled state.
-    fs::write(s.mnt_path("c.txt"), "post-jump\n").expect("write c");
+    fs::write(s.mnt_path("c.txt"), "post-travel\n").expect("write c");
     s.cli(&["snapshot", "c3"]).expect("snapshot c3");
 
-    // Now jump to the jump meta by its numeric gen_id ("3").
+    // Now travel to the travel meta by its numeric gen_id ("3").
     // This travels to position 3 in the timeline. Only metas between [3]
     // and the new travel become unreachable — c1 and c2 are preserved.
-    s.cli(&["travel", "3"]).expect("travel to jump meta");
+    s.cli(&["travel", "3"]).expect("travel to travel meta");
 
     let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
     assert_eq!(content, "v1\n", "should see state at gen 3");

@@ -17,21 +17,21 @@ pub fn run(meta_name: &str) -> Result<()> {
     let meta = journal.metas.get(target_gen as usize).cloned();
 
     // Extract live records from the prefix up to the target meta,
-    // handling any J records within that prefix.
+    // handling any T records within that prefix.
     let tree = journal.into_tree_at(target_gen);
     let count = tree.len();
     let buf = tree.serialize();
 
-    // Jump kernel state — if this fails (e.g. EBUSY), the journal is
+    // Travel kernel state — if this fails (e.g. EBUSY), the journal is
     // still intact (append-only) and the operation can be retried.
-    let ctl_file = ioctl::open(&yolofs).context("opening ctl for jump")?;
-    let _new_gen = ioctl::jump(&ctl_file, target_gen, &buf).context("ioctl JUMP")?;
+    let ctl_file = ioctl::open(&yolofs).context("opening ctl for travel")?;
+    let _new_gen = ioctl::travel(&ctl_file, target_gen, &buf).context("ioctl TRAVEL")?;
 
     let label = match &meta {
-        Some(Meta::Mark { name, .. }) => {
+        Some(Meta::Snapshot { name, .. }) => {
             format!("snapshot \"{name}\"")
         }
-        Some(Meta::Jump {
+        Some(Meta::Travel {
             gen_id, target_gen, ..
         }) => {
             format!("travel [{gen_id}] (traveled to [{target_gen}])")

@@ -81,10 +81,10 @@ fn note_matches_path(note: &journal::Note, filter: &str) -> bool {
 
 fn format_meta(meta: &journal::Meta) -> String {
     match meta {
-        journal::Meta::Mark { gen_id, name } => {
+        journal::Meta::Snapshot { gen_id, name } => {
             format!("{} {}", format!("[{}]", gen_id).cyan().bold(), name)
         }
-        journal::Meta::Jump {
+        journal::Meta::Travel {
             gen_id, target_gen, ..
         } => {
             format!(
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn format_snapshot() {
-        let meta = Meta::Mark {
+        let meta = Meta::Snapshot {
             gen_id: 3,
             name: "build".into(),
         };
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn format_travel() {
-        let meta = Meta::Jump {
+        let meta = Meta::Travel {
             gen_id: 5,
             target_gen: 2,
         };

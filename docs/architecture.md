@@ -41,8 +41,8 @@ interposition. It adds two orthogonal capabilities:
  │    ← YOLO_IOC_GET_REQUEST:  dequeue perm request │
  │    → YOLO_IOC_PUT_RESPONSE: post decision        │
  │    → YOLO_IOC_RULE_SET/RESOLVE: manage rules     │
- │    → YOLO_IOC_JUMP: reset/jump                   │
- │    → YOLO_IOC_MARK: create mark                  │
+ │    → YOLO_IOC_TRAVEL: reset/travel               │
+ │    → YOLO_IOC_SNAPSHOT: create snapshot          │
  └──────────────────────────────────────────────────┘
 ```
 
@@ -101,7 +101,7 @@ for interactive approval.
 **On-disk format**: OverlayFS requires filesystem support for whiteouts
 (`RENAME_WHITEOUT`, ext4/xfs). YoloFS uses a flat inode store + append-only
 journal, working on any lower FS. The journal uses typed record tags
-(`S`/`D`/`R` for mutations, `M`/`J` for marks/jumps) so
+(`S`/`D`/`R` for mutations, `P`/`T` for snapshots/travels) so
 each record is self-describing. All renames — staged or redirect — emit a
 single R record carrying both source and destination paths.
 
@@ -174,16 +174,16 @@ $ echo x >> /etc/hosts
 # 7. Commit all staged changes to the real filesystem (userspace)
 $ yolo commit
    -> userspace: replay journal -- apply renames, deletes, move inodes to base
-   -> userspace: ioctl(YOLO_IOC_JUMP) with tree_len=0 on .yolofs/mnt
+   -> userspace: ioctl(YOLO_IOC_TRAVEL) with tree_len=0 on .yolofs/mnt
    -> kernel: release staged dentries, invalidate dentry + inode caches
    -> umount .yolofs/mnt
 
-# 8. Travel to a previous meta (appends J record, no truncation)
+# 8. Travel to a previous meta (appends T record, no truncation)
 $ yolo travel "after make build"
    -> CLI: Journal → find_meta → live_segments_at_name → build tree → serialize tree
-   -> CLI: ioctl(YOLO_IOC_JUMP, { target_gen=2, tree_buf })
+   -> CLI: ioctl(YOLO_IOC_TRAVEL, { target_gen=2, tree_buf })
    -> kernel: release staged dentries, inject VFS dentries from tree, increment gen to 4,
-      append J record to journal
+      append T record to journal
    -> journal is append-only — dead records remain but are filtered
       by Journal reachability on subsequent operations
 ```

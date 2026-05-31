@@ -6,8 +6,8 @@
 //   S\0<path>\0<ino>\n                — Stage (staged content at path)
 //   D\0<path>\n                       — Delete
 //   R\0<dst>\0<src>\n                  — Rename
-//   M\0<gen>\0<name>\n                — Mark
-//   J\0<gen>\0<target_gen>\n          — Jump
+//   P\0<gen>\0<name>\n                — Snapshot
+//   T\0<gen>\0<target_gen>\n          — Travel
 //   B\0<path>\n                       — Blocked (permission denied;
 //                                       observational, no state change)
 
@@ -62,20 +62,20 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
 
                 records.push(Record::Action(Action::Rename { src, dst }));
             }
-            b"M" if fields.len() >= 3 => {
+            b"P" if fields.len() >= 3 => {
                 let gen_str = String::from_utf8_lossy(fields[1]);
                 let name = field_str(fields[2]);
                 if let Ok(gen_id) = gen_str.parse::<u64>() {
-                    records.push(Record::Meta(Meta::Mark { gen_id, name }));
+                    records.push(Record::Meta(Meta::Snapshot { gen_id, name }));
                 }
             }
-            b"J" if fields.len() >= 3 => {
+            b"T" if fields.len() >= 3 => {
                 let gen_str = String::from_utf8_lossy(fields[1]);
                 let target_str = String::from_utf8_lossy(fields[2]);
                 if let (Ok(gen_id), Ok(target_gen)) =
                     (gen_str.parse::<u64>(), target_str.parse::<u64>())
                 {
-                    records.push(Record::Meta(Meta::Jump { gen_id, target_gen }));
+                    records.push(Record::Meta(Meta::Travel { gen_id, target_gen }));
                 }
             }
             b"B" if fields.len() >= 2 => {
@@ -115,24 +115,24 @@ mod tests {
     }
 
     #[test]
-    fn parse_mark_record() {
-        let records = parse(b"S\0/a\01\nM\01\0build\nS\0/a\02\n").unwrap();
+    fn parse_snapshot_record() {
+        let records = parse(b"S\0/a\01\nP\01\0build\nS\0/a\02\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
-            matches!(&records[1], Record::Meta(Meta::Mark { gen_id, name }) if *gen_id == 1 && name == "build")
+            matches!(&records[1], Record::Meta(Meta::Snapshot { gen_id, name }) if *gen_id == 1 && name == "build")
         );
     }
 
     #[test]
-    fn parse_jump_record() {
-        let records = parse(b"J\x004\x002\n").unwrap();
+    fn parse_travel_record() {
+        let records = parse(b"T\x004\x002\n").unwrap();
         assert_eq!(records.len(), 1);
         match &records[0] {
-            Record::Meta(Meta::Jump { gen_id, target_gen }) => {
+            Record::Meta(Meta::Travel { gen_id, target_gen }) => {
                 assert_eq!(*gen_id, 4);
                 assert_eq!(*target_gen, 2);
             }
-            _ => panic!("expected Jump record"),
+            _ => panic!("expected Travel record"),
         }
     }
 

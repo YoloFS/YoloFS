@@ -26,7 +26,7 @@ the kernel, not merely assumed.
    Pinned child dentries hold a ref on `dentry->d_parent`, which
    transitively keeps the parent inode alive through
    VFS refcounting — no `igrab()` is needed. Pins are released in bulk by
-   `YOLO_IOC_JUMP` (called by commit/abort/travel) and during
+   `YOLO_IOC_TRAVEL` (called by commit/abort/travel) and during
    `kill_sb` (unmount) via a recursive dentry tree walk from
    `sb->s_root`. Directories are never COW'd, so their inode
    identity (keyed by `lower_inode` in `iget5_locked`) is stable for
@@ -90,7 +90,7 @@ VFS `d_children` list.
 | `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
 | `gen` | Atomic counter, starts at 1, bumped by each snapshot and travel ioctl. Compared against `staging_gen` on the inode at open time to decide COW / re-COW. |
 | `staging_fd_count` | Atomic counter of open staging fds (opened for write). Snapshot ioctl rejects with `-EBUSY` when > 0. |
-| `dirty` | Boolean flag set on every data journal write (S/D/R), cleared on snapshot or travel. Used by `YOLO_MARK_IF_CHANGED` to skip empty auto-snapshots. |
+| `dirty` | Boolean flag set on every data journal write (S/D/R), cleared on snapshot or travel. Used by `YOLO_SNAPSHOT_IF_CHANGED` to skip empty auto-snapshots. |
 
 **Per-inode** (`yolo_inode_info`) — one per cached inode:
 
@@ -517,8 +517,8 @@ sequence of NUL-separated fields terminated by a newline.
 S\0<path>\0<ino>\n                — Stage (staged content at path)
 D\0<path>\n                      — Delete
 R\0<dst>\0<src>\n                 — Rename
-M\0<gen>\0<name>\n                — Mark
-J\0<gen>\0<target_gen>\n          — Jump
+M\0<gen>\0<name>\n                — Snapshot
+J\0<gen>\0<target_gen>\n          — Travel
 B\0<path>\n                      — Blocked (permission denied)
 ```
 
@@ -530,16 +530,16 @@ it needs. The kernel always uses `S` for creates/COW and `R` for renames:
 | `S` | `<path>`, `<ino>` | Staged content at path (create or COW) |
 | `D` | `<path>` | Entry deleted |
 | `R` | `<dst>`, `<src>` | Rename |
-| `M` | `<gen>`, `<name>` | Mark meta |
-| `J` | `<gen>`, `<target_gen>` | Jump meta |
+| `P` | `<gen>`, `<name>` | Snapshot meta |
+| `T` | `<gen>`, `<target_gen>` | Travel meta |
 | `B` | `<path>` | Access blocked by a rule (`-EACCES`) — observational |
 
-S/D/R are state mutations. M/J are control metas. **B is observational**:
+S/D/R are state mutations. P/T are control metas. **B is observational**:
 it records that a rule blocked the access at `<path>` but does not affect
 any state. The CLI's dir-tree builder, commit, abort, and diff ignore B
 records; only `yolo audit` surfaces them. B writes do not set
 `sbi->dirty`, so a read-only command that only triggers blocks does not
-cause an auto-snapshot under `YOLO_MARK_IF_CHANGED`. B records ride
+cause an auto-snapshot under `YOLO_SNAPSHOT_IF_CHANGED`. B records ride
 within segments alongside S/D/R, so reachability and `--path` filtering
 apply identically (a B in an unreachable segment is dimmed in audit
 output). Current scope is `-EACCES` only; `HIDE`/`-ENOENT` paths are
@@ -549,10 +549,10 @@ Userspace derives the stage/modify distinction by checking the base
 filesystem — it does not need the kernel to encode it in the tag.
 
 **Gen_id invariant.** The kernel increments `sbi->gen` via
-`atomic_inc_return()` on every M and J record. Gen_id values are
+`atomic_inc_return()` on every P and T record. Gen_id values are
 strictly sequential: meta\[i\] has gen_id = i (meta\[0\] is a phantom
-`Mark { gen_id: 0, name: "(initial)" }` inserted by the CLI). The
-`MetaIndex` type relies on this for O(1) mark lookup by gen_id.
+`Snapshot { gen_id: 0, name: "(initial)" }` inserted by the CLI). The
+`MetaIndex` type relies on this for O(1) snapshot lookup by gen_id.
 
 `<path>` is the full overlay path (e.g. `/dir/file`).
 `<src>` is the overlay path before the rename (R only).
@@ -570,7 +570,7 @@ segment\[i\] contains the records from meta\[i\] up to (but not
 including) meta\[i+1\]. The phantom meta at index 0 opens segment 0
 (pre-first-snapshot records). This is O(N) total.
 
-An M record marks a snapshot. The CLI can slice segments with
+A P record names a snapshot. The CLI can slice segments with
 `Journal::live_segments_slice(at, from, to)`, so that only the requested
 range of segments is resolved and displayed.
 
@@ -606,15 +606,15 @@ I/O redirection. The `yolo` CLI reads the journal and applies or discards.
    Principle: readers before writers — renames read from base paths, so
    saves must complete before any destination is written.
 4. Clean up: remove all files under `.yolofs/inodes/`, truncate `.yolofs/journal`.
-5. Signal kernel to reset staging state (`YOLO_IOC_JUMP` with `target_gen=0`,
-   `tree_len=0` &mdash; reset mode, no J record written).
+5. Signal kernel to reset staging state (`YOLO_IOC_TRAVEL` with `target_gen=0`,
+   `tree_len=0` &mdash; reset mode, no T record written).
 
 **Abort** (`yolo abort`):
 
 1. Count staged changes; if none, print "nothing to discard" and exit.
 2. Prompt for confirmation: `Discard N staged changes? [y/N]`.
 3. Remove all files under `.yolofs/inodes/` and truncate `.yolofs/journal`.
-4. Signal kernel to reset staging state (`YOLO_IOC_JUMP` with `target_gen=0`, `tree_len=0` — reset mode, no J record written).
+4. Signal kernel to reset staging state (`YOLO_IOC_TRAVEL` with `target_gen=0`, `tree_len=0` — reset mode, no T record written).
 
 **Status** (`yolo status`):
 
@@ -650,7 +650,7 @@ This is the re-COW mechanism.
 
 ### Creating a Snapshot
 
-`yolo snapshot [name]` calls `ioctl(YOLO_IOC_MARK)`. The kernel:
+`yolo snapshot [name]` calls `ioctl(YOLO_IOC_SNAPSHOT)`. The kernel:
 
 1. Returns `-ENOTSUP` if `staging` is disabled (snapshots require staging).
 2. Takes `staging_sem` write lock.
@@ -674,7 +674,7 @@ looking up by name, `--at` and `--from` match the latest one.
 Auto-snapshotting after `yolo exec` is skipped when the command produced no
 staged changes. The kernel tracks a `dirty` flag on `yolo_sb_info` that is set
 on every data journal write (S/D/R) and cleared on snapshot or travel.
-When the CLI passes the `YOLO_MARK_IF_CHANGED` flag in the snapshot ioctl, the
+When the CLI passes the `YOLO_SNAPSHOT_IF_CHANGED` flag in the snapshot ioctl, the
 kernel returns `gen = 0` (skipped) if the flag is clear, avoiding empty
 snapshots from read-only or no-op commands.
 
@@ -742,8 +742,8 @@ S\0/src/util.rs\0f\04\n                          # create util.rs -> ino 4
 M\04\0after make fix\n                            # snapshot 4
 ```
 
-Reachable records (after `reachable`): S(main.rs→1), S(lib.rs→2), M1, S(util.rs→4), M4
-Unreachable region: S(main.rs→3), D(lib.rs), M2, J3
+Reachable records (after `reachable`): S(main.rs→1), S(lib.rs→2), P1, S(util.rs→4), P4
+Unreachable region: S(main.rs→3), D(lib.rs), P2, T3
 
 State at current:
 
@@ -767,31 +767,31 @@ output always preserves snapshot boundaries within the requested range.
 
 **`yolo travel <name|gen>`**: Move the mounted view to the state at the
 named meta (snapshot or travel). The journal is **append-only** —
-travel appends a J record instead of truncating. J records create
-unreachable records — records between the target meta and the J record that no longer reflect
+travel appends a T record instead of truncating. T records create
+unreachable records — records between the target meta and the T record that no longer reflect
 current state. All CLI consumers (commit, status, diff, travel) build a
 `Journal` to filter unreachable records before resolving.
 
-The reachability algorithm: O(N) single pass to collect J/M positions,
-O(R) backward walk to build reachable ranges, skip unreachable J records.
+The reachability algorithm: O(N) single pass to collect P/T positions,
+O(R) backward walk to build reachable ranges, skip unreachable T records.
 
 1. CLI builds a `Journal` and finds the target meta via
    `MetaIndex::find_meta()` (including unreachable regions, to support undo-travel).
 2. CLI calls `live_segments_at(gen_id)` (or `live_segments_at_name(name)` which
    resolves the name internally) to get an iterator over live segments in the
-   prefix up to the target meta, handling any J records in that
+   prefix up to the target meta, handling any T records in that
    prefix.
 3. CLI builds the dir tree from live records.
 4. CLI serializes the dir tree into a contiguous byte buffer (depth-first,
    children sorted by name).
-5. `ioctl(YOLO_IOC_JUMP, { target_gen=N, tree_buf })`:
+5. `ioctl(YOLO_IOC_TRAVEL, { target_gen=N, tree_buf })`:
    kernel releases all pinned staged dentries (recursive `d_children`
    tree walk from `sb->s_root`, `dput()` each), shrinks dcache,
    `vmalloc`s + `copy_from_user`s the tree buffer, walks it iteratively
    with a directory stack to inject VFS dentries with new gen (via
    `d_alloc()`, set target/pinned, `d_add()`, `dget()` to pin), appends
    `J\0<new_gen>\0<target_gen>\n`, returns new_gen.  The
-   `YOLO_IOC_JUMP` ioctl **increments** gen (monotonically) instead
+   `YOLO_IOC_TRAVEL` ioctl **increments** gen (monotonically) instead
    of setting it to the target value — this avoids gen collisions.
    Injected inodes receive the new gen value in `staging_gen`.
 6. No journal truncation.

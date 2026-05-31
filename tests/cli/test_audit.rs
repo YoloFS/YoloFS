@@ -35,7 +35,7 @@ fn audit_shows_snapshots_and_travels() {
     );
 }
 
-/// `yolofs audit` marks unreachable records with (unreachable) suffix after travel.
+/// `yolofs audit` snapshots unreachable records with (unreachable) suffix after travel.
 #[test]
 fn audit_dims_unreachable_after_travel() {
     let s = YoloSession::new().expect("session setup");

@@ -30,7 +30,7 @@ fn operations_produce_ordered_records() {
     );
     assert!(
         recs.iter()
-            .any(|r| matches!(r, Record::Meta(Meta::Mark { .. }))),
+            .any(|r| matches!(r, Record::Meta(Meta::Snapshot { .. }))),
         "missing M record: {recs:?}"
     );
     assert!(
@@ -47,7 +47,7 @@ fn operations_produce_ordered_records() {
     // Snapshot "s1" should appear after the Add (write) and before the Delete.
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Meta(Meta::Mark { name, .. }) if name == "s1"))
+        .position(|r| matches!(r, Record::Meta(Meta::Snapshot { name, .. }) if name == "s1"))
         .unwrap();
     let add_pos = recs
         .iter()

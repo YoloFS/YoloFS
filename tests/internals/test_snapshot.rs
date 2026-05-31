@@ -5,7 +5,7 @@ use yolofs::journal::{Action, Meta, Record};
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 
-/// Creating a snapshot produces a Mark record with the given name.
+/// Creating a snapshot produces a Snapshot record with the given name.
 #[test]
 fn snapshot_produces_snapshot_record() {
     let s = YoloSession::new().expect("session setup");
@@ -17,8 +17,8 @@ fn snapshot_produces_snapshot_record() {
     let mkrs = metas(&j);
     assert!(
         mkrs.iter()
-            .any(|m| matches!(m, Meta::Mark { name, .. } if name == "build")),
-        "journal should have a Mark record named 'build': {mkrs:?}"
+            .any(|m| matches!(m, Meta::Snapshot { name, .. } if name == "build")),
+        "journal should have a Snapshot record named 'build': {mkrs:?}"
     );
 }
 
@@ -50,10 +50,10 @@ fn recow_after_snapshot_produces_new_add() {
         assert_ne!(ino1, ino2, "re-COW ino values should differ: {recs:?}");
     }
 
-    // Mark "s1" should sit between the two adds.
+    // Snapshot "s1" should sit between the two adds.
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Meta(Meta::Mark { name, .. }) if name == "s1"))
+        .position(|r| matches!(r, Record::Meta(Meta::Snapshot { name, .. }) if name == "s1"))
         .unwrap();
     let first_add = recs
         .iter()
@@ -63,11 +63,11 @@ fn recow_after_snapshot_produces_new_add() {
         .iter()
         .rposition(|r| matches!(r, Record::Action(Action::Stage { path, .. }) if path.ends_with("/hello.txt")))
         .unwrap();
-    assert!(first_add < chk_pos, "first Add should precede Mark s1");
-    assert!(chk_pos < last_add, "Mark s1 should precede re-COW Add");
+    assert!(first_add < chk_pos, "first Add should precede Snapshot s1");
+    assert!(chk_pos < last_add, "Snapshot s1 should precede re-COW Add");
 }
 
-/// Multiple snapshots interleaved with writes: each mark gets a unique id.
+/// Multiple snapshots interleaved with writes: each snapshot gets a unique id.
 #[test]
 fn multiple_snapshots_have_distinct_ids() {
     let s = YoloSession::new().expect("session setup");
@@ -82,22 +82,22 @@ fn multiple_snapshots_have_distinct_ids() {
     let snaps: Vec<_> = mkrs
         .iter()
         .filter_map(|m| match m {
-            Meta::Mark { gen_id, name } => Some((gen_id, name)),
+            Meta::Snapshot { gen_id, name } => Some((gen_id, name)),
             _ => None,
         })
         .collect();
     assert_eq!(
         snaps.len(),
         3,
-        "should have phantom + 2 user mark records: {mkrs:?}"
+        "should have phantom + 2 user snapshot records: {mkrs:?}"
     );
     assert_eq!(snaps[0].1, "(initial)");
     assert_eq!(snaps[1].1, "s1");
     assert_eq!(snaps[2].1, "s2");
-    assert_ne!(snaps[1].0, snaps[2].0, "user mark ids should differ");
+    assert_ne!(snaps[1].0, snaps[2].0, "user snapshot ids should differ");
 }
 
-/// Rename after snapshot: the R record appears after the Mark record.
+/// Rename after snapshot: the R record appears after the Snapshot record.
 /// Writing to a base file triggers COW (staged inode), then renaming emits R.
 #[test]
 fn rename_after_snapshot() {
@@ -110,17 +110,20 @@ fn rename_after_snapshot() {
     let recs = records(&journal(&s));
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Meta(Meta::Mark { name, .. }) if name == "s1"))
+        .position(|r| matches!(r, Record::Meta(Meta::Snapshot { name, .. }) if name == "s1"))
         .unwrap();
     // After COW, hello.txt has a staged ino — rename emits single R record
     let rename_pos = recs
         .iter()
         .position(|r| matches!(r, Record::Action(Action::Rename { dst, .. }) if dst.ends_with("/moved.txt")))
         .expect("should have Redirect for moved.txt");
-    assert!(chk_pos < rename_pos, "Mark should precede Rename: {recs:?}");
+    assert!(
+        chk_pos < rename_pos,
+        "Snapshot should precede Rename: {recs:?}"
+    );
 }
 
-/// Delete after snapshot: the DEL record appears after the Mark record.
+/// Delete after snapshot: the DEL record appears after the Snapshot record.
 #[test]
 fn delete_after_snapshot() {
     let s = YoloSession::new().expect("session setup");
@@ -132,13 +135,16 @@ fn delete_after_snapshot() {
     let recs = records(&journal(&s));
     let chk_pos = recs
         .iter()
-        .position(|r| matches!(r, Record::Meta(Meta::Mark { name, .. }) if name == "s1"))
+        .position(|r| matches!(r, Record::Meta(Meta::Snapshot { name, .. }) if name == "s1"))
         .unwrap();
     let del_pos = recs
         .iter()
         .position(|r| matches!(r, Record::Action(Action::Delete { .. })))
         .unwrap();
-    assert!(chk_pos < del_pos, "Mark should precede Delete: {recs:?}");
+    assert!(
+        chk_pos < del_pos,
+        "Snapshot should precede Delete: {recs:?}"
+    );
 }
 
 // ── Inode Store ──────────────────────────────────────────────────────────────────

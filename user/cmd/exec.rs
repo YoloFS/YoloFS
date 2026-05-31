@@ -107,8 +107,8 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
 /// Create a snapshot only if there are staged changes (kernel-side check).
 fn auto_snapshot(name: &str) -> Result<bool> {
     let yolofs = crate::utils::session_dir()?;
-    let ctl_file = ioctl::open(&yolofs).context("opening ctl for mark")?;
-    let gen_id = ioctl::mark(&ctl_file, name, ioctl::YOLO_MARK_IF_CHANGED)?;
+    let ctl_file = ioctl::open(&yolofs).context("opening ctl for snapshot")?;
+    let gen_id = ioctl::snapshot(&ctl_file, name, ioctl::YOLO_SNAPSHOT_IF_CHANGED)?;
     if gen_id == 0 {
         return Ok(false);
     }

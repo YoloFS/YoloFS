@@ -142,7 +142,7 @@ impl DirTree {
         None
     }
 
-    /// Serialize the tree into a contiguous byte buffer for the jump ioctl.
+    /// Serialize the tree into a contiguous byte buffer for the travel ioctl.
     ///
     /// Wire format (all integers little-endian):
     ///   DirTree      := child_count:le16  DirNode[child_count]
@@ -717,10 +717,10 @@ mod tests {
         );
     }
 
-    // ── Mark/Jump records ignored ────────────────────────────
+    // ── Snapshot/Travel records ignored ────────────────────────────
 
     #[test]
-    fn mark_records_ignored_in_stream() {
+    fn snapshot_records_ignored_in_stream() {
         let tree = build(&[
             add("/x", 1),
             Action::Stage {
@@ -733,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn jump_records_ignored_in_stream() {
+    fn travel_records_ignored_in_stream() {
         let tree = build(&[add("/a", 1), add("/b", 2)]);
         assert_eq!(tree.len(), 2);
         assert!(matches!(tree.get("/a"), Some(Target::StagedFile(1))));
@@ -1383,7 +1383,7 @@ mod tests {
     fn serialize_deeply_nested_passthrough_dirs() {
         // /a/b/c/file — three levels of passthrough scaffolds.
         // Each intermediate dir must serialize as tag=2, path_len=0
-        // so the kernel's jump_inject_entry skips them correctly.
+        // so the kernel's travel_inject_entry skips them correctly.
         let tree = build(&[add("/a/b/c/file", 42)]);
         let buf = tree.serialize();
         let mut cursor = 0usize;

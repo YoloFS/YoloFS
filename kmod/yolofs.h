@@ -30,9 +30,9 @@
 #define YOLO_SUPER_MAGIC	0xA6F5
 #define YOLO_PATH_MAX		256
 
-/* Jump tree buffer limits */
-#define YOLO_JUMP_MAX_DEPTH		32
-#define YOLO_JUMP_MAX_TREE_LEN		(16 * 1024 * 1024)
+/* Travel tree buffer limits */
+#define YOLO_TRAVEL_MAX_DEPTH		32
+#define YOLO_TRAVEL_MAX_TREE_LEN		(16 * 1024 * 1024)
 
 /* Operations passed in ask requests */
 enum yolo_op {
@@ -67,22 +67,22 @@ struct yolo_ioc_rule {
 	__u8	_pad[5];
 };
 
-/* Mark flags */
-#define YOLO_MARK_IF_CHANGED	(1 << 0)	/* skip if no data records since last M/J */
+/* Snapshot flags */
+#define YOLO_SNAPSHOT_IF_CHANGED	(1 << 0)	/* skip if no data records since last P/T */
 
-/* userspace ↔ kernel: YOLO_IOC_MARK (name in, gen out) */
-struct yolo_ioc_mark {
+/* userspace ↔ kernel: YOLO_IOC_SNAPSHOT (name in, gen out) */
+struct yolo_ioc_snapshot {
 	__u64	gen;			/* out: assigned gen (0 if skipped) */
 	__u64	name_ptr;		/* in: userspace pointer to name string */
 	__u16	name_len;		/* in: length excluding NUL */
-	__u8	flags;			/* in: YOLO_MARK_IF_CHANGED, etc. */
+	__u8	flags;			/* in: YOLO_SNAPSHOT_IF_CHANGED, etc. */
 	__u8	_pad[5];
 };
 
-/* userspace ↔ kernel: YOLO_IOC_JUMP */
-struct yolo_ioc_jump {
-	__u64	target_gen;		/* in: mark gen to jump to (0 = reset) */
-	__u64	new_gen;		/* out: new generation assigned (jump mode only) */
+/* userspace ↔ kernel: YOLO_IOC_TRAVEL */
+struct yolo_ioc_travel {
+	__u64	target_gen;		/* in: snapshot gen to travel to (0 = reset) */
+	__u64	new_gen;		/* out: new generation assigned (travel mode only) */
 	__u64	tree_len;		/* in: byte length of serialized tree */
 	__u64	tree_ptr;		/* in: userspace pointer to tree buffer */
 };
@@ -91,8 +91,8 @@ struct yolo_ioc_jump {
 #define YOLO_IOC_RULE_RESOLVE	_IOWR('A', 11, struct yolo_ioc_rule)
 #define YOLO_IOC_GET_REQUEST	_IOWR('A', 30, struct yolo_ioc_ask_request)
 #define YOLO_IOC_PUT_RESPONSE	_IOW('A', 31, struct yolo_ioc_ask_response)
-#define YOLO_IOC_MARK		_IOWR('A', 40, struct yolo_ioc_mark)
-#define YOLO_IOC_JUMP		_IOWR('A', 41, struct yolo_ioc_jump)
+#define YOLO_IOC_SNAPSHOT		_IOWR('A', 40, struct yolo_ioc_snapshot)
+#define YOLO_IOC_TRAVEL		_IOWR('A', 41, struct yolo_ioc_travel)
 
 /* ── Control-File Protocol (binary) ───────────────────────────────── */
 
@@ -181,7 +181,7 @@ struct yolo_sb_info {
 	u32			shard_id;	/* which shard shard_dentry belongs to */
 	atomic_t		gen;		/* bumped on each snapshot; triggers re-COW */
 	atomic_t		staging_fd_count;/* open staging write fds */
-	bool			dirty;		/* data records written since last M/J */
+	bool			dirty;		/* data records written since last P/T */
 
 	/* Permission gating */
 	bool			permission;	/* enable/disable toggle */
@@ -396,8 +396,8 @@ int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
 int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry);
 int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 			  struct dentry *new_dentry);
-int yolo_journal_mark(struct yolo_sb_info *sbi, u16 id, const char *name);
-int yolo_journal_jump(struct yolo_sb_info *sbi, u16 gen, u16 target_gen);
+int yolo_journal_snapshot(struct yolo_sb_info *sbi, u16 id, const char *name);
+int yolo_journal_travel(struct yolo_sb_info *sbi, u16 gen, u16 target_gen);
 int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *dentry);
 
 /* perm.c */

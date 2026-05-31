@@ -9,8 +9,8 @@
  *   S\0<path>\0<ino>\n                — Stage (staged content at path)
  *   D\0<path>\n                       — Delete
  *   R\0<dst>\0<src>\n                  — Rename
- *   M\0<gen>\0<name>\n                — Mark
- *   J\0<gen>\0<target_gen>\n          — Jump
+ *   M\0<gen>\0<name>\n                — Snapshot
+ *   J\0<gen>\0<target_gen>\n          — Travel
  *   B\0<path>\n                       — Blocked (permission denied;
  *                                       observational, does not set dirty)
  */
@@ -72,7 +72,7 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 
 	pos = f->f_pos;
 	err = kernel_write(f, buf, off, &pos);
-	if (err >= 0 && tag != 'M' && tag != 'J' && tag != 'B')
+	if (err >= 0 && tag != 'P' && tag != 'T' && tag != 'B')
 		WRITE_ONCE(sbi->dirty, true);
 	return err < 0 ? err : 0;
 }
@@ -126,24 +126,24 @@ int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 			     (const char *[]){ dst_path, src_path, NULL });
 }
 
-int yolo_journal_mark(struct yolo_sb_info *sbi, u16 id, const char *name)
+int yolo_journal_snapshot(struct yolo_sb_info *sbi, u16 id, const char *name)
 {
 	char id_str[6];
 
 	snprintf(id_str, sizeof(id_str), "%u", (unsigned)id);
-	return journal_write(sbi, 'M',
+	return journal_write(sbi, 'P',
 			     (const char *[]){ id_str, name, NULL });
 }
 
 /**
- * yolo_journal_jump - Append a jump record to the journal.
+ * yolo_journal_travel - Append a travel record to the journal.
  * @sbi: superblock info (has journal_file)
- * @gen: new generation assigned to this jump
- * @target_gen: the mark gen being jumped to
+ * @gen: new generation assigned to this travel
+ * @target_gen: the snapshot gen being traveled to
  *
  * Format: J\0<gen>\0<target_gen>\n
  */
-int yolo_journal_jump(struct yolo_sb_info *sbi, u16 gen, u16 target_gen)
+int yolo_journal_travel(struct yolo_sb_info *sbi, u16 gen, u16 target_gen)
 {
 	char gen_str[6];
 	char target_str[6];
@@ -151,7 +151,7 @@ int yolo_journal_jump(struct yolo_sb_info *sbi, u16 gen, u16 target_gen)
 	snprintf(gen_str, sizeof(gen_str), "%u", (unsigned)gen);
 	snprintf(target_str, sizeof(target_str), "%u",
 		 (unsigned)target_gen);
-	return journal_write(sbi, 'J',
+	return journal_write(sbi, 'T',
 			     (const char *[]){ gen_str, target_str, NULL });
 }
 

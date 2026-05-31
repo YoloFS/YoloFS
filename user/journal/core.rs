@@ -10,7 +10,7 @@ use super::types::*;
 use anyhow::Result;
 use std::path::Path;
 
-/// All segments + M/J skeleton + precomputed alive mask.
+/// All segments + P/T skeleton + precomputed alive mask.
 pub struct Journal {
     pub segments: Vec<Segment>,
     pub metas: MetaIndex,
@@ -21,7 +21,7 @@ impl Journal {
     /// Build from parsed journal records.
     pub fn new(records: Vec<Record>) -> Self {
         let mut segments = Vec::new();
-        let mut metas_vec: Vec<Meta> = vec![Meta::Mark {
+        let mut metas_vec: Vec<Meta> = vec![Meta::Snapshot {
             gen_id: 0,
             name: "(initial)".into(),
         }];
@@ -30,7 +30,7 @@ impl Journal {
 
         for record in records.into_iter() {
             match record {
-                Record::Meta(meta @ Meta::Mark { gen_id, .. }) => {
+                Record::Meta(meta @ Meta::Snapshot { gen_id, .. }) => {
                     segments.push(Segment {
                         from: current_from,
                         records: std::mem::take(&mut current_records),
@@ -38,7 +38,7 @@ impl Journal {
                     current_from = gen_id;
                     metas_vec.push(meta);
                 }
-                Record::Meta(meta @ Meta::Jump { target_gen, .. }) => {
+                Record::Meta(meta @ Meta::Travel { target_gen, .. }) => {
                     segments.push(Segment {
                         from: current_from,
                         records: std::mem::take(&mut current_records),
@@ -83,7 +83,7 @@ impl Journal {
         DirTree::build(self.into_live_segments())
     }
 
-    /// Consume the journal and build a DirTree from live segments up to a mark.
+    /// Consume the journal and build a DirTree from live segments up to a snapshot.
     pub fn into_tree_at(self, gen_id: u64) -> DirTree {
         DirTree::build(self.into_live_segments_at(gen_id))
     }
@@ -112,7 +112,7 @@ impl Journal {
 
     fn into_live_segments_at(self, gen_id: u64) -> impl Iterator<Item = Segment> {
         let num_prefix = (gen_id as usize).min(self.segments.len());
-        // Include one extra meta so that a jump meta at gen_id
+        // Include one extra meta so that a travel meta at gen_id
         // participates in the dead-zone scan.
         let meta_end = (gen_id as usize + 1).min(self.metas.len());
         let alive = self.metas.alive_segments_range(0..meta_end, num_prefix);
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn segmentation_basic() {
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -142,7 +142,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -150,7 +150,7 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn segmentation_splits_at_j_boundary() {
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -178,7 +178,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -186,11 +186,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 4,
                 target_gen: 2,
             }),
@@ -198,7 +198,7 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -213,13 +213,13 @@ mod tests {
     }
 
     #[test]
-    fn records_before_first_mark_in_segment_zero() {
+    fn records_before_first_snapshot_in_segment_zero() {
         let records = vec![
             Record::Action(Action::Stage {
                 path: "/orphan".into(),
                 ino: 999,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -227,7 +227,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn segmentation_only_j_records() {
-        let records = vec![Record::Meta(Meta::Jump {
+        let records = vec![Record::Meta(Meta::Travel {
             gen_id: 1,
             target_gen: 99,
         })];
@@ -279,7 +279,7 @@ mod tests {
             Record::Note(Note::Block {
                 path: "/etc/x".into(),
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "c1".into(),
             }),
@@ -289,7 +289,7 @@ mod tests {
         ];
         let j = Journal::new(records);
         assert_eq!(j.segments.len(), 2);
-        // seg0: action + note before the first mark.
+        // seg0: action + note before the first snapshot.
         assert_eq!(j.segments[0].records.len(), 2);
         assert!(matches!(
             &j.segments[0].records[0],
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn live_segments_basic() {
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -320,7 +320,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -328,11 +328,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 4,
                 target_gen: 2,
             }),
@@ -340,7 +340,7 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn live_segments_at_basic() {
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -362,7 +362,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -370,11 +370,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 4,
                 target_gen: 1,
             }),
@@ -382,13 +382,13 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
         ];
         let j = Journal::new(records);
-        // Live prefix up to M2: seg0 (empty) + seg1 ([A])
+        // Live prefix up to P2: seg0 (empty) + seg1 ([A])
         let live: Vec<_> = j.into_live_segments_at(2).collect();
         let actions: Vec<_> = live.iter().flat_map(|s| &s.records).collect();
         assert_eq!(actions.len(), 1);
@@ -411,9 +411,9 @@ mod tests {
     }
 
     #[test]
-    fn reachable_no_jumps() {
+    fn reachable_no_travels() {
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -421,7 +421,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -432,10 +432,10 @@ mod tests {
     }
 
     #[test]
-    fn reachable_multiple_jumps_last_wins() {
-        // M1 [A] M2 [B] M3 J4(M2) [D] M5 J6(M1)
+    fn reachable_multiple_travels_last_wins() {
+        // P1 [A] P2 [B] P3 T4(P2) [D] P5 T6(P1)
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -443,7 +443,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -451,11 +451,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 4,
                 target_gen: 2,
             }),
@@ -463,11 +463,11 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 6,
                 target_gen: 1,
             }),
@@ -475,15 +475,15 @@ mod tests {
         let actions = live_actions(records);
         assert!(
             actions.is_empty(),
-            "last jump to M1 kills everything after M1"
+            "last travel to P1 kills everything after P1"
         );
     }
 
     #[test]
     fn reachable_nested_j_in_dead_zone() {
-        // M1 [A] M2 [B] M3 J4(M1) [D] M5 [E] M6 J7(M5)
+        // P1 [A] P2 [B] P3 T4(P1) [D] P5 [E] P6 T7(P5)
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -491,7 +491,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -499,11 +499,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 4,
                 target_gen: 1,
             }),
@@ -511,7 +511,7 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -519,11 +519,11 @@ mod tests {
                 path: "/e".into(),
                 ino: 4,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 6,
                 name: "c6".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 7,
                 target_gen: 5,
             }),
@@ -533,10 +533,10 @@ mod tests {
     }
 
     #[test]
-    fn reachable_undo_jump() {
-        // M1 [A] M2 [B] M3 J4(M1) [D] M5 J6(M3)
+    fn reachable_undo_travel() {
+        // P1 [A] P2 [B] P3 T4(P1) [D] P5 T6(P3)
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -544,7 +544,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -552,11 +552,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 4,
                 target_gen: 1,
             }),
@@ -564,11 +564,11 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 6,
                 target_gen: 3,
             }),
@@ -578,9 +578,9 @@ mod tests {
     }
 
     #[test]
-    fn reachable_jump_to_first_mark() {
+    fn reachable_travel_to_first_snapshot() {
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "c1".into(),
             }),
@@ -588,11 +588,11 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 3,
                 target_gen: 1,
             }),
@@ -600,15 +600,15 @@ mod tests {
         let actions = live_actions(records);
         assert!(
             actions.is_empty(),
-            "jump to first mark discards all actions"
+            "travel to first snapshot discards all actions"
         );
     }
 
     #[test]
     fn reachable_consecutive_j_records() {
-        // M1 [A] M2 [B] M3 J4(M2) J5(M1)
+        // P1 [A] P2 [B] P3 T4(P2) T5(P1)
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -616,7 +616,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -624,28 +624,31 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 4,
                 target_gen: 2,
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 5,
                 target_gen: 1,
             }),
         ];
         let actions = live_actions(records);
-        assert!(actions.is_empty(), "consecutive jumps: last one (M1) wins");
+        assert!(
+            actions.is_empty(),
+            "consecutive travels: last one (P1) wins"
+        );
     }
 
     #[test]
-    fn reachable_single_jump() {
-        // M1 [A] M2 [B] M3 J4(M2) [D] M5
+    fn reachable_single_travel() {
+        // P1 [A] P2 [B] P3 T4(P2) [D] P5
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -653,7 +656,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -661,11 +664,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 4,
                 target_gen: 2,
             }),
@@ -673,7 +676,7 @@ mod tests {
                 path: "/d".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -690,10 +693,10 @@ mod tests {
 
     #[test]
     fn reachable_corrupt_j_record_skipped() {
-        // M1 [A] J2(M99) [B]
-        // J targets nonexistent M99 — skipped, all segments alive.
+        // P1 [A] T2(P99) [B]
+        // J targets nonexistent P99 — skipped, all segments alive.
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -701,7 +704,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 2,
                 target_gen: 99,
             }),
@@ -719,7 +722,7 @@ mod tests {
     #[test]
     fn live_segments_slice_from_to() {
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -727,7 +730,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -735,7 +738,7 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
@@ -743,7 +746,7 @@ mod tests {
                 path: "/c".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 4,
                 name: "c4".into(),
             }),
@@ -769,7 +772,7 @@ mod tests {
 
     #[test]
     fn live_segments_slice_not_found() {
-        let records = vec![Record::Meta(Meta::Mark {
+        let records = vec![Record::Meta(Meta::Snapshot {
             gen_id: 1,
             name: "init".into(),
         })];
@@ -782,12 +785,12 @@ mod tests {
     }
 
     #[test]
-    fn live_segments_at_with_nested_jumps() {
-        // M1 [A] M2 [B] M3 J4(M1) [C] M5 [D] M6
-        // live_segments_at(M5): prefix metas M1,M2,M3,J4.
-        // J4(M1) kills seg1,seg2,seg3 → live: seg0 (empty) + seg4 ([C])
+    fn live_segments_at_with_nested_travels() {
+        // P1 [A] P2 [B] P3 T4(P1) [C] P5 [D] P6
+        // live_segments_at(P5): prefix metas P1,P2,P3,T4.
+        // T4(P1) kills seg1,seg2,seg3 → live: seg0 (empty) + seg4 ([C])
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -795,7 +798,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -803,11 +806,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 4,
                 target_gen: 1,
             }),
@@ -815,7 +818,7 @@ mod tests {
                 path: "/c".into(),
                 ino: 3,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 5,
                 name: "c5".into(),
             }),
@@ -823,7 +826,7 @@ mod tests {
                 path: "/d".into(),
                 ino: 4,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 6,
                 name: "c6".into(),
             }),
@@ -839,7 +842,7 @@ mod tests {
     #[test]
     fn live_segments_at_clamps_invalid_gen_id() {
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "c1".into(),
             }),
@@ -847,7 +850,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -861,15 +864,15 @@ mod tests {
     }
 
     #[test]
-    fn into_tree_at_jump_meta() {
-        // [A:/a] M1 [B:/b] M2 J3(→M1)
+    fn into_tree_at_travel_meta() {
+        // [A:/a] P1 [B:/b] P2 T3(→P1)
         // into_tree_at(3) should give the journal state at position 3.
         let records = vec![
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "c1".into(),
             }),
@@ -877,11 +880,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 3,
                 target_gen: 1,
             }),
@@ -898,7 +901,7 @@ mod tests {
     #[test]
     fn is_alive_basic() {
         let records = vec![
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 1,
                 name: "init".into(),
             }),
@@ -906,7 +909,7 @@ mod tests {
                 path: "/a".into(),
                 ino: 1,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 2,
                 name: "c2".into(),
             }),
@@ -914,11 +917,11 @@ mod tests {
                 path: "/b".into(),
                 ino: 2,
             }),
-            Record::Meta(Meta::Mark {
+            Record::Meta(Meta::Snapshot {
                 gen_id: 3,
                 name: "c3".into(),
             }),
-            Record::Meta(Meta::Jump {
+            Record::Meta(Meta::Travel {
                 gen_id: 4,
                 target_gen: 2,
             }),

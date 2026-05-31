@@ -14,8 +14,8 @@ pub fn create(name: Option<&str>) -> Result<()> {
         _ => default_name(),
     };
 
-    let ctl_file = ioctl::open(&yolofs).context("opening ctl for mark")?;
-    let gen_id = ioctl::mark(&ctl_file, &chk_name, 0)?;
+    let ctl_file = ioctl::open(&yolofs).context("opening ctl for snapshot")?;
+    let gen_id = ioctl::snapshot(&ctl_file, &chk_name, 0)?;
 
     eprintln!(
         "{} {}",

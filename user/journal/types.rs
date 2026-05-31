@@ -43,11 +43,11 @@ pub enum Action {
     Rename { src: String, dst: String },
 }
 
-/// A control meta (M/J).
+/// A control meta (P/T).
 #[derive(Debug, Clone)]
 pub enum Meta {
-    Mark { gen_id: u64, name: String },
-    Jump { gen_id: u64, target_gen: u64 },
+    Snapshot { gen_id: u64, name: String },
+    Travel { gen_id: u64, target_gen: u64 },
 }
 
 /// An observational note — does not affect overlay state, only audit.
@@ -67,16 +67,16 @@ pub enum Record {
     Note(Note),
 }
 
-/// A group of records (S/D/R + B) between consecutive M/J boundaries.
+/// A group of records (S/D/R + B) between consecutive P/T boundaries.
 ///
 /// `Record::Meta` is never pushed into a segment by `Journal::new` —
 /// metas split segments. Only `Record::Action` and `Record::Note`
 /// appear here.
 #[derive(Debug)]
 pub struct Segment {
-    /// The gen_id of the mark this segment builds on.
-    /// 0 for the 0-th segment (records before the first mark).
+    /// The gen_id of the snapshot this segment builds on.
+    /// 0 for the 0-th segment (records before the first snapshot).
     pub from: u64,
-    /// The S/D/R + B records in this segment (no M/J records).
+    /// The S/D/R + B records in this segment (no P/T records).
     pub records: Vec<Record>,
 }

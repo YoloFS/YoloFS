@@ -79,7 +79,7 @@ fn print_segment_footer(closing: &Option<(u64, String)>) {
     if let Some((gen_id, label)) = closing {
         println!(
             "{} {}",
-            format!("marker [{}]", gen_id).cyan().bold(),
+            format!("snapshot [{}]", gen_id).cyan().bold(),
             label.dimmed()
         );
     }
@@ -178,8 +178,8 @@ fn run(
         .filter(|i| journal.is_alive(*i))
         .map(|i| {
             journal.metas.meta_at(i).map(|m| match m {
-                Meta::Mark { gen_id, name } => (*gen_id, name.clone()),
-                Meta::Jump {
+                Meta::Snapshot { gen_id, name } => (*gen_id, name.clone()),
+                Meta::Travel {
                     gen_id, target_gen, ..
                 } => (*gen_id, format!("traveled to [{target_gen}]")),
             })

@@ -155,11 +155,11 @@ fn block_records_do_not_contribute_to_tree() {
     );
 }
 
-/// B records do not set sbi->dirty: an auto-snapshot (MARK_IF_CHANGED)
+/// B records do not set sbi->dirty: an auto-snapshot (SNAPSHOT_IF_CHANGED)
 /// must be skipped if only B writes happened since the last meta.
 ///
 /// We check this indirectly via `yolo exec`: a denied-read command produces
-/// only B records, and the kernel's MARK_IF_CHANGED auto-snapshot should
+/// only B records, and the kernel's SNAPSHOT_IF_CHANGED auto-snapshot should
 /// be skipped, leaving the journal with no M record.
 #[test]
 fn block_writes_do_not_set_dirty() {
@@ -188,12 +188,12 @@ fn block_writes_do_not_set_dirty() {
         "expected B records from the denied cat invocation"
     );
 
-    // Phantom meta is index 0; if MARK_IF_CHANGED skipped correctly, no
+    // Phantom meta is index 0; if SNAPSHOT_IF_CHANGED skipped correctly, no
     // real M record should exist.  metas.len() == 1 means only the phantom.
     assert_eq!(
         j.metas.len(),
         1,
-        "MARK_IF_CHANGED should skip auto-snapshot when only B records were written; metas={:?}",
+        "SNAPSHOT_IF_CHANGED should skip auto-snapshot when only B records were written; metas={:?}",
         j.metas.iter().collect::<Vec<_>>()
     );
 }

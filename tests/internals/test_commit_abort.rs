@@ -28,13 +28,13 @@ fn travel_to_snapshot_appends_jmp_record() {
         "travel should append exactly one record: {recs:?}"
     );
     assert!(
-        matches!(recs.last(), Some(Record::Meta(Meta::Jump { .. }))),
-        "last record should be Jump: {recs:?}"
+        matches!(recs.last(), Some(Record::Meta(Meta::Travel { .. }))),
+        "last record should be Travel: {recs:?}"
     );
-    // The s1 mark itself should still be present
+    // The s1 snapshot itself should still be present
     assert!(
         recs.iter()
-            .any(|r| matches!(r, Record::Meta(Meta::Mark { name, .. }) if name == "s1")),
+            .any(|r| matches!(r, Record::Meta(Meta::Snapshot { name, .. }) if name == "s1")),
         "s1 snapshot should be preserved: {recs:?}"
     );
 }

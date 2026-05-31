@@ -5,9 +5,9 @@
 // Submodules:
 //   types     — Action, Meta, Note, Record, Segment
 //   parse     — read(), parse()  (pub(super) only)
-//   meta      — MetaIndex (M/J skeleton: lookup, range, liveness computation)
+//   meta      — MetaIndex (P/T skeleton: lookup, range, liveness computation)
 //   journal   — Journal (segments + metas + precomputed liveness, borrowing filters)
-//   tree      — DirTree builder: apply actions → dir tree, walk for display/jump
+//   tree      — DirTree builder: apply actions → dir tree, walk for display/travel
 //   plan      — DirTree → Actions: commit plan (inverse of tree)
 pub(crate) mod core;
 

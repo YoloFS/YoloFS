@@ -6,7 +6,7 @@ use yolofs::journal::Meta;
 
 // ── Journal state after travel ──────────────────────────────────────────
 
-/// Travel keeps journal records up to and including the mark meta.
+/// Travel keeps journal records up to and including the snapshot meta.
 #[test]
 fn travel_journal_contains_snapshot_meta() {
     let s = YoloSession::new().expect("session setup");
@@ -21,7 +21,7 @@ fn travel_journal_contains_snapshot_meta() {
     let mkrs = metas(&j);
     assert!(
         mkrs.iter()
-            .any(|m| matches!(m, Meta::Mark { name, .. } if name == "chk1")),
+            .any(|m| matches!(m, Meta::Snapshot { name, .. } if name == "chk1")),
         "chk1 meta should be in journal: {mkrs:?}"
     );
 }
@@ -41,10 +41,10 @@ fn travel_journal_has_no_post_snapshot_records() {
     let j = journal(&s);
     let mkrs = metas(&j);
 
-    // J (Jump) record should be present in the raw journal.
+    // J (Travel) record should be present in the raw journal.
     assert!(
-        mkrs.iter().any(|m| matches!(m, Meta::Jump { .. })),
-        "Jump record should be in journal: {mkrs:?}"
+        mkrs.iter().any(|m| matches!(m, Meta::Travel { .. })),
+        "Travel record should be in journal: {mkrs:?}"
     );
 
     // reachable + resolve should match the snapshot state (only a.txt).
@@ -114,7 +114,7 @@ fn travel_orphans_post_snapshot_inodes() {
 
 /// Abort after travel cleans up all inodes including orphans.
 #[test]
-fn abort_after_jump_cleans_orphans() {
+fn abort_after_travel_cleans_orphans() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
@@ -180,7 +180,7 @@ fn travel_new_files_get_fresh_inodes() {
 
 /// Writing to a traveled file without a new snapshot reuses the inode.
 #[test]
-fn write_after_jump_without_snapshot_reuses_inode() {
+fn write_after_travel_without_snapshot_reuses_inode() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
@@ -205,7 +205,7 @@ fn write_after_jump_without_snapshot_reuses_inode() {
 
 /// Writing after travel + new snapshot triggers re-COW (new inode).
 #[test]
-fn write_after_jump_and_snapshot_triggers_recow() {
+fn write_after_travel_and_snapshot_triggers_recow() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
@@ -213,7 +213,7 @@ fn write_after_jump_and_snapshot_triggers_recow() {
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2");
 
     s.cli(&["travel", "chk1"]).expect("travel");
-    s.cli(&["snapshot", "post-jump"]).expect("new snapshot");
+    s.cli(&["snapshot", "post-travel"]).expect("new snapshot");
 
     let inos_before = inos(&s);
     fs::write(s.mnt_path("file.txt"), "v3\n").expect("write triggers re-COW");
@@ -229,7 +229,7 @@ fn write_after_jump_and_snapshot_triggers_recow() {
 
 /// Re-COW after travel preserves the pre-snapshot inode content.
 #[test]
-fn recow_after_jump_preserves_old_inode() {
+fn recow_after_travel_preserves_old_inode() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("file.txt"), "v1\n").expect("write v1");
@@ -239,7 +239,7 @@ fn recow_after_jump_preserves_old_inode() {
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2 (re-COW)");
 
     s.cli(&["travel", "chk1"]).expect("travel");
-    s.cli(&["snapshot", "post-jump"]).expect("new snapshot");
+    s.cli(&["snapshot", "post-travel"]).expect("new snapshot");
 
     fs::write(s.mnt_path("file.txt"), "v3\n").expect("write v3 (re-COW)");
 
@@ -363,12 +363,12 @@ fn travel_renamed_symlink_in_resolved_changes() {
         "new_link should be a symlink after travel"
     );
 
-    // Journal should have the mark meta and records up to it
+    // Journal should have the snapshot meta and records up to it
     let j = journal(&s);
     let mkrs = metas(&j);
     assert!(
         mkrs.iter()
-            .any(|m| matches!(m, Meta::Mark { name, .. } if name == "chk1")),
+            .any(|m| matches!(m, Meta::Snapshot { name, .. } if name == "chk1")),
         "chk1 should be in journal: {mkrs:?}"
     );
 }
@@ -429,8 +429,8 @@ fn travel_journal_is_byte_prefix() {
     let j = journal(&s);
     let mkrs = metas(&j);
     assert!(
-        mkrs.iter().any(|m| matches!(m, Meta::Jump { .. })),
-        "Jump record should be in journal: {mkrs:?}"
+        mkrs.iter().any(|m| matches!(m, Meta::Travel { .. })),
+        "Travel record should be in journal: {mkrs:?}"
     );
 }
 
@@ -451,11 +451,11 @@ fn travel_j_record_has_correct_gen() {
     let j = journal(&s);
     let mkrs = metas(&j);
 
-    // Find the mark gen_ids and the jump record.
+    // Find the snapshot gen_ids and the travel record.
     let chk1_gen = mkrs
         .iter()
         .find_map(|m| match m {
-            Meta::Mark { gen_id, name } if name == "chk1" => Some(*gen_id),
+            Meta::Snapshot { gen_id, name } if name == "chk1" => Some(*gen_id),
             _ => None,
         })
         .expect("chk1 should exist");
@@ -463,7 +463,7 @@ fn travel_j_record_has_correct_gen() {
     let chk2_gen = mkrs
         .iter()
         .find_map(|m| match m {
-            Meta::Mark { gen_id, name } if name == "chk2" => Some(*gen_id),
+            Meta::Snapshot { gen_id, name } if name == "chk2" => Some(*gen_id),
             _ => None,
         })
         .expect("chk2 should exist");
@@ -471,7 +471,7 @@ fn travel_j_record_has_correct_gen() {
     let (s_gen, s_target) = mkrs
         .iter()
         .find_map(|m| match m {
-            Meta::Jump { gen_id, target_gen } => Some((*gen_id, *target_gen)),
+            Meta::Travel { gen_id, target_gen } => Some((*gen_id, *target_gen)),
             _ => None,
         })
         .expect("travel record should exist");

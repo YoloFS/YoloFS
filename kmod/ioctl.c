@@ -251,7 +251,7 @@ static int yolo_resolve_rule(struct file *file, unsigned long arg,
 	return 0;
 }
 
-/* ── Rule / mark ioctl handlers ─────────────────────────────────── */
+/* ── Rule / snapshot ioctl handlers ─────────────────────────────────── */
 
 /*
  * YOLO_IOC_RULE_SET: attach a rule to a path's dentry. perm == YOLO_PERM_UNSET
@@ -342,10 +342,10 @@ static long yolo_rule_resolve_ioctl(struct file *file, unsigned long arg)
 	return 0;
 }
 
-static long yolo_mark_ioctl(struct file *file, unsigned long arg)
+static long yolo_snapshot_ioctl(struct file *file, unsigned long arg)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
-	struct yolo_ioc_mark mrk;
+	struct yolo_ioc_snapshot snap;
 	char name_buf[YOLO_PATH_MAX];
 	u16 gen;
 	int err;
@@ -353,10 +353,10 @@ static long yolo_mark_ioctl(struct file *file, unsigned long arg)
 	if (!sbi->staging)
 		return -EOPNOTSUPP;
 
-	if (copy_from_user(&mrk, (void __user *)arg, sizeof(mrk)))
+	if (copy_from_user(&snap, (void __user *)arg, sizeof(snap)))
 		return -EFAULT;
 
-	err = yolo_copy_user_path(mrk.name_ptr, mrk.name_len, name_buf);
+	err = yolo_copy_user_path(snap.name_ptr, snap.name_len, name_buf);
 	if (err)
 		return err;
 
@@ -365,10 +365,10 @@ static long yolo_mark_ioctl(struct file *file, unsigned long arg)
 		up_write(&sbi->staging_sem);
 		return -EBUSY;
 	}
-	if ((mrk.flags & YOLO_MARK_IF_CHANGED) && !READ_ONCE(sbi->dirty)) {
+	if ((snap.flags & YOLO_SNAPSHOT_IF_CHANGED) && !READ_ONCE(sbi->dirty)) {
 		up_write(&sbi->staging_sem);
-		mrk.gen = 0;
-		if (copy_to_user((void __user *)arg, &mrk, sizeof(mrk)))
+		snap.gen = 0;
+		if (copy_to_user((void __user *)arg, &snap, sizeof(snap)))
 			return -EFAULT;
 		return 0;
 	}
@@ -377,20 +377,20 @@ static long yolo_mark_ioctl(struct file *file, unsigned long arg)
 		return -EOVERFLOW;
 	}
 	gen = (u16)atomic_inc_return(&sbi->gen);
-	yolo_journal_mark(sbi, gen, name_buf);
+	yolo_journal_snapshot(sbi, gen, name_buf);
 	WRITE_ONCE(sbi->dirty, false);
 	up_write(&sbi->staging_sem);
 
-	/* Best-effort: mark is already committed to the journal,
+	/* Best-effort: snapshot is already committed to the journal,
 	 * so return success even if copy_to_user fails. */
-	mrk.gen = gen;
-	if (copy_to_user((void __user *)arg, &mrk, sizeof(mrk)))
+	snap.gen = gen;
+	if (copy_to_user((void __user *)arg, &snap, sizeof(snap)))
 		/* gen already in journal — userspace can read it back */;
 
 	return 0;
 }
 
-/* ── Jump ioctl handler ────────────────────────────────────────────── */
+/* ── Travel ioctl handler ────────────────────────────────────────────── */
 
 /* ── Cursor helpers for reading the serialized DirTree buffer ──────── */
 
@@ -443,7 +443,7 @@ struct dir_frame {
  * Parse the target-specific payload from @cur and inject the corresponding
  * dentry under @parent.  Scaffold (tag 0) entries have no payload.
  */
-static int jump_inject_entry(struct tree_cursor *cur,
+static int travel_inject_entry(struct tree_cursor *cur,
 				struct yolo_sb_info *sbi,
 				struct dentry *parent,
 				const u8 *name_ptr, u16 name_len,
@@ -512,17 +512,17 @@ static int jump_inject_entry(struct tree_cursor *cur,
 	}
 }
 
-static int yolo_jump_inject(struct file *file, struct yolo_sb_info *sbi,
-			    struct yolo_ioc_jump *hdr, u16 gen)
+static int yolo_travel_inject(struct file *file, struct yolo_sb_info *sbi,
+			    struct yolo_ioc_travel *hdr, u16 gen)
 {
-	struct dir_frame stack[YOLO_JUMP_MAX_DEPTH];
+	struct dir_frame stack[YOLO_TRAVEL_MAX_DEPTH];
 	struct tree_cursor cur;
 	u8 *kbuf;
 	int depth;
 	int err = 0;
 	u16 root_count;
 
-	if (hdr->tree_len > YOLO_JUMP_MAX_TREE_LEN)
+	if (hdr->tree_len > YOLO_TRAVEL_MAX_TREE_LEN)
 		return -EINVAL;
 
 	kbuf = vmalloc(hdr->tree_len);
@@ -578,7 +578,7 @@ static int yolo_jump_inject(struct file *file, struct yolo_sb_info *sbi,
 		err = read_u8(&cur, &target);
 		if (err)
 			goto out_unwind;
-		err = jump_inject_entry(&cur, sbi, stack[depth].dentry,
+		err = travel_inject_entry(&cur, sbi, stack[depth].dentry,
 					   name_ptr, name_len, target, gen);
 		if (err)
 			goto out_unwind;
@@ -595,7 +595,7 @@ static int yolo_jump_inject(struct file *file, struct yolo_sb_info *sbi,
 		{
 			struct dentry *child;
 
-			if (depth + 1 >= YOLO_JUMP_MAX_DEPTH) {
+			if (depth + 1 >= YOLO_TRAVEL_MAX_DEPTH) {
 				err = -EINVAL;
 				goto out_unwind;
 			}
@@ -628,11 +628,11 @@ out_free:
 	return err;
 }
 
-static long yolo_jump_ioctl(struct file *file, unsigned long arg)
+static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 {
 	struct super_block *sb = file_inode(file)->i_sb;
 	struct yolo_sb_info *sbi = YOLO_SB(sb);
-	struct yolo_ioc_jump hdr;
+	struct yolo_ioc_travel hdr;
 	u16 new_gen;
 	int err = 0;
 
@@ -668,22 +668,22 @@ static long yolo_jump_ioctl(struct file *file, unsigned long arg)
 		return 0;
 	}
 
-	/* Invalidate shard cache before jump — CLI may reorganize inodes. */
+	/* Invalidate shard cache before travel — CLI may reorganize inodes. */
 	if (sbi->shard_dentry) {
 		dput(sbi->shard_dentry);
 		sbi->shard_dentry = NULL;
 	}
 
-	/* Jump mode: increment gen, inject entries, write J record */
+	/* Travel mode: increment gen, inject entries, write T record */
 	if (atomic_read(&sbi->gen) >= U16_MAX) {
 		up_write(&sbi->staging_sem);
 		return -EOVERFLOW;
 	}
 	new_gen = (u16)atomic_inc_return(&sbi->gen);
 
-	err = yolo_jump_inject(file, sbi, &hdr, new_gen);
+	err = yolo_travel_inject(file, sbi, &hdr, new_gen);
 	if (!err)
-		err = yolo_journal_jump(sbi, new_gen, hdr.target_gen);
+		err = yolo_journal_travel(sbi, new_gen, hdr.target_gen);
 	/* Don't rollback gen on failure — dirents may already be injected
 	 * with new_gen.  Rolling back would leave those dirents with a gen
 	 * higher than sbi->gen, breaking COW checks.  The CLI can retry
@@ -694,7 +694,7 @@ static long yolo_jump_ioctl(struct file *file, unsigned long arg)
 	up_write(&sbi->staging_sem);
 
 	if (!err) {
-		/* Best-effort: jump is already committed to the journal,
+		/* Best-effort: travel is already committed to the journal,
 		 * so return success even if copy_to_user fails. */
 		hdr.new_gen = new_gen;
 		if (copy_to_user((void __user *)arg, &hdr, sizeof(hdr)))
@@ -722,11 +722,11 @@ static long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
 	case YOLO_IOC_RULE_RESOLVE:
 		return yolo_rule_resolve_ioctl(file, arg);
 
-	case YOLO_IOC_MARK:
-		return yolo_mark_ioctl(file, arg);
+	case YOLO_IOC_SNAPSHOT:
+		return yolo_snapshot_ioctl(file, arg);
 
-	case YOLO_IOC_JUMP:
-		return yolo_jump_ioctl(file, arg);
+	case YOLO_IOC_TRAVEL:
+		return yolo_travel_ioctl(file, arg);
 
 	default:
 		return -ENOTTY;

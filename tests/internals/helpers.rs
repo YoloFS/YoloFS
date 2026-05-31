@@ -52,7 +52,7 @@ pub fn records(j: &journal::Journal) -> Vec<Record> {
 }
 
 /// Resolve the journal into a DirTree.
-/// Uses `Journal` to filter out dead records (e.g. after jump).
+/// Uses `Journal` to filter out dead records (e.g. after travel).
 pub fn tree(s: &YoloSession) -> DirTree {
     let j = journal(s);
     j.into_tree()

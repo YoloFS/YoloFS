@@ -79,7 +79,7 @@ static struct file *yolo_open_staged(struct yolo_sb_info *sbi,
 		return yolo_open_lower(dentry, file->f_flags);
 
 	/* Fast path: inode is current — open directly.
-	 * staging_sem excludes mark, so gen is stable under the lock. */
+	 * staging_sem excludes snapshot, so gen is stable under the lock. */
 	down_read(&sbi->staging_sem);
 	if (yolo_dentry_is_current(dentry, sbi)) {
 		atomic_inc(&sbi->staging_fd_count);
