@@ -73,9 +73,6 @@ enum Command {
         /// End at a named snapshot (inclusive)
         #[arg(long, conflicts_with = "at")]
         to: Option<String>,
-        /// Print nothing when there are no staged changes
-        #[arg(long)]
-        quiet: bool,
     },
     /// Git-style diff of staged vs base
     Diff {
@@ -106,9 +103,6 @@ enum Command {
         /// Only snapshot if there are staged changes (no-op otherwise)
         #[arg(long)]
         if_changed: bool,
-        /// Don't print the snapshot line on success
-        #[arg(long)]
-        quiet: bool,
     },
     /// Travel to a previous snapshot
     Travel {
@@ -186,12 +180,9 @@ fn run_cli() -> anyhow::Result<u8> {
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,
         Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
-        Some(Command::Status {
-            at,
-            from,
-            to,
-            quiet,
-        }) => diff::run_status(at.as_deref(), from.as_deref(), to.as_deref(), quiet)?,
+        Some(Command::Status { at, from, to }) => {
+            diff::run_status(at.as_deref(), from.as_deref(), to.as_deref())?
+        }
         Some(Command::Diff { at, from, to, path }) => {
             diff::run_diff(
                 at.as_deref(),
@@ -202,12 +193,8 @@ fn run_cli() -> anyhow::Result<u8> {
         }
         Some(Command::Commit) => commit::run()?,
         Some(Command::Abort { force }) => abort::run(force)?,
-        Some(Command::Snapshot {
-            name,
-            if_changed,
-            quiet,
-        }) => {
-            snapshot::create(name.as_deref(), if_changed, quiet)?;
+        Some(Command::Snapshot { name, if_changed }) => {
+            snapshot::create(name.as_deref(), if_changed)?;
         }
         Some(Command::Travel { name }) => travel::run(&name)?,
         Some(Command::Timeline) => timeline::run()?,

@@ -16,14 +16,18 @@ use std::process;
 
 /// bash `PROMPT_COMMAND` bootstrap for the interactive shell. A DEBUG trap
 /// records each command (`$BASH_COMMAND`, captured at run time — reliable,
-/// unlike history/`fc`), and a precmd *function* snapshots it (only if
-/// something changed) and shows status after it finishes. Because bash doesn't
-/// fire the DEBUG trap inside functions (no `functrace`), the trap never
-/// captures the hook's own commands — so no flag juggling is needed. `$?` is
+/// unlike history/`fc`), and a precmd *function* snapshots it after it finishes
+/// (only if something changed), printing `snapshot [N] <cmd>` — the same
+/// per-command checkpoint trail an agent gets. We deliberately do NOT run
+/// `yolo status` here: its added/modified/deleted classification needs the
+/// lower filesystem, which the chroot hides behind the overlay, so it
+/// misreports inside the mount. Review state with `yolo status`/`diff` from
+/// outside. Because bash doesn't fire the DEBUG trap inside functions (no
+/// `functrace`), the trap never captures the hook's own commands. `$?` is
 /// saved and restored so the hook doesn't clobber the command's exit status.
 /// This runs once on the first prompt, then replaces itself with the function.
 const PER_COMMAND_HOOK: &str = "\
-__yolo_precmd() { local rc=$?; [ -n \"$__yl\" ] && yolo snapshot --if-changed --quiet \"$__yl\"; __yl=; yolo status --quiet; return $rc; }; \
+__yolo_precmd() { local rc=$?; [ -n \"$__yl\" ] && yolo snapshot --if-changed \"$__yl\"; __yl=; return $rc; }; \
 trap '[ \"$BASH_COMMAND\" = __yolo_precmd ] || __yl=$BASH_COMMAND' DEBUG; \
 PROMPT_COMMAND=__yolo_precmd";
 
