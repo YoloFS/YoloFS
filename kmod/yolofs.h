@@ -186,8 +186,7 @@ struct yolo_permission {
 /* ── Per-Superblock Info ───────────────────────────────────────────── */
 
 struct yolo_sb_info {
-	struct super_block	*lower_sb;
-	struct path		base_path;	/* always "/" */
+	struct super_block	*lower_sb;	/* lower fs superblock (kept via s_active) */
 	struct path		storage_path;	/* ./yolofs/ directory */
 
 	struct yolo_staging	staging;	/* staging area + inode store */

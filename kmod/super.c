@@ -83,8 +83,6 @@ static void yolo_put_super(struct super_block *sb)
 		fput(sbi->staging.journal_file);
 	if (sbi->storage_path.dentry)
 		path_put(&sbi->storage_path);
-	if (sbi->base_path.dentry)
-		path_put(&sbi->base_path);
 	if (sbi->lower_sb)
 		atomic_dec(&sbi->lower_sb->s_active);
 
@@ -152,20 +150,25 @@ static void yolo_init_sbi(struct yolo_sb_info *sbi,
 	atomic_set(&sbi->staging.fd_count, 0);
 }
 
+/*
+ * Resolve the lower paths. The lower root ("/") is returned to the caller via
+ * @base_path (it is only needed during mount, to build the root dentry); the
+ * caller owns that reference and must path_put it. lower_sb keeps the lower
+ * superblock alive for our lifetime, and the root dentry pins the lower root.
+ */
 static int yolo_resolve_paths(struct yolo_sb_info *sbi,
 			      struct super_block *sb,
-			      struct fs_context *fc)
+			      struct fs_context *fc,
+			      struct path *base_path)
 {
-	struct path base_path;
 	int err;
 
 	/* Resolve base path ("/") */
-	err = kern_path("/", LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &base_path);
+	err = kern_path("/", LOOKUP_FOLLOW | LOOKUP_DIRECTORY, base_path);
 	if (err)
 		return err;
 
-	sbi->base_path = base_path;
-	sbi->lower_sb = base_path.dentry->d_sb;
+	sbi->lower_sb = base_path->dentry->d_sb;
 	atomic_inc(&sbi->lower_sb->s_active);
 	sb->s_maxbytes = sbi->lower_sb->s_maxbytes;
 	sb->s_stack_depth = sbi->lower_sb->s_stack_depth + 1;
@@ -209,6 +212,7 @@ static int yolo_fill_super(struct super_block *sb, struct fs_context *fc)
 {
 	struct yolo_fs_opts *opts = fc->fs_private;
 	struct yolo_sb_info *sbi;
+	struct path base_path = {};
 	struct inode *inode;
 	int err;
 
@@ -224,7 +228,7 @@ static int yolo_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	yolo_init_sbi(sbi, opts);
 
-	err = yolo_resolve_paths(sbi, sb, fc);
+	err = yolo_resolve_paths(sbi, sb, fc, &base_path);
 	if (err)
 		goto out_put;
 
@@ -232,7 +236,7 @@ static int yolo_fill_super(struct super_block *sb, struct fs_context *fc)
 	 * Reject lower filesystems that need d_revalidate (e.g. NFS).
 	 * YoloFS only supports local filesystems (ext4, xfs, btrfs, …).
 	 */
-	if (sbi->base_path.dentry->d_flags & DCACHE_OP_REVALIDATE) {
+	if (base_path.dentry->d_flags & DCACHE_OP_REVALIDATE) {
 		pr_err("yolofs: lower filesystem requires d_revalidate; "
 		       "only local filesystems are supported\n");
 		err = -EINVAL;
@@ -241,7 +245,7 @@ static int yolo_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_d_op = &yolo_dops;
 
 	/* Create root inode from lower root */
-	inode = yolo_iget(sb, d_inode(sbi->base_path.dentry));
+	inode = yolo_iget(sb, d_inode(base_path.dentry));
 	if (IS_ERR(inode)) {
 		err = PTR_ERR(inode);
 		goto out_put;
@@ -253,16 +257,19 @@ static int yolo_fill_super(struct super_block *sb, struct fs_context *fc)
 		goto out_put;
 	}
 
-	/* d_init already allocated d_fsdata for the root dentry */
-
-	path_get(&sbi->base_path);
-	yolo_set_lower_path(sb->s_root, &sbi->base_path);
+	/* d_init already allocated d_fsdata for the root dentry. The root dentry
+	 * takes its own reference on the lower root, so we drop ours below. */
+	path_get(&base_path);
+	yolo_set_lower_path(sb->s_root, &base_path);
 
 	YOLO_D(sb->s_root)->perm = YOLO_PERM_ASK;
 
+	path_put(&base_path);
 	return 0;
 
 out_put:
+	/* Safe on a zero-initialized path if resolve_paths never acquired it. */
+	path_put(&base_path);
 	yolo_put_super(sb);
 	return err;
 }
