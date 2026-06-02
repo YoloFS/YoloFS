@@ -7,7 +7,7 @@
 // `--to <name>` — diff changes up to a marker.
 // `--from <name> --to <name>` — diff changes between two markers.
 
-use crate::journal::{DirTree, Journal, Marker, Target};
+use crate::journal::{DirTree, Journal, Marker, Note, Record, Target};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -205,6 +205,25 @@ fn run(
         .collect();
     let has_snapshots = labels.iter().any(|c| c.is_some());
 
+    // Observational notes (A/B) in the visible, live range. Shown in `status`
+    // only — they record denied/ask-resolved accesses, not staged changes, so
+    // `diff` (verbose) leaves them out. Deduped: status is a summary, not the
+    // raw audit stream (`yolo audit` shows every occurrence).
+    let notes: Vec<Note> = if verbose {
+        Vec::new()
+    } else {
+        let mut seen = std::collections::HashSet::new();
+        (start..end)
+            .filter(|i| journal.is_alive(*i))
+            .flat_map(|i| journal.segments[i].records.iter())
+            .filter_map(|r| match r {
+                Record::Note(n) => Some(n.clone()),
+                _ => None,
+            })
+            .filter(|n| seen.insert(note_key(n)))
+            .collect()
+    };
+
     let mut total = 0usize;
     let mut base_exists_cache = std::collections::HashMap::new();
 
@@ -252,16 +271,56 @@ fn run(
             "{}",
             format!("No changes{}.", range_label(at, from, to)).yellow()
         );
-        print_full_hint(scoped, verbose);
-        return Ok(false);
-    }
-
-    if !verbose {
+    } else if !verbose {
         print_total(total);
     }
+
+    if !notes.is_empty() {
+        print_notes(&notes);
+    }
+
     print_full_hint(scoped, verbose);
 
-    Ok(true)
+    Ok(total > 0)
+}
+
+/// A dedup key for a note: its kind, path, op, and (for asks) decision.
+fn note_key(note: &Note) -> String {
+    match note {
+        Note::Block { path, op } => format!("B\0{path}\0{}", op.label()),
+        Note::Ask {
+            path,
+            op,
+            decision,
+        } => format!("A\0{path}\0{}\0{decision}", op.label()),
+    }
+}
+
+/// Print observational notes (A/B) under `status`. These are denied or
+/// ask-resolved accesses recorded in the visible range — not staged changes,
+/// so they're listed separately and excluded from the staged-change count.
+fn print_notes(notes: &[Note]) {
+    println!("\n{}", "Observed accesses (not staged):".bold());
+    for note in notes {
+        match note {
+            Note::Block { path, op } => {
+                println!("  {:8} {:5} {}", "blocked".yellow(), op.label(), path);
+            }
+            Note::Ask {
+                path,
+                op,
+                decision,
+            } => {
+                println!(
+                    "  {:8} {:5} {} → {}",
+                    "ask".yellow(),
+                    op.label(),
+                    path,
+                    decision
+                );
+            }
+        }
+    }
 }
 
 /// When the view is scoped to the latest snapshot, point the user at `--full`.

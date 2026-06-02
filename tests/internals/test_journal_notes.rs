@@ -1,13 +1,20 @@
-//! Verify the kernel writes B (Blocked) journal records for accesses denied
-//! by yolofs rules, and that these records are observational — they do not
-//! set the dirty flag and they don't contribute to the dir tree.
+//! Verify the kernel writes observational journal notes:
+//!
+//! - **B (Blocked)** records for accesses denied by yolofs rules, and
+//! - **A (Ask resolved)** records carrying the decision an `ask` path
+//!   resolved to (from the daemon or the no-daemon default).
+//!
+//! Both are observational — they do not set the dirty flag and they don't
+//! contribute to the dir tree. The A-note tests at the bottom of this file
+//! drive a live `yolo watch` daemon to confirm the daemon's interactive
+//! decision is the one persisted in the journal.
 
 use crate::helpers::YoloSession;
 use crate::internals::helpers::{actions, journal, notes};
 use std::collections::BTreeMap;
 use std::fs;
 use yolofs::config::Config;
-use yolofs::journal::{Note, Op};
+use yolofs::journal::{Journal, Note, Op};
 use yolofs::perm::Perm;
 
 /// Build a session where the entire mount denies access.
@@ -374,10 +381,11 @@ fn ask_resolved_to_default_deny_emits_block() {
     );
 }
 
-/// B records must be invisible to `yolo status` and `yolo diff` — they are
-/// observational and contribute no staged change.
+/// B records surface in `yolo status` (as observed-but-not-staged accesses)
+/// but never in `yolo diff`, which shows staged content only. Repeated
+/// identical blocks are deduped to a single status line.
 #[test]
-fn block_records_invisible_in_status_and_diff() {
+fn block_records_shown_in_status_hidden_in_diff() {
     use crate::helpers::YOLO_BIN;
     let s = deny_session();
 
@@ -396,8 +404,14 @@ fn block_records_invisible_in_status_and_diff() {
         .expect("yolo status");
     let stdout = String::from_utf8_lossy(&status.stdout);
     assert!(
-        !stdout.contains("blocked") && !stdout.contains("/hello.txt"),
-        "yolo status leaked B record info: {stdout}"
+        stdout.contains("blocked") && stdout.contains("/hello.txt"),
+        "yolo status should surface the B record: {stdout}"
+    );
+    // Three identical blocked reads collapse to one status line.
+    assert_eq!(
+        stdout.matches("blocked").count(),
+        1,
+        "identical blocks should be deduped in status: {stdout}"
     );
 
     let diff = std::process::Command::new(YOLO_BIN)
@@ -409,6 +423,162 @@ fn block_records_invisible_in_status_and_diff() {
     let stdout = String::from_utf8_lossy(&diff.stdout);
     assert!(
         !stdout.contains("blocked") && !stdout.contains("/hello.txt"),
-        "yolo diff leaked B record info: {stdout}"
+        "yolo diff must not show B records (staged content only): {stdout}"
     );
+}
+
+/// A (ask-resolved) notes also surface in `yolo status`. With no daemon the
+/// ask resolves to deny, producing an A note that status should display.
+#[test]
+fn ask_records_shown_in_status() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::new(),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let _ = fs::read_to_string(s.mnt_path("hello.txt"));
+
+    // Sanity: an A note was emitted.
+    assert!(
+        !notes(&journal(&s)).is_empty(),
+        "expected an A note to be emitted"
+    );
+
+    let out = s.cli(&["status"]).expect("yolo status");
+    assert!(
+        out.contains("ask") && out.contains("hello.txt"),
+        "yolo status should surface the A note: {out}"
+    );
+}
+
+// ── A (ask) notes: daemon decision → journal round-trip ─────────────
+//
+// `ask_record_emitted_on_no_daemon` above covers the *no-daemon default*
+// path (decision = deny). These tests confirm the inverse: when a live
+// `yolo watch` daemon answers an ask interactively, the decision it gives
+// (allow / read / hide / deny) is exactly what the kernel records in the
+// A note. This ties the userspace daemon (cli/test_watch.rs) to the journal
+// recording verified here.
+
+/// Mount with "/" = Allow (so directory traversal never asks), then live-add
+/// an `ask` rule for a single file so only that file's open() goes through
+/// the daemon. Mirrors `session_with_ask_file` in cli/test_watch.rs.
+fn session_with_ask_file() -> YoloSession {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+    s.cli(&["rule", "ask", "hello.txt"]).unwrap();
+    s
+}
+
+/// Spawn `yolo watch`, pre-fill its stdin with `input` (one decision per
+/// line), give it time to block on the ioctl read, and return the child so
+/// the caller can trigger the ask and then stop the daemon.
+fn spawn_watch_with_input(s: &YoloSession, input: &str) -> std::process::Child {
+    use crate::helpers::YOLO_BIN;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut watch = Command::new(YOLO_BIN)
+        .args(["watch"])
+        .current_dir(&s.root)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn watch");
+
+    // Let the daemon open the ioctl fd and block on the first read.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    watch
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    watch
+}
+
+/// Assert the journal contains an A note for `suffix` with the given op and
+/// resolved decision.
+fn assert_ask_note(j: &Journal, suffix: &str, op: Op, decision: Perm) {
+    let ns = notes(j);
+    assert!(
+        ns.iter().any(|n| matches!(
+            n,
+            Note::Ask { path, op: o, decision: d }
+                if path.ends_with(suffix) && *o == op && *d == decision
+        )),
+        "expected A note {suffix} ({op:?}) -> {decision:?}, got: {ns:?}"
+    );
+}
+
+/// Daemon answers `allow` → read succeeds and the A note records `allow`.
+#[test]
+fn daemon_allow_records_ask_note_allow() {
+    let s = session_with_ask_file();
+    let mut watch = spawn_watch_with_input(&s, "a\n");
+
+    let content = fs::read_to_string(s.mnt_path("hello.txt"));
+
+    watch.kill().ok();
+    let _ = watch.wait();
+
+    assert_eq!(
+        content.expect("read should succeed after daemon allow"),
+        "base content\n"
+    );
+    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::Allow);
+}
+
+/// Daemon answers `read` → read succeeds and the A note records `read`.
+#[test]
+fn daemon_read_records_ask_note_read() {
+    let s = session_with_ask_file();
+    let mut watch = spawn_watch_with_input(&s, "r\n");
+
+    let content = fs::read_to_string(s.mnt_path("hello.txt"));
+
+    watch.kill().ok();
+    let _ = watch.wait();
+
+    assert_eq!(
+        content.expect("read should succeed after daemon read-only"),
+        "base content\n"
+    );
+    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::Read);
+}
+
+/// Daemon answers `hide` → read fails (ENOENT) and the A note records `hide`.
+#[test]
+fn daemon_hide_records_ask_note_hide() {
+    let s = session_with_ask_file();
+    let mut watch = spawn_watch_with_input(&s, "h\n");
+
+    let result = fs::read_to_string(s.mnt_path("hello.txt"));
+
+    watch.kill().ok();
+    let _ = watch.wait();
+
+    assert!(result.is_err(), "read should fail after daemon hide");
+    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::Hide);
+}
+
+/// Daemon answers `deny` → read fails (EACCES) and the A note records `deny`.
+#[test]
+fn daemon_deny_records_ask_note_deny() {
+    let s = session_with_ask_file();
+    let mut watch = spawn_watch_with_input(&s, "d\n");
+
+    let result = fs::read_to_string(s.mnt_path("hello.txt"));
+
+    watch.kill().ok();
+    let _ = watch.wait();
+
+    assert!(result.is_err(), "read should fail after daemon deny");
+    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::Deny);
 }

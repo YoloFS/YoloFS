@@ -1,5 +1,8 @@
 use crate::helpers::YoloSession;
+use std::collections::BTreeMap;
 use std::fs;
+use yolofs::config::Config;
+use yolofs::perm::Perm;
 
 /// `yolofs audit` shows file operations.
 #[test]
@@ -79,6 +82,32 @@ fn audit_path_filter() {
     assert!(
         data_lines.is_empty(),
         "should not show b.txt data records: {output}"
+    );
+}
+
+/// `yolofs audit` surfaces observational notes — a denied access (B note)
+/// must appear as "blocked <path>". This is the complement of
+/// `block_records_invisible_in_status_and_diff`: notes are hidden from
+/// status/diff but visible in audit.
+#[test]
+fn audit_shows_blocked_note() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::Deny)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    // Denied read emits a B note for hello.txt (no S/D/R action).
+    let _ = fs::read_to_string(s.mnt_path("hello.txt"));
+
+    let output = s.cli(&["audit"]).expect("audit");
+    assert!(
+        output.contains("blocked"),
+        "audit should show the blocked note: {output}"
+    );
+    assert!(
+        output.contains("hello.txt"),
+        "audit should name the blocked path: {output}"
     );
 }
 

@@ -187,6 +187,50 @@ fn interactive_watch_deny_blocks_read() {
     assert!(result.is_err(), "read should fail after interactive 'deny'");
 }
 
+/// Interactive `yolofs watch` — daemon reads "h\n" and responds `hide`.
+/// The file must appear to not exist (ENOENT → NotFound), which is distinct
+/// from `deny` (EACCES → PermissionDenied) above.
+#[test]
+fn interactive_watch_hide_returns_not_found() {
+    let (s, _path) = session_with_ask_file();
+
+    let mut watch = Command::new(YOLO_BIN)
+        .args(["watch"])
+        .current_dir(&s.root)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn interactive watch");
+
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Pre-fill stdin with "h" (hide).
+    watch.stdin.as_mut().unwrap().write_all(b"h\n").unwrap();
+
+    let result = std::fs::read_to_string(s.mnt_path("hello.txt"));
+
+    watch.kill().ok();
+    let output = watch.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    assert!(
+        stderr.contains("[ask]"),
+        "daemon should have prompted: {stderr}"
+    );
+    assert!(
+        stderr.contains("→ hide"),
+        "daemon should log hide decision: {stderr}"
+    );
+    let err = result.expect_err("read should fail after interactive 'hide'");
+    assert_eq!(
+        err.kind(),
+        std::io::ErrorKind::NotFound,
+        "hide must surface as ENOENT (not-found), not EACCES: {err:?}"
+    );
+}
+
 /// Interactive `yolofs watch` — daemon reads "r\n" and responds `read`.
 /// Read succeeds, but write is denied.
 #[test]
