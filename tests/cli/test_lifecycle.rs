@@ -166,3 +166,16 @@ fn abort_then_modify_commit() {
     }
     // If write failed, the dentry was stale after abort — acceptable
 }
+
+/// `yolo mount` always reminds the user to run `yolo watch` for permission prompts.
+#[test]
+fn mount_hints_to_run_watch() {
+    let s = YoloSession::new().expect("session setup");
+    // Re-running mount hits the already-mounted path, which prints the hint.
+    let (ok, _out, err) = s.cli_output(&["mount"]).expect("mount");
+    assert!(ok, "mount should succeed: {err}");
+    assert!(
+        err.contains("yolo watch"),
+        "mount should suggest `yolo watch`: {err}"
+    );
+}

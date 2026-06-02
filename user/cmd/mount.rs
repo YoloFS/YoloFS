@@ -168,6 +168,16 @@ pub fn unmount_at(yolo_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// After mounting, remind the user to run `yolo watch` to answer permission
+/// prompts. Without a watcher the kernel resolves `ask` paths to the ask default
+/// immediately (no prompt, no hang) — so this is guidance, not an error.
+fn hint_watch() {
+    eprintln!(
+        "{} run `yolo watch` to answer permission prompts",
+        "yolo:".yellow()
+    );
+}
+
 /// Create .yolofs/ layout, mount, and apply rules.
 /// If already mounted, re-applies rules from yolofs.toml.
 pub fn mount() -> Result<()> {
@@ -183,6 +193,7 @@ pub fn mount() -> Result<()> {
             mnt.display(),
             opts
         );
+        hint_watch();
         return Ok(());
     }
 
@@ -200,6 +211,7 @@ pub fn mount() -> Result<()> {
         let _ = unmount_at(&yolo_dir);
         return Err(e);
     }
+    hint_watch();
     Ok(())
 }
 
