@@ -53,14 +53,14 @@ static struct file *yolo_open_staged_lower(struct dentry *dentry,
 		err = vfs_truncate(&lower_path, 0);
 		if (err) {
 			yolo_put_lower_path(dentry, &lower_path);
-			atomic_dec(&sbi->staging_fd_count);
+			atomic_dec(&sbi->staging.fd_count);
 			return ERR_PTR(err);
 		}
 	}
 	f = dentry_open(&lower_path, flags, current_cred());
 	yolo_put_lower_path(dentry, &lower_path);
 	if (IS_ERR(f))
-		atomic_dec(&sbi->staging_fd_count);
+		atomic_dec(&sbi->staging.fd_count);
 	return f;
 }
 
@@ -80,33 +80,33 @@ static struct file *yolo_open_staged(struct yolo_sb_info *sbi,
 
 	/* Fast path: inode is current — open directly.
 	 * staging_sem excludes snapshot, so gen is stable under the lock. */
-	down_read(&sbi->staging_sem);
+	down_read(&sbi->staging.sem);
 	if (yolo_dentry_is_current(dentry, sbi)) {
-		atomic_inc(&sbi->staging_fd_count);
-		up_read(&sbi->staging_sem);
+		atomic_inc(&sbi->staging.fd_count);
+		up_read(&sbi->staging.sem);
 		return yolo_open_staged_lower(dentry, sbi, file->f_flags);
 	}
-	up_read(&sbi->staging_sem);
+	up_read(&sbi->staging.sem);
 
 	/* Slow path: needs COW (base file, redirect, or stale inode) */
 	truncate = !!(file->f_flags & O_TRUNC);
 
-	down_write(&sbi->staging_sem);
+	down_write(&sbi->staging.sem);
 
 	/* Re-check — a concurrent open may have COW'd */
 	if (yolo_dentry_is_current(dentry, sbi)) {
-		atomic_inc(&sbi->staging_fd_count);
-		up_write(&sbi->staging_sem);
+		atomic_inc(&sbi->staging.fd_count);
+		up_write(&sbi->staging.sem);
 		return yolo_open_staged_lower(dentry, sbi, file->f_flags);
 	}
 
-	atomic_inc(&sbi->staging_fd_count);
+	atomic_inc(&sbi->staging.fd_count);
 	err = yolo_do_cow(sbi, dentry, &new_file,
 			  file->f_flags & ~O_TRUNC, truncate);
-	up_write(&sbi->staging_sem);
+	up_write(&sbi->staging.sem);
 
 	if (err) {
-		atomic_dec(&sbi->staging_fd_count);
+		atomic_dec(&sbi->staging.fd_count);
 		return ERR_PTR(err);
 	}
 	return new_file;
@@ -126,7 +126,7 @@ static int yolo_open(struct inode *inode, struct file *file)
 	if (!fi)
 		return -ENOMEM;
 
-	if (sbi->permission) {
+	if (sbi->perm.enabled) {
 		char buf[YOLO_PATH_MAX];
 
 		err = yolo_check_open_perm(sbi, dentry, file, buf);
@@ -138,7 +138,7 @@ static int yolo_open(struct inode *inode, struct file *file)
 		}
 	}
 
-	if (sbi->staging) {
+	if (sbi->staging.enabled) {
 		lower_file = yolo_open_staged(sbi, dentry, file);
 	} else {
 		lower_file = yolo_open_lower(dentry, file->f_flags);
@@ -247,8 +247,8 @@ static int yolo_release(struct inode *inode, struct file *file)
 		struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
 
 		/* Decrement staging fd count for write-mode opens */
-		if (sbi->staging && (file->f_mode & FMODE_WRITE))
-			atomic_dec(&sbi->staging_fd_count);
+		if (sbi->staging.enabled && (file->f_mode & FMODE_WRITE))
+			atomic_dec(&sbi->staging.fd_count);
 
 		if (fi->lower_file)
 			fput(fi->lower_file);

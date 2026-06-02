@@ -40,7 +40,7 @@ int yolo_journal_open(struct yolo_sb_info *sbi)
 	if (IS_ERR(f))
 		return PTR_ERR(f);
 
-	sbi->journal_file = f;
+	sbi->staging.journal_file = f;
 	return 0;
 }
 
@@ -52,7 +52,7 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 	char buf[3 * YOLO_PATH_MAX + 64];
 	size_t off = 0;
 	const char **fp;
-	struct file *f = sbi->journal_file;
+	struct file *f = sbi->staging.journal_file;
 	loff_t pos;
 	int err;
 
@@ -77,7 +77,7 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 	 * observational notes (A/B) are excluded — they must not trigger an
 	 * auto-snapshot under YOLO_SNAPSHOT_IF_CHANGED. */
 	if (err >= 0 && tag != 'P' && tag != 'T' && tag != 'B' && tag != 'A')
-		WRITE_ONCE(sbi->dirty, true);
+		WRITE_ONCE(sbi->staging.dirty, true);
 	return err < 0 ? err : 0;
 }
 
@@ -185,7 +185,7 @@ static char perm_char(enum yolo_perm p)
  * @decision: the resolved permission (enum yolo_perm) — from the daemon or
  *            the timeout default
  *
- * Observational note (does not set sbi->dirty). Format:
+ * Observational note (does not set sbi->staging.dirty). Format:
  *   A\0<path>\0<op>\0<decision>\n   (op = r/w; decision = a/y/r/d/h)
  */
 int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
@@ -207,7 +207,7 @@ int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
  * Observational note: written when a yolofs rule causes the kernel to
  * return -EACCES for an access. The path is the agent's intended target
  * (file for opens; child for parent-write-denied mutates), not the
- * parent dentry whose perm caused the denial. Does not set sbi->dirty
+ * parent dentry whose perm caused the denial. Does not set sbi->staging.dirty
  * (see journal_write).
  *
  * Format: B\0<path>\0<op>\n

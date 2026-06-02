@@ -33,10 +33,10 @@ static int yolo_dir_open(struct inode *inode, struct file *file)
 
 	/* Hidden directories are invisible — return ENOENT.
 	 * All other perms (including deny) allow readdir. */
-	if (sbi->permission) {
+	if (sbi->perm.enabled) {
 		struct dentry *dentry = file->f_path.dentry;
 		struct yolo_inode_info *ii = YOLO_I(d_inode(dentry));
-		if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
+		if (ii->perm_gen != atomic64_read(&sbi->perm.gen))
 			yolo_cache_perm(d_inode(dentry), dentry);
 		if (ii->cached_perm == YOLO_PERM_HIDE)
 			return -ENOENT;
@@ -138,7 +138,7 @@ static bool yolo_fill_base(struct dir_context *ctx, const char *name,
 	 * Scan the parent's pinned rule dentries for a matching name
 	 * with YOLO_PERM_HIDE. Rule dentries are pinned (dget'd) so
 	 * they're always in the dcache as children of the parent. */
-	if (YOLO_SB(rdd->dentry->d_sb)->permission) {
+	if (YOLO_SB(rdd->dentry->d_sb)->perm.enabled) {
 		struct dentry *child;
 		bool is_hidden = false;
 
@@ -291,7 +291,7 @@ static int yolo_readdir(struct file *file, struct dir_context *ctx)
 		return -EIO;
 
 	/* No staging → passthrough */
-	if (!sbi->staging || !sbi->inodes_dir.dentry) {
+	if (!sbi->staging.enabled || !sbi->staging.inodes_dir.dentry) {
 		lower_file->f_pos = ctx->pos;
 		err = iterate_dir(lower_file, ctx);
 		file->f_pos = lower_file->f_pos;

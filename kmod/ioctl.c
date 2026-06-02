@@ -41,11 +41,11 @@ static bool yolo_caller_inside(struct super_block *sb)
 void yolo_ctl_release(struct file *file)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
-	struct yolo_ask_engine *eng = &sbi->ask_engine;
+	struct yolo_permission *perm = &sbi->perm;
 
-	if (cmpxchg(&eng->daemon_file, file, NULL) == file) {
+	if (cmpxchg(&perm->daemon_file, file, NULL) == file) {
 		yolo_daemon_cleanup(sbi);
-		atomic_set(&eng->has_daemon, 0);
+		atomic_set(&perm->has_daemon, 0);
 	}
 }
 
@@ -54,7 +54,7 @@ void yolo_ctl_release(struct file *file)
 static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
-	struct yolo_ask_engine *eng = &sbi->ask_engine;
+	struct yolo_permission *perm = &sbi->perm;
 	struct yolo_perm_request *req;
 	struct yolo_ioc_ask out;
 	int err;
@@ -62,10 +62,10 @@ static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 
 	/* Claim daemon status on first call; reject if another fd already has it.
 	 * Tracked by file identity (private_data holds the dir's readdir cursor). */
-	if (eng->daemon_file != file) {
-		if (cmpxchg(&eng->daemon_file, NULL, file) != NULL)
+	if (perm->daemon_file != file) {
+		if (cmpxchg(&perm->daemon_file, NULL, file) != NULL)
 			return -EBUSY;
-		atomic_set(&eng->has_daemon, 1);
+		atomic_set(&perm->has_daemon, 1);
 	}
 
 	/* Read buffer info from userspace */
@@ -74,28 +74,28 @@ static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 
 	/* Wait for a pending request */
 	if (file->f_flags & O_NONBLOCK) {
-		spin_lock(&eng->pending_lock);
-		if (list_empty(&eng->pending_reqs)) {
-			spin_unlock(&eng->pending_lock);
+		spin_lock(&perm->pending_lock);
+		if (list_empty(&perm->pending_reqs)) {
+			spin_unlock(&perm->pending_lock);
 			return -EAGAIN;
 		}
 	} else {
-		err = wait_event_interruptible(eng->request_waitq,
-			!list_empty(&eng->pending_reqs));
+		err = wait_event_interruptible(perm->request_waitq,
+			!list_empty(&perm->pending_reqs));
 		if (err)
 			return err;
-		spin_lock(&eng->pending_lock);
-		if (list_empty(&eng->pending_reqs)) {
-			spin_unlock(&eng->pending_lock);
+		spin_lock(&perm->pending_lock);
+		if (list_empty(&perm->pending_reqs)) {
+			spin_unlock(&perm->pending_lock);
 			return -EAGAIN;
 		}
 	}
 
-	req = list_first_entry(&eng->pending_reqs,
+	req = list_first_entry(&perm->pending_reqs,
 			       struct yolo_perm_request, list);
 	list_del_init(&req->list);
 	kref_get(&req->ref); /* daemon takes a reference */
-	spin_unlock(&eng->pending_lock);
+	spin_unlock(&perm->pending_lock);
 
 	path_len = req->path_len;
 
@@ -110,9 +110,9 @@ static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 	strscpy(out.comm, req->comm, sizeof(out.comm));
 	out.path_len = path_len;
 
-	spin_lock(&eng->dispatch_lock);
-	list_add_tail(&req->list, &eng->dispatched);
-	spin_unlock(&eng->dispatch_lock);
+	spin_lock(&perm->dispatch_lock);
+	list_add_tail(&req->list, &perm->dispatched);
+	spin_unlock(&perm->dispatch_lock);
 
 	/* Write path data to user buffer */
 	if (copy_to_user((void __user *)out.path_ptr, req->path, path_len)) {
@@ -129,14 +129,14 @@ static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 	return 0;
 
 requeue_dispatched:
-	spin_lock(&eng->dispatch_lock);
+	spin_lock(&perm->dispatch_lock);
 	list_del_init(&req->list);
-	spin_unlock(&eng->dispatch_lock);
+	spin_unlock(&perm->dispatch_lock);
 requeue_pending:
-	spin_lock(&eng->pending_lock);
-	list_add_tail(&req->list, &eng->pending_reqs);
-	spin_unlock(&eng->pending_lock);
-	wake_up_interruptible(&eng->request_waitq);
+	spin_lock(&perm->pending_lock);
+	list_add_tail(&req->list, &perm->pending_reqs);
+	spin_unlock(&perm->pending_lock);
+	wake_up_interruptible(&perm->request_waitq);
 	kref_put(&req->ref, yolo_perm_request_release);
 	return err;
 }
@@ -145,7 +145,7 @@ requeue_pending:
 
 static long yolo_put_decision_ioctl(struct file *file, unsigned long arg)
 {
-	struct yolo_ask_engine *eng = &YOLO_SB(file_inode(file)->i_sb)->ask_engine;
+	struct yolo_permission *perm = &YOLO_SB(file_inode(file)->i_sb)->perm;
 	struct yolo_ioc_decision in;
 	struct yolo_perm_request *req, *tmp;
 	bool found = false;
@@ -156,8 +156,8 @@ static long yolo_put_decision_ioctl(struct file *file, unsigned long arg)
 	if (in.decision > YOLO_PERM_HIDE)
 		return -EINVAL;
 
-	spin_lock(&eng->dispatch_lock);
-	list_for_each_entry_safe(req, tmp, &eng->dispatched, list) {
+	spin_lock(&perm->dispatch_lock);
+	list_for_each_entry_safe(req, tmp, &perm->dispatched, list) {
 		if (req->id == in.id) {
 			req->decision = (enum yolo_perm)in.decision;
 			list_del_init(&req->list);
@@ -165,7 +165,7 @@ static long yolo_put_decision_ioctl(struct file *file, unsigned long arg)
 			break;
 		}
 	}
-	spin_unlock(&eng->dispatch_lock);
+	spin_unlock(&perm->dispatch_lock);
 
 	if (!found)
 		return -ENOENT;
@@ -179,17 +179,17 @@ static long yolo_put_decision_ioctl(struct file *file, unsigned long arg)
 
 void yolo_daemon_cleanup(struct yolo_sb_info *sbi)
 {
-	struct yolo_ask_engine *eng = &sbi->ask_engine;
+	struct yolo_permission *perm = &sbi->perm;
 	struct yolo_perm_request *req, *tmp;
 
-	spin_lock(&eng->dispatch_lock);
-	list_for_each_entry_safe(req, tmp, &eng->dispatched, list) {
+	spin_lock(&perm->dispatch_lock);
+	list_for_each_entry_safe(req, tmp, &perm->dispatched, list) {
 		req->decision = YOLO_PERM_DENY;
 		list_del_init(&req->list);
 		complete(&req->done);
 		kref_put(&req->ref, yolo_perm_request_release);
 	}
-	spin_unlock(&eng->dispatch_lock);
+	spin_unlock(&perm->dispatch_lock);
 }
 
 /* ── Release all rule-pinned dentries ───────────────────────────────── */
@@ -199,9 +199,9 @@ void yolo_release_pinned_rules(struct yolo_sb_info *sbi)
 	LIST_HEAD(local);
 	struct yolo_dentry_info *di, *tmp;
 
-	spin_lock(&sbi->pinned_rules_lock);
-	list_splice_init(&sbi->pinned_rules, &local);
-	spin_unlock(&sbi->pinned_rules_lock);
+	spin_lock(&sbi->perm.pinned_rules_lock);
+	list_splice_init(&sbi->perm.pinned_rules, &local);
+	spin_unlock(&sbi->perm.pinned_rules_lock);
 
 	list_for_each_entry_safe(di, tmp, &local, rule_pin) {
 		struct dentry *dentry = di->rule_dentry;
@@ -303,10 +303,10 @@ static long yolo_rule_set_ioctl(struct file *file, unsigned long arg)
 		spin_unlock(&di->lock);
 
 		if (had_rule) {
-			spin_lock(&sbi->pinned_rules_lock);
+			spin_lock(&sbi->perm.pinned_rules_lock);
 			if (!list_empty(&di->rule_pin))
 				list_del_init(&di->rule_pin);
-			spin_unlock(&sbi->pinned_rules_lock);
+			spin_unlock(&sbi->perm.pinned_rules_lock);
 			dput(rule_path.dentry);
 		}
 	} else {
@@ -322,14 +322,14 @@ static long yolo_rule_set_ioctl(struct file *file, unsigned long arg)
 		spin_unlock(&di->lock);
 
 		if (first) {
-			spin_lock(&sbi->pinned_rules_lock);
+			spin_lock(&sbi->perm.pinned_rules_lock);
 			if (list_empty(&di->rule_pin))
-				list_add(&di->rule_pin, &sbi->pinned_rules);
-			spin_unlock(&sbi->pinned_rules_lock);
+				list_add(&di->rule_pin, &sbi->perm.pinned_rules);
+			spin_unlock(&sbi->perm.pinned_rules_lock);
 		}
 	}
 
-	atomic64_inc(&sbi->perm_gen);
+	atomic64_inc(&sbi->perm.gen);
 	path_put(&rule_path);
 	return 0;
 }
@@ -366,7 +366,7 @@ static long yolo_snapshot_ioctl(struct file *file, unsigned long arg)
 	u16 gen;
 	int err;
 
-	if (!sbi->staging)
+	if (!sbi->staging.enabled)
 		return -EOPNOTSUPP;
 
 	if (copy_from_user(&snap, (void __user *)arg, sizeof(snap)))
@@ -376,26 +376,26 @@ static long yolo_snapshot_ioctl(struct file *file, unsigned long arg)
 	if (err)
 		return err;
 
-	down_write(&sbi->staging_sem);
-	if (atomic_read(&sbi->staging_fd_count) > 0) {
-		up_write(&sbi->staging_sem);
+	down_write(&sbi->staging.sem);
+	if (atomic_read(&sbi->staging.fd_count) > 0) {
+		up_write(&sbi->staging.sem);
 		return -EBUSY;
 	}
-	if ((snap.flags & YOLO_SNAPSHOT_IF_CHANGED) && !READ_ONCE(sbi->dirty)) {
-		up_write(&sbi->staging_sem);
+	if ((snap.flags & YOLO_SNAPSHOT_IF_CHANGED) && !READ_ONCE(sbi->staging.dirty)) {
+		up_write(&sbi->staging.sem);
 		snap.gen = 0;
 		if (copy_to_user((void __user *)arg, &snap, sizeof(snap)))
 			return -EFAULT;
 		return 0;
 	}
-	if (atomic_read(&sbi->gen) >= U16_MAX) {
-		up_write(&sbi->staging_sem);
+	if (atomic_read(&sbi->staging.gen) >= U16_MAX) {
+		up_write(&sbi->staging.sem);
 		return -EOVERFLOW;
 	}
-	gen = (u16)atomic_inc_return(&sbi->gen);
+	gen = (u16)atomic_inc_return(&sbi->staging.gen);
 	yolo_journal_snapshot(sbi, gen, name_buf);
-	WRITE_ONCE(sbi->dirty, false);
-	up_write(&sbi->staging_sem);
+	WRITE_ONCE(sbi->staging.dirty, false);
+	up_write(&sbi->staging.sem);
 
 	/* Best-effort: snapshot is already committed to the journal,
 	 * so return success even if copy_to_user fails. */
@@ -652,7 +652,7 @@ static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 	u16 new_gen;
 	int err = 0;
 
-	if (!sbi->staging)
+	if (!sbi->staging.enabled)
 		return -EOPNOTSUPP;
 
 	if (copy_from_user(&hdr, (void __user *)arg, sizeof(hdr)))
@@ -661,53 +661,53 @@ static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 	if (hdr.target_gen > U16_MAX)
 		return -EINVAL;
 
-	down_write(&sbi->staging_sem);
-	if (atomic_read(&sbi->staging_fd_count) > 0) {
-		up_write(&sbi->staging_sem);
+	down_write(&sbi->staging.sem);
+	if (atomic_read(&sbi->staging.fd_count) > 0) {
+		up_write(&sbi->staging.sem);
 		return -EBUSY;
 	}
 
 	/* Wipe perm caches, pinned dentries, dentry cache */
-	atomic64_inc(&sbi->perm_gen);
+	atomic64_inc(&sbi->perm.gen);
 	yolo_dentry_unpin_all(sb);
 
 	if (hdr.target_gen == 0) {
 		/* Reset mode (commit/abort): no entries, no journal write */
-		atomic_set(&sbi->gen, 0);
-		WRITE_ONCE(sbi->dirty, false);
+		atomic_set(&sbi->staging.gen, 0);
+		WRITE_ONCE(sbi->staging.dirty, false);
 		/* Invalidate shard cache — CLI is about to delete shard dirs. */
-		if (sbi->shard_dentry) {
-			dput(sbi->shard_dentry);
-			sbi->shard_dentry = NULL;
+		if (sbi->staging.shard_dentry) {
+			dput(sbi->staging.shard_dentry);
+			sbi->staging.shard_dentry = NULL;
 		}
-		up_write(&sbi->staging_sem);
+		up_write(&sbi->staging.sem);
 		return 0;
 	}
 
 	/* Invalidate shard cache before travel — CLI may reorganize inodes. */
-	if (sbi->shard_dentry) {
-		dput(sbi->shard_dentry);
-		sbi->shard_dentry = NULL;
+	if (sbi->staging.shard_dentry) {
+		dput(sbi->staging.shard_dentry);
+		sbi->staging.shard_dentry = NULL;
 	}
 
 	/* Travel mode: increment gen, inject entries, write T record */
-	if (atomic_read(&sbi->gen) >= U16_MAX) {
-		up_write(&sbi->staging_sem);
+	if (atomic_read(&sbi->staging.gen) >= U16_MAX) {
+		up_write(&sbi->staging.sem);
 		return -EOVERFLOW;
 	}
-	new_gen = (u16)atomic_inc_return(&sbi->gen);
+	new_gen = (u16)atomic_inc_return(&sbi->staging.gen);
 
 	err = yolo_travel_inject(file, sbi, &hdr, new_gen);
 	if (!err)
 		err = yolo_journal_travel(sbi, new_gen, hdr.target_gen);
 	/* Don't rollback gen on failure — dirents may already be injected
 	 * with new_gen.  Rolling back would leave those dirents with a gen
-	 * higher than sbi->gen, breaking COW checks.  The CLI can retry
+	 * higher than sbi->staging.gen, breaking COW checks.  The CLI can retry
 	 * the operation or abort (which resets gen to 0). */
 	if (!err)
-		WRITE_ONCE(sbi->dirty, false);
+		WRITE_ONCE(sbi->staging.dirty, false);
 
-	up_write(&sbi->staging_sem);
+	up_write(&sbi->staging.sem);
 
 	if (!err) {
 		/* Best-effort: travel is already committed to the journal,

@@ -31,14 +31,14 @@ static struct dentry *get_shard_dir(struct yolo_sb_info *sbi, u32 ino)
 	int err, len;
 
 	/* Fast path: cached shard matches. */
-	if (sbi->shard_dentry && sbi->shard_id == shard)
-		return dget(sbi->shard_dentry);
+	if (sbi->staging.shard_dentry && sbi->staging.shard_id == shard)
+		return dget(sbi->staging.shard_dentry);
 
 	len = snprintf(shard_name, sizeof(shard_name), "%u", shard);
-	dir = d_inode(sbi->inodes_dir.dentry);
+	dir = d_inode(sbi->staging.inodes_dir.dentry);
 
 	inode_lock(dir);
-	shard_dentry = lookup_one_len(shard_name, sbi->inodes_dir.dentry, len);
+	shard_dentry = lookup_one_len(shard_name, sbi->staging.inodes_dir.dentry, len);
 	if (IS_ERR(shard_dentry)) {
 		inode_unlock(dir);
 		return shard_dentry;
@@ -46,7 +46,7 @@ static struct dentry *get_shard_dir(struct yolo_sb_info *sbi, u32 ino)
 
 	if (!d_inode(shard_dentry)) {
 		/* Shard dir doesn't exist yet — create it. */
-		err = vfs_mkdir(mnt_idmap(sbi->inodes_dir.mnt),
+		err = vfs_mkdir(mnt_idmap(sbi->staging.inodes_dir.mnt),
 				dir, shard_dentry, 0755);
 		if (err) {
 			inode_unlock(dir);
@@ -57,10 +57,10 @@ static struct dentry *get_shard_dir(struct yolo_sb_info *sbi, u32 ino)
 	inode_unlock(dir);
 
 	/* Update cache. */
-	if (sbi->shard_dentry)
-		dput(sbi->shard_dentry);
-	sbi->shard_dentry = dget(shard_dentry);
-	sbi->shard_id = shard;
+	if (sbi->staging.shard_dentry)
+		dput(sbi->staging.shard_dentry);
+	sbi->staging.shard_dentry = dget(shard_dentry);
+	sbi->staging.shard_id = shard;
 
 	return shard_dentry;
 }
@@ -72,12 +72,12 @@ int yolo_inode_path(struct yolo_sb_info *sbi, u32 ino,
 {
 	char rel[24]; /* "<shard>/<ino>" */
 
-	if (!sbi->inodes_dir.dentry)
+	if (!sbi->staging.inodes_dir.dentry)
 		return -ENOENT;
 
 	snprintf(rel, sizeof(rel), "%u/%u", ino / YOLO_SHARD_SIZE, ino);
 	/* No LOOKUP_FOLLOW — symlink inodes must not be dereferenced */
-	return vfs_path_lookup(sbi->inodes_dir.dentry, sbi->inodes_dir.mnt,
+	return vfs_path_lookup(sbi->staging.inodes_dir.dentry, sbi->staging.inodes_dir.mnt,
 			       rel, 0, result);
 }
 
@@ -98,10 +98,10 @@ int yolo_inode_alloc(struct yolo_sb_info *sbi, u32 *out_ino,
 	u32 ino;
 	int err, len;
 
-	if (!sbi->inodes_dir.dentry)
+	if (!sbi->staging.inodes_dir.dentry)
 		return -ENOENT;
 
-	ino = (u32)atomic_inc_return(&sbi->next_ino);
+	ino = (u32)atomic_inc_return(&sbi->staging.next_ino);
 	if (unlikely(ino == 0))
 		return -ENOSPC;
 
@@ -121,13 +121,13 @@ int yolo_inode_alloc(struct yolo_sb_info *sbi, u32 *out_ino,
 	}
 
 	if (S_ISDIR(mode))
-		err = vfs_mkdir(mnt_idmap(sbi->inodes_dir.mnt),
+		err = vfs_mkdir(mnt_idmap(sbi->staging.inodes_dir.mnt),
 				shard_inode, ino_dentry, mode);
 	else if (S_ISLNK(mode))
-		err = vfs_symlink(mnt_idmap(sbi->inodes_dir.mnt),
+		err = vfs_symlink(mnt_idmap(sbi->staging.inodes_dir.mnt),
 				  shard_inode, ino_dentry, symname);
 	else
-		err = vfs_create(mnt_idmap(sbi->inodes_dir.mnt),
+		err = vfs_create(mnt_idmap(sbi->staging.inodes_dir.mnt),
 				 shard_inode, ino_dentry, mode, true);
 
 	inode_unlock(shard_inode);
@@ -139,7 +139,7 @@ int yolo_inode_alloc(struct yolo_sb_info *sbi, u32 *out_ino,
 	}
 
 	inode_path->dentry = ino_dentry;
-	inode_path->mnt = mntget(sbi->inodes_dir.mnt);
+	inode_path->mnt = mntget(sbi->staging.inodes_dir.mnt);
 	*out_ino = ino;
 	return 0;
 }
@@ -217,7 +217,7 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 	 */
 	inode_lock(parent);
 	yolo_dentry_pin(dentry, YOLO_TARGET_INODE);
-	YOLO_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->gen);
+	YOLO_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->staging.gen);
 	inode_unlock(parent);
 
 	path_get(&inode_path); /* extra ref for reopen below */

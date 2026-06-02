@@ -35,7 +35,7 @@ void yolo_cache_perm(struct inode *inode, struct dentry *dentry)
 	struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
 
 	info->cached_perm = yolo_resolve_perm(dentry);
-	info->perm_gen = atomic64_read(&sbi->perm_gen);
+	info->perm_gen = atomic64_read(&sbi->perm.gen);
 }
 
 /* ── Check perm against file flags ─────────────────────────────────── */
@@ -83,7 +83,7 @@ int yolo_check_dentry_perm(struct yolo_sb_info *sbi, struct dentry *dentry,
 	enum yolo_perm perm;
 	int err;
 
-	if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
+	if (ii->perm_gen != atomic64_read(&sbi->perm.gen))
 		yolo_cache_perm(inode, dentry);
 	perm = ii->cached_perm;
 
@@ -115,13 +115,13 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 	long timeout;
 	int err = 0;
 
-	if (!sbi->permission) {
+	if (!sbi->perm.enabled) {
 		*result = YOLO_PERM_ALLOW;
 		return 0;
 	}
 
 	/* No daemon connected — deny immediately (an unanswered ask is a deny) */
-	if (!atomic_read(&sbi->ask_engine.has_daemon)) {
+	if (!atomic_read(&sbi->perm.has_daemon)) {
 		*result = YOLO_PERM_DENY;
 		yolo_journal_ask(sbi, relpath, op, *result);
 		return 0;
@@ -132,7 +132,7 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 		return -ENOMEM;
 
 	kref_init(&req->ref);
-	req->id = atomic64_inc_return(&sbi->ask_engine.next_req_id);
+	req->id = atomic64_inc_return(&sbi->perm.next_req_id);
 	req->path_len = strscpy(req->path, relpath, YOLO_PATH_MAX);
 	req->op = op;
 	req->pid = current->pid;
@@ -142,16 +142,16 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 	INIT_LIST_HEAD(&req->list);
 
 	/* Enqueue */
-	spin_lock(&sbi->ask_engine.pending_lock);
-	list_add_tail(&req->list, &sbi->ask_engine.pending_reqs);
-	spin_unlock(&sbi->ask_engine.pending_lock);
+	spin_lock(&sbi->perm.pending_lock);
+	list_add_tail(&req->list, &sbi->perm.pending_reqs);
+	spin_unlock(&sbi->perm.pending_lock);
 
 	/* Wake daemon */
-	wake_up_interruptible(&sbi->ask_engine.request_waitq);
+	wake_up_interruptible(&sbi->perm.request_waitq);
 
 	/* Wait for decision */
-	if (sbi->ask_engine.timeout_s > 0)
-		timeout = msecs_to_jiffies(sbi->ask_engine.timeout_s * 1000);
+	if (sbi->perm.timeout_s > 0)
+		timeout = msecs_to_jiffies(sbi->perm.timeout_s * 1000);
 	else
 		timeout = MAX_SCHEDULE_TIMEOUT;
 	timeout = wait_for_completion_interruptible_timeout(&req->done,
@@ -162,10 +162,10 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 		err = -EINTR;
 
 	/* Remove from pending list if the daemon hasn't dequeued it yet */
-	spin_lock(&sbi->ask_engine.pending_lock);
+	spin_lock(&sbi->perm.pending_lock);
 	if (!list_empty(&req->list))
 		list_del_init(&req->list);
-	spin_unlock(&sbi->ask_engine.pending_lock);
+	spin_unlock(&sbi->perm.pending_lock);
 
 	if (!err && req->decision == YOLO_PERM_UNSET) {
 		/* Shouldn't happen — treat as deny */

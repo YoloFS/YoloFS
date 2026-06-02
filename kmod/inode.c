@@ -22,7 +22,7 @@ static int yolo_check_mutate_perm(struct dentry *dentry)
 	struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
 	int err;
 
-	if (!sbi->permission)
+	if (!sbi->perm.enabled)
 		return 0;
 
 	err = yolo_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY);
@@ -50,7 +50,7 @@ static int yolo_create_staged(struct inode *dir, struct dentry *dentry,
 		return err;
 
 	yolo_dentry_pin(dentry, YOLO_TARGET_INODE);
-	YOLO_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->gen);
+	YOLO_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->staging.gen);
 
 	yolo_journal_stage(sbi, dentry, ino);
 
@@ -201,11 +201,11 @@ static int yolo_permission(struct mnt_idmap *idmap,
 	struct inode *lower_inode = yolo_lower_inode(inode);
 
 	/* Skip all permission gating if disabled */
-	if (!sbi->permission)
+	if (!sbi->perm.enabled)
 		return 0;
 
 	/* Check generation — re-resolve if stale */
-	if (info->perm_gen != atomic64_read(&sbi->perm_gen)) {
+	if (info->perm_gen != atomic64_read(&sbi->perm.gen)) {
 		struct dentry *dentry = d_find_alias(inode);
 		if (dentry) {
 			yolo_cache_perm(inode, dentry);
@@ -275,7 +275,7 @@ static int yolo_setattr(struct mnt_idmap *idmap,
 		 * to the base file — the staging copy is the data store.
 		 * The VFS triggers this via O_TRUNC after open; the
 		 * staging file is already the correct size. */
-		if (sbi->staging && S_ISREG(inode->i_mode))
+		if (sbi->staging.enabled && S_ISREG(inode->i_mode))
 			ia->ia_valid &= ~ATTR_SIZE;
 	}
 
@@ -314,9 +314,9 @@ static int yolo_getattr(struct mnt_idmap *idmap,
 	int err;
 
 	/* Hidden paths return ENOENT on stat. */
-	if (sbi->permission) {
+	if (sbi->perm.enabled) {
 		struct yolo_inode_info *ii = YOLO_I(inode);
-		if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
+		if (ii->perm_gen != atomic64_read(&sbi->perm.gen))
 			yolo_cache_perm(inode, dentry);
 		if (ii->cached_perm == YOLO_PERM_HIDE)
 			return -ENOENT;

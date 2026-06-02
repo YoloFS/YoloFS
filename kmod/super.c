@@ -75,12 +75,12 @@ static void yolo_put_super(struct super_block *sb)
 	if (!sbi)
 		return;
 
-	if (sbi->shard_dentry)
-		dput(sbi->shard_dentry);
-	if (sbi->inodes_dir.dentry)
-		path_put(&sbi->inodes_dir);
-	if (sbi->journal_file)
-		fput(sbi->journal_file);
+	if (sbi->staging.shard_dentry)
+		dput(sbi->staging.shard_dentry);
+	if (sbi->staging.inodes_dir.dentry)
+		path_put(&sbi->staging.inodes_dir);
+	if (sbi->staging.journal_file)
+		fput(sbi->staging.journal_file);
 	if (sbi->storage_path.dentry)
 		path_put(&sbi->storage_path);
 	if (sbi->base_path.dentry)
@@ -110,9 +110,9 @@ static int yolo_show_options(struct seq_file *m, struct dentry *root)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(root->d_sb);
 
-	seq_printf(m, ",permission=%d", sbi->permission);
-	seq_printf(m, ",staging=%d", sbi->staging);
-	seq_printf(m, ",prompt_timeout=%u", sbi->ask_engine.timeout_s);
+	seq_printf(m, ",permission=%d", sbi->perm.enabled);
+	seq_printf(m, ",staging=%d", sbi->staging.enabled);
+	seq_printf(m, ",prompt_timeout=%u", sbi->perm.timeout_s);
 	return 0;
 }
 
@@ -130,26 +130,26 @@ const struct super_operations yolo_sops = {
 static void yolo_init_sbi(struct yolo_sb_info *sbi,
 			   const struct yolo_fs_opts *opts)
 {
-	sbi->permission = opts->permission;
-	sbi->staging = opts->staging;
+	sbi->perm.enabled = opts->permission;
+	sbi->staging.enabled = opts->staging;
 
 	/* Permission gating state */
-	atomic64_set(&sbi->perm_gen, 1);
-	INIT_LIST_HEAD(&sbi->ask_engine.pending_reqs);
-	spin_lock_init(&sbi->ask_engine.pending_lock);
-	init_waitqueue_head(&sbi->ask_engine.request_waitq);
-	atomic64_set(&sbi->ask_engine.next_req_id, 1);
-	INIT_LIST_HEAD(&sbi->ask_engine.dispatched);
-	spin_lock_init(&sbi->ask_engine.dispatch_lock);
-	sbi->ask_engine.timeout_s = opts->prompt_timeout_s;
-	INIT_LIST_HEAD(&sbi->pinned_rules);
-	spin_lock_init(&sbi->pinned_rules_lock);
+	atomic64_set(&sbi->perm.gen, 1);
+	INIT_LIST_HEAD(&sbi->perm.pending_reqs);
+	spin_lock_init(&sbi->perm.pending_lock);
+	init_waitqueue_head(&sbi->perm.request_waitq);
+	atomic64_set(&sbi->perm.next_req_id, 1);
+	INIT_LIST_HEAD(&sbi->perm.dispatched);
+	spin_lock_init(&sbi->perm.dispatch_lock);
+	sbi->perm.timeout_s = opts->prompt_timeout_s;
+	INIT_LIST_HEAD(&sbi->perm.pinned_rules);
+	spin_lock_init(&sbi->perm.pinned_rules_lock);
 
 	/* Staging state */
-	init_rwsem(&sbi->staging_sem);
-	atomic_set(&sbi->next_ino, 0);
-	atomic_set(&sbi->gen, 0);
-	atomic_set(&sbi->staging_fd_count, 0);
+	init_rwsem(&sbi->staging.sem);
+	atomic_set(&sbi->staging.next_ino, 0);
+	atomic_set(&sbi->staging.gen, 0);
+	atomic_set(&sbi->staging.fd_count, 0);
 }
 
 static int yolo_resolve_paths(struct yolo_sb_info *sbi,
@@ -192,7 +192,7 @@ static int yolo_resolve_paths(struct yolo_sb_info *sbi,
 				      "inodes", LOOKUP_DIRECTORY,
 				      &inodes);
 		if (!err)
-			sbi->inodes_dir = inodes;
+			sbi->staging.inodes_dir = inodes;
 	}
 
 	/* Open the journal file */

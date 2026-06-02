@@ -142,9 +142,32 @@ enum yolo_target {
 	YOLO_TARGET_NONE	= 3,	/* tombstone (pinned negative dentry) */
 };
 
-/* ── Ask Protocol Engine ───────────────────────────────────────────── */
+/* ── Staging ───────────────────────────────────────────────────────── */
 
-struct yolo_ask_engine {
+struct yolo_staging {
+	bool			enabled;	/* staging on/off toggle */
+	struct path		inodes_dir;	/* ./yolofs/inodes/ (sharded inode store) */
+	struct file		*journal_file;	/* ./yolofs/journal (append-only, opened lazily) */
+	struct rw_semaphore	sem;		/* protects staging + journal writes */
+	atomic_t		next_ino;	/* counter for inode store IDs */
+
+	/* Inode store shard cache (avoids repeated lookups) */
+	struct dentry		*shard_dentry;	/* cached current shard dir dentry */
+	u32			shard_id;	/* which shard shard_dentry belongs to */
+	atomic_t		gen;		/* bumped on each snapshot; triggers re-COW */
+	atomic_t		fd_count;	/* open staging write fds */
+	bool			dirty;		/* data records written since last P/T */
+};
+
+/* ── Permission gating: rules + the ask protocol ───────────────────── */
+
+struct yolo_permission {
+	bool			enabled;	/* permission gating on/off toggle */
+	atomic64_t		gen;		/* cache invalidation counter */
+	struct list_head	pinned_rules;	/* dget()'d dentries with perm rules */
+	spinlock_t		pinned_rules_lock;/* protects pinned_rules */
+
+	/* Ask protocol */
 	struct list_head	pending_reqs;	/* requests waiting for daemon */
 	spinlock_t		pending_lock;	/* protects pending_reqs */
 	wait_queue_head_t	request_waitq;	/* daemon blocks here */
@@ -167,28 +190,8 @@ struct yolo_sb_info {
 	struct path		base_path;	/* always "/" */
 	struct path		storage_path;	/* ./yolofs/ directory */
 
-
-	/* Staging */
-	struct path		inodes_dir;	/* ./yolofs/inodes/ (sharded inode store) */
-	struct file		*journal_file;	/* ./yolofs/journal (append-only, opened lazily) */
-	struct rw_semaphore	staging_sem;	/* protects staging + journal writes */
-	atomic_t		next_ino;	/* counter for inode store IDs */
-
-	/* Inode store shard cache (avoids repeated lookups) */
-	struct dentry		*shard_dentry;	/* cached current shard dir dentry */
-	u32			shard_id;	/* which shard shard_dentry belongs to */
-	atomic_t		gen;		/* bumped on each snapshot; triggers re-COW */
-	atomic_t		staging_fd_count;/* open staging write fds */
-	bool			dirty;		/* data records written since last P/T */
-
-	/* Permission gating */
-	bool			permission;	/* enable/disable toggle */
-	atomic64_t		perm_gen;	/* cache invalidation counter */
-	struct yolo_ask_engine	ask_engine;	/* ask protocol state */
-	struct list_head	pinned_rules;	/* dget()'d dentries with perm rules */
-	spinlock_t		pinned_rules_lock;/* protects pinned_rules */
-
-	bool			staging;
+	struct yolo_staging	staging;	/* staging area + inode store */
+	struct yolo_permission	perm;		/* gating rules + ask protocol */
 };
 
 /* ── Per-Inode Info ────────────────────────────────────────────────── */
@@ -210,7 +213,7 @@ struct yolo_dentry_info {
 	enum yolo_target	target;		/* where content lives */
 	bool			pinned;		/* held via dget by staging */
 	enum yolo_perm		perm;		/* NONE unless explicit rule */
-	struct list_head	rule_pin;	/* node in sbi->pinned_rules */
+	struct list_head	rule_pin;	/* node in sbi->perm.pinned_rules */
 	struct dentry		*rule_dentry;	/* back-pointer for dput on release */
 };
 
@@ -251,7 +254,7 @@ static inline bool yolo_dentry_is_current(const struct dentry *d,
 					   struct yolo_sb_info *sbi)
 {
 	return YOLO_D(d)->target == YOLO_TARGET_INODE &&
-	       YOLO_I(d_inode(d))->staging_gen >= (u16)atomic_read(&sbi->gen);
+	       YOLO_I(d_inode(d))->staging_gen >= (u16)atomic_read(&sbi->staging.gen);
 }
 
 static inline struct yolo_file_info *YOLO_F(const struct file *file)
