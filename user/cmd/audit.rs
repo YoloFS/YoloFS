@@ -7,8 +7,9 @@ use crate::journal::{self, Journal};
 use anyhow::Result;
 use colored::Colorize;
 
-/// Display the full journal with dead branches dimmed.
-pub fn run(path_filter: Option<&str>) -> Result<()> {
+/// Display the journal with dead branches dimmed. Defaults to the latest
+/// snapshot's records; `--full` shows the entire history.
+pub fn run(path_filter: Option<&str>, full: bool) -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
     let path_filter = path_filter.map(crate::utils::normalize_path);
 
@@ -19,7 +20,15 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    for (seg_idx, segment) in journal.segments.iter().enumerate() {
+    let num = journal.segments.len();
+    let (start, end, scoped) = if full {
+        (0, num, false)
+    } else {
+        journal.latest_range()
+    };
+
+    for seg_idx in start..end {
+        let segment = &journal.segments[seg_idx];
         let reachable = journal.is_alive(seg_idx);
 
         for record in &segment.records {
@@ -59,6 +68,13 @@ pub fn run(path_filter: Option<&str>) -> Result<()> {
                 println!("  {} {}", line.dimmed(), "(unreachable)".dimmed());
             }
         }
+    }
+
+    if scoped {
+        println!(
+            "{}",
+            "(latest snapshot — run `yolo audit --full` for the full history)".dimmed()
+        );
     }
 
     Ok(())

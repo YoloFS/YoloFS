@@ -26,7 +26,7 @@ fn audit_shows_snapshots_and_travels() {
     s.cli(&["snapshot", "chk2"]).expect("snapshot");
     s.cli(&["travel", "chk1"]).expect("travel");
 
-    let output = s.cli(&["audit"]).expect("audit");
+    let output = s.cli(&["audit", "--full"]).expect("audit");
     assert!(output.contains("chk1"), "should show chk1: {output}");
     assert!(output.contains("chk2"), "should show chk2: {output}");
     assert!(

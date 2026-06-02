@@ -113,3 +113,30 @@ fn status_at_snapshot_after_travel() {
         "chk2-only change should NOT appear: {output}"
     );
 }
+
+/// `yolo status` defaults to the latest snapshot's changes; `--full` shows all,
+/// and the scoped view hints about `--full`.
+#[test]
+fn status_defaults_to_latest_snapshot() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    s.cli(&["snapshot", "chk1"]).expect("snapshot chk1");
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+    s.cli(&["snapshot", "chk2"]).expect("snapshot chk2");
+
+    let latest = s.cli(&["status"]).expect("status");
+    assert!(latest.contains("b.txt"), "latest should show b.txt: {latest}");
+    assert!(
+        !latest.contains("a.txt"),
+        "latest should NOT show the older a.txt: {latest}"
+    );
+    assert!(
+        latest.contains("--full"),
+        "scoped view should hint about --full: {latest}"
+    );
+
+    let full = s.cli(&["status", "--full"]).expect("status --full");
+    assert!(full.contains("a.txt"), "--full should show a.txt: {full}");
+    assert!(full.contains("b.txt"), "--full should show b.txt: {full}");
+}

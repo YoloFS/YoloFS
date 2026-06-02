@@ -24,25 +24,26 @@ run through yolofs. Supported agents: `claude` (`.claude/`), `gemini` (`.gemini/
 `--agents <name>...` (repeatable) to scaffold only specific ones. Existing hook
 files are never overwritten.
 
-**Full workflow** — mount, watch, exec, diff, and prompt to commit/abort in one command:
-
-```bash
-$ yolo                   # launch sh under yolofs
-$ yolo -- make build     # run a specific command instead of sh
-```
+`yolo` is a host-side tool — like `docker`, you run it **outside** the mount and
+it manages the sandbox. `status`/`diff`/`commit`/`abort` need the base
+filesystem, which only exists outside, so **every `yolo` command refuses to run
+inside the mount**. Sandbox your work with `yolo exec` (below) and review/commit
+from outside. Bare `yolo` prints this command list.
 
 **Session management** — manual control over each step:
 
 ```bash
 $ yolo mount             # create .yolofs/ layout and mount (auto-loads kmod if needed)
-$ yolo exec              # chroot $SHELL into .yolofs/mnt (requires existing mount)
-$ yolo exec -- make build
-$ yolo status            # show staged changes (grouped by snapshot when present)
+$ yolo exec              # chroot a shell into .yolofs/mnt (requires existing mount)
+$ yolo exec -- make build   # run one command sandboxed (auto-snapshots after)
+$ yolo status            # staged changes for the latest snapshot (default)
+$ yolo status --full     # all staged changes since base (grouped by snapshot)
 $ yolo status --at <name|gen>           # show single snapshot segment
 $ yolo status --from <name|gen>        # show changes since snapshot
 $ yolo status --to <name|gen>          # show changes up to snapshot
 $ yolo status --from <A> --to <B>      # show changes between two snapshots
-$ yolo diff              # git-style diff of staged vs base (grouped by snapshot)
+$ yolo diff              # git-style diff for the latest snapshot (default)
+$ yolo diff --full       # diff all staged changes since base
 $ yolo diff <path>       # diff a single file
 $ yolo diff --at <name|gen>             # diff single snapshot segment
 $ yolo diff --from <name|gen>          # diff changes since snapshot
@@ -62,7 +63,8 @@ $ yolo snapshot              # snapshot with timestamp as name
 $ yolo snapshot "my label"   # snapshot with explicit name
 $ yolo travel <name|gen>      # travel to a previous snapshot or travel point
 $ yolo timeline                # show snapshot/travel DAG (unreachable dimmed)
-$ yolo audit                 # show every raw journal record (unreachable dimmed)
+$ yolo audit                 # journal records for the latest snapshot (default)
+$ yolo audit --full          # the entire journal (unreachable dimmed)
 $ yolo audit --path /src/main.rs  # trace operations on a specific file
 ```
 

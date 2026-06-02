@@ -266,9 +266,6 @@ fn doc_unset_rule(doc: &mut toml_edit::DocumentMut, path: &str) {
 
 /// Set a rule on `path` to `perm`: persist to yolofs.toml and apply live if mounted.
 pub fn set_rule(path: &str, perm: Perm) -> Result<()> {
-    if crate::utils::inside_mount() {
-        anyhow::bail!("rule changes must be run from outside the yolofs mount");
-    }
     let cp = config_path()?;
     let mut doc = read_doc(&cp)?;
     doc_set_rule(&mut doc, path, perm);
@@ -296,9 +293,6 @@ pub fn set_rule(path: &str, perm: Perm) -> Result<()> {
 
 /// Remove any rule on `path`; it reverts to inheriting from its ancestors.
 pub fn unset_rule(path: &str) -> Result<()> {
-    if crate::utils::inside_mount() {
-        anyhow::bail!("rule changes must be run from outside the yolofs mount");
-    }
     let cp = config_path()?;
     if cp.exists() {
         let mut doc = read_doc(&cp)?;

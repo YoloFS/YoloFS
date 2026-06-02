@@ -78,6 +78,32 @@ impl Journal {
         self.alive.get(gen_id).copied().unwrap_or(false)
     }
 
+    /// Segment range [start, end) for the default scoped ("latest") view — the
+    /// most recent batch of changes. Each `yolo exec` auto-snapshots, so the
+    /// usual tip is an empty trailing segment; in that case we show the segment
+    /// the most recent snapshot captured (the last command's work). If there is
+    /// uncommitted work *after* the last snapshot we show that instead, and with
+    /// no snapshots at all we fall back to the full range. The bool is true when
+    /// older history is hidden, so callers can hint about `--full`.
+    pub fn latest_range(&self) -> (usize, usize, bool) {
+        let num = self.segments.len();
+        match self.markers.last_snapshot_idx() {
+            None => (0, num, false),
+            Some(s) => {
+                // Live, non-empty work after the last snapshot (e.g. with
+                // auto-snapshot off) — show that. A post-travel dead zone is not
+                // live, so it doesn't count.
+                let live_tail = (s..num).any(|i| self.is_alive(i) && !self.segments[i].records.is_empty());
+                if live_tail {
+                    (s, num, s > 0)
+                } else {
+                    let start = self.markers.prev_snapshot_idx(s);
+                    (start, s, start > 0)
+                }
+            }
+        }
+    }
+
     /// Consume the journal and build a DirTree from all live segments.
     pub fn into_tree(self) -> DirTree {
         DirTree::build(self.into_live_segments())

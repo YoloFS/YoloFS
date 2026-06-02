@@ -55,8 +55,8 @@ fn status_at_snapshot() {
         "should NOT show new_after_chk.txt: {at_output}"
     );
 
-    // Regular status should show both
-    let full_output = s.cli(&["status"]).expect("status");
+    // `--full` status should show both
+    let full_output = s.cli(&["status", "--full"]).expect("status");
     assert!(
         full_output.contains("hello.txt"),
         "full should show hello.txt: {full_output}"

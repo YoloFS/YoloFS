@@ -527,7 +527,8 @@ fn journal_appends_after_travel() {
     // New mutation after travel
     fs::write(s.mnt_path("new.txt"), "new\n").expect("write new after travel");
 
-    let status = s.cli(&["status"]).expect("status");
+    // --full: the cumulative live state (chk1's old.txt + post-travel new.txt).
+    let status = s.cli(&["status", "--full"]).expect("status");
     assert!(
         status.contains("old.txt"),
         "pre-snapshot file in status: {status}"

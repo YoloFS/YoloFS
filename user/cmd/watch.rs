@@ -104,9 +104,6 @@ fn prompt_decision(req: &PermRequest) -> Perm {
 
 /// Interactive watch — blocks on ioctl read for each ask request.
 pub fn run(allow_all: bool) -> Result<()> {
-    if crate::utils::inside_mount() {
-        anyhow::bail!("`yolo watch` must run outside the yolofs mount");
-    }
     let yolofs = crate::utils::session_dir()?;
 
     let ctl_file = ioctl::open(&yolofs)?;
@@ -170,22 +167,6 @@ fn parse_input(input: &str) -> Perm {
         "d" | "deny" => Perm::Deny,
         _ => Perm::Deny,
     }
-}
-
-/// Spawn a background watch daemon thread that prompts for ask requests.
-/// The thread runs until the process exits (it cannot be stopped early
-/// because it blocks on a kernel ioctl).
-pub fn run_background(allow_all: bool) -> Result<()> {
-    let yolofs = crate::utils::session_dir()?;
-    let ctl_file = ioctl::open(&yolofs)?;
-
-    std::thread::spawn(move || {
-        if let Err(e) = watch_loop(&ctl_file, allow_all) {
-            eprintln!("{} {e}", "yolo watch:".red());
-        }
-    });
-
-    Ok(())
 }
 
 #[cfg(test)]

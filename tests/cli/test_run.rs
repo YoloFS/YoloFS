@@ -204,3 +204,21 @@ fn run_with_changes_creates_snapshot() {
         "exec with changes should create exactly one snapshot.\nbefore:\n{before}\nafter:\n{after}"
     );
 }
+
+/// yolo is a host-side tool: every command refuses to run inside the mount
+/// (its base-fs operations only work outside). Running it via `yolo exec`
+/// chroots it inside, where the top-level guard rejects it.
+#[test]
+fn run_yolo_inside_mount_is_rejected() {
+    let session = YoloSession::new().expect("session setup");
+
+    let (ok, _out, err) = session
+        .cli_output(&["exec", "--", "yolo", "status"])
+        .expect("running yolo inside the mount");
+
+    assert!(!ok, "yolo inside the mount should fail; stderr={err}");
+    assert!(
+        err.contains("cannot run inside the mount"),
+        "expected inside-mount rejection, got: {err}"
+    );
+}

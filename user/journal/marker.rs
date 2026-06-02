@@ -84,6 +84,23 @@ impl MarkerIndex {
         }
     }
 
+    /// Index of the most recent snapshot marker (highest index, gen_id > 0),
+    /// or `None` when only the phantom initial marker exists.
+    pub fn last_snapshot_idx(&self) -> Option<usize> {
+        self.0.iter().enumerate().rev().find_map(|(i, m)| {
+            matches!(m, Marker::Snapshot { gen_id, .. } if *gen_id > 0).then_some(i)
+        })
+    }
+
+    /// Index of the nearest snapshot marker before `idx` (skipping the phantom
+    /// at index 0), or 0 when there is none.
+    pub fn prev_snapshot_idx(&self, idx: usize) -> usize {
+        (1..idx)
+            .rev()
+            .find(|&i| matches!(&self.0[i], Marker::Snapshot { .. }))
+            .unwrap_or(0)
+    }
+
     /// Compute the segment index range for --at/--from/--to queries.
     /// Returns a half-open range [start, end).
     pub fn segment_range(
@@ -94,14 +111,8 @@ impl MarkerIndex {
         num_segments: usize,
     ) -> Result<(usize, usize)> {
         if let Some(name) = at {
-            let gen_id = self.find_marker(name)?;
-            let m_idx = gen_id as usize;
-            // Find the previous snapshot marker (skip phantom at index 0).
-            let prev_k = (1..m_idx)
-                .rev()
-                .find(|&i| matches!(&self.0[i], Marker::Snapshot { .. }));
-            let start = prev_k.unwrap_or(0);
-            return Ok((start, m_idx));
+            let m_idx = self.find_marker(name)? as usize;
+            return Ok((self.prev_snapshot_idx(m_idx), m_idx));
         }
 
         let start = if let Some(from_name) = from {

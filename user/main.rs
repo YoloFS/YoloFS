@@ -2,7 +2,6 @@
 
 use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;
-use std::io::{self, BufRead, Write};
 use yolofs::cmd::{
     abort, audit, commit, diff, exec, init, load, mount, snapshot, timeline, travel, watch,
 };
@@ -17,14 +16,6 @@ use yolofs::perm;
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-
-    /// Automatically allow all permission requests without prompting
-    #[arg(long)]
-    allow_all: bool,
-
-    /// Command to run under yolofs (after --)
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    exec_args: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -62,7 +53,7 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         exec_args: Vec<String>,
     },
-    /// Show staged changes
+    /// Show staged changes (latest snapshot by default; --full for all)
     Status {
         /// Show state at a named snapshot (single segment)
         #[arg(long)]
@@ -73,8 +64,11 @@ enum Command {
         /// End at a named snapshot (inclusive)
         #[arg(long, conflicts_with = "at")]
         to: Option<String>,
+        /// Show all staged changes since base (not just the latest snapshot)
+        #[arg(long, conflicts_with_all = ["at", "from", "to"])]
+        full: bool,
     },
-    /// Git-style diff of staged vs base
+    /// Git-style diff of staged vs base (latest snapshot by default; --full for all)
     Diff {
         /// Diff a single snapshot segment
         #[arg(long)]
@@ -85,6 +79,9 @@ enum Command {
         /// Diff changes up to a named snapshot
         #[arg(long, conflicts_with = "at")]
         to: Option<String>,
+        /// Diff all staged changes since base (not just the latest snapshot)
+        #[arg(long, conflicts_with_all = ["at", "from", "to"])]
+        full: bool,
         /// Show diff for a single file
         path: Option<String>,
     },
@@ -111,11 +108,14 @@ enum Command {
     },
     /// Show snapshot/travel timeline (unreachable branches dimmed)
     Timeline,
-    /// Show full session history (every operation, dead branches dimmed)
+    /// Show session history (latest snapshot by default; --full for all)
     Audit {
         /// Filter to operations on a specific path
         #[arg(long)]
         path: Option<String>,
+        /// Show the entire journal (not just the latest snapshot)
+        #[arg(long)]
+        full: bool,
     },
     /// Manage permission rules
     #[command(arg_required_else_help = true)]
@@ -167,6 +167,13 @@ fn main() -> ! {
 fn run_cli() -> anyhow::Result<u8> {
     let cli = Cli::parse();
 
+    // yolo is a host-side tool: its base-fs operations only work outside the
+    // mount, so refuse every subcommand when run inside the chroot. Sandbox
+    // commands with `yolo exec -- <cmd>` and manage from outside.
+    if cli.command.is_some() && yolofs::utils::inside_mount() {
+        anyhow::bail!("yolo cannot run inside the mount — run it from outside");
+    }
+
     match cli.command {
         Some(Command::Load) => {
             if !load::load()? {
@@ -180,15 +187,22 @@ fn run_cli() -> anyhow::Result<u8> {
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,
         Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
-        Some(Command::Status { at, from, to }) => {
-            diff::run_status(at.as_deref(), from.as_deref(), to.as_deref())?
+        Some(Command::Status { at, from, to, full }) => {
+            diff::run_status(at.as_deref(), from.as_deref(), to.as_deref(), full)?
         }
-        Some(Command::Diff { at, from, to, path }) => {
+        Some(Command::Diff {
+            at,
+            from,
+            to,
+            full,
+            path,
+        }) => {
             diff::run_diff(
                 at.as_deref(),
                 from.as_deref(),
                 to.as_deref(),
                 path.as_deref(),
+                full,
             )?;
         }
         Some(Command::Commit) => commit::run()?,
@@ -198,7 +212,7 @@ fn run_cli() -> anyhow::Result<u8> {
         }
         Some(Command::Travel { name }) => travel::run(&name)?,
         Some(Command::Timeline) => timeline::run()?,
-        Some(Command::Audit { path }) => audit::run(path.as_deref())?,
+        Some(Command::Audit { path, full }) => audit::run(path.as_deref(), full)?,
         Some(Command::Rule { action }) => match action {
             RuleAction::List => config::list_rules()?,
             RuleAction::Resolve { path } => config::resolve_rule(&path)?,
@@ -211,56 +225,9 @@ fn run_cli() -> anyhow::Result<u8> {
         },
         Some(Command::Watch { allow_all }) => watch::run(allow_all)?,
         None => {
-            let has_separator = std::env::args().any(|a| a == "--");
-            if !cli.exec_args.is_empty() && !has_separator {
-                Cli::command().print_help()?;
-                std::process::exit(1);
-            }
-            return run(&cli.exec_args, cli.allow_all);
+            Cli::command().print_help()?;
         }
     }
 
     Ok(0)
-}
-
-/// Full workflow: mount (if needed) → watch → exec → diff → commit/abort/stage.
-fn run(exec_args: &[String], allow_all: bool) -> anyhow::Result<u8> {
-    // 1. Mount if not already mounted
-    mount::mount()?;
-
-    // 2. Start background watch daemon (prompts for permission asks)
-    watch::run_background(allow_all)?;
-
-    // 3. Exec (spawn + wait) — continue to diff even if command fails
-    let cmd_exit_code = exec::run(exec_args).unwrap_or(1);
-
-    // 4. Show diff
-    let has_changes = diff::run_diff(None, None, None, None)?;
-
-    if !has_changes {
-        return Ok(cmd_exit_code);
-    }
-
-    // 5. Ask commit, abort, or stage
-    eprint!(
-        "\n{} ",
-        "Choose [c]ommit, [a]bort, or [s]tage [default: stage]:".bold()
-    );
-    io::stderr().flush().ok();
-
-    let mut line = String::new();
-    io::stdin().lock().read_line(&mut line)?;
-
-    match line.trim().to_ascii_lowercase().as_str() {
-        "c" | "commit" => commit::run()?,
-        "a" | "abort" => abort::run(true)?,
-        _ => {
-            eprintln!(
-                "{}",
-                "Changes kept staged. Run `yolo status` or `yolo diff` to review, `yolo commit` to apply, `yolo abort` to discard.".cyan()
-            );
-        }
-    }
-
-    Ok(cmd_exit_code)
 }

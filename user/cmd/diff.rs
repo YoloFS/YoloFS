@@ -143,8 +143,13 @@ fn print_change(
 // ── Public entry points ──────────────────────────────────────────────
 
 /// `yolo status` — summary view.
-pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> Result<()> {
-    run(false, at, from, to, None)?;
+pub fn run_status(
+    at: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    full: bool,
+) -> Result<()> {
+    run(false, at, from, to, None, full)?;
     Ok(())
 }
 
@@ -154,9 +159,10 @@ pub fn run_diff(
     from: Option<&str>,
     to: Option<&str>,
     path: Option<&str>,
+    full: bool,
 ) -> Result<bool> {
     let path = path.map(crate::utils::normalize_path);
-    run(true, at, from, to, path.as_deref())
+    run(true, at, from, to, path.as_deref(), full)
 }
 
 // ── Core implementation ─────────────────────────────────────────────
@@ -167,11 +173,23 @@ fn run(
     from: Option<&str>,
     to: Option<&str>,
     path: Option<&str>,
+    full: bool,
 ) -> Result<bool> {
     let yolofs = crate::utils::session_dir()?;
     let journal = Journal::read(&yolofs)?;
     let num = journal.segments.len();
-    let (start, end) = journal.markers.segment_range(at, from, to, num)?;
+
+    // Default to the latest batch of changes; `--full` (or an explicit
+    // --at/--from/--to range) widens it. `scoped` drives the `--full` hint.
+    let explicit = at.is_some() || from.is_some() || to.is_some();
+    let (start, end, scoped) = if explicit {
+        let (s, e) = journal.markers.segment_range(at, from, to, num)?;
+        (s, e, false)
+    } else if full {
+        (0, num, false)
+    } else {
+        journal.latest_range()
+    };
 
     // Precompute marker labels for live segments before consuming the journal.
     let labels: Vec<Option<(u64, String)>> = (start..end)
@@ -234,14 +252,27 @@ fn run(
             "{}",
             format!("No changes{}.", range_label(at, from, to)).yellow()
         );
+        print_full_hint(scoped, verbose);
         return Ok(false);
     }
 
     if !verbose {
         print_total(total);
     }
+    print_full_hint(scoped, verbose);
 
     Ok(true)
+}
+
+/// When the view is scoped to the latest snapshot, point the user at `--full`.
+fn print_full_hint(scoped: bool, verbose: bool) {
+    if scoped {
+        let cmd = if verbose { "diff" } else { "status" };
+        println!(
+            "{}",
+            format!("(latest snapshot — run `yolo {cmd} --full` for all staged changes)").dimmed()
+        );
+    }
 }
 
 fn print_total(n: usize) {

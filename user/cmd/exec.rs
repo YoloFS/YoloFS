@@ -1,9 +1,10 @@
 // yolo CLI — exec.rs
 //
 // `yolo exec [-- cmd]` — chroot into .yolofs/mnt and exec a command,
-// preserving the caller's working directory.
-// When config.snapshot=true, a snapshot is created after the command
-// finishes, capturing what the command did.
+// preserving the caller's working directory. With no command it drops into a
+// shell. When config.snapshot=true, a snapshot is created after the command
+// finishes, capturing what the command did — this is how each `yolo exec`
+// (e.g. one agent tool-call) becomes a per-command checkpoint.
 
 use crate::config;
 use crate::ioctl;
@@ -13,23 +14,6 @@ use std::env;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process;
-
-/// bash `PROMPT_COMMAND` bootstrap for the interactive shell. A DEBUG trap
-/// records each command (`$BASH_COMMAND`, captured at run time — reliable,
-/// unlike history/`fc`), and a precmd *function* snapshots it after it finishes
-/// (only if something changed), printing `snapshot [N] <cmd>` — the same
-/// per-command checkpoint trail an agent gets. We deliberately do NOT run
-/// `yolo status` here: its added/modified/deleted classification needs the
-/// lower filesystem, which the chroot hides behind the overlay, so it
-/// misreports inside the mount. Review state with `yolo status`/`diff` from
-/// outside. Because bash doesn't fire the DEBUG trap inside functions (no
-/// `functrace`), the trap never captures the hook's own commands. `$?` is
-/// saved and restored so the hook doesn't clobber the command's exit status.
-/// This runs once on the first prompt, then replaces itself with the function.
-const PER_COMMAND_HOOK: &str = "\
-__yolo_precmd() { local rc=$?; [ -n \"$__yl\" ] && yolo snapshot --if-changed \"$__yl\"; __yl=; return $rc; }; \
-trap '[ \"$BASH_COMMAND\" = __yolo_precmd ] || __yl=$BASH_COMMAND' DEBUG; \
-PROMPT_COMMAND=__yolo_precmd";
 
 /// Pre-exec hook: chroot into mnt, chdir back to the original cwd, then
 /// permanently drop root privileges to the invoking user's real uid/gid.
@@ -74,12 +58,11 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         bail!("mount point .yolofs/mnt/ does not exist — run `yolo mount` first");
     }
 
-    // Interactive shell → bash, so the per-command hook below can run (sh has
-    // no PROMPT_COMMAND). A one-off command runs exactly as given.
+    // With no command, drop into a shell. A one-off command runs as given.
     let interactive = exec_args.is_empty();
     let (cmd, args) = if interactive {
         eprintln!("{}", "yolo: entering yolofs (exit to return)".cyan());
-        ("bash".to_string(), vec![])
+        ("sh".to_string(), vec![])
     } else {
         (exec_args[0].clone(), exec_args[1..].to_vec())
     };
@@ -88,9 +71,6 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
     command
         .args(&args)
         .env("YOLO_SESSION", yolo_dir.to_string_lossy().as_ref());
-    if interactive {
-        command.env("PROMPT_COMMAND", PER_COMMAND_HOOK);
-    }
 
     let status = unsafe {
         command
