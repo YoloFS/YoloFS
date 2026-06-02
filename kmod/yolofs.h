@@ -152,8 +152,11 @@ struct yolo_ask_engine {
 	unsigned int		timeout_s;	/* seconds before applying default */
 	enum yolo_perm		default_perm;	/* decision when no daemon or timeout */
 
-	/* Daemon connection (at most one — enforced by .ctl single-open) */
+	/* Daemon connection (at most one). The control ioctls live on the mount
+	 * root directory, whose fd already uses private_data for the readdir
+	 * cursor — so the daemon is tracked by file identity, not private_data. */
 	atomic_t		has_daemon;	/* 1 if daemon connected, 0 otherwise */
+	struct file		*daemon_file;	/* the fd that claimed the daemon */
 	struct list_head	dispatched;	/* requests sent to daemon */
 	spinlock_t		dispatch_lock;	/* protects dispatched */
 };
@@ -165,9 +168,6 @@ struct yolo_sb_info {
 	struct path		base_path;	/* always "/" */
 	struct path		storage_path;	/* ./yolofs/ directory */
 
-	/* Control file */
-	struct inode		*ctl_inode;	/* synthetic .ctl inode */
-	struct dentry		*ctl_dentry;	/* pinned .ctl dentry */
 
 	/* Staging */
 	struct path		inodes_dir;	/* ./yolofs/inodes/ (sharded inode store) */
@@ -417,8 +417,9 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 		       const char *relpath, enum yolo_op op,
 		       enum yolo_perm *result);
 
-/* ioctl.c */
-extern const struct file_operations yolo_ctl_fops;
+/* ioctl.c — control ioctls live on the mount-root directory (yolo_dir_fops). */
+long yolo_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+void yolo_ctl_release(struct file *file);
 void yolo_daemon_cleanup(struct yolo_sb_info *sbi);
 void yolo_release_pinned_rules(struct yolo_sb_info *sbi);
 

@@ -78,8 +78,6 @@ static void yolo_put_super(struct super_block *sb)
 	if (!sbi)
 		return;
 
-	if (sbi->ctl_inode)
-		iput(sbi->ctl_inode);
 	if (sbi->shard_dentry)
 		dput(sbi->shard_dentry);
 	if (sbi->inodes_dir.dentry)
@@ -132,41 +130,6 @@ const struct super_operations yolo_sops = {
 };
 
 /* ── Fill Superblock helpers ────────────────────────────────────────── */
-
-/*
- * Create the synthetic .ctl control file inode and pin its dentry
- * in the dcache.  Must be called after sb->s_root is set up.
- */
-static int yolo_init_ctl(struct super_block *sb)
-{
-	struct yolo_sb_info *sbi = YOLO_SB(sb);
-	struct inode *ctl;
-	struct dentry *ctl_dentry;
-	struct qstr ctl_name = QSTR_INIT(".ctl", 4);
-
-	ctl = new_inode(sb);
-	if (!ctl)
-		return -ENOMEM;
-
-	ctl->i_ino = get_next_ino();
-	ctl->i_mode = S_IFREG | 0600;
-	ctl->i_uid = current_uid();
-	ctl->i_gid = current_gid();
-	ctl->i_fop = &yolo_ctl_fops;
-	simple_inode_init_ts(ctl);
-	sbi->ctl_inode = ctl;
-
-	/* Pin .ctl in the dcache so lookup_fast() always finds it */
-	ctl_name.hash = full_name_hash(sb->s_root, ".ctl", 4);
-	ctl_dentry = d_alloc(sb->s_root, &ctl_name);
-	if (!ctl_dentry)
-		return -ENOMEM;
-
-	ihold(ctl);
-	d_add(ctl_dentry, ctl);
-	sbi->ctl_dentry = ctl_dentry;
-	return 0;
-}
 
 static void yolo_init_sbi(struct yolo_sb_info *sbi,
 			   const struct yolo_fs_opts *opts)
@@ -303,10 +266,6 @@ static int yolo_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	YOLO_D(sb->s_root)->perm = YOLO_PERM_ASK;
 
-	err = yolo_init_ctl(sb);
-	if (err)
-		goto out_put;
-
 	return 0;
 
 out_put:
@@ -380,10 +339,6 @@ static void yolo_kill_super(struct super_block *sb)
 
 	if (sbi) {
 		yolo_release_pinned_rules(sbi);
-		if (sbi->ctl_dentry) {
-			dput(sbi->ctl_dentry);
-			sbi->ctl_dentry = NULL;
-		}
 		yolo_dentry_unpin_all(sb);
 	}
 

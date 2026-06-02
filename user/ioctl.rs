@@ -1,7 +1,8 @@
 // yolo CLI — ioctl.rs
 //
 // Binary protocol helpers for communicating with the kernel module
-// via ioctl on .yolofs/mnt/.ctl control file.
+// via ioctl on a directory fd in the mount (the mount root, or "." inside
+// the sandbox). There is no separate control file.
 
 use anyhow::{Context, Result};
 use std::fs::{File, OpenOptions};
@@ -152,19 +153,19 @@ pub fn put_decision(fd: &File, id: u64, decision: u8) -> Result<()> {
     Ok(())
 }
 
-/// Open the .ctl control file for ioctl operations.
+/// Open a directory fd in the mount (the mount root) for control ioctls.
 pub fn open(yolo_dir: &Path) -> Result<File> {
-    let ctl = yolo_dir.join("mnt").join(".ctl");
-    match OpenOptions::new().read(true).open(&ctl) {
+    // Control ioctls go to a directory fd in the mount. From outside that's the
+    // mount root (`<session>/mnt`); inside the sandbox that path is hidden, so
+    // fall back to "/" (the mount root as seen from within the chroot).
+    let mnt = yolo_dir.join("mnt");
+    match OpenOptions::new().read(true).open(&mnt) {
         Ok(f) => Ok(f),
-        // Inside the mount, `<session>/mnt` is hidden and the control file is at
-        // the mount root — fall back to /.ctl so commands run from within the
-        // sandbox (e.g. an interactive shell's snapshot hook) still reach it.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => OpenOptions::new()
             .read(true)
-            .open("/.ctl")
-            .context("opening /.ctl for ioctl (inside the mount)"),
-        Err(e) => Err(e).context("opening .yolofs/mnt/.ctl for ioctl"),
+            .open("/")
+            .context("opening / for ioctl (inside the mount)"),
+        Err(e) => Err(e).context("opening the mount root for ioctl"),
     }
 }
 

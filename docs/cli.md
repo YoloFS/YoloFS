@@ -1,6 +1,7 @@
 # CLI Reference
 
-The CLI communicates with the kernel module via ioctls on `.yolofs/mnt/.ctl`.
+The CLI communicates with the kernel module via ioctls on a directory fd in the
+mount (the mount root, or `.` from inside the sandbox).
 For protocol and travel/snapshot details, see `docs/architecture.md` and
 `docs/staging.md`.
 

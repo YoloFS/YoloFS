@@ -84,14 +84,21 @@ grouped into `struct yolo_ask_engine` (embedded in `yolo_sb_info` as
 | `next_req_id` | Atomic counter for unique request IDs |
 | `timeout_s` | Seconds before an unanswered ask applies the default |
 | `default_perm` | Default decision (`deny` or `read`) when no daemon or timeout |
-| `daemon_file` | Pointer to the daemon's open `struct file` (the `.ctl` control file); NULL if no daemon connected. Set atomically on the first `GET_ASK` ioctl, cleared in `yolo_ctl_release()`. Only one daemon allowed — a second `GET_ASK` from a different fd returns `-EBUSY`. |
+| `daemon_file` | Pointer to the daemon's open `struct file` (a directory fd in the mount); NULL if no daemon connected. Set atomically on the first `GET_ASK` ioctl, cleared in `yolo_ctl_release()`. Only one daemon allowed — a second `GET_ASK` from a different fd returns `-EBUSY`. |
 | `dispatched` | Linked list of requests sent to daemon but not yet answered |
 | `dispatch_lock` | Spinlock protecting `dispatched` and `daemon_file` |
 
-The daemon connects by opening `.yolofs/mnt/.ctl` and issuing its first
-`GET_ASK` ioctl to claim exclusive daemon status. On close, all
+The daemon connects by opening the mount root (a directory fd) and issuing its
+first `GET_ASK` ioctl to claim exclusive daemon status. On close, all
 dispatched-but-unanswered
 requests receive `default_perm` and `daemon_file` is reset to NULL.
+
+Control ioctls live on a directory fd in the mount (there is no separate `.ctl`
+file). Operations that could defeat gating — `RULE_SET`, `GET_ASK`,
+`PUT_DECISION` — are refused when the caller is chrooted *inside* the mount (an
+agent command or the interactive `yolo` shell), so nothing running in the
+sandbox can un-gate itself or answer its own ask prompts. `SNAPSHOT`, `TRAVEL`,
+and `RULE_RESOLVE` are allowed from inside.
 
 **Per-request** (`yolo_perm_request`) — one per in-flight ask:
 

@@ -1,37 +1,52 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * yolofs — control interface via .ctl control file.
+ * yolofs — control interface (ioctls on the mount-root directory).
  *
- * All ioctl operations go through the synthetic .ctl file at the mount
- * root.  The permission daemon claims exclusive daemon status on its
- * first GET_ASK call; only that fd may issue GET_ASK and
- * PUT_DECISION.  All other operations may be issued from any fd.
+ * All control operations are ioctls on a directory fd in the mount (the CLI
+ * opens the mount root; commands run inside the sandbox open "."). Only the
+ * owning uid (or CAP_SYS_ADMIN) may issue them. The permission daemon claims
+ * exclusive status on its first GET_ASK call; only that fd may issue GET_ASK
+ * and PUT_DECISION. All other operations may be issued from any fd.
  *
- * On close of the daemon fd, any dispatched-but-unanswered requests
- * get the default decision.
+ * On close of the daemon fd, any dispatched-but-unanswered requests get the
+ * default decision.
  */
 
 #include "yolofs.h"
 #include <linux/file.h>
+#include <linux/fs_struct.h>
 #include <linux/vmalloc.h>
 #include <asm/unaligned.h>
 
-/* ── .ctl open/release ──────────────────────────────────────────────── */
-
-static int yolo_ctl_open(struct inode *inode, struct file *file)
+/* True if the caller is chrooted into this mount (an agent command or the
+ * interactive `yolo` shell), as opposed to a normal terminal outside it.
+ * Gating-defeating ops are refused from inside so nothing in the sandbox can
+ * un-gate itself or answer its own ask prompts. */
+static bool yolo_caller_inside(struct super_block *sb)
 {
-	return 0;
+	struct path root;
+	bool inside;
+
+	get_fs_root(current->fs, &root);
+	inside = (root.dentry->d_sb == sb);
+	path_put(&root);
+	return inside;
 }
 
-static int yolo_ctl_release(struct inode *inode, struct file *file)
+/* ── Daemon release ──────────────────────────────────────────────────
+ * Called from yolo_dir_release when a mount-root directory fd closes. Cleans
+ * up only if this fd was the connected daemon — tracked by file identity, not
+ * private_data (dir fds use private_data for the readdir cursor).
+ */
+void yolo_ctl_release(struct file *file)
 {
-	struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
+	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
+	struct yolo_ask_engine *eng = &sbi->ask_engine;
 
-	if (file->private_data) {
+	if (cmpxchg(&eng->daemon_file, file, NULL) == file) {
 		yolo_daemon_cleanup(sbi);
-		atomic_set(&sbi->ask_engine.has_daemon, 0);
+		atomic_set(&eng->has_daemon, 0);
 	}
-	return 0;
 }
 
 /* ── GET_ASK: dequeue pending request ──────────────────────────── */
@@ -45,11 +60,12 @@ static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 	int err;
 	__u16 path_len;
 
-	/* Claim daemon status on first call; reject if another fd already has it */
-	if (!file->private_data) {
-		if (atomic_cmpxchg(&eng->has_daemon, 0, 1))
+	/* Claim daemon status on first call; reject if another fd already has it.
+	 * Tracked by file identity (private_data holds the dir's readdir cursor). */
+	if (eng->daemon_file != file) {
+		if (cmpxchg(&eng->daemon_file, NULL, file) != NULL)
 			return -EBUSY;
-		file->private_data = (void *)1;
+		atomic_set(&eng->has_daemon, 1);
 	}
 
 	/* Read buffer info from userspace */
@@ -704,11 +720,25 @@ static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 	return err;
 }
 
-/* ── .ctl ioctl handler (all operations) ────────────────────────────── */
+/* ── ioctl handler (all operations), dispatched from yolo_dir_fops ──── */
 
-static long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
-			   unsigned long arg)
+long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
+		    unsigned long arg)
 {
+	/* Gating-defeating ops must come from outside the sandbox: an agent (or
+	 * the interactive shell) could otherwise grant itself access or answer
+	 * its own ask prompts. SNAPSHOT/TRAVEL/RESOLVE are fine from inside. */
+	switch (cmd) {
+	case YOLO_IOC_RULE_SET:
+	case YOLO_IOC_GET_ASK:
+	case YOLO_IOC_PUT_DECISION:
+		if (yolo_caller_inside(file_inode(file)->i_sb))
+			return -EPERM;
+		break;
+	default:
+		break;
+	}
+
 	switch (cmd) {
 	case YOLO_IOC_GET_ASK:
 		return yolo_get_ask_ioctl(file, arg);
@@ -732,10 +762,3 @@ static long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
 		return -ENOTTY;
 	}
 }
-
-const struct file_operations yolo_ctl_fops = {
-	.open		= yolo_ctl_open,
-	.release	= yolo_ctl_release,
-	.unlocked_ioctl	= yolo_ctl_ioctl,
-	.compat_ioctl	= yolo_ctl_ioctl,
-};
