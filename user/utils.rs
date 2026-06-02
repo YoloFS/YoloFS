@@ -53,7 +53,10 @@ pub fn session_dir() -> Result<PathBuf> {
     if dir.exists() {
         Ok(dir)
     } else {
-        anyhow::bail!("no yolofs session found (no .yolofs/ directory)")
+        anyhow::bail!(
+            "no yolofs session in {} — run `yolo mount` first (or `yolo init` to set up a new project)",
+            cwd.display()
+        )
     }
 }
 
