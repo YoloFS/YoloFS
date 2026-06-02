@@ -1,8 +1,8 @@
 // yolo CLI — ioctl.rs
 //
 // Binary protocol helpers for communicating with the kernel module
-// via ioctl on a directory fd in the mount (the mount root, or "." inside
-// the sandbox). There is no separate control file.
+// via ioctl on a directory fd in the mount (the mount root, or "." from
+// inside the mount). There is no separate control file.
 
 use anyhow::{Context, Result};
 use std::fs::{File, OpenOptions};
@@ -156,7 +156,7 @@ pub fn put_decision(fd: &File, id: u64, decision: u8) -> Result<()> {
 /// Open a directory fd in the mount (the mount root) for control ioctls.
 pub fn open(yolo_dir: &Path) -> Result<File> {
     // Control ioctls go to a directory fd in the mount. From outside that's the
-    // mount root (`<session>/mnt`); inside the sandbox that path is hidden, so
+    // mount root (`<session>/mnt`); inside the mount that path is hidden, so
     // fall back to "/" (the mount root as seen from within the chroot).
     let mnt = yolo_dir.join("mnt");
     match OpenOptions::new().read(true).open(&mnt) {

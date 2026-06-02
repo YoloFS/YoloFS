@@ -96,8 +96,8 @@ requests receive `default_perm` and `daemon_file` is reset to NULL.
 Control ioctls live on a directory fd in the mount (there is no separate `.ctl`
 file). Operations that could defeat gating — `RULE_SET`, `GET_ASK`,
 `PUT_DECISION` — are refused when the caller is chrooted *inside* the mount (an
-agent command or the interactive `yolo` shell), so nothing running in the
-sandbox can un-gate itself or answer its own ask prompts. `SNAPSHOT`, `TRAVEL`,
+agent command or the interactive `yolo` shell), so nothing running inside the
+mount can un-gate itself or answer its own ask prompts. `SNAPSHOT`, `TRAVEL`,
 and `RULE_RESOLVE` are allowed from inside.
 
 **Per-request** (`yolo_perm_request`) — one per in-flight ask:

@@ -3,7 +3,7 @@
  * yolofs — control interface (ioctls on the mount-root directory).
  *
  * All control operations are ioctls on a directory fd in the mount (the CLI
- * opens the mount root; commands run inside the sandbox open "."). Only the
+ * opens the mount root; commands run inside the mount open "."). Only the
  * owning uid (or CAP_SYS_ADMIN) may issue them. The permission daemon claims
  * exclusive status on its first GET_ASK call; only that fd may issue GET_ASK
  * and PUT_DECISION. All other operations may be issued from any fd.
@@ -20,7 +20,7 @@
 
 /* True if the caller is chrooted into this mount (an agent command or the
  * interactive `yolo` shell), as opposed to a normal terminal outside it.
- * Gating-defeating ops are refused from inside so nothing in the sandbox can
+ * Gating-defeating ops are refused from inside so nothing inside the mount can
  * un-gate itself or answer its own ask prompts. */
 static bool yolo_caller_inside(struct super_block *sb)
 {
@@ -725,7 +725,7 @@ static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
 		    unsigned long arg)
 {
-	/* Gating-defeating ops must come from outside the sandbox: an agent (or
+	/* Gating-defeating ops must come from outside the mount: an agent (or
 	 * the interactive shell) could otherwise grant itself access or answer
 	 * its own ask prompts. SNAPSHOT/TRAVEL/RESOLVE are fine from inside. */
 	switch (cmd) {

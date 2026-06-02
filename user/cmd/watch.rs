@@ -104,6 +104,9 @@ fn prompt_decision(req: &PermRequest) -> Perm {
 
 /// Interactive watch — blocks on ioctl read for each ask request.
 pub fn run(allow_all: bool) -> Result<()> {
+    if crate::utils::inside_mount() {
+        anyhow::bail!("`yolo watch` must run outside the yolofs mount");
+    }
     let yolofs = crate::utils::session_dir()?;
 
     let ctl_file = ioctl::open(&yolofs)?;

@@ -57,6 +57,14 @@ pub fn session_dir() -> Result<PathBuf> {
     }
 }
 
+/// True if running inside the yolofs mount — `yolo exec` sets `YOLO_SESSION`
+/// for the processes it spawns in. This is a convenience signal for clearer CLI
+/// errors; the kernel is the real boundary (it refuses gating-changing ioctls
+/// from a chrooted caller regardless).
+pub fn inside_mount() -> bool {
+    std::env::var_os("YOLO_SESSION").is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
