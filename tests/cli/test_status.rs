@@ -126,7 +126,10 @@ fn status_defaults_to_latest_snapshot() {
     s.cli(&["snapshot", "chk2"]).expect("snapshot chk2");
 
     let latest = s.cli(&["status"]).expect("status");
-    assert!(latest.contains("b.txt"), "latest should show b.txt: {latest}");
+    assert!(
+        latest.contains("b.txt"),
+        "latest should show b.txt: {latest}"
+    );
     assert!(
         !latest.contains("a.txt"),
         "latest should NOT show the older a.txt: {latest}"

@@ -285,8 +285,5 @@ fn print_overview() {
             println!("  {} {}", format!("{name:<9}").bold(), desc.dimmed());
         }
     }
-    println!(
-        "\n{}",
-        "Run `yolo <command> --help` for details.".dimmed()
-    );
+    println!("\n{}", "Run `yolo <command> --help` for details.".dimmed());
 }
