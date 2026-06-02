@@ -7,8 +7,10 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 
 /// Create a snapshot with the given name (or a timestamp if empty). With
-/// `if_changed`, the kernel skips the snapshot when nothing is staged.
-pub fn create(name: Option<&str>, if_changed: bool) -> Result<()> {
+/// `if_changed`, the kernel skips the snapshot when nothing is staged. With
+/// `quiet`, the creation line isn't printed (e.g. when the caller will show
+/// `yolo status` next, which already lists the snapshot marker).
+pub fn create(name: Option<&str>, if_changed: bool, quiet: bool) -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
     let chk_name = match name {
         Some(n) if !n.is_empty() => n.to_string(),
@@ -22,8 +24,8 @@ pub fn create(name: Option<&str>, if_changed: bool) -> Result<()> {
         0
     };
     let gen_id = ioctl::snapshot(&ctl_file, &chk_name, flags)?;
-    if if_changed && gen_id == 0 {
-        // --if-changed: a skip is the expected no-op, so say nothing.
+    if quiet || (if_changed && gen_id == 0) {
+        // Either silenced by the caller, or an --if-changed skip (a no-op).
         return Ok(());
     }
 
