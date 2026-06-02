@@ -29,3 +29,8 @@ ask_timeout = 30      # seconds to wait on an interactive ask before ask_default
 ".yolofs" = "read"
 ".yolofs/mnt" = "hide"
 "yolofs.toml" = "read"
+
+"$HOME/.bashrc" = "allow"
+"$HOME/.bash_history" = "allow"
+"$HOME/.cargo/env" = "allow"
+"$HOME/.nvm" = "allow"
