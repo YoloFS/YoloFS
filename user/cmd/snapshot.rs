@@ -23,7 +23,7 @@ pub fn create(name: Option<&str>, if_changed: bool) -> Result<()> {
     };
     let gen_id = ioctl::snapshot(&ctl_file, &chk_name, flags)?;
     if if_changed && gen_id == 0 {
-        eprintln!("{}", "yolo: no changes, skipping snapshot".dimmed());
+        // --if-changed: a skip is the expected no-op, so say nothing.
         return Ok(());
     }
 

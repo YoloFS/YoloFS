@@ -73,6 +73,9 @@ enum Command {
         /// End at a named snapshot (inclusive)
         #[arg(long, conflicts_with = "at")]
         to: Option<String>,
+        /// Print nothing when there are no staged changes
+        #[arg(long)]
+        quiet: bool,
     },
     /// Git-style diff of staged vs base
     Diff {
@@ -180,9 +183,12 @@ fn run_cli() -> anyhow::Result<u8> {
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,
         Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
-        Some(Command::Status { at, from, to }) => {
-            diff::run_status(at.as_deref(), from.as_deref(), to.as_deref())?
-        }
+        Some(Command::Status {
+            at,
+            from,
+            to,
+            quiet,
+        }) => diff::run_status(at.as_deref(), from.as_deref(), to.as_deref(), quiet)?,
         Some(Command::Diff { at, from, to, path }) => {
             diff::run_diff(
                 at.as_deref(),

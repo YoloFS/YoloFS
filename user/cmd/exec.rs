@@ -23,7 +23,7 @@ use std::process;
 /// saved and restored so the hook doesn't clobber the command's exit status.
 /// This runs once on the first prompt, then replaces itself with the function.
 const PER_COMMAND_HOOK: &str = "\
-__yolo_precmd() { local rc=$?; [ -n \"$__yl\" ] && yolo snapshot --if-changed \"$__yl\"; __yl=; yolo status; return $rc; }; \
+__yolo_precmd() { local rc=$?; [ -n \"$__yl\" ] && yolo snapshot --if-changed \"$__yl\"; __yl=; yolo status --quiet; return $rc; }; \
 trap '[ \"$BASH_COMMAND\" = __yolo_precmd ] || __yl=$BASH_COMMAND' DEBUG; \
 PROMPT_COMMAND=__yolo_precmd";
 

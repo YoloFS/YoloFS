@@ -143,8 +143,13 @@ fn print_change(
 // ── Public entry points ──────────────────────────────────────────────
 
 /// `yolo status` — summary view.
-pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> Result<()> {
-    run(false, at, from, to, None)?;
+pub fn run_status(
+    at: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    quiet: bool,
+) -> Result<()> {
+    run(false, at, from, to, None, quiet)?;
     Ok(())
 }
 
@@ -156,7 +161,7 @@ pub fn run_diff(
     path: Option<&str>,
 ) -> Result<bool> {
     let path = path.map(crate::utils::normalize_path);
-    run(true, at, from, to, path.as_deref())
+    run(true, at, from, to, path.as_deref(), false)
 }
 
 // ── Core implementation ─────────────────────────────────────────────
@@ -167,6 +172,7 @@ fn run(
     from: Option<&str>,
     to: Option<&str>,
     path: Option<&str>,
+    quiet: bool,
 ) -> Result<bool> {
     let yolofs = crate::utils::session_dir()?;
     let journal = Journal::read(&yolofs)?;
@@ -230,10 +236,12 @@ fn run(
     }
 
     if total == 0 {
-        println!(
-            "{}",
-            format!("No changes{}.", range_label(at, from, to)).yellow()
-        );
+        if !quiet {
+            println!(
+                "{}",
+                format!("No changes{}.", range_label(at, from, to)).yellow()
+            );
+        }
         return Ok(false);
     }
 
