@@ -20,12 +20,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Load the kernel module
-    Load,
-    /// Unmount all sessions and unload the kernel module
-    Unload,
-    /// Unload then reload the kernel module
-    Reload,
+    // ── Setup ────────────────────────────────────────────────────────
     /// Create yolofs.toml and scaffold agent hook templates
     Init {
         /// Agent hooks to scaffold (e.g. `--agents claude gemini`). Repeatable.
@@ -33,8 +28,21 @@ enum Command {
         #[arg(long = "agents", num_args = 1.., ignore_case = true)]
         agents: Vec<init::AgentChoice>,
     },
+    /// Load the kernel module
+    Load,
+    /// Unmount all sessions and unload the kernel module
+    Unload,
+    /// Unload then reload the kernel module
+    Reload,
+    // ── Session ──────────────────────────────────────────────────────
     /// Create .yolofs/ layout and mount the filesystem
     Mount,
+    /// Execute a command under yolofs (requires existing mount)
+    Exec {
+        /// Command to run (after --)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        exec_args: Vec<String>,
+    },
     /// Unmount and clean up the session
     Unmount {
         /// Skip staged-changes prompt
@@ -47,12 +55,7 @@ enum Command {
         #[arg(long, short)]
         force: bool,
     },
-    /// Execute a command under yolofs (requires existing mount)
-    Exec {
-        /// Command to run (after --)
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        exec_args: Vec<String>,
-    },
+    // ── Review & commit ──────────────────────────────────────────────
     /// Show staged changes (latest snapshot by default; --full for all)
     Status {
         /// Show state at a named snapshot (single segment)
@@ -93,6 +96,7 @@ enum Command {
         #[arg(long, short)]
         force: bool,
     },
+    // ── History ──────────────────────────────────────────────────────
     /// Create a snapshot
     Snapshot {
         /// Snapshot name (defaults to timestamp)
@@ -117,6 +121,7 @@ enum Command {
         #[arg(long)]
         full: bool,
     },
+    // ── Permissions ──────────────────────────────────────────────────
     /// Manage permission rules
     #[command(arg_required_else_help = true)]
     Rule {
@@ -175,6 +180,7 @@ fn run_cli() -> anyhow::Result<u8> {
     }
 
     match cli.command {
+        Some(Command::Init { agents }) => init::run(&std::env::current_dir()?, &agents)?,
         Some(Command::Load) => {
             if !load::load()? {
                 eprintln!("{} kernel module already loaded", "yolo:".green());
@@ -182,11 +188,10 @@ fn run_cli() -> anyhow::Result<u8> {
         }
         Some(Command::Unload) => load::unload()?,
         Some(Command::Reload) => load::reload()?,
-        Some(Command::Init { agents }) => init::run(&std::env::current_dir()?, &agents)?,
         Some(Command::Mount) => mount::mount()?,
+        Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,
-        Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
         Some(Command::Status { at, from, to, full }) => {
             diff::run_status(at.as_deref(), from.as_deref(), to.as_deref(), full)?
         }
