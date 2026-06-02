@@ -76,7 +76,7 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 	/* Only data mutations (S/D/R) mark the session dirty. Markers (P/T) and
 	 * observational notes (A/B) are excluded — they must not trigger an
 	 * auto-snapshot under YOLO_SNAPSHOT_IF_CHANGED. */
-	if (err >= 0 && tag != 'P' && tag != 'T' && tag != 'B' && tag != 'A')
+	if (err >= 0 && (tag == 'S' || tag == 'D' || tag == 'R'))
 		WRITE_ONCE(sbi->staging.dirty, true);
 	return err < 0 ? err : 0;
 }

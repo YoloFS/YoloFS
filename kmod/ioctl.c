@@ -668,23 +668,19 @@ static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 	atomic64_inc(&sbi->perm.gen);
 	yolo_dentry_unpin_all(sb);
 
+	/* Both modes invalidate the shard cache: the CLI is about to delete
+	 * (reset) or reorganize (travel) the shard directories. */
+	if (sbi->staging.shard_dentry) {
+		dput(sbi->staging.shard_dentry);
+		sbi->staging.shard_dentry = NULL;
+	}
+
 	if (hdr.target_gen == 0) {
 		/* Reset mode (commit/abort): no entries, no journal write */
 		atomic_set(&sbi->staging.gen, 0);
 		WRITE_ONCE(sbi->staging.dirty, false);
-		/* Invalidate shard cache — CLI is about to delete shard dirs. */
-		if (sbi->staging.shard_dentry) {
-			dput(sbi->staging.shard_dentry);
-			sbi->staging.shard_dentry = NULL;
-		}
 		up_write(&sbi->staging.sem);
 		return 0;
-	}
-
-	/* Invalidate shard cache before travel — CLI may reorganize inodes. */
-	if (sbi->staging.shard_dentry) {
-		dput(sbi->staging.shard_dentry);
-		sbi->staging.shard_dentry = NULL;
 	}
 
 	/* Travel mode: increment gen, inject entries, write T record */
