@@ -14,7 +14,6 @@ use yolofs::perm::Perm;
 #[test]
 fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Ask),
         rules: BTreeMap::new(),
         ..Default::default()
     })
@@ -61,7 +60,6 @@ fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
 #[test]
 fn second_watch_reports_already_running() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })
@@ -101,7 +99,6 @@ fn second_watch_reports_already_running() {
 /// goes through the interactive daemon path.
 fn session_with_ask_file() -> (YoloSession, String) {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
     })

@@ -22,9 +22,10 @@ fn hide_session() -> YoloSession {
         Perm::Hide,
     );
 
+    // Permissive backdrop so non-hidden paths work; specific rules above win.
+    rules.insert("/".into(), Perm::Allow);
     let config = Config {
         permission: true,
-        ask_default: Some(Perm::Allow),
         rules,
         ..Default::default()
     };
@@ -131,9 +132,10 @@ fn hide_single_file() {
         Perm::Hide,
     );
 
+    // Permissive backdrop so non-hidden paths work; specific rules above win.
+    rules.insert("/".into(), Perm::Allow);
     let config = Config {
         permission: true,
-        ask_default: Some(Perm::Allow),
         rules,
         ..Default::default()
     };

@@ -13,7 +13,6 @@ use yolofs::perm::Perm;
 /// Build a session where the entire mount denies access.
 fn deny_session() -> YoloSession {
     YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
@@ -23,7 +22,6 @@ fn deny_session() -> YoloSession {
 /// Build a session where the entire mount is read-only.
 fn ro_session() -> YoloSession {
     YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Read)]),
         ..Default::default()
     })
@@ -71,9 +69,8 @@ fn block_record_format() {
 #[test]
 fn ask_record_emitted_on_no_daemon() {
     // No rules → everything resolves to `ask`; no `yolo watch` daemon is
-    // running, so the kernel applies ask_default (deny) and logs an A note.
+    // running, so the kernel denies (unanswered ask) and logs an A note.
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })
@@ -201,9 +198,8 @@ fn block_records_do_not_contribute_to_tree() {
 fn block_writes_do_not_set_dirty() {
     use crate::helpers::YOLO_BIN;
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
-        snapshot: true,
+        auto_snapshot: true,
         ..Default::default()
     })
     .expect("session setup");
@@ -246,14 +242,16 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
     fs::write(root.join("locked.txt"), "secret\n").unwrap();
 
     let mut rules = BTreeMap::new();
+    // Allow everything by default so the new.txt write succeeds, except the
+    // explicit deny on locked.txt (more specific, so it wins).
+    rules.insert("/".into(), Perm::Allow);
     rules.insert(
         root.join("locked.txt").to_string_lossy().into_owned(),
         Perm::Deny,
     );
     let config = Config {
         permission: true,
-        ask_default: Some(Perm::Allow),
-        snapshot: true,
+        auto_snapshot: true,
         rules,
         ..Default::default()
     };
@@ -314,9 +312,10 @@ fn hidden_paths_do_not_log_block() {
         root.join("hello.txt").to_string_lossy().into_owned(),
         Perm::Hide,
     );
+    // Permissive backdrop so visible.txt works; the hide rule above wins.
+    rules.insert("/".into(), Perm::Allow);
     let config = Config {
         permission: true,
-        ask_default: Some(Perm::Allow),
         rules,
         ..Default::default()
     };
@@ -353,12 +352,11 @@ fn hidden_paths_do_not_log_block() {
 /// because `yolo_permission` returns 0 for ASK and lets `yolo_open` resolve).
 #[test]
 fn ask_resolved_to_default_deny_emits_block() {
-    // No daemon connected; ask_default=deny applies immediately when an
+    // No daemon connected; the ask is denied immediately when an
     // unruled file is opened. The deny decision is made inside
     // `yolo_check_dentry_perm` and surfaces from `yolo_open`, not from
     // `yolo_permission` (which returned 0 for the ASK perm).
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })

@@ -7,7 +7,6 @@ use yolofs::perm::Perm;
 /// Helper: create a session with deny-by-default and no rules on the session root.
 fn deny_session() -> YoloSession {
     YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })
@@ -133,7 +132,6 @@ fn create_denied_with_ro_rule() {
 
     let config = Config {
         permission: true,
-        ask_default: Some(Perm::Deny),
         rules,
         ..Default::default()
     };

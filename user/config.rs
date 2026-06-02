@@ -31,11 +31,9 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub staging: bool,
     #[serde(default)]
-    pub ask_timeout: Option<u64>,
+    pub prompt_timeout: Option<u64>,
     #[serde(default)]
-    pub ask_default: Option<Perm>,
-    #[serde(default)]
-    pub snapshot: bool,
+    pub auto_snapshot: bool,
     #[serde(default)]
     pub rules: BTreeMap<String, Perm>,
 }
@@ -169,11 +167,8 @@ pub fn mount_options(yolo_dir: &Path) -> String {
         format!("staging={}", config.staging as u8),
     ];
 
-    if let Some(v) = config.ask_timeout {
-        opts.push(format!("ask_timeout={v}"));
-    }
-    if let Some(p) = config.ask_default {
-        opts.push(format!("ask_default={}", p.to_ioctl()));
+    if let Some(v) = config.prompt_timeout {
+        opts.push(format!("prompt_timeout={v}"));
     }
 
     opts.join(",")
@@ -502,7 +497,6 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.rules["/usr"], Perm::Read);
         assert_eq!(config.rules["/etc"], Perm::Read);
-        assert_eq!(config.ask_default, Some(Perm::Deny));
         // Storage is readable from inside the mount (yolofs stacks over /), but
         // the nested mountpoint is hidden to avoid recursion.
         assert_eq!(config.rules[".yolofs"], Perm::Read);
@@ -525,7 +519,7 @@ mod tests {
         let config = Config::default();
         config.save(&path).unwrap();
         let loaded = Config::load(&path).unwrap();
-        assert_eq!(loaded.ask_default, config.ask_default);
+        assert_eq!(loaded.prompt_timeout, config.prompt_timeout);
         assert_eq!(loaded.rules.len(), config.rules.len());
     }
 
@@ -558,7 +552,7 @@ mod tests {
         let yolo_dir = tmp.path().join(".yolofs");
         fs::create_dir_all(&yolo_dir).unwrap();
         let opts = mount_options(&yolo_dir);
-        // Falls back to defaults: permission=1,staging=1,ask_default=...
+        // Falls back to defaults: permission=1,staging=1
         assert!(opts.contains("permission=1"), "opts = {opts}");
         assert!(opts.contains("staging=1"), "opts = {opts}");
     }
@@ -571,14 +565,14 @@ mod tests {
         let config = Config {
             permission: false,
             staging: false,
-            ask_timeout: Some(5),
+            prompt_timeout: Some(5),
             ..Default::default()
         };
         config.save(&tmp.path().join("yolofs.toml")).unwrap();
         let opts = mount_options(&yolo_dir);
         assert!(opts.contains("permission=0"), "opts = {opts}");
         assert!(opts.contains("staging=0"), "opts = {opts}");
-        assert!(opts.contains("ask_timeout=5"), "opts = {opts}");
+        assert!(opts.contains("prompt_timeout=5"), "opts = {opts}");
     }
 
     #[test]
@@ -587,12 +581,12 @@ mod tests {
         let yolo_dir = tmp.path().join(".yolofs");
         fs::create_dir_all(&yolo_dir).unwrap();
         let config = Config {
-            ask_timeout: Some(10),
+            prompt_timeout: Some(10),
             ..Default::default()
         };
         config.save(&tmp.path().join("yolofs.toml")).unwrap();
         let opts = mount_options(&yolo_dir);
-        assert!(opts.contains("ask_timeout=10"));
+        assert!(opts.contains("prompt_timeout=10"));
         assert!(opts.contains("permission=1"), "opts = {opts}");
         assert!(opts.contains("staging=1"), "opts = {opts}");
     }

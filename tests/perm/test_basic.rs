@@ -4,11 +4,10 @@ use std::fs;
 use yolofs::config::Config;
 use yolofs::perm::Perm;
 
-/// With no daemon and ask_default=deny, reading an unruled file should fail.
+/// With no daemon and no rule, an `ask` path (the default) is denied.
 #[test]
 fn no_daemon_denies_by_default() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })
@@ -21,26 +20,10 @@ fn no_daemon_denies_by_default() {
     );
 }
 
-/// With no daemon and ask_default=allow, reading an unruled file should succeed.
-#[test]
-fn no_daemon_allows_when_configured() {
-    let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Allow),
-        rules: BTreeMap::new(),
-        ..Default::default()
-    })
-    .expect("session setup");
-
-    let content = fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("read should succeed with ask_default=allow");
-    assert_eq!(content, "base content\n");
-}
-
 /// An explicit allow rule should bypass the ask mechanism entirely.
 #[test]
 fn explicit_rule_bypasses_ask() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
     })
@@ -55,7 +38,6 @@ fn explicit_rule_bypasses_ask() {
 #[test]
 fn deny_rule_blocks_access() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Allow),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })

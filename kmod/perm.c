@@ -120,9 +120,9 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 		return 0;
 	}
 
-	/* No daemon connected — apply default immediately */
+	/* No daemon connected — deny immediately (an unanswered ask is a deny) */
 	if (!atomic_read(&sbi->ask_engine.has_daemon)) {
-		*result = sbi->ask_engine.default_perm;
+		*result = YOLO_PERM_DENY;
 		yolo_journal_ask(sbi, relpath, op, *result);
 		return 0;
 	}
@@ -157,7 +157,7 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 	timeout = wait_for_completion_interruptible_timeout(&req->done,
 							    timeout);
 	if (timeout == 0)
-		req->decision = sbi->ask_engine.default_perm;
+		req->decision = YOLO_PERM_DENY;
 	else if (timeout < 0)
 		err = -EINTR;
 

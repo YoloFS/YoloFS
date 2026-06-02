@@ -14,23 +14,20 @@
 enum yolo_param {
 	Opt_permission,
 	Opt_staging,
-	Opt_ask_timeout,
-	Opt_ask_default,
+	Opt_prompt_timeout,
 };
 
 static const struct fs_parameter_spec yolo_fs_parameters[] = {
 	fsparam_bool("permission",	Opt_permission),
 	fsparam_bool("staging",		Opt_staging),
-	fsparam_u32("ask_timeout",	Opt_ask_timeout),
-	fsparam_u32("ask_default",	Opt_ask_default),
+	fsparam_u32("prompt_timeout",	Opt_prompt_timeout),
 	{}
 };
 
 struct yolo_fs_opts {
 	bool		permission;
 	bool		staging;
-	unsigned int	ask_timeout_s;
-	unsigned int	ask_default;
+	unsigned int	prompt_timeout_s;
 };
 
 /* ── Inode Slab Cache ──────────────────────────────────────────────── */
@@ -115,8 +112,7 @@ static int yolo_show_options(struct seq_file *m, struct dentry *root)
 
 	seq_printf(m, ",permission=%d", sbi->permission);
 	seq_printf(m, ",staging=%d", sbi->staging);
-	seq_printf(m, ",ask_timeout=%u", sbi->ask_engine.timeout_s);
-	seq_printf(m, ",ask_default=%d", sbi->ask_engine.default_perm);
+	seq_printf(m, ",prompt_timeout=%u", sbi->ask_engine.timeout_s);
 	return 0;
 }
 
@@ -145,9 +141,7 @@ static void yolo_init_sbi(struct yolo_sb_info *sbi,
 	atomic64_set(&sbi->ask_engine.next_req_id, 1);
 	INIT_LIST_HEAD(&sbi->ask_engine.dispatched);
 	spin_lock_init(&sbi->ask_engine.dispatch_lock);
-	sbi->ask_engine.timeout_s = opts->ask_timeout_s;
-	sbi->ask_engine.default_perm = opts->ask_default
-		? opts->ask_default : YOLO_PERM_DENY;
+	sbi->ask_engine.timeout_s = opts->prompt_timeout_s;
 	INIT_LIST_HEAD(&sbi->pinned_rules);
 	spin_lock_init(&sbi->pinned_rules_lock);
 
@@ -292,11 +286,8 @@ static int yolo_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	case Opt_staging:
 		opts->staging = result.boolean;
 		break;
-	case Opt_ask_timeout:
-		opts->ask_timeout_s = result.uint_32;
-		break;
-	case Opt_ask_default:
-		opts->ask_default = result.uint_32;
+	case Opt_prompt_timeout:
+		opts->prompt_timeout_s = result.uint_32;
 		break;
 	default:
 		return -EINVAL;

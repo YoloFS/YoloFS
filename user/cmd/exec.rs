@@ -2,9 +2,9 @@
 //
 // `yolo exec [-- cmd]` — chroot into .yolofs/mnt and exec a command,
 // preserving the caller's working directory. With no command it drops into a
-// shell. When config.snapshot=true, a snapshot is created after the command
-// finishes, capturing what the command did — this is how each `yolo exec`
-// (e.g. one agent tool-call) becomes a per-command checkpoint.
+// shell. When config.auto_snapshot=true, a snapshot is created after the
+// command finishes, capturing what the command did — this is how each
+// `yolo exec` (e.g. one agent tool-call) becomes a per-command checkpoint.
 
 use crate::config;
 use crate::ioctl;
@@ -86,7 +86,7 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
 
     // Snapshot after the command so the snapshot captures what the command did.
     // Skip if the command produced no staged changes to avoid empty snapshots.
-    if config::load_config().snapshot {
+    if config::load_config().auto_snapshot {
         let cmd_desc = if interactive {
             cmd.clone()
         } else {

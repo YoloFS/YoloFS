@@ -21,7 +21,6 @@ fn child_rule_overrides_parent() {
     s.cli(&["unmount"]).unwrap();
     let root_path = s.root.display().to_string();
     Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny), (root_path, Perm::Allow)]),
         ..Default::default()
     }
@@ -57,7 +56,6 @@ fn deep_nested_rules_closest_wins() {
     // Remount with tiered rules.
     s.cli(&["unmount"]).unwrap();
     Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([
             ("/".into(), Perm::Deny),
             (s.root.join("a/b").display().to_string(), Perm::Allow),
@@ -102,7 +100,6 @@ fn different_paths_different_rules() {
 
     s.cli(&["unmount"]).unwrap();
     Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([
             (s.root.join("readonly").display().to_string(), Perm::Read),
             (s.root.join("writable").display().to_string(), Perm::Allow),

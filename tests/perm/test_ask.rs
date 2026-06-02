@@ -2,83 +2,42 @@ use crate::helpers::YoloSession;
 use std::collections::BTreeMap;
 use std::fs;
 use yolofs::config::Config;
-use yolofs::perm::Perm;
 
-// ── ask_default variants (perm.c: yolo_ask_userspace no-daemon path) ──
+// ── Unanswered ask → deny (perm.c: yolo_ask_userspace no-daemon path) ──
 
-/// ask_default=ro: read OK, write denied.
+/// With no daemon connected, an `ask` path (the default for unruled paths) is
+/// denied for both read and write — an unanswered ask is a deny.
 #[test]
-fn ask_default_ro_read_ok_write_denied() {
+fn no_daemon_denies_ask() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Read),
         rules: BTreeMap::new(),
         ..Default::default()
     })
     .expect("session setup");
 
-    let content = fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("read should succeed with ask_default=ro");
-    assert_eq!(content, "base content\n");
-
-    let result = fs::write(s.mnt_path("hello.txt"), "modified\n");
     assert!(
-        result.is_err(),
-        "write should be denied with ask_default=ro"
+        fs::read_to_string(s.mnt_path("hello.txt")).is_err(),
+        "read should be denied with no daemon"
+    );
+    assert!(
+        fs::write(s.mnt_path("hello.txt"), "modified\n").is_err(),
+        "write should be denied with no daemon"
     );
 }
 
-/// ask_default=allow: read OK, write OK.
+/// `prompt_timeout` is accepted as a mount option; with no daemon the ask is
+/// denied immediately regardless of the timeout.
 #[test]
-fn ask_default_allow_read_ok_write_ok() {
+fn prompt_timeout_no_daemon_denies() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Allow),
+        prompt_timeout: Some(1),
         rules: BTreeMap::new(),
         ..Default::default()
     })
     .expect("session setup");
 
-    let content = fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("read should succeed with ask_default=allow");
-    assert_eq!(content, "base content\n");
-
-    fs::write(s.mnt_path("hello.txt"), "modified\n")
-        .expect("write should succeed with ask_default=allow");
-}
-
-// ── ask_timeout applies default when no daemon ──
-
-/// With ask_timeout set and no daemon, the ask should time out and
-/// apply the ask_default.
-#[test]
-fn ask_timeout_applies_default() {
-    let s = YoloSession::new_with_config(Config {
-        ask_timeout: Some(1),
-        ask_default: Some(Perm::Deny),
-        rules: BTreeMap::new(),
-        ..Default::default()
-    })
-    .expect("session setup");
-
-    // No daemon running — ask times out, applies ask_default=deny.
-    let result = fs::read_to_string(s.mnt_path("hello.txt"));
     assert!(
-        result.is_err(),
-        "read should be denied when ask times out with ask_default=deny"
+        fs::read_to_string(s.mnt_path("hello.txt")).is_err(),
+        "read should be denied when no daemon answers"
     );
-}
-
-/// With ask_timeout and ask_default=allow, timed out ask should allow.
-#[test]
-fn ask_timeout_applies_allow_default() {
-    let s = YoloSession::new_with_config(Config {
-        ask_timeout: Some(1),
-        ask_default: Some(Perm::Allow),
-        rules: BTreeMap::new(),
-        ..Default::default()
-    })
-    .expect("session setup");
-
-    let content = fs::read_to_string(s.mnt_path("hello.txt"))
-        .expect("read should succeed when ask times out with ask_default=allow");
-    assert_eq!(content, "base content\n");
 }

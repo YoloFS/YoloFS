@@ -149,8 +149,7 @@ struct yolo_ask_engine {
 	spinlock_t		pending_lock;	/* protects pending_reqs */
 	wait_queue_head_t	request_waitq;	/* daemon blocks here */
 	atomic64_t		next_req_id;	/* unique request ID counter */
-	unsigned int		timeout_s;	/* seconds before applying default */
-	enum yolo_perm		default_perm;	/* decision when no daemon or timeout */
+	unsigned int		timeout_s;	/* seconds to wait before denying */
 
 	/* Daemon connection (at most one). The control ioctls live on the mount
 	 * root directory, whose fd already uses private_data for the readdir

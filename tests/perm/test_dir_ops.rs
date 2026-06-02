@@ -12,7 +12,6 @@ use yolofs::perm::Perm;
 #[test]
 fn mkdir_denied_under_deny() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
@@ -26,7 +25,6 @@ fn mkdir_denied_under_deny() {
 #[test]
 fn unlink_denied_under_ro() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Read)]),
         ..Default::default()
     })
@@ -40,7 +38,6 @@ fn unlink_denied_under_ro() {
 #[test]
 fn symlink_denied_under_deny() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
@@ -54,7 +51,6 @@ fn symlink_denied_under_deny() {
 #[test]
 fn rmdir_denied_under_deny() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
@@ -68,7 +64,6 @@ fn rmdir_denied_under_deny() {
 #[test]
 fn rename_denied_under_deny() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
@@ -82,7 +77,6 @@ fn rename_denied_under_deny() {
 #[test]
 fn create_denied_under_deny() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
@@ -101,7 +95,6 @@ fn create_denied_under_deny() {
 #[test]
 fn readdir_allowed_under_deny() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
@@ -121,7 +114,6 @@ fn readdir_allowed_under_deny() {
 #[test]
 fn stat_allowed_under_deny() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
@@ -136,11 +128,10 @@ fn stat_allowed_under_deny() {
 }
 
 /// readdir is not permission-gated. Even on an ask directory with
-/// ask_default=deny, readdir succeeds because it is never gated.
+/// no daemon (asks deny), readdir succeeds because it is never gated.
 #[test]
 fn readdir_on_ask_dir_still_succeeds_when_default_denies() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
     })
@@ -153,14 +144,14 @@ fn readdir_on_ask_dir_still_succeeds_when_default_denies() {
         .collect();
     assert!(
         !entries.is_empty(),
-        "readdir should list entries in ask dir even when ask_default=deny"
+        "readdir should list entries in ask dir even with no daemon (asks deny)"
     );
 }
 
 // ── Verify directory read-like ops are NOT gated ──
 //
 // These tests use no explicit rules (everything defaults to ask) and no
-// daemon, with ask_default=deny.  If stat/readdir/lookup went through the
+// daemon, so asks deny.  If stat/readdir/lookup went through the
 // ask path they would resolve to deny and fail.  Their success proves
 // that directory read-like ops bypass the ask path entirely.
 
@@ -168,7 +159,6 @@ fn readdir_on_ask_dir_still_succeeds_when_default_denies() {
 #[test]
 fn stat_on_ask_dir_not_gated() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })
@@ -186,7 +176,6 @@ fn stat_on_ask_dir_not_gated() {
 #[test]
 fn readdir_on_ask_dir_not_gated() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })
@@ -204,7 +193,6 @@ fn readdir_on_ask_dir_not_gated() {
 #[test]
 fn lookup_traversal_not_gated() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })
@@ -222,7 +210,6 @@ fn lookup_traversal_not_gated() {
 #[test]
 fn file_open_still_gated_when_dir_not_gated() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })
@@ -244,7 +231,6 @@ fn file_open_still_gated_when_dir_not_gated() {
 #[test]
 fn mkdir_in_ask_dir_gated() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })

@@ -82,16 +82,15 @@ grouped into `struct yolo_ask_engine` (embedded in `yolo_sb_info` as
 | `pending_lock` | Spinlock protecting `pending_reqs` |
 | `request_waitq` | Wait queue — daemon's `GET_ASK` ioctl blocks here |
 | `next_req_id` | Atomic counter for unique request IDs |
-| `timeout_s` | Seconds before an unanswered ask applies the default |
-| `default_perm` | Default decision (`deny` or `read`) when no daemon or timeout |
+| `timeout_s` | Seconds to wait for an answer before denying (0 = infinite) |
 | `daemon_file` | Pointer to the daemon's open `struct file` (a directory fd in the mount); NULL if no daemon connected. Set atomically on the first `GET_ASK` ioctl, cleared in `yolo_ctl_release()`. Only one daemon allowed — a second `GET_ASK` from a different fd returns `-EBUSY`. |
 | `dispatched` | Linked list of requests sent to daemon but not yet answered |
 | `dispatch_lock` | Spinlock protecting `dispatched` and `daemon_file` |
 
 The daemon connects by opening the mount root (a directory fd) and issuing its
 first `GET_ASK` ioctl to claim exclusive daemon status. On close, all
-dispatched-but-unanswered
-requests receive `default_perm` and `daemon_file` is reset to NULL.
+dispatched-but-unanswered requests are denied and `daemon_file` is reset to
+NULL.
 
 Control ioctls live on a directory fd in the mount (there is no separate `.ctl`
 file). Operations that could defeat gating — `RULE_SET`, `GET_ASK`,
@@ -129,8 +128,7 @@ Two levels:
 
 1. Write the rule to `yolofs.toml` (source of truth on disk):
   ```toml
-   ask_timeout = 30
-   ask_default = "deny"
+   prompt_timeout = 30
 
    [rules]
    "src"        = "allow"
@@ -206,7 +204,7 @@ int yolo_check_dentry_perm(struct yolo_sb_info *sbi,
     perm = ii->cached_perm;
 
     if (perm == YOLO_PERM_ASK) {
-        // ... ask daemon or apply default_perm ...
+        // ... ask daemon, or deny if none answers ...
     }
     return yolo_check_perm(perm, f_flags);
 }
@@ -321,9 +319,8 @@ Key properties:
 
 - **Interruptible sleep**: The thread can be killed with `SIGKILL`. The
   request is removed from the pending list and `-EINTR` is returned.
-- **Timeout**: Configurable via mount option `ask_timeout=<seconds>`.
-  If the daemon doesn't respond, the default action (configurable:
-  `deny` or `read`) is applied.
+- **Timeout**: Configurable via mount option `prompt_timeout=<seconds>`.
+  If the daemon doesn't respond in time, the request is denied.
 - **Minimal response**: `yolo_ioc_decision` only carries `{ id, decision }`.
   Persisting policy is always a separate `ioctl(YOLO_IOC_RULE_SET)`.
 - **One-time by default**: The decision applies to this single access only.

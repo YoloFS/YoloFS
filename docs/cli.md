@@ -106,11 +106,10 @@ Configured via top-level keys in `yolofs.toml`:
 
 | Option | Default | Description |
 |---|---|---|
-| `ask_timeout` | 0 (infinite) | Seconds before ask request times out |
-| `ask_default` | `deny` | Fallback when no daemon is connected or on timeout |
 | `permission` | true | Enable permission gating |
 | `staging` | true | Enable staging area |
-| `snapshot` | true | Auto-snapshot after each `yolo exec` invocation (skipped when no changes) |
+| `auto_snapshot` | true | Auto-snapshot after each `yolo exec` invocation (skipped when no changes) |
+| `prompt_timeout` | 0 (infinite) | Seconds to wait for an `ask` answer before denying (an unanswered ask is a deny) |
 
 ## Execution Environment
 

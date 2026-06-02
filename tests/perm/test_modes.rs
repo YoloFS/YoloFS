@@ -10,7 +10,6 @@ use yolofs::perm::Perm;
 #[test]
 fn ro_permits_read_denies_write() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Read)]),
         ..Default::default()
     })
@@ -31,7 +30,6 @@ fn ro_permits_read_denies_write() {
 #[test]
 fn allow_permits_read() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
     })
@@ -46,7 +44,6 @@ fn allow_permits_read() {
 #[test]
 fn allow_permits_write() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
     })
@@ -59,7 +56,6 @@ fn allow_permits_write() {
 #[test]
 fn allow_permits_exec() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
     })
@@ -77,7 +73,6 @@ fn allow_permits_exec() {
 #[test]
 fn ro_permits_exec() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Read)]),
         ..Default::default()
     })
@@ -95,7 +90,6 @@ fn ro_permits_exec() {
 #[test]
 fn deny_blocks_write() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Allow),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
@@ -109,7 +103,6 @@ fn deny_blocks_write() {
 #[test]
 fn deny_blocks_exec() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Allow),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })

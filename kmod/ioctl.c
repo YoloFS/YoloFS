@@ -184,7 +184,7 @@ void yolo_daemon_cleanup(struct yolo_sb_info *sbi)
 
 	spin_lock(&eng->dispatch_lock);
 	list_for_each_entry_safe(req, tmp, &eng->dispatched, list) {
-		req->decision = eng->default_perm;
+		req->decision = YOLO_PERM_DENY;
 		list_del_init(&req->list);
 		complete(&req->done);
 		kref_put(&req->ref, yolo_perm_request_release);

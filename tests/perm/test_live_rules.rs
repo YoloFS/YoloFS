@@ -11,7 +11,6 @@ use yolofs::perm::Perm;
 #[test]
 fn newly_created_file_checked_on_reopen() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
     })
@@ -23,7 +22,6 @@ fn newly_created_file_checked_on_reopen() {
     // Now change rules to deny and re-read.
     s.cli(&["unmount", "--force"]).unwrap();
     Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     }
@@ -50,7 +48,6 @@ fn newly_created_file_checked_on_reopen() {
 #[test]
 fn live_rule_change_takes_effect() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
@@ -72,7 +69,6 @@ fn live_rule_change_takes_effect() {
 #[test]
 fn live_rule_remove_reapplies_gating() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })
@@ -93,7 +89,6 @@ fn live_rule_remove_reapplies_gating() {
 #[test]
 fn rule_resolve_matches_enforcement() {
     let s = YoloSession::new_with_config(Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::new(),
         ..Default::default()
     })
@@ -151,7 +146,6 @@ fn rename_across_permission_boundary() {
 
     s.cli(&["unmount"]).unwrap();
     Config {
-        ask_default: Some(Perm::Deny),
         rules: BTreeMap::from([
             (s.root.join("allowed").display().to_string(), Perm::Allow),
             (s.root.join("denied").display().to_string(), Perm::Deny),

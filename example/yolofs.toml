@@ -4,11 +4,10 @@
 # `yolo mount` with no yolofs.toml falls back to these settings. Edit freely.
 # See docs/cli.md and docs/permissions.md for the full reference.
 
-permission = true     # gate filesystem access through the [rules] below
-staging = true        # stage writes for review instead of applying directly
-snapshot = true       # allow named snapshots within a session
-ask_default = "deny"  # verdict for an "ask" rule whose prompt times out
-ask_timeout = 30      # seconds to wait on an interactive ask before ask_default
+permission = true      # gate filesystem access through the [rules] below
+staging = true         # stage writes for review instead of applying directly
+auto_snapshot = true   # snapshot after each `yolo exec` (per-command checkpoints)
+prompt_timeout = 30    # seconds to wait for an `ask` answer before denying
 
 [rules]
 # System locations: read-only so tools work but can't be modified.
