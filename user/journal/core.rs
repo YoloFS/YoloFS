@@ -93,7 +93,8 @@ impl Journal {
                 // Live, non-empty work after the last snapshot (e.g. with
                 // auto-snapshot off) — show that. A post-travel dead zone is not
                 // live, so it doesn't count.
-                let live_tail = (s..num).any(|i| self.is_alive(i) && !self.segments[i].records.is_empty());
+                let live_tail =
+                    (s..num).any(|i| self.is_alive(i) && !self.segments[i].records.is_empty());
                 if live_tail {
                     (s, num, s > 0)
                 } else {
