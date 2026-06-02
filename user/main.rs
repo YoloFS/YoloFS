@@ -1,6 +1,6 @@
 // yolo CLI — main.rs
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use colored::Colorize;
 use yolofs::cmd::{
     abort, audit, commit, diff, exec, init, load, mount, snapshot, timeline, travel, watch,
@@ -224,10 +224,64 @@ fn run_cli() -> anyhow::Result<u8> {
             RuleAction::Hide { path } => config::set_rule(&path, perm::Perm::Hide)?,
         },
         Some(Command::Watch { allow_all }) => watch::run(allow_all)?,
-        None => {
-            Cli::command().print_help()?;
-        }
+        None => print_overview(),
     }
 
     Ok(0)
+}
+
+/// Bare `yolo`: a grouped overview of the commands. (`yolo --help` still prints
+/// clap's full flat reference.)
+fn print_overview() {
+    #[rustfmt::skip]
+    let groups: &[(&str, &[(&str, &str)])] = &[
+        ("Setup", &[
+            ("init",     "Create yolofs.toml + agent hook templates"),
+            ("load",     "Load the kernel module"),
+            ("unload",   "Unmount all sessions and unload the module"),
+            ("reload",   "Unload then reload the kernel module"),
+        ]),
+        ("Session", &[
+            ("mount",    "Create .yolofs/ and mount the filesystem"),
+            ("exec",     "Run a command under yolofs (auto-snapshots after)"),
+            ("unmount",  "Tear down the session"),
+            ("remount",  "Unmount then remount (picks up yolofs.toml options)"),
+        ]),
+        ("Review & commit", &[
+            ("status",   "Show staged changes (latest snapshot; --full for all)"),
+            ("diff",     "Git-style diff of staged vs base"),
+            ("commit",   "Apply staged changes to base"),
+            ("abort",    "Discard staged changes"),
+        ]),
+        ("History", &[
+            ("snapshot", "Create a snapshot"),
+            ("travel",   "Travel to a previous snapshot"),
+            ("timeline", "Show the snapshot/travel timeline"),
+            ("audit",    "Show session history (latest snapshot; --full for all)"),
+        ]),
+        ("Permissions", &[
+            ("rule",     "Manage permission rules (allow/read/deny/hide/ask)"),
+            ("watch",    "Permission-prompt daemon"),
+        ]),
+    ];
+
+    println!(
+        "{}",
+        "Agentic filesystem — staging-commit + permission gating".bold()
+    );
+    println!();
+    println!(
+        "{}",
+        "Run yolo outside the mount; sandbox your work with `yolo exec`.".dimmed()
+    );
+    for (heading, cmds) in groups {
+        println!("\n{}", heading.cyan().bold());
+        for (name, desc) in *cmds {
+            println!("  {} {}", format!("{name:<9}").bold(), desc.dimmed());
+        }
+    }
+    println!(
+        "\n{}",
+        "Run `yolo <command> --help` for details.".dimmed()
+    );
 }
