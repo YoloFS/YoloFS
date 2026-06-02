@@ -134,11 +134,10 @@ static void yolo_init_sbi(struct yolo_sb_info *sbi,
 	/* Permission gating state */
 	atomic64_set(&sbi->perm.gen, 1);
 	INIT_LIST_HEAD(&sbi->perm.pending_reqs);
+	INIT_LIST_HEAD(&sbi->perm.dispatched);
 	spin_lock_init(&sbi->perm.pending_lock);
 	init_waitqueue_head(&sbi->perm.request_waitq);
 	atomic64_set(&sbi->perm.next_req_id, 1);
-	INIT_LIST_HEAD(&sbi->perm.dispatched);
-	spin_lock_init(&sbi->perm.dispatch_lock);
 	sbi->perm.timeout_s = opts->prompt_timeout_s;
 	INIT_LIST_HEAD(&sbi->perm.pinned_rules);
 	spin_lock_init(&sbi->perm.pinned_rules_lock);

@@ -76,7 +76,7 @@ fn second_watch_reports_already_running() {
         .spawn()
         .expect("spawn first watch");
 
-    // Give it time to register with the kernel (ensure_ctl sets has_daemon).
+    // Give it time to register with the kernel (ensure_ctl claims daemon_file).
     std::thread::sleep(Duration::from_millis(300));
 
     // Second watch should fail with "already running".

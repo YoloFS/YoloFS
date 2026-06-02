@@ -78,14 +78,13 @@ grouped into `struct yolo_ask_engine` (embedded in `yolo_sb_info` as
 
 | Field | Purpose |
 |-------|---------|
-| `pending_reqs` | Linked list of `yolo_perm_request` structs waiting for a daemon decision |
-| `pending_lock` | Spinlock protecting `pending_reqs` |
+| `pending_reqs` | Linked list of `yolo_perm_request` structs waiting to be dequeued by the daemon |
+| `dispatched` | Linked list of requests handed to the daemon but not yet answered |
+| `pending_lock` | Spinlock protecting both `pending_reqs` and `dispatched` |
 | `request_waitq` | Wait queue — daemon's `GET_ASK` ioctl blocks here |
 | `next_req_id` | Atomic counter for unique request IDs |
 | `timeout_s` | Seconds to wait for an answer before denying (0 = infinite) |
-| `daemon_file` | Pointer to the daemon's open `struct file` (a directory fd in the mount); NULL if no daemon connected. Set atomically on the first `GET_ASK` ioctl, cleared in `yolo_ctl_release()`. Only one daemon allowed — a second `GET_ASK` from a different fd returns `-EBUSY`. |
-| `dispatched` | Linked list of requests sent to daemon but not yet answered |
-| `dispatch_lock` | Spinlock protecting `dispatched` and `daemon_file` |
+| `daemon_file` | Pointer to the daemon's open `struct file` (a directory fd in the mount); NULL if no daemon connected (NULL is itself the "connected" flag). Set atomically on the first `GET_ASK` ioctl, cleared in `yolo_ctl_release()`. Only one daemon allowed — a second `GET_ASK` from a different fd returns `-EBUSY`. |
 
 The daemon connects by opening the mount root (a directory fd) and issuing its
 first `GET_ASK` ioctl to claim exclusive daemon status. On close, all

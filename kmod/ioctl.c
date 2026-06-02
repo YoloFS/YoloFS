@@ -43,10 +43,8 @@ void yolo_ctl_release(struct file *file)
 	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
 	struct yolo_permission *perm = &sbi->perm;
 
-	if (cmpxchg(&perm->daemon_file, file, NULL) == file) {
+	if (cmpxchg(&perm->daemon_file, file, NULL) == file)
 		yolo_daemon_cleanup(sbi);
-		atomic_set(&perm->has_daemon, 0);
-	}
 }
 
 /* ── GET_ASK: dequeue pending request ──────────────────────────── */
@@ -62,46 +60,38 @@ static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 
 	/* Claim daemon status on first call; reject if another fd already has it.
 	 * Tracked by file identity (private_data holds the dir's readdir cursor). */
-	if (perm->daemon_file != file) {
-		if (cmpxchg(&perm->daemon_file, NULL, file) != NULL)
-			return -EBUSY;
-		atomic_set(&perm->has_daemon, 1);
-	}
+	if (perm->daemon_file != file &&
+	    cmpxchg(&perm->daemon_file, NULL, file) != NULL)
+		return -EBUSY;
 
 	/* Read buffer info from userspace */
 	if (copy_from_user(&out, (void __user *)arg, sizeof(out)))
 		return -EFAULT;
 
-	/* Wait for a pending request */
-	if (file->f_flags & O_NONBLOCK) {
-		spin_lock(&perm->pending_lock);
-		if (list_empty(&perm->pending_reqs)) {
-			spin_unlock(&perm->pending_lock);
-			return -EAGAIN;
-		}
-	} else {
+	/* Block until a request is pending (unless non-blocking), then take the
+	 * lock and re-check — the requester may have reclaimed it meanwhile. */
+	if (!(file->f_flags & O_NONBLOCK)) {
 		err = wait_event_interruptible(perm->request_waitq,
 			!list_empty(&perm->pending_reqs));
 		if (err)
 			return err;
-		spin_lock(&perm->pending_lock);
-		if (list_empty(&perm->pending_reqs)) {
-			spin_unlock(&perm->pending_lock);
-			return -EAGAIN;
-		}
+	}
+	spin_lock(&perm->pending_lock);
+	if (list_empty(&perm->pending_reqs)) {
+		spin_unlock(&perm->pending_lock);
+		return -EAGAIN;
 	}
 
 	req = list_first_entry(&perm->pending_reqs,
 			       struct yolo_perm_request, list);
-	list_del_init(&req->list);
-	kref_get(&req->ref); /* daemon takes a reference */
-	spin_unlock(&perm->pending_lock);
 
 	path_len = req->path_len;
-
 	if (path_len > out.path_buf_len) {
-		err = -EOVERFLOW;
-		goto requeue_pending;
+		/* Daemon's buffer is too small; rotate to the tail so it does
+		 * not head-of-line block, and let the daemon retry. */
+		list_move_tail(&req->list, &perm->pending_reqs);
+		spin_unlock(&perm->pending_lock);
+		return -EOVERFLOW;
 	}
 
 	out.id = req->id;
@@ -110,33 +100,38 @@ static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 	strscpy(out.comm, req->comm, sizeof(out.comm));
 	out.path_len = path_len;
 
-	spin_lock(&perm->dispatch_lock);
-	list_add_tail(&req->list, &perm->dispatched);
-	spin_unlock(&perm->dispatch_lock);
+	/* Hand off to the daemon: move pending -> dispatched and take a
+	 * reference, all under pending_lock (which guards both lists). The
+	 * reference keeps the req alive across the copies below; it is dropped
+	 * by PUT_DECISION / daemon cleanup when they remove it from dispatched. */
+	list_move_tail(&req->list, &perm->dispatched);
+	req->dispatched = true;
+	kref_get(&req->ref);
+	spin_unlock(&perm->pending_lock);
 
 	/* Write path data to user buffer */
 	if (copy_to_user((void __user *)out.path_ptr, req->path, path_len)) {
 		err = -EFAULT;
-		goto requeue_dispatched;
+		goto deny;
 	}
 
 	/* Write header back to userspace */
 	if (copy_to_user((void __user *)arg, &out, sizeof(out))) {
 		err = -EFAULT;
-		goto requeue_dispatched;
+		goto deny;
 	}
 
 	return 0;
 
-requeue_dispatched:
-	spin_lock(&perm->dispatch_lock);
-	list_del_init(&req->list);
-	spin_unlock(&perm->dispatch_lock);
-requeue_pending:
+deny:
+	/* Delivery failed (daemon passed a bad buffer). Deny this one req
+	 * rather than requeue it — a retry would fault on the same buffer. */
 	spin_lock(&perm->pending_lock);
-	list_add_tail(&req->list, &perm->pending_reqs);
+	list_del_init(&req->list);
+	req->dispatched = false;
 	spin_unlock(&perm->pending_lock);
-	wake_up_interruptible(&perm->request_waitq);
+	req->decision = YOLO_PERM_DENY;
+	complete(&req->done);
 	kref_put(&req->ref, yolo_perm_request_release);
 	return err;
 }
@@ -147,7 +142,7 @@ static long yolo_put_decision_ioctl(struct file *file, unsigned long arg)
 {
 	struct yolo_permission *perm = &YOLO_SB(file_inode(file)->i_sb)->perm;
 	struct yolo_ioc_decision in;
-	struct yolo_perm_request *req, *tmp;
+	struct yolo_perm_request *req;
 	bool found = false;
 
 	if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
@@ -156,16 +151,17 @@ static long yolo_put_decision_ioctl(struct file *file, unsigned long arg)
 	if (in.decision > YOLO_PERM_HIDE)
 		return -EINVAL;
 
-	spin_lock(&perm->dispatch_lock);
-	list_for_each_entry_safe(req, tmp, &perm->dispatched, list) {
+	spin_lock(&perm->pending_lock);
+	list_for_each_entry(req, &perm->dispatched, list) {
 		if (req->id == in.id) {
 			req->decision = (enum yolo_perm)in.decision;
 			list_del_init(&req->list);
+			req->dispatched = false;
 			found = true;
 			break;
 		}
 	}
-	spin_unlock(&perm->dispatch_lock);
+	spin_unlock(&perm->pending_lock);
 
 	if (!found)
 		return -ENOENT;
@@ -182,14 +178,15 @@ void yolo_daemon_cleanup(struct yolo_sb_info *sbi)
 	struct yolo_permission *perm = &sbi->perm;
 	struct yolo_perm_request *req, *tmp;
 
-	spin_lock(&perm->dispatch_lock);
+	spin_lock(&perm->pending_lock);
 	list_for_each_entry_safe(req, tmp, &perm->dispatched, list) {
 		req->decision = YOLO_PERM_DENY;
 		list_del_init(&req->list);
+		req->dispatched = false;
 		complete(&req->done);
 		kref_put(&req->ref, yolo_perm_request_release);
 	}
-	spin_unlock(&perm->dispatch_lock);
+	spin_unlock(&perm->pending_lock);
 }
 
 /* ── Release all rule-pinned dentries ───────────────────────────────── */

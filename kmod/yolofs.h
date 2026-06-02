@@ -118,7 +118,20 @@ struct yolo_ioc_decision {
 	__u8	_pad[7];
 };
 
-/* ── Internal: Pending Permission Request ──────────────────────────── */
+/* ── Internal: Pending Permission Request ──────────────────────────────
+ *
+ * Ownership & locking (perm->pending_lock guards both request lists and the
+ * `dispatched` flag):
+ *   - The requesting thread holds one ref for the req's whole life: kref_init
+ *     in yolo_ask_userspace() down to its final kref_put().
+ *   - A req lives on exactly one of perm->pending_reqs (awaiting dequeue) or
+ *     perm->dispatched (handed to the daemon), or on neither once resolved;
+ *     `dispatched` records which.
+ *   - While on the dispatched list it carries a second ref (taken in GET_ASK),
+ *     dropped by whoever unlinks it there — PUT_DECISION, daemon cleanup, or a
+ *     failed GET_ASK delivery. So a timed-out / interrupted requester leaves a
+ *     dispatched req in place rather than unlinking it itself.
+ */
 
 struct yolo_perm_request {
 	struct kref		ref;
@@ -132,6 +145,7 @@ struct yolo_perm_request {
 	enum yolo_perm		decision;
 	struct completion	done;
 	struct list_head	list;
+	bool			dispatched;	/* true while on perm->dispatched */
 };
 
 /* ── Dentry state ────────────────────────────────────────────── */
@@ -167,20 +181,21 @@ struct yolo_permission {
 	struct list_head	pinned_rules;	/* dget()'d dentries with perm rules */
 	spinlock_t		pinned_rules_lock;/* protects pinned_rules */
 
-	/* Ask protocol */
+	/* Ask protocol. pending_lock guards both request lists: pending_reqs
+	 * (waiting to be dequeued) and dispatched (handed to the daemon,
+	 * awaiting a decision). */
 	struct list_head	pending_reqs;	/* requests waiting for daemon */
-	spinlock_t		pending_lock;	/* protects pending_reqs */
+	struct list_head	dispatched;	/* requests sent to daemon */
+	spinlock_t		pending_lock;	/* protects pending_reqs + dispatched */
 	wait_queue_head_t	request_waitq;	/* daemon blocks here */
 	atomic64_t		next_req_id;	/* unique request ID counter */
 	unsigned int		timeout_s;	/* seconds to wait before denying */
 
 	/* Daemon connection (at most one). The control ioctls live on the mount
 	 * root directory, whose fd already uses private_data for the readdir
-	 * cursor — so the daemon is tracked by file identity, not private_data. */
-	atomic_t		has_daemon;	/* 1 if daemon connected, 0 otherwise */
+	 * cursor — so the daemon is tracked by file identity, not private_data.
+	 * A non-NULL daemon_file is itself the "daemon connected" flag. */
 	struct file		*daemon_file;	/* the fd that claimed the daemon */
-	struct list_head	dispatched;	/* requests sent to daemon */
-	spinlock_t		dispatch_lock;	/* protects dispatched */
 };
 
 /* ── Per-Superblock Info ───────────────────────────────────────────── */

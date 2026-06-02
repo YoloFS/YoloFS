@@ -42,7 +42,7 @@ void yolo_cache_perm(struct inode *inode, struct dentry *dentry)
 
 int yolo_check_perm(enum yolo_perm perm, int f_flags)
 {
-	bool wants_write = (f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC));
+	bool wants_write = yolo_open_op(f_flags) == YOLO_OP_WRITE;
 
 	switch (perm) {
 	case YOLO_PERM_ALLOW:
@@ -121,7 +121,7 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 	}
 
 	/* No daemon connected — deny immediately (an unanswered ask is a deny) */
-	if (!atomic_read(&sbi->perm.has_daemon)) {
+	if (!READ_ONCE(sbi->perm.daemon_file)) {
 		*result = YOLO_PERM_DENY;
 		yolo_journal_ask(sbi, relpath, op, *result);
 		return 0;
@@ -138,6 +138,7 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 	req->pid = current->pid;
 	get_task_comm(req->comm, current);
 	req->decision = YOLO_PERM_UNSET; /* undecided */
+	req->dispatched = false;
 	init_completion(&req->done);
 	INIT_LIST_HEAD(&req->list);
 
@@ -161,9 +162,11 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
 	else if (timeout < 0)
 		err = -EINTR;
 
-	/* Remove from pending list if the daemon hasn't dequeued it yet */
+	/* If the daemon already dequeued the req onto the dispatched list, leave
+	 * it there: PUT_DECISION or daemon cleanup owns it now and drops the
+	 * dispatched reference. Only reclaim it while it is still pending. */
 	spin_lock(&sbi->perm.pending_lock);
-	if (!list_empty(&req->list))
+	if (!req->dispatched && !list_empty(&req->list))
 		list_del_init(&req->list);
 	spin_unlock(&sbi->perm.pending_lock);
 
