@@ -31,8 +31,8 @@ pub fn reset_staging(yolofs: &Path) -> Result<()> {
             .open(&journal_path)
             .context("truncating journal")?;
     }
-    let ctl_file = crate::ioctl::open(yolofs).context("opening ctl for travel")?;
-    crate::ioctl::travel(&ctl_file, 0, &[]).context("ioctl TRAVEL")?;
+    let ctl_file = crate::ioctl::open(yolofs).context("opening ctl for reset")?;
+    crate::ioctl::reset(&ctl_file).context("ioctl RESET")?;
     Ok(())
 }
 

@@ -78,10 +78,10 @@ struct yolo_ioc_snapshot {
 	__u8	_pad[5];
 };
 
-/* userspace ↔ kernel: YOLO_IOC_TRAVEL */
+/* userspace ↔ kernel: YOLO_IOC_TRAVEL (real travel to a snapshot, gen >= 1) */
 struct yolo_ioc_travel {
-	__u64	target_gen;		/* in: snapshot gen to travel to (0 = reset) */
-	__u64	new_gen;		/* out: new generation assigned (travel mode only) */
+	__u64	target_gen;		/* in: snapshot gen to travel to (must be >= 1) */
+	__u64	new_gen;		/* out: new generation assigned */
 	__u64	tree_len;		/* in: byte length of serialized tree */
 	__u64	tree_ptr;		/* in: userspace pointer to tree buffer */
 };
@@ -92,6 +92,7 @@ struct yolo_ioc_travel {
 #define YOLO_IOC_PUT_DECISION	_IOW('A', 31, struct yolo_ioc_decision)
 #define YOLO_IOC_SNAPSHOT		_IOWR('A', 40, struct yolo_ioc_snapshot)
 #define YOLO_IOC_TRAVEL		_IOWR('A', 41, struct yolo_ioc_travel)
+#define YOLO_IOC_RESET		_IO('A', 42)
 
 /* ── Control-File Protocol (binary) ───────────────────────────────── */
 

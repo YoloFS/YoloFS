@@ -1097,3 +1097,35 @@ fn travel_to_travel_meta() {
     assert_eq!(content, "v2\n", "should see v2 after undo to c2");
     assert!(s.mnt_path("b.txt").exists(), "b.txt should reappear");
 }
+
+/// Travelling to the base (gen 0, or its name "(initial)") is a valid,
+/// non-destructive travel: the mount falls through to the base (staged files
+/// vanish), but the staged state is preserved so travelling forward restores
+/// it. This is distinct from `abort`, which discards everything.
+#[test]
+fn travel_to_base_is_non_destructive() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
+    s.cli(&["snapshot", "c1"]).expect("snapshot");
+
+    // Travel to the base by gen id — the staged file vanishes from the mount.
+    s.cli(&["travel", "0"]).expect("travel to base by id");
+    assert!(!s.mnt_path("a.txt").exists(), "base should not show a.txt");
+    let status = s.cli(&["status"]).expect("status");
+    assert!(
+        status.contains("No changes"),
+        "base has no staged changes: {status}"
+    );
+
+    // Travelling forward to c1 restores it — nothing was destroyed.
+    s.cli(&["travel", "c1"]).expect("travel back to c1");
+    assert_eq!(fs::read_to_string(s.mnt_path("a.txt")).unwrap(), "v1\n");
+
+    // The base is reachable by its name too.
+    s.cli(&["travel", "(initial)"]).expect("travel to base by name");
+    assert!(
+        !s.mnt_path("a.txt").exists(),
+        "base by name should not show a.txt"
+    );
+}

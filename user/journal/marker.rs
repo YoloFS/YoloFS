@@ -34,11 +34,9 @@ impl MarkerIndex {
     ///
     /// This relies on the gen_id invariant: the kernel increments `sbi->gen`
     /// via `atomic64_inc_return()` on every P and T record, so gen_id values
-    /// are strictly sequential — marker[i] has gen_id = i.
+    /// are strictly sequential — marker[i] has gen_id = i. gen 0 is the base
+    /// "(initial)" marker, addressable like any other (and like its name).
     fn find_marker_by_gen_id(&self, gen_id: u64) -> Result<u64> {
-        if gen_id == 0 {
-            anyhow::bail!("marker not found: {gen_id}");
-        }
         let idx = gen_id as usize;
         match self.0.get(idx) {
             Some(Marker::Snapshot { gen_id: g, .. } | Marker::Travel { gen_id: g, .. })
@@ -310,17 +308,17 @@ mod tests {
     }
 
     #[test]
-    fn find_marker_by_gen_id_rejects_phantom() {
+    fn find_marker_by_gen_id_resolves_phantom() {
         let records = vec![Record::Marker(Marker::Snapshot {
             gen_id: 1,
             name: "c1".into(),
         })];
         let j = Journal::new(records);
-        assert!(
-            j.markers.find_marker_by_gen_id(0).is_err(),
-            "phantom gen_id=0 should not be a valid marker"
-        );
+        // gen 0 is the base/"(initial)" marker — addressable like its name.
+        assert_eq!(j.markers.find_marker_by_gen_id(0).unwrap(), 0);
         assert!(j.markers.find_marker_by_gen_id(1).is_ok());
+        // Out-of-range ids still error.
+        assert!(j.markers.find_marker_by_gen_id(99).is_err());
     }
 
     #[test]
@@ -361,18 +359,44 @@ mod tests {
     }
 
     #[test]
-    fn segment_range_at_rejects_phantom_id() {
+    fn segment_range_at_phantom_is_empty() {
         let records = vec![Record::Marker(Marker::Snapshot {
             gen_id: 1,
             name: "c1".into(),
         })];
         let j = Journal::new(records);
-        assert!(
-            j.markers
-                .segment_range(Some("0"), None, None, j.segments.len())
-                .is_err(),
-            "--at 0 should be rejected (phantom)"
-        );
+        // `--at 0` (the base) resolves to an empty range — the base introduced
+        // no changes, so `status --at 0` shows nothing (no longer an error).
+        let r = j
+            .markers
+            .segment_range(Some("0"), None, None, j.segments.len())
+            .unwrap();
+        assert_eq!(r, (0, 0));
+    }
+
+    #[test]
+    fn segment_range_from_phantom_is_full() {
+        let records = vec![
+            Record::Marker(Marker::Snapshot {
+                gen_id: 1,
+                name: "c1".into(),
+            }),
+            Record::Action(Action::Stage {
+                path: "/a".into(),
+                ino: 1,
+            }),
+            Record::Marker(Marker::Snapshot {
+                gen_id: 2,
+                name: "c2".into(),
+            }),
+        ];
+        let j = Journal::new(records);
+        // `--from 0` spans everything since the base — i.e. the same as `--full`.
+        let r = j
+            .markers
+            .segment_range(None, Some("0"), None, j.segments.len())
+            .unwrap();
+        assert_eq!(r, (0, j.segments.len()));
     }
 
     #[test]
@@ -912,7 +936,10 @@ mod tests {
         assert_eq!(j.markers.find_marker("3").unwrap(), 3);
         assert_eq!(j.markers.find_marker("1").unwrap(), 1);
         assert_eq!(j.markers.find_marker("c1").unwrap(), 1);
-        assert!(j.markers.find_marker("0").is_err());
+        // gen 0 is the base "(initial)" marker, resolvable like its name.
+        assert_eq!(j.markers.find_marker("0").unwrap(), 0);
+        // Out-of-range ids still error.
+        assert!(j.markers.find_marker("99").is_err());
     }
 
     #[test]

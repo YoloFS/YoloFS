@@ -32,6 +32,7 @@ nix::ioctl_readwrite!(ioctl_get_ask, b'A', 30, YoloIocAsk);
 nix::ioctl_write_ptr!(ioctl_put_decision, b'A', 31, YoloIocDecision);
 nix::ioctl_readwrite!(ioctl_snapshot, b'A', 40, YoloIocSnapshot);
 nix::ioctl_readwrite!(ioctl_travel, b'A', 41, YoloIocTravel);
+nix::ioctl_none!(ioctl_reset, b'A', 42);
 
 /// Matches `struct yolo_ioc_rule` in the kernel.
 #[repr(C)]
@@ -197,9 +198,9 @@ pub fn resolve_rule(fd: &File, path: &str) -> Result<u8> {
     Ok(rule.perm)
 }
 
-/// Send YOLO_IOC_TRAVEL ioctl. Resets staging state and optionally injects
-/// a serialized DirTree. For commit/abort, pass an empty buffer with target_gen=0.
-/// For travel, pass target_gen > 0; returns the new generation assigned.
+/// Send YOLO_IOC_TRAVEL ioctl: travel to a real snapshot (`target_gen >= 1`),
+/// injecting the serialized DirTree of that snapshot's state. Returns the new
+/// generation assigned. Resetting to the base is [`reset`], not travel.
 pub fn travel(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
     let mut hdr = YoloIocTravel {
         target_gen,
@@ -213,6 +214,13 @@ pub fn travel(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
     };
     unsafe { ioctl_travel(fd.as_raw_fd(), &mut hdr) }.context("ioctl TRAVEL")?;
     Ok(hdr.new_gen)
+}
+
+/// Send YOLO_IOC_RESET ioctl: drop all staging back to the base (no journal
+/// record). Used by commit (after applying) and abort (to discard).
+pub fn reset(fd: &File) -> Result<()> {
+    unsafe { ioctl_reset(fd.as_raw_fd()) }.context("ioctl RESET")?;
+    Ok(())
 }
 
 /// Send YOLO_IOC_SNAPSHOT ioctl. Returns the assigned gen, or 0 if

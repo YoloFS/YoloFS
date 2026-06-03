@@ -641,6 +641,46 @@ out_free:
 	return err;
 }
 
+/* Invalidate the caches that both reset and travel must drop before changing
+ * the staging view: perm caches, pinned dentries, and the cached shard dir
+ * (the CLI is about to delete or reorganize the shard directories). Must be
+ * called with sbi->staging.sem held for write. */
+static void yolo_staging_quiesce(struct super_block *sb,
+				 struct yolo_sb_info *sbi)
+{
+	atomic64_inc(&sbi->perm.gen);
+	yolo_dentry_unpin_all(sb);
+	if (sbi->staging.shard_dentry) {
+		dput(sbi->staging.shard_dentry);
+		sbi->staging.shard_dentry = NULL;
+	}
+}
+
+/* YOLO_IOC_RESET — drop all staging back to the base, with no journal record.
+ * Used by commit (after applying) and abort (to discard). Distinct from travel,
+ * which moves to a real snapshot and journals a T record. */
+static long yolo_reset_ioctl(struct file *file)
+{
+	struct super_block *sb = file_inode(file)->i_sb;
+	struct yolo_sb_info *sbi = YOLO_SB(sb);
+
+	if (!sbi->staging.enabled)
+		return -EOPNOTSUPP;
+
+	down_write(&sbi->staging.sem);
+	if (atomic_read(&sbi->staging.fd_count) > 0) {
+		up_write(&sbi->staging.sem);
+		return -EBUSY;
+	}
+
+	yolo_staging_quiesce(sb, sbi);
+	atomic_set(&sbi->staging.gen, 0);
+	WRITE_ONCE(sbi->staging.dirty, false);
+
+	up_write(&sbi->staging.sem);
+	return 0;
+}
+
 static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 {
 	struct super_block *sb = file_inode(file)->i_sb;
@@ -655,6 +695,9 @@ static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 	if (copy_from_user(&hdr, (void __user *)arg, sizeof(hdr)))
 		return -EFAULT;
 
+	/* gen 0 (the base) is a valid target: quiesce drops the overlay dentries
+	 * and an empty inject adds none, so the mount falls through to the base —
+	 * non-destructively (staged inodes + journal are kept, unlike RESET). */
 	if (hdr.target_gen > U16_MAX)
 		return -EINVAL;
 
@@ -664,26 +707,9 @@ static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 		return -EBUSY;
 	}
 
-	/* Wipe perm caches, pinned dentries, dentry cache */
-	atomic64_inc(&sbi->perm.gen);
-	yolo_dentry_unpin_all(sb);
+	yolo_staging_quiesce(sb, sbi);
 
-	/* Both modes invalidate the shard cache: the CLI is about to delete
-	 * (reset) or reorganize (travel) the shard directories. */
-	if (sbi->staging.shard_dentry) {
-		dput(sbi->staging.shard_dentry);
-		sbi->staging.shard_dentry = NULL;
-	}
-
-	if (hdr.target_gen == 0) {
-		/* Reset mode (commit/abort): no entries, no journal write */
-		atomic_set(&sbi->staging.gen, 0);
-		WRITE_ONCE(sbi->staging.dirty, false);
-		up_write(&sbi->staging.sem);
-		return 0;
-	}
-
-	/* Travel mode: increment gen, inject entries, write T record */
+	/* Increment gen, inject entries, write T record */
 	if (atomic_read(&sbi->staging.gen) >= U16_MAX) {
 		up_write(&sbi->staging.sem);
 		return -EOVERFLOW;
@@ -750,6 +776,9 @@ long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
 
 	case YOLO_IOC_TRAVEL:
 		return yolo_travel_ioctl(file, arg);
+
+	case YOLO_IOC_RESET:
+		return yolo_reset_ioctl(file);
 
 	default:
 		return -ENOTTY;
