@@ -408,7 +408,7 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 /* journal.c */
 int yolo_journal_open(struct yolo_sb_info *sbi);
 int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
-		       u32 ino);
+		       u32 ino, bool existed);
 int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry);
 int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 			  struct dentry *new_dentry);

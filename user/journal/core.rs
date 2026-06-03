@@ -168,6 +168,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -176,6 +177,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -204,6 +206,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -212,6 +215,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -224,6 +228,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -245,6 +250,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/orphan".into(),
                 ino: 999,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 1,
@@ -253,6 +259,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -302,6 +309,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Note(Note::Block {
                 path: "/etc/x".into(),
@@ -348,6 +356,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -356,6 +365,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -368,6 +378,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -390,6 +401,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -398,6 +410,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -410,6 +423,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -449,6 +463,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -471,6 +486,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -479,6 +495,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -491,6 +508,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -519,6 +537,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -527,6 +546,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -539,6 +559,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -547,6 +568,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/e".into(),
                 ino: 4,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 6,
@@ -572,6 +594,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -580,6 +603,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -592,6 +616,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -616,6 +641,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -644,6 +670,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -652,6 +679,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -684,6 +712,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -692,6 +721,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -704,6 +734,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -732,6 +763,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Travel {
                 gen_id: 2,
@@ -740,6 +772,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
         ];
         let actions = live_actions(records);
@@ -758,6 +791,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -766,6 +800,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -774,6 +809,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/c".into(),
                 ino: 3,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 4,
@@ -826,6 +862,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -834,6 +871,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -846,6 +884,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/c".into(),
                 ino: 3,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -854,6 +893,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 4,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 6,
@@ -878,6 +918,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -900,6 +941,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 1,
@@ -908,6 +950,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -937,6 +980,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -945,6 +989,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
+                existed: false,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,

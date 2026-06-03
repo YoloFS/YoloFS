@@ -68,6 +68,7 @@ mod tests {
         let tree = build(&[Action::Stage {
             path: "/src/main.rs".into(),
             ino: 1,
+            existed: false,
         }]);
         assert_eq!(tree.len(), 1);
         assert!(matches!(
@@ -82,6 +83,7 @@ mod tests {
             Action::Stage {
                 path: "/old.txt".into(),
                 ino: 1,
+                existed: false,
             },
             Action::Delete {
                 path: "/old.txt".into(),
@@ -112,6 +114,7 @@ mod tests {
             Action::Stage {
                 path: "/new.rs".into(),
                 ino: 5,
+                existed: false,
             },
         ]);
 
@@ -124,6 +127,7 @@ mod tests {
         let tree = build(&[Action::Stage {
             path: "/newdir".into(),
             ino: 1,
+            existed: false,
         }]);
         let node = tree.get_node("/newdir").expect("should exist");
         assert!(matches!(node.target, Target::StagedFile(1)));
@@ -134,6 +138,7 @@ mod tests {
         let tree = build(&[Action::Stage {
             path: "/link".into(),
             ino: 1,
+            existed: false,
         }]);
         let node = tree.get_node("/link").expect("should exist");
         assert!(matches!(node.target, Target::StagedFile(1)));

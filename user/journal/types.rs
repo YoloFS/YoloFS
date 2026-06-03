@@ -38,7 +38,12 @@ impl Target {
 /// A data mutation applied to the dir tree (S/D/R).
 #[derive(Debug, Clone)]
 pub enum Action {
-    Stage { path: String, ino: u32 },
+    /// `existed` is true if the stage overwrote a file that existed just before
+    /// (copy-up of a base/redirected file), false if it created a new one. The
+    /// kernel records it at write time (redirect-resolved) so the default
+    /// (vs-previous-snapshot) status can classify added/modified from the
+    /// latest segment alone, without rebuilding the previous tree.
+    Stage { path: String, ino: u32, existed: bool },
     Delete { path: String },
     Rename { src: String, dst: String },
 }

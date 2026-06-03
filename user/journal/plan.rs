@@ -102,6 +102,7 @@ fn collect(tree: &DirTree, prefix: &mut String, renames: &mut Vec<Action>, ops: 
                 ops.push(Action::Stage {
                     path: prefix.clone(),
                     ino: *ino,
+                    existed: false, // unused for commit ops (vs-base via the fs)
                 });
             }
             Target::BasePath(src) => {
@@ -195,6 +196,7 @@ mod tests {
         Action::Stage {
             path: path.into(),
             ino,
+            existed: false,
         }
     }
 
@@ -237,7 +239,7 @@ mod tests {
         plan.ops
             .iter()
             .filter_map(|op| match op {
-                Action::Stage { path, ino } => Some((path.clone(), *ino)),
+                Action::Stage { path, ino, .. } => Some((path.clone(), *ino)),
                 _ => None,
             })
             .collect()

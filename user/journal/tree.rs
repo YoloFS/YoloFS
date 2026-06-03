@@ -44,7 +44,7 @@ impl DirTree {
     /// Apply a single journal action to the tree (consumes the action).
     fn apply(&mut self, action: Action) {
         match action {
-            Action::Stage { path, ino } => {
+            Action::Stage { path, ino, .. } => {
                 let target = Target::StagedFile(ino);
                 self.set_target(path, target);
             }
@@ -422,6 +422,7 @@ mod tests {
         Action::Stage {
             path: path.into(),
             ino,
+            existed: false,
         }
     }
 
@@ -727,6 +728,7 @@ mod tests {
             Action::Stage {
                 path: "/x".into(),
                 ino: 2,
+                existed: false,
             },
         ]);
         assert_eq!(tree.len(), 1);
@@ -1028,6 +1030,7 @@ mod tests {
             Action::Stage {
                 path: "/old".into(),
                 ino: 1,
+                existed: false,
             },
             Action::Delete {
                 path: "/old".into(),
@@ -1249,6 +1252,7 @@ mod tests {
         let tree = build(&[Action::Stage {
             path: "/f".into(),
             ino: 42,
+            existed: false,
         }]);
         let buf = tree.serialize();
         // Skip: root child_count(2) + name_len(2) + name(1) = offset 5
@@ -1492,6 +1496,7 @@ mod tests {
                 Record::Action(Action::Stage {
                     path: "/a".into(),
                     ino: 1,
+                    existed: false,
                 }),
                 Record::Note(Note::Block {
                     path: "/etc/shadow".into(),
@@ -1508,6 +1513,7 @@ mod tests {
             Action::Stage {
                 path: "/a".into(),
                 ino: 1,
+                existed: false,
             },
             Action::Delete { path: "/b".into() },
         ]);

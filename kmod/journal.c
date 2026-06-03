@@ -6,7 +6,8 @@
  * commit/abort/status/diff. The kernel never reads it back.
  *
  * Record format (NUL-separated fields, newline-terminated):
- *   S\0<path>\0<ino>\n                — Stage (staged content at path)
+ *   S\0<path>\0<ino>\0<existed>\n      — Stage (existed = 1 if it overwrote an
+ *                                        existing file, 0 if newly created)
  *   D\0<path>\n                       — Delete
  *   R\0<dst>\0<src>\n                  — Rename
  *   P\0<gen>\0<name>\n                — Snapshot
@@ -86,10 +87,11 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 /* ── Public: typed journal record writers ──────────────────────────── */
 
 int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
-		      u32 ino)
+		      u32 ino, bool existed)
 {
 	char path_buf[YOLO_PATH_MAX];
 	char ino_str[11];
+	char existed_str[2] = { existed ? '1' : '0', '\0' };
 	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
 	if (IS_ERR(path))
 		return PTR_ERR(path);
@@ -97,7 +99,7 @@ int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
 	snprintf(ino_str, sizeof(ino_str), "%u", ino);
 
 	return journal_write(sbi, 'S',
-			     (const char *[]){ path, ino_str, NULL });
+			     (const char *[]){ path, ino_str, existed_str, NULL });
 }
 
 int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry)

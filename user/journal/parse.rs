@@ -48,9 +48,12 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
             b"S" if fields.len() >= 3 => {
                 let path = field_str(fields[1]);
                 let ino_str = String::from_utf8_lossy(fields[2]);
+                // 4th field is the existed bit ('1' = overwrote an existing
+                // file, '0' = newly created). Absent in older records → new.
+                let existed = fields.get(3).is_some_and(|f| *f == b"1");
 
                 if let Ok(ino) = ino_str.parse::<u32>() {
-                    records.push(Record::Action(Action::Stage { path, ino }));
+                    records.push(Record::Action(Action::Stage { path, ino, existed }));
                 }
             }
             b"D" if fields.len() >= 2 => {
@@ -119,7 +122,7 @@ mod tests {
         let records = parse(b"S\0/a\01\nD\0/b\nR\0/d\0/c\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
-            matches!(&records[0], Record::Action(Action::Stage { path, ino: 1 }) if path == "/a")
+            matches!(&records[0], Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/a")
         );
         assert!(matches!(&records[1], Record::Action(Action::Delete { path }) if path == "/b"));
         assert!(
@@ -156,7 +159,7 @@ mod tests {
         let records = parse(b"S\0/src/main.rs\01\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
-            matches!(&records[0], Record::Action(Action::Stage { path, ino: 1 }) if path == "/src/main.rs")
+            matches!(&records[0], Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/src/main.rs")
         );
     }
 
@@ -248,7 +251,7 @@ mod tests {
         assert_eq!(records.len(), 3);
         assert!(matches!(
             &records[0],
-            Record::Action(Action::Stage { path, ino: 1 }) if path == "/a"
+            Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/a"
         ));
         assert!(matches!(
             &records[1],
