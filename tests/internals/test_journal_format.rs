@@ -57,7 +57,11 @@ fn stage_record_format() {
             (fields.len() == 4 && fields[1].ends_with(suffix.as_bytes())).then_some(fields[3])
         })
     };
-    assert_eq!(existed_for("/test.txt"), Some(&b"0"[..]), "new file → existed 0");
+    assert_eq!(
+        existed_for("/test.txt"),
+        Some(&b"0"[..]),
+        "new file → existed 0"
+    );
     assert_eq!(
         existed_for("/hello.txt"),
         Some(&b"1"[..]),

@@ -208,7 +208,13 @@ fn print_change(
 /// Print the changeset's changes, each classified against the `from` baseline,
 /// and return how many were actually shown (no-op deletes don't count).
 /// `verbose` adds each file's unified-diff body.
-fn render(changeset: &Changeset, yolofs: &Path, root: &Path, from: &DirTree, verbose: bool) -> usize {
+fn render(
+    changeset: &Changeset,
+    yolofs: &Path,
+    root: &Path,
+    from: &DirTree,
+    verbose: bool,
+) -> usize {
     let mut shown = 0;
     for (path, target) in &changeset.changes {
         if print_change(yolofs, root, from, path, target, verbose) {
@@ -256,7 +262,12 @@ fn open_session() -> Result<(PathBuf, PathBuf, Journal)> {
 }
 
 /// `yolo status` — summary of staged changes plus observed-access notes.
-pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>, full: bool) -> Result<()> {
+pub fn run_status(
+    at: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    full: bool,
+) -> Result<()> {
     let (yolofs, root, journal) = open_session()?;
     let (start, end) = resolve_range(&journal, at, from, to, full)?;
     // Baseline state to diff against: the range's start (prev snapshot, or base).
@@ -265,7 +276,10 @@ pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>, full: 
     let total = render(&changeset, &yolofs, &root, &from_state, false);
 
     if total == 0 {
-        println!("{}", format!("No changes{}.", range_label(at, from, to)).yellow());
+        println!(
+            "{}",
+            format!("No changes{}.", range_label(at, from, to)).yellow()
+        );
     } else {
         print_total(total);
     }
@@ -296,7 +310,10 @@ pub fn run_diff(
     let total = render(&changeset, &yolofs, &root, &from_state, true);
 
     if total == 0 {
-        println!("{}", format!("No changes{}.", range_label(at, from, to)).yellow());
+        println!(
+            "{}",
+            format!("No changes{}.", range_label(at, from, to)).yellow()
+        );
     } else if is_default_view(at, from, to, full) {
         print_full_hint(true);
     }
@@ -351,11 +368,7 @@ fn print_notes(notes: &[Note], root: &Path) {
                     rel(path, root)
                 );
             }
-            Note::Ask {
-                path,
-                op,
-                decision,
-            } => {
+            Note::Ask { path, op, decision } => {
                 println!(
                     "  {:8} {:5} {} → {}",
                     "ask".yellow(),

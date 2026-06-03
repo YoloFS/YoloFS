@@ -302,8 +302,7 @@ pub fn setup_yolo_dir(yolo_dir: &Path) -> Result<()> {
     let mnt_link = yolo_dir.join("mnt");
     let mnt = if mnt_link.symlink_metadata().is_ok() {
         let m = crate::utils::mnt_dir(yolo_dir);
-        fs::create_dir_all(&m)
-            .with_context(|| format!("creating mountpoint {}", m.display()))?;
+        fs::create_dir_all(&m).with_context(|| format!("creating mountpoint {}", m.display()))?;
         m
     } else {
         let m = crate::utils::create_mnt_dir()?;

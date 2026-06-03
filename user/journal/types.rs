@@ -43,9 +43,18 @@ pub enum Action {
     /// kernel records it at write time (redirect-resolved) so the default
     /// (vs-previous-snapshot) status can classify added/modified from the
     /// latest segment alone, without rebuilding the previous tree.
-    Stage { path: String, ino: u32, existed: bool },
-    Delete { path: String },
-    Rename { src: String, dst: String },
+    Stage {
+        path: String,
+        ino: u32,
+        existed: bool,
+    },
+    Delete {
+        path: String,
+    },
+    Rename {
+        src: String,
+        dst: String,
+    },
 }
 
 /// A control marker (P/T).

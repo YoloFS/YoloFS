@@ -260,6 +260,12 @@ fn modify_child_of_renamed_base_dir_is_modified() {
         diff.contains("deep.txt") && diff.contains("modified"),
         "child of renamed dir should be modified: {diff}"
     );
-    assert!(!diff.contains("added"), "should not be classified as added: {diff}");
-    assert!(diff.contains("+extra"), "diff should be just the appended line: {diff}");
+    assert!(
+        !diff.contains("added"),
+        "should not be classified as added: {diff}"
+    );
+    assert!(
+        diff.contains("+extra"),
+        "diff should be just the appended line: {diff}"
+    );
 }
