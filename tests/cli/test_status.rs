@@ -175,10 +175,10 @@ fn delete_of_staged_file_shows_vs_prev_but_not_full() {
 }
 
 /// A file modified under a RENAMED base directory shows as "modified", not
-/// "added": its stage records `existed=1` because the rename redirect resolves
-/// to the real backing (subdir/deep.txt). Mirrors the `diff` regression
-/// `modify_child_of_renamed_base_dir_is_modified`, but exercises the
-/// O(segment) vs-previous-snapshot status path.
+/// "added": its stage records a pre-image pointing at the real backing
+/// (subdir/deep.txt) — the rename redirect is resolved at copy-up. Mirrors the
+/// `diff` regression `modify_child_of_renamed_base_dir_is_modified`, but
+/// exercises the O(segment) vs-previous-snapshot status path.
 #[test]
 fn modify_child_of_renamed_dir_shows_modified() {
     let s = YoloSession::new().expect("session setup");
@@ -199,9 +199,10 @@ fn modify_child_of_renamed_dir_shows_modified() {
     );
 }
 
-/// `existed` is relative to the PREVIOUS SNAPSHOT, not the base: a file created
-/// this session, snapshotted, then modified re-COWs with existed=1, so the
-/// default (vs-prev) status shows "modified" — not "added".
+/// The pre-image is relative to the PREVIOUS SNAPSHOT, not the base: a file
+/// created this session, snapshotted, then modified re-COWs with a pre-image
+/// (the prior staged inode), so the default (vs-prev) status shows "modified"
+/// — not "added".
 #[test]
 fn recow_after_snapshot_shows_modified_vs_prev() {
     let s = YoloSession::new().expect("session setup");
@@ -210,12 +211,31 @@ fn recow_after_snapshot_shows_modified_vs_prev() {
     fs::write(s.mnt_path("created.txt"), "v1\n").expect("create");
     s.cli(&["snapshot", "c1"]).expect("snapshot");
 
-    // Modify it after the snapshot: the re-COW records existed=1.
+    // Modify it after the snapshot: the re-COW records a pre-image (prior inode).
     fs::write(s.mnt_path("created.txt"), "v2\n").expect("modify");
 
     let output = s.cli(&["status"]).expect("status");
     assert!(
         output.contains("created.txt") && output.contains("modified"),
         "re-COW after snapshot is modified vs the previous snapshot: {output}"
+    );
+}
+
+/// A rename renders as a single `(renamed)` entry — the vacated source is not
+/// also listed as `(deleted)` (the changeset drops that tombstone).
+#[test]
+fn rename_shows_only_renamed_not_deleted() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
+
+    let output = s.cli(&["status"]).expect("status");
+    assert!(
+        output.contains("renamed") && output.contains("moved.txt"),
+        "should show the rename: {output}"
+    );
+    assert!(
+        !output.contains("deleted"),
+        "rename must not also show a deleted line for the vacated source: {output}"
     );
 }

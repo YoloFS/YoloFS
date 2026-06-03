@@ -3,10 +3,10 @@
 // Parse the append-only journal file.
 //
 // Record format (NUL-separated fields, newline-terminated):
-//   S\0<path>\0<ino>\0<existed>\n      — Stage (existed = 1 if it overwrote a
-//                                       file present in the previous snapshot,
-//                                       0 if newly created)
-//   D\0<path>\n                       — Delete
+//   S\0<path>\0<ino>\0<preimage>\n     — Stage (preimage = absolute path of the
+//                                       overwritten content, empty for a create)
+//   D\0<path>\0<preimage>\n            — Delete (preimage = absolute path of the
+//                                       removed content, empty for a no-op)
 //   R\0<dst>\0<src>\n                  — Rename
 //   P\0<gen>\0<name>\n                — Snapshot
 //   T\0<gen>\0<target_gen>\n          — Travel
@@ -21,6 +21,12 @@ use std::path::Path;
 
 fn field_str(field: &[u8]) -> String {
     String::from_utf8_lossy(field).into_owned()
+}
+
+/// A pre-image field: the absolute path of the old content, or `None` when
+/// empty (a fresh create / no-op delete — nothing existed to point at).
+fn preimage_field(field: &[u8]) -> Option<String> {
+    (!field.is_empty()).then(|| field_str(field))
 }
 
 /// Read and parse the journal file.
@@ -50,18 +56,24 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
             b"S" if fields.len() >= 4 => {
                 let path = field_str(fields[1]);
                 let ino_str = String::from_utf8_lossy(fields[2]);
-                // 4th field is the existed bit: '1' if it overwrote a file
-                // present in the previous snapshot, '0' if newly created. The
-                // kernel always writes it, so the field is required.
-                let existed = fields[3] == b"1";
+                // 4th field is the pre-image: the absolute path of the content
+                // this stage overwrote, empty for a fresh create. The kernel
+                // always writes it, so the field is required.
+                let preimage = preimage_field(fields[3]);
 
                 if let Ok(ino) = ino_str.parse::<u32>() {
-                    records.push(Record::Action(Action::Stage { path, ino, existed }));
+                    records.push(Record::Action(Action::Stage {
+                        path,
+                        ino,
+                        preimage,
+                    }));
                 }
             }
-            b"D" if fields.len() >= 2 => {
+            b"D" if fields.len() >= 3 => {
                 let path = field_str(fields[1]);
-                records.push(Record::Action(Action::Delete { path }));
+                // 3rd field is the pre-image (empty for a no-op delete).
+                let preimage = preimage_field(fields[2]);
+                records.push(Record::Action(Action::Delete { path, preimage }));
             }
             b"R" if fields.len() >= 3 => {
                 let dst = field_str(fields[1]);
@@ -122,36 +134,46 @@ mod tests {
 
     #[test]
     fn parse_multiple() {
-        let records = parse(b"S\0/a\01\00\nD\0/b\nR\0/d\0/c\n").unwrap();
+        let records = parse(b"S\0/a\01\0\nD\0/b\0\nR\0/d\0/c\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
             matches!(&records[0], Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/a")
         );
-        assert!(matches!(&records[1], Record::Action(Action::Delete { path }) if path == "/b"));
+        assert!(matches!(&records[1], Record::Action(Action::Delete { path, .. }) if path == "/b"));
         assert!(
             matches!(&records[2], Record::Action(Action::Rename { dst, src }) if dst == "/d" && src == "/c")
         );
     }
 
     #[test]
-    fn parse_stage_existed_bit() {
-        // 4th field = 1 → overwrote a file present in the previous snapshot.
-        let r = parse(b"S\0/a\01\01\n").unwrap();
+    fn parse_stage_and_delete_preimage() {
+        // S: 4th field is the pre-image path → Some; empty → None (create).
+        let r = parse(b"S\0/a\01\0/a\n").unwrap();
         assert!(matches!(
             &r[0],
-            Record::Action(Action::Stage { existed: true, .. })
+            Record::Action(Action::Stage { preimage: Some(p), .. }) if p == "/a"
         ));
-        // 4th field = 0 → newly created.
-        let r = parse(b"S\0/a\01\00\n").unwrap();
+        let r = parse(b"S\0/a\01\0\n").unwrap();
         assert!(matches!(
             &r[0],
-            Record::Action(Action::Stage { existed: false, .. })
+            Record::Action(Action::Stage { preimage: None, .. })
+        ));
+        // D: 3rd field is the pre-image path → Some; empty → None (no-op).
+        let r = parse(b"D\0/a\0/a\n").unwrap();
+        assert!(matches!(
+            &r[0],
+            Record::Action(Action::Delete { preimage: Some(p), .. }) if p == "/a"
+        ));
+        let r = parse(b"D\0/a\0\n").unwrap();
+        assert!(matches!(
+            &r[0],
+            Record::Action(Action::Delete { preimage: None, .. })
         ));
     }
 
     #[test]
     fn parse_snapshot_record() {
-        let records = parse(b"S\0/a\01\00\nP\01\0build\nS\0/a\02\00\n").unwrap();
+        let records = parse(b"S\0/a\01\0\nP\01\0build\nS\0/a\02\0\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
             matches!(&records[1], Record::Marker(Marker::Snapshot { gen_id, name }) if *gen_id == 1 && name == "build")
@@ -175,7 +197,7 @@ mod tests {
 
     #[test]
     fn parse_entry_full_path() {
-        let records = parse(b"S\0/src/main.rs\01\00\n").unwrap();
+        let records = parse(b"S\0/src/main.rs\01\0\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
             matches!(&records[0], Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/src/main.rs")
@@ -186,8 +208,8 @@ mod tests {
 
     #[test]
     fn malformed_s_record_too_few_fields_skipped() {
-        // S record missing fields (needs path, ino, existed) — should be skipped
-        let records = parse(b"S\0/file\nS\0/good\02\00\n").unwrap();
+        // S record missing fields (needs path, ino, preimage) — should be skipped
+        let records = parse(b"S\0/file\nS\0/good\02\0\n").unwrap();
         assert_eq!(
             records.len(),
             1,
@@ -203,7 +225,7 @@ mod tests {
     #[test]
     fn malformed_d_record_too_few_fields_skipped() {
         // D record with only tag (needs path) — should be skipped
-        let records = parse(b"D\nS\0/good\01\00\n").unwrap();
+        let records = parse(b"D\nS\0/good\01\0\n").unwrap();
         assert_eq!(
             records.len(),
             1,
@@ -219,7 +241,7 @@ mod tests {
     #[test]
     fn malformed_r_record_too_few_fields_skipped() {
         // R record with only 2 fields (needs dst + src) — should be skipped
-        let records = parse(b"R\0/file\nS\0/good\01\00\n").unwrap();
+        let records = parse(b"R\0/file\nS\0/good\01\0\n").unwrap();
         assert_eq!(
             records.len(),
             1,
@@ -234,9 +256,11 @@ mod tests {
 
     #[test]
     fn parse_delete() {
-        let records = parse(b"D\0/foo\n").unwrap();
+        let records = parse(b"D\0/foo\0\n").unwrap();
         assert_eq!(records.len(), 1);
-        assert!(matches!(&records[0], Record::Action(Action::Delete { path }) if path == "/foo"));
+        assert!(
+            matches!(&records[0], Record::Action(Action::Delete { path, .. }) if path == "/foo")
+        );
     }
 
     // ── Note (A/B) record tests ────────────────────────────────────────
@@ -266,7 +290,7 @@ mod tests {
     #[test]
     fn parse_block_interleaved_with_actions() {
         // B records ride alongside S/D/R within a segment.
-        let records = parse(b"S\0/a\01\00\nB\0/etc/passwd\0w\nD\0/a\n").unwrap();
+        let records = parse(b"S\0/a\01\0\nB\0/etc/passwd\0w\nD\0/a\0\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(matches!(
             &records[0],
@@ -278,14 +302,14 @@ mod tests {
         ));
         assert!(matches!(
             &records[2],
-            Record::Action(Action::Delete { path }) if path == "/a"
+            Record::Action(Action::Delete { path, .. }) if path == "/a"
         ));
     }
 
     #[test]
     fn malformed_b_record_too_few_fields_skipped() {
         // B record with only the tag (needs path) — should be skipped.
-        let records = parse(b"B\nS\0/good\01\00\n").unwrap();
+        let records = parse(b"B\nS\0/good\01\0\n").unwrap();
         assert_eq!(
             records.len(),
             1,

@@ -301,6 +301,23 @@ static inline void yolo_put_lower_path(const struct dentry *dentry,
 	path_put(lower_path);
 }
 
+/* Absolute path of the dentry's current lower file, written into `buf`. Returns
+ * the string, or "" if it can't be resolved (e.g. longer than the buffer). Used
+ * to record the pre-image (previous-snapshot content) when journaling a stage or
+ * delete; an empty result makes the CLI treat the change as having no previous
+ * content. */
+static inline const char *yolo_lower_abspath(const struct dentry *dentry,
+					     char *buf, int len)
+{
+	struct path lower;
+	const char *p;
+
+	yolo_get_lower_path(dentry, &lower);
+	p = d_path(&lower, buf, len);
+	yolo_put_lower_path(dentry, &lower);
+	return IS_ERR(p) ? "" : p;
+}
+
 static inline void yolo_set_lower_path(const struct dentry *dentry,
 					struct path *lower_path)
 {
@@ -408,7 +425,7 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 /* journal.c */
 int yolo_journal_open(struct yolo_sb_info *sbi);
 int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
-		       u32 ino, bool existed);
+		       u32 ino, const char *preimage);
 int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry);
 int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 			  struct dentry *new_dentry);

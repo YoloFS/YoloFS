@@ -6,10 +6,10 @@
  * commit/abort/status/diff. The kernel never reads it back.
  *
  * Record format (NUL-separated fields, newline-terminated):
- *   S\0<path>\0<ino>\0<existed>\n      — Stage (existed = 1 if it overwrote a
- *                                        file present in the previous snapshot,
- *                                        0 if newly created)
- *   D\0<path>\n                       — Delete
+ *   S\0<path>\0<ino>\0<preimage>\n     — Stage (preimage = absolute path of the
+ *                                        overwritten content, empty for a create)
+ *   D\0<path>\0<preimage>\n            — Delete (preimage = absolute path of the
+ *                                        removed content, empty for a no-op)
  *   R\0<dst>\0<src>\n                  — Rename
  *   P\0<gen>\0<name>\n                — Snapshot
  *   T\0<gen>\0<target_gen>\n          — Travel
@@ -88,11 +88,10 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 /* ── Public: typed journal record writers ──────────────────────────── */
 
 int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
-		      u32 ino, bool existed)
+		      u32 ino, const char *preimage)
 {
 	char path_buf[YOLO_PATH_MAX];
 	char ino_str[11];
-	char existed_str[2] = { existed ? '1' : '0', '\0' };
 	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
 	if (IS_ERR(path))
 		return PTR_ERR(path);
@@ -100,18 +99,23 @@ int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
 	snprintf(ino_str, sizeof(ino_str), "%u", ino);
 
 	return journal_write(sbi, 'S',
-			     (const char *[]){ path, ino_str, existed_str, NULL });
+			     (const char *[]){ path, ino_str,
+					       preimage ? preimage : "", NULL });
 }
 
 int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry)
 {
 	char path_buf[YOLO_PATH_MAX];
+	char pre_buf[YOLO_PATH_MAX];
 	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
 	if (IS_ERR(path))
 		return PTR_ERR(path);
 
 	return journal_write(sbi, 'D',
-			     (const char *[]){ path, NULL });
+			     (const char *[]){ path,
+					       yolo_lower_abspath(dentry, pre_buf,
+								   sizeof(pre_buf)),
+					       NULL });
 }
 
 int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,

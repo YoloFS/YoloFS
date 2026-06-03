@@ -263,3 +263,58 @@ fn modify_child_of_renamed_base_dir_is_modified() {
     assert!(!diff.contains("added"), "should not be classified as added: {diff}");
     assert!(diff.contains("+extra"), "diff should be just the appended line: {diff}");
 }
+
+/// `diff` of a deleted file shows its removed content (read from the delete's
+/// pre-image), not just a "(deleted)" header.
+#[test]
+fn diff_deleted_file_shows_removed_content() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::remove_file(s.mnt_path("hello.txt")).expect("delete"); // base = "base content\n"
+
+    let diff = s.cli(&["diff"]).expect("diff");
+    assert!(diff.contains("deleted"), "should show deleted: {diff}");
+    assert!(
+        diff.contains("-base content"),
+        "should show the removed content from the pre-image: {diff}"
+    );
+}
+
+/// `diff` after a re-COW (modify across a snapshot) reads the old content from
+/// the prior staged inode (the pre-image), showing v1 → v2.
+#[test]
+fn diff_recow_after_snapshot_shows_prior_content() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("created.txt"), "v1\n").expect("create");
+    s.cli(&["snapshot", "c1"]).expect("snapshot");
+    fs::write(s.mnt_path("created.txt"), "v2\n").expect("modify");
+
+    let diff = s.cli(&["diff"]).expect("diff");
+    assert!(
+        diff.contains("-v1") && diff.contains("+v2"),
+        "re-COW diff should show v1 → v2 from the prior staged inode: {diff}"
+    );
+}
+
+/// `diff --full` uses each path's FIRST-touch pre-image (the base), not the
+/// latest intermediate version — so it diffs base → final, never against v1.
+#[test]
+fn diff_full_uses_base_not_intermediate() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("modify 1"); // base = "base content\n"
+    s.cli(&["snapshot", "c1"]).expect("snapshot");
+    fs::write(s.mnt_path("hello.txt"), "v2\n").expect("modify 2");
+
+    let diff = s.cli(&["diff", "--full"]).expect("diff --full");
+    assert!(
+        diff.contains("-base content"),
+        "--full old side should be the base (first touch), not v1: {diff}"
+    );
+    assert!(diff.contains("+v2"), "--full new side should be v2: {diff}");
+    assert!(
+        !diff.contains("v1"),
+        "--full must not diff against the intermediate v1: {diff}"
+    );
+}

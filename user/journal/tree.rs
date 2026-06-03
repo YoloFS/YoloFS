@@ -48,7 +48,7 @@ impl DirTree {
                 let target = Target::StagedFile(ino);
                 self.set_target(path, target);
             }
-            Action::Delete { path } => {
+            Action::Delete { path, .. } => {
                 self.set_target(path, Target::Tombstone);
             }
             Action::Rename { dst, src } => {
@@ -284,7 +284,7 @@ impl DirTree {
     /// This is how a renamed base directory's children stay anchored to their
     /// (immutable) base location: the journal records overlay paths, but the
     /// base content lives under the pre-rename path.
-    pub fn resolve_base_path(&self, path: &str) -> String {
+    fn resolve_base_path(&self, path: &str) -> String {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let mut current = self;
         let mut base_at: Option<(usize, &str)> = None;
@@ -422,12 +422,15 @@ mod tests {
         Action::Stage {
             path: path.into(),
             ino,
-            existed: false,
+            preimage: None,
         }
     }
 
     fn delete(path: &str) -> Action {
-        Action::Delete { path: path.into() }
+        Action::Delete {
+            path: path.into(),
+            preimage: None,
+        }
     }
 
     fn rename(dest: &str, src: &str) -> Action {
@@ -687,7 +690,10 @@ mod tests {
         let tree = build(&[
             add("/d", 1),
             add("/d/f", 2),
-            Action::Delete { path: "/d".into() },
+            Action::Delete {
+                path: "/d".into(),
+                preimage: None,
+            },
         ]);
         // Delete always tombstones. Children remain in the subtree.
         assert_eq!(tree.len(), 2);
@@ -728,7 +734,7 @@ mod tests {
             Action::Stage {
                 path: "/x".into(),
                 ino: 2,
-                existed: false,
+                preimage: None,
             },
         ]);
         assert_eq!(tree.len(), 1);
@@ -870,6 +876,7 @@ mod tests {
             add("/link", 1),
             Action::Delete {
                 path: "/link".into(),
+                preimage: None,
             },
         ]);
         assert_eq!(tree.len(), 1);
@@ -985,7 +992,10 @@ mod tests {
                 src: "/a".into(),
                 dst: "/b".into(),
             },
-            Action::Delete { path: "/b".into() },
+            Action::Delete {
+                path: "/b".into(),
+                preimage: None,
+            },
         ]);
         // Both /a and /b should be tombstoned.
         assert!(
@@ -1030,10 +1040,11 @@ mod tests {
             Action::Stage {
                 path: "/old".into(),
                 ino: 1,
-                existed: false,
+                preimage: None,
             },
             Action::Delete {
                 path: "/old".into(),
+                preimage: None,
             },
         ]);
         let buf = tree.serialize();
@@ -1252,7 +1263,7 @@ mod tests {
         let tree = build(&[Action::Stage {
             path: "/f".into(),
             ino: 42,
-            existed: false,
+            preimage: None,
         }]);
         let buf = tree.serialize();
         // Skip: root child_count(2) + name_len(2) + name(1) = offset 5
@@ -1345,7 +1356,10 @@ mod tests {
     #[test]
     fn serialize_negative_dentry_symlink() {
         // delete on a base-only symlink produces a negative dentry.
-        let tree = build(&[Action::Delete { path: "/s".into() }]);
+        let tree = build(&[Action::Delete {
+            path: "/s".into(),
+            preimage: None,
+        }]);
         let buf = tree.serialize();
         assert_eq!(buf[5], 3); // kind=None/negative
     }
@@ -1496,13 +1510,16 @@ mod tests {
                 Record::Action(Action::Stage {
                     path: "/a".into(),
                     ino: 1,
-                    existed: false,
+                    preimage: None,
                 }),
                 Record::Note(Note::Block {
                     path: "/etc/shadow".into(),
                     op: Op::Write,
                 }),
-                Record::Action(Action::Delete { path: "/b".into() }),
+                Record::Action(Action::Delete {
+                    path: "/b".into(),
+                    preimage: None,
+                }),
                 Record::Note(Note::Block {
                     path: "/etc/group".into(),
                     op: Op::Write,
@@ -1513,9 +1530,12 @@ mod tests {
             Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                existed: false,
+                preimage: None,
             },
-            Action::Delete { path: "/b".into() },
+            Action::Delete {
+                path: "/b".into(),
+                preimage: None,
+            },
         ]);
         assert_eq!(with_notes, without_notes);
     }

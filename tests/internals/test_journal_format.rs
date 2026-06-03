@@ -10,16 +10,16 @@ fn parse_line(line: &[u8]) -> (u8, Vec<&[u8]>) {
     (fields[0][0], fields)
 }
 
-/// Stage record format: S\0<path>\0<ino>\0<existed>\n (4 fields, no dtype).
-/// The 4th field is the existed bit: 0 for a fresh create, 1 for copy-up of an
-/// existing file.
+/// Stage record format: S\0<path>\0<ino>\0<preimage>\n (4 fields, no dtype).
+/// The 4th field is the pre-image: the absolute path of the content the stage
+/// overwrote, or empty for a fresh create.
 #[test]
 fn stage_record_format() {
     let s = YoloSession::new().expect("session setup");
 
-    // A brand-new file → existed = 0.
+    // A brand-new file → empty pre-image.
     fs::write(s.mnt_path("test.txt"), "content").expect("create file");
-    // Overwriting a seeded base file → copy-up → existed = 1.
+    // Overwriting a seeded base file → copy-up → pre-image points at the base.
     fs::write(s.mnt_path("hello.txt"), "changed").expect("modify base file");
 
     let journal_bytes = fs::read(s.root.join(".yolofs/journal")).expect("read journal");
@@ -39,33 +39,32 @@ fn stage_record_format() {
         assert_eq!(
             fields.len(),
             4,
-            "S record should be (S, path, ino, existed), got {}: {:?}",
+            "S record should be (S, path, ino, preimage), got {}: {:?}",
             fields.len(),
             shown
         );
-        assert!(
-            fields[3] == b"0" || fields[3] == b"1",
-            "existed field should be 0/1, got {:?}",
-            shown[3]
-        );
     }
 
-    // The new file records existed=0; the overwritten base file records 1.
-    let existed_for = |suffix: &str| -> Option<&[u8]> {
+    // The new file has an empty pre-image; the overwritten base file's pre-image
+    // is the base file it copied up.
+    let preimage_for = |suffix: &str| -> Option<&[u8]> {
         stage_lines.iter().find_map(|line| {
             let fields: Vec<&[u8]> = line.split(|&b| b == 0).collect();
             (fields.len() == 4 && fields[1].ends_with(suffix.as_bytes())).then_some(fields[3])
         })
     };
-    assert_eq!(existed_for("/test.txt"), Some(&b"0"[..]), "new file → existed 0");
     assert_eq!(
-        existed_for("/hello.txt"),
-        Some(&b"1"[..]),
-        "overwritten base file → existed 1"
+        preimage_for("/test.txt"),
+        Some(&b""[..]),
+        "fresh create → empty pre-image"
+    );
+    assert!(
+        preimage_for("/hello.txt").is_some_and(|p| !p.is_empty() && p.ends_with(b"hello.txt")),
+        "overwritten base file → pre-image points at the base file"
     );
 }
 
-/// Delete record format: D\0<path>\n (exactly 2 fields, no dtype).
+/// Delete record format: D\0<path>\0<preimage>\n (3 fields, no dtype).
 #[test]
 fn delete_record_has_no_dtype() {
     let s = YoloSession::new().expect("session setup");
@@ -88,8 +87,8 @@ fn delete_record_has_no_dtype() {
         assert_eq!(tag, b'D');
         assert_eq!(
             fields.len(),
-            2,
-            "D record should have exactly 2 fields (D, path), got {}: {:?}",
+            3,
+            "D record should have 3 fields (D, path, preimage), got {}: {:?}",
             fields.len(),
             fields
                 .iter()
@@ -133,9 +132,9 @@ fn rename_record_has_no_dtype() {
     }
 }
 
-/// The `existed` field (4th of an S record) for the S record whose path ends
+/// The pre-image (4th field of an S record) for the S record whose path ends
 /// with `suffix`, read straight from the raw journal.
-fn stage_existed(root: &std::path::Path, suffix: &str) -> Option<Vec<u8>> {
+fn stage_preimage(root: &std::path::Path, suffix: &str) -> Option<Vec<u8>> {
     let journal = fs::read(root.join(".yolofs/journal")).expect("read journal");
     journal
         .split(|&b| b == b'\n')
@@ -147,39 +146,40 @@ fn stage_existed(root: &std::path::Path, suffix: &str) -> Option<Vec<u8>> {
 }
 
 /// A file modified under a RENAMED base directory copies up its real backing
-/// (subdir/deep.txt) — the redirect is resolved at copy-up — so its stage
-/// records existed=1. This is the motivating case for the existed bit.
+/// (subdir/deep.txt), not the overlay path — the redirect is resolved at
+/// copy-up — so its pre-image points at the backing. The motivating case.
 #[test]
-fn copy_up_under_renamed_dir_records_existed() {
+fn copy_up_under_renamed_dir_records_backing_preimage() {
     let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir"), s.mnt_path("moved")).expect("rename dir");
     fs::write(s.mnt_path("moved/deep.txt"), "nested\nextra\n").expect("modify child");
 
-    assert_eq!(
-        stage_existed(&s.root, "/moved/deep.txt").as_deref(),
-        Some(&b"1"[..]),
-        "child of a renamed dir copies up its base backing → existed 1"
+    let pre = stage_preimage(&s.root, "/moved/deep.txt").expect("stage record for the child");
+    assert!(
+        pre.ends_with(b"subdir/deep.txt"),
+        "pre-image should point at the real backing (subdir/deep.txt), got {:?}",
+        String::from_utf8_lossy(&pre)
     );
 }
 
 /// mkdir and symlink create fresh nodes — nothing existed before — so their
-/// stage records carry existed=0.
+/// stage records carry an empty pre-image.
 #[test]
-fn create_dir_and_symlink_record_not_existed() {
+fn create_dir_and_symlink_have_empty_preimage() {
     let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
     std::os::unix::fs::symlink("target", s.mnt_path("link")).expect("symlink");
 
     assert_eq!(
-        stage_existed(&s.root, "/newdir").as_deref(),
-        Some(&b"0"[..]),
-        "mkdir creates a new node → existed 0"
+        stage_preimage(&s.root, "/newdir").as_deref(),
+        Some(&b""[..]),
+        "mkdir creates a new node → empty pre-image"
     );
     assert_eq!(
-        stage_existed(&s.root, "/link").as_deref(),
-        Some(&b"0"[..]),
-        "symlink creates a new node → existed 0"
+        stage_preimage(&s.root, "/link").as_deref(),
+        Some(&b""[..]),
+        "symlink creates a new node → empty pre-image"
     );
 }

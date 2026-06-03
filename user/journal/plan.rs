@@ -102,7 +102,7 @@ fn collect(tree: &DirTree, prefix: &mut String, renames: &mut Vec<Action>, ops: 
                 ops.push(Action::Stage {
                     path: prefix.clone(),
                     ino: *ino,
-                    existed: false, // unused for commit ops (vs-base via the fs)
+                    preimage: None, // unused for commit ops (applied vs the base fs)
                 });
             }
             Target::BasePath(src) => {
@@ -114,6 +114,7 @@ fn collect(tree: &DirTree, prefix: &mut String, renames: &mut Vec<Action>, ops: 
             Target::Tombstone => {
                 ops.push(Action::Delete {
                     path: prefix.clone(),
+                    preimage: None,
                 });
             }
             Target::Passthrough => {}
@@ -196,12 +197,15 @@ mod tests {
         Action::Stage {
             path: path.into(),
             ino,
-            existed: false,
+            preimage: None,
         }
     }
 
     fn delete(path: &str) -> Action {
-        Action::Delete { path: path.into() }
+        Action::Delete {
+            path: path.into(),
+            preimage: None,
+        }
     }
 
     fn rename(dest: &str, src: &str) -> Action {
@@ -249,7 +253,7 @@ mod tests {
         plan.ops
             .iter()
             .filter_map(|op| match op {
-                Action::Delete { path } => Some(path.clone()),
+                Action::Delete { path, .. } => Some(path.clone()),
                 _ => None,
             })
             .collect()

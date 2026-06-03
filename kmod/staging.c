@@ -193,8 +193,15 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 {
 	struct inode *parent = d_inode(dentry->d_parent);
 	struct path inode_path;
+	char pre_buf[YOLO_PATH_MAX];
+	const char *preimage;
 	u32 ino;
 	int err;
+
+	/* Capture the pre-image — the lower we're about to copy up — before the
+	 * lower_path is swapped to the new inode below. Its absolute path lets
+	 * `yolo diff` read the previous-snapshot content in O(segment). */
+	preimage = yolo_lower_abspath(dentry, pre_buf, sizeof(pre_buf));
 
 	err = yolo_inode_alloc(sbi, &ino, &inode_path,
 			       d_inode(dentry)->i_mode & ~S_IFMT, NULL);
@@ -225,11 +232,10 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 	/* Update dentry lower_path to point at the inode (consumes original ref) */
 	yolo_replace_lower_path(dentry, &inode_path);
 
-	/* Append journal record (best-effort — target is already set). COW copies
-	 * up the current lower file — a base file, a redirect-resolved backing, or
-	 * a prior snapshot's staged inode — so the path existed in the previous
-	 * snapshot: existed=true ("modified" vs prev, not necessarily vs base). */
-	yolo_journal_stage(sbi, dentry, ino, true);
+	/* Append journal record (best-effort — target is already set). `preimage`
+	 * (captured above, before the lower_path swap) is the previous-snapshot
+	 * content the CLI diffs against; empty if it couldn't be resolved. */
+	yolo_journal_stage(sbi, dentry, ino, preimage);
 
 	/* Reopen with requested flags */
 	err = 0;

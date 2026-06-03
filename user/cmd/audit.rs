@@ -196,7 +196,7 @@ mod tests {
         let action = Action::Stage {
             path: "/src/main.rs".into(),
             ino: 42,
-            existed: false,
+            preimage: None,
         };
         let s = strip_ansi(&format_action(&action));
         assert!(s.contains("staged"), "should say staged: {s}");

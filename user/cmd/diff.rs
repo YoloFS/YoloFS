@@ -7,8 +7,8 @@
 // `--to <name>` — diff changes up to a marker.
 // `--from <name> --to <name>` — diff changes between two markers.
 
-use crate::changeset::Changeset;
-use crate::journal::{DirTree, Journal, Note, Target};
+use crate::changeset::{Change, Changeset};
+use crate::journal::{Journal, Note, Target};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -36,16 +36,8 @@ fn read_inode(yolofs: &Path, ino: u32) -> String {
     read_file_lossy(&crate::utils::inode_path(yolofs, ino))
 }
 
-fn read_base(rel_path: &str) -> String {
-    read_file_lossy(&crate::utils::to_base_path(rel_path))
-}
-
 fn is_binary_inode(yolofs: &Path, ino: u32) -> bool {
     read_file_text(&crate::utils::inode_path(yolofs, ino)).is_none()
-}
-
-fn is_binary_base(rel_path: &str) -> bool {
-    read_file_text(&crate::utils::to_base_path(rel_path)).is_none()
 }
 
 // ── Unified diff printing ────────────────────────────────────────────
@@ -85,55 +77,6 @@ fn rel(path: &str, root: &Path) -> String {
         .and_then(|p| p.to_str())
         .map(str::to_string)
         .unwrap_or_else(|| path.to_string())
-}
-
-/// A path's state in the "from" baseline (the previous snapshot, or the base
-/// for `--full`): where its prior content lives, or `Absent`.
-enum FromSide {
-    Absent,
-    Inode(u32),
-    Base(String),
-}
-
-/// Resolve a path's state at the `from` baseline: its staged target there, or
-/// — when not staged at `from` — the base file if it exists.
-fn from_side(from: &DirTree, path: &str) -> FromSide {
-    match from.get(path) {
-        Some(Target::StagedFile(ino)) => FromSide::Inode(*ino),
-        Some(Target::BasePath(src)) => FromSide::Base(src.clone()),
-        Some(Target::Tombstone) => FromSide::Absent,
-        Some(Target::Passthrough) | None => {
-            // Not staged at `from`, so it's backed by the base — but a renamed
-            // ancestor dir redirects it to its pre-rename base location, so
-            // resolve through the redirects before checking the base.
-            let resolved = from.resolve_base_path(path);
-            if crate::utils::to_base_path(&resolved).exists() {
-                FromSide::Base(resolved)
-            } else {
-                FromSide::Absent
-            }
-        }
-    }
-}
-
-impl FromSide {
-    fn exists(&self) -> bool {
-        !matches!(self, FromSide::Absent)
-    }
-    fn content(&self, yolofs: &Path) -> String {
-        match self {
-            FromSide::Absent => String::new(),
-            FromSide::Inode(ino) => read_inode(yolofs, *ino),
-            FromSide::Base(p) => read_base(p),
-        }
-    }
-    fn is_binary(&self, yolofs: &Path) -> bool {
-        match self {
-            FromSide::Absent => false,
-            FromSide::Inode(ino) => is_binary_inode(yolofs, *ino),
-            FromSide::Base(p) => is_binary_base(p),
-        }
-    }
 }
 
 // ── Classification (shared by status summary and diff bodies) ─────────
@@ -182,17 +125,21 @@ fn print_header(kind: ChangeKind, shown: &str, target: &Target, root: &Path) {
     }
 }
 
-/// Print one change as a git-style diff stanza (header + unified body),
-/// classified against the `from` baseline tree (which also supplies the old
-/// content). Returns whether it printed: a delete of something absent at
-/// `from`, or a stage byte-identical to `from`, is a no-op and prints nothing.
-fn print_diff(yolofs: &Path, root: &Path, from: &DirTree, path: &str, target: &Target) -> bool {
-    // `path` stays absolute for base/inode lookups; `shown` is the display form.
+/// Print one change as a git-style diff stanza (header + unified body). The old
+/// content comes from the change's pre-image (the previous-snapshot version);
+/// the new content from the staged inode. Returns whether it printed — nothing
+/// to show, or a stage byte-identical to its pre-image, prints nothing.
+fn print_diff(yolofs: &Path, root: &Path, change: &Change) -> bool {
+    let Change {
+        path,
+        target,
+        preimage,
+    } = change;
     let shown = rel(path, root);
-    let prev = from_side(from, path);
-    let Some(kind) = classify(target, prev.exists()) else {
+    let Some(kind) = classify(target, preimage.is_some()) else {
         return false;
     };
+    let pre = preimage.as_deref().map(Path::new);
     match kind {
         ChangeKind::Added => {
             let ino = target.ino().expect("added ⇒ staged file");
@@ -205,14 +152,14 @@ fn print_diff(yolofs: &Path, root: &Path, from: &DirTree, path: &str, target: &T
         }
         ChangeKind::Modified => {
             let ino = target.ino().expect("modified ⇒ staged file");
-            if is_binary_inode(yolofs, ino) || prev.is_binary(yolofs) {
+            if is_binary_inode(yolofs, ino) || pre.is_some_and(|p| read_file_text(p).is_none()) {
                 print_header(kind, &shown, target, root);
                 println!("  {}", "Binary files differ".dimmed());
             } else {
-                let old_text = prev.content(yolofs);
+                let old_text = pre.map(read_file_lossy).unwrap_or_default();
                 let new_text = read_inode(yolofs, ino);
                 if old_text == new_text {
-                    return false; // identical to `from` — not a real change
+                    return false; // identical to the pre-image — not a real change
                 }
                 print_header(kind, &shown, target, root);
                 print_unified_diff(&old_text, &new_text);
@@ -220,7 +167,7 @@ fn print_diff(yolofs: &Path, root: &Path, from: &DirTree, path: &str, target: &T
         }
         ChangeKind::Deleted => {
             print_header(kind, &shown, target, root);
-            print_unified_diff(&prev.content(yolofs), "");
+            print_unified_diff(&pre.map(read_file_lossy).unwrap_or_default(), "");
         }
         ChangeKind::Renamed => print_header(kind, &shown, target, root),
     }
@@ -229,28 +176,27 @@ fn print_diff(yolofs: &Path, root: &Path, from: &DirTree, path: &str, target: &T
 
 // ── View: rendering the changeset ────────────────────────────────────
 
-/// `status` view: one classified line per change, using the changeset's
-/// `prev_present` map as the baseline (no tree rebuild, no base stat — the
-/// O(segment) vs-previous-snapshot path). Returns how many were shown (no-op
-/// deletes don't count).
+/// `status` view: one classified line per change, presence taken from the
+/// change's pre-image (no tree rebuild, no base stat — the O(segment) path).
+/// Returns how many were shown (no-op deletes don't count).
 fn render_summary(changeset: &Changeset, root: &Path) -> usize {
     let mut shown = 0;
-    for (path, target) in &changeset.changes {
-        let Some(kind) = classify(target, changeset.present_before(path)) else {
+    for change in &changeset.changes {
+        let Some(kind) = classify(&change.target, change.preimage.is_some()) else {
             continue;
         };
-        print_header(kind, &rel(path, root), target, root);
+        print_header(kind, &rel(&change.path, root), &change.target, root);
         shown += 1;
     }
     shown
 }
 
-/// `diff` view: each change as a unified-diff stanza against the `from`
-/// baseline tree. Returns how many were shown.
-fn render(changeset: &Changeset, yolofs: &Path, root: &Path, from: &DirTree) -> usize {
+/// `diff` view: each change as a unified-diff stanza, old content from its
+/// pre-image. Returns how many were shown.
+fn render(changeset: &Changeset, yolofs: &Path, root: &Path) -> usize {
     let mut shown = 0;
-    for (path, target) in &changeset.changes {
-        if print_diff(yolofs, root, from, path, target) {
+    for change in &changeset.changes {
+        if print_diff(yolofs, root, change) {
             shown += 1;
         }
     }
@@ -295,7 +241,12 @@ fn open_session() -> Result<(PathBuf, PathBuf, Journal)> {
 }
 
 /// `yolo status` — summary of staged changes plus observed-access notes.
-pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>, full: bool) -> Result<()> {
+pub fn run_status(
+    at: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    full: bool,
+) -> Result<()> {
     let (_yolofs, root, journal) = open_session()?;
     let (start, end) = resolve_range(&journal, at, from, to, full)?;
     // Classified vs the previous snapshot from the range's own records — no
@@ -304,7 +255,10 @@ pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>, full: 
     let total = render_summary(&changeset, &root);
 
     if total == 0 {
-        println!("{}", format!("No changes{}.", range_label(at, from, to)).yellow());
+        println!(
+            "{}",
+            format!("No changes{}.", range_label(at, from, to)).yellow()
+        );
     } else {
         print_total(total);
     }
@@ -329,13 +283,15 @@ pub fn run_diff(
 ) -> Result<bool> {
     let (yolofs, root, journal) = open_session()?;
     let (start, end) = resolve_range(&journal, at, from, to, full)?;
-    let from_state = Journal::read(&yolofs)?.into_tree_at(start as u64);
     let path = path.map(crate::utils::normalize_path);
     let changeset = Changeset::collect(journal, start, end, path.as_deref());
-    let total = render(&changeset, &yolofs, &root, &from_state);
+    let total = render(&changeset, &yolofs, &root);
 
     if total == 0 {
-        println!("{}", format!("No changes{}.", range_label(at, from, to)).yellow());
+        println!(
+            "{}",
+            format!("No changes{}.", range_label(at, from, to)).yellow()
+        );
     } else if is_default_view(at, from, to, full) {
         print_full_hint(true);
     }
@@ -389,11 +345,7 @@ fn print_notes(notes: &[Note], root: &Path) {
                     rel(path, root)
                 );
             }
-            Note::Ask {
-                path,
-                op,
-                decision,
-            } => {
+            Note::Ask { path, op, decision } => {
                 println!(
                     "  {:8} {:5} {} → {}",
                     "ask".yellow(),
@@ -438,9 +390,6 @@ fn range_label(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> String
 mod tests {
     use super::*;
     use crate::journal::Target;
-    use std::collections::BTreeMap;
-    use std::fs;
-    use tempfile::TempDir;
 
     // ── classify (label rule shared by status + diff) ────────────────
 
@@ -448,8 +397,14 @@ mod tests {
     fn classify_all_combinations() {
         use ChangeKind::*;
         // A staged file is added when absent before, modified when present.
-        assert!(matches!(classify(&Target::StagedFile(1), false), Some(Added)));
-        assert!(matches!(classify(&Target::StagedFile(1), true), Some(Modified)));
+        assert!(matches!(
+            classify(&Target::StagedFile(1), false),
+            Some(Added)
+        ));
+        assert!(matches!(
+            classify(&Target::StagedFile(1), true),
+            Some(Modified)
+        ));
         // A tombstone is a real delete only if the path existed before.
         assert!(matches!(classify(&Target::Tombstone, true), Some(Deleted)));
         assert!(classify(&Target::Tombstone, false).is_none());
@@ -464,124 +419,6 @@ mod tests {
         ));
         // Scaffolds never show.
         assert!(classify(&Target::Passthrough, true).is_none());
-    }
-
-    fn state_map<'a>(
-        yolofs: &Path,
-        entries: &'a [(String, Target)],
-    ) -> BTreeMap<&'a str, Option<String>> {
-        let mut map = BTreeMap::new();
-        for (path, target) in entries {
-            match target {
-                Target::StagedFile(ino) => {
-                    map.insert(path.as_str(), Some(read_inode(yolofs, *ino)));
-                }
-                Target::Tombstone => {
-                    map.insert(path.as_str(), None);
-                }
-                Target::BasePath(src) => {
-                    map.insert(src.as_str(), None);
-                    map.insert(path.as_str(), Some(read_base(src)));
-                }
-                Target::Passthrough => {} // passthrough
-            }
-        }
-        map
-    }
-
-    /// Create a temp dir that looks like an yolofs session with staged inodes.
-    /// Returns the TempDir (must be kept alive) and its path.
-    fn make_yolofs(inodes: &[(u32, &str)]) -> TempDir {
-        let tmp = TempDir::new().unwrap();
-        let inodes_dir = tmp.path().join("inodes");
-        fs::create_dir_all(&inodes_dir).unwrap();
-        for (ino, content) in inodes {
-            let path = crate::utils::inode_path(tmp.path(), *ino);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, content).unwrap();
-        }
-        tmp
-    }
-
-    #[test]
-    fn state_map_empty_changes() {
-        let tmp = make_yolofs(&[]);
-        let map = state_map(tmp.path(), &[]);
-        assert!(map.is_empty());
-    }
-
-    #[test]
-    fn state_map_added() {
-        let tmp = make_yolofs(&[(1, "hello\n")]);
-        let dentries = vec![("/src/main.rs".into(), Target::StagedFile(1))];
-        let map = state_map(tmp.path(), &dentries);
-        assert_eq!(map.len(), 1);
-        assert_eq!(map["/src/main.rs"], Some("hello\n".into()));
-    }
-
-    #[test]
-    fn state_map_modified() {
-        let tmp = make_yolofs(&[(5, "new content")]);
-        let dentries = vec![("/etc/config".into(), Target::StagedFile(5))];
-        let map = state_map(tmp.path(), &dentries);
-        assert_eq!(map.len(), 1);
-        assert_eq!(map["/etc/config"], Some("new content".into()));
-    }
-
-    #[test]
-    fn state_map_deleted() {
-        let tmp = make_yolofs(&[]);
-        let dentries = vec![("/old/file.txt".into(), Target::Tombstone)];
-        let map = state_map(tmp.path(), &dentries);
-        assert_eq!(map.len(), 1);
-        assert_eq!(map["/old/file.txt"], None);
-    }
-
-    #[test]
-    fn state_map_renamed() {
-        // Renamed reads base content via read_base(from). Since the `from` path
-        // won't exist on the real filesystem, read_file_lossy returns "".
-        let tmp = make_yolofs(&[]);
-        let entries = vec![(
-            "/nonexistent/new.rs".into(),
-            Target::BasePath("/nonexistent/old.rs".into()),
-        )];
-        let map = state_map(tmp.path(), &entries);
-        assert_eq!(map.len(), 2);
-        assert_eq!(map["/nonexistent/old.rs"], None);
-        // read_base on a missing path returns ""
-        assert_eq!(map["/nonexistent/new.rs"], Some(String::new()));
-    }
-
-    #[test]
-    fn state_map_renamed_modified() {
-        let tmp = make_yolofs(&[(7, "modified content")]);
-        let entries = vec![
-            (
-                "/nonexistent/new.rs".into(),
-                Target::BasePath("/nonexistent/old.rs".into()),
-            ),
-            ("/nonexistent/new.rs".into(), Target::StagedFile(7)),
-        ];
-        let map = state_map(tmp.path(), &entries);
-        assert_eq!(map.len(), 2);
-        assert_eq!(map["/nonexistent/old.rs"], None);
-        assert_eq!(map["/nonexistent/new.rs"], Some("modified content".into()));
-    }
-
-    #[test]
-    fn state_map_multiple_changes() {
-        let tmp = make_yolofs(&[(1, "aaa"), (2, "bbb")]);
-        let dentries = vec![
-            ("/a.txt".into(), Target::StagedFile(1)),
-            ("/b.txt".into(), Target::StagedFile(2)),
-            ("/c.txt".into(), Target::Tombstone),
-        ];
-        let map = state_map(tmp.path(), &dentries);
-        assert_eq!(map.len(), 3);
-        assert_eq!(map["/a.txt"], Some("aaa".into()));
-        assert_eq!(map["/b.txt"], Some("bbb".into()));
-        assert_eq!(map["/c.txt"], None);
     }
 
     // -- range_label tests --

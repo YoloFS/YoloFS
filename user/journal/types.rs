@@ -38,18 +38,34 @@ impl Target {
 /// A data mutation applied to the dir tree (S/D/R).
 #[derive(Debug, Clone)]
 pub enum Action {
-    /// `existed` records whether this stage overwrote content that already
-    /// existed in the lower layer at copy-up time — i.e. **in the previous
-    /// snapshot** (redirect-resolved, so a child of a renamed dir resolves to
-    /// its real backing). It is *not* relative to the immutable base: a file
-    /// created this session then modified after a snapshot has `existed = true`,
-    /// because it existed in that prior snapshot. `true` → "modified",
-    /// `false` → "added". This lets the default vs-previous-snapshot status
-    /// classify the latest segment alone, without rebuilding the previous tree
-    /// — O(segment), not O(journal). Consumed via changeset.rs `prev_present`.
-    Stage { path: String, ino: u32, existed: bool },
-    Delete { path: String },
-    Rename { src: String, dst: String },
+    /// `preimage` is the absolute path of the content this stage overwrote — the
+    /// file COW copied up (a base file, a redirect-resolved backing, or a prior
+    /// snapshot's staged inode), as it existed in the **previous snapshot**.
+    /// `None` for a fresh create (nothing existed). It is *not* relative to the
+    /// immutable base: a file created this session then modified after a snapshot
+    /// has a `Some` pre-image (it existed in that prior snapshot). Its presence
+    /// classifies added (`None`) vs modified (`Some`), and `diff` reads it for
+    /// the old content — so status/diff need neither a separate `existed` bit nor
+    /// a rebuilt previous tree (O(segment), not O(journal)). Resolved from the
+    /// first touch in changeset.rs. A pre-image the kernel can't resolve (a path
+    /// over YOLO_PATH_MAX, or an unreachable lower) is recorded empty → `None`,
+    /// so that change reads as added rather than modified.
+    Stage {
+        path: String,
+        ino: u32,
+        preimage: Option<String>,
+    },
+    /// `preimage` is the absolute path of the removed content (as in the previous
+    /// snapshot), or `None` when the path was created and deleted within the
+    /// range (a no-op delete). Lets `diff` show the deleted content in O(segment).
+    Delete {
+        path: String,
+        preimage: Option<String>,
+    },
+    Rename {
+        src: String,
+        dst: String,
+    },
 }
 
 /// A control marker (P/T).
