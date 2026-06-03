@@ -103,8 +103,12 @@ fn from_side(from: &DirTree, path: &str) -> FromSide {
         Some(Target::BasePath(src)) => FromSide::Base(src.clone()),
         Some(Target::Tombstone) => FromSide::Absent,
         Some(Target::Passthrough) | None => {
-            if crate::utils::to_base_path(path).exists() {
-                FromSide::Base(path.to_string())
+            // Not staged at `from`, so it's backed by the base — but a renamed
+            // ancestor dir redirects it to its pre-rename base location, so
+            // resolve through the redirects before checking the base.
+            let resolved = from.resolve_base_path(path);
+            if crate::utils::to_base_path(&resolved).exists() {
+                FromSide::Base(resolved)
             } else {
                 FromSide::Absent
             }

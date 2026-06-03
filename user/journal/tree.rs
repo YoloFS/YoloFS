@@ -276,47 +276,48 @@ impl DirTree {
         }
     }
 
-    /// Detach a node and resolve its overlay path to a base filesystem path.
+    /// Resolve an overlay path to the base filesystem path that backs it,
+    /// following the deepest `BasePath` ancestor redirect. With no redirecting
+    /// ancestor the path is returned unchanged. E.g. with `/dir → BasePath("/a")`,
+    /// `/dir/f` resolves to `/a/f`.
     ///
-    /// The journal records overlay paths (e.g. `/dir/f`), but BasePath must
-    /// reference the immutable base filesystem.  If an ancestor has a
-    /// `BasePath(base)` target, substitute the deepest such prefix: e.g. if
-    /// `/dir → BasePath("/a")`, then `/dir/f` resolves to `/a/f`.
-    ///
-    /// Returns the detached node (if found) and the resolved base path.
+    /// This is how a renamed base directory's children stay anchored to their
+    /// (immutable) base location: the journal records overlay paths, but the
+    /// base content lives under the pre-rename path.
+    pub fn resolve_base_path(&self, path: &str) -> String {
+        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let mut current = self;
+        let mut base_at: Option<(usize, &str)> = None;
+
+        for (i, &part) in parts.iter().enumerate() {
+            match current.nodes.get(part) {
+                Some(node) => {
+                    if let Target::BasePath(base) = &node.target {
+                        base_at = Some((i, base.as_str()));
+                    }
+                    current = &node.children;
+                }
+                None => break,
+            }
+        }
+
+        match base_at {
+            Some((i, base)) => {
+                let suffix = &parts[i + 1..];
+                if suffix.is_empty() {
+                    base.to_string()
+                } else {
+                    format!("{}/{}", base, suffix.join("/"))
+                }
+            }
+            None => path.to_string(),
+        }
+    }
+
+    /// Detach a node and resolve its overlay path to a base filesystem path
+    /// (see [`resolve_base_path`](Self::resolve_base_path)).
     fn detach_resolved(&mut self, path: &str) -> (Option<DirNode>, String) {
-        // Resolve (immutable walk): find the deepest BasePath ancestor.
-        let resolved = {
-            let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-            let mut current = self as &DirTree;
-            let mut base_at: Option<(usize, &str)> = None;
-
-            for (i, &part) in parts.iter().enumerate() {
-                match current.nodes.get(part) {
-                    Some(node) => {
-                        if let Target::BasePath(base) = &node.target {
-                            base_at = Some((i, base.as_str()));
-                        }
-                        current = &node.children;
-                    }
-                    None => break,
-                }
-            }
-
-            match base_at {
-                Some((i, base)) => {
-                    let suffix = &parts[i + 1..];
-                    if suffix.is_empty() {
-                        base.to_string()
-                    } else {
-                        format!("{}/{}", base, suffix.join("/"))
-                    }
-                }
-                None => path.to_string(),
-            }
-        };
-
-        // Detach (mutable walk): remove the leaf node.
+        let resolved = self.resolve_base_path(path);
         let node = self.detach(path);
         (node, resolved)
     }

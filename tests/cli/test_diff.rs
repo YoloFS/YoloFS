@@ -240,3 +240,26 @@ fn diff_between_snapshots_spanning_travel() {
         "dead-zone file should NOT appear: {output}"
     );
 }
+
+/// A file modified under a RENAMED base directory is classified vs its base
+/// backing (through the rename redirect), so it's "modified" with a minimal
+/// diff — not "added" with the whole file. Regression for the literal-path
+/// base check that ignored ancestor BasePath redirects.
+#[test]
+fn modify_child_of_renamed_base_dir_is_modified() {
+    let s = YoloSession::new().expect("session setup");
+
+    // Rename a base dir, snapshot it, then modify a child (backed by the base
+    // subdir/deep.txt via the rename redirect).
+    fs::rename(s.mnt_path("subdir"), s.mnt_path("moved")).expect("rename dir");
+    s.cli(&["snapshot", "c1"]).expect("snapshot");
+    fs::write(s.mnt_path("moved/deep.txt"), "nested\nextra\n").expect("modify child");
+
+    let diff = s.cli(&["diff"]).expect("diff");
+    assert!(
+        diff.contains("deep.txt") && diff.contains("modified"),
+        "child of renamed dir should be modified: {diff}"
+    );
+    assert!(!diff.contains("added"), "should not be classified as added: {diff}");
+    assert!(diff.contains("+extra"), "diff should be just the appended line: {diff}");
+}
