@@ -136,82 +136,121 @@ impl FromSide {
     }
 }
 
-/// Print one change, classified against the `from` baseline, and return whether
-/// it printed: a delete of something absent at `from` is a no-op and prints
-/// nothing. `verbose` adds the unified-diff body (vs the `from` content).
-fn print_change(
-    yolofs: &Path,
-    root: &Path,
-    from: &DirTree,
-    path: &str,
-    target: &Target,
-    verbose: bool,
-) -> bool {
+// ── Classification (shared by status summary and diff bodies) ─────────
+
+/// How a net change reads against the baseline. The single source of truth for
+/// both `status` (one-line summary) and `diff` (unified body) — they must agree
+/// on the verb and differ only in whether they also print content.
+#[derive(Clone, Copy)]
+enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+/// Classify a net target given whether its path existed at the baseline.
+/// `None` means nothing to show: a delete of something already absent (a
+/// create+delete that nets out), or a scaffold passthrough.
+fn classify(target: &Target, present: bool) -> Option<ChangeKind> {
+    match target {
+        Target::StagedFile(_) if !present => Some(ChangeKind::Added),
+        Target::StagedFile(_) => Some(ChangeKind::Modified),
+        Target::Tombstone if present => Some(ChangeKind::Deleted),
+        Target::Tombstone => None,
+        Target::BasePath(_) => Some(ChangeKind::Renamed),
+        Target::Passthrough => None,
+    }
+}
+
+/// Print a change's one-line header. Renames read their source from the target.
+fn print_header(kind: ChangeKind, shown: &str, target: &Target, root: &Path) {
+    match kind {
+        ChangeKind::Added => println!("{} {}", shown.bold(), "(added)".green()),
+        ChangeKind::Modified => println!("{} {}", shown.bold(), "(modified)".yellow()),
+        ChangeKind::Deleted => println!("{} {}", shown.bold(), "(deleted)".red()),
+        ChangeKind::Renamed => {
+            if let Target::BasePath(src) = target {
+                println!(
+                    "{} → {} {}",
+                    rel(src, root).bold(),
+                    shown.bold(),
+                    "(renamed)".cyan()
+                );
+            }
+        }
+    }
+}
+
+/// Print one change as a git-style diff stanza (header + unified body),
+/// classified against the `from` baseline tree (which also supplies the old
+/// content). Returns whether it printed: a delete of something absent at
+/// `from`, or a stage byte-identical to `from`, is a no-op and prints nothing.
+fn print_diff(yolofs: &Path, root: &Path, from: &DirTree, path: &str, target: &Target) -> bool {
     // `path` stays absolute for base/inode lookups; `shown` is the display form.
     let shown = rel(path, root);
     let prev = from_side(from, path);
-    match target {
-        Target::StagedFile(ino) if !prev.exists() => {
-            println!("{} {}", shown.bold(), "(added)".green());
-            if verbose {
-                if is_binary_inode(yolofs, *ino) {
-                    println!("  {}", "Binary file (not shown)".dimmed());
-                } else {
-                    print_unified_diff("", &read_inode(yolofs, *ino));
-                }
-            }
-            true
-        }
-        Target::StagedFile(ino) => {
-            // Modified relative to the `from` baseline.
-            if verbose {
-                if is_binary_inode(yolofs, *ino) || prev.is_binary(yolofs) {
-                    println!("{} {}", shown.bold(), "(modified)".yellow());
-                    println!("  {}", "Binary files differ".dimmed());
-                } else {
-                    let old_text = prev.content(yolofs);
-                    let new_text = read_inode(yolofs, *ino);
-                    if old_text == new_text {
-                        return false; // identical to `from` — not a real change
-                    }
-                    println!("{} {}", shown.bold(), "(modified)".yellow());
-                    print_unified_diff(&old_text, &new_text);
-                }
+    let Some(kind) = classify(target, prev.exists()) else {
+        return false;
+    };
+    match kind {
+        ChangeKind::Added => {
+            let ino = target.ino().expect("added ⇒ staged file");
+            print_header(kind, &shown, target, root);
+            if is_binary_inode(yolofs, ino) {
+                println!("  {}", "Binary file (not shown)".dimmed());
             } else {
-                println!("{} {}", shown.bold(), "(modified)".yellow());
+                print_unified_diff("", &read_inode(yolofs, ino));
             }
-            true
         }
-        Target::Tombstone if prev.exists() => {
-            println!("{} {}", shown.bold(), "(deleted)".red());
-            if verbose {
-                print_unified_diff(&prev.content(yolofs), "");
+        ChangeKind::Modified => {
+            let ino = target.ino().expect("modified ⇒ staged file");
+            if is_binary_inode(yolofs, ino) || prev.is_binary(yolofs) {
+                print_header(kind, &shown, target, root);
+                println!("  {}", "Binary files differ".dimmed());
+            } else {
+                let old_text = prev.content(yolofs);
+                let new_text = read_inode(yolofs, ino);
+                if old_text == new_text {
+                    return false; // identical to `from` — not a real change
+                }
+                print_header(kind, &shown, target, root);
+                print_unified_diff(&old_text, &new_text);
             }
-            true
         }
-        Target::Tombstone => false, // absent at `from` — a no-op delete
-        Target::BasePath(src) => {
-            println!(
-                "{} → {} {}",
-                rel(src, root).bold(),
-                shown.bold(),
-                "(renamed)".cyan()
-            );
-            true
+        ChangeKind::Deleted => {
+            print_header(kind, &shown, target, root);
+            print_unified_diff(&prev.content(yolofs), "");
         }
-        Target::Passthrough => false, // scaffold — should not appear in iteration
+        ChangeKind::Renamed => print_header(kind, &shown, target, root),
     }
+    true
 }
 
 // ── View: rendering the changeset ────────────────────────────────────
 
-/// Print the changeset's changes, each classified against the `from` baseline,
-/// and return how many were actually shown (no-op deletes don't count).
-/// `verbose` adds each file's unified-diff body.
-fn render(changeset: &Changeset, yolofs: &Path, root: &Path, from: &DirTree, verbose: bool) -> usize {
+/// `status` view: one classified line per change, using the changeset's
+/// `prev_present` map as the baseline (no tree rebuild, no base stat — the
+/// O(segment) vs-previous-snapshot path). Returns how many were shown (no-op
+/// deletes don't count).
+fn render_summary(changeset: &Changeset, root: &Path) -> usize {
     let mut shown = 0;
     for (path, target) in &changeset.changes {
-        if print_change(yolofs, root, from, path, target, verbose) {
+        let Some(kind) = classify(target, changeset.present_before(path)) else {
+            continue;
+        };
+        print_header(kind, &rel(path, root), target, root);
+        shown += 1;
+    }
+    shown
+}
+
+/// `diff` view: each change as a unified-diff stanza against the `from`
+/// baseline tree. Returns how many were shown.
+fn render(changeset: &Changeset, yolofs: &Path, root: &Path, from: &DirTree) -> usize {
+    let mut shown = 0;
+    for (path, target) in &changeset.changes {
+        if print_diff(yolofs, root, from, path, target) {
             shown += 1;
         }
     }
@@ -257,12 +296,12 @@ fn open_session() -> Result<(PathBuf, PathBuf, Journal)> {
 
 /// `yolo status` — summary of staged changes plus observed-access notes.
 pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>, full: bool) -> Result<()> {
-    let (yolofs, root, journal) = open_session()?;
+    let (_yolofs, root, journal) = open_session()?;
     let (start, end) = resolve_range(&journal, at, from, to, full)?;
-    // Baseline state to diff against: the range's start (prev snapshot, or base).
-    let from_state = Journal::read(&yolofs)?.into_tree_at(start as u64);
+    // Classified vs the previous snapshot from the range's own records — no
+    // previous-tree rebuild (O(segment), not O(journal)).
     let changeset = Changeset::collect(journal, start, end, None);
-    let total = render(&changeset, &yolofs, &root, &from_state, false);
+    let total = render_summary(&changeset, &root);
 
     if total == 0 {
         println!("{}", format!("No changes{}.", range_label(at, from, to)).yellow());
@@ -293,7 +332,7 @@ pub fn run_diff(
     let from_state = Journal::read(&yolofs)?.into_tree_at(start as u64);
     let path = path.map(crate::utils::normalize_path);
     let changeset = Changeset::collect(journal, start, end, path.as_deref());
-    let total = render(&changeset, &yolofs, &root, &from_state, true);
+    let total = render(&changeset, &yolofs, &root, &from_state);
 
     if total == 0 {
         println!("{}", format!("No changes{}.", range_label(at, from, to)).yellow());
@@ -306,11 +345,10 @@ pub fn run_diff(
 /// `yolo -- <cmd>` review: show what the just-run command changed, then a
 /// summary line carrying the new snapshot's id — the handle for `yolo travel`.
 pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
-    let (yolofs, root, journal) = open_session()?;
+    let (_yolofs, root, journal) = open_session()?;
     let (start, end) = resolve_range(&journal, None, None, None, false)?;
-    let from_state = Journal::read(&yolofs)?.into_tree_at(start as u64);
     let changeset = Changeset::collect(journal, start, end, None);
-    let total = render(&changeset, &yolofs, &root, &from_state, false);
+    let total = render_summary(&changeset, &root);
 
     if !changeset.notes.is_empty() {
         print_notes(&changeset.notes, &root);
@@ -403,6 +441,30 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::TempDir;
+
+    // ── classify (label rule shared by status + diff) ────────────────
+
+    #[test]
+    fn classify_all_combinations() {
+        use ChangeKind::*;
+        // A staged file is added when absent before, modified when present.
+        assert!(matches!(classify(&Target::StagedFile(1), false), Some(Added)));
+        assert!(matches!(classify(&Target::StagedFile(1), true), Some(Modified)));
+        // A tombstone is a real delete only if the path existed before.
+        assert!(matches!(classify(&Target::Tombstone, true), Some(Deleted)));
+        assert!(classify(&Target::Tombstone, false).is_none());
+        // A rename always reads as renamed, regardless of prior presence.
+        assert!(matches!(
+            classify(&Target::BasePath("/x".into()), true),
+            Some(Renamed)
+        ));
+        assert!(matches!(
+            classify(&Target::BasePath("/x".into()), false),
+            Some(Renamed)
+        ));
+        // Scaffolds never show.
+        assert!(classify(&Target::Passthrough, true).is_none());
+    }
 
     fn state_map<'a>(
         yolofs: &Path,

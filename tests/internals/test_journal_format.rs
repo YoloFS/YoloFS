@@ -1,5 +1,5 @@
 //! Verify the kernel writes journal records in the expected wire format
-//! (without dtype fields).
+//! (NUL-separated fields, including the stage `existed` bit).
 
 use crate::helpers::YoloSession;
 use std::fs;
@@ -131,4 +131,55 @@ fn rename_record_has_no_dtype() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+/// The `existed` field (4th of an S record) for the S record whose path ends
+/// with `suffix`, read straight from the raw journal.
+fn stage_existed(root: &std::path::Path, suffix: &str) -> Option<Vec<u8>> {
+    let journal = fs::read(root.join(".yolofs/journal")).expect("read journal");
+    journal
+        .split(|&b| b == b'\n')
+        .filter(|l| !l.is_empty() && l[0] == b'S')
+        .find_map(|l| {
+            let f: Vec<&[u8]> = l.split(|&b| b == 0).collect();
+            (f.len() == 4 && f[1].ends_with(suffix.as_bytes())).then(|| f[3].to_vec())
+        })
+}
+
+/// A file modified under a RENAMED base directory copies up its real backing
+/// (subdir/deep.txt) — the redirect is resolved at copy-up — so its stage
+/// records existed=1. This is the motivating case for the existed bit.
+#[test]
+fn copy_up_under_renamed_dir_records_existed() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("subdir"), s.mnt_path("moved")).expect("rename dir");
+    fs::write(s.mnt_path("moved/deep.txt"), "nested\nextra\n").expect("modify child");
+
+    assert_eq!(
+        stage_existed(&s.root, "/moved/deep.txt").as_deref(),
+        Some(&b"1"[..]),
+        "child of a renamed dir copies up its base backing → existed 1"
+    );
+}
+
+/// mkdir and symlink create fresh nodes — nothing existed before — so their
+/// stage records carry existed=0.
+#[test]
+fn create_dir_and_symlink_record_not_existed() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
+    std::os::unix::fs::symlink("target", s.mnt_path("link")).expect("symlink");
+
+    assert_eq!(
+        stage_existed(&s.root, "/newdir").as_deref(),
+        Some(&b"0"[..]),
+        "mkdir creates a new node → existed 0"
+    );
+    assert_eq!(
+        stage_existed(&s.root, "/link").as_deref(),
+        Some(&b"0"[..]),
+        "symlink creates a new node → existed 0"
+    );
 }

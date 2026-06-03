@@ -38,11 +38,15 @@ impl Target {
 /// A data mutation applied to the dir tree (S/D/R).
 #[derive(Debug, Clone)]
 pub enum Action {
-    /// `existed` is true if the stage overwrote a file that existed just before
-    /// (copy-up of a base/redirected file), false if it created a new one. The
-    /// kernel records it at write time (redirect-resolved) so the default
-    /// (vs-previous-snapshot) status can classify added/modified from the
-    /// latest segment alone, without rebuilding the previous tree.
+    /// `existed` records whether this stage overwrote content that already
+    /// existed in the lower layer at copy-up time — i.e. **in the previous
+    /// snapshot** (redirect-resolved, so a child of a renamed dir resolves to
+    /// its real backing). It is *not* relative to the immutable base: a file
+    /// created this session then modified after a snapshot has `existed = true`,
+    /// because it existed in that prior snapshot. `true` → "modified",
+    /// `false` → "added". This lets the default vs-previous-snapshot status
+    /// classify the latest segment alone, without rebuilding the previous tree
+    /// — O(segment), not O(journal). Consumed via changeset.rs `prev_present`.
     Stage { path: String, ino: u32, existed: bool },
     Delete { path: String },
     Rename { src: String, dst: String },

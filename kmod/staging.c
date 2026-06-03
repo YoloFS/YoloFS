@@ -225,9 +225,10 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 	/* Update dentry lower_path to point at the inode (consumes original ref) */
 	yolo_replace_lower_path(dentry, &inode_path);
 
-	/* Append journal record (best-effort — target is already set). This is
-	 * copy-up of an existing lower file (the redirect was resolved when we
-	 * opened it), so the staged path overwrote something that existed. */
+	/* Append journal record (best-effort — target is already set). COW copies
+	 * up the current lower file — a base file, a redirect-resolved backing, or
+	 * a prior snapshot's staged inode — so the path existed in the previous
+	 * snapshot: existed=true ("modified" vs prev, not necessarily vs base). */
 	yolo_journal_stage(sbi, dentry, ino, true);
 
 	/* Reopen with requested flags */

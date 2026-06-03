@@ -173,3 +173,49 @@ fn delete_of_staged_file_shows_vs_prev_but_not_full() {
         "--full (vs base) should show nothing for a staged-only add+delete: {full}"
     );
 }
+
+/// A file modified under a RENAMED base directory shows as "modified", not
+/// "added": its stage records `existed=1` because the rename redirect resolves
+/// to the real backing (subdir/deep.txt). Mirrors the `diff` regression
+/// `modify_child_of_renamed_base_dir_is_modified`, but exercises the
+/// O(segment) vs-previous-snapshot status path.
+#[test]
+fn modify_child_of_renamed_dir_shows_modified() {
+    let s = YoloSession::new().expect("session setup");
+
+    // Rename a base dir, snapshot, then modify a child (backed via the redirect).
+    fs::rename(s.mnt_path("subdir"), s.mnt_path("moved")).expect("rename dir");
+    s.cli(&["snapshot", "c1"]).expect("snapshot");
+    fs::write(s.mnt_path("moved/deep.txt"), "nested\nextra\n").expect("modify child");
+
+    let output = s.cli(&["status"]).expect("status");
+    assert!(
+        output.contains("deep.txt") && output.contains("modified"),
+        "child of renamed dir should be modified, not added: {output}"
+    );
+    assert!(
+        !output.contains("(added)"),
+        "should not be classified as added: {output}"
+    );
+}
+
+/// `existed` is relative to the PREVIOUS SNAPSHOT, not the base: a file created
+/// this session, snapshotted, then modified re-COWs with existed=1, so the
+/// default (vs-prev) status shows "modified" — not "added".
+#[test]
+fn recow_after_snapshot_shows_modified_vs_prev() {
+    let s = YoloSession::new().expect("session setup");
+
+    // Create a brand-new file (absent from base) and snapshot it.
+    fs::write(s.mnt_path("created.txt"), "v1\n").expect("create");
+    s.cli(&["snapshot", "c1"]).expect("snapshot");
+
+    // Modify it after the snapshot: the re-COW records existed=1.
+    fs::write(s.mnt_path("created.txt"), "v2\n").expect("modify");
+
+    let output = s.cli(&["status"]).expect("status");
+    assert!(
+        output.contains("created.txt") && output.contains("modified"),
+        "re-COW after snapshot is modified vs the previous snapshot: {output}"
+    );
+}

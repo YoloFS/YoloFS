@@ -6,8 +6,9 @@
  * commit/abort/status/diff. The kernel never reads it back.
  *
  * Record format (NUL-separated fields, newline-terminated):
- *   S\0<path>\0<ino>\0<existed>\n      — Stage (existed = 1 if it overwrote an
- *                                        existing file, 0 if newly created)
+ *   S\0<path>\0<ino>\0<existed>\n      — Stage (existed = 1 if it overwrote a
+ *                                        file present in the previous snapshot,
+ *                                        0 if newly created)
  *   D\0<path>\n                       — Delete
  *   R\0<dst>\0<src>\n                  — Rename
  *   P\0<gen>\0<name>\n                — Snapshot
