@@ -1,6 +1,6 @@
 // yolo CLI — exec.rs
 //
-// `yolo exec [-- cmd]` — chroot into .yolofs/mnt and exec a command,
+// `yolo exec [-- cmd]` — chroot into the session mountpoint and exec a command,
 // preserving the caller's working directory. With no command it drops into a
 // shell. When config.auto_snapshot=true, a snapshot is created after the
 // command finishes, capturing what the command did — this is how each
@@ -78,11 +78,11 @@ pub fn announce(snapshot: &Snapshot) {
 /// exit code (0 = success) and the post-command auto-snapshot outcome.
 pub fn run(exec_args: &[String]) -> Result<(u8, Snapshot)> {
     let yolo_dir = crate::utils::session_dir()?;
-    let mnt = yolo_dir.join("mnt");
+    let mnt = crate::utils::mnt_dir(&yolo_dir);
     let cwd = env::current_dir().context("getting cwd")?;
 
     if !mnt.exists() {
-        bail!("mount point .yolofs/mnt/ does not exist — run `yolo mount` first");
+        bail!("mount point does not exist — run `yolo mount` first");
     }
 
     // With no command, drop into a shell. A one-off command runs as given.

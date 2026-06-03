@@ -60,6 +60,42 @@ pub fn session_dir() -> Result<PathBuf> {
     }
 }
 
+/// Per-user base directory that holds every session's mountpoint. The
+/// mountpoint is an empty directory the over-`/` mount lands on — no data is
+/// stored there — so it belongs on ephemeral, per-user runtime storage *outside*
+/// the workspace, where editors and indexers won't wander into a recursive view
+/// of `/`. `/run/user/<uid>` is the systemd per-user runtime dir: tmpfs, mode
+/// 0700, wiped on logout. `getuid()` (not euid) is the invoking user even under
+/// the setuid-root CLI, so this lands in *their* runtime dir.
+fn runtime_base() -> PathBuf {
+    let uid = nix::unistd::getuid().as_raw();
+    PathBuf::from(format!("/run/user/{uid}/yolofs"))
+}
+
+/// Create a fresh, unique mountpoint directory under the per-user runtime base
+/// and return it. Called once per `yolo mount`; the chosen path is recorded in
+/// the `.yolofs/mnt` symlink, which is the authoritative handle thereafter (see
+/// [`mnt_dir`]). Uniqueness comes from `mkdtemp` rather than a derived key — so
+/// there's no hashing, no canonicalization, and nothing to recompute. The dir
+/// *is* the mount root; no nested `mnt/` is needed since it holds no data.
+pub fn create_mnt_dir() -> Result<PathBuf> {
+    let base = runtime_base();
+    std::fs::create_dir_all(&base)
+        .with_context(|| format!("creating runtime base {}", base.display()))?;
+    nix::unistd::mkdtemp(&base.join("XXXXXX"))
+        .with_context(|| format!("creating a mountpoint under {}", base.display()))
+}
+
+/// Resolve where this session's over-`/` mountpoint lives — the single source of
+/// truth for the mount root. The location is recorded once at mount time in the
+/// `.yolofs/mnt` symlink, so resolving that link is authoritative. When the link
+/// isn't there yet (e.g. before setup) this returns the link's own path, which
+/// won't exist — so callers correctly see the session as not mounted.
+pub fn mnt_dir(yolo_dir: &Path) -> PathBuf {
+    let link = yolo_dir.join("mnt");
+    std::fs::read_link(&link).unwrap_or(link)
+}
+
 /// True if running inside the yolofs mount. `yolo exec` is the only way into the
 /// mount and it sets `YOLO_SESSION` for the processes it spawns, so this env var
 /// is a reliable (and syscall-free) signal. yolo is a host-side tool — its

@@ -22,11 +22,11 @@ prompt_timeout = 30    # seconds to wait for an `ask` answer before denying
 "$HOME/.ssh/id_ed25519" = "ask"
 
 # Project tree and yolofs internals. The storage dir is readable (yolofs stacks
-# over /, so tools can inspect staging from inside the mount) but its nested
-# mountpoint is hidden to avoid recursion.
+# over /, so tools can inspect staging from inside the mount). The mountpoint
+# itself lives outside the workspace under the per-user runtime dir and is hidden
+# automatically to avoid recursion — no rule needed here.
 "." = "allow"
 ".yolofs" = "read"
-".yolofs/mnt" = "hide"
 "yolofs.toml" = "read"
 
 "$HOME/.bashrc" = "allow"

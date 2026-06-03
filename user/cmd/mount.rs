@@ -152,7 +152,7 @@ fn unbind_mount_pseudofs(mnt: &Path) -> Result<()> {
 
 /// Full teardown of a YoloFS session directory: unbind pseudofs, unmount, remove symlinks, clean up.
 pub fn unmount_at(yolo_dir: &Path) -> Result<()> {
-    let mnt = yolo_dir.join("mnt");
+    let mnt = crate::utils::mnt_dir(yolo_dir);
 
     // Remove symlinks first (they point into the mount)
     let _ = fs::remove_file(yolo_dir.join("cwd"));
@@ -163,7 +163,10 @@ pub fn unmount_at(yolo_dir: &Path) -> Result<()> {
         umount_or_prompt(&mnt).with_context(|| format!("unmounting {}", mnt.display()))?;
     }
 
-    // Remove the .yolofs/ directory
+    // Remove the now-unmounted mountpoint dir (NOT its parent — that's the
+    // runtime base shared with other sessions), then the in-workspace .yolofs/
+    // (including its `mnt` convenience symlink).
+    let _ = fs::remove_dir_all(&mnt);
     let _ = fs::remove_dir_all(yolo_dir);
     Ok(())
 }
@@ -183,14 +186,14 @@ fn hint_watch() {
 pub fn mount() -> Result<()> {
     let cwd = env::current_dir().context("getting cwd")?;
     let yolo_dir = cwd.join(".yolofs");
-    let mnt = yolo_dir.join("mnt");
+    let mnt = crate::utils::mnt_dir(&yolo_dir);
 
     if mnt.exists() && is_mountpoint(&mnt) {
         let opts = crate::config::mount_options(&yolo_dir);
         eprintln!(
             "{} {} ({})",
             "yolo: mounted at".green(),
-            mnt.display(),
+            yolo_dir.join("mnt").display(),
             opts
         );
         hint_watch();
@@ -289,7 +292,24 @@ fn is_mountpoint(path: &Path) -> bool {
 
 pub fn setup_yolo_dir(yolo_dir: &Path) -> Result<()> {
     fs::create_dir_all(yolo_dir.join("inodes")).context("creating .yolofs/inodes/")?;
-    fs::create_dir_all(yolo_dir.join("mnt")).context("creating .yolofs/mnt/")?;
+
+    // The mountpoint (an empty dir the over-`/` mount lands on) lives under the
+    // per-user runtime dir, NOT in the workspace — so editors and indexers can't
+    // wander into a recursive view of `/`. `.yolofs/mnt` is just a convenience
+    // symlink to it (`cd .yolofs/mnt` still works for humans). On a fresh mount
+    // we mkdtemp a unique location and record it in the symlink; on remount we
+    // honor the recorded one so the location stays stable for the session.
+    let mnt_link = yolo_dir.join("mnt");
+    let mnt = if mnt_link.symlink_metadata().is_ok() {
+        let m = crate::utils::mnt_dir(yolo_dir);
+        fs::create_dir_all(&m)
+            .with_context(|| format!("creating mountpoint {}", m.display()))?;
+        m
+    } else {
+        let m = crate::utils::create_mnt_dir()?;
+        unix::fs::symlink(&m, &mnt_link).context("creating .yolofs/mnt symlink")?;
+        m
+    };
 
     // Create the journal file; the kernel module expects it to exist.
     let journal = yolo_dir.join("journal");
@@ -305,12 +325,21 @@ pub fn setup_yolo_dir(yolo_dir: &Path) -> Result<()> {
     if nix::unistd::geteuid() != uid {
         let uid = Some(uid);
         let gid = Some(nix::unistd::getgid());
-        for path in [
+        // The runtime mountpoint and its base need chowning too: after privileges
+        // drop, the real user must be able to traverse into the mountpoint to
+        // chroot. `mnt.parent()` is the per-user runtime base (`…/yolofs`); both
+        // live under the user's own `/run/user/<uid>`, so handing them over is
+        // safe.
+        let mut paths = vec![
             yolo_dir.to_path_buf(),
             yolo_dir.join("inodes"),
-            yolo_dir.join("mnt"),
             journal,
-        ] {
+            mnt.clone(),
+        ];
+        if let Some(base) = mnt.parent() {
+            paths.push(base.to_path_buf());
+        }
+        for path in paths {
             if let Err(e) = nix::unistd::chown(&path, uid, gid) {
                 // chown is unsupported on some filesystems (9p, virtio-fs).
                 // Tolerate the failure if the real user can already write.
@@ -344,14 +373,16 @@ pub fn setup_yolo_dir(yolo_dir: &Path) -> Result<()> {
 }
 
 pub fn do_mount(yolo_dir: &Path) -> Result<()> {
-    let mnt = yolo_dir.join("mnt");
+    let mnt = crate::utils::mnt_dir(yolo_dir);
     let mount_data = crate::config::mount_options(yolo_dir);
     let source = yolo_dir.to_string_lossy();
 
+    // Show the in-workspace `.yolofs/mnt` symlink rather than the runtime
+    // mountpoint path — it's the familiar, stable handle users interact with.
     eprintln!(
         "{} {} ({})",
         "yolo: mounting".green(),
-        mnt.display(),
+        yolo_dir.join("mnt").display(),
         mount_data
     );
 
@@ -370,9 +401,7 @@ pub fn do_mount(yolo_dir: &Path) -> Result<()> {
 /// Create .yolofs/cwd symlink pointing to the cwd inside the mount.
 fn create_cwd_symlink(yolo_dir: &Path, cwd: &Path) -> Result<()> {
     let link = yolo_dir.join("cwd");
-    let target = yolo_dir
-        .join("mnt")
-        .join(cwd.strip_prefix("/").unwrap_or(cwd));
+    let target = crate::utils::mnt_dir(yolo_dir).join(cwd.strip_prefix("/").unwrap_or(cwd));
     if link.exists() || link.symlink_metadata().is_ok() {
         fs::remove_file(&link).context("removing old .yolofs/cwd symlink")?;
     }
@@ -404,19 +433,39 @@ mod tests {
         }
     }
 
+    /// Create `.yolofs/` with its `mnt` symlink already pointing at a tempdir, so
+    /// `setup_yolo_dir` honors that recorded location instead of reaching for the
+    /// real `/run/user/<uid>` runtime dir — keeps these tests hermetic.
+    fn yolofs_with_recorded_mnt(tmp: &Path) -> (PathBuf, PathBuf) {
+        let yolofs = tmp.join(".yolofs");
+        fs::create_dir_all(&yolofs).unwrap();
+        let mnt = tmp.join("realmnt");
+        unix::fs::symlink(&mnt, yolofs.join("mnt")).unwrap();
+        (yolofs, mnt)
+    }
+
     #[test]
     fn setup_yolo_dir_creates_layout() {
         let tmp = tempfile::tempdir().unwrap();
-        let yolofs = tmp.path().join(".yolofs");
+        let (yolofs, mnt) = yolofs_with_recorded_mnt(tmp.path());
         setup_yolo_dir(&yolofs).unwrap();
         assert!(yolofs.join("inodes").is_dir());
-        assert!(yolofs.join("mnt").is_dir());
+        // `.yolofs/mnt` is a symlink to the (now created) mountpoint dir.
+        assert!(
+            yolofs
+                .join("mnt")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(mnt.is_dir());
     }
 
     #[test]
     fn setup_yolo_dir_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        let yolofs = tmp.path().join(".yolofs");
+        let (yolofs, _mnt) = yolofs_with_recorded_mnt(tmp.path());
         setup_yolo_dir(&yolofs).unwrap();
         setup_yolo_dir(&yolofs).unwrap(); // second call should not fail
         assert!(yolofs.join("inodes").is_dir());
@@ -472,30 +521,38 @@ mod tests {
         assert!(pids.is_empty());
     }
 
+    /// Point `.yolofs/mnt` at a real tempdir so `mnt_dir` resolves it without
+    /// touching `/run/user/<uid>` — keeps these symlink tests hermetic.
+    fn fake_mnt(tmp: &Path) -> (PathBuf, PathBuf) {
+        let yolofs = tmp.join(".yolofs");
+        fs::create_dir_all(&yolofs).unwrap();
+        let mnt = tmp.join("realmnt");
+        fs::create_dir_all(&mnt).unwrap();
+        unix::fs::symlink(&mnt, yolofs.join("mnt")).unwrap();
+        (yolofs, mnt)
+    }
+
     #[test]
     fn create_cwd_symlink_creates_link() {
         let tmp = tempfile::tempdir().unwrap();
-        let yolofs = tmp.path().join(".yolofs");
-        fs::create_dir_all(yolofs.join("mnt")).unwrap();
-        let cwd = PathBuf::from("/some/work/dir");
-        create_cwd_symlink(&yolofs, &cwd).unwrap();
+        let (yolofs, mnt) = fake_mnt(tmp.path());
+        create_cwd_symlink(&yolofs, &PathBuf::from("/some/work/dir")).unwrap();
 
         let link = yolofs.join("cwd");
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
         let target = fs::read_link(&link).unwrap();
-        assert_eq!(target, yolofs.join("mnt/some/work/dir"));
+        assert_eq!(target, mnt.join("some/work/dir"));
     }
 
     #[test]
     fn create_cwd_symlink_replaces_existing() {
         let tmp = tempfile::tempdir().unwrap();
-        let yolofs = tmp.path().join(".yolofs");
-        fs::create_dir_all(yolofs.join("mnt")).unwrap();
+        let (yolofs, mnt) = fake_mnt(tmp.path());
 
         create_cwd_symlink(&yolofs, &PathBuf::from("/old/dir")).unwrap();
         create_cwd_symlink(&yolofs, &PathBuf::from("/new/dir")).unwrap();
 
         let target = fs::read_link(yolofs.join("cwd")).unwrap();
-        assert_eq!(target, yolofs.join("mnt/new/dir"));
+        assert_eq!(target, mnt.join("new/dir"));
     }
 }

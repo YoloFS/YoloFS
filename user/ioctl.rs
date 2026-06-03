@@ -159,7 +159,7 @@ pub fn open(yolo_dir: &Path) -> Result<File> {
     // Control ioctls go to a directory fd in the mount. From outside that's the
     // mount root (`<session>/mnt`); inside the mount that path is hidden, so
     // fall back to "/" (the mount root as seen from within the chroot).
-    let mnt = yolo_dir.join("mnt");
+    let mnt = crate::utils::mnt_dir(yolo_dir);
     match OpenOptions::new().read(true).open(&mnt) {
         Ok(f) => Ok(f),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => OpenOptions::new()
