@@ -7,7 +7,8 @@
 // `--to <name>` — diff changes up to a marker.
 // `--from <name> --to <name>` — diff changes between two markers.
 
-use crate::journal::{DirTree, Journal, Marker, Note, Record, Target};
+use crate::changeset::Changeset;
+use crate::journal::{Journal, Note, Target};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -70,18 +71,6 @@ fn print_unified_diff(old_text: &str, new_text: &str) {
                 println!();
             }
         }
-    }
-}
-
-// ── Segment display helpers ──────────────────────────────────────────
-
-fn print_segment_footer(closing: &Option<(u64, String)>) {
-    if let Some((gen_id, label)) = closing {
-        println!(
-            "{} {}",
-            format!("snapshot [{}]", gen_id).cyan().bold(),
-            label.dimmed()
-        );
     }
 }
 
@@ -159,96 +148,14 @@ fn print_change(
     }
 }
 
-// ── Model: the resolved changes, grouped by snapshot ─────────────────
-
-/// The staged changes that build on one snapshot — the changes "between two
-/// snapshots" (or since the base, for the first batch).
-struct Batch {
-    /// The snapshot this batch builds on (gen id + label); `None` for work
-    /// before the first snapshot. Shown as the batch's footer.
-    base: Option<(u64, String)>,
-    /// Each changed path and what happened to it.
-    changes: Vec<(String, Target)>,
-}
-
-/// All staged changes in a journal range, grouped into per-snapshot batches.
-/// This is the model the status / diff / run-review views render — it owns
-/// *what* changed, leaving *how to show it* to the renderer.
-struct Changeset {
-    batches: Vec<Batch>,
-}
-
-impl Changeset {
-    /// Resolve the changes in segments `[start, end)` (consuming the journal),
-    /// keeping only `path` when given. Empty batches are dropped, so every
-    /// batch holds at least one change.
-    fn collect(journal: Journal, start: usize, end: usize, path: Option<&str>) -> Self {
-        // The marker opening each live segment is the snapshot it builds on.
-        let bases: Vec<Option<(u64, String)>> = (start..end)
-            .filter(|i| journal.is_alive(*i))
-            .map(|i| {
-                journal.markers.marker_at(i).map(|m| match m {
-                    Marker::Snapshot { gen_id, name } => (*gen_id, name.clone()),
-                    Marker::Travel {
-                        gen_id, target_gen, ..
-                    } => (*gen_id, format!("traveled to [{target_gen}]")),
-                })
-            })
-            .collect();
-
-        let mut batches = Vec::new();
-        for (seg, base) in journal.into_live_segments_range(start, end).zip(bases) {
-            let tree = DirTree::build(std::iter::once(seg));
-            let mut changes = Vec::new();
-            tree.for_each(|p, target| {
-                if path.is_none() || target.matches_path(p, path.unwrap()) {
-                    changes.push((p.to_string(), target.clone()));
-                }
-            });
-            if !changes.is_empty() {
-                batches.push(Batch { base, changes });
-            }
-        }
-        Changeset { batches }
-    }
-
-    /// Total number of changed paths across all batches.
-    fn total(&self) -> usize {
-        self.batches.iter().map(|b| b.changes.len()).sum()
-    }
-}
-
-/// Collect the deduped observational notes (A/B) in segments `[start, end)`.
-/// These record denied/ask-resolved accesses — not staged changes — and are
-/// deduped because a summary shouldn't repeat what `yolo audit` lists in full.
-fn collect_notes(journal: &Journal, start: usize, end: usize) -> Vec<Note> {
-    let mut seen = std::collections::HashSet::new();
-    (start..end)
-        .filter(|i| journal.is_alive(*i))
-        .flat_map(|i| journal.segments[i].records.iter())
-        .filter_map(|r| match r {
-            Record::Note(n) => Some(n.clone()),
-            _ => None,
-        })
-        .filter(|n| seen.insert(note_key(n)))
-        .collect()
-}
-
 // ── View: rendering the changeset ────────────────────────────────────
 
-/// Print a changeset. `verbose` adds each file's unified-diff body. Footers
-/// (the snapshot each batch builds on) appear only when more than one batch is
-/// shown — with a single batch there's nothing to delineate.
+/// Print a changeset's net changes. `verbose` adds each file's unified-diff
+/// body.
 fn render(changeset: &Changeset, yolofs: &Path, root: &Path, verbose: bool) {
-    let footers = changeset.batches.len() > 1;
     let mut base_exists_cache = std::collections::HashMap::new();
-    for batch in &changeset.batches {
-        for (path, target) in &batch.changes {
-            print_change(yolofs, root, path, target, verbose, &mut base_exists_cache);
-        }
-        if footers {
-            print_segment_footer(&batch.base);
-        }
+    for (path, target) in &changeset.changes {
+        print_change(yolofs, root, path, target, verbose, &mut base_exists_cache);
     }
 }
 
@@ -293,9 +200,8 @@ fn open_session() -> Result<(PathBuf, PathBuf, Journal)> {
 pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>, full: bool) -> Result<()> {
     let (yolofs, root, journal) = open_session()?;
     let (start, end) = resolve_range(&journal, at, from, to, full)?;
-    let notes = collect_notes(&journal, start, end);
     let changeset = Changeset::collect(journal, start, end, None);
-    let total = changeset.total();
+    let total = changeset.changes.len();
 
     render(&changeset, &yolofs, &root, false);
     if total == 0 {
@@ -303,8 +209,8 @@ pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>, full: 
     } else {
         print_total(total);
     }
-    if !notes.is_empty() {
-        print_notes(&notes, &root);
+    if !changeset.notes.is_empty() {
+        print_notes(&changeset.notes, &root);
     }
     // In the default view, always point at `--full` (when something is staged).
     if total > 0 && is_default_view(at, from, to, full) {
@@ -326,7 +232,7 @@ pub fn run_diff(
     let (start, end) = resolve_range(&journal, at, from, to, full)?;
     let path = path.map(crate::utils::normalize_path);
     let changeset = Changeset::collect(journal, start, end, path.as_deref());
-    let total = changeset.total();
+    let total = changeset.changes.len();
 
     render(&changeset, &yolofs, &root, true);
     if total == 0 {
@@ -342,13 +248,12 @@ pub fn run_diff(
 pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
     let (yolofs, root, journal) = open_session()?;
     let (start, end) = resolve_range(&journal, None, None, None, false)?;
-    let notes = collect_notes(&journal, start, end);
     let changeset = Changeset::collect(journal, start, end, None);
-    let total = changeset.total();
+    let total = changeset.changes.len();
 
     render(&changeset, &yolofs, &root, false);
-    if !notes.is_empty() {
-        print_notes(&notes, &root);
+    if !changeset.notes.is_empty() {
+        print_notes(&changeset.notes, &root);
     }
     match snapshot {
         // The id is how you return here later: `yolo travel <id>`.
@@ -364,22 +269,10 @@ pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
         // No snapshot (nothing staged, or auto-snapshot off): show the count if
         // any, else a quiet "(no changes)" — unless notes already said why.
         None if total > 0 => print_total(total),
-        None if notes.is_empty() => println!("{}", "(no changes)".dimmed()),
+        None if changeset.notes.is_empty() => println!("{}", "(no changes)".dimmed()),
         None => {}
     }
     Ok(())
-}
-
-/// A dedup key for a note: its kind, path, op, and (for asks) decision.
-fn note_key(note: &Note) -> String {
-    match note {
-        Note::Block { path, op } => format!("B\0{path}\0{}", op.label()),
-        Note::Ask {
-            path,
-            op,
-            decision,
-        } => format!("A\0{path}\0{}\0{decision}", op.label()),
-    }
 }
 
 /// Print observational notes (A/B) under `status`. These are denied or

@@ -1,3 +1,4 @@
+pub mod changeset;
 pub mod cmd;
 pub mod config;
 pub mod ioctl;
