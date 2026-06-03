@@ -1123,7 +1123,8 @@ fn travel_to_base_is_non_destructive() {
     assert_eq!(fs::read_to_string(s.mnt_path("a.txt")).unwrap(), "v1\n");
 
     // The base is reachable by its name too.
-    s.cli(&["travel", "(initial)"]).expect("travel to base by name");
+    s.cli(&["travel", "(initial)"])
+        .expect("travel to base by name");
     assert!(
         !s.mnt_path("a.txt").exists(),
         "base by name should not show a.txt"
