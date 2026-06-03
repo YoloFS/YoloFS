@@ -205,6 +205,60 @@ fn run_with_changes_creates_snapshot() {
     );
 }
 
+// ── `yolo -- <cmd>` shorthand: run, then review (vs quiet `exec`) ────
+
+/// `yolo -- <cmd>` runs the command and then prints a status summary of what
+/// it changed (the run-and-review path), unlike the quiet `exec`.
+#[test]
+fn run_shorthand_shows_status() {
+    let session = YoloSession::new().expect("session setup");
+
+    let (ok, stdout, _err) = session
+        .cli_output(&["--", "sh", "-c", "echo hi > shorthand.txt"])
+        .expect("yolo -- cmd");
+
+    assert!(ok, "command should succeed");
+    assert!(
+        stdout.contains("shorthand.txt"),
+        "`yolo -- <cmd>` should print a status summary naming the changed file: {stdout}"
+    );
+    assert!(
+        stdout.contains("staged change"),
+        "the summary should mention staged changes: {stdout}"
+    );
+}
+
+/// `yolo exec -- <cmd>` is the quiet primitive: it must NOT print a status
+/// summary (the snapshot line it does emit goes to stderr).
+#[test]
+fn exec_stays_quiet_no_status() {
+    let session = YoloSession::new().expect("session setup");
+
+    let (ok, stdout, _err) = session
+        .cli_output(&["exec", "--", "sh", "-c", "echo hi > quiet.txt"])
+        .expect("yolo exec -- cmd");
+
+    assert!(ok, "command should succeed");
+    assert!(
+        !stdout.contains("staged change"),
+        "`yolo exec` should not print a status summary on stdout: {stdout}"
+    );
+}
+
+/// The shorthand propagates the command's exit code, just like `exec`.
+#[test]
+fn run_shorthand_propagates_exit_code() {
+    let session = YoloSession::new().expect("session setup");
+
+    let code = session
+        .cli_exit_code(&["--", "sh", "-c", "exit 42"])
+        .unwrap();
+    assert_eq!(
+        code, 42,
+        "`yolo -- <cmd>` should propagate the command's exit code"
+    );
+}
+
 /// yolo is a host-side tool: every command refuses to run inside the mount
 /// (its base-fs operations only work outside). Running it via `yolo exec`
 /// chroots it inside, where the top-level guard rejects it.

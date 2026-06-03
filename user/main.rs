@@ -170,6 +170,21 @@ fn main() -> ! {
 }
 
 fn run_cli() -> anyhow::Result<u8> {
+    // `yolo -- <cmd>`: when `--` is the first argument (no subcommand before
+    // it), run <cmd> under yolofs and then show what changed. Handled before
+    // clap so a bare unknown word (e.g. `yolo notacommand`) still falls through
+    // to clap's help instead of being treated as a command to run.
+    let raw: Vec<String> = std::env::args().collect();
+    if let Some(pos) = raw.iter().position(|a| a == "--")
+        && raw[1..pos].is_empty()
+        && pos + 1 < raw.len()
+    {
+        if yolofs::utils::inside_mount() {
+            anyhow::bail!("yolo cannot run inside the mount — run it from outside");
+        }
+        return run_and_review(&raw[pos + 1..]);
+    }
+
     let cli = Cli::parse();
 
     // yolo is a host-side tool: its base-fs operations only work outside the
@@ -235,6 +250,15 @@ fn run_cli() -> anyhow::Result<u8> {
     Ok(0)
 }
 
+/// `yolo -- <cmd>`: run a command under yolofs (like `exec`), then print a
+/// status summary of what it changed — the friendly counterpart to the quiet
+/// `exec`. Returns the command's exit code.
+fn run_and_review(run_args: &[String]) -> anyhow::Result<u8> {
+    let code = exec::run(run_args)?;
+    diff::run_status(None, None, None, false)?;
+    Ok(code)
+}
+
 /// Bare `yolo`: a grouped overview of the commands. (`yolo --help` still prints
 /// clap's full flat reference.)
 fn print_overview() {
@@ -248,7 +272,8 @@ fn print_overview() {
         ]),
         ("Session", &[
             ("mount",    "Create .yolofs/ and mount the filesystem"),
-            ("exec",     "Run a command under yolofs (auto-snapshots after)"),
+            ("-- <cmd>", "Run <cmd> under yolofs and show what changed"),
+            ("exec",     "Run a command under yolofs, quietly (auto-snapshots)"),
             ("unmount",  "Tear down the session"),
             ("remount",  "Unmount then remount (picks up yolofs.toml options)"),
         ]),
