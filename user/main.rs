@@ -204,7 +204,11 @@ fn run_cli() -> anyhow::Result<u8> {
         Some(Command::Unload) => load::unload()?,
         Some(Command::Reload) => load::reload()?,
         Some(Command::Mount) => mount::mount()?,
-        Some(Command::Exec { exec_args }) => return exec::run(&exec_args),
+        Some(Command::Exec { exec_args }) => {
+            let (code, snapshot) = exec::run(&exec_args)?;
+            exec::announce(&snapshot);
+            return Ok(code);
+        }
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,
         Some(Command::Status { at, from, to, full }) => {
@@ -254,8 +258,12 @@ fn run_cli() -> anyhow::Result<u8> {
 /// status summary of what it changed — the friendly counterpart to the quiet
 /// `exec`. Returns the command's exit code.
 fn run_and_review(run_args: &[String]) -> anyhow::Result<u8> {
-    let code = exec::run(run_args)?;
-    diff::run_status(None, None, None, false)?;
+    let (code, snapshot) = exec::run(run_args)?;
+    let snapshot_id = match snapshot {
+        exec::Snapshot::Created(gen_id) => Some(gen_id),
+        exec::Snapshot::NoChanges | exec::Snapshot::Off => None,
+    };
+    diff::run_after_exec(snapshot_id)?;
     Ok(code)
 }
 

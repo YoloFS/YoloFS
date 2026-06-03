@@ -12,7 +12,7 @@ use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ── File reading helpers ─────────────────────────────────────────────
 
@@ -87,19 +87,33 @@ fn print_segment_footer(closing: &Option<(u64, String)>) {
 
 // ── Per-change printing (summary vs verbose) ─────────────────────────
 
+/// Display a journal path relative to the session root (git-style). Paths that
+/// fall outside the root (e.g. `/etc/...`) are left absolute.
+fn rel(path: &str, root: &Path) -> String {
+    Path::new(path)
+        .strip_prefix(root)
+        .ok()
+        .and_then(|p| p.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| path.to_string())
+}
+
 fn print_change(
     yolofs: &Path,
+    root: &Path,
     path: &str,
     target: &Target,
     verbose: bool,
     base_exists_cache: &mut std::collections::HashMap<String, bool>,
 ) {
+    // `path` stays absolute for base/inode lookups; `shown` is the display form.
+    let shown = rel(path, root);
     let base_exists = *base_exists_cache
         .entry(path.to_string())
         .or_insert_with(|| crate::utils::to_base_path(path).exists());
     match target {
         Target::StagedFile(ino) if !base_exists => {
-            println!("{} {}", path.bold(), "(added)".green());
+            println!("{} {}", shown.bold(), "(added)".green());
             if verbose {
                 if is_binary_inode(yolofs, *ino) {
                     println!("  {}", "Binary file (not shown)".dimmed());
@@ -112,48 +126,195 @@ fn print_change(
             if verbose {
                 let binary = is_binary_inode(yolofs, *ino) || is_binary_base(path);
                 if binary {
-                    println!("{} {}", path.bold(), "(modified)".yellow());
+                    println!("{} {}", shown.bold(), "(modified)".yellow());
                     println!("  {}", "Binary files differ".dimmed());
                 } else {
                     let old_text = read_base(path);
                     let new_text = read_inode(yolofs, *ino);
                     if old_text != new_text {
-                        println!("{} {}", path.bold(), "(modified)".yellow());
+                        println!("{} {}", shown.bold(), "(modified)".yellow());
                         print_unified_diff(&old_text, &new_text);
                     }
                 }
             } else {
-                println!("{} {}", path.bold(), "(modified)".yellow());
+                println!("{} {}", shown.bold(), "(modified)".yellow());
             }
         }
         Target::Tombstone if base_exists => {
-            println!("{} {}", path.bold(), "(deleted)".red());
+            println!("{} {}", shown.bold(), "(deleted)".red());
             if verbose {
                 print_unified_diff(&read_base(path), "");
             }
         }
         Target::Tombstone => {} // spurious tombstone — staged-only file deleted; skip
         Target::BasePath(src) => {
-            println!("{} → {} {}", src.bold(), path.bold(), "(renamed)".cyan());
+            println!(
+                "{} → {} {}",
+                rel(src, root).bold(),
+                shown.bold(),
+                "(renamed)".cyan()
+            );
         }
         Target::Passthrough => {} // passthrough — should not appear in iteration
     }
 }
 
-// ── Public entry points ──────────────────────────────────────────────
+// ── Model: the resolved changes, grouped by snapshot ─────────────────
 
-/// `yolo status` — summary view.
-pub fn run_status(
+/// The staged changes that build on one snapshot — the changes "between two
+/// snapshots" (or since the base, for the first batch).
+struct Batch {
+    /// The snapshot this batch builds on (gen id + label); `None` for work
+    /// before the first snapshot. Shown as the batch's footer.
+    base: Option<(u64, String)>,
+    /// Each changed path and what happened to it.
+    changes: Vec<(String, Target)>,
+}
+
+/// All staged changes in a journal range, grouped into per-snapshot batches.
+/// This is the model the status / diff / run-review views render — it owns
+/// *what* changed, leaving *how to show it* to the renderer.
+struct Changeset {
+    batches: Vec<Batch>,
+}
+
+impl Changeset {
+    /// Resolve the changes in segments `[start, end)` (consuming the journal),
+    /// keeping only `path` when given. Empty batches are dropped, so every
+    /// batch holds at least one change.
+    fn collect(journal: Journal, start: usize, end: usize, path: Option<&str>) -> Self {
+        // The marker opening each live segment is the snapshot it builds on.
+        let bases: Vec<Option<(u64, String)>> = (start..end)
+            .filter(|i| journal.is_alive(*i))
+            .map(|i| {
+                journal.markers.marker_at(i).map(|m| match m {
+                    Marker::Snapshot { gen_id, name } => (*gen_id, name.clone()),
+                    Marker::Travel {
+                        gen_id, target_gen, ..
+                    } => (*gen_id, format!("traveled to [{target_gen}]")),
+                })
+            })
+            .collect();
+
+        let mut batches = Vec::new();
+        for (seg, base) in journal.into_live_segments_range(start, end).zip(bases) {
+            let tree = DirTree::build(std::iter::once(seg));
+            let mut changes = Vec::new();
+            tree.for_each(|p, target| {
+                if path.is_none() || target.matches_path(p, path.unwrap()) {
+                    changes.push((p.to_string(), target.clone()));
+                }
+            });
+            if !changes.is_empty() {
+                batches.push(Batch { base, changes });
+            }
+        }
+        Changeset { batches }
+    }
+
+    /// Total number of changed paths across all batches.
+    fn total(&self) -> usize {
+        self.batches.iter().map(|b| b.changes.len()).sum()
+    }
+}
+
+/// Collect the deduped observational notes (A/B) in segments `[start, end)`.
+/// These record denied/ask-resolved accesses — not staged changes — and are
+/// deduped because a summary shouldn't repeat what `yolo audit` lists in full.
+fn collect_notes(journal: &Journal, start: usize, end: usize) -> Vec<Note> {
+    let mut seen = std::collections::HashSet::new();
+    (start..end)
+        .filter(|i| journal.is_alive(*i))
+        .flat_map(|i| journal.segments[i].records.iter())
+        .filter_map(|r| match r {
+            Record::Note(n) => Some(n.clone()),
+            _ => None,
+        })
+        .filter(|n| seen.insert(note_key(n)))
+        .collect()
+}
+
+// ── View: rendering the changeset ────────────────────────────────────
+
+/// Print a changeset. `verbose` adds each file's unified-diff body. Footers
+/// (the snapshot each batch builds on) appear only when more than one batch is
+/// shown — with a single batch there's nothing to delineate.
+fn render(changeset: &Changeset, yolofs: &Path, root: &Path, verbose: bool) {
+    let footers = changeset.batches.len() > 1;
+    let mut base_exists_cache = std::collections::HashMap::new();
+    for batch in &changeset.batches {
+        for (path, target) in &batch.changes {
+            print_change(yolofs, root, path, target, verbose, &mut base_exists_cache);
+        }
+        if footers {
+            print_segment_footer(&batch.base);
+        }
+    }
+}
+
+/// Resolve which segments to show. Defaults to the latest batch of changes;
+/// `--full` or an explicit `--at/--from/--to` range widens it.
+fn resolve_range(
+    journal: &Journal,
     at: Option<&str>,
     from: Option<&str>,
     to: Option<&str>,
     full: bool,
-) -> Result<()> {
-    run(false, at, from, to, None, full)?;
+) -> Result<(usize, usize)> {
+    let num = journal.segments.len();
+    if at.is_some() || from.is_some() || to.is_some() {
+        journal.markers.segment_range(at, from, to, num)
+    } else if full {
+        Ok((0, num))
+    } else {
+        let (start, end, _) = journal.latest_range();
+        Ok((start, end))
+    }
+}
+
+/// The default view (no `--full`, no explicit range) — where we always offer
+/// the `--full` hint.
+fn is_default_view(at: Option<&str>, from: Option<&str>, to: Option<&str>, full: bool) -> bool {
+    at.is_none() && from.is_none() && to.is_none() && !full
+}
+
+// ── Public entry points ──────────────────────────────────────────────
+
+/// Open the session: returns its `.yolofs` dir, the session root (its parent —
+/// what paths display relative to), and the parsed journal.
+fn open_session() -> Result<(PathBuf, PathBuf, Journal)> {
+    let yolofs = crate::utils::session_dir()?;
+    let root = yolofs.parent().unwrap_or(yolofs.as_path()).to_path_buf();
+    let journal = Journal::read(&yolofs)?;
+    Ok((yolofs, root, journal))
+}
+
+/// `yolo status` — summary of staged changes plus observed-access notes.
+pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>, full: bool) -> Result<()> {
+    let (yolofs, root, journal) = open_session()?;
+    let (start, end) = resolve_range(&journal, at, from, to, full)?;
+    let notes = collect_notes(&journal, start, end);
+    let changeset = Changeset::collect(journal, start, end, None);
+    let total = changeset.total();
+
+    render(&changeset, &yolofs, &root, false);
+    if total == 0 {
+        println!("{}", format!("No changes{}.", range_label(at, from, to)).yellow());
+    } else {
+        print_total(total);
+    }
+    if !notes.is_empty() {
+        print_notes(&notes, &root);
+    }
+    // In the default view, always point at `--full` (when something is staged).
+    if total > 0 && is_default_view(at, from, to, full) {
+        print_full_hint(false);
+    }
     Ok(())
 }
 
-/// `yolo diff` — verbose diff view. Returns true if there were changes.
+/// `yolo diff` — verbose unified diff of staged vs base. Returns whether there
+/// were any changes.
 pub fn run_diff(
     at: Option<&str>,
     from: Option<&str>,
@@ -161,127 +322,52 @@ pub fn run_diff(
     path: Option<&str>,
     full: bool,
 ) -> Result<bool> {
+    let (yolofs, root, journal) = open_session()?;
+    let (start, end) = resolve_range(&journal, at, from, to, full)?;
     let path = path.map(crate::utils::normalize_path);
-    run(true, at, from, to, path.as_deref(), full)
+    let changeset = Changeset::collect(journal, start, end, path.as_deref());
+    let total = changeset.total();
+
+    render(&changeset, &yolofs, &root, true);
+    if total == 0 {
+        println!("{}", format!("No changes{}.", range_label(at, from, to)).yellow());
+    } else if is_default_view(at, from, to, full) {
+        print_full_hint(true);
+    }
+    Ok(total > 0)
 }
 
-// ── Core implementation ─────────────────────────────────────────────
+/// `yolo -- <cmd>` review: show what the just-run command changed, then a
+/// summary line carrying the new snapshot's id — the handle for `yolo travel`.
+pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
+    let (yolofs, root, journal) = open_session()?;
+    let (start, end) = resolve_range(&journal, None, None, None, false)?;
+    let notes = collect_notes(&journal, start, end);
+    let changeset = Changeset::collect(journal, start, end, None);
+    let total = changeset.total();
 
-fn run(
-    verbose: bool,
-    at: Option<&str>,
-    from: Option<&str>,
-    to: Option<&str>,
-    path: Option<&str>,
-    full: bool,
-) -> Result<bool> {
-    let yolofs = crate::utils::session_dir()?;
-    let journal = Journal::read(&yolofs)?;
-    let num = journal.segments.len();
-
-    // Default to the latest batch of changes; `--full` (or an explicit
-    // --at/--from/--to range) widens it. `scoped` drives the `--full` hint.
-    let explicit = at.is_some() || from.is_some() || to.is_some();
-    let (start, end, scoped) = if explicit {
-        let (s, e) = journal.markers.segment_range(at, from, to, num)?;
-        (s, e, false)
-    } else if full {
-        (0, num, false)
-    } else {
-        journal.latest_range()
-    };
-
-    // Precompute marker labels for live segments before consuming the journal.
-    let labels: Vec<Option<(u64, String)>> = (start..end)
-        .filter(|i| journal.is_alive(*i))
-        .map(|i| {
-            journal.markers.marker_at(i).map(|m| match m {
-                Marker::Snapshot { gen_id, name } => (*gen_id, name.clone()),
-                Marker::Travel {
-                    gen_id, target_gen, ..
-                } => (*gen_id, format!("traveled to [{target_gen}]")),
-            })
-        })
-        .collect();
-    let has_snapshots = labels.iter().any(|c| c.is_some());
-
-    // Observational notes (A/B) in the visible, live range. Shown in `status`
-    // only — they record denied/ask-resolved accesses, not staged changes, so
-    // `diff` (verbose) leaves them out. Deduped: status is a summary, not the
-    // raw audit stream (`yolo audit` shows every occurrence).
-    let notes: Vec<Note> = if verbose {
-        Vec::new()
-    } else {
-        let mut seen = std::collections::HashSet::new();
-        (start..end)
-            .filter(|i| journal.is_alive(*i))
-            .flat_map(|i| journal.segments[i].records.iter())
-            .filter_map(|r| match r {
-                Record::Note(n) => Some(n.clone()),
-                _ => None,
-            })
-            .filter(|n| seen.insert(note_key(n)))
-            .collect()
-    };
-
-    let mut total = 0usize;
-    let mut base_exists_cache = std::collections::HashMap::new();
-
-    for (seg, label) in journal.into_live_segments_range(start, end).zip(labels) {
-        let tree = DirTree::build(std::iter::once(seg));
-
-        // Count entries (filtered if a path is given).
-        let count = match path {
-            Some(target) => {
-                let mut n = 0usize;
-                tree.for_each(|p, t| {
-                    if t.matches_path(p, target) {
-                        n += 1;
-                    }
-                });
-                n
-            }
-            None => tree.len(),
-        };
-
-        if has_snapshots {
-            if count == 0 && path.is_some() {
-                continue;
-            }
-            if count == 0 {
-                print_segment_footer(&label);
-                continue;
-            }
-        }
-
-        tree.for_each(|p, target| {
-            if path.is_none() || target.matches_path(p, path.unwrap()) {
-                print_change(&yolofs, p, target, verbose, &mut base_exists_cache);
-            }
-        });
-        total += count;
-
-        if has_snapshots {
-            print_segment_footer(&label);
-        }
-    }
-
-    if total == 0 {
-        println!(
-            "{}",
-            format!("No changes{}.", range_label(at, from, to)).yellow()
-        );
-    } else if !verbose {
-        print_total(total);
-    }
-
+    render(&changeset, &yolofs, &root, false);
     if !notes.is_empty() {
-        print_notes(&notes);
+        print_notes(&notes, &root);
     }
-
-    print_full_hint(scoped, verbose);
-
-    Ok(total > 0)
+    match snapshot {
+        // The id is how you return here later: `yolo travel <id>`.
+        Some(gen_id) => println!(
+            "\n{} {}",
+            format!("snapshot [{gen_id}]").cyan().bold(),
+            format!(
+                "· {total} staged change{} · travel {gen_id} to return",
+                crate::utils::plural(total)
+            )
+            .dimmed()
+        ),
+        // No snapshot (nothing staged, or auto-snapshot off): show the count if
+        // any, else a quiet "(no changes)" — unless notes already said why.
+        None if total > 0 => print_total(total),
+        None if notes.is_empty() => println!("{}", "(no changes)".dimmed()),
+        None => {}
+    }
+    Ok(())
 }
 
 /// A dedup key for a note: its kind, path, op, and (for asks) decision.
@@ -299,12 +385,17 @@ fn note_key(note: &Note) -> String {
 /// Print observational notes (A/B) under `status`. These are denied or
 /// ask-resolved accesses recorded in the visible range — not staged changes,
 /// so they're listed separately and excluded from the staged-change count.
-fn print_notes(notes: &[Note]) {
+fn print_notes(notes: &[Note], root: &Path) {
     println!("\n{}", "Observed accesses (not staged):".bold());
     for note in notes {
         match note {
             Note::Block { path, op } => {
-                println!("  {:8} {:5} {}", "blocked".yellow(), op.label(), path);
+                println!(
+                    "  {:8} {:5} {}",
+                    "blocked".yellow(),
+                    op.label(),
+                    rel(path, root)
+                );
             }
             Note::Ask {
                 path,
@@ -315,7 +406,7 @@ fn print_notes(notes: &[Note]) {
                     "  {:8} {:5} {} → {}",
                     "ask".yellow(),
                     op.label(),
-                    path,
+                    rel(path, root),
                     decision
                 );
             }
@@ -323,15 +414,14 @@ fn print_notes(notes: &[Note]) {
     }
 }
 
-/// When the view is scoped to the latest snapshot, point the user at `--full`.
-fn print_full_hint(scoped: bool, verbose: bool) {
-    if scoped {
-        let cmd = if verbose { "diff" } else { "status" };
-        println!(
-            "{}",
-            format!("(latest snapshot — run `yolo {cmd} --full` for all staged changes)").dimmed()
-        );
-    }
+/// Point the user at `--full` for the complete history. The caller decides
+/// when to show this (the default view, when something is staged).
+fn print_full_hint(verbose: bool) {
+    let cmd = if verbose { "diff" } else { "status" };
+    println!(
+        "{}",
+        format!("(latest snapshot — run `yolo {cmd} --full` for all staged changes)").dimmed()
+    );
 }
 
 fn print_total(n: usize) {

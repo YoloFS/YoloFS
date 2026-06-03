@@ -47,9 +47,36 @@ unsafe fn chroot_pre_exec(mnt: &Path, cwd: &Path) -> Result<(), std::io::Error> 
     Ok(())
 }
 
-/// Spawn a command under yolofs and wait for it to exit.
-/// Returns the process exit code (0 = success).
-pub fn run(exec_args: &[String]) -> Result<u8> {
+/// Outcome of the post-command auto-snapshot, so callers can decide how to
+/// surface it (the quiet `exec` prints a terse line; `yolo -- <cmd>` folds the
+/// id into its review summary).
+pub enum Snapshot {
+    /// A snapshot was created with this gen id.
+    Created(u64),
+    /// The command staged nothing, so no snapshot was made.
+    NoChanges,
+    /// Auto-snapshot is disabled in config.
+    Off,
+}
+
+/// Print the post-command snapshot outcome for the quiet standalone `yolo exec`
+/// (to stderr). The snapshot's name is omitted — it just echoes the command you
+/// already typed; `timeline`/`audit` still show it.
+pub fn announce(snapshot: &Snapshot) {
+    match snapshot {
+        Snapshot::Created(gen_id) => {
+            eprintln!("{}", format!("snapshot [{gen_id}]").cyan().bold());
+        }
+        Snapshot::NoChanges => {
+            eprintln!("{}", "yolo: no changes, skipping snapshot".dimmed());
+        }
+        Snapshot::Off => {}
+    }
+}
+
+/// Spawn a command under yolofs and wait for it to exit. Returns the process
+/// exit code (0 = success) and the post-command auto-snapshot outcome.
+pub fn run(exec_args: &[String]) -> Result<(u8, Snapshot)> {
     let yolo_dir = crate::utils::session_dir()?;
     let mnt = yolo_dir.join("mnt");
     let cwd = env::current_dir().context("getting cwd")?;
@@ -84,42 +111,36 @@ pub fn run(exec_args: &[String]) -> Result<u8> {
         eprintln!("{} {}", "yolo: command exited with".red(), code);
     }
 
-    // Snapshot after the command so the snapshot captures what the command did.
-    // Skip if the command produced no staged changes to avoid empty snapshots.
-    if config::load_config().auto_snapshot {
+    // Snapshot after the command so it captures what the command did (skipped
+    // when nothing was staged, to avoid empty snapshots). The name — still
+    // stored for `timeline`/`audit`/travel-by-name — is just the command; how
+    // the outcome is surfaced is left to the caller.
+    let snapshot = if config::load_config().auto_snapshot {
         let cmd_desc = if interactive {
             cmd.clone()
         } else {
             exec_args.join(" ")
         };
-        let chk_name = format!("after {cmd_desc}");
-
-        match auto_snapshot(&chk_name) {
-            Ok(true) => {} // snapshot created (message printed by snapshot::create path)
-            Ok(false) => {
-                eprintln!("{}", "yolo: no changes, skipping snapshot".dimmed());
-            }
+        match auto_snapshot(&format!("after {cmd_desc}")) {
+            Ok(Some(gen_id)) => Snapshot::Created(gen_id),
+            Ok(None) => Snapshot::NoChanges,
             Err(e) => {
                 eprintln!("{} {:#}", "yolo: snapshot failed:".yellow(), e);
+                Snapshot::NoChanges
             }
         }
-    }
+    } else {
+        Snapshot::Off
+    };
 
-    Ok(code)
+    Ok((code, snapshot))
 }
 
 /// Create a snapshot only if there are staged changes (kernel-side check).
-fn auto_snapshot(name: &str) -> Result<bool> {
+/// Returns the new snapshot's gen id, or `None` if nothing changed.
+fn auto_snapshot(name: &str) -> Result<Option<u64>> {
     let yolofs = crate::utils::session_dir()?;
     let ctl_file = ioctl::open(&yolofs).context("opening ctl for snapshot")?;
     let gen_id = ioctl::snapshot(&ctl_file, name, ioctl::YOLO_SNAPSHOT_IF_CHANGED)?;
-    if gen_id == 0 {
-        return Ok(false);
-    }
-    eprintln!(
-        "{} {}",
-        format!("snapshot [{gen_id}]").cyan().bold(),
-        name.dimmed()
-    );
-    Ok(true)
+    Ok((gen_id != 0).then_some(gen_id))
 }

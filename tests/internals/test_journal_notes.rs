@@ -404,7 +404,7 @@ fn block_records_shown_in_status_hidden_in_diff() {
         .expect("yolo status");
     let stdout = String::from_utf8_lossy(&status.stdout);
     assert!(
-        stdout.contains("blocked") && stdout.contains("/hello.txt"),
+        stdout.contains("blocked") && stdout.contains("hello.txt"),
         "yolo status should surface the B record: {stdout}"
     );
     // Three identical blocked reads collapse to one status line.
@@ -422,7 +422,7 @@ fn block_records_shown_in_status_hidden_in_diff() {
         .expect("yolo diff");
     let stdout = String::from_utf8_lossy(&diff.stdout);
     assert!(
-        !stdout.contains("blocked") && !stdout.contains("/hello.txt"),
+        !stdout.contains("blocked") && !stdout.contains("hello.txt"),
         "yolo diff must not show B records (staged content only): {stdout}"
     );
 }
