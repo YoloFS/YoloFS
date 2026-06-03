@@ -8,7 +8,7 @@
 // `--from <name> --to <name>` — diff changes between two markers.
 
 use crate::changeset::Changeset;
-use crate::journal::{Journal, Note, Target};
+use crate::journal::{DirTree, Journal, Note, Target};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -87,21 +87,67 @@ fn rel(path: &str, root: &Path) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+/// A path's state in the "from" baseline (the previous snapshot, or the base
+/// for `--full`): where its prior content lives, or `Absent`.
+enum FromSide {
+    Absent,
+    Inode(u32),
+    Base(String),
+}
+
+/// Resolve a path's state at the `from` baseline: its staged target there, or
+/// — when not staged at `from` — the base file if it exists.
+fn from_side(from: &DirTree, path: &str) -> FromSide {
+    match from.get(path) {
+        Some(Target::StagedFile(ino)) => FromSide::Inode(*ino),
+        Some(Target::BasePath(src)) => FromSide::Base(src.clone()),
+        Some(Target::Tombstone) => FromSide::Absent,
+        Some(Target::Passthrough) | None => {
+            if crate::utils::to_base_path(path).exists() {
+                FromSide::Base(path.to_string())
+            } else {
+                FromSide::Absent
+            }
+        }
+    }
+}
+
+impl FromSide {
+    fn exists(&self) -> bool {
+        !matches!(self, FromSide::Absent)
+    }
+    fn content(&self, yolofs: &Path) -> String {
+        match self {
+            FromSide::Absent => String::new(),
+            FromSide::Inode(ino) => read_inode(yolofs, *ino),
+            FromSide::Base(p) => read_base(p),
+        }
+    }
+    fn is_binary(&self, yolofs: &Path) -> bool {
+        match self {
+            FromSide::Absent => false,
+            FromSide::Inode(ino) => is_binary_inode(yolofs, *ino),
+            FromSide::Base(p) => is_binary_base(p),
+        }
+    }
+}
+
+/// Print one change, classified against the `from` baseline, and return whether
+/// it printed: a delete of something absent at `from` is a no-op and prints
+/// nothing. `verbose` adds the unified-diff body (vs the `from` content).
 fn print_change(
     yolofs: &Path,
     root: &Path,
+    from: &DirTree,
     path: &str,
     target: &Target,
     verbose: bool,
-    base_exists_cache: &mut std::collections::HashMap<String, bool>,
-) {
+) -> bool {
     // `path` stays absolute for base/inode lookups; `shown` is the display form.
     let shown = rel(path, root);
-    let base_exists = *base_exists_cache
-        .entry(path.to_string())
-        .or_insert_with(|| crate::utils::to_base_path(path).exists());
+    let prev = from_side(from, path);
     match target {
-        Target::StagedFile(ino) if !base_exists => {
+        Target::StagedFile(ino) if !prev.exists() => {
             println!("{} {}", shown.bold(), "(added)".green());
             if verbose {
                 if is_binary_inode(yolofs, *ino) {
@@ -110,32 +156,36 @@ fn print_change(
                     print_unified_diff("", &read_inode(yolofs, *ino));
                 }
             }
+            true
         }
         Target::StagedFile(ino) => {
+            // Modified relative to the `from` baseline.
             if verbose {
-                let binary = is_binary_inode(yolofs, *ino) || is_binary_base(path);
-                if binary {
+                if is_binary_inode(yolofs, *ino) || prev.is_binary(yolofs) {
                     println!("{} {}", shown.bold(), "(modified)".yellow());
                     println!("  {}", "Binary files differ".dimmed());
                 } else {
-                    let old_text = read_base(path);
+                    let old_text = prev.content(yolofs);
                     let new_text = read_inode(yolofs, *ino);
-                    if old_text != new_text {
-                        println!("{} {}", shown.bold(), "(modified)".yellow());
-                        print_unified_diff(&old_text, &new_text);
+                    if old_text == new_text {
+                        return false; // identical to `from` — not a real change
                     }
+                    println!("{} {}", shown.bold(), "(modified)".yellow());
+                    print_unified_diff(&old_text, &new_text);
                 }
             } else {
                 println!("{} {}", shown.bold(), "(modified)".yellow());
             }
+            true
         }
-        Target::Tombstone if base_exists => {
+        Target::Tombstone if prev.exists() => {
             println!("{} {}", shown.bold(), "(deleted)".red());
             if verbose {
-                print_unified_diff(&read_base(path), "");
+                print_unified_diff(&prev.content(yolofs), "");
             }
+            true
         }
-        Target::Tombstone => {} // spurious tombstone — staged-only file deleted; skip
+        Target::Tombstone => false, // absent at `from` — a no-op delete
         Target::BasePath(src) => {
             println!(
                 "{} → {} {}",
@@ -143,20 +193,25 @@ fn print_change(
                 shown.bold(),
                 "(renamed)".cyan()
             );
+            true
         }
-        Target::Passthrough => {} // passthrough — should not appear in iteration
+        Target::Passthrough => false, // scaffold — should not appear in iteration
     }
 }
 
 // ── View: rendering the changeset ────────────────────────────────────
 
-/// Print a changeset's net changes. `verbose` adds each file's unified-diff
-/// body.
-fn render(changeset: &Changeset, yolofs: &Path, root: &Path, verbose: bool) {
-    let mut base_exists_cache = std::collections::HashMap::new();
+/// Print the changeset's changes, each classified against the `from` baseline,
+/// and return how many were actually shown (no-op deletes don't count).
+/// `verbose` adds each file's unified-diff body.
+fn render(changeset: &Changeset, yolofs: &Path, root: &Path, from: &DirTree, verbose: bool) -> usize {
+    let mut shown = 0;
     for (path, target) in &changeset.changes {
-        print_change(yolofs, root, path, target, verbose, &mut base_exists_cache);
+        if print_change(yolofs, root, from, path, target, verbose) {
+            shown += 1;
+        }
     }
+    shown
 }
 
 /// Resolve which segments to show. Defaults to the latest batch of changes;
@@ -200,10 +255,11 @@ fn open_session() -> Result<(PathBuf, PathBuf, Journal)> {
 pub fn run_status(at: Option<&str>, from: Option<&str>, to: Option<&str>, full: bool) -> Result<()> {
     let (yolofs, root, journal) = open_session()?;
     let (start, end) = resolve_range(&journal, at, from, to, full)?;
+    // Baseline state to diff against: the range's start (prev snapshot, or base).
+    let from_state = Journal::read(&yolofs)?.into_tree_at(start as u64);
     let changeset = Changeset::collect(journal, start, end, None);
-    let total = changeset.changes.len();
+    let total = render(&changeset, &yolofs, &root, &from_state, false);
 
-    render(&changeset, &yolofs, &root, false);
     if total == 0 {
         println!("{}", format!("No changes{}.", range_label(at, from, to)).yellow());
     } else {
@@ -230,11 +286,11 @@ pub fn run_diff(
 ) -> Result<bool> {
     let (yolofs, root, journal) = open_session()?;
     let (start, end) = resolve_range(&journal, at, from, to, full)?;
+    let from_state = Journal::read(&yolofs)?.into_tree_at(start as u64);
     let path = path.map(crate::utils::normalize_path);
     let changeset = Changeset::collect(journal, start, end, path.as_deref());
-    let total = changeset.changes.len();
+    let total = render(&changeset, &yolofs, &root, &from_state, true);
 
-    render(&changeset, &yolofs, &root, true);
     if total == 0 {
         println!("{}", format!("No changes{}.", range_label(at, from, to)).yellow());
     } else if is_default_view(at, from, to, full) {
@@ -248,20 +304,21 @@ pub fn run_diff(
 pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
     let (yolofs, root, journal) = open_session()?;
     let (start, end) = resolve_range(&journal, None, None, None, false)?;
+    let from_state = Journal::read(&yolofs)?.into_tree_at(start as u64);
     let changeset = Changeset::collect(journal, start, end, None);
-    let total = changeset.changes.len();
+    let total = render(&changeset, &yolofs, &root, &from_state, false);
 
-    render(&changeset, &yolofs, &root, false);
     if !changeset.notes.is_empty() {
         print_notes(&changeset.notes, &root);
     }
     match snapshot {
-        // The id is how you return here later: `yolo travel <id>`.
+        // A subtle one-line footer: the new snapshot id is the handle for
+        // `yolo travel <id>` to return here later.
         Some(gen_id) => println!(
-            "\n{} {}",
-            format!("snapshot [{gen_id}]").cyan().bold(),
+            "{} {}",
+            "yolo:".cyan(),
             format!(
-                "· {total} staged change{} · travel {gen_id} to return",
+                "snapshot [{gen_id}] · {total} staged change{} · yolo travel {gen_id} to return",
                 crate::utils::plural(total)
             )
             .dimmed()

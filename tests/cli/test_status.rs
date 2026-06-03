@@ -143,3 +143,33 @@ fn status_defaults_to_latest_snapshot() {
     assert!(full.contains("a.txt"), "--full should show a.txt: {full}");
     assert!(full.contains("b.txt"), "--full should show b.txt: {full}");
 }
+
+/// The default view diffs vs the PREVIOUS snapshot: a staged-only file deleted
+/// in a later snapshot shows as "deleted". But `--full` diffs vs the base,
+/// where that file never existed, so it nets to nothing.
+#[test]
+fn delete_of_staged_file_shows_vs_prev_but_not_full() {
+    let s = YoloSession::new().expect("session setup");
+
+    // Add a brand-new file (absent from base) and snapshot it.
+    fs::write(s.mnt_path("staged_only.txt"), "hi\n").expect("write");
+    s.cli(&["snapshot", "c1"]).expect("snapshot c1");
+
+    // Delete it, then snapshot so it sits in its own segment.
+    fs::remove_file(s.mnt_path("staged_only.txt")).expect("rm");
+    s.cli(&["snapshot", "c2"]).expect("snapshot c2");
+
+    // Default status is vs the previous snapshot (c1, where it existed).
+    let status = s.cli(&["status"]).expect("status");
+    assert!(
+        status.contains("staged_only.txt") && status.contains("deleted"),
+        "default status should show the file deleted vs prev snapshot: {status}"
+    );
+
+    // --full is vs base: the file never existed there, so nothing nets out.
+    let full = s.cli(&["status", "--full"]).expect("status --full");
+    assert!(
+        !full.contains("staged_only.txt"),
+        "--full (vs base) should show nothing for a staged-only add+delete: {full}"
+    );
+}
