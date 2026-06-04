@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn create_then_delete_keeps_no_preimage() {
-        // Net tombstone, but first touch (the create) has no pre-image — diff.rs
+        // Net tombstone, but first touch (the create) has no pre-image — review.rs
         // classifies that as a no-op and skips it.
         let cs = collect(vec![stage("/a", 1, None), delete("/a", Some("/a"))]);
         let c = find(&cs, "/a").unwrap();

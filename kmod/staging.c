@@ -200,7 +200,7 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 
 	/* Capture the pre-image — the lower we're about to copy up — before the
 	 * lower_path is swapped to the new inode below. Its absolute path lets
-	 * `yolo diff` read the previous-snapshot content in O(segment). */
+	 * `yolo review --diff` read the previous-snapshot content in O(segment). */
 	preimage = yolo_lower_abspath(dentry, pre_buf, sizeof(pre_buf));
 
 	err = yolo_inode_alloc(sbi, &ino, &inode_path,

@@ -1,6 +1,6 @@
 #!/bin/bash
-# YoloFS walkthrough: run commands in a staging overlay, see what changed, then
-# keep or discard — plus permission gating and time travel. Uses the
+# YoloFS walkthrough: run commands in a staging overlay, review what changed,
+# rewind through snapshots, and gate access with permission rules. Uses the
 # yolofs.toml in this directory.
 set -euo pipefail
 cd "$(dirname "$0")/example"
@@ -21,20 +21,36 @@ section "Setup"
 run yolo reload
 run yolo mount
 
-section "Run a command, see what changed, then keep or discard it"
-note "'yolo -- <cmd>' runs <cmd> in a staging overlay and shows what changed."
+section "Stage a change, review it, then keep or discard"
+note "'yolo -- <cmd>' runs <cmd> in a staging overlay and prints what it changed."
 run yolo -- sh -c 'echo "hello, yolofs" > greeting.txt'
-note "'commit' writes the staged change out to the real file."
+note "'review' summarizes the staged changes; '--diff' shows the content."
+run yolo review
+run yolo review --diff
+note "'commit' writes staging out to the real files."
 run yolo commit
 run cat greeting.txt
 note "'abort' throws staging away instead — the real directory is never touched."
 run yolo -- sh -c 'echo oops > mistake.txt'
 run yolo abort --force
 
+section "Snapshots, history & travel"
+note "Every run auto-snapshots, so you can review across them and rewind."
+run yolo -- sh -c 'echo step1 > step1.txt'
+run yolo -- sh -c 'echo step2 > step2.txt'
+note "'review all' is everything vs base; '--each' breaks it out per snapshot."
+run yolo review all
+run yolo review --each
+note "'travel' rewinds the working tree to a snapshot — step2 disappears."
+run yolo travel 1
+run yolo -- sh -c 'ls step*.txt'
+note "'timeline' is the snapshot graph; after travel the abandoned branch is dimmed."
+run yolo timeline
+
 section "Permission rules & the 'yolo watch' daemon"
 echo secret > secret.txt
 echo token  > apikey.txt
-note "'deny' blocks a path; the attempt is logged under 'Observed accesses'."
+note "'deny' blocks a path; the attempt is logged as an access note."
 run yolo rule deny secret.txt
 run yolo -- sh -c 'cat secret.txt' || true
 note "'ask' defers to the 'yolo watch' daemon (no daemon => denied). Interactively"
@@ -47,15 +63,6 @@ run yolo -- sh -c 'cat apikey.txt'
 kill "$watch_pid" 2>/dev/null || true
 wait "$watch_pid" 2>/dev/null || true
 
-section "Snapshots & time travel"
-note "Every run auto-checkpoints, so you can rewind to any earlier point."
-run yolo -- sh -c 'echo v1 > notes.txt'
-run yolo -- sh -c 'echo v2 >> notes.txt'
-run yolo timeline
-note "'travel' rewinds the working tree to snapshot 1 ('yolo exec' runs quietly)."
-run yolo travel 1
-run yolo exec -- cat notes.txt
-
 section "Teardown"
 run yolo abort --force
 run yolo unmount
@@ -64,4 +71,4 @@ run yolo unload
 # remove the files the walkthrough created.
 yolo rule unset secret.txt >/dev/null 2>&1 || true
 yolo rule unset apikey.txt >/dev/null 2>&1 || true
-rm -f greeting.txt secret.txt apikey.txt notes.txt
+rm -f greeting.txt secret.txt apikey.txt step1.txt step2.txt mistake.txt
