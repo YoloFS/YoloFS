@@ -1,5 +1,5 @@
 mod test_abort;
-mod test_audit;
+mod test_journal;
 mod test_commit;
 mod test_diff;
 mod test_ioctl_errors;

@@ -104,7 +104,7 @@ impl Op {
 /// An observational note — does not affect overlay state, only audit.
 ///
 /// Emitted by the kernel and ignored by commit/abort/diff/replay; only
-/// `yolo audit` surfaces them. The `decision` is a [`Perm`](crate::perm::Perm)
+/// `yolo journal` surfaces them. The `decision` is a [`Perm`](crate::perm::Perm)
 /// (the unified permission type); journal-encoded as a single letter.
 ///
 /// - `Ask` — an `ask` path was resolved to `decision` (by the daemon or the

@@ -1,17 +1,21 @@
-// yolo CLI — audit.rs
+// yolo CLI — journal.rs
 //
-// `yolo audit`                — full session history (every record, dead branches dimmed).
-// `yolo audit --path <path>`  — trace operations on a specific file.
+// `yolo journal`                  — the raw record log over a range (every op +
+//                                   access note, dead branches dimmed).
+// `yolo journal [<id>|a..b|all]`  — scope to a snapshot / range (review's grammar).
+// `yolo journal -- <path>`        — trace operations on a specific file.
+//
+// The curated net-change view is `yolo review`; this is the raw underside.
 
 use crate::journal::{self, Journal};
 use anyhow::Result;
 use colored::Colorize;
 
-/// Display the journal with dead branches dimmed. Defaults to the latest
-/// snapshot's records; `--full` shows the entire history.
-pub fn run(path_filter: Option<&str>, full: bool) -> Result<()> {
+/// Display the raw journal records with dead branches dimmed, over the same
+/// `[<id>|a..b|all]` range grammar as `review` (default: the latest snapshot).
+pub fn run(range: Option<&str>, path: Option<&str>) -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
-    let path_filter = path_filter.map(crate::utils::normalize_path);
+    let path_filter = path.map(crate::utils::normalize_path);
 
     let journal = Journal::read(&yolofs)?;
 
@@ -20,12 +24,7 @@ pub fn run(path_filter: Option<&str>, full: bool) -> Result<()> {
         return Ok(());
     }
 
-    let num = journal.segments.len();
-    let (start, end, scoped) = if full {
-        (0, num, false)
-    } else {
-        journal.latest_range()
-    };
+    let (start, end) = super::review::parse_range(range, false, &journal)?;
 
     for seg_idx in start..end {
         let segment = &journal.segments[seg_idx];
@@ -70,10 +69,12 @@ pub fn run(path_filter: Option<&str>, full: bool) -> Result<()> {
         }
     }
 
-    if scoped {
+    // In the default (latest) view, point at the full log when older history is
+    // hidden (`start > 0`).
+    if range.is_none() && start > 0 {
         println!(
             "{}",
-            "(latest snapshot — run `yolo audit --full` for the full history)".dimmed()
+            "(latest snapshot — `yolo journal all` for the full log)".dimmed()
         );
     }
 

@@ -37,7 +37,7 @@ impl Changeset {
     pub fn collect(journal: &Journal, start: usize, end: usize, path: Option<&str>) -> Self {
         // One O(segment) pass over the live records collects:
         //   * `notes` — observational A/B accesses, deduped (a summary shouldn't
-        //     repeat what `yolo audit` lists in full).
+        //     repeat what `yolo journal` lists in full).
         //   * `preimage` — per path, the pre-image from its *first* touch in the
         //     range. First-touch (not the net action) is what matters: a
         //     create+delete must let the create's "no pre-image" win, and for a

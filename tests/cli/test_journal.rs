@@ -4,23 +4,23 @@ use std::fs;
 use yolofs::config::Config;
 use yolofs::perm::Perm;
 
-/// `yolofs audit` shows file operations.
+/// `yolofs journal` shows file operations.
 #[test]
-fn audit_shows_added_file() {
+fn journal_shows_added_file() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "content\n").expect("write");
 
-    let output = s.cli(&["audit"]).expect("audit");
+    let output = s.cli(&["journal"]).expect("journal");
     assert!(
         output.contains("hello.txt"),
         "should show record for hello.txt: {output}"
     );
 }
 
-/// `yolofs audit` shows snapshot and travel records.
+/// `yolofs journal` shows snapshot and travel records.
 #[test]
-fn audit_shows_snapshots_and_travels() {
+fn journal_shows_snapshots_and_travels() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
@@ -29,7 +29,7 @@ fn audit_shows_snapshots_and_travels() {
     s.cli(&["snapshot", "chk2"]).expect("snapshot");
     s.cli(&["travel", "chk1"]).expect("travel");
 
-    let output = s.cli(&["audit", "--full"]).expect("audit");
+    let output = s.cli(&["journal", "all"]).expect("journal");
     assert!(output.contains("chk1"), "should show chk1: {output}");
     assert!(output.contains("chk2"), "should show chk2: {output}");
     assert!(
@@ -38,9 +38,9 @@ fn audit_shows_snapshots_and_travels() {
     );
 }
 
-/// `yolofs audit` snapshots unreachable records with (unreachable) suffix after travel.
+/// `yolofs journal` snapshots unreachable records with (unreachable) suffix after travel.
 #[test]
-fn audit_dims_unreachable_after_travel() {
+fn journal_dims_unreachable_after_travel() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
@@ -49,7 +49,7 @@ fn audit_dims_unreachable_after_travel() {
     s.cli(&["snapshot", "chk2"]).expect("snapshot");
     s.cli(&["travel", "chk1"]).expect("travel");
 
-    let output = s.cli(&["audit"]).expect("audit");
+    let output = s.cli(&["journal"]).expect("journal");
     let unreachable: Vec<&str> = output
         .lines()
         .filter(|l| l.contains("(unreachable)"))
@@ -66,16 +66,16 @@ fn audit_dims_unreachable_after_travel() {
     );
 }
 
-/// `yolofs audit --path` filters to a specific file.
+/// `yolofs journal --path` filters to a specific file.
 #[test]
-fn audit_path_filter() {
+fn journal_path_filter() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("a.txt"), "aaa\n").expect("write a");
     fs::write(s.mnt_path("b.txt"), "bbb\n").expect("write b");
 
     // CLI runs from session root; normalize_path resolves relative to cwd
-    let output = s.cli(&["audit", "--path", "a.txt"]).expect("audit --path");
+    let output = s.cli(&["journal", "--", "a.txt"]).expect("journal --path");
     assert!(output.contains("a.txt"), "should include a.txt: {output}");
     // b.txt data records should be filtered out (only structural records pass through)
     let data_lines: Vec<&str> = output.lines().filter(|l| l.contains("b.txt")).collect();
@@ -85,12 +85,12 @@ fn audit_path_filter() {
     );
 }
 
-/// `yolofs audit` surfaces observational notes — a denied access (B note)
+/// `yolofs journal` surfaces observational notes — a denied access (B note)
 /// must appear as "blocked <path>". This is the complement of
 /// `block_records_invisible_in_status_and_diff`: notes are hidden from
-/// status/diff but visible in audit.
+/// status/diff but visible in journal.
 #[test]
-fn audit_shows_blocked_note() {
+fn journal_shows_blocked_note() {
     let s = YoloSession::new_with_config(Config {
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
@@ -100,23 +100,23 @@ fn audit_shows_blocked_note() {
     // Denied read emits a B note for hello.txt (no S/D/R action).
     let _ = fs::read_to_string(s.mnt_path("hello.txt"));
 
-    let output = s.cli(&["audit"]).expect("audit");
+    let output = s.cli(&["journal"]).expect("journal");
     assert!(
         output.contains("blocked"),
-        "audit should show the blocked note: {output}"
+        "journal should show the blocked note: {output}"
     );
     assert!(
         output.contains("hello.txt"),
-        "audit should name the blocked path: {output}"
+        "journal should name the blocked path: {output}"
     );
 }
 
-/// `yolofs audit` on a fresh session shows no records.
+/// `yolofs journal` on a fresh session shows no records.
 #[test]
-fn audit_fresh_session() {
+fn journal_fresh_session() {
     let s = YoloSession::new().expect("session setup");
 
-    let output = s.cli(&["audit"]).expect("audit");
+    let output = s.cli(&["journal"]).expect("journal");
     // A fresh session has no records at all
     assert!(
         !output.contains("added") && !output.contains("modified") && !output.contains("deleted"),

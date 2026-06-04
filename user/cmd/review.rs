@@ -226,8 +226,13 @@ fn render(changeset: &Changeset, yolofs: &Path, root: &Path) -> usize {
 /// Translate a positional id/range spec into a segment range `[start, end)`,
 /// delegating the resolution to `MarkerIndex::segment_range`. Ids are numbers
 /// only (`0` = base); names are rejected here so the positional can't be
-/// mistaken for a path — the `--diff` path filter is passed after `--`.
-fn parse_range(spec: Option<&str>, each: bool, journal: &Journal) -> Result<(usize, usize)> {
+/// mistaken for a path — the `--diff` path filter is passed after `--`. Shared
+/// with `yolo journal`, which takes the same `[<id>|a..b|all]` grammar.
+pub(crate) fn parse_range(
+    spec: Option<&str>,
+    each: bool,
+    journal: &Journal,
+) -> Result<(usize, usize)> {
     let num = journal.segments.len();
     let Some(spec) = spec else {
         // No spec: the latest segment (vs prev), or the whole session under

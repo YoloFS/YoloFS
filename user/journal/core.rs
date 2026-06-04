@@ -73,7 +73,7 @@ impl Journal {
         Ok(Self::new(parse::read(yolo_dir)?))
     }
 
-    /// Whether the segment with this gen_id is alive (for audit/timeline display).
+    /// Whether the segment with this gen_id is alive (for journal/timeline display).
     pub fn is_alive(&self, gen_id: usize) -> bool {
         self.alive.get(gen_id).copied().unwrap_or(false)
     }

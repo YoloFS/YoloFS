@@ -3,7 +3,7 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use yolofs::cmd::{
-    abort, audit, commit, exec, init, load, mount, review, snapshot, timeline, travel, watch,
+    abort, commit, exec, init, journal, load, mount, review, snapshot, timeline, travel, watch,
 };
 use yolofs::config;
 use yolofs::perm;
@@ -96,14 +96,13 @@ enum Command {
     },
     /// Show snapshot/travel timeline (unreachable branches dimmed)
     Timeline,
-    /// Show session history (latest snapshot by default; --full for all)
-    Audit {
-        /// Filter to operations on a specific path
-        #[arg(long)]
+    /// Raw journal: every op + access note over a range (vs `review`'s net view)
+    Journal {
+        /// Snapshot id or range (see `review`); `all` = the full log
+        range: Option<String>,
+        /// Limit to ops on a single file, passed after `--` (e.g. `-- foo.txt`)
+        #[arg(last = true)]
         path: Option<String>,
-        /// Show the entire journal (not just the latest snapshot)
-        #[arg(long)]
-        full: bool,
     },
     // ── Permissions ──────────────────────────────────────────────────
     /// Manage permission rules
@@ -208,7 +207,9 @@ fn run_cli() -> anyhow::Result<u8> {
         }
         Some(Command::Travel { name }) => travel::run(&name)?,
         Some(Command::Timeline) => timeline::run()?,
-        Some(Command::Audit { path, full }) => audit::run(path.as_deref(), full)?,
+        Some(Command::Journal { range, path }) => {
+            journal::run(range.as_deref(), path.as_deref())?
+        }
         Some(Command::Rule { action }) => match action {
             RuleAction::List => config::list_rules()?,
             RuleAction::Resolve { path } => config::resolve_rule(&path)?,
@@ -266,7 +267,7 @@ fn print_overview() {
             ("snapshot", "Create a snapshot"),
             ("travel",   "Travel to a previous snapshot"),
             ("timeline", "Show the snapshot/travel timeline"),
-            ("audit",    "Show session history (latest snapshot; --full for all)"),
+            ("journal",  "Raw record log over a range (`-- path` to filter)"),
         ]),
         ("Permissions", &[
             ("rule",     "Manage permission rules (allow/read/deny/hide/ask)"),
