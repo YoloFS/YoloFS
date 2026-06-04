@@ -86,7 +86,7 @@ $ yolo timeline
 # 'deny' blocks a path; the attempt is logged as an access note.
 
 $ yolo rule deny secret.txt
-rule set: secret.txt = deny (live)
+rule applied: secret.txt = deny
 
 $ yolo -- sh -c 'cat secret.txt'
 cat: secret.txt: Permission denied
@@ -98,7 +98,7 @@ secret.txt (blocked read)
 # it prompts [a]llow/[r]ead/[h]ide/[d]eny; here it runs --allow-all in the background.
 
 $ yolo rule ask apikey.txt
-rule set: apikey.txt = ask (live)
+rule applied: apikey.txt = ask
 
 $ yolo watch --allow-all &
 yolo: watching for permission requests — allowing all (Ctrl-C to stop)

@@ -298,15 +298,11 @@ pub fn set_rule(path: &str, perm: Perm) -> Result<()> {
         let resolved = resolve_through_mount(&abs_path, &mnt);
         let ctl_file = ioctl::open(&yolofs)?;
         ioctl::set_rule(&ctl_file, &resolved, perm.to_ioctl())?;
-        eprintln!(
-            "{} {} = {} {}",
-            "rule set:".green().bold(),
-            path,
-            perm,
-            "(live)".green()
-        );
+        // Pushed to the running mount: applied now. Otherwise it's only written
+        // to yolofs.toml and takes effect at the next mount — say which.
+        eprintln!("{} {path} = {perm}", "rule applied:".green().bold());
     } else {
-        eprintln!("{} {} = {}", "rule set:".green().bold(), path, perm);
+        eprintln!("{} {path} = {perm}", "rule saved:".dimmed());
     }
     Ok(())
 }
@@ -327,14 +323,11 @@ pub fn unset_rule(path: &str) -> Result<()> {
         let resolved = resolve_through_mount(&abs_path, &mnt);
         let ctl_file = ioctl::open(&yolofs)?;
         ioctl::set_rule(&ctl_file, &resolved, ioctl::YOLO_PERM_UNSET)?;
-        eprintln!(
-            "{} {} {}",
-            "rule unset:".yellow().bold(),
-            path,
-            "(live)".yellow()
-        );
+        // An unset removes the path's own rule (it reverts to inheriting from its
+        // ancestors); report that, plus whether it's applied now or saved.
+        eprintln!("{} {path} = unset", "rule applied:".green().bold());
     } else {
-        eprintln!("{} {}", "rule unset:".yellow().bold(), path);
+        eprintln!("{} {path} = unset", "rule saved:".dimmed());
     }
     Ok(())
 }
