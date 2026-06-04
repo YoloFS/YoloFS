@@ -165,7 +165,14 @@ fn run_cli() -> anyhow::Result<u8> {
         if yolofs::utils::inside_mount() {
             anyhow::bail!("yolo cannot run inside the mount — run it from outside");
         }
-        return run_and_review(&raw[pos + 1..]);
+        let cmd = &raw[pos + 1..];
+        // A `yolo` subcommand is host-side, so it can't be sandboxed — gate it
+        // instead (the agent may inspect/navigate; commit/abort/rule/… are the
+        // human's). Everything else runs sandboxed, then we show what changed.
+        if cmd.first().map(String::as_str) == Some("yolo") {
+            return run_agent_yolo(cmd);
+        }
+        return run_and_review(cmd);
     }
 
     let cli = Cli::parse();
@@ -177,7 +184,35 @@ fn run_cli() -> anyhow::Result<u8> {
         anyhow::bail!("yolo cannot run inside the mount — run it from outside");
     }
 
-    match cli.command {
+    dispatch(cli.command)
+}
+
+/// Subcommands the agent may run via its hook's `yolo -- yolo <sub>` — read and
+/// navigation only. Everything else (commit/abort/rule/session control/…) is the
+/// human's, so this is default-deny: an unlisted or unknown subcommand is
+/// rejected. Centralizing the policy here keeps agent hooks trivial
+/// (`yolo -- <cmd>`) and prevents them from drifting.
+const AGENT_ALLOWED: &[&str] = &["review", "journal", "timeline", "travel", "snapshot"];
+
+/// The agent invoked `yolo <sub> …` (its hook wraps every command as
+/// `yolo -- <cmd>`). `yolo` is host-side, so the allowed ones run directly — not
+/// sandboxed — and the rest are rejected.
+fn run_agent_yolo(cmd: &[String]) -> anyhow::Result<u8> {
+    match cmd.get(1).map(String::as_str) {
+        Some(sub) if AGENT_ALLOWED.contains(&sub) => {
+            dispatch(Cli::parse_from(cmd.iter().map(String::as_str)).command)
+        }
+        other => anyhow::bail!(
+            "`yolo {}` is reserved for the human; the agent may run: {}",
+            other.unwrap_or(""),
+            AGENT_ALLOWED.join(", ")
+        ),
+    }
+}
+
+/// Dispatch a parsed command to its handler. Returns the process exit code.
+fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
+    match command {
         Some(Command::Init { agents }) => init::run(&std::env::current_dir()?, &agents)?,
         Some(Command::Load) => {
             if !load::load()? {

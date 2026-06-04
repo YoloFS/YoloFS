@@ -302,3 +302,28 @@ fn run_yolo_inside_mount_is_rejected() {
         "expected inside-mount rejection, got: {err}"
     );
 }
+
+/// `yolo -- yolo <sub>` (the agent path) gates which yolo commands an agent may
+/// run: read/navigation pass through; commit/abort/rule/etc. are the human's.
+#[test]
+fn agent_yolo_subcommands_are_gated() {
+    let session = YoloSession::new().expect("session setup");
+
+    // Allowed: `review` runs (fresh session ⇒ "No changes staged").
+    let (ok, out, _err) = session
+        .cli_output(&["--", "yolo", "review"])
+        .expect("yolo -- yolo review");
+    assert!(ok, "review should be allowed for the agent: {out}");
+
+    // Blocked: commit/abort/rule are reserved for the human.
+    for sub in ["commit", "abort", "rule"] {
+        let (ok, _out, err) = session
+            .cli_output(&["--", "yolo", sub])
+            .expect("blocked yolo subcommand");
+        assert!(!ok, "`yolo {sub}` should be blocked for the agent: {err}");
+        assert!(
+            err.contains("reserved for the human"),
+            "expected the reserved-for-human message for `{sub}`: {err}"
+        );
+    }
+}

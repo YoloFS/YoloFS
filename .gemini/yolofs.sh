@@ -8,15 +8,7 @@ set -euo pipefail
 
 input=$(cat)
 command=$(echo "$input" | jq -r '.tool_input.command // ""')
-commit_pattern='(^|[^[:alnum:]_-])yolo[[:space:]]+commit([[:space:]]|$)'
-
-if [[ "$command" =~ $commit_pattern ]]; then
-  updated_command="printf '%s\n' 'yolo commit is reserved for human approval; leave staged changes for review.'; yolo status; exit 2"
-elif [[ "$command" =~ ^[[:space:]]*yolo([[:space:]]|$) ]]; then
-  updated_command="$command"
-else
-  updated_command="yolo exec -- $command"
-fi
+updated_command="yolo -- $command"
 
 jq -n --arg cmd "$updated_command" '{
   hookSpecificOutput: {
