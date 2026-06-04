@@ -19,13 +19,13 @@ fn write_triggers_cow() {
     assert_eq!(base, "base content\n");
 
     // The change should be visible via `yolofs status` and `yolofs diff`
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(
         status.contains("hello.txt"),
         "status should show modified file: {status}"
     );
 
-    let diff = s.cli(&["diff"]).expect("diff");
+    let diff = s.cli(&["review", "--diff"]).expect("diff");
     assert!(
         diff.contains("+modified"),
         "diff should show the new content: {diff}"

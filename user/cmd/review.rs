@@ -1,11 +1,11 @@
 // yolo CLI — review.rs
 //
-// Reviewing staged changes: `yolo status` (summary), `yolo diff` (git-style
-// diff), and the post-`yolo -- <cmd>` review — all render the same `Changeset`
-// model over a snapshot range.
+// Reviewing staged changes: `yolo review` (a summary, or a git-style diff with
+// `--diff`) and the post-`yolo -- <cmd>` review — both render the same
+// `Changeset` model over a snapshot range.
 //
-// status/diff take an optional `[<id>[..<id>]]` spec selecting which snapshots
-// to show (default: the latest, vs prev) and `--each` to expand a range into one
+// `review` takes an optional `[<id>[..<id>]]` spec selecting which snapshots to
+// show (default: the latest, vs prev) and `--each` to expand a range into one
 // stanza per consecutive snapshot. See the id/range grammar below.
 
 use crate::changeset::{Change, Changeset};
@@ -83,8 +83,8 @@ fn rel(path: &str, root: &Path) -> String {
 // ── Classification (shared by status summary and diff bodies) ─────────
 
 /// How a net change reads against the baseline. The single source of truth for
-/// both `status` (one-line summary) and `diff` (unified body) — they must agree
-/// on the verb and differ only in whether they also print content.
+/// both the summary line and the `--diff` body — they must agree on the verb and
+/// differ only in whether they also print content.
 #[derive(Clone, Copy)]
 enum ChangeKind {
     Added,
@@ -179,8 +179,8 @@ fn print_diff(yolofs: &Path, root: &Path, change: &Change) -> bool {
 
 /// The changes in a set that actually render, each with its kind. Drops what
 /// shows nothing — a no-op delete (create+delete that nets out) or a passthrough
-/// scaffold. The single definition of "what shows," shared by `status`, `diff`,
-/// and the `--each` emptiness check.
+/// scaffold. The single definition of "what shows," shared by the summary, the
+/// `--diff` body, and the `--each` emptiness check.
 fn classified(changeset: &Changeset) -> Vec<(&Change, ChangeKind)> {
     changeset
         .changes
@@ -189,7 +189,7 @@ fn classified(changeset: &Changeset) -> Vec<(&Change, ChangeKind)> {
         .collect()
 }
 
-/// `status` view: one classified line per change, presence taken from the
+/// Summary view: one classified line per change, presence taken from the
 /// change's pre-image (no tree rebuild, no base stat — the O(segment) path).
 /// Returns how many were shown (no-op deletes don't count).
 fn render_summary(changeset: &Changeset, root: &Path) -> usize {
@@ -200,7 +200,7 @@ fn render_summary(changeset: &Changeset, root: &Path) -> usize {
     items.len()
 }
 
-/// `diff` view: each change as a unified-diff stanza, old content from its
+/// `--diff` view: each change as a unified-diff stanza, old content from its
 /// pre-image. Returns how many were shown.
 fn render(changeset: &Changeset, yolofs: &Path, root: &Path) -> usize {
     let mut shown = 0;
@@ -219,19 +219,19 @@ fn render(changeset: &Changeset, yolofs: &Path, root: &Path) -> usize {
 //   (none)  → latest segment (vs prev); the whole session under `--each`
 //   N       → snapshot N's own change, `prev(N)..N`
 //   a..b    → state(a) → state(b); empty end means base (0) / tip
-//   ..      → the full range, base..tip (everything vs base); same as `0..`
-// Ids are numbers (0 is the base/"(initial)" marker). `diff`'s optional path
-// filter is passed after `--`, so the positional is unambiguously a range.
+//   all     → the whole session, base..tip (everything vs base); same as `..`
+// Ids are numbers (0 is the base/"(initial)" marker). The optional `--diff`
+// path filter is passed after `--`, so the positional is unambiguously a range.
 
 /// Translate a positional id/range spec into a segment range `[start, end)`,
 /// delegating the resolution to `MarkerIndex::segment_range`. Ids are numbers
 /// only (`0` = base); names are rejected here so the positional can't be
-/// mistaken for a path — `diff`'s path filter is passed after `--`.
+/// mistaken for a path — the `--diff` path filter is passed after `--`.
 fn parse_range(spec: Option<&str>, each: bool, journal: &Journal) -> Result<(usize, usize)> {
     let num = journal.segments.len();
     let Some(spec) = spec else {
         // No spec: the latest segment (vs prev), or the whole session under
-        // `--each` so `yolo diff --each` walks every snapshot.
+        // `--each` so `yolo review --each` walks every snapshot.
         return Ok(if each {
             (0, num)
         } else {
@@ -239,6 +239,10 @@ fn parse_range(spec: Option<&str>, each: bool, journal: &Journal) -> Result<(usi
             (start, end)
         });
     };
+    // `all` — the readable name for the whole session (`..`), everything vs base.
+    if spec == "all" {
+        return Ok((0, num));
+    }
     // Endpoints must be numeric (empty = an open end).
     let numeric = |t: &str| t.is_empty() || t.bytes().all(|b| b.is_ascii_digit());
     match spec.split_once("..") {
@@ -265,52 +269,42 @@ fn open_session() -> Result<(PathBuf, PathBuf, Journal)> {
     Ok((yolofs, root, journal))
 }
 
-/// `yolo status [<id>[..<id>]] [--each]` — summary of staged changes plus
-/// observed-access notes, classified vs the range's start (the pre-image
-/// baseline — no previous-tree rebuild; O(segment), not O(journal)).
-pub fn run_status(range: Option<&str>, each: bool) -> Result<()> {
-    let (yolofs, root, journal) = open_session()?;
-    let (start, end) = parse_range(range, each, &journal)?;
-    if each {
-        render_each(&journal, &yolofs, &root, None, start, end, false);
-        return Ok(());
-    }
-    let changeset = Changeset::collect(&journal, start, end, None);
-    let total = render_summary(&changeset, &root);
-
-    if total == 0 {
-        println!("{}", format!("No changes{}.", range_label(range)).yellow());
-    } else {
-        print_total(total);
-    }
-    if !changeset.notes.is_empty() {
-        print_notes(&changeset.notes, &root);
-    }
-    // In the default view, point at the vs-base range and the per-snapshot view.
-    if total > 0 && range.is_none() {
-        print_base_hint(false);
-    }
-    Ok(())
-}
-
-/// `yolo diff [<id>[..<id>]] [--each] [<path>]` — unified diff of the range.
-/// Returns whether there were any changes.
-pub fn run_diff(range: Option<&str>, path: Option<&str>, each: bool) -> Result<bool> {
+/// `yolo review [<id>[..<id>]] [--diff] [--each] [-- <path>]` — review staged
+/// changes over a range. The default is a one-line-per-change summary; `--diff`
+/// renders the git-style unified body instead. Everything is classified vs the
+/// range's start (the pre-image baseline — no previous-tree rebuild; O(segment),
+/// not O(journal)).
+pub fn run_review(range: Option<&str>, path: Option<&str>, each: bool, diff: bool) -> Result<()> {
     let (yolofs, root, journal) = open_session()?;
     let (start, end) = parse_range(range, each, &journal)?;
     let path = path.map(crate::utils::normalize_path);
     if each {
-        return Ok(render_each(&journal, &yolofs, &root, path.as_deref(), start, end, true));
+        render_each(&journal, &yolofs, &root, path.as_deref(), start, end, diff);
+        return Ok(());
     }
     let changeset = Changeset::collect(&journal, start, end, path.as_deref());
-    let total = render(&changeset, &yolofs, &root);
+    let total = if diff {
+        render(&changeset, &yolofs, &root)
+    } else {
+        render_summary(&changeset, &root)
+    };
 
     if total == 0 {
         println!("{}", format!("No changes{}.", range_label(range)).yellow());
-    } else if range.is_none() {
-        print_base_hint(true);
+    } else if !diff {
+        // The summary closes with a count; the diff body speaks for itself.
+        print_total(total);
     }
-    Ok(total > 0)
+    // Observed-access notes ride along the summary, not the diff body (which
+    // shows staged content only).
+    if !diff && !changeset.notes.is_empty() {
+        print_notes(&changeset.notes, &root);
+    }
+    // In the default view, point at the vs-base range and the per-snapshot view.
+    if total > 0 && range.is_none() {
+        print_base_hint();
+    }
+    Ok(())
 }
 
 /// `--each`: one stanza per consecutive snapshot in `[start, end)`. Each live,
@@ -352,7 +346,7 @@ fn render_each(
         } else {
             render_summary(&changeset, root);
         }
-        if !changeset.notes.is_empty() {
+        if !verbose && !changeset.notes.is_empty() {
             print_notes(&changeset.notes, root);
         }
         shown_any = true;
@@ -406,7 +400,7 @@ pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
     Ok(())
 }
 
-/// Print observational notes (A/B) under `status`. These are denied or
+/// Print observational notes (A/B) under the review. These are denied or
 /// ask-resolved accesses recorded in the visible range — not staged changes,
 /// so they're listed separately and excluded from the staged-change count.
 fn print_notes(notes: &[Note], root: &Path) {
@@ -436,12 +430,10 @@ fn print_notes(notes: &[Note], root: &Path) {
 
 /// In the default view (latest snapshot, something staged), point at the two
 /// other common shapes: the vs-base range and the per-snapshot expansion.
-fn print_base_hint(verbose: bool) {
-    let cmd = if verbose { "diff" } else { "status" };
+fn print_base_hint() {
     println!(
         "{}",
-        format!("(latest snapshot · `yolo {cmd} ..` for everything vs base · `--each` per snapshot)")
-            .dimmed()
+        "(latest snapshot · more: `yolo review [<id>|a..b|all] [--diff] [--each]`)".dimmed()
     );
 }
 

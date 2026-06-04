@@ -381,9 +381,9 @@ fn ask_resolved_to_default_deny_emits_block() {
     );
 }
 
-/// B records surface in `yolo status` (as observed-but-not-staged accesses)
-/// but never in `yolo diff`, which shows staged content only. Repeated
-/// identical blocks are deduped to a single status line.
+/// B records surface in `yolo review` (as observed-but-not-staged accesses)
+/// but never in `yolo review --diff`, which shows staged content only. Repeated
+/// identical blocks are deduped to a single summary line.
 #[test]
 fn block_records_shown_in_status_hidden_in_diff() {
     use crate::helpers::YOLO_BIN;
@@ -397,15 +397,15 @@ fn block_records_shown_in_status_hidden_in_diff() {
     assert!(!notes(&j).is_empty(), "expected B records to be emitted");
 
     let status = std::process::Command::new(YOLO_BIN)
-        .args(["status"])
+        .args(["review"])
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
         .output()
-        .expect("yolo status");
+        .expect("yolo review");
     let stdout = String::from_utf8_lossy(&status.stdout);
     assert!(
         stdout.contains("blocked") && stdout.contains("hello.txt"),
-        "yolo status should surface the B record: {stdout}"
+        "yolo review should surface the B record: {stdout}"
     );
     // Three identical blocked reads collapse to one status line.
     assert_eq!(
@@ -415,19 +415,19 @@ fn block_records_shown_in_status_hidden_in_diff() {
     );
 
     let diff = std::process::Command::new(YOLO_BIN)
-        .args(["diff"])
+        .args(["review", "--diff"])
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
         .output()
-        .expect("yolo diff");
+        .expect("yolo review --diff");
     let stdout = String::from_utf8_lossy(&diff.stdout);
     assert!(
         !stdout.contains("blocked") && !stdout.contains("hello.txt"),
-        "yolo diff must not show B records (staged content only): {stdout}"
+        "yolo review --diff must not show B records (staged content only): {stdout}"
     );
 }
 
-/// A (ask-resolved) notes also surface in `yolo status`. With no daemon the
+/// A (ask-resolved) notes also surface in `yolo review`. With no daemon the
 /// ask resolves to deny, producing an A note that status should display.
 #[test]
 fn ask_records_shown_in_status() {
@@ -445,10 +445,10 @@ fn ask_records_shown_in_status() {
         "expected an A note to be emitted"
     );
 
-    let out = s.cli(&["status"]).expect("yolo status");
+    let out = s.cli(&["review"]).expect("yolo review");
     assert!(
         out.contains("ask") && out.contains("hello.txt"),
-        "yolo status should surface the A note: {out}"
+        "yolo review should surface the A note: {out}"
     );
 }
 

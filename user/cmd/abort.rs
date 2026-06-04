@@ -40,22 +40,17 @@ pub fn run(force: bool) -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
 
     let journal = Journal::read(&yolofs)?;
-    let tree = journal.into_tree();
-    if tree.is_empty() {
+    if !journal.has_staged_changes() {
         println!("{}", "Nothing to discard.".yellow());
         return Ok(());
     }
 
     if !force {
-        eprint!(
-            "{} ",
-            format!(
-                "Discard {} staged change{}? [y/N]:",
-                tree.len(),
-                crate::utils::plural(tree.len())
-            )
-            .bold()
+        eprintln!(
+            "{}",
+            "You have staged changes (run `yolo review` to see them).".yellow()
         );
+        eprint!("{} ", "Discard them all? [y/N]:".bold());
         io::stderr().flush().ok();
 
         let mut line = String::new();

@@ -37,7 +37,7 @@ fn delete_creates_status_entry() {
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(
         status.contains("hello.txt"),
         "status should show deleted file: {status}"

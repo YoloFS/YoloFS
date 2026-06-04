@@ -115,6 +115,19 @@ impl Journal {
         DirTree::build(self.into_live_segments_at(gen_id))
     }
 
+    /// Whether any live segment carries a staging action (S/D/R) — i.e. there
+    /// are staged changes to commit or discard. Cheaper than
+    /// `into_tree().is_empty()` (builds no tree, early-exits) and correctly
+    /// ignores what isn't a staged change: audit notes, snapshot/travel markers,
+    /// and changes a `travel` left behind in a dead segment.
+    pub fn has_staged_changes(&self) -> bool {
+        self.segments
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.is_alive(*i))
+            .any(|(_, seg)| seg.records.iter().any(|r| matches!(r, Record::Action(_))))
+    }
+
     /// Consume the journal and return owned live segments in `[start, end)`.
     /// When `start == 0` and `end == segments.len()`, returns all live segments.
     pub fn into_live_segments_range(
@@ -172,6 +185,45 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn has_staged_changes_ignores_notes_markers_and_dead() {
+        // Empty journal → nothing staged.
+        assert!(!Journal::new(vec![]).has_staged_changes());
+
+        // A bare note (e.g. a blocked access) is not a staged change.
+        let notes_only = Journal::new(vec![Record::Note(Note::Block {
+            path: "/etc/x".into(),
+            op: Op::Write,
+        })]);
+        assert!(!notes_only.has_staged_changes());
+
+        // A live stage counts.
+        let staged = Journal::new(vec![Record::Action(Action::Stage {
+            path: "/a".into(),
+            ino: 1,
+            preimage: None,
+        })]);
+        assert!(staged.has_staged_changes());
+
+        // A change a `travel` left in a dead segment does not count.
+        let traveled = Journal::new(vec![
+            Record::Marker(Marker::Snapshot {
+                gen_id: 1,
+                name: "c1".into(),
+            }),
+            Record::Action(Action::Stage {
+                path: "/a".into(),
+                ino: 1,
+                preimage: None,
+            }),
+            Record::Marker(Marker::Travel {
+                gen_id: 2,
+                target_gen: 1,
+            }),
+        ]);
+        assert!(!traveled.has_staged_changes());
+    }
 
     // ── Segmentation tests (migrated from segment.rs) ────────────────
 

@@ -5,7 +5,7 @@ use std::fs;
 fn status_empty() {
     let s = YoloSession::new().expect("session setup");
 
-    let output = s.cli(&["status"]).expect("status");
+    let output = s.cli(&["review"]).expect("status");
     assert!(output.contains("No changes staged"), "output: {output}");
 }
 
@@ -15,7 +15,7 @@ fn status_modified() {
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
 
-    let output = s.cli(&["status"]).expect("status");
+    let output = s.cli(&["review"]).expect("status");
     assert!(output.contains("modified"), "output: {output}");
     assert!(output.contains("hello.txt"), "output: {output}");
     assert!(output.contains("1 staged change"), "output: {output}");
@@ -28,7 +28,7 @@ fn status_multiple_changes() {
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
     fs::write(s.mnt_path("newfile.txt"), "new\n").unwrap();
 
-    let output = s.cli(&["status"]).expect("status");
+    let output = s.cli(&["review"]).expect("status");
     assert!(output.contains("hello.txt"), "output: {output}");
     assert!(output.contains("newfile.txt"), "output: {output}");
     assert!(output.contains("2 staged change"), "output: {output}");
@@ -40,7 +40,7 @@ fn status_deleted() {
 
     fs::remove_file(s.mnt_path("hello.txt")).unwrap();
 
-    let output = s.cli(&["status"]).expect("status");
+    let output = s.cli(&["review"]).expect("status");
     assert!(
         output.contains("deleted"),
         "status should show deleted: {output}"
@@ -55,7 +55,7 @@ fn status_renamed() {
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).unwrap();
 
-    let output = s.cli(&["status"]).expect("status");
+    let output = s.cli(&["review"]).expect("status");
     assert!(
         output.contains("renamed"),
         "status should show renamed: {output}"
@@ -78,7 +78,7 @@ fn status_after_travel_excludes_dead_zone() {
 
     s.cli(&["travel", "chk1"]).expect("travel");
 
-    let output = s.cli(&["status"]).expect("status");
+    let output = s.cli(&["review"]).expect("status");
     assert!(
         output.contains("hello.txt"),
         "snapshot change should appear: {output}"
@@ -103,7 +103,7 @@ fn status_at_snapshot_after_travel() {
 
     s.cli(&["travel", "chk1"]).expect("travel");
 
-    let output = s.cli(&["status", "1"]).expect("status 1");
+    let output = s.cli(&["review", "1"]).expect("status 1");
     assert!(
         output.contains("hello.txt"),
         "snapshot 1's change should appear: {output}"
@@ -114,7 +114,7 @@ fn status_at_snapshot_after_travel() {
     );
 }
 
-/// `yolo status` defaults to the latest snapshot's changes; `0..` shows
+/// `yolo review` defaults to the latest snapshot's changes; `0..` shows
 /// everything vs base, and the default view hints at it.
 #[test]
 fn status_defaults_to_latest_snapshot() {
@@ -125,7 +125,7 @@ fn status_defaults_to_latest_snapshot() {
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
     s.cli(&["snapshot", "chk2"]).expect("snapshot chk2");
 
-    let latest = s.cli(&["status"]).expect("status");
+    let latest = s.cli(&["review"]).expect("status");
     assert!(
         latest.contains("b.txt"),
         "latest should show b.txt: {latest}"
@@ -135,13 +135,14 @@ fn status_defaults_to_latest_snapshot() {
         "latest should NOT show the older a.txt: {latest}"
     );
     assert!(
-        latest.contains("vs base"),
-        "default view should hint at the vs-base range: {latest}"
+        latest.contains("--diff"),
+        "default view should hint at the other review options: {latest}"
     );
 
-    let full = s.cli(&["status", "0.."]).expect("status 0..");
-    assert!(full.contains("a.txt"), "0.. should show a.txt: {full}");
-    assert!(full.contains("b.txt"), "0.. should show b.txt: {full}");
+    // `all` is the readable name for everything vs base — shows both snapshots.
+    let full = s.cli(&["review", "all"]).expect("review all");
+    assert!(full.contains("a.txt"), "all should show a.txt: {full}");
+    assert!(full.contains("b.txt"), "all should show b.txt: {full}");
 }
 
 /// The default view diffs vs the PREVIOUS snapshot: a staged-only file deleted
@@ -160,14 +161,14 @@ fn delete_of_staged_file_shows_vs_prev_but_not_full() {
     s.cli(&["snapshot", "c2"]).expect("snapshot c2");
 
     // Default status is vs the previous snapshot (c1, where it existed).
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(
         status.contains("staged_only.txt") && status.contains("deleted"),
         "default status should show the file deleted vs prev snapshot: {status}"
     );
 
     // `0..` is vs base: the file never existed there, so nothing nets out.
-    let full = s.cli(&["status", "0.."]).expect("status 0..");
+    let full = s.cli(&["review", "0.."]).expect("status 0..");
     assert!(
         !full.contains("staged_only.txt"),
         "0.. (vs base) should show nothing for a staged-only add+delete: {full}"
@@ -188,7 +189,7 @@ fn modify_child_of_renamed_dir_shows_modified() {
     s.cli(&["snapshot", "c1"]).expect("snapshot");
     fs::write(s.mnt_path("moved/deep.txt"), "nested\nextra\n").expect("modify child");
 
-    let output = s.cli(&["status"]).expect("status");
+    let output = s.cli(&["review"]).expect("status");
     assert!(
         output.contains("deep.txt") && output.contains("modified"),
         "child of renamed dir should be modified, not added: {output}"
@@ -214,7 +215,7 @@ fn recow_after_snapshot_shows_modified_vs_prev() {
     // Modify it after the snapshot: the re-COW records a pre-image (prior inode).
     fs::write(s.mnt_path("created.txt"), "v2\n").expect("modify");
 
-    let output = s.cli(&["status"]).expect("status");
+    let output = s.cli(&["review"]).expect("status");
     assert!(
         output.contains("created.txt") && output.contains("modified"),
         "re-COW after snapshot is modified vs the previous snapshot: {output}"
@@ -229,7 +230,7 @@ fn rename_shows_only_renamed_not_deleted() {
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).expect("rename");
 
-    let output = s.cli(&["status"]).expect("status");
+    let output = s.cli(&["review"]).expect("status");
     assert!(
         output.contains("renamed") && output.contains("moved.txt"),
         "should show the rename: {output}"
@@ -251,7 +252,7 @@ fn status_each_shows_one_summary_per_snapshot() {
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
     s.cli(&["snapshot", "c2"]).expect("snapshot c2"); // gen 2
 
-    let output = s.cli(&["status", "--each"]).expect("status --each");
+    let output = s.cli(&["review", "--each"]).expect("status --each");
     assert!(
         output.contains("snapshot [1]") && output.contains("a.txt"),
         "step 1 should head snapshot [1] with a.txt: {output}"
@@ -272,7 +273,7 @@ fn each_labels_working_tip() {
     s.cli(&["snapshot", "c1"]).expect("snapshot c1"); // gen 1
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b"); // not snapshotted
 
-    let output = s.cli(&["status", "--each"]).expect("status --each");
+    let output = s.cli(&["review", "--each"]).expect("status --each");
     assert!(
         output.contains("snapshot [1]") && output.contains("a.txt"),
         "snapshot 1's change should still be headed `snapshot [1]`: {output}"

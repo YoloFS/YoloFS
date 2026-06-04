@@ -34,7 +34,7 @@ fn symlink_commit_to_base() {
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink creation");
 
     // Status should show the symlink as a staged change
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(
         status.contains("link.txt"),
         "status should show symlink: {status}"

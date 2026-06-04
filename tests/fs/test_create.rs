@@ -55,7 +55,7 @@ fn create_lands_in_inode_store() {
     fs::write(s.mnt_path("brandnew.txt"), "new\n").expect("create");
 
     // Status should show the new file as a staged change
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(
         status.contains("brandnew.txt"),
         "status should show new file: {status}"

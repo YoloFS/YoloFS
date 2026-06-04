@@ -483,7 +483,7 @@ fn status_after_travel() {
 
     s.cli(&["travel", "chk1"]).expect("travel");
 
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(
         status.contains("a.txt"),
         "a.txt should be in status: {status}"
@@ -505,7 +505,7 @@ fn diff_after_travel() {
 
     s.cli(&["travel", "chk1"]).expect("travel");
 
-    let diff = s.cli(&["diff"]).expect("diff");
+    let diff = s.cli(&["review", "--diff"]).expect("diff");
     assert!(diff.contains("a.txt"), "a.txt should be in diff: {diff}");
     assert!(
         !diff.contains("b.txt"),
@@ -528,7 +528,7 @@ fn journal_appends_after_travel() {
     fs::write(s.mnt_path("new.txt"), "new\n").expect("write new after travel");
 
     // `0..`: the cumulative live state (chk1's old.txt + post-travel new.txt).
-    let status = s.cli(&["status", "0.."]).expect("status 0..");
+    let status = s.cli(&["review", "0.."]).expect("status 0..");
     assert!(
         status.contains("old.txt"),
         "pre-snapshot file in status: {status}"
@@ -778,7 +778,7 @@ fn kernel_appends_to_journal_after_travel() {
     // using the same O_APPEND fd that was open before the truncation.
     fs::write(s.mnt_path("after.txt"), "after\n").expect("write after travel");
 
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(
         status.contains("after.txt"),
         "kernel journal append after travel should work: {status}"
@@ -836,7 +836,7 @@ fn multiple_travels_in_session() {
     // Second travel: back to c1 again (discards b.txt)
     s.cli(&["travel", "c1"]).expect("travel to c1 again");
 
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(
         !status.contains("b.txt"),
         "b.txt should be gone after second travel: {status}"
@@ -1112,7 +1112,7 @@ fn travel_to_base_is_non_destructive() {
     // Travel to the base by gen id — the staged file vanishes from the mount.
     s.cli(&["travel", "0"]).expect("travel to base by id");
     assert!(!s.mnt_path("a.txt").exists(), "base should not show a.txt");
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(
         status.contains("No changes"),
         "base has no staged changes: {status}"

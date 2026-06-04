@@ -1,8 +1,8 @@
 // yolo CLI — changeset.rs
 //
-// The model behind `status` / `diff` / the `yolo -- <cmd>` review: what changed
-// across a span of the journal. Rendering lives in diff.rs; this file only
-// resolves *what* happened, not *how* to show it.
+// The model behind `yolo review` and the post-`yolo -- <cmd>` review: what
+// changed across a span of the journal. Rendering lives in cmd/review.rs; this
+// file only resolves *what* happened, not *how* to show it.
 
 use crate::journal::{Action, DirTree, Journal, Note, Record, Target};
 use std::collections::{HashMap, HashSet};

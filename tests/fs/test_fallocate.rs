@@ -30,7 +30,7 @@ fn fallocate_passes_through_and_allocates_space() {
     assert_eq!(st.size(), 16 * 1024 * 1024);
     assert!(st.blocks() > 0, "fallocate should allocate blocks");
 
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(
         status.contains("fallocate.bin"),
         "status should include fallocate-created file: {status}"

@@ -45,7 +45,7 @@ fn status_at_snapshot() {
     fs::write(s.mnt_path("new_after_chk.txt"), "new content\n").expect("write new");
 
     // `status 1` (snapshot 1's own change) should not show new_after_chk.txt
-    let at_output = s.cli(&["status", "1"]).expect("status 1");
+    let at_output = s.cli(&["review", "1"]).expect("status 1");
     assert!(
         at_output.contains("hello.txt"),
         "should show hello.txt: {at_output}"
@@ -56,7 +56,7 @@ fn status_at_snapshot() {
     );
 
     // `0..` (vs base) should show both
-    let full_output = s.cli(&["status", "0.."]).expect("status 0..");
+    let full_output = s.cli(&["review", "0.."]).expect("status 0..");
     assert!(
         full_output.contains("hello.txt"),
         "full should show hello.txt: {full_output}"
@@ -84,7 +84,7 @@ fn recow_preserves_snapshot_inode() {
     assert_eq!(current, "version2\n");
 
     // Re-COW: status 1 should show the snapshot state, proving inode preserved
-    let at_v1 = s.cli(&["status", "1"]).expect("status 1");
+    let at_v1 = s.cli(&["review", "1"]).expect("status 1");
     assert!(
         at_v1.contains("hello.txt"),
         "should show hello.txt at v1: {at_v1}"
@@ -156,7 +156,7 @@ fn two_handles_same_file_no_snapshot() {
     assert_eq!(base, "base content\n");
 
     // Only one staged inode needed (no snapshot → no re-COW)
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(
         status.contains("hello.txt"),
         "status should show hello.txt: {status}"
@@ -187,7 +187,7 @@ fn two_handles_recow_after_snapshot() {
     assert_eq!(content, "v2\n");
 
     // status 1 should show the v1 snapshot state (proves re-COW preserved it)
-    let at_s1 = s.cli(&["status", "1"]).expect("status 1");
+    let at_s1 = s.cli(&["review", "1"]).expect("status 1");
     assert!(
         at_s1.contains("hello.txt"),
         "snapshot state should have hello.txt: {at_s1}"
@@ -213,7 +213,7 @@ fn second_handle_skips_redundant_recow() {
     s.cli(&["snapshot", "s1"]).expect("snapshot");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 (re-COW)");
 
-    let status_before = s.cli(&["status"]).expect("status after v2");
+    let status_before = s.cli(&["review"]).expect("status after v2");
 
     // Handle B opens and writes — should NOT create another inode
     // because dirent.snapshot_gen already matches sbi->snapshot_gen.
@@ -225,7 +225,7 @@ fn second_handle_skips_redundant_recow() {
     assert_eq!(content, "v3\n");
 
     // Status should still show the same number of staged changes
-    let status_after = s.cli(&["status"]).expect("status after v3");
+    let status_after = s.cli(&["review"]).expect("status after v3");
     assert_eq!(
         status_before, status_after,
         "v3 should not create additional staged changes (no redundant re-COW)"
@@ -252,7 +252,7 @@ fn multiple_snapshots_interleaved_writes() {
     assert_eq!(content, "v3\n");
 
     // status 1: hello.txt modified (inode has v1)
-    let at_s1 = s.cli(&["status", "1"]).expect("status 1");
+    let at_s1 = s.cli(&["review", "1"]).expect("status 1");
     assert!(
         at_s1.contains("hello.txt"),
         "s1 should have hello.txt: {at_s1}"
@@ -263,7 +263,7 @@ fn multiple_snapshots_interleaved_writes() {
     );
 
     // status 2: hello.txt modified (inode has v2)
-    let at_s2 = s.cli(&["status", "2"]).expect("status 2");
+    let at_s2 = s.cli(&["review", "2"]).expect("status 2");
     assert!(
         at_s2.contains("hello.txt"),
         "s2 should have hello.txt: {at_s2}"
@@ -298,7 +298,7 @@ fn status_from_snapshot() {
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
     // `1..` (since s1) should show newfile.txt but not hello.txt
-    let output = s.cli(&["status", "1.."]).expect("status 1..");
+    let output = s.cli(&["review", "1.."]).expect("status 1..");
     assert!(
         output.contains("newfile.txt"),
         "should show newfile.txt: {output}"
@@ -321,7 +321,7 @@ fn status_to_snapshot() {
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
     // `..1` (base up to s1) should show hello.txt but not newfile.txt
-    let output = s.cli(&["status", "..1"]).expect("status ..1");
+    let output = s.cli(&["review", "..1"]).expect("status ..1");
     assert!(
         output.contains("hello.txt"),
         "should show hello.txt: {output}"
@@ -347,7 +347,7 @@ fn status_from_to_range() {
     s.cli(&["snapshot", "s3"]).expect("snapshot s3");
 
     // `1..2` should only show mid.txt
-    let output = s.cli(&["status", "1..2"]).expect("status 1..2");
+    let output = s.cli(&["review", "1..2"]).expect("status 1..2");
     assert!(output.contains("mid.txt"), "should show mid.txt: {output}");
     assert!(
         !output.contains("hello.txt"),
@@ -371,7 +371,7 @@ fn diff_at_snapshot() {
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
     // `diff 1` (s1's own change) should show hello.txt but not newfile.txt
-    let output = s.cli(&["diff", "1"]).expect("diff 1");
+    let output = s.cli(&["review", "--diff", "1"]).expect("diff 1");
     assert!(
         output.contains("hello.txt"),
         "should show hello.txt: {output}"
@@ -392,7 +392,7 @@ fn diff_from_snapshot() {
 
     fs::write(s.mnt_path("newfile.txt"), "new content\n").expect("write new");
 
-    let output = s.cli(&["diff", "1.."]).expect("diff 1..");
+    let output = s.cli(&["review", "--diff", "1.."]).expect("diff 1..");
     assert!(
         output.contains("newfile.txt"),
         "should show newfile.txt: {output}"
@@ -420,7 +420,7 @@ fn diff_from_to_range() {
 
     fs::write(s.mnt_path("late.txt"), "late\n").expect("write late");
 
-    let output = s.cli(&["diff", "1..2"]).expect("diff 1..2");
+    let output = s.cli(&["review", "--diff", "1..2"]).expect("diff 1..2");
     assert!(output.contains("mid.txt"), "should show mid.txt: {output}");
     assert!(
         output.contains("+mid content"),
@@ -448,7 +448,7 @@ fn diff_to_snapshot() {
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
     // `diff ..1` (base up to s1) should show hello.txt but not newfile.txt
-    let output = s.cli(&["diff", "..1"]).expect("diff ..1");
+    let output = s.cli(&["review", "--diff", "..1"]).expect("diff ..1");
     assert!(
         output.contains("hello.txt"),
         "should show hello.txt: {output}"
@@ -472,7 +472,7 @@ fn status_from_last_snapshot_empty() {
     s.cli(&["snapshot", "s1"]).expect("snapshot s1");
 
     // No changes after s1
-    let output = s.cli(&["status", "1.."]).expect("status 1..");
+    let output = s.cli(&["review", "1.."]).expect("status 1..");
     assert!(
         output.contains("No changes"),
         "should say no changes: {output}"
@@ -487,7 +487,7 @@ fn diff_from_last_snapshot_empty() {
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["snapshot", "s1"]).expect("snapshot s1");
 
-    let output = s.cli(&["diff", "1.."]).expect("diff 1..");
+    let output = s.cli(&["review", "--diff", "1.."]).expect("diff 1..");
     assert!(
         output.contains("No changes"),
         "should say no changes: {output}"
@@ -506,7 +506,7 @@ fn status_from_to_same_snapshot_empty() {
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
     // `1..1`: start and end both at s1 → empty
-    let output = s.cli(&["status", "1..1"]).expect("status 1..1");
+    let output = s.cli(&["review", "1..1"]).expect("status 1..1");
     assert!(
         output.contains("No changes"),
         "same start/end should be empty: {output}"
@@ -526,7 +526,7 @@ fn diff_from_with_path_filter() {
 
     // `diff 1.. -- target.txt`: should show only target.txt
     let output = s
-        .cli(&["diff", "1..", "--", "target.txt"])
+        .cli(&["review", "--diff", "1..", "--", "target.txt"])
         .expect("diff 1.. -- target.txt");
     assert!(
         output.contains("target.txt"),
@@ -552,11 +552,11 @@ fn backwards_range_errors() {
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
-    let (ok, _, stderr) = s.cli_output(&["status", "2..1"]).expect("cli_output");
+    let (ok, _, stderr) = s.cli_output(&["review", "2..1"]).expect("cli_output");
     assert!(!ok, "backwards range should fail: {stderr}");
 
     // A non-numeric id is rejected too (ids only).
-    let (ok, _, stderr) = s.cli_output(&["status", "s1"]).expect("cli_output");
+    let (ok, _, stderr) = s.cli_output(&["review", "s1"]).expect("cli_output");
     assert!(!ok, "name (non-id) should fail: {stderr}");
 }
 
@@ -583,7 +583,7 @@ fn append_after_snapshot_triggers_recow() {
     assert_eq!(content, "line1\nline2\n");
 
     // The pre-snapshot state should be preserved (re-COW triggered by append)
-    let at_s1 = s.cli(&["status", "1"]).expect("status 1");
+    let at_s1 = s.cli(&["review", "1"]).expect("status 1");
     assert!(
         at_s1.contains("hello.txt"),
         "snapshot s1 should have hello.txt preserved: {at_s1}"

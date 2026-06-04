@@ -246,20 +246,15 @@ pub fn remount(force: bool) -> Result<()> {
 /// If there are staged changes, ask the user to commit or abort before proceeding.
 fn prompt_if_staged(yolo_dir: &Path) -> Result<()> {
     let journal = Journal::read(yolo_dir).unwrap_or_else(|_| Journal::new(vec![]));
-    let tree = journal.into_tree();
-    if tree.is_empty() {
+    if !journal.has_staged_changes() {
         return Ok(());
     }
 
     eprintln!(
         "{}",
-        format!(
-            "Warning: {} staged change{} will be lost.",
-            tree.len(),
-            crate::utils::plural(tree.len())
-        )
-        .yellow()
-        .bold()
+        "Warning: staged changes will be lost (run `yolo review` to see them)."
+            .yellow()
+            .bold()
     );
     eprint!(
         "{} ",

@@ -34,7 +34,7 @@ fn mkdir_lands_in_inode_store() {
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
 
     // Status should show the new directory as a staged change
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(
         status.contains("newdir"),
         "status should show new directory: {status}"

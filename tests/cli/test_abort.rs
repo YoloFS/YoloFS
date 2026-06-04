@@ -8,7 +8,7 @@ fn abort_discards_changes() {
     fs::write(s.mnt_path("hello.txt"), "will be aborted\n").unwrap();
 
     // Verify staged
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(status.contains("1 staged change"), "status: {status}");
 
     // Abort
@@ -56,6 +56,6 @@ fn abort_after_travel_discards_all() {
     );
 
     // Status should show nothing staged
-    let status = s.cli(&["status"]).expect("status");
+    let status = s.cli(&["review"]).expect("status");
     assert!(status.contains("No changes staged"), "status: {status}");
 }

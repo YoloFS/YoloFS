@@ -293,7 +293,7 @@ fn run_yolo_inside_mount_is_rejected() {
     let session = YoloSession::new().expect("session setup");
 
     let (ok, _out, err) = session
-        .cli_output(&["exec", "--", "yolo", "status"])
+        .cli_output(&["exec", "--", "yolo", "review"])
         .expect("running yolo inside the mount");
 
     assert!(!ok, "yolo inside the mount should fail; stderr={err}");

@@ -5,7 +5,7 @@ use std::fs;
 fn diff_empty() {
     let s = YoloSession::new().expect("session setup");
 
-    let output = s.cli(&["diff"]).expect("diff");
+    let output = s.cli(&["review", "--diff"]).expect("diff");
     assert!(output.contains("No changes staged"), "output: {output}");
 }
 
@@ -15,7 +15,7 @@ fn diff_modified_file() {
 
     fs::write(s.mnt_path("hello.txt"), "new content\n").unwrap();
 
-    let output = s.cli(&["diff"]).expect("diff");
+    let output = s.cli(&["review", "--diff"]).expect("diff");
     assert!(output.contains("hello.txt"), "output: {output}");
     assert!(output.contains("modified"), "output: {output}");
     assert!(output.contains("+new content"), "output: {output}");
@@ -27,7 +27,7 @@ fn diff_new_file() {
 
     fs::write(s.mnt_path("added.txt"), "brand new\n").unwrap();
 
-    let output = s.cli(&["diff"]).expect("diff");
+    let output = s.cli(&["review", "--diff"]).expect("diff");
     assert!(output.contains("added.txt"), "output: {output}");
     assert!(output.contains("+brand new"), "output: {output}");
 }
@@ -38,7 +38,7 @@ fn diff_deleted_file() {
 
     fs::remove_file(s.mnt_path("hello.txt")).unwrap();
 
-    let output = s.cli(&["diff"]).expect("diff");
+    let output = s.cli(&["review", "--diff"]).expect("diff");
     assert!(output.contains("hello.txt"), "output: {output}");
     assert!(
         output.contains("deleted"),
@@ -52,7 +52,7 @@ fn diff_renamed_file() {
 
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("moved.txt")).unwrap();
 
-    let output = s.cli(&["diff"]).expect("diff");
+    let output = s.cli(&["review", "--diff"]).expect("diff");
     assert!(
         output.contains("hello.txt"),
         "diff should mention old name: {output}"
@@ -70,7 +70,7 @@ fn diff_single_file_shows_only_that_file() {
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
     fs::write(s.mnt_path("other.txt"), "also changed\n").unwrap();
 
-    let output = s.cli(&["diff", "--", "hello.txt"]).expect("diff -- hello.txt");
+    let output = s.cli(&["review", "--diff", "--", "hello.txt"]).expect("diff -- hello.txt");
     assert!(
         output.contains("hello.txt"),
         "should show hello.txt: {output}"
@@ -87,7 +87,7 @@ fn diff_single_file_not_changed() {
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
 
-    let output = s.cli(&["diff", "--", "other.txt"]).expect("diff -- other.txt");
+    let output = s.cli(&["review", "--diff", "--", "other.txt"]).expect("diff -- other.txt");
     assert!(
         output.contains("No changes staged"),
         "no matching changes: {output}"
@@ -101,7 +101,7 @@ fn diff_single_file_with_absolute_path() {
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
 
     let abs = format!("{}/hello.txt", s.root.display());
-    let output = s.cli(&["diff", "--", &abs]).expect("diff -- absolute path");
+    let output = s.cli(&["review", "--diff", "--", &abs]).expect("diff -- absolute path");
     assert!(
         output.contains("hello.txt"),
         "should find with absolute path: {output}"
@@ -117,7 +117,7 @@ fn diff_spurious_tombstone_skipped() {
     fs::write(s.mnt_path("ephemeral.txt"), "temporary\n").unwrap();
     fs::remove_file(s.mnt_path("ephemeral.txt")).unwrap();
 
-    let output = s.cli(&["diff"]).expect("diff");
+    let output = s.cli(&["review", "--diff"]).expect("diff");
     assert!(
         !output.contains("ephemeral.txt"),
         "spurious tombstone should not appear in diff: {output}"
@@ -136,7 +136,7 @@ fn diff_add_vs_modify_classification() {
     // brand_new.txt does not exist in base → creation is an addition
     fs::write(s.mnt_path("brand_new.txt"), "fresh\n").unwrap();
 
-    let output = s.cli(&["diff"]).expect("diff");
+    let output = s.cli(&["review", "--diff"]).expect("diff");
     assert!(
         output.contains("hello.txt") && output.contains("modified"),
         "base file overwrite should show as modified: {output}"
@@ -161,7 +161,7 @@ fn diff_after_travel_excludes_dead_zone() {
 
     s.cli(&["travel", "chk1"]).expect("travel");
 
-    let output = s.cli(&["diff"]).expect("diff");
+    let output = s.cli(&["review", "--diff"]).expect("diff");
     assert!(
         output.contains("hello.txt"),
         "snapshot change should appear in diff: {output}"
@@ -181,7 +181,7 @@ fn diff_new_binary_file() {
     let binary_data: Vec<u8> = (0..256).map(|i| i as u8).collect();
     fs::write(s.mnt_path("image.bin"), &binary_data).unwrap();
 
-    let output = s.cli(&["diff"]).expect("diff");
+    let output = s.cli(&["review", "--diff"]).expect("diff");
     assert!(
         output.contains("image.bin"),
         "binary file should appear in diff: {output}"
@@ -201,7 +201,7 @@ fn diff_modified_binary_file() {
     let binary_data = vec![0u8, 1, 2, 0xFF, 0xFE, 0, 0, 3];
     fs::write(s.mnt_path("test.sh"), &binary_data).unwrap();
 
-    let output = s.cli(&["diff"]).expect("diff");
+    let output = s.cli(&["review", "--diff"]).expect("diff");
     assert!(
         output.contains("test.sh"),
         "modified binary file should appear: {output}"
@@ -235,7 +235,7 @@ fn diff_between_snapshots_spanning_travel() {
     // Gen ids: chk1=1, chk2=2, travel=3, post-travel=4, chk3=5 → range 1..5.
     // (chk2's segment falls inside that range by index, but the liveness mask
     // drops it as a dead zone, so extra.txt never appears.)
-    let output = s.cli(&["diff", "1..5"]).expect("diff 1..5");
+    let output = s.cli(&["review", "--diff", "1..5"]).expect("diff 1..5");
     assert!(
         !output.contains("extra.txt"),
         "dead-zone file should NOT appear: {output}"
@@ -256,7 +256,7 @@ fn modify_child_of_renamed_base_dir_is_modified() {
     s.cli(&["snapshot", "c1"]).expect("snapshot");
     fs::write(s.mnt_path("moved/deep.txt"), "nested\nextra\n").expect("modify child");
 
-    let diff = s.cli(&["diff"]).expect("diff");
+    let diff = s.cli(&["review", "--diff"]).expect("diff");
     assert!(
         diff.contains("deep.txt") && diff.contains("modified"),
         "child of renamed dir should be modified: {diff}"
@@ -279,7 +279,7 @@ fn diff_deleted_file_shows_removed_content() {
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("delete"); // base = "base content\n"
 
-    let diff = s.cli(&["diff"]).expect("diff");
+    let diff = s.cli(&["review", "--diff"]).expect("diff");
     assert!(diff.contains("deleted"), "should show deleted: {diff}");
     assert!(
         diff.contains("-base content"),
@@ -297,7 +297,7 @@ fn diff_recow_after_snapshot_shows_prior_content() {
     s.cli(&["snapshot", "c1"]).expect("snapshot");
     fs::write(s.mnt_path("created.txt"), "v2\n").expect("modify");
 
-    let diff = s.cli(&["diff"]).expect("diff");
+    let diff = s.cli(&["review", "--diff"]).expect("diff");
     assert!(
         diff.contains("-v1") && diff.contains("+v2"),
         "re-COW diff should show v1 → v2 from the prior staged inode: {diff}"
@@ -315,7 +315,7 @@ fn diff_each_shows_per_snapshot_stanzas() {
     fs::write(s.mnt_path("added.txt"), "fresh\n").expect("create");
     s.cli(&["snapshot", "c2"]).expect("snapshot c2"); // gen 2
 
-    let diff = s.cli(&["diff", "--each"]).expect("diff --each");
+    let diff = s.cli(&["review", "--diff", "--each"]).expect("diff --each");
     // Step 1 (snapshot 1): hello.txt modified base content → v1.
     assert!(
         diff.contains("snapshot [1]") && diff.contains("+v1"),
@@ -338,7 +338,7 @@ fn diff_base_uses_base_not_intermediate() {
     s.cli(&["snapshot", "c1"]).expect("snapshot");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("modify 2");
 
-    let diff = s.cli(&["diff", "0.."]).expect("diff 0..");
+    let diff = s.cli(&["review", "--diff", "0.."]).expect("diff 0..");
     assert!(
         diff.contains("-base content"),
         "0.. old side should be the base (first touch), not v1: {diff}"

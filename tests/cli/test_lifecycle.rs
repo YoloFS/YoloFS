@@ -11,11 +11,11 @@ fn full_write_commit_cycle() {
     fs::write(s.mnt_path("newfile.txt"), "brand new\n").unwrap();
 
     // 2. Status shows 2 changes
-    let status = s.cli(&["status"]).unwrap();
+    let status = s.cli(&["review"]).unwrap();
     assert!(status.contains("2 staged change"), "status: {status}");
 
     // 3. Diff shows content
-    let diff = s.cli(&["diff"]).unwrap();
+    let diff = s.cli(&["review", "--diff"]).unwrap();
     assert!(diff.contains("+updated"), "diff: {diff}");
     assert!(diff.contains("+brand new"), "diff: {diff}");
 
@@ -45,7 +45,7 @@ fn full_write_abort_cycle() {
     fs::write(s.mnt_path("multi.txt"), "also aborted\n").unwrap();
 
     // 2. Status shows 2 changes
-    let status = s.cli(&["status"]).unwrap();
+    let status = s.cli(&["review"]).unwrap();
     assert!(status.contains("2 staged change"), "status: {status}");
 
     // 3. Abort
@@ -102,7 +102,7 @@ fn delete_commit_then_verify_base() {
 
     fs::remove_file(s.mnt_path("hello.txt")).expect("unlink");
 
-    let status = s.cli(&["status"]).unwrap();
+    let status = s.cli(&["review"]).unwrap();
     assert!(
         status.contains("hello.txt"),
         "status should show deleted file: {status}"
@@ -127,7 +127,7 @@ fn commit_clears_inode_store() {
     s.cli(&["commit"]).expect("commit");
 
     // Status should show no remaining changes
-    let status = s.cli(&["status"]).expect("status after commit");
+    let status = s.cli(&["review"]).expect("status after commit");
     assert!(
         status.contains("No changes"),
         "status should show no changes after commit: {status}"

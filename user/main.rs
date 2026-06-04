@@ -56,24 +56,19 @@ enum Command {
         force: bool,
     },
     // ── Review & commit ──────────────────────────────────────────────
-    /// Show staged changes (latest snapshot by default)
-    Status {
+    /// Review staged changes — a summary, or a git-style diff with `--diff`
+    Review {
         /// Snapshot id or range: `N` = snapshot N's own change; `a..b` =
-        /// between two; `a..` / `..b` open ends; `..` = everything vs base
-        /// (0 is the base). Ids only — see `yolo timeline`.
+        /// between two; `a..` / `..b` open ends; `all` (or `..`) = everything
+        /// vs base. Ids are numbers — see `yolo timeline`.
         range: Option<String>,
-        /// One summary per consecutive snapshot in the range
+        /// Show a git-style unified diff instead of the one-line summary
+        #[arg(long)]
+        diff: bool,
+        /// One stanza per consecutive snapshot in the range
         #[arg(long)]
         each: bool,
-    },
-    /// Git-style diff of staged changes (latest snapshot by default)
-    Diff {
-        /// Snapshot id or range (see `status`); `..` diffs everything vs base
-        range: Option<String>,
-        /// One diff per consecutive snapshot in the range
-        #[arg(long)]
-        each: bool,
-        /// Limit the diff to a single file, passed after `--` (e.g. `-- foo.txt`)
+        /// Limit to a single file, passed after `--` (e.g. `-- foo.txt`)
         #[arg(last = true)]
         path: Option<String>,
     },
@@ -200,10 +195,12 @@ fn run_cli() -> anyhow::Result<u8> {
         }
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,
-        Some(Command::Status { range, each }) => review::run_status(range.as_deref(), each)?,
-        Some(Command::Diff { range, path, each }) => {
-            review::run_diff(range.as_deref(), path.as_deref(), each)?;
-        }
+        Some(Command::Review {
+            range,
+            diff,
+            each,
+            path,
+        }) => review::run_review(range.as_deref(), path.as_deref(), each, diff)?,
         Some(Command::Commit) => commit::run()?,
         Some(Command::Abort { force }) => abort::run(force)?,
         Some(Command::Snapshot { name, if_changed }) => {
@@ -261,8 +258,7 @@ fn print_overview() {
             ("remount",  "Unmount then remount (picks up yolofs.toml options)"),
         ]),
         ("Review & commit", &[
-            ("status",   "Show staged changes (latest snapshot; `..` for vs base)"),
-            ("diff",     "Git-style diff of staged vs base"),
+            ("review",   "Review staged changes (summary; `--diff` for the diff)"),
             ("commit",   "Apply staged changes to base"),
             ("abort",    "Discard staged changes"),
         ]),
