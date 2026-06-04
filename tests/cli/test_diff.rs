@@ -311,7 +311,7 @@ fn diff_recow_after_snapshot_shows_prior_content() {
 }
 
 /// `diff --each` shows one unified-diff stanza per consecutive snapshot, each
-/// under a `snapshot [id]` header, with that snapshot's own content.
+/// under a `snapshot <id>` header, with that snapshot's own content.
 #[test]
 fn diff_each_shows_per_snapshot_stanzas() {
     let s = YoloSession::new().expect("session setup");
@@ -324,13 +324,13 @@ fn diff_each_shows_per_snapshot_stanzas() {
     let diff = s.cli(&["review", "--diff", "--each"]).expect("diff --each");
     // Step 1 (snapshot 1): hello.txt modified base content → v1.
     assert!(
-        diff.contains("snapshot [1]") && diff.contains("+v1"),
-        "step 1 should show snapshot [1] with hello.txt's diff: {diff}"
+        diff.contains("snapshot 1") && diff.contains("+v1"),
+        "step 1 should show snapshot 1 with hello.txt's diff: {diff}"
     );
     // Step 2 (snapshot 2): added.txt added.
     assert!(
-        diff.contains("snapshot [2]") && diff.contains("+fresh"),
-        "step 2 should show snapshot [2] with added.txt: {diff}"
+        diff.contains("snapshot 2") && diff.contains("+fresh"),
+        "step 2 should show snapshot 2 with added.txt: {diff}"
     );
 }
 

@@ -9,7 +9,7 @@
 // stanza per consecutive snapshot. See the id/range grammar below.
 
 use crate::changeset::{Change, Changeset};
-use crate::journal::{Journal, Note, Target};
+use crate::journal::{Journal, Marker, Note, Target};
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -314,7 +314,7 @@ pub fn run_review(range: Option<&str>, path: Option<&str>, each: bool, diff: boo
 
 /// `--each`: one stanza per consecutive snapshot in `[start, end)`. Each live,
 /// non-empty segment `i` is the change snapshot `i+1` captured (gen id == marker
-/// index), so it's headed `snapshot [i+1]` — except the tip (work after the last
+/// index), so it's headed `snapshot <i+1>` — except the tip (work after the last
 /// snapshot has no sealing marker, so no snapshot captures it), headed `working`.
 /// Empty/netted-out segments are skipped. Returns whether anything was shown.
 fn render_each(
@@ -341,8 +341,17 @@ fn render_each(
         // Segment i is sealed by marker i+1 (a snapshot, since travel-sealed
         // segments are dead and skipped above). The tip — uncommitted work past
         // the last snapshot — has no sealing marker, so it isn't a snapshot yet.
+        // Head it like `timeline` does: `snapshot <id> <name>`.
         if i + 1 < journal.markers.len() {
-            println!("{}", format!("snapshot [{}]", i + 1).bold());
+            let name = match journal.markers.get(i + 1) {
+                Some(Marker::Snapshot { name, .. }) => name.as_str(),
+                _ => "",
+            };
+            println!(
+                "{} {}",
+                format!("snapshot {}", i + 1).cyan().bold(),
+                name.dimmed()
+            );
         } else {
             println!("{}", "working".bold());
         }
@@ -385,13 +394,13 @@ pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
         print_notes(&changeset.notes, &root);
     }
     match snapshot {
-        // A subtle one-line footer: the new snapshot id is the handle for
-        // `yolo travel <id>` to return here later.
+        // A subtle one-line footer: count first, then the new snapshot id as the
+        // handle for `yolo travel <id>` to return here later.
         Some(gen_id) => println!(
             "{} {}",
             "yolo:".cyan(),
             format!(
-                "snapshot [{gen_id}] · {total} staged change{} · yolo travel {gen_id} to return",
+                "{total} staged change{} in snapshot {gen_id} · `yolo travel {gen_id}` to return",
                 crate::utils::plural(total)
             )
             .dimmed()
@@ -406,45 +415,33 @@ pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
 }
 
 /// Print observational notes (A/B) under the review. These are denied or
-/// ask-resolved accesses recorded in the visible range — not staged changes,
-/// so they're listed separately and excluded from the staged-change count.
+/// ask-resolved accesses recorded in the visible range — not staged changes, so
+/// they're grouped under a `not staged:` header and excluded from the count. The
+/// line shape mirrors a change (`path (kind)`), but dimmed so it reads as an
+/// access, not a commit; the op (and ask decision) ride in the parenthetical.
 fn print_notes(notes: &[Note], root: &Path) {
-    println!("\n{}", "Observed accesses (not staged):".bold());
+    println!("\n{}", "not staged:".dimmed());
     for note in notes {
-        match note {
-            Note::Block { path, op } => {
-                println!(
-                    "  {:8} {:5} {}",
-                    "blocked".yellow(),
-                    op.label(),
-                    rel(path, root)
-                );
-            }
-            Note::Ask { path, op, decision } => {
-                println!(
-                    "  {:8} {:5} {} → {}",
-                    "ask".yellow(),
-                    op.label(),
-                    rel(path, root),
-                    decision
-                );
-            }
-        }
+        let (path, kind) = match note {
+            Note::Block { path, op } => (path, format!("blocked {}", op.label())),
+            Note::Ask { path, op, decision } => (path, format!("asked {} → {decision}", op.label())),
+        };
+        println!("{} {}", rel(path, root).dimmed(), format!("({kind})").yellow());
     }
 }
 
-/// In the default view (latest snapshot, something staged), point at the two
-/// other common shapes: the vs-base range and the per-snapshot expansion.
+/// In the default view (latest snapshot, something staged), point at the
+/// vs-base range. Shares its shape with `yolo journal`'s footer.
 fn print_base_hint() {
     println!(
         "{}",
-        "(latest snapshot · more: `yolo review [<id>|a..b|all] [--diff] [--each]`)".dimmed()
+        "(latest snapshot · `yolo review all` for everything since base)".dimmed()
     );
 }
 
 fn print_total(n: usize) {
     println!(
-        "\n{}",
+        "{}",
         format!("{n} staged change{}", crate::utils::plural(n)).bold()
     );
 }

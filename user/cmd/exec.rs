@@ -65,7 +65,7 @@ pub enum Snapshot {
 pub fn announce(snapshot: &Snapshot) {
     match snapshot {
         Snapshot::Created(gen_id) => {
-            eprintln!("{}", format!("snapshot [{gen_id}]").cyan().bold());
+            eprintln!("{}", format!("snapshot {gen_id}").cyan().bold());
         }
         Snapshot::NoChanges => {
             eprintln!("{}", "yolo: no changes, skipping snapshot".dimmed());

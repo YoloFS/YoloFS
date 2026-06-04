@@ -24,15 +24,15 @@ pub fn run() -> anyhow::Result<()> {
             journal::Marker::Snapshot { gen_id, name } => {
                 format!(
                     "{} {}",
-                    format!("snapshot [{gen_id}]").cyan().bold(),
+                    format!("snapshot {gen_id}").cyan().bold(),
                     name.dimmed(),
                 )
             }
             journal::Marker::Travel { gen_id, target_gen } => {
                 format!(
                     "{} {}",
-                    format!("travel    [{gen_id}]").yellow().bold(),
-                    format!("traveled to [{target_gen}]").dimmed(),
+                    format!("travel   {gen_id}").yellow().bold(),
+                    format!("→ {target_gen}").dimmed(),
                 )
             }
         };

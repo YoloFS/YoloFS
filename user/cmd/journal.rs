@@ -74,7 +74,7 @@ pub fn run(range: Option<&str>, path: Option<&str>) -> Result<()> {
     if range.is_none() && start > 0 {
         println!(
             "{}",
-            "(latest snapshot — `yolo journal all` for the full log)".dimmed()
+            "(latest snapshot · `yolo journal all` for the full log)".dimmed()
         );
     }
 
@@ -99,14 +99,14 @@ fn note_matches_path(note: &journal::Note, filter: &str) -> bool {
 fn format_marker(marker: &journal::Marker) -> String {
     match marker {
         journal::Marker::Snapshot { gen_id, name } => {
-            format!("{} {}", format!("[{}]", gen_id).cyan().bold(), name)
+            format!("{} {}", format!("snapshot {gen_id}").cyan().bold(), name)
         }
         journal::Marker::Travel {
             gen_id, target_gen, ..
         } => {
             format!(
-                "{} traveled to [{}]",
-                format!("[{gen_id}]").yellow().bold(),
+                "{} → {}",
+                format!("travel {gen_id}").yellow().bold(),
                 target_gen,
             )
         }
@@ -174,7 +174,7 @@ mod tests {
             name: "build".into(),
         };
         let s = strip_ansi(&format_marker(&marker));
-        assert!(s.contains("[3]"), "should contain gen_id: {s}");
+        assert!(s.contains("snapshot 3"), "should contain gen_id: {s}");
         assert!(s.contains("build"), "should contain name: {s}");
     }
 
@@ -185,11 +185,8 @@ mod tests {
             target_gen: 2,
         };
         let s = strip_ansi(&format_marker(&marker));
-        assert!(s.contains("[5]"), "should contain gen_id: {s}");
-        assert!(
-            s.contains("traveled to [2]"),
-            "should reference target: {s}"
-        );
+        assert!(s.contains("travel 5"), "should contain gen_id: {s}");
+        assert!(s.contains("→ 2"), "should reference target: {s}");
     }
 
     #[test]

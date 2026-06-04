@@ -34,9 +34,9 @@ pub fn run(marker_name: &str) -> Result<()> {
         Some(Marker::Travel {
             gen_id, target_gen, ..
         }) => {
-            format!("travel [{gen_id}] (traveled to [{target_gen}])")
+            format!("travel {gen_id} → {target_gen}")
         }
-        None => format!("marker [{target_gen}]"),
+        None => format!("marker {target_gen}"),
     };
 
     println!(

@@ -242,7 +242,7 @@ fn rename_shows_only_renamed_not_deleted() {
 }
 
 /// `status --each` expands the whole session into one summary per consecutive
-/// snapshot, each under a `snapshot [id]` header (gen id == marker index).
+/// snapshot, each under a `snapshot <id>` header (gen id == marker index).
 #[test]
 fn status_each_shows_one_summary_per_snapshot() {
     let s = YoloSession::new().expect("session setup");
@@ -254,17 +254,17 @@ fn status_each_shows_one_summary_per_snapshot() {
 
     let output = s.cli(&["review", "--each"]).expect("status --each");
     assert!(
-        output.contains("snapshot [1]") && output.contains("a.txt"),
-        "step 1 should head snapshot [1] with a.txt: {output}"
+        output.contains("snapshot 1") && output.contains("a.txt"),
+        "step 1 should head snapshot 1 with a.txt: {output}"
     );
     assert!(
-        output.contains("snapshot [2]") && output.contains("b.txt"),
-        "step 2 should head snapshot [2] with b.txt: {output}"
+        output.contains("snapshot 2") && output.contains("b.txt"),
+        "step 2 should head snapshot 2 with b.txt: {output}"
     );
 }
 
 /// `--each` labels the tip (work after the last snapshot, not snapshotted) as
-/// `working`, not a phantom `snapshot [N]` — that snapshot doesn't exist yet.
+/// `working`, not a phantom `snapshot N` — that snapshot doesn't exist yet.
 #[test]
 fn each_labels_working_tip() {
     let s = YoloSession::new().expect("session setup");
@@ -275,15 +275,15 @@ fn each_labels_working_tip() {
 
     let output = s.cli(&["review", "--each"]).expect("status --each");
     assert!(
-        output.contains("snapshot [1]") && output.contains("a.txt"),
-        "snapshot 1's change should still be headed `snapshot [1]`: {output}"
+        output.contains("snapshot 1") && output.contains("a.txt"),
+        "snapshot 1's change should still be headed `snapshot 1`: {output}"
     );
     assert!(
         output.contains("working") && output.contains("b.txt"),
         "the tip should be headed `working` with b.txt: {output}"
     );
     assert!(
-        !output.contains("snapshot [2]"),
-        "must not invent a `snapshot [2]` that doesn't exist: {output}"
+        !output.contains("snapshot 2"),
+        "must not invent a `snapshot 2` that doesn't exist: {output}"
     );
 }

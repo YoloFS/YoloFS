@@ -33,7 +33,7 @@ fn journal_shows_snapshots_and_travels() {
     assert!(output.contains("chk1"), "should show chk1: {output}");
     assert!(output.contains("chk2"), "should show chk2: {output}");
     assert!(
-        output.contains("traveled to"),
+        output.contains("travel"),
         "should show travel record: {output}"
     );
 }

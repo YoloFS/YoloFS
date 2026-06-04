@@ -188,7 +188,7 @@ fn run_with_changes_creates_snapshot() {
     let session = YoloSession::new().expect("session setup");
 
     let before = session.cli(&["timeline"]).expect("timeline before");
-    let before_count = before.matches("snapshot [").count();
+    let before_count = before.matches("snapshot").count();
 
     let target = session.root.join("chk_test.txt");
     let code = session
@@ -197,7 +197,7 @@ fn run_with_changes_creates_snapshot() {
     assert_eq!(code, 0);
 
     let after = session.cli(&["timeline"]).expect("timeline after");
-    let after_count = after.matches("snapshot [").count();
+    let after_count = after.matches("snapshot").count();
 
     assert!(
         after_count == before_count + 1,

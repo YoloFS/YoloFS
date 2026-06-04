@@ -29,7 +29,7 @@ pub fn create(name: Option<&str>, if_changed: bool) -> Result<()> {
 
     eprintln!(
         "{} {}",
-        format!("snapshot [{gen_id}]").cyan().bold(),
+        format!("snapshot {gen_id}").cyan().bold(),
         chk_name.dimmed()
     );
     Ok(())

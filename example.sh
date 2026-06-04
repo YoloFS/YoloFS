@@ -24,8 +24,7 @@ run yolo mount
 section "Stage a change, review it, then keep or discard"
 note "'yolo -- <cmd>' runs <cmd> in a staging overlay and prints what it changed."
 run yolo -- sh -c 'echo "hello, yolofs" > greeting.txt'
-note "'review' summarizes the staged changes; '--diff' shows the content."
-run yolo review
+note "'review --diff' shows the staged changes as a git-style diff."
 run yolo review --diff
 note "'commit' writes staging out to the real files."
 run yolo commit
@@ -38,9 +37,9 @@ section "Snapshots, history & travel"
 note "Every run auto-snapshots, so you can review across them and rewind."
 run yolo -- sh -c 'echo step1 > step1.txt'
 run yolo -- sh -c 'echo step2 > step2.txt'
-note "'review all' is everything vs base; '--each' breaks it out per snapshot."
+note "'review all' lists everything since base; add '--diff' for the content."
 run yolo review all
-run yolo review --each
+run yolo review all --diff
 note "'travel' rewinds the working tree to a snapshot — step2 disappears."
 run yolo travel 1
 run yolo -- sh -c 'ls step*.txt'

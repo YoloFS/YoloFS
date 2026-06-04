@@ -74,14 +74,14 @@ filter is passed after `--`, so the positional is unambiguously a range.
 dimmed. Example `yolo timeline` output:
 
 ```
-snapshot [1] after make build
-snapshot [2] after make test
-travel    [3] traveled to [1]
-snapshot [4] after make fix
+snapshot 1 after make build
+snapshot 2 after make test
+travel   3 → 1
+snapshot 4 after make fix
 ```
 
 Traveling to an earlier point (`yolo travel 3` above) is valid — any
-gen_id is a valid travel target. Only entries between [3] and the
+gen_id is a valid travel target. Only entries between 3 and the
 new travel become unreachable, preserving earlier history.
 
 **Permission rules and diagnostics:**
