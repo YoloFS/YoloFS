@@ -42,11 +42,10 @@ make test-vm                     # run unit + e2e tests in a VM (recommended)
 `yolofs.toml` in the session directory:
 
 ```toml
-permission   = true              # enable permission gating
-staging      = true              # enable staging area
-ask_default  = "deny"            # fallback when no daemon or on timeout
-ask_timeout  = 30                # ask timeout (seconds; 0 = infinite)
-snapshot     = true              # auto-snapshot after each `yolo exec`
+permission     = true            # enable permission gating
+staging        = true            # enable staging area
+auto_snapshot  = true            # snapshot after each command run through yolofs
+prompt_timeout = 30              # seconds to wait for an `ask` answer before denying (0 = infinite)
 
 [rules]
 "."          = "allow"
@@ -62,5 +61,4 @@ Paths in `[rules]` can be absolute or relative to the session root.
 - [Architecture](docs/architecture.md) — high-level design, lifecycle, source layout
 - [Staging](docs/staging.md) — COW, journal, path resolution, snapshots
 - [Permissions](docs/permissions.md) — rule engine, ask protocol
-- [Internals](docs/internals.md) — data structures, VFS map, ioctls, concurrency
 - [CLI](docs/cli.md) — commands, options, terminal handling

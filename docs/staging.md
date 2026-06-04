@@ -25,8 +25,9 @@ the kernel, not merely assumed.
    (via `d_fsdata`), so it survives dentry cache pressure naturally.
    Pinned child dentries hold a ref on `dentry->d_parent`, which
    transitively keeps the parent inode alive through
-   VFS refcounting — no `igrab()` is needed. Pins are released in bulk by
-   `YOLO_IOC_TRAVEL` (called by commit/abort/travel) and during
+   VFS refcounting — no `igrab()` is needed. Pins are released in bulk by the
+   reset/travel ioctls (`YOLO_IOC_RESET` for commit/abort, `YOLO_IOC_TRAVEL` for
+   travel — both via `yolo_dentry_unpin_all`) and during
    `kill_sb` (unmount) via a recursive dentry tree walk from
    `sb->s_root`. Directories are never COW'd, so their inode
    identity (keyed by `lower_inode` in `iget5_locked`) is stable for
@@ -37,7 +38,7 @@ the kernel, not merely assumed.
 | Term                  | Meaning |
 | --------------------- | ------- |
 | **base**              | Always `/` — the entire root filesystem, read-only from YoloFS's perspective until commit. |
-| **inode store**       | `.yolofs/inodes/` — a sharded store of inodes. Each entry lives under a shard directory: `inodes/<ino/1000>/<ino>` (e.g., `inodes/0/1`, `inodes/0/2`, ..., `inodes/1/1000`). Shards keep each directory small (~1000 entries) for fast ext4 htree lookups. Regular files and symlinks are stored as inodes; directories created by `mkdir` are empty directory inodes (children live in their own entries). No mirrored directory tree. |
+| **inode store**       | `.yolofs/inodes/` — a sharded store of inodes. Each entry lives under a shard directory: `inodes/<ino/100>/<ino>` (e.g., `inodes/0/1`, `inodes/0/2`, ..., `inodes/1/100`). Shards keep each directory small (~100 entries) for fast ext4 htree lookups. Regular files and symlinks are stored as inodes; directories created by `mkdir` are empty directory inodes (children live in their own entries). No mirrored directory tree. |
 | **staged dentry list** | Per-directory set of pinned staged VFS dentries, identified by `pinned == true` in the VFS `d_children` list. Each pinned dentry carries overlay state in its `yolo_dentry_info`. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
 | **journal**           | `.yolofs/journal` — append-only log of all mutations. Written by the kernel, read by the CLI for commit/abort/review. The kernel never reads it back. |
 | **mount point**       | `.yolofs/mnt/` — the agent's view of the filesystem. Shows the merged base + staged changes with permission gating applied. |
@@ -60,11 +61,11 @@ yolofs.toml                       # config file in CWD (mount options + rules)
 .yolofs/                          # created by `yolo` in CWD
 ├── journal                      # append-only journal (all ops)
 ├── inodes/                      # sharded inode store
-│   ├── 0/                       # shard 0 (inodes 0–999)
+│   ├── 0/                       # shard 0 (inodes 0–99)
 │   │   ├── 1                    # inode: content of some file
 │   │   ├── 2                    # inode: content of another file
 │   │   └── ...
-│   ├── 1/                       # shard 1 (inodes 1000–1999)
+│   ├── 1/                       # shard 1 (inodes 100–199)
 │   │   └── ...
 │   └── ...
 └── mnt/                         # mount point -- agent works here
@@ -80,16 +81,16 @@ zero staging-specific fields; all staging truth lives in the overlay
 state on pinned VFS dentries, identified by `pinned == true` in the
 VFS `d_children` list.
 
-**Per-superblock** (`yolo_sb_info`) — one instance, lives for the mount:
+**Per-superblock** (`yolo_sb_info.staging`, a `struct yolo_staging`) — one instance, lives for the mount:
 
 | Field | Purpose |
 |-------|---------|
 | `inodes_dir` | Pinned path to `.yolofs/inodes/` |
 | `journal_file` | Open file handle to `.yolofs/journal` (`O_APPEND`). The kernel only appends; it never reads the journal back. |
-| `staging_sem` | rw\_semaphore serializing COW / re-COW, snapshot, and journal writes |
+| `sem` | rw\_semaphore serializing COW / re-COW, snapshot, and journal writes |
 | `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
-| `gen` | Atomic counter, starts at 1, bumped by each snapshot and travel ioctl. Compared against `staging_gen` on the inode at open time to decide COW / re-COW. |
-| `staging_fd_count` | Atomic counter of open staging fds (opened for write). Snapshot ioctl rejects with `-EBUSY` when > 0. |
+| `gen` | Atomic counter, starts at 0 (the first snapshot bumps it to 1), bumped by each snapshot and travel ioctl. Compared against `staging_gen` on the inode at open time to decide COW / re-COW. |
+| `fd_count` | Atomic counter of open staging fds (opened for write). Snapshot ioctl rejects with `-EBUSY` when > 0. |
 | `dirty` | Boolean flag set on every data journal write (S/D/R), cleared on snapshot or travel. Used by `YOLO_SNAPSHOT_IF_CHANGED` to skip empty auto-snapshots. |
 
 **Per-inode** (`yolo_inode_info`) — one per cached inode:
@@ -492,21 +493,20 @@ starts at the saved `dirent_off`), and phase 2 resumes from `base_pos`.
 
 ## setattr / getattr / fsync
 
-**`setattr`** (e.g., `chmod`, `chown`, `truncate`): `ATTR_MODE` is always
-stripped (chmod is a no-op through YoloFS). When staging is active,
+**`setattr`** (e.g., `chmod`, `chown`, `truncate`): When staging is active,
 `ATTR_SIZE` is stripped — truncation is handled by the COW mechanism at
-open time (O_TRUNC creates an empty inode), not by setattr. Remaining
-attribute changes (e.g., `chown`, timestamps) propagate directly to the
-lower file (staged inode if COW'd, base file otherwise). No COW is
+open time (O_TRUNC creates an empty inode), not by setattr. All remaining
+attribute changes (mode, owner, timestamps) propagate via `notify_change` to
+the lower file (staged inode if COW'd, base file otherwise). No COW is
 triggered by setattr itself.
 
 **`getattr`** (e.g., `stat`): Stats from the resolved path — the staged
 inode if the file has been modified, otherwise the base file.
 
-**`fsync`**: If the file is staged (`YOLO_D(dentry)->target == YOLO_TARGET_INODE`),
-returns 0 immediately — staged inodes are ephemeral and will be committed or
-discarded as a batch. For base files opened read-only, fsync is delegated to
-the lower filesystem as usual.
+**`fsync`**: yolofs installs `noop_fsync` for every regular-file handle — staged
+inodes are ephemeral (committed or discarded as a batch) and base files are
+read-only, so durability is deferred to commit. fsync is never forwarded to the
+lower file.
 
 ## Journal Format
 
@@ -514,8 +514,8 @@ The journal is an append-only file at `.yolofs/journal`. Each record is a
 sequence of NUL-separated fields terminated by a newline.
 
 ```
-S\0<path>\0<ino>\n                — Stage (staged content at path)
-D\0<path>\n                      — Delete
+S\0<path>\0<ino>\0<preimage>\n    — Stage (staged content at path)
+D\0<path>\0<preimage>\n          — Delete
 R\0<dst>\0<src>\n                 — Rename
 P\0<gen>\0<name>\n                — Snapshot
 T\0<gen>\0<target_gen>\n          — Travel
@@ -524,12 +524,15 @@ B\0<path>\0<op>\n                — Blocked by a rule (permission denied)
 ```
 
 Each mutation type has its own record tag and carries exactly the fields
-it needs. The kernel always uses `S` for creates/COW and `R` for renames:
+it needs. The kernel always uses `S` for creates/COW and `R` for renames.
+`<preimage>` is the absolute path of the overwritten/removed content (empty for
+a fresh create or a no-op delete) — it lets `yolo review --diff` read the
+previous-snapshot content in O(segment) without rebuilding the prior tree:
 
 | Tag | Fields | Meaning |
 |-----|--------|---------|
-| `S` | `<path>`, `<ino>` | Staged content at path (create or COW) |
-| `D` | `<path>` | Entry deleted |
+| `S` | `<path>`, `<ino>`, `<preimage>` | Staged content at path (create or COW) |
+| `D` | `<path>`, `<preimage>` | Entry deleted |
 | `R` | `<dst>`, `<src>` | Rename |
 | `P` | `<gen>`, `<name>` | Snapshot marker |
 | `T` | `<gen>`, `<target_gen>` | Travel marker |
@@ -614,15 +617,15 @@ I/O redirection. The `yolo` CLI reads the journal and applies or discards.
    Principle: readers before writers — renames read from base paths, so
    saves must complete before any destination is written.
 4. Clean up: remove all files under `.yolofs/inodes/`, truncate `.yolofs/journal`.
-5. Signal kernel to reset staging state (`YOLO_IOC_TRAVEL` with `target_gen=0`,
-   `tree_len=0` &mdash; reset mode, no T record written).
+5. Signal kernel to reset staging state (`YOLO_IOC_RESET` &mdash; drops all
+   overlay dentries back to base and zeroes `gen`; no journal record written).
 
 **Abort** (`yolo abort`):
 
-1. Count staged changes; if none, print "nothing to discard" and exit.
-2. Prompt for confirmation: `Discard N staged changes? [y/N]`.
+1. If nothing is staged, print "Nothing to discard." and exit.
+2. Prompt for confirmation: `Discard them all? [y/N]` (`--force` skips the prompt).
 3. Remove all files under `.yolofs/inodes/` and truncate `.yolofs/journal`.
-4. Signal kernel to reset staging state (`YOLO_IOC_TRAVEL` with `target_gen=0`, `tree_len=0` — reset mode, no T record written).
+4. Signal kernel to reset staging state (`YOLO_IOC_RESET` — drops all overlay dentries back to base and zeroes `gen`; no journal record written).
 
 **Review** (`yolo review`, `yolo review --diff`):
 
@@ -662,7 +665,7 @@ This is the re-COW mechanism.
 
 `yolo snapshot [name]` calls `ioctl(YOLO_IOC_SNAPSHOT)`. The kernel:
 
-1. Returns `-ENOTSUP` if `staging` is disabled (snapshots require staging).
+1. Returns `-EOPNOTSUPP` if `staging` is disabled (snapshots require staging).
 2. Takes `staging_sem` write lock.
 3. If `staging_fd_count > 0`, releases sem and returns `-EBUSY`.
 4. Increments `sbi->gen` (atomic counter).
@@ -692,7 +695,7 @@ snapshots from read-only or no-op commands.
 
 The COW check is per-inode: `YOLO_I(d_inode(dentry))->staging_gen`
 records the `sbi->gen` at which the current inode was staged or COW'd.
-`sbi->gen` starts at 1. Newly created files set
+`sbi->gen` starts at 0 (the first snapshot makes it 1). Newly created files set
 `staging_gen = sbi->gen` at creation time, so they are already
 up-to-date and skip the COW check. Base files that have no staged
 dentry (or have negative dentries) naturally trigger COW on the first
@@ -720,14 +723,14 @@ The generation counter collapses consecutive snapshots.
 ### Example Journal with Snapshots
 
 ```
-S\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
-S\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
-P\01\0after make build\n                          # snapshot 1
-S\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
-D\0/src/lib.rs\0f\n                               # delete lib.rs
-S\0/src/new.rs\0f\04\n                           # create new.rs
-P\02\0after make test\n                           # snapshot 2
-S\0/src/new.rs\0f\05\n                           # re-COW: new.rs -> ino 5
+S\0/src/main.rs\01\0/src/main.rs\n      # COW main.rs from base -> ino 1
+S\0/src/lib.rs\02\0\n                    # create lib.rs -> ino 2 (no pre-image)
+P\01\0after make build\n                 # snapshot 1
+S\0/src/main.rs\03\0…/inodes/0/1\n      # re-COW main.rs -> ino 3 (pre-image: ino 1)
+D\0/src/lib.rs\0…/inodes/0/2\n           # delete lib.rs (pre-image: ino 2)
+S\0/src/new.rs\04\0\n                    # create new.rs -> ino 4
+P\02\0after make test\n                  # snapshot 2
+S\0/src/new.rs\05\0…/inodes/0/4\n       # re-COW new.rs -> ino 5
 ```
 
 State at each point:
@@ -741,15 +744,15 @@ State at each point:
 ### Example Journal with Travel
 
 ```
-S\0/src/main.rs\0f\01\n                          # COW: main.rs -> ino 1
-S\0/src/lib.rs\0f\02\n                           # create lib.rs -> ino 2
-P\01\0after make build\n                          # snapshot 1
-S\0/src/main.rs\0f\03\n                          # re-COW: main.rs -> ino 3
-D\0/src/lib.rs\0f\n                               # delete lib.rs
-P\02\0after make test\n                           # snapshot 2
-T\03\01\n                                         # travel to snapshot 1 (gen bumped to 3)
-S\0/src/util.rs\0f\04\n                          # create util.rs -> ino 4
-P\04\0after make fix\n                            # snapshot 4
+S\0/src/main.rs\01\0/src/main.rs\n      # COW main.rs from base -> ino 1
+S\0/src/lib.rs\02\0\n                    # create lib.rs -> ino 2
+P\01\0after make build\n                 # snapshot 1
+S\0/src/main.rs\03\0…/inodes/0/1\n      # re-COW main.rs -> ino 3
+D\0/src/lib.rs\0…/inodes/0/2\n           # delete lib.rs
+P\02\0after make test\n                  # snapshot 2
+T\03\01\n                                # travel to snapshot 1 (gen bumped to 3)
+S\0/src/util.rs\04\0\n                   # create util.rs -> ino 4
+P\04\0after make fix\n                   # snapshot 4
 ```
 
 Reachable records (after `reachable`): S(main.rs→1), S(lib.rs→2), P1, S(util.rs→4), P4
@@ -786,11 +789,11 @@ O(R) backward walk to build reachable ranges, skip unreachable T records.
 
 1. CLI builds a `Journal` and finds the target marker via
    `MarkerIndex::find_marker()` (including unreachable regions, to support undo-travel).
-2. CLI calls `live_segments_at(gen_id)` (or `live_segments_at_name(name)` which
-   resolves the name internally) to get an iterator over live segments in the
-   prefix up to the target marker, handling any T records in that
-   prefix.
-3. CLI builds the dir tree from live records.
+2. CLI calls `Journal::into_tree_at(target_gen)` (name resolution already
+   happened in step 1), which selects the live segments of the prefix up to the
+   target marker via the private `into_live_segments_at`, handling any T records
+   in that prefix.
+3. `into_tree_at` builds the dir tree from those live segments.
 4. CLI serializes the dir tree into a contiguous byte buffer (depth-first,
    children sorted by name).
 5. `ioctl(YOLO_IOC_TRAVEL, { target_gen=N, tree_buf })`:

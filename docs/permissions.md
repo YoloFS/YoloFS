@@ -310,8 +310,9 @@ When a thread accesses a file whose effective permission is `ask`:
    7. complete(&req->done)                     find request by id
      ...thread wakes...                       set decision
   8. Proceed with operation                  complete(&req->done)
-     (one-time; daemon may separately
-      `ioctl(RULE_SET)` to persist)
+     (cached on the inode until the next
+      generation bump; daemon may separately
+      `ioctl(RULE_SET)` to persist across bumps)
 ```
 
 Key properties:
@@ -322,10 +323,12 @@ Key properties:
   If the daemon doesn't respond in time, the request is denied.
 - **Minimal response**: `yolo_ioc_decision` only carries `{ id, decision }`.
   Persisting policy is always a separate `ioctl(YOLO_IOC_RULE_SET)`.
-- **One-time by default**: The decision applies to this single access only.
-  Next access to the same file triggers ask again. To persist a decision,
-  the daemon separately calls `ioctl(YOLO_IOC_RULE_SET)` to install a rule
-  on the dentry.
+- **Cached after the first decision**: The kernel records the daemon's verdict
+  in the inode's `cached_perm`, so later accesses to the same file are answered
+  from the cache without re-asking. The cache is dropped (and the path re-asks)
+  on the next generation bump — a rule add/remove/change, or a staging
+  `RESET`/`TRAVEL`. To persist a decision across those events, the daemon
+  separately calls `ioctl(YOLO_IOC_RULE_SET)` to install a rule on the dentry.
 
 ## Why Dentry Walk-Up?
 

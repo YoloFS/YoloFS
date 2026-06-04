@@ -216,8 +216,11 @@ yolofs/
 ├── user/                      # Userspace CLI source (Rust)
 │   ├── main.rs
 │   ├── lib.rs
-│   ├── config.rs              # yolofs.toml management (init, rules, mount options)
+│   ├── config.rs              # yolofs.toml management (read, rules, mount options)
+│   ├── changeset.rs           # net-change model behind `yolo review` (cmd/review.rs renders it)
+│   ├── perm.rs                # shared Perm verdict type (config/ioctl/daemon/journal)
 │   ├── cmd/                   # CLI subcommand implementations
+│   │   ├── init.rs            # `yolo init` -- scaffold yolofs.toml + agent hooks
 │   │   ├── abort.rs
 │   │   ├── journal.rs         # `yolo journal` (raw record display, `-- <path>` filter)
 │   │   ├── snapshot.rs      # `yolo snapshot` (create only)
@@ -230,12 +233,12 @@ yolofs/
 │   │   ├── timeline.rs        # `yolo timeline` command (snapshot/travel DAG)
 │   │   └── watch.rs           # permission prompt daemon (handles TTY ownership)
 │   ├── journal/               # journal parsing, timeline, and resolution
-│   │   ├── types.rs           # Action, Marker, Record, Segment
+│   │   ├── types.rs           # Action, Marker, Record, Segment, Target, Op, Note
 │   │   ├── parse.rs           # parse()  (pub(super))
-│   │   ├── marker.rs          # MarkerIndex (lookup + range + alive_segments + marker_at)
-│   │   ├── journal.rs         # Journal (struct + new + read + live_segments_*)
+│   │   ├── marker.rs          # MarkerIndex (find_marker + marker_at + segment_range + alive_segments)
+│   │   ├── core.rs            # Journal (struct + new + read + live_segments_*)
 │   │   ├── tree.rs            # DirTree, DirNode
-│   │   └── dentry.rs          # Dentry, Target — dentry state types
+│   │   └── plan.rs            # DirTree::into_plan() -- commit mutation planner
 │   ├── ioctl.rs               # binary protocol structs + ioctl helpers
 │   ├── kmsg.rs                # kernel log reading via /dev/kmsg
 │   └── utils.rs               # shared helpers (session_dir, plural)

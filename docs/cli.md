@@ -45,9 +45,9 @@ $ yolo review <id>       # snapshot <id>'s own change (the segment it sealed)
 $ yolo review <a>..<b>   # changes between two snapshots
 $ yolo review <id> --diff -- <path>   # diff one file within a range
 $ yolo commit            # apply staged changes to base
-$ yolo abort             # discard staged changes (prompts for confirmation)
-$ yolo unmount           # tear down session (prompts if staged changes exist)
-$ yolo remount           # unmount then remount (prompts if staged changes exist)
+$ yolo abort             # discard staged changes (prompts; `--force`/`-f` skips)
+$ yolo unmount           # tear down session (prompts if staged changes exist; `-f` skips)
+$ yolo remount           # unmount then remount (prompts if staged changes exist; `-f` skips)
 ```
 
 **Snapshots:**
@@ -96,6 +96,7 @@ $ yolo rule unset src    # remove a rule (revert to inherited)
 $ yolo rule list         # list configured rules (bare `yolo rule` prints the subcommands)
 $ yolo rule resolve src  # effective level for a path + where it comes from
 $ yolo watch             # handle ask requests (daemon mode)
+$ yolo watch --allow-all # answer every ask with "allow" (non-interactive)
 ```
 
 ## Options
@@ -107,7 +108,7 @@ Configured via top-level keys in `yolofs.toml`:
 | `permission` | true | Enable permission gating |
 | `staging` | true | Enable staging area |
 | `auto_snapshot` | true | Auto-snapshot after each command run through yolofs (`yolo --` / `yolo exec`), skipped when no changes |
-| `prompt_timeout` | 0 (infinite) | Seconds to wait for an `ask` answer before denying (an unanswered ask is a deny) |
+| `prompt_timeout` | 30 | Seconds to wait for an `ask` answer before denying (`0` = wait forever; an unanswered ask is a deny) |
 
 ## Execution Environment
 
