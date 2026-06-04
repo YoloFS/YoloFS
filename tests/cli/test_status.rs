@@ -135,8 +135,8 @@ fn status_defaults_to_latest_snapshot() {
         "latest should NOT show the older a.txt: {latest}"
     );
     assert!(
-        latest.contains("--diff"),
-        "default view should hint at the other review options: {latest}"
+        latest.contains("review all"),
+        "default view should hint at the vs-base view (`yolo review all`): {latest}"
     );
 
     // `all` is the readable name for everything vs base — shows both snapshots.

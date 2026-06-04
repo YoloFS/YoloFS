@@ -167,14 +167,14 @@ fn run_no_changes_skips_snapshot() {
     let session = YoloSession::new().expect("session setup");
 
     let before = session.cli(&["timeline"]).expect("timeline before");
-    let before_count = before.matches("snapshot").count();
+    let before_count = before.matches("snapshot ").count();
 
     // Run a read-only command — no staged changes
     let code = session.run_in_yolofs(&["true"]).unwrap();
     assert_eq!(code, 0);
 
     let after = session.cli(&["timeline"]).expect("timeline after");
-    let after_count = after.matches("snapshot").count();
+    let after_count = after.matches("snapshot ").count();
 
     assert_eq!(
         before_count, after_count,
@@ -188,7 +188,7 @@ fn run_with_changes_creates_snapshot() {
     let session = YoloSession::new().expect("session setup");
 
     let before = session.cli(&["timeline"]).expect("timeline before");
-    let before_count = before.matches("snapshot").count();
+    let before_count = before.matches("snapshot ").count();
 
     let target = session.root.join("chk_test.txt");
     let code = session
@@ -197,7 +197,7 @@ fn run_with_changes_creates_snapshot() {
     assert_eq!(code, 0);
 
     let after = session.cli(&["timeline"]).expect("timeline after");
-    let after_count = after.matches("snapshot").count();
+    let after_count = after.matches("snapshot ").count();
 
     assert!(
         after_count == before_count + 1,
