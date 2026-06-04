@@ -147,11 +147,7 @@ impl Journal {
     /// [`into_live_segments_range`](Self::into_live_segments_range), for callers
     /// that build a tree without consuming the journal (e.g. `Changeset::collect`
     /// run once per segment for `--each`).
-    pub fn live_segments_range(
-        &self,
-        start: usize,
-        end: usize,
-    ) -> impl Iterator<Item = &Segment> {
+    pub fn live_segments_range(&self, start: usize, end: usize) -> impl Iterator<Item = &Segment> {
         let alive = &self.alive;
         self.segments
             .iter()

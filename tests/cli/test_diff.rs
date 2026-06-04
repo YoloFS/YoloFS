@@ -70,7 +70,9 @@ fn diff_single_file_shows_only_that_file() {
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
     fs::write(s.mnt_path("other.txt"), "also changed\n").unwrap();
 
-    let output = s.cli(&["review", "--diff", "--", "hello.txt"]).expect("diff -- hello.txt");
+    let output = s
+        .cli(&["review", "--diff", "--", "hello.txt"])
+        .expect("diff -- hello.txt");
     assert!(
         output.contains("hello.txt"),
         "should show hello.txt: {output}"
@@ -87,7 +89,9 @@ fn diff_single_file_not_changed() {
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
 
-    let output = s.cli(&["review", "--diff", "--", "other.txt"]).expect("diff -- other.txt");
+    let output = s
+        .cli(&["review", "--diff", "--", "other.txt"])
+        .expect("diff -- other.txt");
     assert!(
         output.contains("No changes staged"),
         "no matching changes: {output}"
@@ -101,7 +105,9 @@ fn diff_single_file_with_absolute_path() {
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
 
     let abs = format!("{}/hello.txt", s.root.display());
-    let output = s.cli(&["review", "--diff", "--", &abs]).expect("diff -- absolute path");
+    let output = s
+        .cli(&["review", "--diff", "--", &abs])
+        .expect("diff -- absolute path");
     assert!(
         output.contains("hello.txt"),
         "should find with absolute path: {output}"
