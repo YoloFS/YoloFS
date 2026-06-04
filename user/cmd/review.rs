@@ -424,9 +424,15 @@ fn print_notes(notes: &[Note], root: &Path) {
     for note in notes {
         let (path, kind) = match note {
             Note::Block { path, op } => (path, format!("blocked {}", op.label())),
-            Note::Ask { path, op, decision } => (path, format!("asked {} → {decision}", op.label())),
+            Note::Ask { path, op, decision } => {
+                (path, format!("asked {} → {decision}", op.label()))
+            }
         };
-        println!("{} {}", rel(path, root).dimmed(), format!("({kind})").yellow());
+        println!(
+            "{} {}",
+            rel(path, root).dimmed(),
+            format!("({kind})").yellow()
+        );
     }
 }
 
