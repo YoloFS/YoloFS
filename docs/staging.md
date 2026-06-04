@@ -39,7 +39,7 @@ the kernel, not merely assumed.
 | **base**              | Always `/` — the entire root filesystem, read-only from YoloFS's perspective until commit. |
 | **inode store**       | `.yolofs/inodes/` — a sharded store of inodes. Each entry lives under a shard directory: `inodes/<ino/1000>/<ino>` (e.g., `inodes/0/1`, `inodes/0/2`, ..., `inodes/1/1000`). Shards keep each directory small (~1000 entries) for fast ext4 htree lookups. Regular files and symlinks are stored as inodes; directories created by `mkdir` are empty directory inodes (children live in their own entries). No mirrored directory tree. |
 | **staged dentry list** | Per-directory set of pinned staged VFS dentries, identified by `pinned == true` in the VFS `d_children` list. Each pinned dentry carries overlay state in its `yolo_dentry_info`. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
-| **journal**           | `.yolofs/journal` — append-only log of all mutations. Written by the kernel, read by the CLI for commit/abort/status/diff. The kernel never reads it back. |
+| **journal**           | `.yolofs/journal` — append-only log of all mutations. Written by the kernel, read by the CLI for commit/abort/review. The kernel never reads it back. |
 | **mount point**       | `.yolofs/mnt/` — the agent's view of the filesystem. Shows the merged base + staged changes with permission gating applied. |
 | **commit**            | CLI reads the journal and applies all operations to the base filesystem. |
 | **abort**             | CLI deletes journal + inode store. O(1). |
@@ -322,7 +322,7 @@ yolo_symlink(dir, dentry, target):
 ```
 
 `touch` (create + close, no write) produces an empty inode in the store —
-visible in `yolo status` / `yolo diff` and cleanly discarded by abort.
+visible in `yolo review` (`--diff` for the body) and cleanly discarded by abort.
 
 ## Delete / Rmdir Path
 
@@ -541,12 +541,12 @@ it needs. The kernel always uses `S` for creates/COW and `R` for renames:
 S/D/R are state mutations. P/T are control markers. **A and B are
 observational notes**: they record that a rule blocked an access (`B`) or
 that an `ask` was resolved (`A`, by the daemon or the timeout default) but
-do not affect any state. The CLI's dir-tree builder, commit, abort, and diff
-ignore them; only `yolo audit` surfaces them. A/B writes do not set
+do not affect any state. The CLI's dir-tree builder, commit, abort, and review
+ignore them; only `yolo journal` surfaces them. A/B writes do not set
 `sbi->dirty`, so a command that only triggers blocks/asks does not cause an
 auto-snapshot under `YOLO_SNAPSHOT_IF_CHANGED`. They ride within segments
-alongside S/D/R, so reachability and `--path` filtering
-apply identically (a B in an unreachable segment is dimmed in audit
+alongside S/D/R, so reachability and `-- <path>` filtering
+apply identically (a B in an unreachable segment is dimmed in journal
 output). Current scope is `-EACCES` only; `HIDE`/`-ENOENT` paths are
 not logged.
 
@@ -575,19 +575,22 @@ segment\[i\] contains the records from marker\[i\] up to (but not
 including) marker\[i+1\]. The phantom marker at index 0 opens segment 0
 (pre-first-snapshot records). This is O(N) total.
 
-A P record names a snapshot. The CLI can slice segments with
-`Journal::live_segments_slice(at, from, to)`, so that only the requested
-range of segments is resolved and displayed.
+A P record names a snapshot. `review` and `journal` take a positional
+id/range spec (`[<id>|a..b|all]`); `parse_range` resolves it to a half-open
+segment range `[start, end)` via `MarkerIndex::segment_range`, and
+`Journal::live_segments_range(start, end)` yields just those (live) segments
+to resolve and display.
 
-Slicing semantics:
-- `--at <name>` — isolate the single segment opened by that snapshot
-  (records from that snapshot marker up to the next marker).
-- `--from <name>` — records from that snapshot to end.
-- `--to <name>` — records from start up to and including that snapshot's segment.
-- `--from <A> --to <B>` — records between the two snapshots.
+Range semantics (the spec → `[start, end)`):
+- `<id>` — that snapshot's own change: the single segment it sealed
+  (`prev(id)..id`).
+- `<a>..<b>` — the span between two snapshots; an empty end means base (`0`)
+  or the tip.
+- `all` (== `..` == `0..`) — every segment, base to tip.
+- (omitted) — the latest segment (vs prev); the whole session under `--each`.
 
 Written by the kernel (`kernel_write()` per mutation). Read by the CLI
-for commit/abort/status/diff. Never read by the kernel.
+for commit/abort/review. Never read by the kernel.
 
 ## Staging Operations (Userspace)
 
@@ -621,22 +624,24 @@ I/O redirection. The `yolo` CLI reads the journal and applies or discards.
 3. Remove all files under `.yolofs/inodes/` and truncate `.yolofs/journal`.
 4. Signal kernel to reset staging state (`YOLO_IOC_TRAVEL` with `target_gen=0`, `tree_len=0` — reset mode, no T record written).
 
-**Status** (`yolo status`):
+**Review** (`yolo review`, `yolo review --diff`):
 
-1. Build a `Journal` from the journal records and call `live_segments_slice()` to filter
-   unreachable records and optionally narrow to a range (`--at`, `--from`, `--to`).
-2. Build a dir tree from each segment's records independently.
-3. Walk the tree for display: one-line summaries under snapshot headers (and any trailing
-   unsaved changes). Print total count.
-
-**Diff** (`yolo diff`):
-
-1. Build a `Journal` from the journal records and call `live_segments_slice()` to filter
-   unreachable records and optionally narrow to a range (`--at`, `--from`, `--to`).
-2. Build a dir tree from each segment's records independently.
-3. For modified/added files, diff `inodes/<ino>` vs base.
-   For renames, show rename metadata. For deletes, show as deleted file.
-4. Output in git-style unified diff format under snapshot headers.
+1. Build a `Journal` from the journal records; `parse_range` resolves the
+   id/range spec to a half-open segment range `[start, end)`, skipping
+   unreachable segments.
+2. `Changeset::collect` makes one O(segment) pass over the range, gathering the
+   observational notes and, per path, the pre-image from its *first* touch (the
+   range-start version), then replays the range into one dir tree for the net
+   per-path target.
+3. Summary view: classify each net change from its pre-image alone — added (no
+   pre-image), modified (pre-image differs), deleted (tombstone over a
+   pre-image), or renamed — one line each. No previous-tree rebuild, no base
+   stat: O(segment), not O(journal).
+4. `--diff` view: for each change, diff its pre-image (old content) against the
+   staged `inodes/<ino>` (new content) as a git-style unified hunk; renames show
+   metadata, deletes show the removed content.
+5. `--each` expands the range into one stanza per consecutive snapshot (the tip
+   — work past the last snapshot — is headed `working`).
 
 ## Snapshot Mechanism
 
@@ -673,8 +678,8 @@ is bumped (open-for-write holds at least a read lock while incrementing
 The name defaults to `"after <cmd>"` when auto-snapshotting via `yolo exec`
 (e.g., `"after make build"`), or a human-readable timestamp like
 `chk-20260315-043807` when run via `yolo snapshot` with no argument. Names need
-not be unique; snapshots can also be addressed by their numeric gen. When
-looking up by name, `--at` and `--from` match the latest one.
+not be unique; `review` and `journal` address snapshots by their numeric gen id
+only (`0` is the base), so a duplicate name never makes a range ambiguous.
 
 Auto-snapshotting after `yolo exec` is skipped when the command produced no
 staged changes. The kernel tracks a `dirty` flag on `yolo_sb_info` that is set
@@ -759,22 +764,21 @@ State at current:
 
 ### Snapshot-Aware CLI Operations
 
-All snapshot query flags (`--at`, `--from`, `--to`) work by slicing
-the journal records before resolving into segments. This means the
-output always preserves snapshot boundaries within the requested range.
+The positional id/range spec works by slicing the journal records before
+resolving into segments, so the output always preserves snapshot boundaries
+within the requested range.
 
-**`yolo status`** / **`yolo diff`** support:
-- `--at <name|gen>` — show the single segment at that snapshot.
-- `--from <name|gen>` — show changes from that snapshot to end of journal.
-- `--to <name|gen>` — show changes from start of journal to that snapshot.
-- `--from <A> --to <B>` — show changes between two snapshots.
-- `--at` conflicts with `--from`/`--to`.
+**`yolo review`** and **`yolo journal`** share the spec `[<id>|a..b|all]`:
+- `<id>` — the single segment that snapshot sealed (`prev(id)..id`).
+- `<a>..<b>` — changes between two snapshots; an empty end is base (`0`) or tip.
+- `all` (== `..` == `0..`) — everything from base to tip.
+- omitted — the latest segment (vs prev), or the whole session under `--each`.
 
 **`yolo travel <name|gen>`**: Move the mounted view to the state at the
 named marker (snapshot or travel). The journal is **append-only** —
 travel appends a T record instead of truncating. T records create
 unreachable records — records between the target marker and the T record that no longer reflect
-current state. All CLI consumers (commit, status, diff, travel) build a
+current state. All CLI consumers (commit, review, journal, travel) build a
 `Journal` to filter unreachable records before resolving.
 
 The reachability algorithm: O(N) single pass to collect P/T positions,
@@ -808,6 +812,6 @@ taken (since gen is bumped to a fresh value by the travel ioctl). Editing
 files without a new snapshot reuses the existing inodes in place.
 
 **`yolo timeline`**: Show the snapshot/travel DAG in chronological
-order, with unreachable branches dimmed. **`yolo audit`**: Show every
-raw journal record (unreachable dimmed), with an optional `--path` filter
+order, with unreachable branches dimmed. **`yolo journal`**: Show every
+raw journal record (unreachable dimmed), with an optional `-- <path>` filter
 to trace operations on a specific file.

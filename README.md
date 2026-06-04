@@ -13,7 +13,7 @@ See the [website](https://yolofs.github.io/) for an overview and the
 ## Quick start
 
 `yolo` is a host-side tool — like `docker`, you run it **outside** the mount and
-it manages the sandbox; every `yolo` command refuses to run inside the mount.
+it manages the session; every `yolo` command refuses to run inside the mount.
 
 ```bash
 make install                     # build + install CLI and kernel module
@@ -22,9 +22,8 @@ cd /path/to/project
 yolo init                        # initialize a session (yolofs.toml + agent hooks)
 yolo mount                       # mount the session
 yolo watch &                     # permission prompt daemon
-yolo exec -- make build          # run a command sandboxed (auto-snapshots after)
-yolo status                      # show staged changes
-yolo diff                        # git-style diff vs base
+yolo -- make build               # run a command in the staging overlay (shows changes)
+yolo review                      # review staged changes (`--diff` for the diff body)
 yolo commit                      # apply, or `yolo abort` to discard
 ```
 

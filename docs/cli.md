@@ -25,31 +25,25 @@ run through yolofs. Supported agents: `claude` (`.claude/`), `gemini` (`.gemini/
 files are never overwritten.
 
 `yolo` is a host-side tool — like `docker`, you run it **outside** the mount and
-it manages the sandbox. `status`/`diff`/`commit`/`abort` need the base
+it manages the session. `review`/`commit`/`abort` need the base
 filesystem, which only exists outside, so **every `yolo` command refuses to run
-inside the mount**. Sandbox your work with `yolo exec` (below) and review/commit
-from outside. Bare `yolo` prints this command list.
+inside the mount**. Stage your work with `yolo -- <cmd>` (or `yolo exec`,
+below) and review/commit from outside. Bare `yolo` prints this command list.
 
 **Session management** — manual control over each step:
 
 ```bash
 $ yolo mount             # create .yolofs/ layout and mount (auto-loads kmod if needed)
 $ yolo exec              # chroot a shell into .yolofs/mnt (requires existing mount)
-$ yolo exec -- make build   # run one command sandboxed (auto-snapshots after)
-$ yolo status            # staged changes for the latest snapshot (default)
-$ yolo status --full     # all staged changes since base (grouped by snapshot)
-$ yolo status --at <name|gen>           # show single snapshot segment
-$ yolo status --from <name|gen>        # show changes since snapshot
-$ yolo status --to <name|gen>          # show changes up to snapshot
-$ yolo status --from <A> --to <B>      # show changes between two snapshots
-$ yolo diff              # git-style diff for the latest snapshot (default)
-$ yolo diff --full       # diff all staged changes since base
-$ yolo diff <path>       # diff a single file
-$ yolo diff --at <name|gen>             # diff single snapshot segment
-$ yolo diff --from <name|gen>          # diff changes since snapshot
-$ yolo diff --to <name|gen>            # diff changes up to snapshot
-$ yolo diff --from <A> --to <B>        # diff changes between two snapshots
-$ yolo diff --from <name|gen> <path>   # diff a single file since snapshot
+$ yolo exec -- make build   # run one command in the staging overlay (auto-snapshots after)
+$ yolo -- make build     # run one command in the staging overlay, then review what it changed
+$ yolo review            # staged changes for the latest snapshot (summary; default)
+$ yolo review --diff     # the same changes as a git-style diff
+$ yolo review all        # everything since base (`all` == `..` == `0..`)
+$ yolo review --each     # break a range out into one stanza per snapshot
+$ yolo review <id>       # snapshot <id>'s own change (the segment it sealed)
+$ yolo review <a>..<b>   # changes between two snapshots
+$ yolo review <id> --diff -- <path>   # diff one file within a range
 $ yolo commit            # apply staged changes to base
 $ yolo abort             # discard staged changes (prompts for confirmation)
 $ yolo unmount           # tear down session (prompts if staged changes exist)
@@ -63,14 +57,18 @@ $ yolo snapshot              # snapshot with timestamp as name
 $ yolo snapshot "my label"   # snapshot with explicit name
 $ yolo travel <name|gen>      # travel to a previous snapshot or travel point
 $ yolo timeline                # show snapshot/travel DAG (unreachable dimmed)
-$ yolo audit                 # journal records for the latest snapshot (default)
-$ yolo audit --full          # the entire journal (unreachable dimmed)
-$ yolo audit --path /src/main.rs  # trace operations on a specific file
+$ yolo journal               # raw journal records for the latest snapshot (default)
+$ yolo journal all           # the entire journal (unreachable dimmed)
+$ yolo journal <a>..<b>      # records over a range (review's grammar)
+$ yolo journal -- /src/main.rs   # trace operations on a specific file
 ```
 
-The `--at`, `--from`, and `--to` flags accept a snapshot name or
-generation number (of any type) and only address live snapshots and travels
-(not unreachable ones created by travels).
+`review` and `journal` share one positional range grammar: a bare `<id>` is
+that snapshot's own change, `<a>..<b>` is the span between two (an empty end
+means base or tip), and `all` (== `..` == `0..`) is everything since base. Ids
+are generation numbers — `0` is the base — and only address live snapshots and
+travels, not the unreachable ones a travel leaves behind. A `--diff` path
+filter is passed after `--`, so the positional is unambiguously a range.
 
 `yolo timeline` shows the snapshot/travel DAG with unreachable branches
 dimmed. Example `yolo timeline` output:
@@ -108,7 +106,7 @@ Configured via top-level keys in `yolofs.toml`:
 |---|---|---|
 | `permission` | true | Enable permission gating |
 | `staging` | true | Enable staging area |
-| `auto_snapshot` | true | Auto-snapshot after each `yolo exec` invocation (skipped when no changes) |
+| `auto_snapshot` | true | Auto-snapshot after each command run through yolofs (`yolo --` / `yolo exec`), skipped when no changes |
 | `prompt_timeout` | 0 (infinite) | Seconds to wait for an `ask` answer before denying (an unanswered ask is a deny) |
 
 ## Execution Environment
@@ -149,7 +147,8 @@ process credentials, not euid.
 |---|---|---|
 | `mount()`, bind-mounts, `chroot()` | 0 | Require `CAP_SYS_ADMIN` |
 | `exec` user command | real uid | User code must not run as root |
-| `commit`, `travel`, `status`, `diff` | 0 | Need root for ioctl on the mount |
+| `commit`, `travel` | 0 | Need root for ioctl on the mount |
+| `review`, `journal` | real uid | Plain reads of the journal + inode store |
 | `load`/`unload` | delegates to `sudo` | Already handled correctly |
 
 ### `.yolofs/` directory ownership

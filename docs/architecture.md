@@ -108,20 +108,20 @@ single R record carrying both source and destination paths.
 ## Lifecycle Example
 
 ```
-# 1. Full interactive workflow (mount -> watch + run -> diff -> commit/abort)
+# 1. Full interactive workflow (mount -> watch + run -> review -> commit/abort)
 $ cd /home/user/project
 $ yolo
    -> creates .yolofs/, mounts / -> .yolofs/mnt, applies rules from yolofs.toml,
      starts background watch daemon for permission requests, chroots into
      .yolofs/mnt, spawns $SHELL with cwd preserved as the caller's original CWD
-   -> on shell exit: stops watch daemon, runs `yolo diff`, prompts user to
+   -> on shell exit: stops watch daemon, runs `yolo review`, prompts user to
      commit, abort, or keep staged (user runs `yolo unmount` when done)
 
 # 1b. Or use individual commands for more control:
 $ yolo mount
 $ yolo watch &           # start daemon in background
-$ yolo exec -- make build
-$ yolo diff
+$ yolo -- make build
+$ yolo review
 $ yolo commit
 
 # 1c. Install rules via CLI from the session root (attaches perm directly
@@ -219,10 +219,10 @@ yolofs/
 │   ├── config.rs              # yolofs.toml management (init, rules, mount options)
 │   ├── cmd/                   # CLI subcommand implementations
 │   │   ├── abort.rs
-│   │   ├── audit.rs           # `yolo audit` command (raw record display, --path filter)
+│   │   ├── journal.rs         # `yolo journal` (raw record display, `-- <path>` filter)
 │   │   ├── snapshot.rs      # `yolo snapshot` (create only)
 │   │   ├── commit.rs
-│   │   ├── diff.rs            # `yolo status` + `yolo diff` (summary and verbose views)
+│   │   ├── review.rs          # `yolo review` (summary, or git-style diff with `--diff`)
 │   │   ├── exec.rs
 │   │   ├── load.rs            # `yolo load/unload/reload` -- kernel module management
 │   │   ├── mount.rs           # mount, unmount, remount (auto-loads kmod, prompts on staged changes)

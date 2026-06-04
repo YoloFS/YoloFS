@@ -98,7 +98,7 @@ agent command or a `yolo exec` shell), so nothing running inside the
 mount can un-gate itself or answer its own ask prompts. `SNAPSHOT`, `TRAVEL`,
 and `RULE_RESOLVE` are allowed from inside. This is the real boundary; on top of
 it the CLI refuses to run *any* `yolo` command from inside the mount (it is a
-host-side tool — `status`/`diff`/`commit` need the base filesystem, which only
+host-side tool — `review`/`commit` need the base filesystem, which only
 exists outside).
 
 **Per-request** (`yolo_perm_request`) — one per in-flight ask:
@@ -388,7 +388,7 @@ record to the journal (the *target* path the agent tried to act on, not
 the parent whose perm was the source of denial; `op` is `r`/`w`). And
 whenever an `ask` is resolved — by the daemon or the timeout default — the
 kernel appends an `A\0<path>\0<op>\0<decision>\n` record capturing the
-verdict. `yolo audit` surfaces both so the user can review what was
+verdict. `yolo journal` surfaces both so the user can review what was
 blocked or asked, in order, relative to snapshots. `HIDE` paths return
 `-ENOENT` and are not logged. See
 [staging.md §Journal Format](staging.md#journal-format) for the record

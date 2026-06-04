@@ -166,9 +166,10 @@ fn run_cli() -> anyhow::Result<u8> {
             anyhow::bail!("yolo cannot run inside the mount — run it from outside");
         }
         let cmd = &raw[pos + 1..];
-        // A `yolo` subcommand is host-side, so it can't be sandboxed — gate it
-        // instead (the agent may inspect/navigate; commit/abort/rule/… are the
-        // human's). Everything else runs sandboxed, then we show what changed.
+        // A `yolo` subcommand is host-side, so it can't run in the staging
+        // overlay — gate it instead (the agent may inspect/navigate;
+        // commit/abort/rule/… are the human's). Everything else runs in the
+        // overlay, then we show what changed.
         if cmd.first().map(String::as_str) == Some("yolo") {
             return run_agent_yolo(cmd);
         }
@@ -178,8 +179,8 @@ fn run_cli() -> anyhow::Result<u8> {
     let cli = Cli::parse();
 
     // yolo is a host-side tool: its base-fs operations only work outside the
-    // mount, so refuse every subcommand when run inside the chroot. Sandbox
-    // commands with `yolo exec -- <cmd>` and manage from outside.
+    // mount, so refuse every subcommand when run inside the chroot. Run
+    // commands through `yolo exec -- <cmd>` and manage from outside.
     if cli.command.is_some() && yolofs::utils::inside_mount() {
         anyhow::bail!("yolo cannot run inside the mount — run it from outside");
     }
@@ -196,7 +197,7 @@ const AGENT_ALLOWED: &[&str] = &["review", "journal", "timeline", "travel", "sna
 
 /// The agent invoked `yolo <sub> …` (its hook wraps every command as
 /// `yolo -- <cmd>`). `yolo` is host-side, so the allowed ones run directly — not
-/// sandboxed — and the rest are rejected.
+/// in the overlay — and the rest are rejected.
 fn run_agent_yolo(cmd: &[String]) -> anyhow::Result<u8> {
     match cmd.get(1).map(String::as_str) {
         Some(sub) if AGENT_ALLOWED.contains(&sub) => {
@@ -315,7 +316,7 @@ fn print_overview() {
     println!();
     println!(
         "{}",
-        "Run yolo outside the mount; sandbox your work with `yolo exec`.".dimmed()
+        "Run yolo outside the mount; stage your work with `yolo -- <cmd>`.".dimmed()
     );
     for (heading, cmds) in groups {
         println!("\n{}", heading.cyan().bold());
