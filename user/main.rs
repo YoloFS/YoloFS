@@ -207,9 +207,7 @@ fn run_cli() -> anyhow::Result<u8> {
         }
         Some(Command::Travel { name }) => travel::run(&name)?,
         Some(Command::Timeline) => timeline::run()?,
-        Some(Command::Journal { range, path }) => {
-            journal::run(range.as_deref(), path.as_deref())?
-        }
+        Some(Command::Journal { range, path }) => journal::run(range.as_deref(), path.as_deref())?,
         Some(Command::Rule { action }) => match action {
             RuleAction::List => config::list_rules()?,
             RuleAction::Resolve { path } => config::resolve_rule(&path)?,

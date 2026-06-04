@@ -1,8 +1,8 @@
 mod test_abort;
-mod test_journal;
 mod test_commit;
 mod test_diff;
 mod test_ioctl_errors;
+mod test_journal;
 mod test_lifecycle;
 mod test_mount;
 mod test_rules;
