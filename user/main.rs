@@ -3,7 +3,7 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use yolofs::cmd::{
-    abort, audit, commit, diff, exec, init, load, mount, snapshot, timeline, travel, watch,
+    abort, audit, commit, exec, init, load, mount, review, snapshot, timeline, travel, watch,
 };
 use yolofs::config;
 use yolofs::perm;
@@ -56,36 +56,25 @@ enum Command {
         force: bool,
     },
     // ── Review & commit ──────────────────────────────────────────────
-    /// Show staged changes (latest snapshot by default; --full for all)
+    /// Show staged changes (latest snapshot by default)
     Status {
-        /// Show state at a named snapshot (single segment)
+        /// Snapshot id or range: `N` = snapshot N's own change; `a..b` =
+        /// between two; `a..` / `..b` open ends; `..` = everything vs base
+        /// (0 is the base). Ids only — see `yolo timeline`.
+        range: Option<String>,
+        /// One summary per consecutive snapshot in the range
         #[arg(long)]
-        at: Option<String>,
-        /// Start from a named snapshot (inclusive)
-        #[arg(long, conflicts_with = "at")]
-        from: Option<String>,
-        /// End at a named snapshot (inclusive)
-        #[arg(long, conflicts_with = "at")]
-        to: Option<String>,
-        /// Show all staged changes since base (not just the latest snapshot)
-        #[arg(long, conflicts_with_all = ["at", "from", "to"])]
-        full: bool,
+        each: bool,
     },
-    /// Git-style diff of staged vs base (latest snapshot by default; --full for all)
+    /// Git-style diff of staged changes (latest snapshot by default)
     Diff {
-        /// Diff a single snapshot segment
+        /// Snapshot id or range (see `status`); `..` diffs everything vs base
+        range: Option<String>,
+        /// One diff per consecutive snapshot in the range
         #[arg(long)]
-        at: Option<String>,
-        /// Diff changes since a named snapshot
-        #[arg(long, conflicts_with = "at")]
-        from: Option<String>,
-        /// Diff changes up to a named snapshot
-        #[arg(long, conflicts_with = "at")]
-        to: Option<String>,
-        /// Diff all staged changes since base (not just the latest snapshot)
-        #[arg(long, conflicts_with_all = ["at", "from", "to"])]
-        full: bool,
-        /// Show diff for a single file
+        each: bool,
+        /// Limit the diff to a single file, passed after `--` (e.g. `-- foo.txt`)
+        #[arg(last = true)]
         path: Option<String>,
     },
     /// Apply staged changes to base
@@ -211,23 +200,9 @@ fn run_cli() -> anyhow::Result<u8> {
         }
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,
-        Some(Command::Status { at, from, to, full }) => {
-            diff::run_status(at.as_deref(), from.as_deref(), to.as_deref(), full)?
-        }
-        Some(Command::Diff {
-            at,
-            from,
-            to,
-            full,
-            path,
-        }) => {
-            diff::run_diff(
-                at.as_deref(),
-                from.as_deref(),
-                to.as_deref(),
-                path.as_deref(),
-                full,
-            )?;
+        Some(Command::Status { range, each }) => review::run_status(range.as_deref(), each)?,
+        Some(Command::Diff { range, path, each }) => {
+            review::run_diff(range.as_deref(), path.as_deref(), each)?;
         }
         Some(Command::Commit) => commit::run()?,
         Some(Command::Abort { force }) => abort::run(force)?,
@@ -263,7 +238,7 @@ fn run_and_review(run_args: &[String]) -> anyhow::Result<u8> {
         exec::Snapshot::Created(gen_id) => Some(gen_id),
         exec::Snapshot::NoChanges | exec::Snapshot::Off => None,
     };
-    diff::run_after_exec(snapshot_id)?;
+    review::run_after_exec(snapshot_id)?;
     Ok(code)
 }
 
@@ -286,7 +261,7 @@ fn print_overview() {
             ("remount",  "Unmount then remount (picks up yolofs.toml options)"),
         ]),
         ("Review & commit", &[
-            ("status",   "Show staged changes (latest snapshot; --full for all)"),
+            ("status",   "Show staged changes (latest snapshot; `..` for vs base)"),
             ("diff",     "Git-style diff of staged vs base"),
             ("commit",   "Apply staged changes to base"),
             ("abort",    "Discard staged changes"),

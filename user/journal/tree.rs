@@ -11,6 +11,7 @@
 // Passthrough (scaffold) dirs that exist only to provide a path to deeper
 // nodes carry a passthrough target (`Target::Passthrough`).
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
 
 use super::types::*;
@@ -42,26 +43,28 @@ impl DirTree {
     }
 
     /// Apply a single journal action to the tree (consumes the action).
-    fn apply(&mut self, action: Action) {
+    fn apply(&mut self, action: &Action) {
         match action {
             Action::Stage { path, ino, .. } => {
-                let target = Target::StagedFile(ino);
-                self.set_target(path, target);
+                self.set_target(path.clone(), Target::StagedFile(*ino));
             }
             Action::Delete { path, .. } => {
-                self.set_target(path, Target::Tombstone);
+                self.set_target(path.clone(), Target::Tombstone);
             }
             Action::Rename { dst, src } => {
-                self.apply_rename(dst, src);
+                self.apply_rename(dst.clone(), src.clone());
             }
         }
     }
 
-    /// Build a tree from owned segments.
-    pub fn build(segments: impl IntoIterator<Item = Segment>) -> Self {
+    /// Build a tree from a sequence of segments. Generic over `Borrow<Segment>`
+    /// so callers can pass owned `Segment`s (consuming the journal) or `&Segment`
+    /// (borrowing it — e.g. `Changeset::collect`, which runs once per segment for
+    /// `--each`). Records are read by reference; only the net targets are kept.
+    pub fn build<S: Borrow<Segment>>(segments: impl IntoIterator<Item = S>) -> Self {
         let mut tree = Self::new();
         for seg in segments {
-            for record in seg.records {
+            for record in &seg.borrow().records {
                 match record {
                     Record::Action(action) => tree.apply(action),
                     // Notes are observational — no state change.

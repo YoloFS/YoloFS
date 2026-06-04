@@ -84,7 +84,7 @@ impl Journal {
     /// the most recent snapshot captured (the last command's work). If there is
     /// uncommitted work *after* the last snapshot we show that instead, and with
     /// no snapshots at all we fall back to the full range. The bool is true when
-    /// older history is hidden, so callers can hint about `--full`.
+    /// older history is hidden, so callers can hint about the full range (`..`).
     pub fn latest_range(&self) -> (usize, usize, bool) {
         let num = self.segments.len();
         match self.markers.last_snapshot_idx() {
@@ -125,6 +125,23 @@ impl Journal {
         let alive = self.alive;
         self.segments
             .into_iter()
+            .enumerate()
+            .filter(move |(i, _)| *i >= start && *i < end && alive[*i])
+            .map(|(_, seg)| seg)
+    }
+
+    /// Borrow the live segments in `[start, end)` — the read-only counterpart to
+    /// [`into_live_segments_range`](Self::into_live_segments_range), for callers
+    /// that build a tree without consuming the journal (e.g. `Changeset::collect`
+    /// run once per segment for `--each`).
+    pub fn live_segments_range(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> impl Iterator<Item = &Segment> {
+        let alive = &self.alive;
+        self.segments
+            .iter()
             .enumerate()
             .filter(move |(i, _)| *i >= start && *i < end && alive[*i])
             .map(|(_, seg)| seg)

@@ -99,8 +99,9 @@ impl MarkerIndex {
             .unwrap_or(0)
     }
 
-    /// Compute the segment index range for --at/--from/--to queries.
-    /// Returns a half-open range [start, end).
+    /// Compute the segment index range `[start, end)` for a status/diff query.
+    /// `at` → that snapshot's own segment (`prev(at)..at`); otherwise `from`/`to`
+    /// bound a range, defaulting to the base (0) and the tip.
     pub fn segment_range(
         &self,
         at: Option<&str>,
@@ -126,7 +127,7 @@ impl MarkerIndex {
         };
 
         if start > end {
-            anyhow::bail!("invalid range: --from snapshot comes after --to snapshot");
+            anyhow::bail!("invalid range: start snapshot comes after end snapshot");
         }
 
         Ok((start, end))
@@ -371,8 +372,8 @@ mod tests {
             name: "c1".into(),
         })];
         let j = Journal::new(records);
-        // `--at 0` (the base) resolves to an empty range — the base introduced
-        // no changes, so `status --at 0` shows nothing (no longer an error).
+        // Snapshot 0 (the base) resolves to an empty range — the base introduced
+        // no changes, so `status 0` shows nothing (no longer an error).
         let r = j
             .markers
             .segment_range(Some("0"), None, None, j.segments.len())
@@ -398,7 +399,7 @@ mod tests {
             }),
         ];
         let j = Journal::new(records);
-        // `--from 0` spans everything since the base — i.e. the same as `--full`.
+        // `from 0` spans everything since the base — i.e. the full range `..`.
         let r = j
             .markers
             .segment_range(None, Some("0"), None, j.segments.len())
@@ -492,7 +493,7 @@ mod tests {
             }),
         ];
         let j = Journal::new(records);
-        // --at c2: prev P is marker 0 (P1), so start=1, end=2
+        // at=c2: the previous snapshot is P1 (marker 1), so start=1, end=2
         let (start, end) = j
             .markers
             .segment_range(Some("c2"), None, None, j.segments.len())
@@ -542,7 +543,7 @@ mod tests {
             }),
         ];
         let j = Journal::new(records);
-        // --at c5: prev P is marker[2] (P3), so start=3, end=5
+        // at=c5: the previous snapshot is P3 (marker 2), so start=3, end=5
         let (start, end) = j
             .markers
             .segment_range(Some("c5"), None, None, j.segments.len())

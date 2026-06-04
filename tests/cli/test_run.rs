@@ -228,6 +228,32 @@ fn run_shorthand_shows_status() {
     );
 }
 
+/// `yolo -- <cmd>` reviews what THAT command did. A no-op command run after a
+/// real change must report no changes — not echo the previous command's staged
+/// change (regression: it used to fall back to the last snapshot's batch).
+#[test]
+fn run_shorthand_noop_after_change_shows_no_changes() {
+    let session = YoloSession::new().expect("session setup");
+
+    // First command stages a change (auto-snapshots).
+    session
+        .cli_output(&["--", "sh", "-c", "echo hi > made.txt"])
+        .expect("first run");
+
+    // Second command changes nothing — its review must say no changes, and must
+    // NOT show the previous command's change.
+    let (ok, stdout, _err) = session.cli_output(&["--", "true"]).expect("no-op run");
+    assert!(ok, "no-op command should succeed");
+    assert!(
+        stdout.contains("no changes"),
+        "a no-op command's review should report no changes: {stdout}"
+    );
+    assert!(
+        !stdout.contains("made.txt"),
+        "review must not echo the previous command's change: {stdout}"
+    );
+}
+
 /// `yolo exec -- <cmd>` is the quiet primitive: it must NOT print a status
 /// summary (the snapshot line it does emit goes to stderr).
 #[test]

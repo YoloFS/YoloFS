@@ -70,7 +70,7 @@ fn diff_single_file_shows_only_that_file() {
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
     fs::write(s.mnt_path("other.txt"), "also changed\n").unwrap();
 
-    let output = s.cli(&["diff", "hello.txt"]).expect("diff hello.txt");
+    let output = s.cli(&["diff", "--", "hello.txt"]).expect("diff -- hello.txt");
     assert!(
         output.contains("hello.txt"),
         "should show hello.txt: {output}"
@@ -87,7 +87,7 @@ fn diff_single_file_not_changed() {
 
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
 
-    let output = s.cli(&["diff", "other.txt"]).expect("diff other.txt");
+    let output = s.cli(&["diff", "--", "other.txt"]).expect("diff -- other.txt");
     assert!(
         output.contains("No changes staged"),
         "no matching changes: {output}"
@@ -101,7 +101,7 @@ fn diff_single_file_with_absolute_path() {
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
 
     let abs = format!("{}/hello.txt", s.root.display());
-    let output = s.cli(&["diff", &abs]).expect("diff absolute path");
+    let output = s.cli(&["diff", "--", &abs]).expect("diff -- absolute path");
     assert!(
         output.contains("hello.txt"),
         "should find with absolute path: {output}"
@@ -231,10 +231,11 @@ fn diff_between_snapshots_spanning_travel() {
     fs::write(s.mnt_path("hello.txt"), "v3\n").unwrap();
     s.cli(&["snapshot", "chk3"]).expect("snapshot 3");
 
-    // Diff from chk1 to chk3 should NOT include chk2's dead-zone changes
-    let output = s
-        .cli(&["diff", "--from", "chk1", "--to", "chk3"])
-        .expect("diff --from --to");
+    // Diff from chk1 to chk3 should NOT include chk2's dead-zone changes.
+    // Gen ids: chk1=1, chk2=2, travel=3, post-travel=4, chk3=5 → range 1..5.
+    // (chk2's segment falls inside that range by index, but the liveness mask
+    // drops it as a dead zone, so extra.txt never appears.)
+    let output = s.cli(&["diff", "1..5"]).expect("diff 1..5");
     assert!(
         !output.contains("extra.txt"),
         "dead-zone file should NOT appear: {output}"
@@ -303,24 +304,48 @@ fn diff_recow_after_snapshot_shows_prior_content() {
     );
 }
 
-/// `diff --full` uses each path's FIRST-touch pre-image (the base), not the
-/// latest intermediate version — so it diffs base → final, never against v1.
+/// `diff --each` shows one unified-diff stanza per consecutive snapshot, each
+/// under a `snapshot [id]` header, with that snapshot's own content.
 #[test]
-fn diff_full_uses_base_not_intermediate() {
+fn diff_each_shows_per_snapshot_stanzas() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("modify"); // base = "base content\n"
+    s.cli(&["snapshot", "c1"]).expect("snapshot c1"); // gen 1
+    fs::write(s.mnt_path("added.txt"), "fresh\n").expect("create");
+    s.cli(&["snapshot", "c2"]).expect("snapshot c2"); // gen 2
+
+    let diff = s.cli(&["diff", "--each"]).expect("diff --each");
+    // Step 1 (snapshot 1): hello.txt modified base content → v1.
+    assert!(
+        diff.contains("snapshot [1]") && diff.contains("+v1"),
+        "step 1 should show snapshot [1] with hello.txt's diff: {diff}"
+    );
+    // Step 2 (snapshot 2): added.txt added.
+    assert!(
+        diff.contains("snapshot [2]") && diff.contains("+fresh"),
+        "step 2 should show snapshot [2] with added.txt: {diff}"
+    );
+}
+
+/// `diff 0..` uses each path's FIRST-touch pre-image (the base), not the latest
+/// intermediate version — so it diffs base → final, never against v1.
+#[test]
+fn diff_base_uses_base_not_intermediate() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("modify 1"); // base = "base content\n"
     s.cli(&["snapshot", "c1"]).expect("snapshot");
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("modify 2");
 
-    let diff = s.cli(&["diff", "--full"]).expect("diff --full");
+    let diff = s.cli(&["diff", "0.."]).expect("diff 0..");
     assert!(
         diff.contains("-base content"),
-        "--full old side should be the base (first touch), not v1: {diff}"
+        "0.. old side should be the base (first touch), not v1: {diff}"
     );
-    assert!(diff.contains("+v2"), "--full new side should be v2: {diff}");
+    assert!(diff.contains("+v2"), "0.. new side should be v2: {diff}");
     assert!(
         !diff.contains("v1"),
-        "--full must not diff against the intermediate v1: {diff}"
+        "0.. must not diff against the intermediate v1: {diff}"
     );
 }

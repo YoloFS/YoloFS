@@ -89,8 +89,8 @@ fn status_after_travel_excludes_dead_zone() {
     );
 }
 
-/// Status with --at targeting a snapshot before a travel
-/// should show only changes at that snapshot.
+/// `status <id>` targeting a snapshot before a travel shows only that
+/// snapshot's own change. (`chk1` is the first snapshot → gen id 1.)
 #[test]
 fn status_at_snapshot_after_travel() {
     let s = YoloSession::new().expect("session setup");
@@ -103,10 +103,10 @@ fn status_at_snapshot_after_travel() {
 
     s.cli(&["travel", "chk1"]).expect("travel");
 
-    let output = s.cli(&["status", "--at", "chk1"]).expect("status --at");
+    let output = s.cli(&["status", "1"]).expect("status 1");
     assert!(
         output.contains("hello.txt"),
-        "chk1 change should appear: {output}"
+        "snapshot 1's change should appear: {output}"
     );
     assert!(
         !output.contains("extra.txt"),
@@ -114,8 +114,8 @@ fn status_at_snapshot_after_travel() {
     );
 }
 
-/// `yolo status` defaults to the latest snapshot's changes; `--full` shows all,
-/// and the scoped view hints about `--full`.
+/// `yolo status` defaults to the latest snapshot's changes; `0..` shows
+/// everything vs base, and the default view hints at it.
 #[test]
 fn status_defaults_to_latest_snapshot() {
     let s = YoloSession::new().expect("session setup");
@@ -135,18 +135,18 @@ fn status_defaults_to_latest_snapshot() {
         "latest should NOT show the older a.txt: {latest}"
     );
     assert!(
-        latest.contains("--full"),
-        "scoped view should hint about --full: {latest}"
+        latest.contains("vs base"),
+        "default view should hint at the vs-base range: {latest}"
     );
 
-    let full = s.cli(&["status", "--full"]).expect("status --full");
-    assert!(full.contains("a.txt"), "--full should show a.txt: {full}");
-    assert!(full.contains("b.txt"), "--full should show b.txt: {full}");
+    let full = s.cli(&["status", "0.."]).expect("status 0..");
+    assert!(full.contains("a.txt"), "0.. should show a.txt: {full}");
+    assert!(full.contains("b.txt"), "0.. should show b.txt: {full}");
 }
 
 /// The default view diffs vs the PREVIOUS snapshot: a staged-only file deleted
-/// in a later snapshot shows as "deleted". But `--full` diffs vs the base,
-/// where that file never existed, so it nets to nothing.
+/// in a later snapshot shows as "deleted". But `0..` diffs vs the base, where
+/// that file never existed, so it nets to nothing.
 #[test]
 fn delete_of_staged_file_shows_vs_prev_but_not_full() {
     let s = YoloSession::new().expect("session setup");
@@ -166,11 +166,11 @@ fn delete_of_staged_file_shows_vs_prev_but_not_full() {
         "default status should show the file deleted vs prev snapshot: {status}"
     );
 
-    // --full is vs base: the file never existed there, so nothing nets out.
-    let full = s.cli(&["status", "--full"]).expect("status --full");
+    // `0..` is vs base: the file never existed there, so nothing nets out.
+    let full = s.cli(&["status", "0.."]).expect("status 0..");
     assert!(
         !full.contains("staged_only.txt"),
-        "--full (vs base) should show nothing for a staged-only add+delete: {full}"
+        "0.. (vs base) should show nothing for a staged-only add+delete: {full}"
     );
 }
 
@@ -237,5 +237,52 @@ fn rename_shows_only_renamed_not_deleted() {
     assert!(
         !output.contains("deleted"),
         "rename must not also show a deleted line for the vacated source: {output}"
+    );
+}
+
+/// `status --each` expands the whole session into one summary per consecutive
+/// snapshot, each under a `snapshot [id]` header (gen id == marker index).
+#[test]
+fn status_each_shows_one_summary_per_snapshot() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    s.cli(&["snapshot", "c1"]).expect("snapshot c1"); // gen 1
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+    s.cli(&["snapshot", "c2"]).expect("snapshot c2"); // gen 2
+
+    let output = s.cli(&["status", "--each"]).expect("status --each");
+    assert!(
+        output.contains("snapshot [1]") && output.contains("a.txt"),
+        "step 1 should head snapshot [1] with a.txt: {output}"
+    );
+    assert!(
+        output.contains("snapshot [2]") && output.contains("b.txt"),
+        "step 2 should head snapshot [2] with b.txt: {output}"
+    );
+}
+
+/// `--each` labels the tip (work after the last snapshot, not snapshotted) as
+/// `working`, not a phantom `snapshot [N]` — that snapshot doesn't exist yet.
+#[test]
+fn each_labels_working_tip() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    s.cli(&["snapshot", "c1"]).expect("snapshot c1"); // gen 1
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b"); // not snapshotted
+
+    let output = s.cli(&["status", "--each"]).expect("status --each");
+    assert!(
+        output.contains("snapshot [1]") && output.contains("a.txt"),
+        "snapshot 1's change should still be headed `snapshot [1]`: {output}"
+    );
+    assert!(
+        output.contains("working") && output.contains("b.txt"),
+        "the tip should be headed `working` with b.txt: {output}"
+    );
+    assert!(
+        !output.contains("snapshot [2]"),
+        "must not invent a `snapshot [2]` that doesn't exist: {output}"
     );
 }

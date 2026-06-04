@@ -32,20 +32,20 @@ fn snapshot_list() {
     assert!(output.contains("second"), "should list second: {output}");
 }
 
-/// Status --at shows state at a snapshot, not the current state.
+/// `status <id>` shows a snapshot's own change, not the current state.
 #[test]
 fn status_at_snapshot() {
     let s = YoloSession::new().expect("session setup");
 
-    // Modify hello.txt, snapshot, then create another file
+    // Modify hello.txt, snapshot (→ gen 1), then create another file
     fs::write(s.mnt_path("hello.txt"), "modified\n").expect("write");
     s.cli(&["snapshot", "snapshot"]).expect("snapshot");
 
     // Create a new file after the snapshot
     fs::write(s.mnt_path("new_after_chk.txt"), "new content\n").expect("write new");
 
-    // Status --at snapshot should not show new_after_chk.txt
-    let at_output = s.cli(&["status", "--at", "snapshot"]).expect("status --at");
+    // `status 1` (snapshot 1's own change) should not show new_after_chk.txt
+    let at_output = s.cli(&["status", "1"]).expect("status 1");
     assert!(
         at_output.contains("hello.txt"),
         "should show hello.txt: {at_output}"
@@ -55,8 +55,8 @@ fn status_at_snapshot() {
         "should NOT show new_after_chk.txt: {at_output}"
     );
 
-    // `--full` status should show both
-    let full_output = s.cli(&["status", "--full"]).expect("status");
+    // `0..` (vs base) should show both
+    let full_output = s.cli(&["status", "0.."]).expect("status 0..");
     assert!(
         full_output.contains("hello.txt"),
         "full should show hello.txt: {full_output}"
@@ -83,8 +83,8 @@ fn recow_preserves_snapshot_inode() {
     let current = fs::read_to_string(s.mnt_path("hello.txt")).expect("read current");
     assert_eq!(current, "version2\n");
 
-    // Re-COW: status --at v1 should show the snapshot state, proving inode preserved
-    let at_v1 = s.cli(&["status", "--at", "v1"]).expect("status --at v1");
+    // Re-COW: status 1 should show the snapshot state, proving inode preserved
+    let at_v1 = s.cli(&["status", "1"]).expect("status 1");
     assert!(
         at_v1.contains("hello.txt"),
         "should show hello.txt at v1: {at_v1}"
@@ -186,8 +186,8 @@ fn two_handles_recow_after_snapshot() {
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
     assert_eq!(content, "v2\n");
 
-    // status --at s1 should show the v1 snapshot state (proves re-COW preserved it)
-    let at_s1 = s.cli(&["status", "--at", "s1"]).expect("status --at s1");
+    // status 1 should show the v1 snapshot state (proves re-COW preserved it)
+    let at_s1 = s.cli(&["status", "1"]).expect("status 1");
     assert!(
         at_s1.contains("hello.txt"),
         "snapshot state should have hello.txt: {at_s1}"
@@ -251,8 +251,8 @@ fn multiple_snapshots_interleaved_writes() {
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
     assert_eq!(content, "v3\n");
 
-    // status --at s1: hello.txt modified (inode has v1)
-    let at_s1 = s.cli(&["status", "--at", "s1"]).expect("status --at s1");
+    // status 1: hello.txt modified (inode has v1)
+    let at_s1 = s.cli(&["status", "1"]).expect("status 1");
     assert!(
         at_s1.contains("hello.txt"),
         "s1 should have hello.txt: {at_s1}"
@@ -262,8 +262,8 @@ fn multiple_snapshots_interleaved_writes() {
         "s1 should be 1 change: {at_s1}"
     );
 
-    // status --at s2: hello.txt modified (inode has v2)
-    let at_s2 = s.cli(&["status", "--at", "s2"]).expect("status --at s2");
+    // status 2: hello.txt modified (inode has v2)
+    let at_s2 = s.cli(&["status", "2"]).expect("status 2");
     assert!(
         at_s2.contains("hello.txt"),
         "s2 should have hello.txt: {at_s2}"
@@ -286,7 +286,7 @@ fn multiple_snapshots_interleaved_writes() {
     );
 }
 
-/// `--from` shows changes after a snapshot to end.
+/// `<id>..` shows changes since a snapshot.
 #[test]
 fn status_from_snapshot() {
     let s = YoloSession::new().expect("session setup");
@@ -297,8 +297,8 @@ fn status_from_snapshot() {
     fs::write(s.mnt_path("newfile.txt"), "new\n").expect("write new");
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
-    // --from s1 should show newfile.txt but not hello.txt
-    let output = s.cli(&["status", "--from", "s1"]).expect("status --from");
+    // `1..` (since s1) should show newfile.txt but not hello.txt
+    let output = s.cli(&["status", "1.."]).expect("status 1..");
     assert!(
         output.contains("newfile.txt"),
         "should show newfile.txt: {output}"
@@ -309,7 +309,7 @@ fn status_from_snapshot() {
     );
 }
 
-/// `--to` shows changes from start up to a snapshot.
+/// `..N` shows changes from base up to a snapshot.
 #[test]
 fn status_to_snapshot() {
     let s = YoloSession::new().expect("session setup");
@@ -320,8 +320,8 @@ fn status_to_snapshot() {
     fs::write(s.mnt_path("newfile.txt"), "new\n").expect("write new");
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
-    // --to s1 should show hello.txt but not newfile.txt
-    let output = s.cli(&["status", "--to", "s1"]).expect("status --to");
+    // `..1` (base up to s1) should show hello.txt but not newfile.txt
+    let output = s.cli(&["status", "..1"]).expect("status ..1");
     assert!(
         output.contains("hello.txt"),
         "should show hello.txt: {output}"
@@ -332,7 +332,7 @@ fn status_to_snapshot() {
     );
 }
 
-/// `--from A --to B` shows changes between two snapshots.
+/// `a..b` shows changes between two snapshots.
 #[test]
 fn status_from_to_range() {
     let s = YoloSession::new().expect("session setup");
@@ -346,10 +346,8 @@ fn status_from_to_range() {
     fs::write(s.mnt_path("late.txt"), "late\n").expect("write late");
     s.cli(&["snapshot", "s3"]).expect("snapshot s3");
 
-    // --from s1 --to s2 should only show mid.txt
-    let output = s
-        .cli(&["status", "--from", "s1", "--to", "s2"])
-        .expect("status --from --to");
+    // `1..2` should only show mid.txt
+    let output = s.cli(&["status", "1..2"]).expect("status 1..2");
     assert!(output.contains("mid.txt"), "should show mid.txt: {output}");
     assert!(
         !output.contains("hello.txt"),
@@ -361,7 +359,7 @@ fn status_from_to_range() {
     );
 }
 
-/// `diff --at` shows diff for a single snapshot segment.
+/// `diff <id>` shows diff for a single snapshot's own change.
 #[test]
 fn diff_at_snapshot() {
     let s = YoloSession::new().expect("session setup");
@@ -372,8 +370,8 @@ fn diff_at_snapshot() {
     fs::write(s.mnt_path("newfile.txt"), "new\n").expect("write new");
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
-    // diff --at s1 should show hello.txt but not newfile.txt
-    let output = s.cli(&["diff", "--at", "s1"]).expect("diff --at");
+    // `diff 1` (s1's own change) should show hello.txt but not newfile.txt
+    let output = s.cli(&["diff", "1"]).expect("diff 1");
     assert!(
         output.contains("hello.txt"),
         "should show hello.txt: {output}"
@@ -384,7 +382,7 @@ fn diff_at_snapshot() {
     );
 }
 
-/// `diff --from` shows diff from a snapshot to end.
+/// `diff <id>..` shows the diff since a snapshot.
 #[test]
 fn diff_from_snapshot() {
     let s = YoloSession::new().expect("session setup");
@@ -394,7 +392,7 @@ fn diff_from_snapshot() {
 
     fs::write(s.mnt_path("newfile.txt"), "new content\n").expect("write new");
 
-    let output = s.cli(&["diff", "--from", "s1"]).expect("diff --from");
+    let output = s.cli(&["diff", "1.."]).expect("diff 1..");
     assert!(
         output.contains("newfile.txt"),
         "should show newfile.txt: {output}"
@@ -409,7 +407,7 @@ fn diff_from_snapshot() {
     );
 }
 
-/// `diff --from A --to B` shows diff between two snapshots.
+/// `diff a..b` shows the diff between two snapshots.
 #[test]
 fn diff_from_to_range() {
     let s = YoloSession::new().expect("session setup");
@@ -422,9 +420,7 @@ fn diff_from_to_range() {
 
     fs::write(s.mnt_path("late.txt"), "late\n").expect("write late");
 
-    let output = s
-        .cli(&["diff", "--from", "s1", "--to", "s2"])
-        .expect("diff --from --to");
+    let output = s.cli(&["diff", "1..2"]).expect("diff 1..2");
     assert!(output.contains("mid.txt"), "should show mid.txt: {output}");
     assert!(
         output.contains("+mid content"),
@@ -440,7 +436,7 @@ fn diff_from_to_range() {
     );
 }
 
-/// `diff --to` shows diff up to a snapshot.
+/// `diff ..<id>` shows the diff up to a snapshot.
 #[test]
 fn diff_to_snapshot() {
     let s = YoloSession::new().expect("session setup");
@@ -451,8 +447,8 @@ fn diff_to_snapshot() {
     fs::write(s.mnt_path("newfile.txt"), "later\n").expect("write new");
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
-    // diff --to s1 should show hello.txt but not newfile.txt
-    let output = s.cli(&["diff", "--to", "s1"]).expect("diff --to");
+    // `diff ..1` (base up to s1) should show hello.txt but not newfile.txt
+    let output = s.cli(&["diff", "..1"]).expect("diff ..1");
     assert!(
         output.contains("hello.txt"),
         "should show hello.txt: {output}"
@@ -467,7 +463,7 @@ fn diff_to_snapshot() {
     );
 }
 
-/// `--from` after the last snapshot with no trailing changes → "No changes".
+/// `<id>..` after the last snapshot with no trailing changes → "No changes".
 #[test]
 fn status_from_last_snapshot_empty() {
     let s = YoloSession::new().expect("session setup");
@@ -476,14 +472,14 @@ fn status_from_last_snapshot_empty() {
     s.cli(&["snapshot", "s1"]).expect("snapshot s1");
 
     // No changes after s1
-    let output = s.cli(&["status", "--from", "s1"]).expect("status --from");
+    let output = s.cli(&["status", "1.."]).expect("status 1..");
     assert!(
         output.contains("No changes"),
         "should say no changes: {output}"
     );
 }
 
-/// `diff --from` after the last snapshot with no trailing changes → "No changes".
+/// `diff <id>..` after the last snapshot with no trailing changes → "No changes".
 #[test]
 fn diff_from_last_snapshot_empty() {
     let s = YoloSession::new().expect("session setup");
@@ -491,14 +487,14 @@ fn diff_from_last_snapshot_empty() {
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
     s.cli(&["snapshot", "s1"]).expect("snapshot s1");
 
-    let output = s.cli(&["diff", "--from", "s1"]).expect("diff --from");
+    let output = s.cli(&["diff", "1.."]).expect("diff 1..");
     assert!(
         output.contains("No changes"),
         "should say no changes: {output}"
     );
 }
 
-/// `--from` and `--to` pointing to the same snapshot → empty range.
+/// A range with the same id on both ends (`1..1`) → empty range.
 #[test]
 fn status_from_to_same_snapshot_empty() {
     let s = YoloSession::new().expect("session setup");
@@ -509,17 +505,15 @@ fn status_from_to_same_snapshot_empty() {
     fs::write(s.mnt_path("other.txt"), "v2\n").expect("write other");
     s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
-    // --from s1 --to s1: exclusive start at s1, inclusive end at s1 → empty
-    let output = s
-        .cli(&["status", "--from", "s1", "--to", "s1"])
-        .expect("status --from --to same");
+    // `1..1`: start and end both at s1 → empty
+    let output = s.cli(&["status", "1..1"]).expect("status 1..1");
     assert!(
         output.contains("No changes"),
-        "same from/to should be empty: {output}"
+        "same start/end should be empty: {output}"
     );
 }
 
-/// Path filter combined with `--from` range flag.
+/// Path filter (after `--`) combined with a range.
 #[test]
 fn diff_from_with_path_filter() {
     let s = YoloSession::new().expect("session setup");
@@ -530,10 +524,10 @@ fn diff_from_with_path_filter() {
     fs::write(s.mnt_path("target.txt"), "target content\n").expect("write target");
     fs::write(s.mnt_path("other.txt"), "other content\n").expect("write other");
 
-    // diff --from s1 target.txt: should show only target.txt
+    // `diff 1.. -- target.txt`: should show only target.txt
     let output = s
-        .cli(&["diff", "--from", "s1", "target.txt"])
-        .expect("diff --from with path");
+        .cli(&["diff", "1..", "--", "target.txt"])
+        .expect("diff 1.. -- target.txt");
     assert!(
         output.contains("target.txt"),
         "should show target.txt: {output}"
@@ -548,30 +542,22 @@ fn diff_from_with_path_filter() {
     );
 }
 
-/// `--at` conflicts with `--from`/`--to` (clap enforces this).
+/// A backwards range (`2..1`, start after end) is rejected.
 #[test]
-fn at_conflicts_with_from_to() {
+fn backwards_range_errors() {
     let s = YoloSession::new().expect("session setup");
 
-    let (ok, _, stderr) = s
-        .cli_output(&["status", "--at", "x", "--from", "y"])
-        .expect("cli_output");
-    assert!(!ok, "should fail: {stderr}");
+    fs::write(s.mnt_path("a.txt"), "a\n").expect("write a");
+    s.cli(&["snapshot", "s1"]).expect("snapshot s1");
+    fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
+    s.cli(&["snapshot", "s2"]).expect("snapshot s2");
 
-    let (ok, _, stderr) = s
-        .cli_output(&["status", "--at", "x", "--to", "y"])
-        .expect("cli_output");
-    assert!(!ok, "should fail: {stderr}");
+    let (ok, _, stderr) = s.cli_output(&["status", "2..1"]).expect("cli_output");
+    assert!(!ok, "backwards range should fail: {stderr}");
 
-    let (ok, _, stderr) = s
-        .cli_output(&["diff", "--at", "x", "--from", "y"])
-        .expect("cli_output");
-    assert!(!ok, "should fail: {stderr}");
-
-    let (ok, _, stderr) = s
-        .cli_output(&["diff", "--at", "x", "--to", "y"])
-        .expect("cli_output");
-    assert!(!ok, "should fail: {stderr}");
+    // A non-numeric id is rejected too (ids only).
+    let (ok, _, stderr) = s.cli_output(&["status", "s1"]).expect("cli_output");
+    assert!(!ok, "name (non-id) should fail: {stderr}");
 }
 
 /// Open a file with O_APPEND (not O_TRUNC) after a snapshot: the
@@ -597,7 +583,7 @@ fn append_after_snapshot_triggers_recow() {
     assert_eq!(content, "line1\nline2\n");
 
     // The pre-snapshot state should be preserved (re-COW triggered by append)
-    let at_s1 = s.cli(&["status", "--at", "s1"]).expect("status --at s1");
+    let at_s1 = s.cli(&["status", "1"]).expect("status 1");
     assert!(
         at_s1.contains("hello.txt"),
         "snapshot s1 should have hello.txt preserved: {at_s1}"

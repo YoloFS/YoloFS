@@ -1,11 +1,12 @@
-// yolo CLI — diff.rs
+// yolo CLI — review.rs
 //
-// `yolo status` — one-line summary of staged changes.
-// `yolo diff`   — git-style unified diff of staged vs base.
-// `--at <name>` — show state at a marker (single segment).
-// `--from <name>` — diff changes since a marker.
-// `--to <name>` — diff changes up to a marker.
-// `--from <name> --to <name>` — diff changes between two markers.
+// Reviewing staged changes: `yolo status` (summary), `yolo diff` (git-style
+// diff), and the post-`yolo -- <cmd>` review — all render the same `Changeset`
+// model over a snapshot range.
+//
+// status/diff take an optional `[<id>[..<id>]]` spec selecting which snapshots
+// to show (default: the latest, vs prev) and `--each` to expand a range into one
+// stanza per consecutive snapshot. See the id/range grammar below.
 
 use crate::changeset::{Change, Changeset};
 use crate::journal::{Journal, Note, Target};
@@ -176,19 +177,27 @@ fn print_diff(yolofs: &Path, root: &Path, change: &Change) -> bool {
 
 // ── View: rendering the changeset ────────────────────────────────────
 
+/// The changes in a set that actually render, each with its kind. Drops what
+/// shows nothing — a no-op delete (create+delete that nets out) or a passthrough
+/// scaffold. The single definition of "what shows," shared by `status`, `diff`,
+/// and the `--each` emptiness check.
+fn classified(changeset: &Changeset) -> Vec<(&Change, ChangeKind)> {
+    changeset
+        .changes
+        .iter()
+        .filter_map(|c| classify(&c.target, c.preimage.is_some()).map(|kind| (c, kind)))
+        .collect()
+}
+
 /// `status` view: one classified line per change, presence taken from the
 /// change's pre-image (no tree rebuild, no base stat — the O(segment) path).
 /// Returns how many were shown (no-op deletes don't count).
 fn render_summary(changeset: &Changeset, root: &Path) -> usize {
-    let mut shown = 0;
-    for change in &changeset.changes {
-        let Some(kind) = classify(&change.target, change.preimage.is_some()) else {
-            continue;
-        };
-        print_header(kind, &rel(&change.path, root), &change.target, root);
-        shown += 1;
+    let items = classified(changeset);
+    for (change, kind) in &items {
+        print_header(*kind, &rel(&change.path, root), &change.target, root);
     }
-    shown
+    items.len()
 }
 
 /// `diff` view: each change as a unified-diff stanza, old content from its
@@ -203,30 +212,46 @@ fn render(changeset: &Changeset, yolofs: &Path, root: &Path) -> usize {
     shown
 }
 
-/// Resolve which segments to show. Defaults to the latest batch of changes;
-/// `--full` or an explicit `--at/--from/--to` range widens it.
-fn resolve_range(
-    journal: &Journal,
-    at: Option<&str>,
-    from: Option<&str>,
-    to: Option<&str>,
-    full: bool,
-) -> Result<(usize, usize)> {
-    let num = journal.segments.len();
-    if at.is_some() || from.is_some() || to.is_some() {
-        journal.markers.segment_range(at, from, to, num)
-    } else if full {
-        Ok((0, num))
-    } else {
-        let (start, end, _) = journal.latest_range();
-        Ok((start, end))
-    }
-}
+// ── Snapshot-id / range grammar: `[<id>[..<id>]]` ────────────────────
+//
+// The positional selects which segments to classify, all relative to the
+// range's start (the pre-image baseline):
+//   (none)  → latest segment (vs prev); the whole session under `--each`
+//   N       → snapshot N's own change, `prev(N)..N`
+//   a..b    → state(a) → state(b); empty end means base (0) / tip
+//   ..      → the full range, base..tip (everything vs base); same as `0..`
+// Ids are numbers (0 is the base/"(initial)" marker). `diff`'s optional path
+// filter is passed after `--`, so the positional is unambiguously a range.
 
-/// The default view (no `--full`, no explicit range) — where we always offer
-/// the `--full` hint.
-fn is_default_view(at: Option<&str>, from: Option<&str>, to: Option<&str>, full: bool) -> bool {
-    at.is_none() && from.is_none() && to.is_none() && !full
+/// Translate a positional id/range spec into a segment range `[start, end)`,
+/// delegating the resolution to `MarkerIndex::segment_range`. Ids are numbers
+/// only (`0` = base); names are rejected here so the positional can't be
+/// mistaken for a path — `diff`'s path filter is passed after `--`.
+fn parse_range(spec: Option<&str>, each: bool, journal: &Journal) -> Result<(usize, usize)> {
+    let num = journal.segments.len();
+    let Some(spec) = spec else {
+        // No spec: the latest segment (vs prev), or the whole session under
+        // `--each` so `yolo diff --each` walks every snapshot.
+        return Ok(if each {
+            (0, num)
+        } else {
+            let (start, end, _) = journal.latest_range();
+            (start, end)
+        });
+    };
+    // Endpoints must be numeric (empty = an open end).
+    let numeric = |t: &str| t.is_empty() || t.bytes().all(|b| b.is_ascii_digit());
+    match spec.split_once("..") {
+        // `a..b`: a range (empty ends → base / tip).
+        Some((a, b)) if numeric(a) && numeric(b) => {
+            let from = (!a.is_empty()).then_some(a);
+            let to = (!b.is_empty()).then_some(b);
+            journal.markers.segment_range(None, from, to, num)
+        }
+        // Bare id N: that snapshot's own change (`prev(N)..N`).
+        None if numeric(spec) => journal.markers.segment_range(Some(spec), None, None, num),
+        _ => anyhow::bail!("`{spec}` is not a snapshot id or range (see `yolo timeline`)"),
+    }
 }
 
 // ── Public entry points ──────────────────────────────────────────────
@@ -240,70 +265,121 @@ fn open_session() -> Result<(PathBuf, PathBuf, Journal)> {
     Ok((yolofs, root, journal))
 }
 
-/// `yolo status` — summary of staged changes plus observed-access notes.
-pub fn run_status(
-    at: Option<&str>,
-    from: Option<&str>,
-    to: Option<&str>,
-    full: bool,
-) -> Result<()> {
-    let (_yolofs, root, journal) = open_session()?;
-    let (start, end) = resolve_range(&journal, at, from, to, full)?;
-    // Classified vs the previous snapshot from the range's own records — no
-    // previous-tree rebuild (O(segment), not O(journal)).
-    let changeset = Changeset::collect(journal, start, end, None);
+/// `yolo status [<id>[..<id>]] [--each]` — summary of staged changes plus
+/// observed-access notes, classified vs the range's start (the pre-image
+/// baseline — no previous-tree rebuild; O(segment), not O(journal)).
+pub fn run_status(range: Option<&str>, each: bool) -> Result<()> {
+    let (yolofs, root, journal) = open_session()?;
+    let (start, end) = parse_range(range, each, &journal)?;
+    if each {
+        render_each(&journal, &yolofs, &root, None, start, end, false);
+        return Ok(());
+    }
+    let changeset = Changeset::collect(&journal, start, end, None);
     let total = render_summary(&changeset, &root);
 
     if total == 0 {
-        println!(
-            "{}",
-            format!("No changes{}.", range_label(at, from, to)).yellow()
-        );
+        println!("{}", format!("No changes{}.", range_label(range)).yellow());
     } else {
         print_total(total);
     }
     if !changeset.notes.is_empty() {
         print_notes(&changeset.notes, &root);
     }
-    // In the default view, always point at `--full` (when something is staged).
-    if total > 0 && is_default_view(at, from, to, full) {
-        print_full_hint(false);
+    // In the default view, point at the vs-base range and the per-snapshot view.
+    if total > 0 && range.is_none() {
+        print_base_hint(false);
     }
     Ok(())
 }
 
-/// `yolo diff` — verbose unified diff of staged vs base. Returns whether there
-/// were any changes.
-pub fn run_diff(
-    at: Option<&str>,
-    from: Option<&str>,
-    to: Option<&str>,
-    path: Option<&str>,
-    full: bool,
-) -> Result<bool> {
+/// `yolo diff [<id>[..<id>]] [--each] [<path>]` — unified diff of the range.
+/// Returns whether there were any changes.
+pub fn run_diff(range: Option<&str>, path: Option<&str>, each: bool) -> Result<bool> {
     let (yolofs, root, journal) = open_session()?;
-    let (start, end) = resolve_range(&journal, at, from, to, full)?;
+    let (start, end) = parse_range(range, each, &journal)?;
     let path = path.map(crate::utils::normalize_path);
-    let changeset = Changeset::collect(journal, start, end, path.as_deref());
+    if each {
+        return Ok(render_each(&journal, &yolofs, &root, path.as_deref(), start, end, true));
+    }
+    let changeset = Changeset::collect(&journal, start, end, path.as_deref());
     let total = render(&changeset, &yolofs, &root);
 
     if total == 0 {
-        println!(
-            "{}",
-            format!("No changes{}.", range_label(at, from, to)).yellow()
-        );
-    } else if is_default_view(at, from, to, full) {
-        print_full_hint(true);
+        println!("{}", format!("No changes{}.", range_label(range)).yellow());
+    } else if range.is_none() {
+        print_base_hint(true);
     }
     Ok(total > 0)
+}
+
+/// `--each`: one stanza per consecutive snapshot in `[start, end)`. Each live,
+/// non-empty segment `i` is the change snapshot `i+1` captured (gen id == marker
+/// index), so it's headed `snapshot [i+1]` — except the tip (work after the last
+/// snapshot has no sealing marker, so no snapshot captures it), headed `working`.
+/// Empty/netted-out segments are skipped. Returns whether anything was shown.
+fn render_each(
+    journal: &Journal,
+    yolofs: &Path,
+    root: &Path,
+    path: Option<&str>,
+    start: usize,
+    end: usize,
+    verbose: bool,
+) -> bool {
+    let mut shown_any = false;
+    for i in start..end {
+        if !journal.is_alive(i) || journal.segments[i].records.is_empty() {
+            continue;
+        }
+        let changeset = Changeset::collect(journal, i, i + 1, path);
+        if classified(&changeset).is_empty() && changeset.notes.is_empty() {
+            continue;
+        }
+        if shown_any {
+            println!();
+        }
+        // Segment i is sealed by marker i+1 (a snapshot, since travel-sealed
+        // segments are dead and skipped above). The tip — uncommitted work past
+        // the last snapshot — has no sealing marker, so it isn't a snapshot yet.
+        if i + 1 < journal.markers.len() {
+            println!("{}", format!("snapshot [{}]", i + 1).bold());
+        } else {
+            println!("{}", "working".bold());
+        }
+        if verbose {
+            render(&changeset, yolofs, root);
+        } else {
+            render_summary(&changeset, root);
+        }
+        if !changeset.notes.is_empty() {
+            print_notes(&changeset.notes, root);
+        }
+        shown_any = true;
+    }
+    if !shown_any {
+        println!("{}", "No changes.".yellow());
+    }
+    shown_any
 }
 
 /// `yolo -- <cmd>` review: show what the just-run command changed, then a
 /// summary line carrying the new snapshot's id — the handle for `yolo travel`.
 pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
     let (_yolofs, root, journal) = open_session()?;
-    let (start, end) = resolve_range(&journal, None, None, None, false)?;
-    let changeset = Changeset::collect(journal, start, end, None);
+    let num = journal.segments.len();
+    // Show what THIS command did — not `latest_range`'s fallback to an older
+    // batch when the command itself changed nothing. If it auto-snapshotted,
+    // show the segment the new snapshot captured; otherwise the (possibly empty)
+    // tail since the last snapshot — empty ⇒ "(no changes)", never an old batch.
+    let (start, end) = match snapshot {
+        Some(gen_id) => {
+            let m = (gen_id as usize).min(num);
+            (journal.markers.prev_snapshot_idx(m), m)
+        }
+        None => (journal.markers.last_snapshot_idx().unwrap_or(0), num),
+    };
+    let changeset = Changeset::collect(&journal, start, end, None);
     let total = render_summary(&changeset, &root);
 
     if !changeset.notes.is_empty() {
@@ -358,13 +434,14 @@ fn print_notes(notes: &[Note], root: &Path) {
     }
 }
 
-/// Point the user at `--full` for the complete history. The caller decides
-/// when to show this (the default view, when something is staged).
-fn print_full_hint(verbose: bool) {
+/// In the default view (latest snapshot, something staged), point at the two
+/// other common shapes: the vs-base range and the per-snapshot expansion.
+fn print_base_hint(verbose: bool) {
     let cmd = if verbose { "diff" } else { "status" };
     println!(
         "{}",
-        format!("(latest snapshot — run `yolo {cmd} --full` for all staged changes)").dimmed()
+        format!("(latest snapshot · `yolo {cmd} ..` for everything vs base · `--each` per snapshot)")
+            .dimmed()
     );
 }
 
@@ -375,14 +452,11 @@ fn print_total(n: usize) {
     );
 }
 
-/// Human-readable label for the query range (empty string when no filter).
-fn range_label(at: Option<&str>, from: Option<&str>, to: Option<&str>) -> String {
-    match (at, from, to) {
-        (Some(name), _, _) => format!(" at snapshot \"{name}\""),
-        (_, Some(f), Some(t)) => format!(" between \"{f}\" and \"{t}\""),
-        (_, Some(f), None) => format!(" since snapshot \"{f}\""),
-        (_, None, Some(t)) => format!(" up to snapshot \"{t}\""),
-        _ => " staged".into(),
+/// Human-readable suffix for "No changes…" — names the queried range.
+fn range_label(spec: Option<&str>) -> String {
+    match spec {
+        None => " staged".into(),
+        Some(s) => format!(" in `{s}`"),
     }
 }
 
@@ -421,39 +495,11 @@ mod tests {
         assert!(classify(&Target::Passthrough, true).is_none());
     }
 
-    // -- range_label tests --
+    // ── id / range grammar ───────────────────────────────────────────
 
     #[test]
-    fn range_label_at() {
-        assert_eq!(range_label(Some("s1"), None, None), " at snapshot \"s1\"");
-    }
-
-    #[test]
-    fn range_label_from_to() {
-        assert_eq!(
-            range_label(None, Some("s1"), Some("s2")),
-            " between \"s1\" and \"s2\""
-        );
-    }
-
-    #[test]
-    fn range_label_from_only() {
-        assert_eq!(
-            range_label(None, Some("s1"), None),
-            " since snapshot \"s1\""
-        );
-    }
-
-    #[test]
-    fn range_label_to_only() {
-        assert_eq!(
-            range_label(None, None, Some("s2")),
-            " up to snapshot \"s2\""
-        );
-    }
-
-    #[test]
-    fn range_label_none() {
-        assert_eq!(range_label(None, None, None), " staged");
+    fn range_label_names_the_spec() {
+        assert_eq!(range_label(None), " staged");
+        assert_eq!(range_label(Some("3..5")), " in `3..5`");
     }
 }

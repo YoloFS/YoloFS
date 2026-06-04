@@ -32,11 +32,10 @@ pub struct Changeset {
 }
 
 impl Changeset {
-    /// Resolve the net changes in segments `[start, end)` (consuming the
-    /// journal), keeping only `path` when given.
-    pub fn collect(journal: Journal, start: usize, end: usize, path: Option<&str>) -> Self {
-        // One O(segment) pass over the live records, before the journal is
-        // consumed for the tree build, collects:
+    /// Resolve the net changes in segments `[start, end)`, keeping only `path`
+    /// when given. Borrows the journal so `--each` can call it once per segment.
+    pub fn collect(journal: &Journal, start: usize, end: usize, path: Option<&str>) -> Self {
+        // One O(segment) pass over the live records collects:
         //   * `notes` — observational A/B accesses, deduped (a summary shouldn't
         //     repeat what `yolo audit` lists in full).
         //   * `preimage` — per path, the pre-image from its *first* touch in the
@@ -76,8 +75,10 @@ impl Changeset {
             }
         }
 
-        // Replay the range into one tree → the net change per path.
-        let tree = DirTree::build(journal.into_live_segments_range(start, end));
+        // Replay the range into one tree → the net change per path. Borrowed,
+        // so the journal isn't consumed — `--each` calls `collect` once per
+        // segment on the same journal.
+        let tree = DirTree::build(journal.live_segments_range(start, end));
         let mut all = Vec::new();
         tree.for_each(|p, target| all.push((p.to_string(), target.clone())));
 
@@ -127,7 +128,7 @@ mod tests {
     fn collect(records: Vec<Record>) -> Changeset {
         let journal = Journal::new(records);
         let end = journal.segments.len();
-        Changeset::collect(journal, 0, end, None)
+        Changeset::collect(&journal, 0, end, None)
     }
 
     fn stage(path: &str, ino: u32, preimage: Option<&str>) -> Record {
