@@ -101,7 +101,10 @@ fn different_paths_different_rules() {
     s.cli(&["unmount"]).unwrap();
     Config {
         rules: BTreeMap::from([
-            (s.root.join("readonly").display().to_string(), Perm::Read),
+            (
+                s.root.join("readonly").display().to_string(),
+                Perm::ReadOnly,
+            ),
             (s.root.join("writable").display().to_string(), Perm::Allow),
         ]),
         ..Default::default()

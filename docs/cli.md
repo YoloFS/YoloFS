@@ -88,7 +88,8 @@ new travel become unreachable, preserving earlier history.
 
 ```bash
 $ yolo rule allow src    # set a rule (verb names the level)
-$ yolo rule read /usr
+$ yolo rule write-ask /etc  # allow reads, ask before writes
+$ yolo rule read-only /usr
 $ yolo rule deny /etc
 $ yolo rule hide ~/.ssh
 $ yolo rule ask /etc/hosts   # force a prompt, overriding an inherited rule

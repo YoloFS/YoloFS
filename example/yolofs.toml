@@ -10,13 +10,13 @@ auto_snapshot = true   # snapshot after each `yolo exec` (per-command checkpoint
 prompt_timeout = 30    # seconds to wait for an `ask` answer before denying
 
 [rules]
-# System locations: read-only so tools work but can't be modified.
-"/usr" = "read"
-"/bin" = "read"
-"/sbin" = "read"
-"/lib" = "read"
-"/lib64" = "read"
-"/etc" = "read"
+# System locations: readable so tools work; writes either prompt or are denied.
+"/usr" = "read-only"
+"/bin" = "read-only"
+"/sbin" = "read-only"
+"/lib" = "read-only"
+"/lib64" = "read-only"
+"/etc" = "write-ask"
 
 # Sensitive files: prompt before any access.
 "$HOME/.ssh/id_ed25519" = "ask"
@@ -26,8 +26,8 @@ prompt_timeout = 30    # seconds to wait for an `ask` answer before denying
 # itself lives outside the workspace under the per-user runtime dir and is hidden
 # automatically to avoid recursion — no rule needed here.
 "." = "allow"
-".yolofs" = "read"
-"yolofs.toml" = "read"
+".yolofs" = "read-only"
+"yolofs.toml" = "read-only"
 
 "$HOME/.bashrc" = "allow"
 "$HOME/.bash_history" = "allow"

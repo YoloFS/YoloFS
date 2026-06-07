@@ -49,9 +49,9 @@ prompt_timeout = 30              # seconds to wait for an `ask` answer before de
 
 [rules]
 "."          = "allow"
-"/etc"       = "deny"
-"/etc/hosts" = "read"
-"/usr/bin"   = "read"
+"/etc"       = "write-ask"
+"/etc/hosts" = "read-only"
+"/usr/bin"   = "read-only"
 ```
 
 Paths in `[rules]` can be absolute or relative to the session root.

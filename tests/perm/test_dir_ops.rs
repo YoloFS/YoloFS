@@ -25,13 +25,45 @@ fn mkdir_denied_under_deny() {
 #[test]
 fn unlink_denied_under_ro() {
     let s = YoloSession::new_with_config(Config {
-        rules: BTreeMap::from([("/".into(), Perm::Read)]),
+        rules: BTreeMap::from([("/".into(), Perm::ReadOnly)]),
         ..Default::default()
     })
     .expect("session setup");
 
     let result = fs::remove_file(s.mnt_path("hello.txt"));
     assert!(result.is_err(), "unlink should be denied under ro");
+}
+
+/// mkdir should ask under write-ask; with no daemon, the ask is denied.
+#[test]
+fn mkdir_denied_under_write_ask_without_daemon() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::WriteAsk)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let result = fs::create_dir(s.mnt_path("newdir"));
+    assert!(
+        result.is_err(),
+        "mkdir should be denied when write-ask has no daemon"
+    );
+}
+
+/// unlink should ask under write-ask; with no daemon, the ask is denied.
+#[test]
+fn unlink_denied_under_write_ask_without_daemon() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::WriteAsk)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let result = fs::remove_file(s.mnt_path("hello.txt"));
+    assert!(
+        result.is_err(),
+        "unlink should be denied when write-ask has no daemon"
+    );
 }
 
 /// symlink creation should fail under deny.

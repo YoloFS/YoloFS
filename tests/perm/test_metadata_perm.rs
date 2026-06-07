@@ -1,6 +1,7 @@
 use crate::helpers::{YOLO_BIN, YoloSession};
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use yolofs::config::Config;
 use yolofs::perm::Perm;
 
@@ -128,7 +129,7 @@ fn create_denied_with_ro_rule() {
     fs::write(root.join("test.sh"), "#!/bin/sh\n").ok();
 
     let mut rules = BTreeMap::new();
-    rules.insert(root.to_string_lossy().into_owned(), Perm::Read);
+    rules.insert(root.to_string_lossy().into_owned(), Perm::ReadOnly);
 
     let config = Config {
         permission: true,
@@ -158,4 +159,21 @@ fn create_denied_with_ro_rule() {
         .env("NO_COLOR", "1")
         .output();
     let _ = fs::remove_dir_all(&root);
+}
+
+/// `write-ask` applies to explicit metadata mutations such as chmod. With no
+/// daemon, the ask is denied.
+#[test]
+fn chmod_denied_with_write_ask_without_daemon() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::WriteAsk)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let result = fs::set_permissions(s.mnt_path("hello.txt"), fs::Permissions::from_mode(0o600));
+    assert!(
+        result.is_err(),
+        "chmod should be denied when write-ask has no daemon"
+    );
 }

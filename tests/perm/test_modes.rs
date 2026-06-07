@@ -10,7 +10,7 @@ use yolofs::perm::Perm;
 #[test]
 fn ro_permits_read_denies_write() {
     let s = YoloSession::new_with_config(Config {
-        rules: BTreeMap::from([("/".into(), Perm::Read)]),
+        rules: BTreeMap::from([("/".into(), Perm::ReadOnly)]),
         ..Default::default()
     })
     .expect("session setup");
@@ -73,7 +73,7 @@ fn allow_permits_exec() {
 #[test]
 fn ro_permits_exec() {
     let s = YoloSession::new_with_config(Config {
-        rules: BTreeMap::from([("/".into(), Perm::Read)]),
+        rules: BTreeMap::from([("/".into(), Perm::ReadOnly)]),
         ..Default::default()
     })
     .expect("session setup");
@@ -82,6 +82,38 @@ fn ro_permits_exec() {
         .output()
         .expect("should be able to spawn executable");
     assert!(output.status.success(), "exec should succeed with ro");
+}
+
+// ── write-ask tests ─────────────────────────────────────────────────
+
+/// write-ask should permit reads without prompting.
+#[test]
+fn write_ask_permits_read() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::WriteAsk)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let content =
+        fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with write-ask");
+    assert_eq!(content, "base content\n");
+}
+
+/// write-ask should ask for writes; with no daemon, unanswered asks deny.
+#[test]
+fn write_ask_denies_write_without_daemon() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::WriteAsk)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let result = fs::write(s.mnt_path("hello.txt"), "modified\n");
+    assert!(
+        result.is_err(),
+        "write should be denied when write-ask has no daemon"
+    );
 }
 
 // ── deny (all blocked) ──

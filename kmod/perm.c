@@ -47,14 +47,16 @@ int yolo_check_perm(enum yolo_perm perm, int f_flags)
 	switch (perm) {
 	case YOLO_PERM_ALLOW:
 		return 0;
-	case YOLO_PERM_READ:
+	case YOLO_PERM_WRITE_ASK:
+		return wants_write ? -EACCES : 0;
+	case YOLO_PERM_READ_ONLY:
 		return wants_write ? -EACCES : 0;
 	case YOLO_PERM_DENY:
 		return -EACCES;
 	case YOLO_PERM_HIDE:
 		return -ENOENT;	/* path doesn't exist from agent's perspective */
 	case YOLO_PERM_ASK:
-		return 0; /* ask is handled by caller (yolo_open) */
+		return -EACCES; /* ask must be resolved before final checking */
 	default:
 		return -EACCES;
 	}
@@ -66,6 +68,12 @@ enum yolo_op yolo_open_op(int f_flags)
 	if (f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC))
 		return YOLO_OP_WRITE;
 	return YOLO_OP_READ;
+}
+
+static bool yolo_perm_needs_ask(enum yolo_perm perm, enum yolo_op op)
+{
+	return perm == YOLO_PERM_ASK ||
+	       (perm == YOLO_PERM_WRITE_ASK && op == YOLO_OP_WRITE);
 }
 
 /* ── Combined resolve + ask + check ───────────────────────────────── */
@@ -81,28 +89,33 @@ int yolo_check_dentry_perm(struct yolo_sb_info *sbi, struct dentry *dentry,
 	struct inode *inode = d_inode(dentry);
 	struct yolo_inode_info *ii = YOLO_I(inode);
 	enum yolo_perm perm;
+	enum yolo_perm decision;
+	enum yolo_op op = yolo_open_op(f_flags);
 	int err;
 
 	if (ii->perm_gen != atomic64_read(&sbi->perm.gen))
 		yolo_cache_perm(inode, dentry);
 	perm = ii->cached_perm;
+	decision = perm;
 
-	if (perm == YOLO_PERM_ASK) {
-		enum yolo_op op = yolo_open_op(f_flags);
+	if (yolo_perm_needs_ask(perm, op)) {
 		char buf[YOLO_PATH_MAX];
 		char *relpath;
 
 		relpath = dentry_path_raw(dentry, buf, sizeof(buf));
 		if (IS_ERR(relpath))
 			return PTR_ERR(relpath);
-		err = yolo_ask_userspace(sbi, dentry, relpath, op, &perm);
+		err = yolo_ask_userspace(sbi, dentry, relpath, op, &decision);
 		if (err)
 			return err;
-		/* Cache the decision so subsequent checks don't re-ask. */
-		ii->cached_perm = perm;
+		/* Plain `ask` paths cache the daemon's chosen policy. `write-ask`
+		 * rules keep asking for later writes, so do not collapse them into
+		 * the current operation's decision. */
+		if (perm == YOLO_PERM_ASK)
+			ii->cached_perm = decision;
 	}
 
-	return yolo_check_perm(perm, f_flags);
+	return yolo_check_perm(decision, f_flags);
 }
 
 /* ── Ask Protocol ─────────────────────────────────────────────────── */

@@ -12,7 +12,10 @@ fn apply_rules_reports_count_and_lists_via_rule() {
     session.cli(&["unmount"]).unwrap();
     Config {
         permission: false,
-        rules: BTreeMap::from([("/etc".into(), Perm::Read), ("/usr".into(), Perm::Read)]),
+        rules: BTreeMap::from([
+            ("/etc".into(), Perm::WriteAsk),
+            ("/usr".into(), Perm::ReadOnly),
+        ]),
         ..Default::default()
     }
     .save(&session.root.join("yolofs.toml"))
@@ -31,8 +34,8 @@ fn apply_rules_reports_count_and_lists_via_rule() {
 
     // The rules themselves are inspected via `yolo rule list`.
     let (_ok, stdout, _e) = session.cli_output(&["rule", "list"]).unwrap();
-    assert!(stdout.contains("/etc = read"), "rule list: {stdout}");
-    assert!(stdout.contains("/usr = read"), "rule list: {stdout}");
+    assert!(stdout.contains("/etc = write-ask"), "rule list: {stdout}");
+    assert!(stdout.contains("/usr = read-only"), "rule list: {stdout}");
 }
 
 #[test]

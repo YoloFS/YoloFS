@@ -1,10 +1,10 @@
 # Permission Gating Layer
 
 The permission gating layer controls which files an agent can access and how.
-Every path starts in the `ask` state. A rule engine promotes matching paths
-to `allow`, `read`, `deny`, or `hide`. When a thread touches an `ask` file,
-the thread is put to sleep; a userspace daemon receives the request and
-writes back a decision that wakes the thread.
+Every path starts in the `ask` state. A rule engine promotes matching paths to
+`allow`, `write-ask`, `read-only`, `ask`, `deny`, or `hide`. When a thread
+touches an `ask` file, the thread is put to sleep; a userspace daemon receives
+the request and writes back a decision that wakes the thread.
 
 Permission gating applies to **file access** (open for read/write/exec)
 and **metadata mutations** (create, mkdir, unlink, rmdir, rename,
@@ -20,7 +20,8 @@ enum yolo_perm {
     YOLO_PERM_UNSET,       // No rule on this dentry (walk up to find one).
     YOLO_PERM_ASK,         // Default. Block thread, ask userspace.
     YOLO_PERM_ALLOW,       // Read + write + execute allowed.
-    YOLO_PERM_READ,        // Read + execute. No write.
+    YOLO_PERM_WRITE_ASK,   // Read + execute; writes ask userspace.
+    YOLO_PERM_READ_ONLY,   // Read + execute; writes denied.
     YOLO_PERM_DENY,        // Files: all access denied.
                            // Dirs: traversal/readdir/stat still work,
                            //       but mutations are denied.
@@ -69,10 +70,11 @@ Rules live directly on dentries. One field, one structure.
 
 ### Ask Protocol Engine
 
-The ask protocol handles paths with no matching rule. A thread accessing
-an `ask` path sleeps until a userspace daemon decides. All ask state is
-grouped into `struct yolo_ask_engine` (embedded in `yolo_sb_info` as
-`ask_engine`), plus per-connection and per-request structures.
+The ask protocol handles operations whose effective policy asks for that
+operation: reads or writes under `ask`, and writes under `write-ask`. The
+thread sleeps until a userspace daemon decides. All ask state is grouped into
+`struct yolo_ask_engine` (embedded in `yolo_sb_info` as `ask_engine`), plus
+per-connection and per-request structures.
 
 **Ask engine** (`yolo_ask_engine`) — embedded in `yolo_sb_info`:
 
@@ -131,9 +133,9 @@ Two levels:
 
    [rules]
    "src"        = "allow"
-   "/etc"       = "deny"
-   "/etc/hosts" = "read"
-   "/usr/bin"   = "read"
+   "/etc"       = "write-ask"
+   "/etc/hosts" = "read-only"
+   "/usr/bin"   = "read-only"
    "/secret"    = "hide"
   ```
 
@@ -197,15 +199,19 @@ int yolo_check_dentry_perm(struct yolo_sb_info *sbi,
 {
     struct yolo_inode_info *ii = YOLO_I(d_inode(dentry));
     enum yolo_perm perm;
+    enum yolo_perm decision;
+    enum yolo_op op = yolo_open_op(f_flags);
 
     if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
         yolo_cache_perm(d_inode(dentry), dentry);
     perm = ii->cached_perm;
+    decision = perm;
 
-    if (perm == YOLO_PERM_ASK) {
-        // ... ask daemon, or deny if none answers ...
+    if (perm == YOLO_PERM_ASK ||
+        (perm == YOLO_PERM_WRITE_ASK && op == YOLO_OP_WRITE)) {
+        // ... ask daemon, or deny if none answers; fills decision ...
     }
-    return yolo_check_perm(perm, f_flags);
+    return yolo_check_perm(decision, f_flags);
 }
 
 // Metadata ops check write permission on the parent directory.
@@ -269,17 +275,17 @@ static int yolo_create(struct mnt_idmap *idmap, struct inode *dir,
 
 ```bash
  yolo rule allow src
- yolo rule deny  /etc
- yolo rule read  /etc/hosts
- yolo rule read  /usr/bin
+ yolo rule write-ask /etc
+ yolo rule read-only /etc/hosts
+ yolo rule read-only /usr/bin
  yolo rule hide  ~/.mozilla
 ```
 
 - `permission("src/main.rs")` -> cached_perm=ALLOW (from lookup) -> **pass**
-- `permission("etc/passwd")` -> cached_perm=DENY -> **-EACCES**
-- `permission("etc/hosts")` -> cached_perm=READ -> **pass for read/exec, deny write**
-- `readdir("etc")` -> cached_perm=DENY -> **pass** (dir read-like ops not gated)
-- `stat("etc")` -> cached_perm=ASK -> **pass** (dir read-like ops not gated)
+- `permission("etc/passwd")` -> cached_perm=WRITE_ASK -> **pass for read/exec, ask on write**
+- `permission("etc/hosts")` -> cached_perm=READ_ONLY -> **pass for read/exec, deny write**
+- `readdir("etc")` -> cached_perm=WRITE_ASK -> **pass** (dir read-like ops not gated)
+- `stat("etc")` -> cached_perm=WRITE_ASK -> **pass** (dir read-like ops not gated)
 - `open("tmp/foo")` -> cached_perm=ASK -> ask daemon -> **sleeps until decision**
 
 ## The Ask Protocol
@@ -323,12 +329,14 @@ Key properties:
   If the daemon doesn't respond in time, the request is denied.
 - **Minimal response**: `yolo_ioc_decision` only carries `{ id, decision }`.
   Persisting policy is always a separate `ioctl(YOLO_IOC_RULE_SET)`.
-- **Cached after the first decision**: The kernel records the daemon's verdict
-  in the inode's `cached_perm`, so later accesses to the same file are answered
-  from the cache without re-asking. The cache is dropped (and the path re-asks)
-  on the next generation bump — a rule add/remove/change, or a staging
-  `RESET`/`TRAVEL`. To persist a decision across those events, the daemon
-  separately calls `ioctl(YOLO_IOC_RULE_SET)` to install a rule on the dentry.
+- **Cached after the first plain-ask decision**: For `ask`, the kernel records
+  the daemon's verdict in the inode's `cached_perm`, so later accesses to the
+  same file are answered from the cache without re-asking. For `write-ask`, the
+  inherited policy stays cached and each later write asks again. The cache is
+  dropped (and the path re-asks) on the next generation bump — a rule
+  add/remove/change, or a staging `RESET`/`TRAVEL`. To persist a decision
+  across those events, the daemon separately calls `ioctl(YOLO_IOC_RULE_SET)` to
+  install a rule on the dentry.
 
 ## Why Dentry Walk-Up?
 
@@ -337,7 +345,7 @@ The rule engine must satisfy these design principles:
 1. **Fast checks** — permission resolution must not scale with the number of
    rules. O(n) scanning per access is unacceptable.
 2. **Hierarchical rules** — a single rule on a directory applies to all files
-   underneath. Rules can overlap (e.g., `/etc` = deny, `/etc/hosts` = read)
+   underneath. Rules can overlap (e.g., `/etc` = write-ask, `/etc/hosts` = read-only)
    and the most specific path always wins, regardless of insertion order.
 3. **Dynamic rules** — adding, changing, or removing a rule must take effect
    immediately without expensive cache invalidation.
@@ -434,7 +442,7 @@ In `yolofs.toml`:
 
 ```toml
 [rules]
-"/usr"           = "read"
+"/usr"           = "read-only"
 "/home/user/src" = "allow"
 "/home/user/tax2025"          = "hide"
 "/home/user/.mozilla"         = "hide"
@@ -459,13 +467,13 @@ stores rules directly on dentries and caches the resolved permission on
 inodes with a generation counter — O(1) in steady state.
 
 **Overlapping rules**: Landlock is additive — rules only grant permissions.
-If `/foo` has no rule and `/foo/bar` has `READ`, then `/foo/bar` is
-readable but `/foo/baz` is denied. However, you **cannot** deny a child
-when a parent is allowed: if `/foo` grants `READ`, then `/foo/bar` also
-gets `READ` and there is no way to revoke it. YoloFS uses nearest-ancestor
-wins: `/foo = allow` + `/foo/bar = deny` works because the walk-up
-finds `/foo/bar`'s rule first. Both directions (allow parent deny child,
-deny parent allow child) are supported.
+If `/foo` has no rule and `/foo/bar` grants read access, then `/foo/bar`
+is readable but `/foo/baz` is denied. However, you **cannot** deny a child
+when a parent is allowed: if `/foo` grants read access, then `/foo/bar` also
+gets read access and there is no way to revoke it. YoloFS uses
+nearest-ancestor wins: `/foo = allow` + `/foo/bar = deny` works because
+the walk-up finds `/foo/bar`'s rule first. Both directions (allow parent
+deny child, deny parent allow child) are supported.
 
 **Dynamic rules**: Landlock rulesets are immutable once enforced via
 `landlock_restrict_self()`. You cannot add or remove rules at runtime.

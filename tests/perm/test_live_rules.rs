@@ -95,32 +95,60 @@ fn rule_resolve_matches_enforcement() {
     .expect("session setup");
 
     let root = s.root.display().to_string();
-    s.cli(&["rule", "read", &root]).unwrap();
+    s.cli(&["rule", "read-only", &root]).unwrap();
 
-    // Explicit rule on the root resolves to `read`.
+    // Explicit rule on the root resolves to `read-only`.
     let (ok, out, err) = s.cli_output(&["rule", "resolve", &root]).unwrap();
     assert!(ok, "resolve failed: {err}");
     assert!(
-        out.contains("read"),
-        "root should resolve to read, got: {out}"
+        out.contains("read-only"),
+        "root should resolve to read-only, got: {out}"
     );
 
-    // A child path inherits `read`.
+    // A child path inherits `read-only`.
     let child = s.root.join("hello.txt").display().to_string();
     let (ok, out, _) = s.cli_output(&["rule", "resolve", &child]).unwrap();
     assert!(
-        ok && out.contains("read"),
-        "child should inherit read, got: {out}"
+        ok && out.contains("read-only"),
+        "child should inherit read-only, got: {out}"
     );
 
-    // Parity with enforcement: read is allowed, write is denied under `read`.
+    // Parity with enforcement: read is allowed, write is denied under `read-only`.
     assert!(
         fs::read_to_string(s.mnt_path("hello.txt")).is_ok(),
-        "read should be allowed under a read rule"
+        "read should be allowed under a read-only rule"
     );
     assert!(
         fs::write(s.mnt_path("hello.txt"), "x").is_err(),
-        "write should be denied under a read rule"
+        "write should be denied under a read-only rule"
+    );
+}
+
+/// `yolo rule write-ask` is a public rule verb: reads pass, writes ask and are
+/// denied when no daemon is connected.
+#[test]
+fn rule_write_ask_resolve_matches_enforcement() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::new(),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let root = s.root.display().to_string();
+    s.cli(&["rule", "write-ask", &root]).unwrap();
+
+    let (ok, out, err) = s.cli_output(&["rule", "resolve", &root]).unwrap();
+    assert!(ok, "resolve failed: {err}");
+    assert!(
+        out.contains("write-ask"),
+        "root should resolve to write-ask, got: {out}"
+    );
+
+    fs::read_to_string(s.mnt_path("hello.txt"))
+        .expect("read should be allowed under a write-ask rule");
+    assert!(
+        fs::write(s.mnt_path("hello.txt"), "x").is_err(),
+        "write should ask and be denied with no daemon"
     );
 }
 

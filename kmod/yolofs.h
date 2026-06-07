@@ -46,9 +46,10 @@ enum yolo_perm {
 	YOLO_PERM_UNSET		= 0,	/* no rule on this dentry */
 	YOLO_PERM_ASK		= 1,	/* block thread, ask userspace */
 	YOLO_PERM_ALLOW		= 2,	/* read + write + execute */
-	YOLO_PERM_READ		= 3,	/* read + execute */
-	YOLO_PERM_DENY		= 4,	/* all access denied */
-	YOLO_PERM_HIDE		= 5,	/* path invisible: ENOENT on lookup/stat/open */
+	YOLO_PERM_WRITE_ASK	= 3,	/* read + execute; writes ask userspace */
+	YOLO_PERM_READ_ONLY	= 4,	/* read + execute; writes denied */
+	YOLO_PERM_DENY		= 5,	/* all access denied */
+	YOLO_PERM_HIDE		= 6,	/* path invisible: ENOENT on lookup/stat/open */
 };
 
 /* ── Ioctl Structures ──────────────────────────────────────────────── */

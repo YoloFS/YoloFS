@@ -55,6 +55,45 @@ fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
     );
 }
 
+/// `write-ask` allows reads but asks on each write. An approved write must not
+/// cache `allow` over the inherited `write-ask` rule, or later writes would stop
+/// prompting.
+#[test]
+fn watch_allow_all_answers_each_write_ask() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::WriteAsk)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let mut watch = std::process::Command::new(YOLO_BIN)
+        .args(["watch", "--allow-all"])
+        .current_dir(&s.root)
+        .env("NO_COLOR", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawning yolofs watch --allow-all");
+
+    std::thread::sleep(Duration::from_millis(200));
+
+    let code = s
+        .run_in_yolofs(&["sh", "-c", "printf one > hello.txt; printf two > hello.txt"])
+        .unwrap_or(1);
+
+    watch.kill().ok();
+    let output = watch.wait_with_output().expect("collecting watch output");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let expected_path = format!("{}/hello.txt", s.root.display());
+
+    assert_eq!(code, 0, "writes should succeed when watch allows them");
+    assert!(
+        stderr.matches(&expected_path).count() >= 2,
+        "write-ask should prompt for both writes to {expected_path}, got:\n{stderr}"
+    );
+}
+
 /// Starting a second watch while one is already running should fail
 /// with a clear "already running" message (kernel returns EBUSY).
 #[test]
@@ -231,7 +270,7 @@ fn interactive_watch_hide_returns_not_found() {
     );
 }
 
-/// Interactive `yolofs watch` — daemon reads "r\n" and responds `read`.
+/// Interactive `yolofs watch` — daemon reads "r\n" and responds `read-only`.
 /// Read succeeds, but write is denied.
 #[test]
 fn interactive_watch_ro_permits_read_denies_write() {

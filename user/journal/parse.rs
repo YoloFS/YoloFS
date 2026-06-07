@@ -12,7 +12,7 @@
 //   T\0<gen>\0<target_gen>\n          — Travel
 //   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
 //   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
-//   (op = r/w; decision = a/y/r/d/h — ask/allow/read/deny/hide)
+//   (op = r/w; decision = y/w/r/d/h — allow/write-ask/read-only/deny/hide)
 
 use super::types::*;
 use anyhow::{Context, Result};

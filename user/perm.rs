@@ -15,7 +15,8 @@ use std::str::FromStr;
 pub enum Perm {
     Ask,
     Allow,
-    Read,
+    WriteAsk,
+    ReadOnly,
     Deny,
     Hide,
 }
@@ -25,7 +26,8 @@ impl Perm {
         match self {
             Perm::Ask => ioctl::YOLO_PERM_ASK,
             Perm::Allow => ioctl::YOLO_PERM_ALLOW,
-            Perm::Read => ioctl::YOLO_PERM_READ,
+            Perm::WriteAsk => ioctl::YOLO_PERM_WRITE_ASK,
+            Perm::ReadOnly => ioctl::YOLO_PERM_READ_ONLY,
             Perm::Deny => ioctl::YOLO_PERM_DENY,
             Perm::Hide => ioctl::YOLO_PERM_HIDE,
         }
@@ -36,7 +38,8 @@ impl Perm {
         match v {
             ioctl::YOLO_PERM_ASK => Some(Perm::Ask),
             ioctl::YOLO_PERM_ALLOW => Some(Perm::Allow),
-            ioctl::YOLO_PERM_READ => Some(Perm::Read),
+            ioctl::YOLO_PERM_WRITE_ASK => Some(Perm::WriteAsk),
+            ioctl::YOLO_PERM_READ_ONLY => Some(Perm::ReadOnly),
             ioctl::YOLO_PERM_DENY => Some(Perm::Deny),
             ioctl::YOLO_PERM_HIDE => Some(Perm::Hide),
             _ => None,
@@ -49,7 +52,8 @@ impl Perm {
         match self {
             Perm::Ask => 'a',
             Perm::Allow => 'y',
-            Perm::Read => 'r',
+            Perm::WriteAsk => 'w',
+            Perm::ReadOnly => 'r',
             Perm::Deny => 'd',
             Perm::Hide => 'h',
         }
@@ -60,7 +64,8 @@ impl Perm {
         match b {
             b'a' => Some(Perm::Ask),
             b'y' => Some(Perm::Allow),
-            b'r' => Some(Perm::Read),
+            b'w' => Some(Perm::WriteAsk),
+            b'r' => Some(Perm::ReadOnly),
             b'd' => Some(Perm::Deny),
             b'h' => Some(Perm::Hide),
             _ => None,
@@ -73,7 +78,8 @@ impl fmt::Display for Perm {
         f.write_str(match self {
             Perm::Ask => "ask",
             Perm::Allow => "allow",
-            Perm::Read => "read",
+            Perm::WriteAsk => "write-ask",
+            Perm::ReadOnly => "read-only",
             Perm::Deny => "deny",
             Perm::Hide => "hide",
         })
@@ -86,7 +92,8 @@ impl FromStr for Perm {
         match s {
             "ask" => Ok(Perm::Ask),
             "allow" => Ok(Perm::Allow),
-            "read" => Ok(Perm::Read),
+            "write-ask" => Ok(Perm::WriteAsk),
+            "read-only" => Ok(Perm::ReadOnly),
             "deny" => Ok(Perm::Deny),
             "hide" => Ok(Perm::Hide),
             _ => anyhow::bail!("unknown permission: {s}"),
@@ -98,7 +105,14 @@ impl FromStr for Perm {
 mod tests {
     use super::*;
 
-    const ALL: [Perm; 5] = [Perm::Ask, Perm::Allow, Perm::Read, Perm::Deny, Perm::Hide];
+    const ALL: [Perm; 6] = [
+        Perm::Ask,
+        Perm::Allow,
+        Perm::WriteAsk,
+        Perm::ReadOnly,
+        Perm::Deny,
+        Perm::Hide,
+    ];
 
     #[test]
     fn letter_roundtrips() {
@@ -108,6 +122,8 @@ mod tests {
         // `allow` is `y` (not `a`, which `ask` takes).
         assert_eq!(Perm::Allow.to_letter(), 'y');
         assert_eq!(Perm::Ask.to_letter(), 'a');
+        assert_eq!(Perm::WriteAsk.to_letter(), 'w');
+        assert_eq!(Perm::ReadOnly.to_letter(), 'r');
         assert_eq!(Perm::from_letter(b'?'), None);
     }
 

@@ -230,7 +230,13 @@ static int yolo_permission(struct mnt_idmap *idmap,
 	switch (perm) {
 	case YOLO_PERM_ALLOW:
 		return 0;
-	case YOLO_PERM_READ:
+	case YOLO_PERM_WRITE_ASK:
+		if (!(mask & MAY_WRITE))
+			return 0;
+		/* Write asks are resolved in open()/metadata op paths where
+		 * sleeping is safe. */
+		return 0;
+	case YOLO_PERM_READ_ONLY:
 		if (!(mask & MAY_WRITE))
 			return 0;
 		break;
@@ -252,6 +258,15 @@ static int yolo_permission(struct mnt_idmap *idmap,
 
 /* ── setattr ───────────────────────────────────────────────────────── */
 
+static bool yolo_setattr_needs_write_check(const struct iattr *ia)
+{
+	unsigned int mutating = ATTR_MODE | ATTR_UID | ATTR_GID | ATTR_SIZE |
+				ATTR_ATIME | ATTR_MTIME |
+				ATTR_ATIME_SET | ATTR_MTIME_SET;
+
+	return (ia->ia_valid & mutating) && !(ia->ia_valid & ATTR_OPEN);
+}
+
 static int yolo_setattr(struct mnt_idmap *idmap,
 			struct dentry *dentry, struct iattr *ia)
 {
@@ -260,6 +275,15 @@ static int yolo_setattr(struct mnt_idmap *idmap,
 	struct inode *inode = d_inode(dentry);
 	struct inode *lower_inode;
 	int err;
+
+	if (sbi->perm.enabled && yolo_setattr_needs_write_check(ia)) {
+		err = yolo_check_dentry_perm(sbi, dentry, O_WRONLY);
+		if (err) {
+			if (err == -EACCES)
+				yolo_journal_block(sbi, dentry, YOLO_OP_WRITE);
+			return err;
+		}
+	}
 
 	err = setattr_prepare(idmap, dentry, ia);
 	if (err)

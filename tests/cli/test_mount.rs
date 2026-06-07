@@ -47,7 +47,7 @@ fn remount_picks_up_new_rules() {
     // Write config with rules, remount
     Config {
         permission: false,
-        rules: BTreeMap::from([("/etc".into(), Perm::Read)]),
+        rules: BTreeMap::from([("/etc".into(), Perm::ReadOnly)]),
         ..Default::default()
     }
     .save(&session.root.join("yolofs.toml"))

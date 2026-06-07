@@ -148,7 +148,9 @@ static long yolo_put_decision_ioctl(struct file *file, unsigned long arg)
 	if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
 		return -EFAULT;
 
-	if (in.decision > YOLO_PERM_HIDE)
+	if (in.decision == YOLO_PERM_UNSET ||
+	    in.decision == YOLO_PERM_ASK ||
+	    in.decision > YOLO_PERM_HIDE)
 		return -EINVAL;
 
 	spin_lock(&perm->pending_lock);

@@ -72,15 +72,16 @@ fn prompt_decision(req: &PermRequest) -> Perm {
     let _guard = claim_tty();
 
     eprintln!(
-        "{} {} {} {}",
+        "{} {} wants to {} {}",
         "[ask]".yellow().bold(),
+        req.comm_str(),
         req.op_str(),
         req.path_str(),
-        format!("(pid={} {})", req.pid, req.comm_str()).dimmed(),
     );
     eprint!(
-        "  [{}]llow [{}]ead [{}]ide [{}]eny (enter = allow): ",
+        "  [{}]llow [{}]rite-ask [{}]ead-only [{}]ide [{}]eny (enter = allow): ",
         "a".blue().bold(),
+        "w".blue().bold(),
         "r".blue().bold(),
         "h".blue().bold(),
         "d".blue().bold(),
@@ -134,11 +135,11 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
 
         let decision = if allow_all {
             eprintln!(
-                "{} {} {} {}",
+                "{} {} wants to {} {}",
                 "[ask]".yellow().bold(),
+                req.comm_str(),
                 req.op_str(),
                 req.path_str(),
-                format!("(pid={} {})", req.pid, req.comm_str()).dimmed(),
             );
             Perm::Allow
         } else {
@@ -162,7 +163,8 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
 fn parse_input(input: &str) -> Perm {
     match input {
         "" | "a" | "allow" => Perm::Allow,
-        "r" | "read" | "read-only" | "readonly" => Perm::Read,
+        "w" | "write-ask" | "writeask" => Perm::WriteAsk,
+        "r" | "read-only" | "readonly" => Perm::ReadOnly,
         "h" | "hide" => Perm::Hide,
         "d" | "deny" => Perm::Deny,
         _ => Perm::Deny,
@@ -199,13 +201,23 @@ mod tests {
     }
 
     #[test]
-    fn r_is_read() {
-        assert_eq!(parse_input("r"), Perm::Read);
+    fn r_is_read_only() {
+        assert_eq!(parse_input("r"), Perm::ReadOnly);
     }
 
     #[test]
-    fn read_is_read() {
-        assert_eq!(parse_input("read"), Perm::Read);
+    fn read_only_is_read_only() {
+        assert_eq!(parse_input("read-only"), Perm::ReadOnly);
+    }
+
+    #[test]
+    fn w_is_write_ask() {
+        assert_eq!(parse_input("w"), Perm::WriteAsk);
+    }
+
+    #[test]
+    fn write_ask_is_write_ask() {
+        assert_eq!(parse_input("write-ask"), Perm::WriteAsk);
     }
 
     #[test]

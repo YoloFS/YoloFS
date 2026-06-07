@@ -128,8 +128,10 @@ enum RuleAction {
     Ask { path: String },
     /// Allow read + write + execute
     Allow { path: String },
-    /// Allow read + execute, deny write
-    Read { path: String },
+    /// Allow read + execute, prompt before writes
+    WriteAsk { path: String },
+    /// Allow read + execute, deny writes
+    ReadOnly { path: String },
     /// Deny all access
     Deny { path: String },
     /// Deny access and hide the path (ENOENT)
@@ -250,7 +252,8 @@ fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
             RuleAction::Unset { path } => config::unset_rule(&path)?,
             RuleAction::Ask { path } => config::set_rule(&path, perm::Perm::Ask)?,
             RuleAction::Allow { path } => config::set_rule(&path, perm::Perm::Allow)?,
-            RuleAction::Read { path } => config::set_rule(&path, perm::Perm::Read)?,
+            RuleAction::WriteAsk { path } => config::set_rule(&path, perm::Perm::WriteAsk)?,
+            RuleAction::ReadOnly { path } => config::set_rule(&path, perm::Perm::ReadOnly)?,
             RuleAction::Deny { path } => config::set_rule(&path, perm::Perm::Deny)?,
             RuleAction::Hide { path } => config::set_rule(&path, perm::Perm::Hide)?,
         },
@@ -304,7 +307,7 @@ fn print_overview() {
             ("journal",  "Raw record log over a range (`-- path` to filter)"),
         ]),
         ("Permissions", &[
-            ("rule",     "Manage permission rules (allow/read/deny/hide/ask)"),
+            ("rule",     "Manage permission rules (allow/write-ask/read-only/ask/deny/hide)"),
             ("watch",    "Permission-prompt daemon"),
         ]),
     ];

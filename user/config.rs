@@ -422,7 +422,8 @@ mod tests {
     #[test]
     fn perm_display() {
         assert_eq!(Perm::Allow.to_string(), "allow");
-        assert_eq!(Perm::Read.to_string(), "read");
+        assert_eq!(Perm::WriteAsk.to_string(), "write-ask");
+        assert_eq!(Perm::ReadOnly.to_string(), "read-only");
         assert_eq!(Perm::Hide.to_string(), "hide");
         assert_eq!(Perm::Deny.to_string(), "deny");
     }
@@ -430,7 +431,8 @@ mod tests {
     #[test]
     fn perm_parse() {
         assert_eq!("allow".parse::<Perm>().unwrap(), Perm::Allow);
-        assert_eq!("read".parse::<Perm>().unwrap(), Perm::Read);
+        assert_eq!("write-ask".parse::<Perm>().unwrap(), Perm::WriteAsk);
+        assert_eq!("read-only".parse::<Perm>().unwrap(), Perm::ReadOnly);
         assert_eq!("hide".parse::<Perm>().unwrap(), Perm::Hide);
         assert_eq!("deny".parse::<Perm>().unwrap(), Perm::Deny);
         assert!("bogus".parse::<Perm>().is_err());
@@ -443,9 +445,11 @@ mod tests {
         struct Wrapper {
             perm: Perm,
         }
-        let w = Wrapper { perm: Perm::Read };
+        let w = Wrapper {
+            perm: Perm::ReadOnly,
+        };
         let s = toml::to_string(&w).unwrap();
-        assert!(s.contains("read"), "s = {s}");
+        assert!(s.contains("read-only"), "s = {s}");
         let w2: Wrapper = toml::from_str(&s).unwrap();
         assert_eq!(w, w2);
     }
@@ -454,17 +458,17 @@ mod tests {
     fn match_rule_explicit_inherited_default() {
         // Absolute paths so resolution is independent of cwd.
         let rules = BTreeMap::from([
-            ("/etc".to_string(), Perm::Deny),
-            ("/etc/hosts".to_string(), Perm::Read),
+            ("/etc".to_string(), Perm::WriteAsk),
+            ("/etc/hosts".to_string(), Perm::ReadOnly),
         ]);
 
         // Exact match → explicit.
         let (rp, perm, explicit) = match_rule(&rules, "/etc/hosts").unwrap().unwrap();
-        assert_eq!((rp, perm, explicit), ("/etc/hosts", Perm::Read, true));
+        assert_eq!((rp, perm, explicit), ("/etc/hosts", Perm::ReadOnly, true));
 
         // Longest ancestor wins, marked inherited.
         let (rp, perm, explicit) = match_rule(&rules, "/etc/passwd").unwrap().unwrap();
-        assert_eq!((rp, perm, explicit), ("/etc", Perm::Deny, false));
+        assert_eq!((rp, perm, explicit), ("/etc", Perm::WriteAsk, false));
 
         // No ancestor rule → default (ask).
         assert!(match_rule(&rules, "/var/log").unwrap().is_none());
@@ -513,13 +517,13 @@ mod tests {
     #[test]
     fn config_default_has_expected_rules() {
         let config = Config::default();
-        assert_eq!(config.rules["/usr"], Perm::Read);
-        assert_eq!(config.rules["/etc"], Perm::Read);
+        assert_eq!(config.rules["/usr"], Perm::ReadOnly);
+        assert_eq!(config.rules["/etc"], Perm::WriteAsk);
         // Storage is readable from inside the mount (yolofs stacks over /). The
         // mountpoint lives outside the workspace and is hidden programmatically
         // to avoid recursion, so there's no static rule for it here.
-        assert_eq!(config.rules[".yolofs"], Perm::Read);
-        assert_eq!(config.rules["yolofs.toml"], Perm::Read);
+        assert_eq!(config.rules[".yolofs"], Perm::ReadOnly);
+        assert_eq!(config.rules["yolofs.toml"], Perm::ReadOnly);
     }
 
     #[test]
@@ -637,7 +641,7 @@ mod tests {
             ..Default::default()
         };
         config.rules.insert("/tmp".to_string(), Perm::Allow);
-        config.rules.insert("/etc".to_string(), Perm::Read);
+        config.rules.insert("/etc".to_string(), Perm::ReadOnly);
         config.save(&path).unwrap();
 
         let mut loaded = Config::load(&path).unwrap();
@@ -663,7 +667,10 @@ mod tests {
         doc_set_rule(&mut doc, "secret.txt", Perm::Deny);
         let out = doc.to_string();
         assert!(out.contains("# System locations"), "comments kept: {out}");
-        assert!(out.contains("\"/usr\" = \"read\""), "existing rule kept");
+        assert!(
+            out.contains("\"/usr\" = \"read-only\""),
+            "existing rule kept"
+        );
         let cfg: Config = toml::from_str(&out).unwrap();
         assert_eq!(cfg.rules["secret.txt"], Perm::Deny);
     }

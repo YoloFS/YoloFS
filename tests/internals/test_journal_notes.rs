@@ -29,7 +29,7 @@ fn deny_session() -> YoloSession {
 /// Build a session where the entire mount is read-only.
 fn ro_session() -> YoloSession {
     YoloSession::new_with_config(Config {
-        rules: BTreeMap::from([("/".into(), Perm::Read)]),
+        rules: BTreeMap::from([("/".into(), Perm::ReadOnly)]),
         ..Default::default()
     })
     .expect("session setup")
@@ -550,7 +550,7 @@ fn daemon_read_records_ask_note_read() {
         content.expect("read should succeed after daemon read-only"),
         "base content\n"
     );
-    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::Read);
+    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::ReadOnly);
 }
 
 /// Daemon answers `hide` → read fails (ENOENT) and the A note records `hide`.
