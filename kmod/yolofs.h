@@ -25,14 +25,16 @@
 #include <linux/magic.h>
 #include <linux/module.h>
 
-/* ── Constants ─────────────────────────────────────────────────────── */
+/* ── User/Kernel ABI ───────────────────────────────────────────────────
+ *
+ * Everything below this banner (up to the next) is the binary contract with
+ * userspace and must stay in sync with the mirrored definitions in
+ * user/ioctl.rs — its struct_sizes test pins the layout. yolofs has no
+ * backward-compat requirement, so these may change freely; just update both
+ * sides together.
+ */
 
-#define YOLO_SUPER_MAGIC	0xA6F5
 #define YOLO_PATH_MAX		256
-
-/* Travel tree buffer limits */
-#define YOLO_TRAVEL_MAX_DEPTH		32
-#define YOLO_TRAVEL_MAX_TREE_LEN		(16 * 1024 * 1024)
 
 /* Operations passed in ask requests */
 enum yolo_op {
@@ -40,8 +42,7 @@ enum yolo_op {
 	YOLO_OP_WRITE		= 2,
 };
 
-/* ── Permission Enum ───────────────────────────────────────────────── */
-
+/* Permission rule modes */
 enum yolo_perm {
 	YOLO_PERM_UNSET		= 0,	/* no rule on this dentry */
 	YOLO_PERM_ASK		= 1,	/* block thread, ask userspace */
@@ -52,13 +53,11 @@ enum yolo_perm {
 	YOLO_PERM_HIDE		= 6,	/* path invisible: ENOENT on lookup/stat/open */
 };
 
-/* ── Ioctl Structures ──────────────────────────────────────────────── */
-
-/*
- * All path fields use pointer + length instead of fixed-size arrays.
- * Paths are limited to YOLO_PATH_MAX-1 bytes (matching internal buffers).
- * The kernel copies path data via secondary copy_from_user / copy_to_user.
- */
+/* One-shot ask decisions */
+enum yolo_decision {
+	YOLO_DECISION_DENY	= 0,	/* fail the current operation */
+	YOLO_DECISION_ALLOW	= 1,	/* allow the current operation */
+};
 
 struct yolo_ioc_rule {
 	__u64	path_ptr;		/* userspace pointer to path string */
@@ -79,46 +78,50 @@ struct yolo_ioc_snapshot {
 	__u8	_pad[5];
 };
 
-/* userspace ↔ kernel: YOLO_IOC_TRAVEL (real travel to a snapshot, gen >= 1) */
+/* userspace ↔ kernel: YOLO_IOC_TRAVEL (gen 0 = base; gen >= 1 = snapshot/travel) */
 struct yolo_ioc_travel {
-	__u64	target_gen;		/* in: snapshot gen to travel to (must be >= 1) */
+	__u64	target_gen;		/* in: generation to travel to */
 	__u64	new_gen;		/* out: new generation assigned */
 	__u64	tree_len;		/* in: byte length of serialized tree */
 	__u64	tree_ptr;		/* in: userspace pointer to tree buffer */
 };
 
-#define YOLO_IOC_RULE_SET	_IOW('A', 10, struct yolo_ioc_rule)
-#define YOLO_IOC_RULE_RESOLVE	_IOWR('A', 11, struct yolo_ioc_rule)
-#define YOLO_IOC_GET_ASK	_IOWR('A', 30, struct yolo_ioc_ask)
-#define YOLO_IOC_PUT_DECISION	_IOW('A', 31, struct yolo_ioc_decision)
-#define YOLO_IOC_SNAPSHOT		_IOWR('A', 40, struct yolo_ioc_snapshot)
-#define YOLO_IOC_TRAVEL		_IOWR('A', 41, struct yolo_ioc_travel)
-#define YOLO_IOC_RESET		_IO('A', 42)
-
-/* ── Control-File Protocol (binary) ───────────────────────────────── */
-
-/*
- * kernel → userspace: dequeued permission request.
- * Userspace provides path_ptr + path_buf_len; kernel writes path into
- * the buffer and sets path_len to the actual length.
- */
+/* kernel → userspace: dequeued permission ask */
 struct yolo_ioc_ask {
 	__u64	id;
 	__u32	op;			/* YOLO_OP_READ / WRITE */
 	__u32	pid;
 	char	comm[16];
-	__u64	path_ptr;		/* in: userspace buffer for path */
-	__u16	path_buf_len;		/* in: buffer capacity */
-	__u16	path_len;		/* out: actual path length written */
-	__u8	_pad[4];
+	__u16	access_path_len;	/* out: bytes in access_path */
+	__u16	rule_path_len;		/* out: bytes in rule_path */
+	__u8	rule_perm;		/* enum yolo_perm value */
+	__u8	_pad[3];
+	char	access_path[YOLO_PATH_MAX];
+	char	rule_path[YOLO_PATH_MAX];	/* empty means default ask */
 };
 
-/* userspace → kernel: write() accepts one of these */
+/* userspace → kernel: answer a pending ask */
 struct yolo_ioc_decision {
 	__u64	id;
-	__u8	decision;		/* enum yolo_perm value */
+	__u8	decision;		/* enum yolo_decision value */
 	__u8	_pad[7];
 };
+
+#define YOLO_IOC_RULE_SET	_IOW('A', 10, struct yolo_ioc_rule)
+#define YOLO_IOC_RULE_RESOLVE	_IOWR('A', 11, struct yolo_ioc_rule)
+#define YOLO_IOC_GET_ASK	_IOR('A', 30, struct yolo_ioc_ask)
+#define YOLO_IOC_PUT_DECISION	_IOW('A', 31, struct yolo_ioc_decision)
+#define YOLO_IOC_SNAPSHOT	_IOWR('A', 40, struct yolo_ioc_snapshot)
+#define YOLO_IOC_TRAVEL		_IOWR('A', 41, struct yolo_ioc_travel)
+#define YOLO_IOC_RESET		_IO('A', 42)
+
+/* ── Constants ─────────────────────────────────────────────────────── */
+
+#define YOLO_SUPER_MAGIC	0xA6F5
+
+/* Travel tree buffer limits */
+#define YOLO_TRAVEL_MAX_DEPTH		32
+#define YOLO_TRAVEL_MAX_TREE_LEN		(16 * 1024 * 1024)
 
 /* ── Internal: Pending Permission Request ──────────────────────────────
  *
@@ -135,16 +138,20 @@ struct yolo_ioc_decision {
  *     dispatched req in place rather than unlinking it itself.
  */
 
-struct yolo_perm_request {
+struct yolo_ask {
 	struct kref		ref;
 	u64			id;
-	char			path[YOLO_PATH_MAX];
-	u16			path_len;
+	char			access_path[YOLO_PATH_MAX];
+	u16			access_path_len;
+	char			rule_path[YOLO_PATH_MAX];
+	u16			rule_path_len;
+	enum yolo_perm		rule_perm;
 	enum yolo_op		op;
 	pid_t			pid;
 	char			comm[TASK_COMM_LEN];
 
-	enum yolo_perm		decision;
+	enum yolo_decision	decision;
+	bool			decided;
 	struct completion	done;
 	struct list_head	list;
 	bool			dispatched;	/* true while on perm->dispatched */
@@ -228,7 +235,7 @@ struct yolo_dentry_info {
 	struct path		lower_path;	/* resolved lower path (inode entry or base) */
 	enum yolo_target	target;		/* where content lives */
 	bool			pinned;		/* held via dget by staging */
-	enum yolo_perm		perm;		/* NONE unless explicit rule */
+	enum yolo_perm		perm;		/* explicit rule or UNSET */
 	struct list_head	rule_pin;	/* node in sbi->perm.pinned_rules */
 	struct dentry		*rule_dentry;	/* back-pointer for dput on release */
 };
@@ -435,27 +442,26 @@ int yolo_journal_travel(struct yolo_sb_info *sbi, u16 gen, u16 target_gen);
 int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *dentry,
 		       enum yolo_op op);
 int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
-		     enum yolo_op op, enum yolo_perm decision);
+		     enum yolo_op op, enum yolo_decision decision);
 enum yolo_op yolo_open_op(int f_flags);
 
 /* perm.c */
-static inline void yolo_perm_request_release(struct kref *kref)
+static inline void yolo_ask_release(struct kref *kref)
 {
-	kfree(container_of(kref, struct yolo_perm_request, ref));
+	kfree(container_of(kref, struct yolo_ask, ref));
 }
-enum yolo_perm yolo_resolve_perm(struct dentry *dentry);
+enum yolo_perm yolo_resolve_perm(struct dentry *dentry, struct dentry **source);
 void yolo_cache_perm(struct inode *inode, struct dentry *dentry);
 int yolo_check_perm(enum yolo_perm perm, int f_flags);
 int yolo_check_dentry_perm(struct yolo_sb_info *sbi, struct dentry *dentry,
 			   int f_flags);
-int yolo_ask_userspace(struct yolo_sb_info *sbi, struct dentry *dentry,
-		       const char *relpath, enum yolo_op op,
-		       enum yolo_perm *result);
+int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
+		       const char *rule_path, enum yolo_perm rule_perm,
+		       enum yolo_op op, enum yolo_decision *result);
 
 /* ioctl.c — control ioctls live on the mount-root directory (yolo_dir_fops). */
 long yolo_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 void yolo_ctl_release(struct file *file);
-void yolo_daemon_cleanup(struct yolo_sb_info *sbi);
 void yolo_release_pinned_rules(struct yolo_sb_info *sbi);
 
 #endif /* _YOLO_H_ */

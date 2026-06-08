@@ -95,7 +95,7 @@ yolo: command exited with 1
 not staged:
 secret.txt (blocked read)
 # 'ask' defers to the 'yolo watch' daemon (no daemon => denied). Interactively
-# it prompts [a]llow/[w]rite-ask/[r]ead-only/[d]eny; here it runs --allow-all in the background.
+# it prompts allow [y]es/[d]eny; here it runs --allow-all in the background.
 
 $ yolo rule ask apikey.txt
 rule applied: apikey.txt = ask
@@ -105,6 +105,7 @@ yolo: watching for permission requests — allowing all (Ctrl-C to stop)
 
 $ yolo -- sh -c 'cat apikey.txt'
 [ask] cat wants to read ~/project/apikey.txt
+  rule: ~/project/apikey.txt asks
   → allow (req #2)
 token
 

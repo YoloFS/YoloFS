@@ -4,6 +4,7 @@
 // via ioctl on a directory fd in the mount (the mount root, or "." from
 // inside the mount). There is no separate control file.
 
+use crate::perm::{Decision, Perm};
 use anyhow::{Context, Result};
 use std::fs::{File, OpenOptions};
 
@@ -26,10 +27,14 @@ pub const YOLO_PERM_READ_ONLY: u8 = 4;
 pub const YOLO_PERM_DENY: u8 = 5;
 pub const YOLO_PERM_HIDE: u8 = 6;
 
+// Ask decision values
+pub const YOLO_DECISION_DENY: u8 = 0;
+pub const YOLO_DECISION_ALLOW: u8 = 1;
+
 // Ioctl command numbers — must match kmod/yolofs.h
 nix::ioctl_write_ptr!(ioctl_rule_set, b'A', 10, YoloIocRule);
 nix::ioctl_readwrite!(ioctl_rule_resolve, b'A', 11, YoloIocRule);
-nix::ioctl_readwrite!(ioctl_get_ask, b'A', 30, YoloIocAsk);
+nix::ioctl_read!(ioctl_get_ask, b'A', 30, YoloIocAsk);
 nix::ioctl_write_ptr!(ioctl_put_decision, b'A', 31, YoloIocDecision);
 nix::ioctl_readwrite!(ioctl_snapshot, b'A', 40, YoloIocSnapshot);
 nix::ioctl_readwrite!(ioctl_travel, b'A', 41, YoloIocTravel);
@@ -45,7 +50,6 @@ pub struct YoloIocRule {
 }
 
 /// Matches `struct yolo_ioc_ask` in the kernel (kernel → userspace).
-/// Userspace provides path_ptr + path_buf_len; kernel fills the rest.
 #[repr(C)]
 #[derive(Clone)]
 pub struct YoloIocAsk {
@@ -53,10 +57,12 @@ pub struct YoloIocAsk {
     pub op: u32,
     pub pid: u32,
     pub comm: [u8; 16],
-    pub path_ptr: u64,
-    pub path_buf_len: u16,
-    pub path_len: u16,
-    pub _pad: [u8; 4],
+    pub access_path_len: u16,
+    pub rule_path_len: u16,
+    pub rule_perm: u8,
+    pub _pad: [u8; 3],
+    pub access_path: [u8; YOLO_PATH_MAX],
+    pub rule_path: [u8; YOLO_PATH_MAX],
 }
 
 /// Matches `struct yolo_ioc_decision` in the kernel (userspace → kernel).
@@ -89,18 +95,21 @@ pub struct YoloIocTravel {
     pub tree_ptr: u64,
 }
 
-/// A dequeued permission request with owned path data.
-pub struct PermRequest {
+/// A dequeued ask with owned path data.
+#[derive(Debug)]
+pub struct Ask {
     pub id: u64,
     pub op: u32,
     pub pid: u32,
     pub comm: [u8; 16],
-    pub path: String,
+    pub access_path: String,
+    pub rule_path: Option<String>,
+    pub rule_perm: Perm,
 }
 
-impl PermRequest {
-    pub fn path_str(&self) -> &str {
-        &self.path
+impl Ask {
+    pub fn access_path_str(&self) -> &str {
+        &self.access_path
     }
 
     pub fn comm_str(&self) -> &str {
@@ -117,35 +126,43 @@ impl PermRequest {
     }
 }
 
-/// Read one permission request via ioctl. Returns a `PermRequest` with
-/// owned path data.
-pub fn get_ask(fd: &File) -> std::result::Result<PermRequest, nix::errno::Errno> {
-    let mut path_buf = [0u8; YOLO_PATH_MAX];
+/// Read one ask via ioctl. Returns an `Ask` with owned path data.
+pub fn get_ask(fd: &File) -> std::result::Result<Ask, nix::errno::Errno> {
     let mut req = YoloIocAsk {
         id: 0,
         op: 0,
         pid: 0,
         comm: [0u8; 16],
-        path_ptr: path_buf.as_mut_ptr() as u64,
-        path_buf_len: YOLO_PATH_MAX as u16,
-        path_len: 0,
-        _pad: [0u8; 4],
+        access_path_len: 0,
+        rule_path_len: 0,
+        rule_perm: 0,
+        _pad: [0u8; 3],
+        access_path: [0u8; YOLO_PATH_MAX],
+        rule_path: [0u8; YOLO_PATH_MAX],
     };
     unsafe { ioctl_get_ask(fd.as_raw_fd(), &mut req) }?;
-    let path = std::str::from_utf8(&path_buf[..req.path_len as usize])
+    let access_path = std::str::from_utf8(&req.access_path[..req.access_path_len as usize])
         .unwrap_or("<invalid>")
         .to_string();
-    Ok(PermRequest {
+    let rule_path = (req.rule_path_len > 0).then(|| {
+        std::str::from_utf8(&req.rule_path[..req.rule_path_len as usize])
+            .unwrap_or("<invalid>")
+            .to_string()
+    });
+    let rule_perm = Perm::from_ioctl(req.rule_perm).ok_or(nix::errno::Errno::EINVAL)?;
+    Ok(Ask {
         id: req.id,
         op: req.op,
         pid: req.pid,
         comm: req.comm,
-        path,
+        access_path,
+        rule_path,
+        rule_perm,
     })
 }
 
 /// Write one `YoloIocDecision` via ioctl on a directory fd.
-pub fn put_decision(fd: &File, id: u64, decision: u8) -> Result<()> {
+pub fn put_decision_raw(fd: &File, id: u64, decision: u8) -> Result<()> {
     let resp = YoloIocDecision {
         id,
         decision,
@@ -153,6 +170,10 @@ pub fn put_decision(fd: &File, id: u64, decision: u8) -> Result<()> {
     };
     unsafe { ioctl_put_decision(fd.as_raw_fd(), &resp) }.context("ioctl PUT_DECISION")?;
     Ok(())
+}
+
+pub fn put_decision(fd: &File, id: u64, decision: Decision) -> Result<()> {
+    put_decision_raw(fd, id, decision.to_ioctl())
 }
 
 /// Open a directory fd in the mount (the mount root) for control ioctls.
@@ -199,9 +220,9 @@ pub fn resolve_rule(fd: &File, path: &str) -> Result<u8> {
     Ok(rule.perm)
 }
 
-/// Send YOLO_IOC_TRAVEL ioctl: travel to a real snapshot (`target_gen >= 1`),
-/// injecting the serialized DirTree of that snapshot's state. Returns the new
-/// generation assigned. Resetting to the base is [`reset`], not travel.
+/// Send YOLO_IOC_TRAVEL ioctl: travel to a generation (0 = base, >=1 =
+/// snapshot/travel) by injecting that generation's serialized DirTree. Returns
+/// the new generation assigned. Commit/abort cleanup uses [`reset`], not travel.
 pub fn travel(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
     let mut hdr = YoloIocTravel {
         target_gen,
@@ -250,7 +271,7 @@ mod tests {
     #[test]
     fn struct_sizes() {
         // Must match the kernel struct sizes for binary protocol compat
-        assert_eq!(size_of::<YoloIocAsk>(), 48);
+        assert_eq!(size_of::<YoloIocAsk>(), 552);
         assert_eq!(size_of::<YoloIocDecision>(), 16);
         assert_eq!(size_of::<YoloIocRule>(), 16);
         assert_eq!(size_of::<YoloIocSnapshot>(), 24);
@@ -258,8 +279,8 @@ mod tests {
     }
 
     #[test]
-    fn perm_request_helpers() {
-        let req = PermRequest {
+    fn ask_helpers() {
+        let req = Ask {
             id: 1,
             op: YOLO_OP_READ,
             pid: 42,
@@ -268,21 +289,25 @@ mod tests {
                 c[..4].copy_from_slice(b"bash");
                 c
             },
-            path: "hello".into(),
+            access_path: "hello".into(),
+            rule_path: Some("/tmp".into()),
+            rule_perm: Perm::Ask,
         };
-        assert_eq!(req.path_str(), "hello");
+        assert_eq!(req.access_path_str(), "hello");
         assert_eq!(req.comm_str(), "bash");
         assert_eq!(req.op_str(), "read");
     }
 
     #[test]
     fn op_str_all_variants() {
-        let mk = |op| PermRequest {
+        let mk = |op| Ask {
             id: 0,
             op,
             pid: 0,
             comm: [0u8; 16],
-            path: String::new(),
+            access_path: String::new(),
+            rule_path: None,
+            rule_perm: Perm::Ask,
         };
         assert_eq!(mk(YOLO_OP_READ).op_str(), "read");
         assert_eq!(mk(YOLO_OP_WRITE).op_str(), "write");

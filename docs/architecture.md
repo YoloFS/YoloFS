@@ -37,11 +37,12 @@ interposition. It adds two orthogonal capabilities:
  └──────────────────────────────────────────────────┘
 
  ┌──────────────────────────────────────────────────┐
- │  ioctl on .yolofs/mnt/.ctl control file            │
+ │  ioctl on mount-root directory fd                  │
  │    ← YOLO_IOC_GET_ASK:  dequeue an ask           │
  │    → YOLO_IOC_PUT_DECISION: post decision        │
  │    → YOLO_IOC_RULE_SET/RESOLVE: manage rules     │
- │    → YOLO_IOC_TRAVEL: reset/travel               │
+ │    → YOLO_IOC_RESET: reset staging               │
+ │    → YOLO_IOC_TRAVEL: travel                     │
  │    → YOLO_IOC_SNAPSHOT: create snapshot          │
  └──────────────────────────────────────────────────┘
 ```
@@ -133,8 +134,8 @@ $ yolo rule read-only /etc/hosts
 # 2. Agent writes to a file matching an allow rule
 $ echo "hello" > /src/main.rs
    -> kernel: yolo_lookup("src") -> explicit rule on dentry -> perm=ALLOW
-   -> kernel: yolo_lookup("main.rs") -> no rule on dentry (NONE)
-              -> yolo_cache_perm() walks up: main.rs(NONE) -> src(ALLOW)
+   -> kernel: yolo_lookup("main.rs") -> no rule on dentry (UNSET)
+              -> yolo_cache_perm() walks up: main.rs(UNSET) -> src(ALLOW)
               -> caches ALLOW on main.rs inode
    -> kernel: yolo_open() -> cached_perm=ALLOW, O_WRONLY -> pass
    -> kernel: yolo_write_iter() -> pass-through to staged inode
@@ -142,8 +143,8 @@ $ echo "hello" > /src/main.rs
 # 3. Agent reads /etc/passwd (readable -- /etc has write-ask rule)
 $ cat /etc/passwd
    -> kernel: yolo_lookup("etc") -> explicit rule on dentry -> perm=WRITE_ASK
-   -> kernel: yolo_lookup("passwd") -> no rule on dentry (NONE)
-              -> yolo_cache_perm() walks up: passwd(NONE) -> etc(WRITE_ASK)
+   -> kernel: yolo_lookup("passwd") -> no rule on dentry (UNSET)
+              -> yolo_cache_perm() walks up: passwd(UNSET) -> etc(WRITE_ASK)
               -> caches WRITE_ASK on passwd inode
    -> kernel: yolo_open("passwd") -> cached_perm=WRITE_ASK, O_RDONLY -> pass
 
@@ -155,17 +156,17 @@ $ cat /etc/hosts
 
 # 5. Agent reads /tmp/secrets (no rule anywhere -> walk up reaches root -> ask)
 $ cat /tmp/secrets
-   -> kernel: yolo_lookup("tmp") -> no rule on dentry (NONE)
-   -> kernel: yolo_lookup("secrets") -> no rule on dentry (NONE)
-              -> yolo_cache_perm() walks up: secrets(NONE) -> tmp(NONE) -> root(ASK)
-              -> caches ASK on secrets inode
+   -> kernel: yolo_lookup("tmp") -> no rule on dentry (UNSET)
+   -> kernel: yolo_lookup("secrets") -> no rule on dentry (UNSET)
+              -> yolo_cache_perm() walks up: secrets(UNSET) -> tmp(UNSET) -> root(UNSET)
+              -> no rule found, caches built-in default ASK on secrets inode
    -> kernel: yolo_open() -> cached_perm=ASK
    -> kernel: enqueue request, thread sleeps
-   -> daemon: ioctl(GET_ASK) -> yolo_ioc_ask { id:1, path:"/tmp/secrets", ... }
-   -> daemon: decision: read-only
-   -> daemon: ioctl(PUT_DECISION, yolo_ioc_decision { id:1, decision:READ_ONLY })
-   -> kernel: wake thread, apply one-shot READ_ONLY to this open
-   -> kernel: open base/tmp/secrets read-only, proceed
+   -> daemon: ioctl(GET_ASK) -> yolo_ioc_ask { id:1, access_path:"/tmp/secrets",
+                                               rule_path:"", rule_perm:ASK, ... }
+   -> daemon: decision: allow
+   -> daemon: ioctl(PUT_DECISION, yolo_ioc_decision { id:1, decision:ALLOW })
+   -> kernel: wake thread, allow this read once
 
 # 6. Agent tries to write /etc/hosts (walk up finds READ_ONLY)
 $ echo x >> /etc/hosts
@@ -174,7 +175,7 @@ $ echo x >> /etc/hosts
 # 7. Commit all staged changes to the real filesystem (userspace)
 $ yolo commit
    -> userspace: replay journal -- apply renames, deletes, move inodes to base
-   -> userspace: ioctl(YOLO_IOC_TRAVEL) with tree_len=0 on .yolofs/mnt
+   -> userspace: ioctl(YOLO_IOC_RESET) on .yolofs/mnt
    -> kernel: release staged dentries, invalidate dentry + inode caches
    -> umount .yolofs/mnt
 
@@ -200,7 +201,7 @@ yolofs/
 │   └── cli.md                 # CLI reference
 ├── kmod/                      # Kernel module
 │   ├── Kbuild
-│   ├── yolofs.h
+│   ├── yolofs.h               # Internal state + user/kernel ioctl ABI
 │   ├── super.c
 │   ├── inode.c
 │   ├── file.c
@@ -218,7 +219,7 @@ yolofs/
 │   ├── lib.rs
 │   ├── config.rs              # yolofs.toml management (read, rules, mount options)
 │   ├── changeset.rs           # net-change model behind `yolo review` (cmd/review.rs renders it)
-│   ├── perm.rs                # shared Perm verdict type (config/ioctl/daemon/journal)
+│   ├── perm.rs                # permission rule modes + allow/deny ask decisions
 │   ├── cmd/                   # CLI subcommand implementations
 │   │   ├── init.rs            # `yolo init` -- scaffold yolofs.toml + agent hooks
 │   │   ├── abort.rs

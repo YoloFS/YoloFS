@@ -53,35 +53,35 @@ Rules live directly on dentries. One field, one structure.
 
 | Field | Purpose |
 |-------|---------|
-| `perm` | `YOLO_PERM_UNSET` unless this dentry has an explicit rule. Set or cleared by `YOLO_IOC_RULE_SET` (a perm of `UNSET` clears it). The dentry is pinned (via `dget`) while a rule is attached to prevent eviction. |
+| `perm` | `YOLO_PERM_UNSET` unless this dentry has an explicit rule. Set or cleared by `YOLO_IOC_RULE_SET` (a perm of `UNSET` clears it). The root dentry also starts as `UNSET`; reaching the root without finding a rule means the built-in default `ask`. The dentry is pinned (via `dget`) while a rule is attached to prevent eviction. |
 
 ### Per-Superblock (`yolo_sb_info`)
 
 | Field | Purpose |
 |-------|---------|
-| `permission` | Bool — whether permission gating is enabled. When false, all checks are skipped. |
-| `perm_gen` | Atomic generation counter, starts at 1. Bumped on every rule add/remove/invalidation. Compared against per-inode `perm_gen` for O(1) staleness check. |
+| `perm.enabled` | Bool — whether permission gating is enabled. When false, all checks are skipped. |
+| `perm.gen` | Atomic generation counter, starts at 1. Bumped on every rule add/remove/invalidation. Compared against per-inode `perm_gen` for O(1) staleness check. |
 
 ### Per-Inode (`yolo_inode_info`)
 
 | Field | Purpose |
 |-------|---------|
 | `cached_perm` | Resolved permission (inherited from nearest ancestor rule). Cached at lookup time, re-resolved lazily when `perm_gen` is stale. |
-| `perm_gen` | The `sbi->perm_gen` value when `cached_perm` was computed. If `!= sbi->perm_gen`, the cache is stale. |
+| `perm_gen` | The `sbi->perm.gen` value when `cached_perm` was computed. If `!= sbi->perm.gen`, the cache is stale. |
 
 ### Ask Protocol Engine
 
 The ask protocol handles operations whose effective policy asks for that
 operation: reads or writes under `ask`, and writes under `write-ask`. The
-thread sleeps until a userspace daemon decides. All ask state is grouped into
-`struct yolo_ask_engine` (embedded in `yolo_sb_info` as `ask_engine`), plus
-per-connection and per-request structures.
+thread sleeps until a userspace daemon decides. Ask state lives in
+`struct yolo_permission` (embedded in `yolo_sb_info` as `perm`), plus one
+`struct yolo_ask` per in-flight ask.
 
-**Ask engine** (`yolo_ask_engine`) — embedded in `yolo_sb_info`:
+**Ask state** (`yolo_permission`) — embedded in `yolo_sb_info`:
 
 | Field | Purpose |
 |-------|---------|
-| `pending_reqs` | Linked list of `yolo_perm_request` structs waiting to be dequeued by the daemon |
+| `pending_reqs` | Linked list of `yolo_ask` structs waiting to be dequeued by the daemon |
 | `dispatched` | Linked list of requests handed to the daemon but not yet answered |
 | `pending_lock` | Spinlock protecting both `pending_reqs` and `dispatched` |
 | `request_waitq` | Wait queue — daemon's `GET_ASK` ioctl blocks here |
@@ -98,19 +98,20 @@ Control ioctls live on a directory fd in the mount (there is no separate `.ctl`
 file). Operations that could defeat gating — `RULE_SET`, `GET_ASK`,
 `PUT_DECISION` — are refused when the caller is chrooted *inside* the mount (an
 agent command or a `yolo exec` shell), so nothing running inside the
-mount can un-gate itself or answer its own ask prompts. `SNAPSHOT`, `TRAVEL`,
-and `RULE_RESOLVE` are allowed from inside. This is the real boundary; on top of
-it the CLI refuses to run *any* `yolo` command from inside the mount (it is a
-host-side tool — `review`/`commit` need the base filesystem, which only
-exists outside).
+mount can un-gate itself or answer its own ask prompts. `SNAPSHOT`, `RESET`,
+`TRAVEL`, and `RULE_RESOLVE` are allowed from inside. This is the real boundary;
+on top of it the CLI refuses to run *any* `yolo` command from inside the mount
+(it is a host-side tool — `review`/`commit` need the base filesystem, which
+only exists outside).
 
-**Per-request** (`yolo_perm_request`) — one per in-flight ask:
+**Per-ask** (`yolo_ask`) — one per in-flight ask:
 
 | Field | Purpose |
 |-------|---------|
 | `id` | Unique request ID (from `next_req_id`) |
-| `path`, `op`, `pid`, `comm` | Context sent to the daemon |
-| `decision` | Set by the daemon's `PUT_DECISION` ioctl |
+| `access_path`, `op`, `pid`, `comm` | Access context sent to the daemon |
+| `rule_path`, `rule_perm` | Source rule context; `rule_path` is empty for the built-in default `ask` |
+| `decision` | Allow/deny decision set by the daemon's `PUT_DECISION` ioctl |
 | `done` | Completion — the blocked thread sleeps here |
 | `ref` | Refcount (kernel thread + daemon fd each hold a ref) |
 
@@ -178,7 +179,7 @@ enum yolo_perm yolo_resolve_perm(struct dentry *dentry)
             break;              // reached root dentry
         cur = cur->d_parent;
     }
-    return YOLO_PERM_ASK;
+    return YOLO_PERM_ASK;   // built-in default; no rule path
 }
 
 // Called during lookup() -- cache the resolved perm on the inode.
@@ -188,7 +189,7 @@ void yolo_cache_perm(struct inode *inode, struct dentry *dentry)
     struct yolo_sb_info *sb = YOLO_SB(inode->i_sb);
 
     info->cached_perm = yolo_resolve_perm(dentry);
-    info->perm_gen = atomic64_read(&sb->perm_gen);
+    info->perm_gen = atomic64_read(&sb->perm.gen);
 }
 
 // Shared permission check: resolve, ask if needed, check the requested op.
@@ -200,33 +201,32 @@ int yolo_check_dentry_perm(struct yolo_sb_info *sbi,
 {
     struct yolo_inode_info *ii = YOLO_I(d_inode(dentry));
     enum yolo_perm perm;
-    enum yolo_perm decision;
+    enum yolo_decision decision;
     enum yolo_op op = yolo_open_op(f_flags);
 
-    if (ii->perm_gen != atomic64_read(&sbi->perm_gen))
+    if (ii->perm_gen != atomic64_read(&sbi->perm.gen))
         yolo_cache_perm(d_inode(dentry), dentry);
     perm = ii->cached_perm;
-    decision = perm;
 
     if (perm == YOLO_PERM_ASK ||
         (perm == YOLO_PERM_WRITE_ASK && op == YOLO_OP_WRITE)) {
         // ... ask daemon, or deny if none answers; fills decision ...
+        return decision == YOLO_DECISION_ALLOW ? 0 : -EACCES;
     }
-    return yolo_check_perm(decision, f_flags);
+    return yolo_check_perm(perm, f_flags);
 }
 
 // Metadata ops check write permission on the parent directory.
 static int yolo_check_mutate_perm(struct dentry *dentry)
 {
     struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
-    if (!sbi->permission)
+    if (!sbi->perm.enabled)
         return 0;
     return yolo_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY);
 }
 
 // yolo_permission() for VFS MAY_READ/MAY_WRITE/MAY_EXEC checks.
-// Directories do not sleep here; ask handling for directory read-like ops
-// lives in yolo_lookup/yolo_getattr/yolo_dir_open.
+// Directories do not sleep here; directory read-like ops only check `hide`.
 static int yolo_permission(struct mnt_idmap *idmap,
                            struct inode *inode, int mask)
 {
@@ -234,10 +234,12 @@ static int yolo_permission(struct mnt_idmap *idmap,
 }
 ```
 
-The root dentry has `perm = YOLO_PERM_ASK`. In steady state (no rule
-changes), `permission()` is a single generation compare + switch — O(1).
-On rule change, the generation bumps and inodes re-resolve lazily on
-next access.
+The root dentry starts as `YOLO_PERM_UNSET`. Reaching the root without finding
+an explicit rule returns the built-in default `YOLO_PERM_ASK`; an explicit
+`/ = "ask"` rule is represented as a real root-dentry rule and is reported to
+userspace as `rule_path = "/"`. In steady state (no rule changes),
+`permission()` is a single generation compare + switch — O(1). On rule change,
+the generation bumps and inodes re-resolve lazily on next access.
 
 The `ask` path is handled in operations that have a stable dentry and may
 sleep: `yolo_open()` for regular-file opens.  Directory read-like
@@ -249,7 +251,7 @@ static int yolo_open(struct inode *inode, struct file *file)
 {
     struct dentry *dentry = file->f_path.dentry;
 
-    if (sbi->permission) {
+    if (sbi->perm.enabled) {
         err = yolo_check_dentry_perm(sbi, dentry, file->f_flags);
         if (err)
             return err;
@@ -298,18 +300,21 @@ file whose effective permission is `write-ask`:
   Thread (kernel)                          Daemon (userspace)
   ──────────────                           ──────────────────
   1. yolo_check_perm() -> perm asks for this op
-  2. Allocate yolo_perm_request {
-       id, path, op, pid, comm
+  2. Allocate yolo_ask {
+       id, access_path, rule_path, rule_perm, op, pid, comm
      }
   3. Enqueue request on sb->pending_reqs
   4. wake_up(&sb->request_waitq)
   5. wait_event_interruptible(              ioctl(GET_ASK) blocks
-       req->done,                            until request is available
-       req->decision != UNDECIDED            |
+       req->done                             until request is available
+       (completion)                          |
      )                                      dequeue request
-     ...thread sleeps...                     -> struct yolo_ioc_ask { id, path, op, ... }
+     ...thread sleeps...                     -> struct yolo_ioc_ask {
+                                                       id, access_path,
+                                                       rule_path, rule_perm, op, ...
+                                                    }
                                              |
-                                            Daemon shows prompt / applies policy
+                                            Daemon shows prompt / decides
                                              |
                                              ioctl(PUT_DECISION) -> struct yolo_ioc_decision {
                                                          id: 42, decision: ALLOW }
@@ -317,10 +322,7 @@ file whose effective permission is `write-ask`:
    6. req->decision = ALLOW                  ioctl handler:
    7. complete(&req->done)                     find request by id
      ...thread wakes...                       set decision
-  8. Proceed with operation                  complete(&req->done)
-     (cached on the inode until the next
-      generation bump; daemon may separately
-      `ioctl(RULE_SET)` to persist across bumps)
+  8. Proceed/fail this operation             complete(&req->done)
 ```
 
 Key properties:
@@ -330,18 +332,15 @@ Key properties:
 - **Timeout**: Configurable via mount option `prompt_timeout=<seconds>`.
   If the daemon doesn't respond in time, the request is denied.
 - **Minimal response**: `yolo_ioc_decision` only carries `{ id, decision }`.
-  Valid ask decisions are `allow`, `write-ask`, `read-only`, and `deny`.
+  Valid decisions are always `allow` or `deny`; they answer only the current
+  blocked operation.
   Persisting policy is always a separate `ioctl(YOLO_IOC_RULE_SET)`.
   `hide` is rule-only: a hidden path returns `ENOENT` and never issues an ask,
   because prompting would already disclose the path.
-- **Cached after the first plain-ask decision**: For `ask`, the kernel records
-  the daemon's verdict in the inode's `cached_perm`, so later accesses to the
-  same file are answered from the cache without re-asking. For `write-ask`, the
-  inherited policy stays cached and each later write asks again. The cache is
-  dropped (and the path re-asks) on the next generation bump — a rule
-  add/remove/change, or a staging `RESET`/`TRAVEL`. To persist a decision
-  across those events, the daemon separately calls `ioctl(YOLO_IOC_RULE_SET)` to
-  install a rule on the dentry.
+- **One-shot decisions**: Ask decisions do not mutate the cached rule mode. An
+  `allow` decision lets only the current access proceed; a later access asks
+  again unless userspace separately calls `ioctl(YOLO_IOC_RULE_SET)` to install
+  a persistent rule. `write-ask` likewise keeps asking on later writes.
 
 ## Why Dentry Walk-Up?
 
@@ -374,11 +373,12 @@ longest-prefix-match for free. This satisfies all three principles:
 
 ## Cache Invalidation
 
-- On rule add/remove: `atomic_inc(&sb->perm_gen)`. All inode caches go
+- On rule add/remove: `atomic_inc(&sb->perm.gen)`. All inode caches go
   stale; next `permission()` call re-resolves lazily via `d_find_alias()` +
   walk up. O(1) invalidation.
-- On `YOLO_IOC_TRAVEL` (after userspace commit/abort/travel): bumps perm_gen
-  and shrinks the dentry cache, so permission re-resolution picks up changes.
+- On `YOLO_IOC_RESET` (after userspace commit/abort) and `YOLO_IOC_TRAVEL`:
+  bumps perm_gen and shrinks the dentry cache, so permission re-resolution picks
+  up changes.
 - On `rename`: pure renames do **not** bump `perm_gen`. The inode keeps its
   `cached_perm` until some later invalidation event (rule add/remove or
   `YOLO_IOC_TRAVEL`). This is intentional: rename is treated as a path
@@ -403,9 +403,10 @@ Whenever a gate returns `-EACCES`, the kernel appends a `B\0<path>\0<op>\n`
 record to the journal (the *target* path the agent tried to act on, not
 the parent whose perm was the source of denial; `op` is `r`/`w`). And
 whenever an `ask` is resolved — by the daemon or the timeout default — the
-kernel appends an `A\0<path>\0<op>\0<decision>\n` record capturing the
-verdict. `yolo journal` surfaces both so the user can review what was
-blocked or asked, in order, relative to snapshots. `HIDE` paths return
+kernel appends an `A\0<access_path>\0<op>\0<decision>\n` record capturing
+the verdict. A records carry the attempted access path, not the rule path.
+`yolo review` summaries and `yolo journal` surface both so the user can review
+what was blocked or asked, in order, relative to snapshots. `HIDE` paths return
 `-ENOENT`, never issue asks, and are not logged. See
 [staging.md §Journal Format](staging.md#journal-format) for the record
 shape and semantics.

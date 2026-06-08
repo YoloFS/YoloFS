@@ -42,9 +42,28 @@ void yolo_ctl_release(struct file *file)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
 	struct yolo_permission *perm = &sbi->perm;
+	struct yolo_ask *req, *tmp;
 
-	if (cmpxchg(&perm->daemon_file, file, NULL) == file)
-		yolo_daemon_cleanup(sbi);
+	spin_lock(&perm->pending_lock);
+	if (perm->daemon_file == file) {
+		list_for_each_entry_safe(req, tmp, &perm->pending_reqs, list) {
+			req->decision = YOLO_DECISION_DENY;
+			req->decided = true;
+			list_del_init(&req->list);
+			req->dispatched = false;
+			complete(&req->done);
+		}
+		list_for_each_entry_safe(req, tmp, &perm->dispatched, list) {
+			req->decision = YOLO_DECISION_DENY;
+			req->decided = true;
+			list_del_init(&req->list);
+			req->dispatched = false;
+			complete(&req->done);
+			kref_put(&req->ref, yolo_ask_release);
+		}
+		perm->daemon_file = NULL;
+	}
+	spin_unlock(&perm->pending_lock);
 }
 
 /* ── GET_ASK: dequeue pending request ──────────────────────────── */
@@ -53,20 +72,22 @@ static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
 	struct yolo_permission *perm = &sbi->perm;
-	struct yolo_perm_request *req;
+	struct yolo_ask *req;
 	struct yolo_ioc_ask out;
 	int err;
-	__u16 path_len;
 
 	/* Claim daemon status on first call; reject if another fd already has it.
 	 * Tracked by file identity (private_data holds the dir's readdir cursor). */
-	if (perm->daemon_file != file &&
-	    cmpxchg(&perm->daemon_file, NULL, file) != NULL)
+	spin_lock(&perm->pending_lock);
+	if (perm->daemon_file != file && perm->daemon_file != NULL) {
+		spin_unlock(&perm->pending_lock);
 		return -EBUSY;
+	}
+	if (perm->daemon_file == NULL)
+		perm->daemon_file = file;
+	spin_unlock(&perm->pending_lock);
 
-	/* Read buffer info from userspace */
-	if (copy_from_user(&out, (void __user *)arg, sizeof(out)))
-		return -EFAULT;
+	memset(&out, 0, sizeof(out));
 
 	/* Block until a request is pending (unless non-blocking), then take the
 	 * lock and re-check — the requester may have reclaimed it meanwhile. */
@@ -82,23 +103,17 @@ static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 		return -EAGAIN;
 	}
 
-	req = list_first_entry(&perm->pending_reqs,
-			       struct yolo_perm_request, list);
-
-	path_len = req->path_len;
-	if (path_len > out.path_buf_len) {
-		/* Daemon's buffer is too small; rotate to the tail so it does
-		 * not head-of-line block, and let the daemon retry. */
-		list_move_tail(&req->list, &perm->pending_reqs);
-		spin_unlock(&perm->pending_lock);
-		return -EOVERFLOW;
-	}
+	req = list_first_entry(&perm->pending_reqs, struct yolo_ask, list);
 
 	out.id = req->id;
 	out.op = req->op;
 	out.pid = req->pid;
 	strscpy(out.comm, req->comm, sizeof(out.comm));
-	out.path_len = path_len;
+	out.rule_perm = (__u8)req->rule_perm;
+	out.access_path_len = req->access_path_len;
+	out.rule_path_len = req->rule_path_len;
+	memcpy(out.access_path, req->access_path, req->access_path_len);
+	memcpy(out.rule_path, req->rule_path, req->rule_path_len);
 
 	/* Hand off to the daemon: move pending -> dispatched and take a
 	 * reference, all under pending_lock (which guards both lists). The
@@ -108,12 +123,6 @@ static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 	req->dispatched = true;
 	kref_get(&req->ref);
 	spin_unlock(&perm->pending_lock);
-
-	/* Write path data to user buffer */
-	if (copy_to_user((void __user *)out.path_ptr, req->path, path_len)) {
-		err = -EFAULT;
-		goto deny;
-	}
 
 	/* Write header back to userspace */
 	if (copy_to_user((void __user *)arg, &out, sizeof(out))) {
@@ -130,9 +139,10 @@ deny:
 	list_del_init(&req->list);
 	req->dispatched = false;
 	spin_unlock(&perm->pending_lock);
-	req->decision = YOLO_PERM_DENY;
+	req->decision = YOLO_DECISION_DENY;
+	req->decided = true;
 	complete(&req->done);
-	kref_put(&req->ref, yolo_perm_request_release);
+	kref_put(&req->ref, yolo_ask_release);
 	return err;
 }
 
@@ -142,54 +152,44 @@ static long yolo_put_decision_ioctl(struct file *file, unsigned long arg)
 {
 	struct yolo_permission *perm = &YOLO_SB(file_inode(file)->i_sb)->perm;
 	struct yolo_ioc_decision in;
-	struct yolo_perm_request *req;
+	struct yolo_ask *req;
 	bool found = false;
+	bool stale = false;
 
 	if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
 		return -EFAULT;
 
-	if (in.decision == YOLO_PERM_UNSET ||
-	    in.decision == YOLO_PERM_ASK ||
-	    in.decision == YOLO_PERM_HIDE ||
-	    in.decision > YOLO_PERM_HIDE)
+	if (in.decision > YOLO_DECISION_ALLOW)
 		return -EINVAL;
 
 	spin_lock(&perm->pending_lock);
+	if (perm->daemon_file != file) {
+		spin_unlock(&perm->pending_lock);
+		return -EPERM;
+	}
 	list_for_each_entry(req, &perm->dispatched, list) {
 		if (req->id == in.id) {
-			req->decision = (enum yolo_perm)in.decision;
 			list_del_init(&req->list);
 			req->dispatched = false;
-			found = true;
+			if (req->decided) {
+				stale = true;
+			} else {
+				req->decision = (enum yolo_decision)in.decision;
+				req->decided = true;
+				found = true;
+			}
 			break;
 		}
 	}
 	spin_unlock(&perm->pending_lock);
 
-	if (!found)
+	if (!found && !stale)
 		return -ENOENT;
 
-	complete(&req->done);
-	kref_put(&req->ref, yolo_perm_request_release);
-	return 0;
-}
-
-/* ── Cleanup dispatched requests on daemon fd close ────────────────── */
-
-void yolo_daemon_cleanup(struct yolo_sb_info *sbi)
-{
-	struct yolo_permission *perm = &sbi->perm;
-	struct yolo_perm_request *req, *tmp;
-
-	spin_lock(&perm->pending_lock);
-	list_for_each_entry_safe(req, tmp, &perm->dispatched, list) {
-		req->decision = YOLO_PERM_DENY;
-		list_del_init(&req->list);
-		req->dispatched = false;
+	if (found)
 		complete(&req->done);
-		kref_put(&req->ref, yolo_perm_request_release);
-	}
-	spin_unlock(&perm->pending_lock);
+	kref_put(&req->ref, yolo_ask_release);
+	return found ? 0 : -ENOENT;
 }
 
 /* ── Release all rule-pinned dentries ───────────────────────────────── */
@@ -350,7 +350,7 @@ static long yolo_rule_resolve_ioctl(struct file *file, unsigned long arg)
 	if (err)
 		return err;
 
-	rule.perm = (__u8)yolo_resolve_perm(rule_path.dentry);
+	rule.perm = (__u8)yolo_resolve_perm(rule_path.dentry, NULL);
 	path_put(&rule_path);
 
 	if (copy_to_user((void __user *)arg, &rule, sizeof(rule)))

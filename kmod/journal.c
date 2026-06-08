@@ -15,7 +15,7 @@
  *   T\0<gen>\0<target_gen>\n          — Travel
  *   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
  *   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
- *   (op = r/w; decision = y/w/r/d — allow/write-ask/read-only/deny)
+ *   (op = r/w; decision = y/d — allow/deny)
  */
 
 #include "yolofs.h"
@@ -172,19 +172,13 @@ static char op_char(enum yolo_op op)
 	return op == YOLO_OP_WRITE ? 'w' : 'r';
 }
 
-static int decision_char(enum yolo_perm p, char *out)
+static int decision_char(enum yolo_decision decision, char *out)
 {
-	switch (p) {
-	case YOLO_PERM_ALLOW:
+	switch (decision) {
+	case YOLO_DECISION_ALLOW:
 		*out = 'y';
 		return 0;
-	case YOLO_PERM_WRITE_ASK:
-		*out = 'w';
-		return 0;
-	case YOLO_PERM_READ_ONLY:
-		*out = 'r';
-		return 0;
-	case YOLO_PERM_DENY:
+	case YOLO_DECISION_DENY:
 		*out = 'd';
 		return 0;
 	default:
@@ -197,14 +191,13 @@ static int decision_char(enum yolo_perm p, char *out)
  * @sbi: superblock info
  * @path: the asked path (relative, as sent to the daemon)
  * @op: the attempted operation (enum yolo_op)
- * @decision: the resolved permission (enum yolo_perm) — from the daemon or
- *            the timeout default
+ * @decision: allow/deny decision from the daemon or timeout default
  *
  * Observational note (does not set sbi->staging.dirty). Format:
- *   A\0<path>\0<op>\0<decision>\n   (op = r/w; decision = y/w/r/d)
+ *   A\0<path>\0<op>\0<decision>\n   (op = r/w; decision = y/d)
  */
 int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
-		     enum yolo_op op, enum yolo_perm decision)
+		     enum yolo_op op, enum yolo_decision decision)
 {
 	char op_str[2] = { op_char(op), '\0' };
 	char dec_str[2] = { 0, '\0' };

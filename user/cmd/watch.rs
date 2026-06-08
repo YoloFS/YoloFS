@@ -10,8 +10,8 @@
 // claim the terminal (tcsetpgrp) so our stdin read succeeds, then hand
 // it back to the previous foreground group.
 
-use crate::ioctl::{self, PermRequest};
-use crate::perm::Perm;
+use crate::ioctl::{self, Ask};
+use crate::perm::Decision;
 use anyhow::Result;
 use colored::Colorize;
 use nix::sys::signal::{SigHandler, Signal, signal};
@@ -68,21 +68,36 @@ fn release_tty(prev: Option<Pid>) {
     }
 }
 
-fn prompt_decision(req: &PermRequest) -> Perm {
-    let _guard = claim_tty();
-
+fn print_ask(req: &Ask) {
     eprintln!(
         "{} {} wants to {} {}",
         "[ask]".yellow().bold(),
         req.comm_str(),
         req.op_str(),
-        req.path_str(),
+        req.access_path_str(),
     );
+    let source = req.rule_path.as_deref().unwrap_or("default");
+    eprintln!("  rule: {source} {}", rule_phrase(req.rule_perm));
+}
+
+fn rule_phrase(perm: crate::perm::Perm) -> &'static str {
+    match perm {
+        crate::perm::Perm::Ask => "asks",
+        crate::perm::Perm::WriteAsk => "asks before writes",
+        crate::perm::Perm::ReadOnly => "is read-only",
+        crate::perm::Perm::Deny => "denies access",
+        crate::perm::Perm::Allow => "allows access",
+        crate::perm::Perm::Hide => "is hidden",
+    }
+}
+
+fn prompt_decision(req: &Ask) -> Decision {
+    let _guard = claim_tty();
+
+    print_ask(req);
     eprint!(
-        "  [{}]llow [{}]rite-ask [{}]ead-only [{}]eny (enter = allow): ",
-        "a".blue().bold(),
-        "w".blue().bold(),
-        "r".blue().bold(),
+        "  allow [{}]es / [{}]eny (enter = yes): ",
+        "y".blue().bold(),
         "d".blue().bold(),
     );
     io::stderr().flush().ok();
@@ -93,10 +108,10 @@ fn prompt_decision(req: &PermRequest) -> Perm {
         let trimmed = line.trim();
         parse_input(trimmed).unwrap_or_else(|| {
             eprintln!("  unknown: {trimmed}, denying");
-            Perm::Deny
+            Decision::Deny
         })
     } else {
-        Perm::Deny
+        Decision::Deny
     }
 }
 
@@ -131,19 +146,13 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
         };
 
         let decision = if allow_all {
-            eprintln!(
-                "{} {} wants to {} {}",
-                "[ask]".yellow().bold(),
-                req.comm_str(),
-                req.op_str(),
-                req.path_str(),
-            );
-            Perm::Allow
+            print_ask(&req);
+            Decision::Allow
         } else {
             prompt_decision(&req)
         };
 
-        if let Err(e) = ioctl::put_decision(ctl_file, req.id, decision.to_ioctl()) {
+        if let Err(e) = ioctl::put_decision(ctl_file, req.id, decision) {
             eprintln!("yolo watch: write error: {e}");
         } else {
             // claim_tty/release_tty is not needed here because TOSTOP
@@ -157,12 +166,10 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
 ///
 /// This is a pure function extracted from `prompt_decision` so it can be
 /// unit-tested without terminal access.
-fn parse_input(input: &str) -> Option<Perm> {
+fn parse_input(input: &str) -> Option<Decision> {
     match input {
-        "" | "a" | "allow" => Some(Perm::Allow),
-        "w" | "write-ask" | "writeask" => Some(Perm::WriteAsk),
-        "r" | "read-only" | "readonly" => Some(Perm::ReadOnly),
-        "d" | "deny" => Some(Perm::Deny),
+        "" | "y" | "yes" | "allow" => Some(Decision::Allow),
+        "d" | "deny" => Some(Decision::Deny),
         _ => None,
     }
 }
@@ -173,47 +180,32 @@ mod tests {
 
     #[test]
     fn empty_string_is_allow() {
-        assert_eq!(parse_input(""), Some(Perm::Allow));
+        assert_eq!(parse_input(""), Some(Decision::Allow));
     }
 
     #[test]
     fn d_is_deny() {
-        assert_eq!(parse_input("d"), Some(Perm::Deny));
+        assert_eq!(parse_input("d"), Some(Decision::Deny));
     }
 
     #[test]
     fn deny_is_deny() {
-        assert_eq!(parse_input("deny"), Some(Perm::Deny));
+        assert_eq!(parse_input("deny"), Some(Decision::Deny));
     }
 
     #[test]
-    fn a_is_allow() {
-        assert_eq!(parse_input("a"), Some(Perm::Allow));
+    fn y_is_allow() {
+        assert_eq!(parse_input("y"), Some(Decision::Allow));
+    }
+
+    #[test]
+    fn yes_is_allow() {
+        assert_eq!(parse_input("yes"), Some(Decision::Allow));
     }
 
     #[test]
     fn allow_is_allow() {
-        assert_eq!(parse_input("allow"), Some(Perm::Allow));
-    }
-
-    #[test]
-    fn r_is_read_only() {
-        assert_eq!(parse_input("r"), Some(Perm::ReadOnly));
-    }
-
-    #[test]
-    fn read_only_is_read_only() {
-        assert_eq!(parse_input("read-only"), Some(Perm::ReadOnly));
-    }
-
-    #[test]
-    fn w_is_write_ask() {
-        assert_eq!(parse_input("w"), Some(Perm::WriteAsk));
-    }
-
-    #[test]
-    fn write_ask_is_write_ask() {
-        assert_eq!(parse_input("write-ask"), Some(Perm::WriteAsk));
+        assert_eq!(parse_input("allow"), Some(Decision::Allow));
     }
 
     #[test]
@@ -226,6 +218,11 @@ mod tests {
         assert_eq!(parse_input("ask"), None);
         assert_eq!(parse_input("hide"), None);
         assert_eq!(parse_input("h"), None);
+        assert_eq!(parse_input("a"), None);
+        assert_eq!(parse_input("w"), None);
+        assert_eq!(parse_input("write-ask"), None);
+        assert_eq!(parse_input("r"), None);
+        assert_eq!(parse_input("read-only"), None);
     }
 
     #[test]

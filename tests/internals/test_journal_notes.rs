@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use yolofs::config::Config;
 use yolofs::journal::{Journal, Note, Op};
-use yolofs::perm::Perm;
+use yolofs::perm::{Decision, Perm};
 
 /// Build a session where the entire mount denies access.
 fn deny_session() -> YoloSession {
@@ -93,7 +93,7 @@ fn ask_record_emitted_on_no_daemon() {
             Note::Ask { path, op, decision }
                 if path.ends_with("/hello.txt")
                     && *op == Op::Read
-                    && *decision == Perm::Deny
+                    && *decision == Decision::Deny
         )),
         "expected an A note (read -> deny) for hello.txt, got: {ns:?}"
     );
@@ -457,7 +457,7 @@ fn ask_records_shown_in_status() {
 // `ask_record_emitted_on_no_daemon` above covers the *no-daemon default*
 // path (decision = deny). These tests confirm the inverse: when a live
 // `yolo watch` daemon answers an ask interactively, the decision it gives
-// (allow / read-only / deny) is exactly what the kernel records in the
+// (allow / deny) is exactly what the kernel records in the
 // A note. This ties the userspace daemon (cli/test_watch.rs) to the journal
 // recording verified here.
 
@@ -505,7 +505,7 @@ fn spawn_watch_with_input(s: &YoloSession, input: &str) -> std::process::Child {
 
 /// Assert the journal contains an A note for `suffix` with the given op and
 /// resolved decision.
-fn assert_ask_note(j: &Journal, suffix: &str, op: Op, decision: Perm) {
+fn assert_ask_note(j: &Journal, suffix: &str, op: Op, decision: Decision) {
     let ns = notes(j);
     assert!(
         ns.iter().any(|n| matches!(
@@ -521,7 +521,7 @@ fn assert_ask_note(j: &Journal, suffix: &str, op: Op, decision: Perm) {
 #[test]
 fn daemon_allow_records_ask_note_allow() {
     let s = session_with_ask_file();
-    let mut watch = spawn_watch_with_input(&s, "a\n");
+    let mut watch = spawn_watch_with_input(&s, "y\n");
 
     let content = fs::read_to_string(s.mnt_path("hello.txt"));
 
@@ -532,44 +532,7 @@ fn daemon_allow_records_ask_note_allow() {
         content.expect("read should succeed after daemon allow"),
         "base content\n"
     );
-    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::Allow);
-}
-
-/// Daemon answers `read` → read succeeds and the A note records `read`.
-#[test]
-fn daemon_read_records_ask_note_read() {
-    let s = session_with_ask_file();
-    let mut watch = spawn_watch_with_input(&s, "r\n");
-
-    let content = fs::read_to_string(s.mnt_path("hello.txt"));
-
-    watch.kill().ok();
-    let _ = watch.wait();
-
-    assert_eq!(
-        content.expect("read should succeed after daemon read-only"),
-        "base content\n"
-    );
-    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::ReadOnly);
-}
-
-/// Daemon answers `write-ask` → read succeeds and the A note records
-/// `write-ask`.
-#[test]
-fn daemon_write_ask_records_ask_note_write_ask() {
-    let s = session_with_ask_file();
-    let mut watch = spawn_watch_with_input(&s, "w\n");
-
-    let content = fs::read_to_string(s.mnt_path("hello.txt"));
-
-    watch.kill().ok();
-    let _ = watch.wait();
-
-    assert_eq!(
-        content.expect("read should succeed after daemon write-ask"),
-        "base content\n"
-    );
-    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::WriteAsk);
+    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Decision::Allow);
 }
 
 /// Daemon answers `deny` → read fails (EACCES) and the A note records `deny`.
@@ -584,5 +547,5 @@ fn daemon_deny_records_ask_note_deny() {
     let _ = watch.wait();
 
     assert!(result.is_err(), "read should fail after daemon deny");
-    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::Deny);
+    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Decision::Deny);
 }

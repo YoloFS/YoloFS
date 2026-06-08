@@ -53,7 +53,7 @@ note "'deny' blocks a path; the attempt is logged as an access note."
 run yolo rule deny secret.txt
 run yolo -- sh -c 'cat secret.txt' || true
 note "'ask' defers to the 'yolo watch' daemon (no daemon => denied). Interactively"
-note "it prompts [a]llow/[w]rite-ask/[r]ead-only/[d]eny; here it runs --allow-all in the background."
+note "it prompts allow [y]es/[d]eny; here it runs --allow-all in the background."
 run yolo rule ask apikey.txt
 printf '\n\033[1m$ yolo watch --allow-all &\033[0m\n'
 yolo watch --allow-all & watch_pid=$!

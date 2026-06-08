@@ -1,11 +1,13 @@
 use crate::helpers::{YOLO_BIN, YoloSession};
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use yolofs::config::Config;
 use yolofs::ioctl;
-use yolofs::perm::Perm;
+use yolofs::journal::{Journal, Note, Op, Record};
+use yolofs::perm::{Decision, Perm};
 
 /// `yolofs watch --allow-all` should answer every ask with allow, so
 /// `touch a` inside `yolofs exec` must succeed.
@@ -93,6 +95,52 @@ fn watch_allow_all_answers_each_write_ask() {
         stderr.matches(&expected_path).count() >= 2,
         "write-ask should prompt for both writes to {expected_path}, got:\n{stderr}"
     );
+    assert!(
+        stderr.contains("rule: / asks before writes"),
+        "write-ask prompt should show inherited rule source: {stderr}"
+    );
+}
+
+/// Plain `ask` decisions are one-shot: allowing a read must not cache an
+/// allow rule over the inherited ask policy.
+#[test]
+fn watch_allow_all_answers_each_plain_ask() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::new(),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let mut watch = std::process::Command::new(YOLO_BIN)
+        .args(["watch", "--allow-all"])
+        .current_dir(&s.root)
+        .env("NO_COLOR", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawning yolofs watch --allow-all");
+
+    std::thread::sleep(Duration::from_millis(200));
+
+    let first = std::fs::read_to_string(s.mnt_path("hello.txt"));
+    let second = std::fs::read_to_string(s.mnt_path("hello.txt"));
+
+    watch.kill().ok();
+    let output = watch.wait_with_output().expect("collecting watch output");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let expected_path = format!("{}/hello.txt", s.root.display());
+
+    first.expect("first read should succeed when watch allows it");
+    second.expect("second read should succeed when watch allows it");
+    assert!(
+        stderr.matches(&expected_path).count() >= 2,
+        "plain ask should prompt for both reads to {expected_path}, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("rule: default asks"),
+        "default ask prompt should show default source: {stderr}"
+    );
 }
 
 /// Starting a second watch while one is already running should fail
@@ -158,7 +206,7 @@ fn assert_errno(result: anyhow::Result<()>, expected: nix::errno::Errno) {
     );
 }
 
-/// Interactive `yolofs watch` — daemon reads "a\n" from piped stdin and
+/// Interactive `yolofs watch` — daemon reads "y\n" from piped stdin and
 /// responds Allow.  A subsequent read through the mount should succeed.
 #[test]
 fn interactive_watch_allow_permits_read() {
@@ -176,8 +224,8 @@ fn interactive_watch_allow_permits_read() {
 
     std::thread::sleep(Duration::from_millis(200));
 
-    // Pre-fill stdin with "a" (allow).
-    watch.stdin.as_mut().unwrap().write_all(b"a\n").unwrap();
+    // Pre-fill stdin with "y" (allow).
+    watch.stdin.as_mut().unwrap().write_all(b"y\n").unwrap();
 
     let content = std::fs::read_to_string(s.mnt_path("hello.txt"));
 
@@ -188,6 +236,10 @@ fn interactive_watch_allow_permits_read() {
     assert!(
         stderr.contains("[ask]"),
         "daemon should have prompted: {stderr}"
+    );
+    assert!(
+        stderr.contains("rule: ") && stderr.contains("hello.txt asks"),
+        "prompt should show explicit ask rule source: {stderr}"
     );
     assert!(
         stderr.contains("→ allow"),
@@ -272,9 +324,10 @@ fn interactive_watch_unknown_input_denies_read() {
     assert!(result.is_err(), "read should fail after unknown input");
 }
 
-/// `ask` and `hide` are rule modes, not ask decisions.
+/// Ask decisions are a separate allow/deny enum; out-of-range raw values are
+/// rejected.
 #[test]
-fn put_decision_rejects_rule_only_modes() {
+fn put_decision_rejects_invalid_decisions() {
     let (s, _path) = session_with_ask_file();
     let ctl_file = ioctl::open(&s.root.join(".yolofs")).expect("open ioctl fd");
     let path = s.mnt_path("hello.txt");
@@ -283,50 +336,176 @@ fn put_decision_rejects_rule_only_modes() {
     let req = ioctl::get_ask(&ctl_file).expect("dequeue ask");
 
     assert_errno(
-        ioctl::put_decision(&ctl_file, req.id, ioctl::YOLO_PERM_ASK),
+        ioctl::put_decision_raw(&ctl_file, req.id, 2),
         nix::errno::Errno::EINVAL,
     );
     assert_errno(
-        ioctl::put_decision(&ctl_file, req.id, ioctl::YOLO_PERM_HIDE),
+        ioctl::put_decision_raw(&ctl_file, req.id, u8::MAX),
         nix::errno::Errno::EINVAL,
     );
-    ioctl::put_decision(&ctl_file, req.id, ioctl::YOLO_PERM_DENY)
-        .expect("deny should unblock the reader");
+    ioctl::put_decision(&ctl_file, req.id, Decision::Deny).expect("deny should unblock the reader");
 
     let result = reader.join().expect("reader thread should not panic");
     assert!(result.is_err(), "read should fail after final deny");
 }
 
-/// Interactive `yolofs watch` — daemon reads "r\n" and responds `read-only`.
-/// Read succeeds, but write is denied.
+/// Only the fd that claimed daemon ownership with GET_ASK may answer the ask.
 #[test]
-fn interactive_watch_ro_permits_read_denies_write() {
+fn put_decision_rejects_non_daemon_fd() {
     let (s, _path) = session_with_ask_file();
+    let daemon_fd = ioctl::open(&s.root.join(".yolofs")).expect("open daemon ioctl fd");
+    let other_fd = ioctl::open(&s.root.join(".yolofs")).expect("open second ioctl fd");
+    let path = s.mnt_path("hello.txt");
 
-    // Pre-fill two responses: "r\n" for the read open, "r\n" for the write open.
-    let mut watch = Command::new(YOLO_BIN)
-        .args(["watch"])
-        .current_dir(&s.root)
-        .env("NO_COLOR", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn interactive watch");
+    let reader = std::thread::spawn(move || std::fs::read_to_string(path));
+    let req = ioctl::get_ask(&daemon_fd).expect("dequeue ask");
 
+    assert_errno(
+        ioctl::put_decision(&other_fd, req.id, Decision::Allow),
+        nix::errno::Errno::EPERM,
+    );
+    ioctl::put_decision(&daemon_fd, req.id, Decision::Deny)
+        .expect("daemon fd should answer the ask");
+
+    let result = reader.join().expect("reader thread should not panic");
+    assert!(result.is_err(), "read should fail after daemon deny");
+}
+
+/// Closing the daemon fd after dequeuing an ask denies the dispatched request.
+#[test]
+fn daemon_close_denies_dispatched_ask() {
+    let (s, _path) = session_with_ask_file();
+    let ctl_file = ioctl::open(&s.root.join(".yolofs")).expect("open ioctl fd");
+    let path = s.mnt_path("hello.txt");
+
+    let reader = std::thread::spawn(move || std::fs::read_to_string(path));
+    let _req = ioctl::get_ask(&ctl_file).expect("dequeue ask");
+    drop(ctl_file);
+
+    let result = reader.join().expect("reader thread should not panic");
+    assert!(result.is_err(), "read should fail after daemon fd close");
+}
+
+/// Closing a daemon fd also denies asks that were still pending and had not yet
+/// been dequeued.
+#[test]
+fn daemon_close_denies_pending_ask() {
+    let (s, _path) = session_with_ask_file();
+    let ctl_file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(s.root.join(".yolofs/mnt"))
+        .expect("open nonblocking ioctl fd");
+    assert_eq!(
+        ioctl::get_ask(&ctl_file).expect_err("no ask should be pending yet"),
+        nix::errno::Errno::EAGAIN
+    );
+
+    let path = s.mnt_path("hello.txt");
+    let reader = std::thread::spawn(move || std::fs::read_to_string(path));
     std::thread::sleep(Duration::from_millis(200));
+    drop(ctl_file);
 
-    watch.stdin.as_mut().unwrap().write_all(b"r\nr\n").unwrap();
+    let result = reader.join().expect("reader thread should not panic");
+    assert!(result.is_err(), "read should fail after daemon fd close");
+}
 
-    // Read should succeed (`read` permits reads).
-    let content =
-        std::fs::read_to_string(s.mnt_path("hello.txt")).expect("read should succeed with ro");
-    assert_eq!(content, "base content\n");
+/// A connected daemon that never answers still gets the timeout default.
+#[test]
+fn dispatched_ask_times_out_to_deny() {
+    let s = YoloSession::new_with_config(Config {
+        prompt_timeout: Some(1),
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+    s.cli(&["rule", "ask", "hello.txt"]).unwrap();
 
-    // Write should fail (`read` denies writes).
-    let result = std::fs::write(s.mnt_path("hello.txt"), "overwritten\n");
-    assert!(result.is_err(), "write should fail with ro");
+    let ctl_file = ioctl::open(&s.root.join(".yolofs")).expect("open ioctl fd");
+    let path = s.mnt_path("hello.txt");
 
-    watch.kill().ok();
-    let _ = watch.wait();
+    let reader = std::thread::spawn(move || std::fs::read_to_string(path));
+    let _req = ioctl::get_ask(&ctl_file).expect("dequeue ask");
+
+    let result = reader.join().expect("reader thread should not panic");
+    assert_errno(
+        ioctl::put_decision(&ctl_file, _req.id, Decision::Allow),
+        nix::errno::Errno::ENOENT,
+    );
+    drop(ctl_file);
+    assert!(result.is_err(), "read should fail after prompt timeout");
+    assert_timeout_ask_note(&s);
+}
+
+/// A connected daemon that never dequeues a pending ask should not leave stale
+/// work behind after timeout.
+#[test]
+fn pending_ask_times_out_and_is_removed() {
+    let s = YoloSession::new_with_config(Config {
+        prompt_timeout: Some(1),
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+    s.cli(&["rule", "ask", "hello.txt"]).unwrap();
+
+    let ctl_file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(s.root.join(".yolofs/mnt"))
+        .expect("open nonblocking ioctl fd");
+    assert_eq!(
+        ioctl::get_ask(&ctl_file).expect_err("no ask should be pending yet"),
+        nix::errno::Errno::EAGAIN
+    );
+
+    let path = s.mnt_path("hello.txt");
+    let reader = std::thread::spawn(move || std::fs::read_to_string(path));
+    let result = reader.join().expect("reader thread should not panic");
+    assert!(result.is_err(), "read should fail after prompt timeout");
+    assert_eq!(
+        ioctl::get_ask(&ctl_file).expect_err("timed-out ask should be removed"),
+        nix::errno::Errno::EAGAIN
+    );
+    assert_timeout_ask_note(&s);
+}
+
+fn assert_timeout_ask_note(s: &YoloSession) {
+    let journal = Journal::read(&s.root.join(".yolofs")).expect("read journal");
+    let found = journal
+        .segments
+        .iter()
+        .flat_map(|segment| segment.records.iter())
+        .any(|record| {
+            matches!(
+                record,
+                Record::Note(Note::Ask { path, op: Op::Read, decision: Decision::Deny })
+                    if path.ends_with("/hello.txt")
+            )
+        });
+    assert!(found, "expected timeout A note for hello.txt");
+}
+
+/// GET_ASK includes the rule source path and rule permission that caused the
+/// prompt.
+#[test]
+fn get_ask_reports_rule_source() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::WriteAsk)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+    let ctl_file = ioctl::open(&s.root.join(".yolofs")).expect("open ioctl fd");
+    let path = s.mnt_path("hello.txt");
+
+    let writer = std::thread::spawn(move || std::fs::write(path, "modified\n"));
+    let req = ioctl::get_ask(&ctl_file).expect("dequeue ask");
+
+    assert_eq!(req.access_path, format!("{}/hello.txt", s.root.display()));
+    assert_eq!(req.rule_path.as_deref(), Some("/"));
+    assert_eq!(req.rule_perm, Perm::WriteAsk);
+
+    ioctl::put_decision(&ctl_file, req.id, Decision::Deny).expect("deny should unblock the writer");
+    let result = writer.join().expect("writer thread should not panic");
+    assert!(result.is_err(), "write should fail after deny");
 }

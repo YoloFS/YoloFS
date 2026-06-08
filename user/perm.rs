@@ -1,8 +1,6 @@
 // yolo CLI — perm.rs
 //
-// The `Perm` permission type — the single rule type shared across config,
-// kernel ioctls, and journal ask decisions. Ask decisions are a subset:
-// allow/write-ask/read-only/deny. `ask` and `hide` are rule-only.
+// Permission rule modes and one-shot ask decisions.
 
 use crate::ioctl;
 use serde::{Deserialize, Serialize};
@@ -18,6 +16,12 @@ pub enum Perm {
     ReadOnly,
     Deny,
     Hide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Deny,
+    Allow,
 }
 
 impl Perm {
@@ -44,26 +48,29 @@ impl Perm {
             _ => None,
         }
     }
+}
 
-    /// The journal's single-letter code for an ask decision. `ask` and `hide`
-    /// are rule-only and cannot be written as A-record decisions.
-    pub fn to_decision_letter(self) -> Option<char> {
+impl Decision {
+    pub fn to_ioctl(self) -> u8 {
         match self {
-            Perm::Allow => Some('y'),
-            Perm::WriteAsk => Some('w'),
-            Perm::ReadOnly => Some('r'),
-            Perm::Deny => Some('d'),
-            Perm::Ask | Perm::Hide => None,
+            Decision::Deny => ioctl::YOLO_DECISION_DENY,
+            Decision::Allow => ioctl::YOLO_DECISION_ALLOW,
         }
     }
 
-    /// Inverse of [`to_decision_letter`].
-    pub fn from_decision_letter(b: u8) -> Option<Self> {
+    /// The journal's single-letter code for an ask decision.
+    pub fn to_letter(self) -> char {
+        match self {
+            Decision::Allow => 'y',
+            Decision::Deny => 'd',
+        }
+    }
+
+    /// Inverse of [`to_letter`].
+    pub fn from_letter(b: u8) -> Option<Self> {
         match b {
-            b'y' => Some(Perm::Allow),
-            b'w' => Some(Perm::WriteAsk),
-            b'r' => Some(Perm::ReadOnly),
-            b'd' => Some(Perm::Deny),
+            b'y' => Some(Decision::Allow),
+            b'd' => Some(Decision::Deny),
             _ => None,
         }
     }
@@ -78,6 +85,15 @@ impl fmt::Display for Perm {
             Perm::ReadOnly => "read-only",
             Perm::Deny => "deny",
             Perm::Hide => "hide",
+        })
+    }
+}
+
+impl fmt::Display for Decision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Decision::Allow => "allow",
+            Decision::Deny => "deny",
         })
     }
 }
@@ -112,22 +128,23 @@ mod tests {
 
     #[test]
     fn decision_letter_roundtrips() {
-        let decisions = [Perm::Allow, Perm::WriteAsk, Perm::ReadOnly, Perm::Deny];
+        let decisions = [Decision::Allow, Decision::Deny];
         for p in decisions {
-            assert_eq!(
-                Perm::from_decision_letter(p.to_decision_letter().unwrap() as u8),
-                Some(p)
-            );
+            assert_eq!(Decision::from_letter(p.to_letter() as u8), Some(p));
         }
-        assert_eq!(Perm::Allow.to_decision_letter(), Some('y'));
-        assert_eq!(Perm::WriteAsk.to_decision_letter(), Some('w'));
-        assert_eq!(Perm::ReadOnly.to_decision_letter(), Some('r'));
-        assert_eq!(Perm::Deny.to_decision_letter(), Some('d'));
-        assert_eq!(Perm::Ask.to_decision_letter(), None);
-        assert_eq!(Perm::Hide.to_decision_letter(), None);
-        assert_eq!(Perm::from_decision_letter(b'a'), None);
-        assert_eq!(Perm::from_decision_letter(b'h'), None);
-        assert_eq!(Perm::from_decision_letter(b'?'), None);
+        assert_eq!(Decision::Allow.to_letter(), 'y');
+        assert_eq!(Decision::Deny.to_letter(), 'd');
+        assert_eq!(Decision::from_letter(b'a'), None);
+        assert_eq!(Decision::from_letter(b'w'), None);
+        assert_eq!(Decision::from_letter(b'r'), None);
+        assert_eq!(Decision::from_letter(b'h'), None);
+        assert_eq!(Decision::from_letter(b'?'), None);
+    }
+
+    #[test]
+    fn decision_ioctl_values() {
+        assert_eq!(Decision::Deny.to_ioctl(), ioctl::YOLO_DECISION_DENY);
+        assert_eq!(Decision::Allow.to_ioctl(), ioctl::YOLO_DECISION_ALLOW);
     }
 
     #[test]

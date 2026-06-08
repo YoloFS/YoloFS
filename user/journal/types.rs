@@ -103,9 +103,9 @@ impl Op {
 
 /// An observational note — does not affect overlay state, only audit.
 ///
-/// Emitted by the kernel and ignored by commit/abort/diff/replay; only
-/// `yolo journal` surfaces them. The `decision` is a [`Perm`](crate::perm::Perm)
-/// (the unified permission type); journal-encoded as a single letter.
+/// Emitted by the kernel and ignored by commit/abort/diff/replay; review
+/// summaries and `yolo journal` surface them. The `decision` is a
+/// [`Decision`](crate::perm::Decision), journal-encoded as a single letter.
 ///
 /// - `Ask` — an `ask` path was resolved to `decision` (by the daemon or the
 ///   timeout default). Wire: `A\0<path>\0<op>\0<decision>\n`.
@@ -115,7 +115,7 @@ pub enum Note {
     Ask {
         path: String,
         op: Op,
-        decision: crate::perm::Perm,
+        decision: crate::perm::Decision,
     },
     Block {
         path: String,

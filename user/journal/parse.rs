@@ -12,7 +12,7 @@
 //   T\0<gen>\0<target_gen>\n          — Travel
 //   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
 //   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
-//   (op = r/w; decision = y/w/r/d — allow/write-ask/read-only/deny)
+//   (op = r/w; decision = y/d — allow/deny)
 
 use super::types::*;
 use anyhow::{Context, Result};
@@ -100,9 +100,9 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
             b"A" if fields.len() >= 4 => {
                 let path = field_str(fields[1]);
                 let op = fields[2].first().and_then(|&b| Op::from_byte(b));
-                let decision = fields[3]
-                    .first()
-                    .and_then(|&b| crate::perm::Perm::from_decision_letter(b));
+                let decision = (fields[3].len() == 1)
+                    .then(|| fields[3][0])
+                    .and_then(crate::perm::Decision::from_letter);
                 if let (Some(op), Some(decision)) = (op, decision) {
                     records.push(Record::Note(Note::Ask { path, op, decision }));
                 }
@@ -272,16 +272,27 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert!(matches!(
             &records[0],
-            Record::Note(Note::Ask { path, op: Op::Read, decision: crate::perm::Perm::Deny }) if path == "/etc/hosts"
+            Record::Note(Note::Ask { path, op: Op::Read, decision: crate::perm::Decision::Deny }) if path == "/etc/hosts"
         ));
     }
 
     #[test]
     fn parse_ask_record_rejects_rule_only_decisions() {
-        let records = parse(b"A\0/ask\0r\0a\nA\0/hide\0r\0h\n").unwrap();
+        let records =
+            parse(b"A\0/ask\0r\0a\nA\0/write-ask\0r\0w\nA\0/read-only\0r\0r\nA\0/hide\0r\0h\n")
+                .unwrap();
         assert!(
             records.is_empty(),
-            "ask/hide are rule-only and must not parse as ask decisions: {records:?}"
+            "rule modes must not parse as ask decisions: {records:?}"
+        );
+    }
+
+    #[test]
+    fn parse_ask_record_rejects_multibyte_decisions() {
+        let records = parse(b"A\0/yes\0r\0yes\nA\0/deny\0r\0deny\n").unwrap();
+        assert!(
+            records.is_empty(),
+            "multi-byte decisions must not parse as ask decisions: {records:?}"
         );
     }
 

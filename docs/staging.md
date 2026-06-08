@@ -69,7 +69,6 @@ yolofs.toml                       # config file in CWD (mount options + rules)
 │   │   └── ...
 │   └── ...
 └── mnt/                         # mount point -- agent works here
-    └── .ctl                     #   synthetic control file for ioctls
 ```
 
 ## In-Kernel State
@@ -519,7 +518,7 @@ D\0<path>\0<preimage>\n          — Delete
 R\0<dst>\0<src>\n                 — Rename
 P\0<gen>\0<name>\n                — Snapshot
 T\0<gen>\0<target_gen>\n          — Travel
-A\0<path>\0<op>\0<decision>\n    — Ask resolved (records the decision)
+A\0<access_path>\0<op>\0<decision>\n    — Ask resolved (records the decision)
 B\0<path>\0<op>\n                — Blocked by a rule (permission denied)
 ```
 
@@ -536,17 +535,19 @@ previous-snapshot content in O(segment) without rebuilding the prior tree:
 | `R` | `<dst>`, `<src>` | Rename |
 | `P` | `<gen>`, `<name>` | Snapshot marker |
 | `T` | `<gen>`, `<target_gen>` | Travel marker |
-| `A` | `<path>`, `<op>`, `<decision>` | An `ask` was resolved to `<decision>` — observational |
+| `A` | `<access_path>`, `<op>`, `<decision>` | An `ask` was resolved to `<decision>` — observational |
 | `B` | `<path>`, `<op>` | Access blocked by a rule (`-EACCES`) — observational |
 
-`op` is a single letter (`r`/`w`); `decision` is a single letter
-(`y`/`w`/`r`/`d` — allow/write-ask/read-only/deny). `hide` is rule-only:
-hidden paths return `ENOENT` without producing ask or block notes.
+`op` is a single letter (`r`/`w`); `decision` is a single letter (`y`/`d` —
+allow/deny). Decisions answer only the current blocked operation; persistent
+policy changes are separate rule updates. A records carry the attempted access
+path, not the rule path. `hide` is rule-only: hidden paths return `ENOENT`
+without producing ask or block notes.
 S/D/R are state mutations. P/T are control markers. **A and B are
 observational notes**: they record that a rule blocked an access (`B`) or
 that an `ask` was resolved (`A`, by the daemon or the timeout default) but
-do not affect any state. The CLI's dir-tree builder, commit, abort, and review
-ignore them; only `yolo journal` surfaces them. A/B writes do not set
+do not affect any state. The CLI's dir-tree builder, commit, abort, and diff
+ignore them; `yolo review` summaries and `yolo journal` surface them. A/B writes do not set
 `sbi->dirty`, so a command that only triggers blocks/asks does not cause an
 auto-snapshot under `YOLO_SNAPSHOT_IF_CHANGED`. They ride within segments
 alongside S/D/R, so reachability and `-- <path>` filtering

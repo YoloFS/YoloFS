@@ -261,8 +261,6 @@ static int yolo_fill_super(struct super_block *sb, struct fs_context *fc)
 	path_get(&base_path);
 	yolo_set_lower_path(sb->s_root, &base_path);
 
-	YOLO_D(sb->s_root)->perm = YOLO_PERM_ASK;
-
 	path_put(&base_path);
 	return 0;
 
