@@ -219,28 +219,22 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 		timeout = MAX_SCHEDULE_TIMEOUT;
 	timeout = wait_for_completion_interruptible_timeout(&req->done,
 							    timeout);
-	if (timeout == 0) {
-		spin_lock(&sbi->perm.pending_lock);
-		if (!req->decided) {
-			req->decision = YOLO_DECISION_DENY;
-			req->decided = true;
-		}
-		if (!req->dispatched && !list_empty(&req->list))
-			list_del_init(&req->list);
-		spin_unlock(&sbi->perm.pending_lock);
-	} else if (timeout < 0) {
-		err = -EINTR;
+	/* Settle under the lock: on timeout, default to deny unless the daemon
+	 * already answered; in every case, reclaim the req if it is still
+	 * pending. If the daemon has moved it to the dispatched list, leave it
+	 * there — PUT_DECISION or daemon cleanup owns it now and drops the
+	 * dispatched reference. */
+	spin_lock(&sbi->perm.pending_lock);
+	if (timeout == 0 && !req->decided) {
+		req->decision = YOLO_DECISION_DENY;
+		req->decided = true;
 	}
+	if (!req->dispatched && !list_empty(&req->list))
+		list_del_init(&req->list);
+	spin_unlock(&sbi->perm.pending_lock);
 
-	/* If the daemon already dequeued the req onto the dispatched list, leave
-	 * it there: PUT_DECISION or daemon cleanup owns it now and drops the
-	 * dispatched reference. Only reclaim it while it is still pending. */
-	if (timeout != 0) {
-		spin_lock(&sbi->perm.pending_lock);
-		if (!req->dispatched && !list_empty(&req->list))
-			list_del_init(&req->list);
-		spin_unlock(&sbi->perm.pending_lock);
-	}
+	if (timeout < 0)
+		err = -EINTR;
 
 	if (!err && !req->decided) {
 		/* Shouldn't happen — treat as deny */
