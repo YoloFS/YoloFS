@@ -15,7 +15,7 @@
  *   T\0<gen>\0<target_gen>\n          — Travel
  *   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
  *   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
- *   (op = r/w; decision = y/w/r/d/h — allow/write-ask/read-only/deny/hide)
+ *   (op = r/w; decision = y/w/r/d — allow/write-ask/read-only/deny)
  */
 
 #include "yolofs.h"
@@ -172,16 +172,23 @@ static char op_char(enum yolo_op op)
 	return op == YOLO_OP_WRITE ? 'w' : 'r';
 }
 
-static char perm_char(enum yolo_perm p)
+static int decision_char(enum yolo_perm p, char *out)
 {
 	switch (p) {
-	case YOLO_PERM_ASK:	return 'a';
-	case YOLO_PERM_ALLOW:	return 'y';
-	case YOLO_PERM_WRITE_ASK:return 'w';
-	case YOLO_PERM_READ_ONLY:return 'r';
-	case YOLO_PERM_DENY:	return 'd';
-	case YOLO_PERM_HIDE:	return 'h';
-	default:		return '?';
+	case YOLO_PERM_ALLOW:
+		*out = 'y';
+		return 0;
+	case YOLO_PERM_WRITE_ASK:
+		*out = 'w';
+		return 0;
+	case YOLO_PERM_READ_ONLY:
+		*out = 'r';
+		return 0;
+	case YOLO_PERM_DENY:
+		*out = 'd';
+		return 0;
+	default:
+		return -EINVAL;
 	}
 }
 
@@ -194,13 +201,18 @@ static char perm_char(enum yolo_perm p)
  *            the timeout default
  *
  * Observational note (does not set sbi->staging.dirty). Format:
- *   A\0<path>\0<op>\0<decision>\n   (op = r/w; decision = y/w/r/d/h)
+ *   A\0<path>\0<op>\0<decision>\n   (op = r/w; decision = y/w/r/d)
  */
 int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
 		     enum yolo_op op, enum yolo_perm decision)
 {
 	char op_str[2] = { op_char(op), '\0' };
-	char dec_str[2] = { perm_char(decision), '\0' };
+	char dec_str[2] = { 0, '\0' };
+	int err;
+
+	err = decision_char(decision, &dec_str[0]);
+	if (err)
+		return err;
 
 	return journal_write(sbi, 'A',
 			     (const char *[]){ path, op_str, dec_str, NULL });

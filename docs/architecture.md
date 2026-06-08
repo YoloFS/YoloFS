@@ -6,7 +6,7 @@ interposition. It adds two orthogonal capabilities:
 | Capability            | Summary |
 | --------------------- | ------- |
 | **Staging-commit**    | Every write goes to a staging layer. Changes are invisible to the lower FS until an explicit `commit`. An `abort` discards them instantly. |
-| **Permission gating** | Every file starts in the `ask` state. A rule engine promotes matching paths to `allow`, `write-ask`, `read-only`, `ask`, `deny`, or `hide`. When a thread touches an `ask` file, the thread is put to sleep; a userspace daemon receives the request and writes back a decision that wakes the thread. |
+| **Permission gating** | Every file starts in the `ask` state. A rule engine promotes matching paths to `allow`, `write-ask`, `read-only`, `ask`, `deny`, or `hide`. When an access needs approval (`ask`, or a write under `write-ask`), the thread is put to sleep; a userspace daemon receives the request and writes back a decision that wakes the thread. |
 
 ## Design Goals
 

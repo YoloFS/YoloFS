@@ -540,7 +540,8 @@ previous-snapshot content in O(segment) without rebuilding the prior tree:
 | `B` | `<path>`, `<op>` | Access blocked by a rule (`-EACCES`) — observational |
 
 `op` is a single letter (`r`/`w`); `decision` is a single letter
-(`y`/`w`/`r`/`d`/`h` — allow/write-ask/read-only/deny/hide).
+(`y`/`w`/`r`/`d` — allow/write-ask/read-only/deny). `hide` is rule-only:
+hidden paths return `ENOENT` without producing ask or block notes.
 S/D/R are state mutations. P/T are control markers. **A and B are
 observational notes**: they record that a rule blocked an access (`B`) or
 that an `ask` was resolved (`A`, by the daemon or the timeout default) but

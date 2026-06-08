@@ -2,9 +2,10 @@
 
 The permission gating layer controls which files an agent can access and how.
 Every path starts in the `ask` state. A rule engine promotes matching paths to
-`allow`, `write-ask`, `read-only`, `ask`, `deny`, or `hide`. When a thread
-touches an `ask` file, the thread is put to sleep; a userspace daemon receives
-the request and writes back a decision that wakes the thread.
+`allow`, `write-ask`, `read-only`, `ask`, `deny`, or `hide`. When an access
+needs approval (`ask`, or a write under `write-ask`), the thread is put to
+sleep; a userspace daemon receives the request and writes back a decision that
+wakes the thread.
 
 Permission gating applies to **file access** (open for read/write/exec)
 and **metadata mutations** (create, mkdir, unlink, rmdir, rename,
@@ -290,12 +291,13 @@ static int yolo_create(struct mnt_idmap *idmap, struct inode *dir,
 
 ## The Ask Protocol
 
-When a thread accesses a file whose effective permission is `ask`:
+When a thread accesses a file whose effective permission is `ask`, or writes a
+file whose effective permission is `write-ask`:
 
 ```
   Thread (kernel)                          Daemon (userspace)
   ──────────────                           ──────────────────
-  1. yolo_check_perm() -> perm == ASK
+  1. yolo_check_perm() -> perm asks for this op
   2. Allocate yolo_perm_request {
        id, path, op, pid, comm
      }
@@ -328,7 +330,10 @@ Key properties:
 - **Timeout**: Configurable via mount option `prompt_timeout=<seconds>`.
   If the daemon doesn't respond in time, the request is denied.
 - **Minimal response**: `yolo_ioc_decision` only carries `{ id, decision }`.
+  Valid ask decisions are `allow`, `write-ask`, `read-only`, and `deny`.
   Persisting policy is always a separate `ioctl(YOLO_IOC_RULE_SET)`.
+  `hide` is rule-only: a hidden path returns `ENOENT` and never issues an ask,
+  because prompting would already disclose the path.
 - **Cached after the first plain-ask decision**: For `ask`, the kernel records
   the daemon's verdict in the inode's `cached_perm`, so later accesses to the
   same file are answered from the cache without re-asking. For `write-ask`, the
@@ -401,7 +406,7 @@ whenever an `ask` is resolved — by the daemon or the timeout default — the
 kernel appends an `A\0<path>\0<op>\0<decision>\n` record capturing the
 verdict. `yolo journal` surfaces both so the user can review what was
 blocked or asked, in order, relative to snapshots. `HIDE` paths return
-`-ENOENT` and are not logged. See
+`-ENOENT`, never issue asks, and are not logged. See
 [staging.md §Journal Format](staging.md#journal-format) for the record
 shape and semantics.
 

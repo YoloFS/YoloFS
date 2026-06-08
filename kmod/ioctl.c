@@ -150,6 +150,7 @@ static long yolo_put_decision_ioctl(struct file *file, unsigned long arg)
 
 	if (in.decision == YOLO_PERM_UNSET ||
 	    in.decision == YOLO_PERM_ASK ||
+	    in.decision == YOLO_PERM_HIDE ||
 	    in.decision > YOLO_PERM_HIDE)
 		return -EINVAL;
 

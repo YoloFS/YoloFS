@@ -457,7 +457,7 @@ fn ask_records_shown_in_status() {
 // `ask_record_emitted_on_no_daemon` above covers the *no-daemon default*
 // path (decision = deny). These tests confirm the inverse: when a live
 // `yolo watch` daemon answers an ask interactively, the decision it gives
-// (allow / read / hide / deny) is exactly what the kernel records in the
+// (allow / read-only / deny) is exactly what the kernel records in the
 // A note. This ties the userspace daemon (cli/test_watch.rs) to the journal
 // recording verified here.
 
@@ -553,19 +553,23 @@ fn daemon_read_records_ask_note_read() {
     assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::ReadOnly);
 }
 
-/// Daemon answers `hide` → read fails (ENOENT) and the A note records `hide`.
+/// Daemon answers `write-ask` → read succeeds and the A note records
+/// `write-ask`.
 #[test]
-fn daemon_hide_records_ask_note_hide() {
+fn daemon_write_ask_records_ask_note_write_ask() {
     let s = session_with_ask_file();
-    let mut watch = spawn_watch_with_input(&s, "h\n");
+    let mut watch = spawn_watch_with_input(&s, "w\n");
 
-    let result = fs::read_to_string(s.mnt_path("hello.txt"));
+    let content = fs::read_to_string(s.mnt_path("hello.txt"));
 
     watch.kill().ok();
     let _ = watch.wait();
 
-    assert!(result.is_err(), "read should fail after daemon hide");
-    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::Hide);
+    assert_eq!(
+        content.expect("read should succeed after daemon write-ask"),
+        "base content\n"
+    );
+    assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Perm::WriteAsk);
 }
 
 /// Daemon answers `deny` → read fails (EACCES) and the A note records `deny`.

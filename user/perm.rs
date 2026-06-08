@@ -1,9 +1,8 @@
 // yolo CLI — perm.rs
 //
-// The `Perm` permission type — the single verdict type shared across the
-// codebase: config rules carry it, the kernel ioctl ABI encodes it, the
-// daemon's ask `decision` is one, and the journal records it. Its only
-// dependency is the ioctl perm constants.
+// The `Perm` permission type — the single rule type shared across config,
+// kernel ioctls, and journal ask decisions. Ask decisions are a subset:
+// allow/write-ask/read-only/deny. `ask` and `hide` are rule-only.
 
 use crate::ioctl;
 use serde::{Deserialize, Serialize};
@@ -46,28 +45,25 @@ impl Perm {
         }
     }
 
-    /// The journal's single-letter code for this perm (matches the kernel's
-    /// `perm_char`). `allow` is `y` ("yes") since `ask` takes `a`.
-    pub fn to_letter(self) -> char {
+    /// The journal's single-letter code for an ask decision. `ask` and `hide`
+    /// are rule-only and cannot be written as A-record decisions.
+    pub fn to_decision_letter(self) -> Option<char> {
         match self {
-            Perm::Ask => 'a',
-            Perm::Allow => 'y',
-            Perm::WriteAsk => 'w',
-            Perm::ReadOnly => 'r',
-            Perm::Deny => 'd',
-            Perm::Hide => 'h',
+            Perm::Allow => Some('y'),
+            Perm::WriteAsk => Some('w'),
+            Perm::ReadOnly => Some('r'),
+            Perm::Deny => Some('d'),
+            Perm::Ask | Perm::Hide => None,
         }
     }
 
-    /// Inverse of [`to_letter`].
-    pub fn from_letter(b: u8) -> Option<Self> {
+    /// Inverse of [`to_decision_letter`].
+    pub fn from_decision_letter(b: u8) -> Option<Self> {
         match b {
-            b'a' => Some(Perm::Ask),
             b'y' => Some(Perm::Allow),
             b'w' => Some(Perm::WriteAsk),
             b'r' => Some(Perm::ReadOnly),
             b'd' => Some(Perm::Deny),
-            b'h' => Some(Perm::Hide),
             _ => None,
         }
     }
@@ -115,16 +111,23 @@ mod tests {
     ];
 
     #[test]
-    fn letter_roundtrips() {
-        for p in ALL {
-            assert_eq!(Perm::from_letter(p.to_letter() as u8), Some(p));
+    fn decision_letter_roundtrips() {
+        let decisions = [Perm::Allow, Perm::WriteAsk, Perm::ReadOnly, Perm::Deny];
+        for p in decisions {
+            assert_eq!(
+                Perm::from_decision_letter(p.to_decision_letter().unwrap() as u8),
+                Some(p)
+            );
         }
-        // `allow` is `y` (not `a`, which `ask` takes).
-        assert_eq!(Perm::Allow.to_letter(), 'y');
-        assert_eq!(Perm::Ask.to_letter(), 'a');
-        assert_eq!(Perm::WriteAsk.to_letter(), 'w');
-        assert_eq!(Perm::ReadOnly.to_letter(), 'r');
-        assert_eq!(Perm::from_letter(b'?'), None);
+        assert_eq!(Perm::Allow.to_decision_letter(), Some('y'));
+        assert_eq!(Perm::WriteAsk.to_decision_letter(), Some('w'));
+        assert_eq!(Perm::ReadOnly.to_decision_letter(), Some('r'));
+        assert_eq!(Perm::Deny.to_decision_letter(), Some('d'));
+        assert_eq!(Perm::Ask.to_decision_letter(), None);
+        assert_eq!(Perm::Hide.to_decision_letter(), None);
+        assert_eq!(Perm::from_decision_letter(b'a'), None);
+        assert_eq!(Perm::from_decision_letter(b'h'), None);
+        assert_eq!(Perm::from_decision_letter(b'?'), None);
     }
 
     #[test]

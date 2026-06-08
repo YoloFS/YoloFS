@@ -4,6 +4,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use yolofs::config::Config;
+use yolofs::ioctl;
 use yolofs::perm::Perm;
 
 /// `yolofs watch --allow-all` should answer every ask with allow, so
@@ -148,6 +149,15 @@ fn session_with_ask_file() -> (YoloSession, String) {
     (s, file_path)
 }
 
+fn assert_errno(result: anyhow::Result<()>, expected: nix::errno::Errno) {
+    let err = result.expect_err("operation should fail");
+    assert_eq!(
+        err.downcast_ref::<nix::errno::Errno>(),
+        Some(&expected),
+        "expected {expected}, got {err:#}"
+    );
+}
+
 /// Interactive `yolofs watch` — daemon reads "a\n" from piped stdin and
 /// responds Allow.  A subsequent read through the mount should succeed.
 #[test]
@@ -226,11 +236,10 @@ fn interactive_watch_deny_blocks_read() {
     assert!(result.is_err(), "read should fail after interactive 'deny'");
 }
 
-/// Interactive `yolofs watch` — daemon reads "h\n" and responds `hide`.
-/// The file must appear to not exist (ENOENT → NotFound), which is distinct
-/// from `deny` (EACCES → PermissionDenied) above.
+/// Unknown prompt input is explicit parser failure; the caller falls back to
+/// deny and reports the unknown token.
 #[test]
-fn interactive_watch_hide_returns_not_found() {
+fn interactive_watch_unknown_input_denies_read() {
     let (s, _path) = session_with_ask_file();
 
     let mut watch = Command::new(YOLO_BIN)
@@ -244,9 +253,7 @@ fn interactive_watch_hide_returns_not_found() {
         .expect("spawn interactive watch");
 
     std::thread::sleep(Duration::from_millis(200));
-
-    // Pre-fill stdin with "h" (hide).
-    watch.stdin.as_mut().unwrap().write_all(b"h\n").unwrap();
+    watch.stdin.as_mut().unwrap().write_all(b"x\n").unwrap();
 
     let result = std::fs::read_to_string(s.mnt_path("hello.txt"));
 
@@ -255,19 +262,39 @@ fn interactive_watch_hide_returns_not_found() {
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     assert!(
-        stderr.contains("[ask]"),
-        "daemon should have prompted: {stderr}"
+        stderr.contains("unknown: x, denying"),
+        "daemon should report unknown input: {stderr}"
     );
     assert!(
-        stderr.contains("→ hide"),
-        "daemon should log hide decision: {stderr}"
+        stderr.contains("→ deny"),
+        "daemon should log deny decision: {stderr}"
     );
-    let err = result.expect_err("read should fail after interactive 'hide'");
-    assert_eq!(
-        err.kind(),
-        std::io::ErrorKind::NotFound,
-        "hide must surface as ENOENT (not-found), not EACCES: {err:?}"
+    assert!(result.is_err(), "read should fail after unknown input");
+}
+
+/// `ask` and `hide` are rule modes, not ask decisions.
+#[test]
+fn put_decision_rejects_rule_only_modes() {
+    let (s, _path) = session_with_ask_file();
+    let ctl_file = ioctl::open(&s.root.join(".yolofs")).expect("open ioctl fd");
+    let path = s.mnt_path("hello.txt");
+
+    let reader = std::thread::spawn(move || std::fs::read_to_string(path));
+    let req = ioctl::get_ask(&ctl_file).expect("dequeue ask");
+
+    assert_errno(
+        ioctl::put_decision(&ctl_file, req.id, ioctl::YOLO_PERM_ASK),
+        nix::errno::Errno::EINVAL,
     );
+    assert_errno(
+        ioctl::put_decision(&ctl_file, req.id, ioctl::YOLO_PERM_HIDE),
+        nix::errno::Errno::EINVAL,
+    );
+    ioctl::put_decision(&ctl_file, req.id, ioctl::YOLO_PERM_DENY)
+        .expect("deny should unblock the reader");
+
+    let result = reader.join().expect("reader thread should not panic");
+    assert!(result.is_err(), "read should fail after final deny");
 }
 
 /// Interactive `yolofs watch` — daemon reads "r\n" and responds `read-only`.
