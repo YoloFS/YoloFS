@@ -9,8 +9,7 @@ created example/yolofs.toml
 created example/.claude/settings.json
 created example/.claude/yolofs.sh
 
-$ yolo reload
-yolo: loading kernel module /lib/modules/6.8.0-117-generic/extra/yolofs.ko
+$ cd example
 
 $ yolo mount
 yolo: mounting ~/project/.yolofs/mnt (permission=1,staging=1,prompt_timeout=30)

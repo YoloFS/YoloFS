@@ -29,11 +29,10 @@ run() {
 section "Setup"
 note "'yolo init <dir>' scaffolds a project: a default yolofs.toml plus agent hook templates."
 run yolo init example --agents claude
-cd example
-run yolo reload
+run cd example
 run yolo mount
 
-section "Stage a change, review it, then commit"
+section "Stage, review & commit"
 note "'yolo -- <cmd>' runs <cmd> in a staging overlay and prints what it changed."
 run yolo -- sh -c 'echo "hello, yolofs" > greeting.txt'
 note "'review --diff' shows the staged changes as a git-style diff."
@@ -42,7 +41,7 @@ note "'commit' writes staging out to the real files."
 run yolo commit
 run cat greeting.txt
 
-section "Discard a change with abort"
+section "Stage & abort"
 note "'abort' throws staging away instead — the real directory is never touched."
 run yolo -- sh -c 'echo oops > mistake.txt'
 run yolo abort --force
