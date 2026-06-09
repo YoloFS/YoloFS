@@ -1,9 +1,10 @@
 // yolo CLI — init.rs
 //
-// `yolo init [--agents <name>...]` — write a default yolofs.toml and optionally
+// `yolo init [path] [--agents <name>...]` — write a default yolofs.toml into
+// `path` (the current directory by default, created if missing) and optionally
 // scaffold agent pre-tool-use hook templates that wrap shell commands so they
-// run through yolofs. The templates are embedded from `example/` at compile time so the
-// installed binary works anywhere; `example/` stays the single source of truth.
+// run through yolofs. The templates are embedded from `user/templates/` at compile time so
+// the installed binary works anywhere; `user/templates/` stays the single source of truth.
 
 use crate::config;
 use anyhow::{Context, Result};
@@ -40,9 +41,9 @@ impl AgentChoice {
                 files: &[
                     (
                         "settings.json",
-                        include_str!("../../example/.claude/settings.json"),
+                        include_str!("../templates/.claude/settings.json"),
                     ),
-                    ("yolofs.sh", include_str!("../../example/.claude/yolofs.sh")),
+                    ("yolofs.sh", include_str!("../templates/.claude/yolofs.sh")),
                 ],
             },
             AgentChoice::Gemini => AgentTemplate {
@@ -50,9 +51,9 @@ impl AgentChoice {
                 files: &[
                     (
                         "settings.json",
-                        include_str!("../../example/.gemini/settings.json"),
+                        include_str!("../templates/.gemini/settings.json"),
                     ),
-                    ("yolofs.sh", include_str!("../../example/.gemini/yolofs.sh")),
+                    ("yolofs.sh", include_str!("../templates/.gemini/yolofs.sh")),
                 ],
             },
             AgentChoice::Copilot => AgentTemplate {
@@ -60,11 +61,11 @@ impl AgentChoice {
                 files: &[
                     (
                         "yolofs.json",
-                        include_str!("../../example/.github/hooks/yolofs.json"),
+                        include_str!("../templates/.github/hooks/yolofs.json"),
                     ),
                     (
                         "yolofs.sh",
-                        include_str!("../../example/.github/hooks/yolofs.sh"),
+                        include_str!("../templates/.github/hooks/yolofs.sh"),
                     ),
                 ],
             },
@@ -75,6 +76,7 @@ impl AgentChoice {
 /// `yolo init`: write yolofs.toml, then scaffold the selected agents' hooks.
 /// An empty selection (no `--agents`) scaffolds every agent.
 pub fn run(dir: &Path, agents: &[AgentChoice]) -> Result<()> {
+    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut created = 0;
     created += usize::from(write_default_config(dir)?);
     created += scaffold_agents(dir, &resolve_choices(agents))?;
@@ -132,7 +134,7 @@ fn scaffold_agents(dir: &Path, selected: &[AgentTemplate]) -> Result<usize> {
             if name.ends_with(".sh") {
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
             }
-            eprintln!("{} {}", "created".green().bold(), rel);
+            eprintln!("{} {}", "created".green().bold(), path.display());
             created += 1;
         }
     }

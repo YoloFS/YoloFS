@@ -23,6 +23,10 @@ enum Command {
     // ── Setup ────────────────────────────────────────────────────────
     /// Create yolofs.toml and scaffold agent hook templates
     Init {
+        /// Project directory to initialize (created if missing). Defaults to the
+        /// current directory.
+        #[arg(default_value = ".")]
+        path: std::path::PathBuf,
         /// Agent hooks to scaffold (e.g. `--agents claude gemini`). Repeatable.
         /// Omit to scaffold every supported agent.
         #[arg(long = "agents", num_args = 1.., ignore_case = true)]
@@ -216,7 +220,7 @@ fn run_agent_yolo(cmd: &[String]) -> anyhow::Result<u8> {
 /// Dispatch a parsed command to its handler. Returns the process exit code.
 fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
     match command {
-        Some(Command::Init { agents }) => init::run(&std::env::current_dir()?, &agents)?,
+        Some(Command::Init { path, agents }) => init::run(&path, &agents)?,
         Some(Command::Load) => {
             if !load::load()? {
                 eprintln!("{} kernel module already loaded", "yolo:".green());

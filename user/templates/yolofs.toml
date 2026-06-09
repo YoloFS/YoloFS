@@ -31,5 +31,3 @@ prompt_timeout = 30    # seconds to wait for an `ask` answer before denying
 
 "$HOME/.bashrc" = "allow"
 "$HOME/.bash_history" = "allow"
-"$HOME/.cargo/env" = "allow"
-"$HOME/.nvm" = "allow"

@@ -30,7 +30,8 @@ below are filesystem-specific and stack on top.
   - `tests/perm/` — black-box permission rule enforcement.
   - `tests/internals/` — white-box; inspect `.yolofs/inodes/` and `.yolofs/journal` directly.
 - **docs/** — Design documents (architecture.md, cli.md, internals.md, permissions.md, staging.md). Keep in sync with code.
-- **example/** — A sample project skeleton that `yolo init` scaffolds: the default `yolofs.toml` plus drop-in hook templates (`.claude/`, `.gemini/`, `.github/`) that wrap a coding agent's shell commands so they run through YoloFS.
+- **user/templates/** — The project skeleton `yolo init` scaffolds, embedded into the binary at compile time (`include_str!`): the default `yolofs.toml` (also `config::DEFAULT_CONFIG`) plus drop-in hook templates (`.claude/`, `.gemini/`, `.github/`) that wrap a coding agent's shell commands so they run through YoloFS.
+- **example/** — Generated, git-ignored. `example.sh` runs `yolo init example` to scaffold it from `user/templates/`, walks through the CLI there, then removes it. `example.out` is the captured walkthrough output.
 
 ## Build & Test
 
