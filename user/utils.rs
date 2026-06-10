@@ -65,8 +65,8 @@ pub fn session_dir() -> Result<PathBuf> {
 /// stored there — so it belongs on ephemeral, per-user runtime storage *outside*
 /// the workspace, where editors and indexers won't wander into a recursive view
 /// of `/`. `/run/user/<uid>` is the systemd per-user runtime dir: tmpfs, mode
-/// 0700, wiped on logout. `getuid()` (not euid) is the invoking user even under
-/// the setuid-root CLI, so this lands in *their* runtime dir.
+/// 0700, wiped on logout. The CLI runs as the invoking user, so `getuid()`
+/// lands this in *their* runtime dir.
 fn runtime_base() -> PathBuf {
     let uid = nix::unistd::getuid().as_raw();
     PathBuf::from(format!("/run/user/{uid}/yolofs"))

@@ -76,50 +76,14 @@ impl AgentChoice {
 /// `yolo init`: write yolofs.toml, then scaffold the selected agents' hooks.
 /// An empty selection (no `--agents`) scaffolds every agent.
 pub fn run(dir: &Path, agents: &[AgentChoice]) -> Result<()> {
-    let fresh = !dir.exists();
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut created = 0;
     created += usize::from(write_default_config(dir)?);
     created += scaffold_agents(dir, &resolve_choices(agents))?;
-    // Hand the scaffolded tree to the invoking user (see fn doc). Only when we
-    // actually created something, so re-running `init .` never rewrites an
-    // existing tree's ownership.
-    if created > 0 || fresh {
-        give_tree_to_real_user(dir)?;
-    }
+    // Files are written as the invoking user (the CLI carries capabilities, not
+    // setuid root, so it never runs as root) — nothing to hand back.
     if created == 0 {
         eprintln!("{} already initialized", "yolo:".green());
-    }
-    Ok(())
-}
-
-/// Hand ownership of the scaffolded tree back to the invoking user. The CLI is
-/// setuid root, so files `init` writes are root-owned; without this the real
-/// user — to whom `yolo exec` drops privileges — can't write into the new
-/// project (e.g. stage a file in it). No-op when not setuid (euid == uid).
-/// Mirrors the chown `mount` does for `.yolofs/`.
-fn give_tree_to_real_user(root: &Path) -> Result<()> {
-    let uid = nix::unistd::getuid();
-    if nix::unistd::geteuid() == uid {
-        return Ok(());
-    }
-    let (uid, gid) = (Some(uid), Some(nix::unistd::getgid()));
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(path) = stack.pop() {
-        if path.is_dir() && !path.is_symlink() {
-            for entry in
-                fs::read_dir(&path).with_context(|| format!("reading {}", path.display()))?
-            {
-                stack.push(entry?.path());
-            }
-        }
-        if let Err(e) = nix::unistd::chown(&path, uid, gid) {
-            // Some filesystems (9p / virtio-fs without uid mapping) reject chown;
-            // tolerate it when the real user can already write the path.
-            if nix::unistd::access(&path, nix::unistd::AccessFlags::W_OK).is_err() {
-                return Err(e).with_context(|| format!("chown {}", path.display()));
-            }
-        }
     }
     Ok(())
 }

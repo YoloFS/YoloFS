@@ -15,9 +15,15 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process;
 
-/// Pre-exec hook: chroot into mnt, chdir back to the original cwd, then
-/// permanently drop root privileges to the invoking user's real uid/gid.
+/// Pre-exec hook: chroot into mnt, then chdir back to the original cwd.
 /// Called after fork but before exec, so it only affects the child.
+///
+/// No uid/gid drop is needed. The CLI carries `cap_sys_chroot` (used here) and
+/// `cap_sys_admin` as file capabilities rather than setuid root, so it already
+/// runs as the invoking user. `execve` then clears both capabilities for the
+/// spawned command — a non-setuid image with no file caps, run by a non-root
+/// euid, receives an empty capability set — so the command itself can neither
+/// chroot nor mount.
 unsafe fn chroot_pre_exec(mnt: &Path, cwd: &Path) -> Result<(), std::io::Error> {
     let mnt_cstr = std::ffi::CString::new(mnt.as_os_str().as_encoded_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
@@ -29,18 +35,6 @@ unsafe fn chroot_pre_exec(mnt: &Path, cwd: &Path) -> Result<(), std::io::Error> 
             return Err(std::io::Error::last_os_error());
         }
         if libc::chdir(cwd_cstr.as_ptr()) != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-
-        // Drop root: restore the invoking user's real gid/uid.
-        // Order matters — setgid first, because setuid drops the ability to
-        // change gid. Both calls are permanent (no re-elevation possible).
-        let real_gid = libc::getgid();
-        let real_uid = libc::getuid();
-        if libc::setgid(real_gid) != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        if libc::setuid(real_uid) != 0 {
             return Err(std::io::Error::last_os_error());
         }
     }

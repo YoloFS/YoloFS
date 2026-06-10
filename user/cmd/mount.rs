@@ -295,15 +295,13 @@ pub fn setup_yolo_dir(yolo_dir: &Path) -> Result<()> {
     // we mkdtemp a unique location and record it in the symlink; on remount we
     // honor the recorded one so the location stays stable for the session.
     let mnt_link = yolo_dir.join("mnt");
-    let mnt = if mnt_link.symlink_metadata().is_ok() {
+    if mnt_link.symlink_metadata().is_ok() {
         let m = crate::utils::mnt_dir(yolo_dir);
         fs::create_dir_all(&m).with_context(|| format!("creating mountpoint {}", m.display()))?;
-        m
     } else {
         let m = crate::utils::create_mnt_dir()?;
         unix::fs::symlink(&m, &mnt_link).context("creating .yolofs/mnt symlink")?;
-        m
-    };
+    }
 
     // Create the journal file; the kernel module expects it to exist.
     let journal = yolo_dir.join("journal");
@@ -311,57 +309,9 @@ pub fn setup_yolo_dir(yolo_dir: &Path) -> Result<()> {
         fs::File::create(&journal).context("creating .yolofs/journal")?;
     }
 
-    // Chown .yolofs/ and its contents to the real user. The CLI runs setuid
-    // root, so dirs/files created above are root-owned. After exec drops
-    // privileges, the real user needs write access to inodes/ (for staging
-    // blobs) and journal (for appends). Skip when not setuid (euid == uid).
-    let uid = nix::unistd::getuid();
-    if nix::unistd::geteuid() != uid {
-        let uid = Some(uid);
-        let gid = Some(nix::unistd::getgid());
-        // The runtime mountpoint and its base need chowning too: after privileges
-        // drop, the real user must be able to traverse into the mountpoint to
-        // chroot. `mnt.parent()` is the per-user runtime base (`…/yolofs`); both
-        // live under the user's own `/run/user/<uid>`, so handing them over is
-        // safe.
-        let mut paths = vec![
-            yolo_dir.to_path_buf(),
-            yolo_dir.join("inodes"),
-            journal,
-            mnt.clone(),
-        ];
-        if let Some(base) = mnt.parent() {
-            paths.push(base.to_path_buf());
-        }
-        for path in paths {
-            if let Err(e) = nix::unistd::chown(&path, uid, gid) {
-                // chown is unsupported on some filesystems (9p, virtio-fs).
-                // Tolerate the failure if the real user can already write.
-                let writable = nix::unistd::access(
-                    &path,
-                    nix::unistd::AccessFlags::W_OK | nix::unistd::AccessFlags::R_OK,
-                )
-                .is_ok();
-                if writable {
-                    eprintln!(
-                        "{} chown {}: {} (directory already accessible, continuing)",
-                        "yolo: warning:".yellow(),
-                        path.display(),
-                        e,
-                    );
-                } else {
-                    return Err(e).with_context(|| {
-                        format!(
-                            "chown {} failed and it isn't writable by you — yolofs drops to \
-                             your uid after mounting and must own its storage, which this \
-                             filesystem (e.g. 9p / virtio-fs without uid mapping) doesn't allow",
-                            path.display()
-                        )
-                    });
-                }
-            }
-        }
-    }
+    // No chown needed: the CLI carries capabilities rather than setuid root, so
+    // it runs as the invoking user and everything above is created owned by them
+    // — including the runtime mountpoint under their own `/run/user/<uid>`.
 
     Ok(())
 }

@@ -78,8 +78,10 @@ impl DirTree {
     }
 
     /// Convert the tree into a commit plan — the inverse of `build()`.
-    pub fn into_plan(&self) -> super::plan::CommitPlan {
-        super::plan::into_plan(self)
+    /// `scratch` is a directory on the same filesystem as the committed files
+    /// (the session `.yolofs/`) used to stage cycle-breaking rename temps.
+    pub fn into_plan(&self, scratch: &std::path::Path) -> super::plan::CommitPlan {
+        super::plan::into_plan(self, scratch)
     }
 
     /// Number of entries (files, dirs with metadata, negative entries) in the tree.

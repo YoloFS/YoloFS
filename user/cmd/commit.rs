@@ -135,7 +135,9 @@ pub fn run() -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
 
     let journal = Journal::read(&yolofs)?;
-    let plan = journal.into_tree().into_plan();
+    // Cycle-breaking rename temps go in the session dir — same filesystem as the
+    // committed files, and writable by us (commit runs unprivileged).
+    let plan = journal.into_tree().into_plan(&yolofs);
 
     if plan.is_empty() {
         println!("{}", "Nothing to commit.".yellow());

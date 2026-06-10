@@ -125,49 +125,61 @@ everything else defaults to `ask`.
 
 ## Privilege Model
 
-The YoloFS binary is installed setuid root (`install -m 4755 -o root`).
-This is needed because `mount()`, `umount()`, bind-mounting `/proc` `/sys`
-`/dev`, and `chroot()` all require `CAP_SYS_ADMIN`.
+The YoloFS binary is installed with file capabilities, not setuid root:
 
-### Privilege lifecycle
+```
+install -m 0755 … /usr/local/bin/yolo
+setcap cap_sys_admin,cap_sys_chroot,cap_sys_module+ep /usr/local/bin/yolo
+```
 
-The `pre_exec` hook in `exec.rs` performs three steps in the child process
-(after fork, before execvp):
+- `cap_sys_admin` — `mount()`, `umount()`, bind-mounting `/proc` `/sys` `/dev`
+- `cap_sys_chroot` — `chroot()` into the session mountpoint in `exec`
+- `cap_sys_module` — `finit_module()` / `delete_module()` for `load` / `unload`
 
-1. `chroot()` into `.yolofs/mnt` — needs euid=0.
-2. `chdir()` to the caller's original working directory.
-3. Permanently drop privileges: `setgid(real_gid)` then `setuid(real_uid)`.
+The binary therefore runs as the **invoking user** (euid = real uid) with just
+these capabilities, never as root. Everything it creates — `.yolofs/`, the
+inode store, the journal, the runtime mountpoint, committed files, `init`
+scaffolding — is owned by that user automatically, so there is no chown-back
+step.
 
-Order matters in step 3 — `setuid()` is irreversible and removes the
-ability to call `setgid()`, so gid must be set first.
+> **Note:** `cap_sys_module` lets the binary load *any* kernel module, which is
+> effectively root-equivalent. It replaces the previous `sudo insmod`/`rmmod`.
+> If you'd rather keep module loading behind an audited, policy-gated elevation,
+> drop `cap_sys_module` from the `setcap` line and have `load`/`unload` shell out
+> to `sudo` instead.
 
-After the drop, the user's command runs with the invoking user's uid and
-gid. The kernel module enforces file access via its rule engine based on
-process credentials, not euid.
+### `exec` lifecycle
 
-| Phase | euid | Why |
+The `pre_exec` hook in `exec.rs` runs in the child (after fork, before execvp):
+
+1. `chroot()` into `.yolofs/mnt` so the mounted view becomes `/` (uses `cap_sys_chroot`).
+2. `chdir()` back to the caller's original working directory.
+
+No uid/gid drop is needed — the process is already the invoking user. `execve`
+then clears both capabilities for the spawned command (a non-setuid image with
+no file caps, run by a non-root euid, receives an empty capability set), so the
+command itself can neither `chroot` nor `mount`.
+
+### Capabilities by command
+
+| Command | Capability | Notes |
 |---|---|---|
-| `mount()`, bind-mounts, `chroot()` | 0 | Require `CAP_SYS_ADMIN` |
-| `exec` user command | real uid | User code must not run as root |
-| `commit`, `travel` | 0 | Need root for ioctl on the mount |
-| `review`, `journal` | real uid | Plain reads of the journal + inode store |
-| `load`/`unload` | delegates to `sudo` | Already handled correctly |
+| `mount`, `unmount`, `remount` | `cap_sys_admin` | `mount()` / `umount()` / bind-mounts |
+| `exec`, `yolo -- <cmd>` | `cap_sys_chroot` | cleared for the spawned command |
+| `load`, `unload`, `reload` | `cap_sys_module` | `finit_module()` / `delete_module()` |
+| `rule`, `watch`, `commit`, `abort`, `snapshot`, `travel`, `review`, `journal`, `timeline`, `init` | none | run unprivileged as the user; ioctls go to a dir fd on the mount root |
 
-### `.yolofs/` directory ownership
-
-`setup_yolo_dir` creates `.yolofs/`, `inodes/`, `mnt/`, and `journal` as
-root (euid=0 from setuid), then `chown`s them all to the real user.
-This ensures the user can write staging blobs into `inodes/` and append
-to `journal` after the exec privilege drop. Without the chown, the
-caller's umask (e.g. 022) would leave `inodes/` as root-owned 0755,
-blocking non-root writes.
+Because `commit` runs as the user (no `CAP_DAC_OVERRIDE`), it applies staged
+changes only to paths the user can write — the normal project workflow. A
+staged change to a path the user doesn't own (e.g. a write-ask-approved `/etc`
+edit) fails on commit with `EACCES` rather than being written as root.
 
 ### Staging blob ownership
 
-The kernel module creates staging blobs via `vfs_create` / `vfs_mkdir`
-using `current_cred()`. Since user commands inside `yolo exec` run with
-the invoking user's credentials (after the privilege drop), staging blobs
-are owned by the real user.
+The kernel module creates staging blobs via `vfs_create` / `vfs_mkdir` using
+`current_cred()`. Both the user's commands inside `yolo exec` and the host-side
+CLI run with the invoking user's credentials, so staging blobs — and committed
+files — are owned by the real user.
 
 ## TTY / Terminal Ownership
 

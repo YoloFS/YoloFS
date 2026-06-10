@@ -34,7 +34,8 @@ $(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild)
 install: install-user install-kmod
 
 install-user: $(USER_OUT)
-	sudo install -m 4755 -o root $(USER_OUT) /usr/local/bin/yolo
+	sudo install -m 0755 $(USER_OUT) /usr/local/bin/yolo
+	sudo setcap cap_sys_admin,cap_sys_chroot,cap_sys_module+ep /usr/local/bin/yolo
 
 install-kmod: $(KMOD_OUT)
 	sudo install -d $(KDIR)/extra

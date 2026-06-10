@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-build_deps=(build-essential 'linux-headers-$(uname -r)' bc kmod)
+build_deps=(build-essential 'linux-headers-$(uname -r)' bc kmod libcap2-bin)
 dev_deps=(qemu-system-x86 qemu-utils cloud-image-utils clangd bear)
 
 install='sudo apt-get update && sudo apt-get install -y --no-install-recommends'

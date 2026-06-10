@@ -6,8 +6,9 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use std::fs::File;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Check if the YoloFS kernel module is loaded.
 pub fn is_loaded() -> bool {
@@ -28,14 +29,13 @@ pub fn load() -> Result<bool> {
         ko_path.display()
     );
 
-    let output = Command::new("sudo")
-        .args(["insmod", &ko_path.to_string_lossy()])
-        .output()
-        .context("running sudo insmod")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("insmod failed: {stderr}");
+    // Load via finit_module(2) using CAP_SYS_MODULE (a file capability) rather
+    // than shelling out to `sudo insmod` — keeps every privileged op on the
+    // capability model and drops the runtime sudo dependency.
+    let file = File::open(&ko_path).with_context(|| format!("opening {}", ko_path.display()))?;
+    let ret = unsafe { libc::syscall(libc::SYS_finit_module, file.as_raw_fd(), c"".as_ptr(), 0) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error()).context("finit_module (loading yolofs.ko)");
     }
 
     Ok(true)
@@ -52,14 +52,12 @@ pub fn unload() -> Result<()> {
 
     eprintln!("{}", "yolo: unloading kernel module".green());
 
-    let output = Command::new("sudo")
-        .args(["rmmod", "yolofs"])
-        .output()
-        .context("running sudo rmmod")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("rmmod failed: {stderr}");
+    // Unload via delete_module(2) using CAP_SYS_MODULE. O_NONBLOCK matches
+    // rmmod's default: fail with EBUSY rather than block if the module is still
+    // in use (unmount_all above should have dropped all references).
+    let ret = unsafe { libc::syscall(libc::SYS_delete_module, c"yolofs".as_ptr(), libc::O_NONBLOCK) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error()).context("delete_module (unloading yolofs)");
     }
 
     Ok(())

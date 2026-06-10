@@ -29,10 +29,10 @@ fn create_file_in_new_subdir() {
 /// Creating a file must work even when the caller's umask is 022.
 ///
 /// umask 022 causes `yolofs mount` to create .yolofs/inodes/ as 0755.
-/// After the CLI drops euid to the real user, vfs_create inside the
-/// inode store directory requires write permission. If the inodes dir
-/// is root-owned 0755, the non-root user cannot create blobs and file
-/// creation fails with EACCES.
+/// The CLI runs as the invoking user, so the inode store is owned by them
+/// and vfs_create inside it succeeds. (Under the old setuid-root CLI the
+/// store was root-owned 0755 and unprivileged blob creation failed with
+/// EACCES — this guards against a regression to that model.)
 #[test]
 fn create_file_under_umask_022() {
     let old = unsafe { libc::umask(0o022) };
