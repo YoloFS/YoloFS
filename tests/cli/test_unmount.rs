@@ -1,4 +1,4 @@
-use crate::helpers::YoloSession;
+use crate::helpers::{YOLO_BIN, YoloSession};
 use std::process::{Command, Stdio};
 
 #[test]
@@ -130,4 +130,86 @@ fn unmount_reports_blocking_process() {
 
     let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
     assert!(ok, "unmount should succeed after blocker killed: {stderr}");
+}
+
+/// `yolo unload` right after SIGKILLing a process with files open in the
+/// mount must not fail with EAGAIN: the kernel can release the module's last
+/// reference asynchronously after `umount(2)` returns (deferred fput /
+/// superblock teardown), and unload briefly retries `delete_module(2)` to
+/// cover that window. The kill→unload cycle loops to widen the race window,
+/// but the race did not reproduce in ~90 cycles on the test VM — this is a
+/// regression smoke test, not a reliable reproducer (see
+/// docs/plans/55-unload-retry.md).
+///
+/// Manual setup instead of `YoloSession`: unloading the module writes
+/// "yolofs: module unloaded" to the kernel log, which the session's
+/// kmsg-cleanliness check on drop would flag as a failure.
+#[test]
+fn unload_retries_until_module_quiesces() {
+    for cycle in 0..10 {
+        let root = tempfile::tempdir().expect("temp dir").keep();
+        std::fs::write(root.join("hello.txt"), "base content\n").unwrap();
+        yolofs::config::Config {
+            permission: false,
+            ..Default::default()
+        }
+        .save(&root.join("yolofs.toml"))
+        .unwrap();
+
+        let out = Command::new(YOLO_BIN)
+            .arg("mount")
+            .current_dir(&root)
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("run yolo mount");
+        assert!(
+            out.status.success(),
+            "mount (cycle {cycle}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Child holding an open fd on a file inside the mount.
+        let file_in_mount = root
+            .join(".yolofs/mnt")
+            .join(root.strip_prefix("/").unwrap())
+            .join("hello.txt");
+        let mut child = Command::new("bash")
+            .args([
+                "-c",
+                &format!("exec 3<'{}'; sleep 60", file_in_mount.display()),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn blocker");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // SIGKILL and reap, then unload immediately: once wait() returns the
+        // child's fds are closed, but the module refcount can drop later.
+        child.kill().expect("kill blocker");
+        child.wait().expect("reap blocker");
+
+        let out = Command::new(YOLO_BIN)
+            .arg("unload")
+            .current_dir(&root)
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("run yolo unload");
+        assert!(
+            out.status.success(),
+            "unload (cycle {cycle}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Leave the module loaded: the next test's session snapshots the kernel
+    // log before mounting, and an auto-load during its mount would make its
+    // kmsg-cleanliness check trip on the "module loaded" message.
+    let out = Command::new(YOLO_BIN)
+        .arg("load")
+        .output()
+        .expect("run yolo load");
+    assert!(out.status.success(), "reload module after test");
 }

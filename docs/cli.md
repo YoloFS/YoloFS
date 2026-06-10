@@ -17,6 +17,10 @@ $ yolo unload            # unmount all sessions and unload the kernel module
 $ yolo reload            # unload then reload the kernel module
 ```
 
+`yolo unload` briefly waits (up to ~2s) for the module to quiesce after
+unmounting — superblock teardown can finish asynchronously after `umount(2)`
+returns — and fails with the live reference count if it never does.
+
 `yolo init` always writes a default `yolofs.toml` (skipped if one exists) and can
 scaffold pre-tool-use hook templates that wrap an agent's shell commands so they
 run through yolofs. Supported agents: `claude` (`.claude/`), `gemini` (`.gemini/`),
