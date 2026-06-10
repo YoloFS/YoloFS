@@ -55,7 +55,13 @@ pub fn unload() -> Result<()> {
     // Unload via delete_module(2) using CAP_SYS_MODULE. O_NONBLOCK matches
     // rmmod's default: fail with EBUSY rather than block if the module is still
     // in use (unmount_all above should have dropped all references).
-    let ret = unsafe { libc::syscall(libc::SYS_delete_module, c"yolofs".as_ptr(), libc::O_NONBLOCK) };
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_delete_module,
+            c"yolofs".as_ptr(),
+            libc::O_NONBLOCK,
+        )
+    };
     if ret != 0 {
         return Err(std::io::Error::last_os_error()).context("delete_module (unloading yolofs)");
     }

@@ -11,9 +11,11 @@ created example/.claude/yolofs.sh
 $ cd example
 
 $ yolo mount
-yolo: loading kernel module /lib/modules/6.8.0-117-generic/extra/yolofs.ko
-yolo: mounting /users/szhong/YoloFS/filesystem/example/.yolofs/mnt (permission=1,staging=1,prompt_timeout=30)
+yolo: loading kernel module /lib/modules/6.8.0-1052-azure/extra/yolofs.ko
+yolo: mounting /home/runner/work/filesystem/filesystem/example/.yolofs/mnt (permission=1,staging=1,prompt_timeout=30)
 yolo: applying 12 rule(s) from yolofs.toml
+  ✗ $HOME/.bash_history = allow: rule path does not exist: /home/runner/.bash_history: No such file or directory (os error 2)
+  ✗ $HOME/.ssh/id_ed25519 = ask: rule path does not exist: /home/runner/.ssh/id_ed25519: No such file or directory (os error 2)
 yolo: run `yolo watch` to answer permission prompts
 # ──────────────────────────────────────────────────────────
 # Stage, review and commit
@@ -71,10 +73,10 @@ step2.txt (added)
 2 staged changes
 
 $ yolo review all --diff
-step2.txt (added)
-+step2
 step1.txt (added)
 +step1
+step2.txt (added)
++step2
 # 'travel' rewinds the working tree to a snapshot — step2 disappears.
 
 $ yolo travel 1
@@ -119,8 +121,8 @@ $ yolo watch --allow-all &
 yolo: watching for permission requests — allowing all (Ctrl-C to stop)
 
 $ yolo run -- sh -c 'cat apikey.txt'
-[ask] cat wants to read /users/szhong/YoloFS/filesystem/example/apikey.txt
-  rule: /users/szhong/YoloFS/filesystem/example/apikey.txt asks
+[ask] cat wants to read /home/runner/work/filesystem/filesystem/example/apikey.txt
+  rule: /home/runner/work/filesystem/filesystem/example/apikey.txt asks
   → allow (req #2)
 token
 
@@ -135,7 +137,7 @@ $ yolo abort --force
 Staging discarded.
 
 $ yolo unmount
-yolo: unmounted /users/szhong/YoloFS/filesystem/example/.yolofs/mnt
+yolo: unmounted /home/runner/work/filesystem/filesystem/example/.yolofs/mnt
 
 $ yolo unload
 yolo: unloading kernel module

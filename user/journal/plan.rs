@@ -335,7 +335,8 @@ mod tests {
 
     #[test]
     fn plan_mixed_ops() {
-        let plan = build(&[add("/a", 1), rename("/c", "/b"), delete("/d")]).into_plan(Path::new("/scratch"));
+        let plan = build(&[add("/a", 1), rename("/c", "/b"), delete("/d")])
+            .into_plan(Path::new("/scratch"));
         assert_eq!(
             get_renames(&plan),
             vec![("/c".to_string(), "/b".to_string())]
@@ -349,7 +350,8 @@ mod tests {
 
     #[test]
     fn plan_tombstoned_dir_skips_subtree() {
-        let plan = build(&[add("/dir/f", 1), delete("/dir/f"), delete("/dir")]).into_plan(Path::new("/scratch"));
+        let plan = build(&[add("/dir/f", 1), delete("/dir/f"), delete("/dir")])
+            .into_plan(Path::new("/scratch"));
         assert!(get_renames(&plan).is_empty());
         assert!(get_stages(&plan).is_empty());
         assert_eq!(get_deletes(&plan), vec!["/dir"]);
@@ -359,7 +361,8 @@ mod tests {
 
     #[test]
     fn stages_parent_before_child() {
-        let plan = build(&[add("/a/b/c", 3), add("/a", 1), add("/a/b", 2)]).into_plan(Path::new("/scratch"));
+        let plan = build(&[add("/a/b/c", 3), add("/a", 1), add("/a/b", 2)])
+            .into_plan(Path::new("/scratch"));
         assert_eq!(
             get_stages(&plan),
             vec![
@@ -383,7 +386,8 @@ mod tests {
     #[test]
     fn independent_renames_both_preserved() {
         // Two renames with no path overlap — both preserved.
-        let plan = build(&[rename("/b", "/a"), rename("/d", "/c")]).into_plan(Path::new("/scratch"));
+        let plan =
+            build(&[rename("/b", "/a"), rename("/d", "/c")]).into_plan(Path::new("/scratch"));
         assert_eq!(plan.saves.len(), 2);
         assert_eq!(get_renames(&plan).len(), 2);
     }
@@ -391,7 +395,8 @@ mod tests {
     #[test]
     fn conflicting_renames_use_temps() {
         // dst of one equals src of other — both renames preserved.
-        let plan = build(&[rename("/a", "/c"), rename("/c", "/b")]).into_plan(Path::new("/scratch"));
+        let plan =
+            build(&[rename("/a", "/c"), rename("/c", "/b")]).into_plan(Path::new("/scratch"));
         assert_eq!(plan.saves.len(), 2);
         assert_eq!(get_renames(&plan).len(), 2);
     }
@@ -399,7 +404,8 @@ mod tests {
     #[test]
     fn nested_source_renames_use_temps() {
         // Parent/child sources.
-        let plan = build(&[rename("/x", "/dir/file"), rename("/y", "/dir")]).into_plan(Path::new("/scratch"));
+        let plan = build(&[rename("/x", "/dir/file"), rename("/y", "/dir")])
+            .into_plan(Path::new("/scratch"));
         assert_eq!(plan.saves.len(), 2);
         assert_eq!(get_renames(&plan).len(), 2);
     }
@@ -408,7 +414,8 @@ mod tests {
     fn nested_destination_renames_use_temps() {
         // Parent/child destinations — saves required so parent doesn't
         // clobber child via remove_dir_all.
-        let plan = build(&[rename("/a", "/x"), rename("/a/b", "/y")]).into_plan(Path::new("/scratch"));
+        let plan =
+            build(&[rename("/a", "/x"), rename("/a/b", "/y")]).into_plan(Path::new("/scratch"));
         assert_eq!(plan.saves.len(), 2);
         assert_eq!(get_renames(&plan).len(), 2);
     }
@@ -418,7 +425,8 @@ mod tests {
         // /b←/a and /d←/c are independent of each other but /b←/a
         // conflicts with /a←/e (dst_b == src_a).  All three go through
         // save/place.
-        let plan = build(&[rename("/b", "/a"), rename("/d", "/c"), rename("/a", "/e")]).into_plan(Path::new("/scratch"));
+        let plan = build(&[rename("/b", "/a"), rename("/d", "/c"), rename("/a", "/e")])
+            .into_plan(Path::new("/scratch"));
         assert_eq!(plan.saves.len(), 3, "all three renames use saves");
         assert_eq!(get_renames(&plan).len(), 3, "all three renames preserved");
     }
@@ -426,7 +434,8 @@ mod tests {
     #[test]
     fn prefix_not_ancestor_is_independent() {
         // /ab is NOT an ancestor of /a — these should be independent.
-        let plan = build(&[rename("/ab", "/x"), rename("/a", "/y")]).into_plan(Path::new("/scratch"));
+        let plan =
+            build(&[rename("/ab", "/x"), rename("/a", "/y")]).into_plan(Path::new("/scratch"));
         assert_eq!(plan.saves.len(), 2);
         assert_eq!(get_renames(&plan).len(), 2);
     }
@@ -434,7 +443,8 @@ mod tests {
     #[test]
     fn saves_deepest_source_first() {
         // Sources /dir and /dir/f: save /dir/f first (deeper).
-        let plan = build(&[rename("/x", "/dir/file"), rename("/y", "/dir")]).into_plan(Path::new("/scratch"));
+        let plan = build(&[rename("/x", "/dir/file"), rename("/y", "/dir")])
+            .into_plan(Path::new("/scratch"));
         assert_eq!(plan.saves.len(), 2);
         let Action::Rename { src, .. } = &plan.saves[0] else {
             unreachable!()
@@ -464,8 +474,8 @@ mod tests {
     fn source_resolution_in_chain() {
         // mv /a /b, mv /b /c, then mv /c/f /x.
         // Chain collapse: /c ← /a. Source resolution: /x ← /a/f.
-        let plan =
-            build(&[rename("/b", "/a"), rename("/c", "/b"), rename("/x", "/c/f")]).into_plan(Path::new("/scratch"));
+        let plan = build(&[rename("/b", "/a"), rename("/c", "/b"), rename("/x", "/c/f")])
+            .into_plan(Path::new("/scratch"));
         let renames = get_renames(&plan);
         // /x should have source /a/f (resolved through chain).
         let x_rename = renames.iter().find(|(dst, _)| dst == "/x").unwrap();
@@ -475,8 +485,8 @@ mod tests {
     #[test]
     fn redirect_child_rename() {
         // mv /dir /other, then mv /dir/f /other/renamed.
-        let plan =
-            build(&[rename("/other", "/dir"), rename("/other/renamed", "/dir/f")]).into_plan(Path::new("/scratch"));
+        let plan = build(&[rename("/other", "/dir"), rename("/other/renamed", "/dir/f")])
+            .into_plan(Path::new("/scratch"));
         let renames = get_renames(&plan);
         assert_eq!(renames.len(), 2);
     }
