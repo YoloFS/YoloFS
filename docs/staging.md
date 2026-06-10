@@ -624,8 +624,9 @@ I/O redirection. The `yolo` CLI reads the journal and applies or discards.
 
 **Abort** (`yolo abort`):
 
-1. If nothing is staged, print "Nothing to discard." and exit.
-2. Prompt for confirmation: `Discard them all? [y/N]` (`--force` skips the prompt).
+1. If nothing is staged, print "nothing to discard" and exit.
+2. Prompt for confirmation: ``discard all staged changes? (`yolo review` to see them) [y/N]:``
+   (`--force` skips the prompt).
 3. Remove all files under `.yolofs/inodes/` and truncate `.yolofs/journal`.
 4. Signal kernel to reset staging state (`YOLO_IOC_RESET` — drops all overlay dentries back to base and zeroes `gen`; no journal record written).
 

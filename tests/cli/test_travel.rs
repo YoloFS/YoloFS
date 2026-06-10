@@ -154,14 +154,14 @@ fn travel_prints_summary() {
 
     fs::write(s.mnt_path("c.txt"), "c\n").expect("write c");
 
-    let output = s.cli(&["travel", "two-files"]).expect("travel");
+    let output = s.cli_stderr(&["travel", "two-files"]).expect("travel");
     assert!(
         output.contains("two-files"),
-        "output should mention snapshot name: {output}"
+        "status (stderr) should mention snapshot name: {output}"
     );
     assert!(
         output.contains("2"),
-        "output should mention change count: {output}"
+        "status (stderr) should mention change count: {output}"
     );
 }
 
@@ -1114,7 +1114,7 @@ fn travel_to_base_is_non_destructive() {
     assert!(!s.mnt_path("a.txt").exists(), "base should not show a.txt");
     let status = s.cli(&["review"]).expect("status");
     assert!(
-        status.contains("No changes"),
+        status.contains("no changes"),
         "base has no staged changes: {status}"
     );
 

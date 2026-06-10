@@ -5,4 +5,5 @@ pub mod ioctl;
 pub mod journal;
 pub mod kmsg;
 pub mod perm;
+pub mod report;
 pub mod utils;

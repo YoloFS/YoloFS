@@ -117,9 +117,9 @@ fn journal_fresh_session() {
     let s = YoloSession::new().expect("session setup");
 
     let output = s.cli(&["journal"]).expect("journal");
-    // A fresh session has no records at all
+    // A fresh session has no records at all — the empty data answer (stdout).
     assert!(
-        !output.contains("added") && !output.contains("modified") && !output.contains("deleted"),
-        "fresh session should have no data records: {output}"
+        output.contains("(no journal records)"),
+        "fresh session should report the empty journal: {output}"
     );
 }

@@ -10,6 +10,7 @@
 
 use crate::changeset::{Change, Changeset};
 use crate::journal::{Journal, Marker, Note, Target};
+use crate::report;
 use anyhow::Result;
 use colored::Colorize;
 use similar::TextDiff;
@@ -295,7 +296,7 @@ pub fn run_review(range: Option<&str>, path: Option<&str>, each: bool, diff: boo
     };
 
     if total == 0 {
-        println!("{}", format!("No changes{}.", range_label(range)).yellow());
+        report::empty(format!("no changes{}", range_label(range)));
     } else if !diff {
         // The summary closes with a count; the diff body speaks for itself.
         print_total(total);
@@ -366,7 +367,7 @@ fn render_each(
         shown_any = true;
     }
     if !shown_any {
-        println!("{}", "No changes.".yellow());
+        report::empty("no changes");
     }
     shown_any
 }
@@ -394,21 +395,16 @@ pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
         print_notes(&changeset.notes, &root);
     }
     match snapshot {
-        // A subtle one-line footer: count first, then the new snapshot id as the
-        // handle for `yolo travel <id>` to return here later.
-        Some(gen_id) => println!(
-            "{} {}",
-            "yolo:".cyan(),
-            format!(
-                "{total} staged change{} in snapshot {gen_id} · `yolo travel {gen_id}` to return",
-                crate::utils::plural(total)
-            )
-            .dimmed()
-        ),
+        // A one-line status footer: count first, then the new snapshot id as
+        // the handle for `yolo travel <id>` to return here later.
+        Some(gen_id) => report::info(format!(
+            "{total} staged change{} in snapshot {gen_id} · `yolo travel {gen_id}` to return",
+            crate::utils::plural(total)
+        )),
         // No snapshot (nothing staged, or auto-snapshot off): show the count if
         // any, else a quiet "(no changes)" — unless notes already said why.
         None if total > 0 => print_total(total),
-        None if changeset.notes.is_empty() => println!("{}", "(no changes)".dimmed()),
+        None if changeset.notes.is_empty() => report::empty("no changes"),
         None => {}
     }
     Ok(())
@@ -452,7 +448,7 @@ fn print_total(n: usize) {
     );
 }
 
-/// Human-readable suffix for "No changes…" — names the queried range.
+/// Human-readable suffix for "(no changes…)" — names the queried range.
 fn range_label(spec: Option<&str>) -> String {
     match spec {
         None => " staged".into(),

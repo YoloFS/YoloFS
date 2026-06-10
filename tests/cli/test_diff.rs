@@ -6,7 +6,7 @@ fn diff_empty() {
     let s = YoloSession::new().expect("session setup");
 
     let output = s.cli(&["review", "--diff"]).expect("diff");
-    assert!(output.contains("No changes staged"), "output: {output}");
+    assert!(output.contains("(no changes staged)"), "output: {output}");
 }
 
 #[test]
@@ -93,7 +93,7 @@ fn diff_single_file_not_changed() {
         .cli(&["review", "--diff", "--", "other.txt"])
         .expect("diff -- other.txt");
     assert!(
-        output.contains("No changes staged"),
+        output.contains("(no changes staged)"),
         "no matching changes: {output}"
     );
 }

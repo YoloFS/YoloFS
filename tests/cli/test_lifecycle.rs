@@ -20,8 +20,8 @@ fn full_write_commit_cycle() {
     assert!(diff.contains("+brand new"), "diff: {diff}");
 
     // 4. Commit
-    let output = s.cli(&["commit"]).unwrap();
-    assert!(output.contains("Committed 2"), "commit: {output}");
+    let output = s.cli_stderr(&["commit"]).unwrap();
+    assert!(output.contains("committed 2"), "commit: {output}");
 
     // 5. Base has committed content
     assert_eq!(
@@ -49,8 +49,8 @@ fn full_write_abort_cycle() {
     assert!(status.contains("2 staged change"), "status: {status}");
 
     // 3. Abort
-    let output = s.cli(&["abort", "--force"]).unwrap();
-    assert!(output.contains("Staging discarded"), "abort: {output}");
+    let output = s.cli_stderr(&["abort", "--force"]).unwrap();
+    assert!(output.contains("staging discarded"), "abort: {output}");
 
     // 4. Base unchanged
     assert_eq!(
@@ -129,7 +129,7 @@ fn commit_clears_inode_store() {
     // Status should show no remaining changes
     let status = s.cli(&["review"]).expect("status after commit");
     assert!(
-        status.contains("No changes"),
+        status.contains("no changes"),
         "status should show no changes after commit: {status}"
     );
 }

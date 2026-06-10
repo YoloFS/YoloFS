@@ -20,7 +20,7 @@ pub fn run(range: Option<&str>, path: Option<&str>) -> Result<()> {
     let journal = Journal::read(&yolofs)?;
 
     if journal.segments.iter().all(|s| s.records.is_empty()) && journal.markers.len() <= 1 {
-        println!("{}", "No journal records.".yellow());
+        crate::report::empty("no journal records");
         return Ok(());
     }
 

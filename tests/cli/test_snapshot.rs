@@ -474,7 +474,7 @@ fn status_from_last_snapshot_empty() {
     // No changes after s1
     let output = s.cli(&["review", "1.."]).expect("status 1..");
     assert!(
-        output.contains("No changes"),
+        output.contains("(no changes"),
         "should say no changes: {output}"
     );
 }
@@ -489,7 +489,7 @@ fn diff_from_last_snapshot_empty() {
 
     let output = s.cli(&["review", "--diff", "1.."]).expect("diff 1..");
     assert!(
-        output.contains("No changes"),
+        output.contains("(no changes"),
         "should say no changes: {output}"
     );
 }
@@ -508,7 +508,7 @@ fn status_from_to_same_snapshot_empty() {
     // `1..1`: start and end both at s1 → empty
     let output = s.cli(&["review", "1..1"]).expect("status 1..1");
     assert!(
-        output.contains("No changes"),
+        output.contains("(no changes"),
         "same start/end should be empty: {output}"
     );
 }
@@ -591,6 +591,18 @@ fn append_after_snapshot_triggers_recow() {
     assert!(
         at_s1.contains("1 staged change"),
         "snapshot s1 should have 1 change: {at_s1}"
+    );
+}
+
+/// `yolo timeline` on a fresh session prints the empty data answer (stdout).
+#[test]
+fn timeline_empty_session() {
+    let s = YoloSession::new().expect("session setup");
+
+    let timeline = s.cli(&["timeline"]).expect("timeline");
+    assert!(
+        timeline.contains("(no snapshots)"),
+        "fresh session timeline should be empty: {timeline}"
     );
 }
 

@@ -99,6 +99,35 @@ $ yolo watch             # handle ask requests (daemon mode)
 $ yolo watch --allow-all # answer every ask with "allow" (non-interactive)
 ```
 
+## Output and status reporting
+
+All CLI status output goes through one module (`user/report.rs`) and shares one
+shape: the line starts with a `yolo:` prefix, **only the prefix is colored**,
+and the color encodes the status:
+
+| Level | `yolo:` color | Used for |
+|---|---|---|
+| info | cyan | progress / state changes underway (`loading kernel module …`, `applying 12 rules …`, the post-`yolo run` snapshot footer) |
+| success | green | completed state changes (`mounted …`, `created …`, `committed 2 changes`, `rule applied: …`, `snapshot 3 "build"`, `traveled to …`, `staging discarded`) |
+| warn | yellow | non-fatal problems and things needing attention (`skipping rule …`, `snapshot failed: …`, an `ask` request) |
+| error | red | fatal errors; the command exits non-zero |
+| hint | dimmed | guidance and no-ops (`run \`yolo watch\` …`, `nothing to commit`, `already initialized`) |
+
+Interactive prompts are `yolo:`-prefixed (yellow) questions; continuation
+detail under a status line (blocking PIDs, the `rule:` line under an ask, the
+`→ allow` decision) is indented two spaces and uncolored.
+
+Streams: **status goes to stderr; stdout carries only the data a command was
+asked for** (review summaries/diffs, timeline/journal listings, `rule list` /
+`rule resolve` rows, the bare-`yolo` overview). So `yolo review > changes.txt`
+captures the changes and nothing else. When a data command has nothing to
+show, stdout gets a single dimmed parenthesized line instead: `(no changes
+staged)`, `(no snapshots)`, `(no journal records)`, `(no rules configured)`.
+
+`yolo run -- <cmd>` does not announce the command's exit status — the exit code
+is propagated as `yolo run`'s own, and the command's output already tells the
+story.
+
 ## Options
 
 Configured via top-level keys in `yolofs.toml`:

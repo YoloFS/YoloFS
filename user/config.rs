@@ -4,8 +4,8 @@
 
 use crate::ioctl;
 use crate::perm::Perm;
+use crate::report;
 use anyhow::{Context, Result};
-use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
@@ -226,14 +226,11 @@ pub fn apply_rules(yolo_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    eprintln!(
-        "{}",
-        format!(
-            "yolo: applying {} rule(s) from yolofs.toml",
-            config.rules.len()
-        )
-        .cyan()
-    );
+    report::info(format!(
+        "applying {} rule{} from yolofs.toml",
+        config.rules.len(),
+        crate::utils::plural(config.rules.len())
+    ));
 
     // Apply silently; only surface rules that fail to apply (a deny that didn't
     // take is worth knowing). Use `yolo rule` to inspect the full set.
@@ -241,13 +238,13 @@ pub fn apply_rules(yolo_dir: &Path) -> Result<()> {
         let abs_path = match resolve_to_abs(path) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("  {} {} = {}: {:#}", "✗".red(), path, perm, e);
+                report::warn(format!("skipping rule {path} = {perm}: {e:#}"));
                 continue;
             }
         };
         let resolved = resolve_through_mount(&abs_path, &mnt);
         if let Err(e) = ioctl::set_rule(&ctl_file, &resolved, perm.to_ioctl()) {
-            eprintln!("  {} {} = {}: {:#}", "✗".red(), abs_path, perm, e);
+            report::warn(format!("skipping rule {abs_path} = {perm}: {e:#}"));
         }
     }
 
@@ -300,9 +297,11 @@ pub fn set_rule(path: &str, perm: Perm) -> Result<()> {
         ioctl::set_rule(&ctl_file, &resolved, perm.to_ioctl())?;
         // Pushed to the running mount: applied now. Otherwise it's only written
         // to yolofs.toml and takes effect at the next mount — say which.
-        eprintln!("{} {path} = {perm}", "rule applied:".cyan().bold());
+        report::success(format!("rule applied: {path} = {perm}"));
     } else {
-        eprintln!("{} {path} = {perm}", "rule saved:".dimmed());
+        report::success(format!(
+            "rule saved: {path} = {perm} (takes effect on next mount)"
+        ));
     }
     Ok(())
 }
@@ -325,9 +324,11 @@ pub fn unset_rule(path: &str) -> Result<()> {
         ioctl::set_rule(&ctl_file, &resolved, ioctl::YOLO_PERM_UNSET)?;
         // An unset removes the path's own rule (it reverts to inheriting from its
         // ancestors); report that, plus whether it's applied now or saved.
-        eprintln!("{} {path} = unset", "rule applied:".cyan().bold());
+        report::success(format!("rule applied: {path} = unset"));
     } else {
-        eprintln!("{} {path} = unset", "rule saved:".dimmed());
+        report::success(format!(
+            "rule saved: {path} = unset (takes effect on next mount)"
+        ));
     }
     Ok(())
 }
@@ -336,7 +337,7 @@ pub fn unset_rule(path: &str) -> Result<()> {
 pub fn list_rules() -> Result<()> {
     let config = load_config();
     if config.rules.is_empty() {
-        eprintln!("{}", "no rules configured".dimmed());
+        report::empty("no rules configured");
         return Ok(());
     }
     // Show each rule's normalized target (`~`/`$HOME` expanded, made absolute,
@@ -385,10 +386,7 @@ pub fn resolve_rule(path: &str) -> Result<()> {
         if let Some((_, p, _)) = cfg
             && p != kperm
         {
-            eprintln!(
-                "{} yolofs.toml says {p}, kernel enforces {kperm}",
-                "warning:".yellow().bold()
-            );
+            report::warn(format!("yolofs.toml says {p}, kernel enforces {kperm}"));
         }
         return Ok(());
     }

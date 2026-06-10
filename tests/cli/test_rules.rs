@@ -30,7 +30,7 @@ fn apply_rules_reports_count_and_lists_via_rule() {
 
     // Mount reports only the count; per-rule lines were dropped to cut noise.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("applying 2 rule(s)"), "stderr = {stderr}");
+    assert!(stderr.contains("applying 2 rules"), "stderr = {stderr}");
 
     // The rules themselves are inspected via `yolo rule list`.
     let (_ok, stdout, _e) = session.cli_output(&["rule", "list"]).unwrap();
@@ -76,8 +76,20 @@ fn rule_set_persists_offline() {
     .save(&session.root.join("yolofs.toml"))
     .unwrap();
 
+    // With no rules configured, `rule list`'s empty data answer is on stdout.
+    let list = session.cli(&["rule", "list"]).unwrap();
+    assert!(
+        list.contains("(no rules configured)"),
+        "empty rule list: {list}"
+    );
+
     let (ok, _, stderr) = session.cli_output(&["rule", "allow", "/tmp"]).unwrap();
     assert!(ok, "rule allow should succeed: {stderr}");
+    // Unmounted => the rule is saved, not applied live; the status says which.
+    assert!(
+        stderr.contains("rule saved") && stderr.contains("takes effect on next mount"),
+        "offline rule set should report saved-not-applied: {stderr}"
+    );
 
     let content = std::fs::read_to_string(session.root.join("yolofs.toml")).unwrap();
     assert!(

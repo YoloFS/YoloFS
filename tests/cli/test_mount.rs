@@ -100,6 +100,18 @@ fn mount_no_config_uses_defaults() {
         "yolofs mount should succeed even without yolofs.toml (uses defaults): {stderr}"
     );
 
+    // The success line names the mount, without the raw mount-option suffix.
+    // Match the message body only — the `yolo:` prefix carries color codes
+    // even under NO_COLOR (the CLI forces color; see report.rs).
+    assert!(
+        stderr.contains(" mounted "),
+        "mount should announce success on stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("(permission="),
+        "mount-option internals should not be printed: {stderr}"
+    );
+
     // Clean up — unmount the session we just created
     let _ = std::process::Command::new(YOLO_BIN)
         .args(["unmount", "--force"])

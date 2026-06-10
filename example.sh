@@ -7,30 +7,32 @@ cd "$(dirname "$0")"
 rm -f example.out
 exec > >(tee >(sed -E "s/\x1B\[[0-9;]*[a-zA-Z]//g" >> example.out)) 2>&1
 
-# `note` prints narration as a `#` comment line. The DEBUG trap echoes each
-# command right before it runs, so example.out reads like a terminal session:
-# $BASH_COMMAND is the *unexpanded* source, so quoting is preserved. Bash does
-# not fire the DEBUG trap for commands inside functions (functrace is off), so
-# `note` never traces its own internals; the case below skips the few infra
-# commands (the backgrounded daemon, sleep/kill/wait) we'd rather not show.
-note() { printf '\033[34m# %s\033[0m\n' "$*"; }   # blue, distinct from the CLI's dim/green/cyan
-cmd_echo() {
+# `note` prints narration as a `#` comment line (no args = blank line).
+# `echo_cmd` prints a bold `$ cmd` line; the DEBUG trap routes every command
+# through it right before it runs, so example.out reads like a terminal
+# session. Call `echo_cmd` directly when the trap can't render a line as
+# written (it sees simple commands one at a time, never the `&`):
+note() { (($#)) || { echo; return; }; printf '\033[34m# %s\033[0m\n' "$*"; }   # blue, distinct from the CLI's dim/green/cyan
+echo_cmd() { printf '\033[1m$ %s\033[0m\n' "$*"; }
+echo_trap() {
     case "$BASH_COMMAND" in
-        note\ *|cmd_echo|true|sleep\ *|kill\ *|wait\ *|watch_pid=*|yolo\ watch\ *) ;;
-        *) printf '\n\033[1m$ %s\033[0m\n' "$BASH_COMMAND" ;;   # blank line groups each command + its output
+        note|note\ *|echo_cmd\ *|echo_trap|true|sleep\ *|kill\ *|wait\ *|watch_pid=*|yolo\ watch\ *) ;;
+        *) echo_cmd "$BASH_COMMAND" ;;
     esac
-    return 0  # a non-zero DEBUG trap would make bash skip the next command
+    return 0
 }
-trap cmd_echo DEBUG
+trap echo_trap DEBUG
 
 note ──────────────────────────────────────────────────────────
 note Setup
 note ──────────────────────────────────────────────────────────
+note
 note "'yolo init <dir>' scaffolds a project: a default yolofs.toml plus agent hook templates."
 yolo init example --agents claude
 cd example
 yolo mount
 
+note
 note ──────────────────────────────────────────────────────────
 note Stage, review and commit
 note ──────────────────────────────────────────────────────────
@@ -42,6 +44,7 @@ note "'commit' writes staging out to the real files."
 yolo commit
 cat greeting.txt
 
+note
 note ──────────────────────────────────────────────────────────
 note Stage and abort
 note ──────────────────────────────────────────────────────────
@@ -51,6 +54,7 @@ yolo abort --force
 note "mistake.txt never reached the real directory:"
 ls mistake.txt || true
 
+note
 note ──────────────────────────────────────────────────────────
 note Snapshots, history and travel
 note ──────────────────────────────────────────────────────────
@@ -66,6 +70,7 @@ yolo run -- sh -c 'ls step*.txt'
 note "'timeline' is the snapshot graph; after travel the abandoned branch is dimmed."
 yolo timeline
 
+note
 note ──────────────────────────────────────────────────────────
 note "Permission rules and the 'yolo watch' daemon"
 note ──────────────────────────────────────────────────────────
@@ -77,13 +82,15 @@ yolo run -- sh -c 'cat secret.txt' || true
 note "'ask' defers to the 'yolo watch' daemon (no daemon => denied). Interactively"
 note "it prompts allow [y]es/[d]eny; here it runs --allow-all in the background."
 yolo rule ask apikey.txt
-printf '\n\033[1m$ yolo watch --allow-all &\033[0m\n'
+note
+echo_cmd 'yolo watch --allow-all &'
 yolo watch --allow-all & watch_pid=$!
 sleep 0.3
 yolo run -- sh -c 'cat apikey.txt'
 kill "$watch_pid" 2>/dev/null || true
 wait "$watch_pid" 2>/dev/null || true
 
+note
 note ──────────────────────────────────────────────────────────
 note Teardown
 note ──────────────────────────────────────────────────────────

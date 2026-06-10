@@ -22,6 +22,10 @@ fn double_mount_is_idempotent() {
 
     let (ok, _, stderr) = session.cli_output(&["mount"]).unwrap();
     assert!(ok, "second mount should succeed (idempotent): {stderr}");
+    assert!(
+        stderr.contains("already mounted at"),
+        "second mount should say it's a no-op: {stderr}"
+    );
 }
 
 #[test]

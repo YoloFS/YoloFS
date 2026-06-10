@@ -7,9 +7,9 @@
 // the installed binary works anywhere; `user/templates/` stays the single source of truth.
 
 use crate::config;
+use crate::report;
 use anyhow::{Context, Result};
 use clap::ValueEnum;
-use colored::Colorize;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -83,7 +83,7 @@ pub fn run(dir: &Path, agents: &[AgentChoice]) -> Result<()> {
     // Files are written as the invoking user (the CLI carries capabilities, not
     // setuid root, so it never runs as root) — nothing to hand back.
     if created == 0 {
-        eprintln!("{} already initialized", "yolo:".cyan());
+        report::hint("already initialized");
     }
     Ok(())
 }
@@ -113,7 +113,7 @@ fn write_default_config(dir: &Path) -> Result<bool> {
         return Ok(false);
     }
     fs::write(&cp, config::DEFAULT_CONFIG).context("writing yolofs.toml")?;
-    eprintln!("{} {}", "created".green().bold(), cp.display());
+    report::success(format!("created {}", cp.display()));
     Ok(true)
 }
 
@@ -136,7 +136,7 @@ fn scaffold_agents(dir: &Path, selected: &[AgentTemplate]) -> Result<usize> {
             if name.ends_with(".sh") {
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
             }
-            eprintln!("{} {}", "created".green().bold(), path.display());
+            report::success(format!("created {}", path.display()));
             created += 1;
         }
     }

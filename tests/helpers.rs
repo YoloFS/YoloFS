@@ -112,8 +112,9 @@ impl YoloSession {
         self.root.join(".yolofs/inodes")
     }
 
-    /// Run an yolo CLI subcommand from the session root, return stdout.
-    pub fn cli(&self, args: &[&str]) -> Result<String> {
+    /// Run an yolo CLI subcommand from the session root and require success,
+    /// returning the raw output for the stream-specific accessors below.
+    fn cli_checked(&self, args: &[&str]) -> Result<std::process::Output> {
         let output = Command::new(YOLO_BIN)
             .args(args)
             .current_dir(&self.root)
@@ -131,7 +132,21 @@ impl YoloSession {
                 stderr
             );
         }
+        Ok(output)
+    }
+
+    /// Run an yolo CLI subcommand from the session root, return stdout.
+    pub fn cli(&self, args: &[&str]) -> Result<String> {
+        let output = self.cli_checked(args)?;
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Run an yolo CLI subcommand from the session root, require success, and
+    /// return **stderr** — the status stream ("Output and status reporting" in
+    /// docs/cli.md): `committed …`, `staging discarded`, `nothing to commit`, …
+    pub fn cli_stderr(&self, args: &[&str]) -> Result<String> {
+        let output = self.cli_checked(args)?;
+        Ok(String::from_utf8_lossy(&output.stderr).to_string())
     }
 
     /// Run an yolo CLI subcommand and return (success, stdout, stderr).

@@ -4,8 +4,8 @@
 
 use crate::ioctl;
 use crate::journal::{Journal, Marker};
+use crate::report;
 use anyhow::{Context, Result};
-use colored::Colorize;
 
 pub fn run(marker_name: &str) -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
@@ -39,15 +39,10 @@ pub fn run(marker_name: &str) -> Result<()> {
         None => format!("marker {target_gen}"),
     };
 
-    println!(
-        "{}",
-        format!(
-            "Traveled to {label} ({count} staged change{}).",
-            crate::utils::plural(count)
-        )
-        .cyan()
-        .bold()
-    );
+    report::success(format!(
+        "traveled to {label} ({count} staged change{})",
+        crate::utils::plural(count)
+    ));
 
     Ok(())
 }

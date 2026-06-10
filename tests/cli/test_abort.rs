@@ -12,8 +12,8 @@ fn abort_discards_changes() {
     assert!(status.contains("1 staged change"), "status: {status}");
 
     // Abort
-    let output = s.cli(&["abort", "--force"]).expect("abort");
-    assert!(output.contains("Staging discarded"), "output: {output}");
+    let output = s.cli_stderr(&["abort", "--force"]).expect("abort");
+    assert!(output.contains("staging discarded"), "output: {output}");
 
     // Base unchanged
     assert_eq!(
@@ -26,8 +26,8 @@ fn abort_discards_changes() {
 fn abort_when_nothing_staged() {
     let s = YoloSession::new().expect("session setup");
 
-    let output = s.cli(&["abort", "--force"]).expect("abort");
-    assert!(output.contains("Nothing to discard"), "output: {output}");
+    let output = s.cli_stderr(&["abort", "--force"]).expect("abort");
+    assert!(output.contains("nothing to discard"), "output: {output}");
 }
 
 /// Abort after travel discards all staging (including traveled state).
@@ -46,8 +46,8 @@ fn abort_after_travel_discards_all() {
     assert_eq!(fs::read_to_string(s.mnt_path("hello.txt")).unwrap(), "v1\n");
 
     // Abort should discard everything
-    let output = s.cli(&["abort", "--force"]).expect("abort");
-    assert!(output.contains("Staging discarded"), "output: {output}");
+    let output = s.cli_stderr(&["abort", "--force"]).expect("abort");
+    assert!(output.contains("staging discarded"), "output: {output}");
 
     // Base should be unchanged
     assert_eq!(
@@ -57,5 +57,5 @@ fn abort_after_travel_discards_all() {
 
     // Status should show nothing staged
     let status = s.cli(&["review"]).expect("status");
-    assert!(status.contains("No changes staged"), "status: {status}");
+    assert!(status.contains("no changes staged"), "status: {status}");
 }

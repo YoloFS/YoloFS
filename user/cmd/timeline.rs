@@ -11,7 +11,7 @@ pub fn run() -> anyhow::Result<()> {
     let journal = Journal::read(&yolofs)?;
 
     if journal.markers.len() <= 1 {
-        println!("{}", "No snapshots.".yellow());
+        crate::report::empty("no snapshots");
         return Ok(());
     }
 

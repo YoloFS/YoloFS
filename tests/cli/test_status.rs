@@ -6,7 +6,7 @@ fn status_empty() {
     let s = YoloSession::new().expect("session setup");
 
     let output = s.cli(&["review"]).expect("status");
-    assert!(output.contains("No changes staged"), "output: {output}");
+    assert!(output.contains("(no changes staged)"), "output: {output}");
 }
 
 #[test]

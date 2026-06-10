@@ -14,6 +14,14 @@ fn run_failure_exit_code_propagated() {
 
     let code = session.run_in_yolofs(&["false"]).unwrap();
     assert_eq!(code, 1, "`false` should return exit code 1");
+
+    // The exit code IS the announcement — no redundant status line.
+    let (ok, _, stderr) = session.cli_output(&["run", "--", "false"]).unwrap();
+    assert!(!ok, "`false` should propagate failure");
+    assert!(
+        !stderr.contains("command exited"),
+        "no exit-status announcement expected: {stderr}"
+    );
 }
 
 #[test]
@@ -213,7 +221,7 @@ fn run_with_changes_creates_snapshot() {
 fn run_shorthand_shows_status() {
     let session = YoloSession::new().expect("session setup");
 
-    let (ok, stdout, _err) = session
+    let (ok, stdout, stderr) = session
         .cli_output(&["run", "--", "sh", "-c", "echo hi > shorthand.txt"])
         .expect("yolo run -- cmd");
 
@@ -223,8 +231,8 @@ fn run_shorthand_shows_status() {
         "`yolo run -- <cmd>` should print a status summary naming the changed file: {stdout}"
     );
     assert!(
-        stdout.contains("staged change"),
-        "the summary should mention staged changes: {stdout}"
+        stderr.contains("staged change"),
+        "the status footer (stderr) should mention staged changes: {stderr}"
     );
 }
 

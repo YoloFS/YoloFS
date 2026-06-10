@@ -154,7 +154,8 @@ fn main() -> ! {
     let code = match run_cli() {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("Error: {e:?}");
+            // `:#` renders the whole context chain on one line.
+            yolofs::report::error(format!("{e:#}"));
             1
         }
     };
@@ -204,7 +205,7 @@ fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
         Some(Command::Init { path, agents }) => init::run(&path, &agents)?,
         Some(Command::Load) => {
             if !load::load()? {
-                eprintln!("{} kernel module already loaded", "yolo:".cyan());
+                yolofs::report::hint("kernel module already loaded");
             }
         }
         Some(Command::Unload) => load::unload()?,

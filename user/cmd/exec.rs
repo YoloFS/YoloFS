@@ -8,8 +8,8 @@
 
 use crate::config;
 use crate::ioctl;
+use crate::report;
 use anyhow::{Context, Result, bail};
-use colored::Colorize;
 use std::env;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -59,10 +59,10 @@ pub enum Snapshot {
 pub fn announce(snapshot: &Snapshot) {
     match snapshot {
         Snapshot::Created(gen_id) => {
-            eprintln!("{}", format!("snapshot {gen_id}").cyan().bold());
+            report::info(format!("snapshot {gen_id}"));
         }
         Snapshot::NoChanges => {
-            eprintln!("{}", "yolo: no changes, skipping snapshot".dimmed());
+            report::hint("no changes, skipping snapshot");
         }
         Snapshot::Off => {}
     }
@@ -95,10 +95,9 @@ pub fn run(exec_args: &[String]) -> Result<(u8, Snapshot)> {
             .with_context(|| format!("spawning {cmd}"))?
     };
 
+    // The command's exit code is propagated as ours and its output already
+    // told the story — no "command exited with N" announcement.
     let code = status.code().unwrap_or(1) as u8;
-    if code != 0 {
-        eprintln!("{} {}", "yolo: command exited with".red(), code);
-    }
 
     // Snapshot after the command so it captures what the command did (skipped
     // when nothing was staged, to avoid empty snapshots). The name — still
@@ -110,7 +109,7 @@ pub fn run(exec_args: &[String]) -> Result<(u8, Snapshot)> {
             Ok(Some(gen_id)) => Snapshot::Created(gen_id),
             Ok(None) => Snapshot::NoChanges,
             Err(e) => {
-                eprintln!("{} {:#}", "yolo: snapshot failed:".yellow(), e);
+                report::warn(format!("snapshot failed: {e:#}"));
                 Snapshot::NoChanges
             }
         }

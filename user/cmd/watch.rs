@@ -12,11 +12,11 @@
 
 use crate::ioctl::{self, Ask};
 use crate::perm::Decision;
+use crate::report;
 use anyhow::Result;
-use colored::Colorize;
 use nix::sys::signal::{SigHandler, Signal, signal};
 use nix::unistd::{Pid, getpgrp, tcgetpgrp, tcsetpgrp};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead};
 
 /// RAII guard that restores the terminal foreground group on drop.
 struct TtyGuard(Option<Pid>);
@@ -69,15 +69,14 @@ fn release_tty(prev: Option<Pid>) {
 }
 
 fn print_ask(req: &Ask) {
-    eprintln!(
-        "{} {} wants to {} {}",
-        "[ask]".yellow().bold(),
+    report::warn(format!(
+        "{} wants to {} {}",
         req.comm_str(),
         req.op_str(),
         req.access_path_str(),
-    );
+    ));
     let source = req.rule_path.as_deref().unwrap_or("default");
-    eprintln!("  rule: {source} {}", rule_phrase(req.rule_perm));
+    report::detail(format!("rule: {source} {}", rule_phrase(req.rule_perm)));
 }
 
 fn rule_phrase(perm: crate::perm::Perm) -> &'static str {
@@ -95,19 +94,14 @@ fn prompt_decision(req: &Ask) -> Decision {
     let _guard = claim_tty();
 
     print_ask(req);
-    eprint!(
-        "  allow [{}]es / [{}]eny (enter = yes): ",
-        "y".yellow().bold(),
-        "d".yellow().bold(),
-    );
-    io::stderr().flush().ok();
+    report::prompt("allow [y]es / [d]eny (enter = yes):");
 
     let mut line = String::new();
     // TTY is released automatically when _guard is dropped.
     if io::stdin().lock().read_line(&mut line).is_ok() {
         let trimmed = line.trim();
         parse_input(trimmed).unwrap_or_else(|| {
-            eprintln!("  unknown: {trimmed}, denying");
+            report::detail(format!("unknown: {trimmed}, denying"));
             Decision::Deny
         })
     } else {
@@ -121,15 +115,9 @@ pub fn run(allow_all: bool) -> Result<()> {
 
     let ctl_file = ioctl::open(&yolofs)?;
     if allow_all {
-        eprintln!(
-            "{}",
-            "yolo: watching for permission requests — allowing all (Ctrl-C to stop)".cyan()
-        );
+        report::info("watching for permission requests — allowing all (Ctrl-C to stop)");
     } else {
-        eprintln!(
-            "{}",
-            "yolo: watching for permission requests (Ctrl-C to stop)".cyan()
-        );
+        report::info("watching for permission requests (Ctrl-C to stop)");
     }
 
     watch_loop(&ctl_file, allow_all)
@@ -153,11 +141,11 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
         };
 
         if let Err(e) = ioctl::put_decision(ctl_file, req.id, decision) {
-            eprintln!("yolo watch: write error: {e}");
+            report::warn(format!("write error: {e}"));
         } else {
             // claim_tty/release_tty is not needed here because TOSTOP
             // is normally unset, so background stderr writes succeed.
-            eprintln!("  → {} (req #{})", decision, req.id);
+            report::detail(format!("→ {} (req #{})", decision, req.id));
         }
     }
 }

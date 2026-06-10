@@ -6,8 +6,8 @@
 // plan (see journal/plan.rs), then applies each action in execution order.
 
 use crate::journal::Journal;
+use crate::report;
 use anyhow::{Context, Result};
-use colored::Colorize;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -140,7 +140,7 @@ pub fn run() -> Result<()> {
     let plan = journal.into_tree().into_plan(&yolofs);
 
     if plan.is_empty() {
-        println!("{}", "Nothing to commit.".yellow());
+        report::hint("nothing to commit");
         return Ok(());
     }
 
@@ -148,15 +148,10 @@ pub fn run() -> Result<()> {
 
     super::abort::reset_staging(&yolofs)?;
 
-    println!(
-        "{}",
-        format!(
-            "Committed {committed} change{}.",
-            crate::utils::plural(committed)
-        )
-        .cyan()
-        .bold()
-    );
+    report::success(format!(
+        "committed {committed} change{}",
+        crate::utils::plural(committed)
+    ));
 
     Ok(())
 }

@@ -3,10 +3,10 @@
 // `yolo abort` — discard staged changes.
 
 use crate::journal::Journal;
+use crate::report;
 use anyhow::{Context, Result};
-use colored::Colorize;
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead};
 use std::path::Path;
 
 /// Clear inode store, truncate journal, and reset kernel staging state.
@@ -41,29 +41,24 @@ pub fn run(force: bool) -> Result<()> {
 
     let journal = Journal::read(&yolofs)?;
     if !journal.has_staged_changes() {
-        println!("{}", "Nothing to discard.".yellow());
+        report::hint("nothing to discard");
         return Ok(());
     }
 
     if !force {
-        eprintln!(
-            "{}",
-            "You have staged changes (run `yolo review` to see them).".yellow()
-        );
-        eprint!("{} ", "Discard them all? [y/N]:".bold());
-        io::stderr().flush().ok();
+        report::prompt("discard all staged changes? (`yolo review` to see them) [y/N]:");
 
         let mut line = String::new();
         io::stdin().lock().read_line(&mut line)?;
         if !line.trim().eq_ignore_ascii_case("y") {
-            eprintln!("{}", "Abort cancelled.".dimmed());
+            report::hint("abort cancelled");
             return Ok(());
         }
     }
 
     reset_staging(&yolofs)?;
 
-    println!("{}", "Staging discarded.".yellow().bold());
+    report::success("staging discarded");
 
     Ok(())
 }

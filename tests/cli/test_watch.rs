@@ -234,7 +234,7 @@ fn interactive_watch_allow_permits_read() {
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     assert!(
-        stderr.contains("[ask]"),
+        stderr.contains("wants to read"),
         "daemon should have prompted: {stderr}"
     );
     assert!(
@@ -278,7 +278,7 @@ fn interactive_watch_deny_blocks_read() {
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     assert!(
-        stderr.contains("[ask]"),
+        stderr.contains("wants to read"),
         "daemon should have prompted: {stderr}"
     );
     assert!(

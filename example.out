@@ -1,147 +1,120 @@
 # ──────────────────────────────────────────────────────────
 # Setup
 # ──────────────────────────────────────────────────────────
+
 # 'yolo init <dir>' scaffolds a project: a default yolofs.toml plus agent hook templates.
-
 $ yolo init example --agents claude
-created example/yolofs.toml
-created example/.claude/settings.json
-created example/.claude/yolofs.sh
-
+yolo: created example/yolofs.toml
+yolo: created example/.claude/settings.json
+yolo: created example/.claude/yolofs.sh
 $ cd example
-
 $ yolo mount
-yolo: loading kernel module /lib/modules/6.8.0-1052-azure/extra/yolofs.ko
-yolo: mounting /home/runner/work/filesystem/filesystem/example/.yolofs/mnt (permission=1,staging=1,prompt_timeout=30)
-yolo: applying 12 rule(s) from yolofs.toml
-  ✗ $HOME/.bash_history = allow: rule path does not exist: /home/runner/.bash_history: No such file or directory (os error 2)
-  ✗ $HOME/.ssh/id_ed25519 = ask: rule path does not exist: /home/runner/.ssh/id_ed25519: No such file or directory (os error 2)
+yolo: loading kernel module /lib/modules/6.8.0-117-generic/extra/yolofs.ko
+yolo: mounted /users/szhong/YoloFS/filesystem/example/.yolofs/mnt
+yolo: applying 12 rules from yolofs.toml
 yolo: run `yolo watch` to answer permission prompts
+
 # ──────────────────────────────────────────────────────────
 # Stage, review and commit
 # ──────────────────────────────────────────────────────────
 # 'yolo run -- <cmd>' runs <cmd> in a staging overlay and prints what it changed.
-
 $ yolo run -- sh -c 'echo "hello, yolofs" > greeting.txt'
 greeting.txt (added)
 yolo: 1 staged change in snapshot 1 · `yolo travel 1` to return
 # 'review --diff' shows the staged changes as a git-style diff.
-
 $ yolo review --diff
 greeting.txt (added)
 +hello, yolofs
 (latest snapshot · `yolo review all` for everything since base)
 # 'commit' writes staging out to the real files.
-
 $ yolo commit
-Committed 1 change.
-
+yolo: committed 1 change
 $ cat greeting.txt
 hello, yolofs
+
 # ──────────────────────────────────────────────────────────
 # Stage and abort
 # ──────────────────────────────────────────────────────────
 # 'abort' throws staging away instead — the real directory is never touched.
-
 $ yolo run -- sh -c 'echo oops > mistake.txt'
 mistake.txt (added)
 yolo: 1 staged change in snapshot 1 · `yolo travel 1` to return
-
 $ yolo abort --force
-Staging discarded.
+yolo: staging discarded
 # mistake.txt never reached the real directory:
-
 $ ls mistake.txt
 ls: cannot access 'mistake.txt': No such file or directory
+
 # ──────────────────────────────────────────────────────────
 # Snapshots, history and travel
 # ──────────────────────────────────────────────────────────
 # Every run auto-snapshots, so you can review across them and rewind.
-
 $ yolo run -- sh -c 'echo step1 > step1.txt'
 step1.txt (added)
 yolo: 1 staged change in snapshot 1 · `yolo travel 1` to return
-
 $ yolo run -- sh -c 'echo step2 > step2.txt'
 step2.txt (added)
 yolo: 1 staged change in snapshot 2 · `yolo travel 2` to return
 # 'review all' lists everything since base; add '--diff' for the content.
-
 $ yolo review all
 step1.txt (added)
 step2.txt (added)
 2 staged changes
-
 $ yolo review all --diff
 step1.txt (added)
 +step1
 step2.txt (added)
 +step2
 # 'travel' rewinds the working tree to a snapshot — step2 disappears.
-
 $ yolo travel 1
-Traveled to snapshot "after sh -c echo step1 > step1.txt" (1 staged change).
-
+yolo: traveled to snapshot "after sh -c echo step1 > step1.txt" (1 staged change)
 $ yolo run -- sh -c 'ls step*.txt'
 step1.txt
 (no changes)
 # 'timeline' is the snapshot graph; after travel the abandoned branch is dimmed.
-
 $ yolo timeline
   snapshot 1 after sh -c echo step1 > step1.txt
   snapshot 2 after sh -c echo step2 > step2.txt (unreachable)
   travel   3 → 1 (unreachable)
+
 # ──────────────────────────────────────────────────────────
 # Permission rules and the 'yolo watch' daemon
 # ──────────────────────────────────────────────────────────
-
 $ echo secret > secret.txt
-
 $ echo token > apikey.txt
 # 'deny' blocks a path; the attempt is logged as an access #.
-
 $ yolo rule deny secret.txt
-rule applied: secret.txt = deny
-
+yolo: rule applied: secret.txt = deny
 $ yolo run -- sh -c 'cat secret.txt'
 cat: secret.txt: Permission denied
-yolo: command exited with 1
 
 not staged:
 secret.txt (blocked read)
 # 'ask' defers to the 'yolo watch' daemon (no daemon => denied). Interactively
 # it prompts allow [y]es/[d]eny; here it runs --allow-all in the background.
-
 $ yolo rule ask apikey.txt
-rule applied: apikey.txt = ask
-
-$ printf '\n\033[1m$ yolo watch --allow-all &\033[0m\n'
+yolo: rule applied: apikey.txt = ask
 
 $ yolo watch --allow-all &
 yolo: watching for permission requests — allowing all (Ctrl-C to stop)
-
 $ yolo run -- sh -c 'cat apikey.txt'
-[ask] cat wants to read /home/runner/work/filesystem/filesystem/example/apikey.txt
-  rule: /home/runner/work/filesystem/filesystem/example/apikey.txt asks
+yolo: cat wants to read /users/szhong/YoloFS/filesystem/example/apikey.txt
+  rule: /users/szhong/YoloFS/filesystem/example/apikey.txt asks
   → allow (req #2)
 token
 
 not staged:
 secret.txt (blocked read)
 apikey.txt (asked read → allow)
+
 # ──────────────────────────────────────────────────────────
 # Teardown
 # ──────────────────────────────────────────────────────────
-
 $ yolo abort --force
-Staging discarded.
-
+yolo: staging discarded
 $ yolo unmount
-yolo: unmounted /home/runner/work/filesystem/filesystem/example/.yolofs/mnt
-
+yolo: unmounted /users/szhong/YoloFS/filesystem/example/.yolofs/mnt
 $ yolo unload
 yolo: unloading kernel module
-
 $ cd ..
-
 $ rm -rf example

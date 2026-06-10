@@ -8,8 +8,8 @@ fn commit_modified_file() {
 
     fs::write(s.mnt_path("hello.txt"), "committed\n").unwrap();
 
-    let output = s.cli(&["commit"]).expect("commit");
-    assert!(output.contains("Committed 1 change"), "output: {output}");
+    let output = s.cli_stderr(&["commit"]).expect("commit");
+    assert!(output.contains("committed 1 change"), "output: {output}");
 
     // Base file now has the committed content
     assert_eq!(
@@ -24,8 +24,8 @@ fn commit_new_file() {
 
     fs::write(s.mnt_path("brandnew.txt"), "new\n").unwrap();
 
-    let output = s.cli(&["commit"]).expect("commit");
-    assert!(output.contains("Committed 1 change"), "output: {output}");
+    let output = s.cli_stderr(&["commit"]).expect("commit");
+    assert!(output.contains("committed 1 change"), "output: {output}");
 
     // New file now in base
     assert_eq!(
@@ -41,8 +41,8 @@ fn commit_multiple_changes() {
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
     fs::write(s.mnt_path("newfile.txt"), "new\n").unwrap();
 
-    let output = s.cli(&["commit"]).expect("commit");
-    assert!(output.contains("Committed 2 change"), "output: {output}");
+    let output = s.cli_stderr(&["commit"]).expect("commit");
+    assert!(output.contains("committed 2 change"), "output: {output}");
 
     assert_eq!(
         fs::read_to_string(s.base_path("hello.txt")).unwrap(),
@@ -58,8 +58,8 @@ fn commit_multiple_changes() {
 fn commit_nothing() {
     let s = YoloSession::new().expect("session setup");
 
-    let output = s.cli(&["commit"]).expect("commit");
-    assert!(output.contains("Nothing to commit"), "output: {output}");
+    let output = s.cli_stderr(&["commit"]).expect("commit");
+    assert!(output.contains("nothing to commit"), "output: {output}");
 }
 
 /// Delete a directory, create a file with the same name, commit.
@@ -100,8 +100,8 @@ fn commit_rename_file() {
     // Rename an existing base file through the mount
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("greeting.txt")).expect("rename");
 
-    let output = s.cli(&["commit"]).expect("commit");
-    assert!(output.contains("Committed"), "output: {output}");
+    let output = s.cli_stderr(&["commit"]).expect("commit");
+    assert!(output.contains("committed"), "output: {output}");
 
     assert!(
         !s.base_path("hello.txt").exists(),
@@ -122,8 +122,8 @@ fn commit_rename_directory() {
     // subdir/ exists in base with subdir/deep.txt
     fs::rename(s.mnt_path("subdir"), s.mnt_path("renamed_dir")).expect("rename dir");
 
-    let output = s.cli(&["commit"]).expect("commit");
-    assert!(output.contains("Committed"), "output: {output}");
+    let output = s.cli_stderr(&["commit"]).expect("commit");
+    assert!(output.contains("committed"), "output: {output}");
 
     assert!(
         !s.base_path("subdir").exists(),
@@ -147,8 +147,8 @@ fn commit_delete_directory() {
     // subdir/ exists in base with subdir/deep.txt
     fs::remove_dir_all(s.mnt_path("subdir")).expect("rmdir");
 
-    let output = s.cli(&["commit"]).expect("commit");
-    assert!(output.contains("Committed"), "output: {output}");
+    let output = s.cli_stderr(&["commit"]).expect("commit");
+    assert!(output.contains("committed"), "output: {output}");
 
     assert!(
         !s.base_path("subdir").exists(),
@@ -283,8 +283,8 @@ fn commit_symlink() {
 
     std::os::unix::fs::symlink("hello.txt", s.mnt_path("link.txt")).expect("symlink");
 
-    let output = s.cli(&["commit"]).expect("commit");
-    assert!(output.contains("Committed"), "output: {output}");
+    let output = s.cli_stderr(&["commit"]).expect("commit");
+    assert!(output.contains("committed"), "output: {output}");
 
     let base_link = s.base_path("link.txt");
     assert!(
@@ -507,8 +507,8 @@ fn commit_rename_staged_only_file() {
     fs::write(s.mnt_path("staged.txt"), "staged\n").expect("write");
     fs::rename(s.mnt_path("staged.txt"), s.mnt_path("moved.txt")).expect("rename");
 
-    let output = s.cli(&["commit"]).expect("commit");
-    assert!(output.contains("Committed"), "output: {output}");
+    let output = s.cli_stderr(&["commit"]).expect("commit");
+    assert!(output.contains("committed"), "output: {output}");
 
     assert!(
         !s.base_path("staged.txt").exists(),
@@ -952,9 +952,9 @@ fn commit_then_noop_commit() {
     fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
     s.cli(&["commit"]).expect("first commit");
 
-    let output = s.cli(&["commit"]).expect("second commit");
+    let output = s.cli_stderr(&["commit"]).expect("second commit");
     assert!(
-        output.contains("Nothing to commit"),
+        output.contains("nothing to commit"),
         "second commit should be a no-op, got: {output}"
     );
 }

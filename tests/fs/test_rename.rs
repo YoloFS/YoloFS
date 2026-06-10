@@ -48,8 +48,8 @@ fn rename_write_commit() {
     fs::rename(s.mnt_path("hello.txt"), s.mnt_path("final.txt")).expect("rename");
     fs::write(s.mnt_path("final.txt"), "committed content\n").expect("write");
 
-    let output = s.cli(&["commit"]).unwrap();
-    assert!(output.contains("Committed"), "commit output: {output}");
+    let output = s.cli_stderr(&["commit"]).unwrap();
+    assert!(output.contains("committed"), "commit output: {output}");
 
     // After commit: new name has new content, old name is gone
     assert_eq!(

@@ -5,11 +5,11 @@
 // `yolo remount`  — unmount then mount again (picks up new yolofs.toml options).
 
 use crate::journal::Journal;
+use crate::report;
 use anyhow::{Context, Result};
-use colored::Colorize;
 use std::env;
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead};
 use std::os::unix;
 use std::path::Path;
 
@@ -35,18 +35,13 @@ fn umount_or_prompt(target: &Path) -> Result<()> {
         );
     }
 
-    eprintln!(
-        "{} {} is busy, blocked by:",
-        "yolo:".red(),
-        target.display()
-    );
+    report::warn(format!("{} is busy, blocked by:", target.display()));
     for &pid in &pids {
         let comm = fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
-        eprintln!("  PID {pid}  {}", comm.trim());
+        report::detail(format!("PID {pid}  {}", comm.trim()));
     }
 
-    eprint!("Kill these processes? [y/N] ");
-    io::stderr().flush().ok();
+    report::prompt("kill these processes? [y/N]:");
     let mut input = String::new();
     io::stdin().lock().read_line(&mut input).ok();
 
@@ -175,10 +170,7 @@ pub fn unmount_at(yolo_dir: &Path) -> Result<()> {
 /// prompts. Without a watcher the kernel resolves `ask` paths to the ask default
 /// immediately (no prompt, no hang) — so this is guidance, not an error.
 fn hint_watch() {
-    eprintln!(
-        "{} run `yolo watch` to answer permission prompts",
-        "yolo:".yellow()
-    );
+    report::hint("run `yolo watch` to answer permission prompts");
 }
 
 /// Create .yolofs/ layout, mount, and apply rules.
@@ -189,13 +181,10 @@ pub fn mount() -> Result<()> {
     let mnt = crate::utils::mnt_dir(&yolo_dir);
 
     if mnt.exists() && is_mountpoint(&mnt) {
-        let opts = crate::config::mount_options(&yolo_dir);
-        eprintln!(
-            "{} {} ({})",
-            "yolo: mounted at".cyan(),
-            yolo_dir.join("mnt").display(),
-            opts
-        );
+        report::hint(format!(
+            "already mounted at {}",
+            yolo_dir.join("mnt").display()
+        ));
         hint_watch();
         return Ok(());
     }
@@ -225,11 +214,7 @@ pub fn unmount(force: bool) -> Result<()> {
         prompt_if_staged(&yolo_dir)?;
     }
     unmount_at(&yolo_dir)?;
-    eprintln!(
-        "{} {}",
-        "yolo: unmounted".cyan(),
-        yolo_dir.join("mnt").display()
-    );
+    report::success(format!("unmounted {}", yolo_dir.join("mnt").display()));
     Ok(())
 }
 
@@ -250,17 +235,8 @@ fn prompt_if_staged(yolo_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    eprintln!(
-        "{}",
-        "Warning: staged changes will be lost (run `yolo review` to see them)."
-            .yellow()
-            .bold()
-    );
-    eprint!(
-        "{} ",
-        "[c]ommit, [a]bort, or [q]uit? [default: quit]:".bold()
-    );
-    io::stderr().flush().ok();
+    report::warn("staged changes will be lost (`yolo review` to see them)");
+    report::prompt("[c]ommit, [a]bort, or [q]uit? [default: quit]:");
 
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line)?;
@@ -321,15 +297,6 @@ pub fn do_mount(yolo_dir: &Path) -> Result<()> {
     let mount_data = crate::config::mount_options(yolo_dir);
     let source = yolo_dir.to_string_lossy();
 
-    // Show the in-workspace `.yolofs/mnt` symlink rather than the runtime
-    // mountpoint path — it's the familiar, stable handle users interact with.
-    eprintln!(
-        "{} {} ({})",
-        "yolo: mounting".cyan(),
-        yolo_dir.join("mnt").display(),
-        mount_data
-    );
-
     nix::mount::mount(
         Some(source.as_ref()),
         &mnt,
@@ -338,6 +305,12 @@ pub fn do_mount(yolo_dir: &Path) -> Result<()> {
         Some(mount_data.as_str()),
     )
     .context("mounting YoloFS (is the kernel module loaded?)")?;
+
+    // Show the in-workspace `.yolofs/mnt` symlink rather than the runtime
+    // mountpoint path — it's the familiar, stable handle users interact with.
+    // The raw mount-option string stays internal; `yolo rule list`/`resolve`
+    // answer the "what's in effect?" question.
+    report::success(format!("mounted {}", yolo_dir.join("mnt").display()));
 
     Ok(())
 }

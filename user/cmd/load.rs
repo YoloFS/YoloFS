@@ -4,8 +4,8 @@
 // `yolo unload` — unmount all sessions and unload the kernel module.
 // `yolo reload` — unload then reload the kernel module.
 
+use crate::report;
 use anyhow::{Context, Result};
-use colored::Colorize;
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -23,11 +23,7 @@ pub fn load() -> Result<bool> {
 
     let ko_path = find_ko().context("cannot find yolofs.ko — build it with `make kmod`")?;
 
-    eprintln!(
-        "{} {}",
-        "yolo: loading kernel module".cyan(),
-        ko_path.display()
-    );
+    report::info(format!("loading kernel module {}", ko_path.display()));
 
     // Load via finit_module(2) using CAP_SYS_MODULE (a file capability) rather
     // than shelling out to `sudo insmod` — keeps every privileged op on the
@@ -46,11 +42,11 @@ pub fn unload() -> Result<()> {
     unmount_all()?;
 
     if !is_loaded() {
-        eprintln!("{} kernel module not loaded", "yolo:".cyan());
+        report::hint("kernel module not loaded");
         return Ok(());
     }
 
-    eprintln!("{}", "yolo: unloading kernel module".cyan());
+    report::info("unloading kernel module");
 
     // Unload via delete_module(2) using CAP_SYS_MODULE. O_NONBLOCK matches
     // rmmod's default: fail with EBUSY rather than block if the module is still
@@ -126,7 +122,7 @@ fn parse_mounts(content: &str) -> Vec<String> {
 /// Unmount all active YoloFS sessions.
 fn unmount_all() -> Result<()> {
     for yolo_dir in find_yolo_dirs() {
-        eprintln!("{} {}", "yolo: unmounting".cyan(), yolo_dir);
+        report::info(format!("unmounting {yolo_dir}"));
         crate::cmd::mount::unmount_at(Path::new(&yolo_dir))?;
     }
     Ok(())

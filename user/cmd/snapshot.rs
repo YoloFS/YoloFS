@@ -3,8 +3,8 @@
 // `yolo snapshot [name]` — create a snapshot.
 
 use crate::ioctl;
+use crate::report;
 use anyhow::{Context, Result};
-use colored::Colorize;
 
 /// Create a snapshot with the given name (or a timestamp if empty). With
 /// `if_changed`, the kernel skips the snapshot when nothing is staged.
@@ -27,11 +27,7 @@ pub fn create(name: Option<&str>, if_changed: bool) -> Result<()> {
         return Ok(());
     }
 
-    eprintln!(
-        "{} {}",
-        format!("snapshot {gen_id}").cyan().bold(),
-        chk_name.dimmed()
-    );
+    report::success(format!("snapshot {gen_id} \"{chk_name}\""));
     Ok(())
 }
 
