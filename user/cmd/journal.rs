@@ -122,7 +122,7 @@ fn format_action(action: &journal::Action) -> String {
             format!("{:10} {}", "deleted".red(), path)
         }
         journal::Action::Rename { src, dst, .. } => {
-            format!("{:10} {} → {}", "renamed".magenta(), src, dst)
+            format!("{:10} {} → {}", "renamed".cyan(), src, dst)
         }
     }
 }

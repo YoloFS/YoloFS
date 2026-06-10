@@ -1,6 +1,6 @@
 // yolo CLI — changeset.rs
 //
-// The model behind `yolo review` and the post-`yolo -- <cmd>` review: what
+// The model behind `yolo review` and the post-`yolo run -- <cmd>` review: what
 // changed across a span of the journal. Rendering lives in cmd/review.rs; this
 // file only resolves *what* happened, not *how* to show it.
 

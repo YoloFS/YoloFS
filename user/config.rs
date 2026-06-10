@@ -300,7 +300,7 @@ pub fn set_rule(path: &str, perm: Perm) -> Result<()> {
         ioctl::set_rule(&ctl_file, &resolved, perm.to_ioctl())?;
         // Pushed to the running mount: applied now. Otherwise it's only written
         // to yolofs.toml and takes effect at the next mount — say which.
-        eprintln!("{} {path} = {perm}", "rule applied:".green().bold());
+        eprintln!("{} {path} = {perm}", "rule applied:".cyan().bold());
     } else {
         eprintln!("{} {path} = {perm}", "rule saved:".dimmed());
     }
@@ -325,7 +325,7 @@ pub fn unset_rule(path: &str) -> Result<()> {
         ioctl::set_rule(&ctl_file, &resolved, ioctl::YOLO_PERM_UNSET)?;
         // An unset removes the path's own rule (it reverts to inheriting from its
         // ancestors); report that, plus whether it's applied now or saved.
-        eprintln!("{} {path} = unset", "rule applied:".green().bold());
+        eprintln!("{} {path} = unset", "rule applied:".cyan().bold());
     } else {
         eprintln!("{} {path} = unset", "rule saved:".dimmed());
     }

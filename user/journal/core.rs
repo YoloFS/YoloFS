@@ -79,7 +79,7 @@ impl Journal {
     }
 
     /// Segment range [start, end) for the default scoped ("latest") view — the
-    /// most recent batch of changes. Each `yolo exec` auto-snapshots, so the
+    /// most recent batch of changes. Each `yolo run -- <cmd>` auto-snapshots, so the
     /// usual tip is an empty trailing segment; in that case we show the segment
     /// the most recent snapshot captured (the last command's work). If there is
     /// uncommitted work *after* the last snapshot we show that instead, and with

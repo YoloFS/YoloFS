@@ -12,7 +12,7 @@ the kernel, not merely assumed.
 
 1. **No open file handles during snapshot.** The snapshot ioctl rejects
    with `-EBUSY` if any staging fds are open (`sbi->staging_fd_count > 0`).
-   The CLI naturally satisfies this by taking snapshots between `yolo exec`
+   The CLI naturally satisfies this by taking snapshots between `yolo run -- <cmd>`
    invocations, never while agent processes are running. This means
    `sbi->gen` cannot change while any staging fd is open, so the
    COW decision can be made once at `open()` time — the write and mmap
@@ -680,13 +680,13 @@ No staged dentries change. No caches invalidated. The write lock on
 is bumped (open-for-write holds at least a read lock while incrementing
 `staging_fd_count`).
 
-The name defaults to `"after <cmd>"` when auto-snapshotting via `yolo exec`
+The name defaults to `"after <cmd>"` when auto-snapshotting via `yolo run -- <cmd>`
 (e.g., `"after make build"`), or a human-readable timestamp like
 `chk-20260315-043807` when run via `yolo snapshot` with no argument. Names need
 not be unique; `review` and `journal` address snapshots by their numeric gen id
 only (`0` is the base), so a duplicate name never makes a range ambiguous.
 
-Auto-snapshotting after `yolo exec` is skipped when the command produced no
+Auto-snapshotting after `yolo run -- <cmd>` is skipped when the command produced no
 staged changes. The kernel tracks a `dirty` flag on `yolo_sb_info` that is set
 on every data journal write (S/D/R) and cleared on snapshot or travel.
 When the CLI passes the `YOLO_SNAPSHOT_IF_CHANGED` flag in the snapshot ioctl, the

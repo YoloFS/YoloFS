@@ -83,7 +83,7 @@ pub fn run(dir: &Path, agents: &[AgentChoice]) -> Result<()> {
     // Files are written as the invoking user (the CLI carries capabilities, not
     // setuid root, so it never runs as root) — nothing to hand back.
     if created == 0 {
-        eprintln!("{} already initialized", "yolo:".green());
+        eprintln!("{} already initialized", "yolo:".cyan());
     }
     Ok(())
 }

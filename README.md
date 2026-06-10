@@ -22,7 +22,7 @@ cd /path/to/project
 yolo init                        # initialize a session (yolofs.toml + agent hooks)
 yolo mount                       # mount the session
 yolo watch &                     # permission prompt daemon
-yolo -- make build               # run a command in the staging overlay (shows changes)
+yolo run -- make build               # run a command in the staging overlay (shows changes)
 yolo review                      # review staged changes (`--diff` for the diff body)
 yolo commit                      # apply, or `yolo abort` to discard
 ```

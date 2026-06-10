@@ -121,7 +121,7 @@ $ yolo
 # 1b. Or use individual commands for more control:
 $ yolo mount
 $ yolo watch &           # start daemon in background
-$ yolo -- make build
+$ yolo run -- make build
 $ yolo review
 $ yolo commit
 

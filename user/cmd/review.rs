@@ -1,7 +1,7 @@
 // yolo CLI — review.rs
 //
 // Reviewing staged changes: `yolo review` (a summary, or a git-style diff with
-// `--diff`) and the post-`yolo -- <cmd>` review — both render the same
+// `--diff`) and the post-`yolo run -- <cmd>` review — both render the same
 // `Changeset` model over a snapshot range.
 //
 // `review` takes an optional `[<id>[..<id>]]` spec selecting which snapshots to
@@ -371,7 +371,7 @@ fn render_each(
     shown_any
 }
 
-/// `yolo -- <cmd>` review: show what the just-run command changed, then a
+/// `yolo run -- <cmd>` review: show what the just-run command changed, then a
 /// summary line carrying the new snapshot's id — the handle for `yolo travel`.
 pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
     let (_yolofs, root, journal) = open_session()?;

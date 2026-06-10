@@ -97,8 +97,8 @@ fn prompt_decision(req: &Ask) -> Decision {
     print_ask(req);
     eprint!(
         "  allow [{}]es / [{}]eny (enter = yes): ",
-        "y".blue().bold(),
-        "d".blue().bold(),
+        "y".yellow().bold(),
+        "d".yellow().bold(),
     );
     io::stderr().flush().ok();
 

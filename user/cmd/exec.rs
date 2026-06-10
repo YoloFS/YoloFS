@@ -1,10 +1,10 @@
 // yolo CLI — exec.rs
 //
-// `yolo exec [-- cmd]` — chroot into the session mountpoint and exec a command,
-// preserving the caller's working directory. With no command it drops into a
-// shell. When config.auto_snapshot=true, a snapshot is created after the
-// command finishes, capturing what the command did — this is how each
-// `yolo exec` (e.g. one agent tool-call) becomes a per-command checkpoint.
+// Chroot into the session mountpoint and exec a command, preserving the
+// caller's working directory. This backs `yolo run -- <cmd>`. When
+// config.auto_snapshot=true, a snapshot is created after the command finishes,
+// capturing what the command did — this is how each command (e.g. one agent
+// tool-call) becomes a per-command checkpoint.
 
 use crate::config;
 use crate::ioctl;
@@ -42,8 +42,8 @@ unsafe fn chroot_pre_exec(mnt: &Path, cwd: &Path) -> Result<(), std::io::Error> 
 }
 
 /// Outcome of the post-command auto-snapshot, so callers can decide how to
-/// surface it (the quiet `exec` prints a terse line; `yolo -- <cmd>` folds the
-/// id into its review summary).
+/// surface it (quiet `yolo run -q -- <cmd>` prints a terse line; the default
+/// `yolo run -- <cmd>` folds the id into its review summary).
 pub enum Snapshot {
     /// A snapshot was created with this gen id.
     Created(u64),
@@ -53,7 +53,7 @@ pub enum Snapshot {
     Off,
 }
 
-/// Print the post-command snapshot outcome for the quiet standalone `yolo exec`
+/// Print the post-command snapshot outcome for the quiet `yolo run -q -- <cmd>`
 /// (to stderr). The snapshot's name is omitted — it just echoes the command you
 /// already typed; `timeline`/`journal` still show it.
 pub fn announce(snapshot: &Snapshot) {
@@ -79,18 +79,13 @@ pub fn run(exec_args: &[String]) -> Result<(u8, Snapshot)> {
         bail!("mount point does not exist — run `yolo mount` first");
     }
 
-    // With no command, drop into a shell. A one-off command runs as given.
-    let interactive = exec_args.is_empty();
-    let (cmd, args) = if interactive {
-        eprintln!("{}", "yolo: entering yolofs (exit to return)".cyan());
-        ("sh".to_string(), vec![])
-    } else {
-        (exec_args[0].clone(), exec_args[1..].to_vec())
+    let Some((cmd, args)) = exec_args.split_first() else {
+        bail!("no command given — usage: `yolo run -- <cmd>`");
     };
 
-    let mut command = process::Command::new(&cmd);
+    let mut command = process::Command::new(cmd);
     command
-        .args(&args)
+        .args(args)
         .env("YOLO_SESSION", yolo_dir.to_string_lossy().as_ref());
 
     let status = unsafe {
@@ -110,11 +105,7 @@ pub fn run(exec_args: &[String]) -> Result<(u8, Snapshot)> {
     // stored for `timeline`/`journal`/travel-by-name — is just the command; how
     // the outcome is surfaced is left to the caller.
     let snapshot = if config::load_config().auto_snapshot {
-        let cmd_desc = if interactive {
-            cmd.clone()
-        } else {
-            exec_args.join(" ")
-        };
+        let cmd_desc = exec_args.join(" ");
         match auto_snapshot(&format!("after {cmd_desc}")) {
             Ok(Some(gen_id)) => Snapshot::Created(gen_id),
             Ok(None) => Snapshot::NoChanges,

@@ -192,7 +192,7 @@ pub fn mount() -> Result<()> {
         let opts = crate::config::mount_options(&yolo_dir);
         eprintln!(
             "{} {} ({})",
-            "yolo: mounted at".green(),
+            "yolo: mounted at".cyan(),
             yolo_dir.join("mnt").display(),
             opts
         );
@@ -227,7 +227,7 @@ pub fn unmount(force: bool) -> Result<()> {
     unmount_at(&yolo_dir)?;
     eprintln!(
         "{} {}",
-        "yolo: unmounted".green(),
+        "yolo: unmounted".cyan(),
         yolo_dir.join("mnt").display()
     );
     Ok(())
@@ -325,7 +325,7 @@ pub fn do_mount(yolo_dir: &Path) -> Result<()> {
     // mountpoint path — it's the familiar, stable handle users interact with.
     eprintln!(
         "{} {} ({})",
-        "yolo: mounting".green(),
+        "yolo: mounting".cyan(),
         yolo_dir.join("mnt").display(),
         mount_data
     );

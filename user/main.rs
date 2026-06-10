@@ -41,9 +41,12 @@ enum Command {
     // ── Session ──────────────────────────────────────────────────────
     /// Create .yolofs/ layout and mount the filesystem
     Mount,
-    /// Execute a command under yolofs (requires existing mount)
-    Exec {
-        /// Command to run (after --)
+    /// Run a command under yolofs, then review what it changed (requires mount)
+    Run {
+        /// Skip the review summary; emit only the terse snapshot line (stderr)
+        #[arg(long, short)]
+        quiet: bool,
+        /// Command to run, after `--` (e.g. `yolo run -- make build`)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         exec_args: Vec<String>,
     },
@@ -159,34 +162,11 @@ fn main() -> ! {
 }
 
 fn run_cli() -> anyhow::Result<u8> {
-    // `yolo -- <cmd>`: when `--` is the first argument (no subcommand before
-    // it), run <cmd> under yolofs and then show what changed. Handled before
-    // clap so a bare unknown word (e.g. `yolo notacommand`) still falls through
-    // to clap's help instead of being treated as a command to run.
-    let raw: Vec<String> = std::env::args().collect();
-    if let Some(pos) = raw.iter().position(|a| a == "--")
-        && raw[1..pos].is_empty()
-        && pos + 1 < raw.len()
-    {
-        if yolofs::utils::inside_mount() {
-            anyhow::bail!("yolo cannot run inside the mount — run it from outside");
-        }
-        let cmd = &raw[pos + 1..];
-        // A `yolo` subcommand is host-side, so it can't run in the staging
-        // overlay — gate it instead (the agent may inspect/navigate;
-        // commit/abort/rule/… are the human's). Everything else runs in the
-        // overlay, then we show what changed.
-        if cmd.first().map(String::as_str) == Some("yolo") {
-            return run_agent_yolo(cmd);
-        }
-        return run_and_review(cmd);
-    }
-
     let cli = Cli::parse();
 
     // yolo is a host-side tool: its base-fs operations only work outside the
     // mount, so refuse every subcommand when run inside the chroot. Run
-    // commands through `yolo exec -- <cmd>` and manage from outside.
+    // commands through `yolo run -- <cmd>` and manage from outside.
     if cli.command.is_some() && yolofs::utils::inside_mount() {
         anyhow::bail!("yolo cannot run inside the mount — run it from outside");
     }
@@ -194,16 +174,17 @@ fn run_cli() -> anyhow::Result<u8> {
     dispatch(cli.command)
 }
 
-/// Subcommands the agent may run via its hook's `yolo -- yolo <sub>` — read and
-/// navigation only. Everything else (commit/abort/rule/session control/…) is the
-/// human's, so this is default-deny: an unlisted or unknown subcommand is
+/// Subcommands the agent may run via its hook's `yolo run -- yolo <sub>` — read
+/// and navigation only. Everything else (commit/abort/rule/session control/…) is
+/// the human's, so this is default-deny: an unlisted or unknown subcommand is
 /// rejected. Centralizing the policy here keeps agent hooks trivial
-/// (`yolo -- <cmd>`) and prevents them from drifting.
+/// (`yolo run -- <cmd>`) and prevents them from drifting.
 const AGENT_ALLOWED: &[&str] = &["review", "journal", "timeline", "travel", "snapshot"];
 
-/// The agent invoked `yolo <sub> …` (its hook wraps every command as
-/// `yolo -- <cmd>`). `yolo` is host-side, so the allowed ones run directly — not
-/// in the overlay — and the rest are rejected.
+/// The agent ran `yolo <sub> …` (its hook wraps every command as
+/// `yolo run -- <cmd>`, so a `yolo` command arrives here as `run`'s exec_args).
+/// `yolo` is host-side, so the allowed ones run directly — not in the overlay —
+/// and the rest are rejected.
 fn run_agent_yolo(cmd: &[String]) -> anyhow::Result<u8> {
     match cmd.get(1).map(String::as_str) {
         Some(sub) if AGENT_ALLOWED.contains(&sub) => {
@@ -223,16 +204,25 @@ fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
         Some(Command::Init { path, agents }) => init::run(&path, &agents)?,
         Some(Command::Load) => {
             if !load::load()? {
-                eprintln!("{} kernel module already loaded", "yolo:".green());
+                eprintln!("{} kernel module already loaded", "yolo:".cyan());
             }
         }
         Some(Command::Unload) => load::unload()?,
         Some(Command::Reload) => load::reload()?,
         Some(Command::Mount) => mount::mount()?,
-        Some(Command::Exec { exec_args }) => {
-            let (code, snapshot) = exec::run(&exec_args)?;
-            exec::announce(&snapshot);
-            return Ok(code);
+        Some(Command::Run { quiet, exec_args }) => {
+            if exec_args.is_empty() {
+                anyhow::bail!("no command given — usage: `yolo run -- <cmd>`");
+            }
+            // A `yolo` subcommand is host-side, so it can't run in the staging
+            // overlay — gate it instead (the agent may inspect/navigate;
+            // commit/abort/rule/… are the human's). Everything else runs in the
+            // overlay, then we show what changed.
+            return if exec_args.first().map(String::as_str) == Some("yolo") {
+                run_agent_yolo(&exec_args)
+            } else {
+                run_and_review(&exec_args, quiet)
+            };
         }
         Some(Command::Unmount { force }) => mount::unmount(force)?,
         Some(Command::Remount { force }) => mount::remount(force)?,
@@ -268,16 +258,20 @@ fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// `yolo -- <cmd>`: run a command under yolofs (like `exec`), then print a
-/// status summary of what it changed — the friendly counterpart to the quiet
-/// `exec`. Returns the command's exit code.
-fn run_and_review(run_args: &[String]) -> anyhow::Result<u8> {
+/// `yolo run [-q] -- <cmd>`: run a command under yolofs, then print a status
+/// summary of what it changed. With `quiet` (`-q`), skip the summary and emit
+/// only the terse snapshot line (to stderr). Returns the command's exit code.
+fn run_and_review(run_args: &[String], quiet: bool) -> anyhow::Result<u8> {
     let (code, snapshot) = exec::run(run_args)?;
-    let snapshot_id = match snapshot {
-        exec::Snapshot::Created(gen_id) => Some(gen_id),
-        exec::Snapshot::NoChanges | exec::Snapshot::Off => None,
-    };
-    review::run_after_exec(snapshot_id)?;
+    if quiet {
+        exec::announce(&snapshot);
+    } else {
+        let snapshot_id = match snapshot {
+            exec::Snapshot::Created(gen_id) => Some(gen_id),
+            exec::Snapshot::NoChanges | exec::Snapshot::Off => None,
+        };
+        review::run_after_exec(snapshot_id)?;
+    }
     Ok(code)
 }
 
@@ -294,8 +288,7 @@ fn print_overview() {
         ]),
         ("Session", &[
             ("mount",    "Create .yolofs/ and mount the filesystem"),
-            ("-- <cmd>", "Run <cmd> under yolofs and show what changed"),
-            ("exec",     "Run a command under yolofs, quietly (auto-snapshots)"),
+            ("run",      "Run a command under yolofs and review it (`run -- <cmd>`; `-q` to silence)"),
             ("unmount",  "Tear down the session"),
             ("remount",  "Unmount then remount (picks up yolofs.toml options)"),
         ]),
@@ -323,7 +316,7 @@ fn print_overview() {
     println!();
     println!(
         "{}",
-        "Run yolo outside the mount; stage your work with `yolo -- <cmd>`.".dimmed()
+        "Run yolo outside the mount; stage your work with `yolo run -- <cmd>`.".dimmed()
     );
     for (heading, cmds) in groups {
         println!("\n{}", heading.cyan().bold());

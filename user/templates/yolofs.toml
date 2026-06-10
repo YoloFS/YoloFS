@@ -6,7 +6,7 @@
 
 permission = true      # gate filesystem access through the [rules] below
 staging = true         # stage writes for review instead of applying directly
-auto_snapshot = true   # snapshot after each `yolo exec` (per-command checkpoints)
+auto_snapshot = true   # snapshot after each `yolo run -- <cmd>` (per-command checkpoints)
 prompt_timeout = 30    # seconds to wait for an `ask` answer before denying
 
 [rules]

@@ -96,8 +96,8 @@ NULL.
 
 Control ioctls live on a directory fd in the mount (there is no separate `.ctl`
 file). Operations that could defeat gating — `RULE_SET`, `GET_ASK`,
-`PUT_DECISION` — are refused when the caller is chrooted *inside* the mount (an
-agent command or a `yolo exec` shell), so nothing running inside the
+`PUT_DECISION` — are refused when the caller is chrooted *inside* the mount (a
+command run via `yolo run -- <cmd>`), so nothing running inside the
 mount can un-gate itself or answer its own ask prompts. `SNAPSHOT`, `RESET`,
 `TRAVEL`, and `RULE_RESOLVE` are allowed from inside. This is the real boundary;
 on top of it the CLI refuses to run *any* `yolo` command from inside the mount

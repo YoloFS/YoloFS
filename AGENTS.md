@@ -9,15 +9,19 @@ below are filesystem-specific and stack on top.
 
 ## Workflow
 
-- Always update documentation (`docs/`) before implementation.
+**Required gates — do not skip, even for small changes:**
+
+1. **Docs before implementation.** Update the relevant `docs/` files first, then write code to match.
+2. **Plan before refactoring.** Save a numbered plan under `docs/plans/` (`0-name.md`, `1-name.md`, ...) *before* implementing; move it to `docs/plans/done/` once fully implemented.
+3. **Failing test before bug fix.** Reproduce the bug with a failing test first, then fix it. Do not modify existing tests while fixing a bug — if unsure, ask.
+4. **Code review before finalizing.** Run the full review in the **Code Review** section below before considering any change set done.
+
+Supporting rules:
+
 - Always verify changes with `make test-vm` (unit tests on host, e2e tests in VM).
-- To fix a bug, first write a failing test, then fix it.
-- Do not modify existing tests when fixing a bug. If you are unsure, ask.
 - When adding new features or making changes, add tests if applicable: unit tests (inline `#[cfg(test)]`), white-box tests (`tests/internals/`), and black-box tests (`tests/fs/`, `tests/cli/`, `tests/perm/`).
 - Do not use git (commit, push, rebase, etc.) unless explicitly asked.
-- For refactoring, save a plan under `docs/plans/` (numbered: `0-name.md`, `1-name.md`, ...) before implementing. When the plan is fully implemented, move it to `docs/plans/done/`.
 - Do not read or maintain old plans in `docs/plans/done/`. They are kept for historical reference only.
-- Before finalizing changes, run a code review (see **Code Review** section below).
 
 ## Project Structure
 

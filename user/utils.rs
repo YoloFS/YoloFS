@@ -96,8 +96,8 @@ pub fn mnt_dir(yolo_dir: &Path) -> PathBuf {
     std::fs::read_link(&link).unwrap_or(link)
 }
 
-/// True if running inside the yolofs mount. `yolo exec` is the only way into the
-/// mount and it sets `YOLO_SESSION` for the processes it spawns, so this env var
+/// True if running inside the yolofs mount. `yolo run -- <cmd>` is the only way into
+/// the mount and it sets `YOLO_SESSION` for the processes it spawns, so this env var
 /// is a reliable (and syscall-free) signal. yolo is a host-side tool — its
 /// base-fs operations only work outside — so every subcommand refuses when this
 /// is true. The kernel is the real boundary regardless (it refuses

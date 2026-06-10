@@ -27,16 +27,15 @@ files are never overwritten.
 `yolo` is a host-side tool — like `docker`, you run it **outside** the mount and
 it manages the session. `review`/`commit`/`abort` need the base
 filesystem, which only exists outside, so **every `yolo` command refuses to run
-inside the mount**. Stage your work with `yolo -- <cmd>` (or `yolo exec`,
-below) and review/commit from outside. Bare `yolo` prints this command list.
+inside the mount**. Stage your work with `yolo run -- <cmd>` and review/commit from
+outside. Bare `yolo` prints this command list.
 
 **Session management** — manual control over each step:
 
 ```bash
 $ yolo mount             # create .yolofs/ layout and mount (auto-loads kmod if needed)
-$ yolo exec              # chroot a shell into .yolofs/mnt (requires existing mount)
-$ yolo exec -- make build   # run one command in the staging overlay (auto-snapshots after)
-$ yolo -- make build     # run one command in the staging overlay, then review what it changed
+$ yolo run -- make build     # run one command in the staging overlay, then review what it changed
+$ yolo run -q -- make build  # same, but quiet — skip the review summary (auto-snapshots after)
 $ yolo review            # staged changes for the latest snapshot (summary; default)
 $ yolo review --diff     # the same changes as a git-style diff
 $ yolo review all        # everything since base (`all` == `..` == `0..`)
@@ -108,7 +107,7 @@ Configured via top-level keys in `yolofs.toml`:
 |---|---|---|
 | `permission` | true | Enable permission gating |
 | `staging` | true | Enable staging area |
-| `auto_snapshot` | true | Auto-snapshot after each command run through yolofs (`yolo --` / `yolo exec`), skipped when no changes |
+| `auto_snapshot` | true | Auto-snapshot after each command run through yolofs (`yolo run -- <cmd>`), skipped when no changes |
 | `prompt_timeout` | 30 | Seconds to wait for an `ask` answer before denying (`0` = wait forever; an unanswered ask is a deny) |
 
 ## Execution Environment
@@ -133,7 +132,7 @@ setcap cap_sys_admin,cap_sys_chroot,cap_sys_module+ep /usr/local/bin/yolo
 ```
 
 - `cap_sys_admin` — `mount()`, `umount()`, bind-mounting `/proc` `/sys` `/dev`
-- `cap_sys_chroot` — `chroot()` into the session mountpoint in `exec`
+- `cap_sys_chroot` — `chroot()` into the session mountpoint when running `yolo run -- <cmd>`
 - `cap_sys_module` — `finit_module()` / `delete_module()` for `load` / `unload`
 
 The binary therefore runs as the **invoking user** (euid = real uid) with just
@@ -148,7 +147,7 @@ step.
 > drop `cap_sys_module` from the `setcap` line and have `load`/`unload` shell out
 > to `sudo` instead.
 
-### `exec` lifecycle
+### Command execution lifecycle
 
 The `pre_exec` hook in `exec.rs` runs in the child (after fork, before execvp):
 
@@ -165,7 +164,7 @@ command itself can neither `chroot` nor `mount`.
 | Command | Capability | Notes |
 |---|---|---|
 | `mount`, `unmount`, `remount` | `cap_sys_admin` | `mount()` / `umount()` / bind-mounts |
-| `exec`, `yolo -- <cmd>` | `cap_sys_chroot` | cleared for the spawned command |
+| `yolo run -- <cmd>` | `cap_sys_chroot` | cleared for the spawned command |
 | `load`, `unload`, `reload` | `cap_sys_module` | `finit_module()` / `delete_module()` |
 | `rule`, `watch`, `commit`, `abort`, `snapshot`, `travel`, `review`, `journal`, `timeline`, `init` | none | run unprivileged as the user; ioctls go to a dir fd on the mount root |
 
@@ -177,7 +176,7 @@ edit) fails on commit with `EACCES` rather than being written as root.
 ### Staging blob ownership
 
 The kernel module creates staging blobs via `vfs_create` / `vfs_mkdir` using
-`current_cred()`. Both the user's commands inside `yolo exec` and the host-side
+`current_cred()`. Both the user's commands inside `yolo run -- <cmd>` and the host-side
 CLI run with the invoking user's credentials, so staging blobs — and committed
 files — are owned by the real user.
 

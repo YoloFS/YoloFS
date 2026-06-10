@@ -25,7 +25,7 @@ pub fn load() -> Result<bool> {
 
     eprintln!(
         "{} {}",
-        "yolo: loading kernel module".green(),
+        "yolo: loading kernel module".cyan(),
         ko_path.display()
     );
 
@@ -46,11 +46,11 @@ pub fn unload() -> Result<()> {
     unmount_all()?;
 
     if !is_loaded() {
-        eprintln!("{} kernel module not loaded", "yolo:".green());
+        eprintln!("{} kernel module not loaded", "yolo:".cyan());
         return Ok(());
     }
 
-    eprintln!("{}", "yolo: unloading kernel module".green());
+    eprintln!("{}", "yolo: unloading kernel module".cyan());
 
     // Unload via delete_module(2) using CAP_SYS_MODULE. O_NONBLOCK matches
     // rmmod's default: fail with EBUSY rather than block if the module is still
@@ -120,7 +120,7 @@ fn parse_mounts(content: &str) -> Vec<String> {
 /// Unmount all active YoloFS sessions.
 fn unmount_all() -> Result<()> {
     for yolo_dir in find_yolo_dirs() {
-        eprintln!("{} {}", "yolo: unmounting".green(), yolo_dir);
+        eprintln!("{} {}", "yolo: unmounting".cyan(), yolo_dir);
         crate::cmd::mount::unmount_at(Path::new(&yolo_dir))?;
     }
     Ok(())

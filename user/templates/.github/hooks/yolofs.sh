@@ -18,7 +18,7 @@ if [ "$tool_name" != "bash" ]; then
 fi
 
 command=$(echo "$input" | jq -r '.toolArgs // "{}"' | jq -r '.command // ""')
-updated_command="yolo -- $command"
+updated_command="yolo run -- $command"
 
 jq -n --arg cmd "$updated_command" '{
   permissionDecision: "allow",

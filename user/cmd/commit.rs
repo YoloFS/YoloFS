@@ -154,7 +154,7 @@ pub fn run() -> Result<()> {
             "Committed {committed} change{}.",
             crate::utils::plural(committed)
         )
-        .green()
+        .cyan()
         .bold()
     );
 

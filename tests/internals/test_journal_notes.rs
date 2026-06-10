@@ -198,7 +198,7 @@ fn block_records_do_not_contribute_to_tree() {
 /// B records do not set sbi->dirty: an auto-snapshot (SNAPSHOT_IF_CHANGED)
 /// must be skipped if only B writes happened since the last marker.
 ///
-/// We check this indirectly via `yolo exec`: a denied-read command produces
+/// We check this indirectly via `yolo run -- <cmd>`: a denied-read command produces
 /// only B records, and the kernel's SNAPSHOT_IF_CHANGED auto-snapshot should
 /// be skipped, leaving the journal with no M record.
 #[test]
@@ -213,11 +213,11 @@ fn block_writes_do_not_set_dirty() {
 
     // Run a command that triggers only denied reads.
     let status = std::process::Command::new(YOLO_BIN)
-        .args(["exec", "--", "sh", "-c", "cat hello.txt; true"])
+        .args(["run", "-q", "--", "sh", "-c", "cat hello.txt; true"])
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
         .status()
-        .expect("yolo exec");
+        .expect("yolo run -q -- cmd");
     let _ = status;
 
     let j = journal(&s);
@@ -238,7 +238,7 @@ fn block_writes_do_not_set_dirty() {
 }
 
 /// Inverse of the above: when real mutations occur, dirty IS set and the
-/// auto-snapshot after `yolo exec` runs. B records in the same session
+/// auto-snapshot after the run completes. B records in the same session
 /// must not cancel that out.
 #[test]
 fn mixed_mutations_and_blocks_still_set_dirty() {
@@ -274,7 +274,8 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
 
     let status = std::process::Command::new(YOLO_BIN)
         .args([
-            "exec",
+            "run",
+            "-q",
             "--",
             "sh",
             "-c",
@@ -283,7 +284,7 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
         .status()
-        .expect("yolo exec");
+        .expect("yolo run -q -- cmd");
     let _ = status;
 
     let j = journal(&s);

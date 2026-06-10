@@ -161,7 +161,7 @@ fn run_multiple_commands_sequentially() {
     assert_eq!(code2, 0, "second command should see first command's output");
 }
 
-/// Auto-snapshot is skipped when the exec command produces no changes.
+/// Auto-snapshot is skipped when the run command produces no changes.
 #[test]
 fn run_no_changes_skips_snapshot() {
     let session = YoloSession::new().expect("session setup");
@@ -178,11 +178,11 @@ fn run_no_changes_skips_snapshot() {
 
     assert_eq!(
         before_count, after_count,
-        "no-op exec should not create a snapshot.\nbefore:\n{before}\nafter:\n{after}"
+        "no-op run should not create a snapshot.\nbefore:\n{before}\nafter:\n{after}"
     );
 }
 
-/// Auto-snapshot is created when the exec command makes changes.
+/// Auto-snapshot is created when the run command makes changes.
 #[test]
 fn run_with_changes_creates_snapshot() {
     let session = YoloSession::new().expect("session setup");
@@ -201,26 +201,26 @@ fn run_with_changes_creates_snapshot() {
 
     assert!(
         after_count == before_count + 1,
-        "exec with changes should create exactly one snapshot.\nbefore:\n{before}\nafter:\n{after}"
+        "run with changes should create exactly one snapshot.\nbefore:\n{before}\nafter:\n{after}"
     );
 }
 
-// ── `yolo -- <cmd>` shorthand: run, then review (vs quiet `exec`) ────
+// ── `yolo run -- <cmd>`: run, then review (vs quiet `yolo run -q --`) ────
 
-/// `yolo -- <cmd>` runs the command and then prints a status summary of what
-/// it changed (the run-and-review path), unlike the quiet `exec`.
+/// `yolo run -- <cmd>` runs the command and then prints a status summary of what
+/// it changed (the run-and-review path), unlike the quiet `yolo run -q --`.
 #[test]
 fn run_shorthand_shows_status() {
     let session = YoloSession::new().expect("session setup");
 
     let (ok, stdout, _err) = session
-        .cli_output(&["--", "sh", "-c", "echo hi > shorthand.txt"])
-        .expect("yolo -- cmd");
+        .cli_output(&["run", "--", "sh", "-c", "echo hi > shorthand.txt"])
+        .expect("yolo run -- cmd");
 
     assert!(ok, "command should succeed");
     assert!(
         stdout.contains("shorthand.txt"),
-        "`yolo -- <cmd>` should print a status summary naming the changed file: {stdout}"
+        "`yolo run -- <cmd>` should print a status summary naming the changed file: {stdout}"
     );
     assert!(
         stdout.contains("staged change"),
@@ -228,7 +228,7 @@ fn run_shorthand_shows_status() {
     );
 }
 
-/// `yolo -- <cmd>` reviews what THAT command did. A no-op command run after a
+/// `yolo run -- <cmd>` reviews what THAT command did. A no-op command run after a
 /// real change must report no changes — not echo the previous command's staged
 /// change (regression: it used to fall back to the last snapshot's batch).
 #[test]
@@ -237,12 +237,14 @@ fn run_shorthand_noop_after_change_shows_no_changes() {
 
     // First command stages a change (auto-snapshots).
     session
-        .cli_output(&["--", "sh", "-c", "echo hi > made.txt"])
+        .cli_output(&["run", "--", "sh", "-c", "echo hi > made.txt"])
         .expect("first run");
 
     // Second command changes nothing — its review must say no changes, and must
     // NOT show the previous command's change.
-    let (ok, stdout, _err) = session.cli_output(&["--", "true"]).expect("no-op run");
+    let (ok, stdout, _err) = session
+        .cli_output(&["run", "--", "true"])
+        .expect("no-op run");
     assert!(ok, "no-op command should succeed");
     assert!(
         stdout.contains("no changes"),
@@ -254,71 +256,53 @@ fn run_shorthand_noop_after_change_shows_no_changes() {
     );
 }
 
-/// `yolo exec -- <cmd>` is the quiet primitive: it must NOT print a status
-/// summary (the snapshot line it does emit goes to stderr).
+/// `yolo run -q -- <cmd>` is the quiet form: it must NOT print a status summary
+/// (the snapshot line it does emit goes to stderr).
 #[test]
-fn exec_stays_quiet_no_status() {
+fn quiet_run_no_status() {
     let session = YoloSession::new().expect("session setup");
 
     let (ok, stdout, _err) = session
-        .cli_output(&["exec", "--", "sh", "-c", "echo hi > quiet.txt"])
-        .expect("yolo exec -- cmd");
+        .cli_output(&["run", "-q", "--", "sh", "-c", "echo hi > quiet.txt"])
+        .expect("yolo run -q -- cmd");
 
     assert!(ok, "command should succeed");
     assert!(
         !stdout.contains("staged change"),
-        "`yolo exec` should not print a status summary on stdout: {stdout}"
+        "`yolo run -q --` should not print a status summary on stdout: {stdout}"
     );
 }
 
-/// The shorthand propagates the command's exit code, just like `exec`.
+/// The shorthand propagates the command's exit code.
 #[test]
 fn run_shorthand_propagates_exit_code() {
     let session = YoloSession::new().expect("session setup");
 
     let code = session
-        .cli_exit_code(&["--", "sh", "-c", "exit 42"])
+        .cli_exit_code(&["run", "--", "sh", "-c", "exit 42"])
         .unwrap();
     assert_eq!(
         code, 42,
-        "`yolo -- <cmd>` should propagate the command's exit code"
+        "`yolo run -- <cmd>` should propagate the command's exit code"
     );
 }
 
-/// yolo is a host-side tool: every command refuses to run inside the mount
-/// (its base-fs operations only work outside). Running it via `yolo exec`
-/// chroots it inside, where the top-level guard rejects it.
-#[test]
-fn run_yolo_inside_mount_is_rejected() {
-    let session = YoloSession::new().expect("session setup");
-
-    let (ok, _out, err) = session
-        .cli_output(&["exec", "--", "yolo", "review"])
-        .expect("running yolo inside the mount");
-
-    assert!(!ok, "yolo inside the mount should fail; stderr={err}");
-    assert!(
-        err.contains("cannot run inside the mount"),
-        "expected inside-mount rejection, got: {err}"
-    );
-}
-
-/// `yolo -- yolo <sub>` (the agent path) gates which yolo commands an agent may
-/// run: read/navigation pass through; commit/abort/rule/etc. are the human's.
+/// `yolo run -- yolo <sub>` (the agent path) gates which yolo commands an agent
+/// may run: read/navigation pass through; commit/abort/rule/etc. are the human's.
 #[test]
 fn agent_yolo_subcommands_are_gated() {
     let session = YoloSession::new().expect("session setup");
 
     // Allowed: `review` runs (fresh session ⇒ "No changes staged").
     let (ok, out, _err) = session
-        .cli_output(&["--", "yolo", "review"])
-        .expect("yolo -- yolo review");
+        .cli_output(&["run", "--", "yolo", "review"])
+        .expect("yolo run -- yolo review");
     assert!(ok, "review should be allowed for the agent: {out}");
 
     // Blocked: commit/abort/rule are reserved for the human.
     for sub in ["commit", "abort", "rule"] {
         let (ok, _out, err) = session
-            .cli_output(&["--", "yolo", sub])
+            .cli_output(&["run", "--", "yolo", sub])
             .expect("blocked yolo subcommand");
         assert!(!ok, "`yolo {sub}` should be blocked for the agent: {err}");
         assert!(

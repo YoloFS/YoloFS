@@ -45,7 +45,7 @@ pub fn run(marker_name: &str) -> Result<()> {
             "Traveled to {label} ({count} staged change{}).",
             crate::utils::plural(count)
         )
-        .green()
+        .cyan()
         .bold()
     );
 
