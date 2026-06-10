@@ -121,16 +121,22 @@ def create_seed_iso(host_cwd: Path, reset: bool = False):
     keys_yaml = f"ssh_authorized_keys:\n        - {pubkey}"
 
     # cloud-init 'mounts' writes /etc/fstab so the 9p share survives reboots.
+    # x-systemd.automount mounts on first access instead of at boot, where the
+    # mount can race virtio-9p driver probe ("no channels available").
     mounts_yaml = (
         "mounts:\n"
         f'  - ["hostcwd", "{host_cwd}", "9p",'
-        f' "trans=virtio,version=9p2000.L,rw,nofail", "0", "0"]'
+        f' "trans=virtio,version=9p2000.L,rw,nofail,x-systemd.automount", "0", "0"]'
     )
 
     setup_cmds = [
         f"mkdir -p {host_cwd}",
         f"chown {DEFAULT_USER}:{DEFAULT_USER} {host_cwd.parent}",
         f'echo "cd {host_cwd}" >> /home/{DEFAULT_USER}/.bashrc',
+        # The e2e test harness reads /dev/kmsg as a regular user; persist the
+        # sysctl so it survives reboots (the Makefile's sysctl -w does not).
+        'echo "kernel.dmesg_restrict = 0" > /etc/sysctl.d/99-yolofs-test.conf',
+        "sysctl -p /etc/sysctl.d/99-yolofs-test.conf",
     ]
     runcmd_yaml = "runcmd:\n" + "\n".join(f"  - {cmd}" for cmd in setup_cmds)
 
@@ -140,6 +146,10 @@ def create_seed_iso(host_cwd: Path, reset: bool = False):
         "manage_etc_hosts: true\n"
         "users:\n"
         f"  - name: {DEFAULT_USER}\n"
+        # Match the host uid: the 9p share uses security_model=none, where the
+        # guest kernel checks permissions against host file ownership. With the
+        # same uid the guest user owns the share and can read/write it normally.
+        f"    uid: {os.getuid()}\n"
         "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
         "    shell: /bin/bash\n"
         "    lock_passwd: false\n"
