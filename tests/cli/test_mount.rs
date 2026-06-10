@@ -101,8 +101,6 @@ fn mount_no_config_uses_defaults() {
     );
 
     // The success line names the mount, without the raw mount-option suffix.
-    // Match the message body only — the `yolo:` prefix carries color codes
-    // even under NO_COLOR (the CLI forces color; see report.rs).
     assert!(
         stderr.contains(" mounted "),
         "mount should announce success on stderr: {stderr}"

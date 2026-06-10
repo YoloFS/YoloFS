@@ -388,10 +388,6 @@ yolo_rename(old_parent, old_dentry, new_parent, new_dentry):
     if new_staged:
         yolo_dentry_unpin(new_dentry)
 
-    # Handle roundtrip detection.
-    if is_roundtrip:
-        yolo_dentry_unpin(old_dentry)     # cancel — back to ground state
-
     d_drop(old_dentry)
     d_drop(new_dentry)
 ```
@@ -402,13 +398,13 @@ old path, and sets a new redirect on `c`'s dentry. The base source is
 derived from `lower_path.dentry` — each rename is
 recorded as a separate journal entry (the DirTree collapses chains into
 minimal redirects at commit time).
-**Roundtrip renames** (`mv a->tmp`, then `mv tmp->a`) are detected at
-rename time: when the effective base source equals the destination
-relpath, the rename chain is a no-op. The kernel
-leaves the destination dentry as unpinned. The journal still records
-the R entries (the CLI has its own roundtrip detection). Negative dentries at
-intermediate positions (e.g. `/tmp` in a swap via third path) are
-independently correct and unaffected.
+**Roundtrip renames** (`mv a->tmp`, then `mv tmp->a`) are not
+special-cased in the kernel: the final dentry is a pinned redirect whose
+base source equals its own path — a harmless self-redirect (reads open
+the base file, writes COW as usual). The journal records both R entries;
+the CLI's tree builder collapses the chain into a no-op. Negative
+dentries at intermediate positions (e.g. `/tmp` in a swap via third
+path) are independently correct and unaffected.
 
 **Rename + recreate** (`mv a->b`, then `touch a`) works because the new
 `touch a` sees the tombstone pinned in the dcache and creates a new
@@ -418,7 +414,7 @@ journal sees `R(b, a)` for the rename, then `S(a)` for the recreate.
 **Read after rename**: lookup of the new name finds the pinned dentry
 in the dcache -> opens the base file via `lower_path` (or the
 staged inode). Lookup of the old name finds the negative dentry ->
-returns `-ENOENT` (or falls through to base if cancelled).
+returns `-ENOENT`.
 
 **Write after rename**: opening for write triggers COW at open time. The
 base file is copied into a new inode; the dentry's target changes

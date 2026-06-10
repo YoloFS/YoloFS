@@ -12,7 +12,7 @@
 // nodes carry a passthrough target (`Target::Passthrough`).
 
 use std::borrow::Borrow;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use super::types::*;
 
@@ -29,16 +29,19 @@ pub struct DirNode {
     pub children: DirTree,
 }
 
-/// A directory tree mapping child names to nodes.
+/// A directory tree mapping child names to nodes. A `BTreeMap` so every
+/// traversal (review listing, commit plan, travel serialization) is
+/// byte-lexicographic per component, depth-first — deterministic by
+/// construction.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DirTree {
-    pub nodes: HashMap<String, DirNode>,
+    pub nodes: BTreeMap<String, DirNode>,
 }
 
 impl DirTree {
     fn new() -> Self {
         Self {
-            nodes: HashMap::new(),
+            nodes: BTreeMap::new(),
         }
     }
 
@@ -168,21 +171,13 @@ impl DirTree {
     }
 
     fn serialize_into(&self, buf: &mut Vec<u8>) {
-        // Collect children sorted by name, skipping empty passthrough dirs.
-        let mut children: Vec<(&str, &DirNode)> = self
-            .nodes
-            .iter()
-            .filter(|(_, node)| {
-                !(matches!(node.target, Target::Passthrough) && node.children.nodes.is_empty())
-            })
-            .map(|(name, node)| (name.as_str(), node))
-            .collect();
-        children.sort_by_key(|(name, _)| *name);
-
-        let count: u16 = children.len().try_into().expect("too many children");
+        // BTreeMap iteration is already name-sorted, so stream directly.
+        // Empty passthrough dirs are emitted as-is (tag=2, path_len=0,
+        // child_count=0) — the kernel parses them as pure no-ops.
+        let count: u16 = self.nodes.len().try_into().expect("too many children");
         buf.extend_from_slice(&count.to_le_bytes());
 
-        for (name, node) in children {
+        for (name, node) in &self.nodes {
             let name_bytes = name.as_bytes();
             let name_len: u16 = name_bytes.len().try_into().expect("name too long");
             buf.extend_from_slice(&name_len.to_le_bytes());
@@ -477,6 +472,45 @@ mod tests {
         assert!(
             tree.get("/file.txt/invalid").is_none(),
             "querying path through a file should return None"
+        );
+    }
+
+    // ── Iteration order ───────────────────────────────────────────────
+
+    #[test]
+    fn for_each_visits_paths_in_component_sorted_dfs_order() {
+        // Insert order is deliberately scrambled; iteration must be
+        // byte-lexicographic per path component, depth-first. Note /a/b
+        // precedes /a.txt: per-component DFS order is not flat string
+        // order ("/a.txt" < "/a/b" as strings, since '.' < '/').
+        let tree = build(&[
+            add("/zeta", 1),
+            add("/a.txt", 2),
+            add("/mike", 3),
+            add("/a/b", 4),
+            add("/beta/x", 5),
+            add("/beta", 6),
+            add("/echo", 7),
+            add("/delta/d2", 8),
+            add("/delta/d1", 9),
+            add("/kilo", 10),
+        ]);
+        let mut paths = Vec::new();
+        tree.for_each(|p, _| paths.push(p.to_string()));
+        assert_eq!(
+            paths,
+            vec![
+                "/a/b",
+                "/a.txt",
+                "/beta",
+                "/beta/x",
+                "/delta/d1",
+                "/delta/d2",
+                "/echo",
+                "/kilo",
+                "/mike",
+                "/zeta",
+            ]
         );
     }
 
@@ -1218,8 +1252,9 @@ mod tests {
     }
 
     #[test]
-    fn serialize_passthrough_dir_empty_subtree_omitted() {
-        // Create a tree with a passthrough dir that has an empty subtree
+    fn serialize_empty_passthrough_dir_emitted() {
+        // An empty passthrough dir is emitted as-is (tag=2, path_len=0,
+        // child_count=0); the kernel parses it as a pure no-op.
         let mut tree = DirTree::new();
         tree.nodes.insert(
             "empty".to_string(),
@@ -1229,8 +1264,14 @@ mod tests {
             },
         );
         let buf = tree.serialize();
-        // Should produce just child_count=0 (the empty passthrough dir is skipped)
-        assert_eq!(buf, vec![0x00, 0x00]);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&1u16.to_le_bytes()); // child_count = 1
+        expected.extend_from_slice(&5u16.to_le_bytes()); // name_len = 5
+        expected.extend_from_slice(b"empty");
+        expected.push(2); // tag=2 (PATH/passthrough)
+        expected.extend_from_slice(&0u16.to_le_bytes()); // path_len = 0
+        expected.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
+        assert_eq!(buf, expected);
     }
 
     #[test]

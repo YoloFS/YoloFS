@@ -121,10 +121,17 @@ Interactive prompts are `yolo:`-prefixed (yellow) questions; continuation
 detail under a status line (blocking PIDs, the `rule:` line under an ask, the
 `→ allow` decision) is indented two spaces and uncolored.
 
+Color is emitted only when stdout is a terminal, with the standard env-var
+overrides: `NO_COLOR` disables it, `CLICOLOR_FORCE=1` forces it even through
+a pipe (`example.sh` uses this to keep color while capturing the
+walkthrough).
+
 Streams: **status goes to stderr; stdout carries only the data a command was
 asked for** (review summaries/diffs, timeline/journal listings, `rule list` /
 `rule resolve` rows, the bare-`yolo` overview). So `yolo review > changes.txt`
-captures the changes and nothing else. When a data command has nothing to
+captures the changes and nothing else. Review and diff listings are
+path-sorted (byte-lexicographic per path component, depth-first) and stable
+across runs. When a data command has nothing to
 show, stdout gets a single dimmed parenthesized line instead: `(no changes
 staged)`, `(no snapshots)`, `(no journal records)`, `(no rules configured)`.
 

@@ -1,5 +1,6 @@
-use crate::helpers::YoloSession;
+use crate::helpers::{YOLO_BIN, YoloSession};
 use std::fs;
+use std::process::Command;
 
 #[test]
 fn status_empty() {
@@ -32,6 +33,87 @@ fn status_multiple_changes() {
     assert!(output.contains("hello.txt"), "output: {output}");
     assert!(output.contains("newfile.txt"), "output: {output}");
     assert!(output.contains("2 staged change"), "output: {output}");
+}
+
+/// Review lists changes in path-sorted order, stable across runs.
+#[test]
+fn status_lists_changes_in_sorted_order() {
+    let s = YoloSession::new().expect("session setup");
+
+    // Scrambled creation order; review must list them sorted by path.
+    let names = [
+        "zeta.txt",
+        "kilo.txt",
+        "mike.txt",
+        "alpha.txt",
+        "echo.txt",
+        "tango.txt",
+        "bravo.txt",
+        "victor.txt",
+        "delta.txt",
+        "sierra.txt",
+    ];
+    for name in names {
+        fs::write(s.mnt_path(name), "x\n").expect("write");
+    }
+
+    let output = s.cli(&["review"]).expect("status");
+    let listed: Vec<&str> = output
+        .lines()
+        .filter(|l| l.ends_with("(added)"))
+        .map(|l| l.split_whitespace().next().unwrap())
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            "alpha.txt",
+            "bravo.txt",
+            "delta.txt",
+            "echo.txt",
+            "kilo.txt",
+            "mike.txt",
+            "sierra.txt",
+            "tango.txt",
+            "victor.txt",
+            "zeta.txt",
+        ],
+        "review should list changes path-sorted: {output}"
+    );
+}
+
+/// Color follows the standard env/tty policy: piped output is plain by
+/// default; `CLICOLOR_FORCE=1` forces ANSI codes through the pipe.
+#[test]
+fn color_follows_env_and_tty() {
+    let s = YoloSession::new().expect("session setup");
+    fs::write(s.mnt_path("c.txt"), "x\n").expect("write");
+
+    // Piped stdout (not a tty) → no escape codes, even without NO_COLOR.
+    let out = Command::new(YOLO_BIN)
+        .arg("review")
+        .current_dir(&s.root)
+        .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .expect("yolo review");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "piped output must be colorless: {stdout:?}"
+    );
+
+    // CLICOLOR_FORCE wins over both NO_COLOR and the tty check.
+    let out = Command::new(YOLO_BIN)
+        .arg("review")
+        .current_dir(&s.root)
+        .env("CLICOLOR_FORCE", "1")
+        .output()
+        .expect("yolo review (forced color)");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains('\u{1b}'),
+        "CLICOLOR_FORCE=1 must force color through the pipe: {stdout:?}"
+    );
 }
 
 #[test]

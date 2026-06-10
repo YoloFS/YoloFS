@@ -83,7 +83,6 @@ impl YoloSession {
         let output = Command::new(YOLO_BIN)
             .arg("mount")
             .current_dir(&self.root)
-            .env("NO_COLOR", "1")
             .output()
             .context("running yolo mount")?;
         if !output.status.success() {
@@ -118,7 +117,6 @@ impl YoloSession {
         let output = Command::new(YOLO_BIN)
             .args(args)
             .current_dir(&self.root)
-            .env("NO_COLOR", "1")
             .output()
             .context("running yolo CLI")?;
         if !output.status.success() {
@@ -154,7 +152,6 @@ impl YoloSession {
         let output = Command::new(YOLO_BIN)
             .args(args)
             .current_dir(&self.root)
-            .env("NO_COLOR", "1")
             .output()
             .context("running yolo CLI")?;
         Ok((
@@ -169,7 +166,6 @@ impl YoloSession {
         let output = Command::new(YOLO_BIN)
             .args(args)
             .current_dir(&self.root)
-            .env("NO_COLOR", "1")
             .output()
             .context("running yolo CLI")?;
         Ok(output.status.code().unwrap_or(-1))
@@ -200,7 +196,6 @@ impl Drop for YoloSession {
             let _ = Command::new(YOLO_BIN)
                 .args(["unmount", "--force"])
                 .current_dir(&self.root)
-                .env("NO_COLOR", "1")
                 .output();
             self.mounted = false;
         }

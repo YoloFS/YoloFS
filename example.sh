@@ -4,6 +4,8 @@ cd "$(dirname "$0")"
 
 # Mirror everything to example.out, stripping ANSI colors from the file copy so
 # it stays readable in a plain editor (the terminal still gets color).
+# CLICOLOR_FORCE keeps the CLI coloring through the tee pipe.
+export CLICOLOR_FORCE=1
 rm -f example.out
 exec > >(tee >(sed -E "s/\x1B\[[0-9;]*[a-zA-Z]//g" >> example.out)) 2>&1
 
