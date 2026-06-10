@@ -213,10 +213,10 @@ fn run_with_changes_creates_snapshot() {
     );
 }
 
-// ── `yolo run -- <cmd>`: run, then review (vs quiet `yolo run -q --`) ────
+// ── `yolo run -- <cmd>`: run, then review (vs quiet `yolo run --no-review --`) ────
 
 /// `yolo run -- <cmd>` runs the command and then prints a status summary of what
-/// it changed (the run-and-review path), unlike the quiet `yolo run -q --`.
+/// it changed (the run-and-review path), unlike the quiet `yolo run --no-review --`.
 #[test]
 fn run_shorthand_shows_status() {
     let session = YoloSession::new().expect("session setup");
@@ -264,20 +264,146 @@ fn run_shorthand_noop_after_change_shows_no_changes() {
     );
 }
 
-/// `yolo run -q -- <cmd>` is the quiet form: it must NOT print a status summary
+/// `yolo run --no-review -- <cmd>` is the quiet form: it must NOT print a status summary
 /// (the snapshot line it does emit goes to stderr).
 #[test]
 fn quiet_run_no_status() {
     let session = YoloSession::new().expect("session setup");
 
     let (ok, stdout, _err) = session
-        .cli_output(&["run", "-q", "--", "sh", "-c", "echo hi > quiet.txt"])
-        .expect("yolo run -q -- cmd");
+        .cli_output(&[
+            "run",
+            "--no-review",
+            "--",
+            "sh",
+            "-c",
+            "echo hi > quiet.txt",
+        ])
+        .expect("yolo run --no-review -- cmd");
 
     assert!(ok, "command should succeed");
     assert!(
         !stdout.contains("staged change"),
-        "`yolo run -q --` should not print a status summary on stdout: {stdout}"
+        "`yolo run --no-review --` should not print a status summary on stdout: {stdout}"
+    );
+}
+
+#[test]
+fn run_mounts_initialized_project_on_demand() {
+    let root = tempfile::tempdir().unwrap();
+    yolofs::config::Config {
+        permission: false,
+        ..Default::default()
+    }
+    .save(&root.path().join("yolofs.toml"))
+    .unwrap();
+
+    let output = std::process::Command::new(crate::helpers::YOLO_BIN)
+        .args([
+            "run",
+            "--no-review",
+            "--",
+            "sh",
+            "-c",
+            "echo hi > first.txt",
+        ])
+        .current_dir(root.path())
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("not mounted — mounting now"),
+        "stderr: {stderr}"
+    );
+    assert!(root.path().join(".yolofs").exists());
+
+    let second = std::process::Command::new(crate::helpers::YOLO_BIN)
+        .args(["run", "--no-review", "--", "true"])
+        .current_dir(root.path())
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let second_stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(second.status.success(), "stderr: {second_stderr}");
+    assert!(
+        !second_stderr.contains("not mounted — mounting now"),
+        "second run must not announce another mount: {second_stderr}"
+    );
+
+    let _ = std::process::Command::new(crate::helpers::YOLO_BIN)
+        .args(["unmount"])
+        .current_dir(root.path())
+        .output();
+}
+
+#[test]
+fn run_mounts_existing_artifact_and_restores_staging() {
+    let session = YoloSession::new().expect("session setup");
+    std::fs::write(session.mnt_path("hello.txt"), "restored by run\n").unwrap();
+    session.cli(&["unmount"]).unwrap();
+
+    let output = std::process::Command::new(crate::helpers::YOLO_BIN)
+        .args(["run", "--no-review", "--", "cat", "hello.txt"])
+        .current_dir(&session.root)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert_eq!(stdout, "restored by run\n");
+    assert!(
+        stderr.contains("not mounted — mounting now") && stderr.contains("restored staged changes"),
+        "auto-mount should restore existing artifact: {stderr}"
+    );
+}
+
+#[test]
+fn run_outside_yolofs_project_fails_without_mounting() {
+    let root = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(crate::helpers::YOLO_BIN)
+        .args(["run", "--no-review", "--", "true"])
+        .current_dir(root.path())
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "run should fail outside project");
+    assert!(
+        stderr.contains("not a yolofs project") && stderr.contains("yolo init"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !root.path().join(".yolofs").exists(),
+        "failed run must not create an artifact"
+    );
+}
+
+#[test]
+fn run_with_only_artifact_fails_without_mounting() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".yolofs")).unwrap();
+
+    let output = std::process::Command::new(crate::helpers::YOLO_BIN)
+        .args(["run", "--no-review", "--", "true"])
+        .current_dir(root.path())
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        ".yolofs alone must not make auto-run treat the directory as a project"
+    );
+    assert!(
+        stderr.contains("not a yolofs project") && stderr.contains("yolo init"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("not mounted — mounting now"),
+        "artifact-only directory must not auto-mount: {stderr}"
     );
 }
 

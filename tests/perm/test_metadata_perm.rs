@@ -154,7 +154,7 @@ fn create_denied_with_ro_rule() {
     assert!(result.is_err(), "create should be denied with ro rule");
 
     let _ = std::process::Command::new(YOLO_BIN)
-        .args(["unmount", "--force"])
+        .args(["unmount"])
         .current_dir(&root)
         .env("NO_COLOR", "1")
         .output();

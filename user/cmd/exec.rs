@@ -42,7 +42,7 @@ unsafe fn chroot_pre_exec(mnt: &Path, cwd: &Path) -> Result<(), std::io::Error> 
 }
 
 /// Outcome of the post-command auto-snapshot, so callers can decide how to
-/// surface it (quiet `yolo run -q -- <cmd>` prints a terse line; the default
+/// surface it (quiet `yolo run --no-review -- <cmd>` prints a terse line; the default
 /// `yolo run -- <cmd>` folds the id into its review summary).
 pub enum Snapshot {
     /// A snapshot was created with this gen id.
@@ -53,7 +53,7 @@ pub enum Snapshot {
     Off,
 }
 
-/// Print the post-command snapshot outcome for the quiet `yolo run -q -- <cmd>`
+/// Print the post-command snapshot outcome for the quiet `yolo run --no-review -- <cmd>`
 /// (to stderr). The snapshot's name is omitted — it just echoes the command you
 /// already typed; `timeline`/`journal` still show it.
 pub fn announce(snapshot: &Snapshot) {
@@ -71,13 +71,9 @@ pub fn announce(snapshot: &Snapshot) {
 /// Spawn a command under yolofs and wait for it to exit. Returns the process
 /// exit code (0 = success) and the post-command auto-snapshot outcome.
 pub fn run(exec_args: &[String]) -> Result<(u8, Snapshot)> {
-    let yolo_dir = crate::utils::session_dir()?;
+    let yolo_dir = super::mount::ensure_mounted()?;
     let mnt = crate::utils::mnt_dir(&yolo_dir);
     let cwd = env::current_dir().context("getting cwd")?;
-
-    if !mnt.exists() {
-        bail!("mount point does not exist — run `yolo mount` first");
-    }
 
     let Some((cmd, args)) = exec_args.split_first() else {
         bail!("no command given — usage: `yolo run -- <cmd>`");

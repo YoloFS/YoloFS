@@ -62,6 +62,130 @@ fn remount_picks_up_new_rules() {
 }
 
 #[test]
+fn remount_restores_staged_view() {
+    let session = YoloSession::new().expect("session setup");
+    std::fs::write(session.mnt_path("hello.txt"), "staged\n").unwrap();
+    std::fs::remove_file(session.mnt_path("multi.txt")).unwrap();
+
+    let stderr = session.cli_stderr(&["remount"]).expect("remount");
+    assert!(
+        stderr.contains("restored staged changes"),
+        "restore should be announced: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(session.mnt_path("hello.txt")).unwrap(),
+        "staged\n"
+    );
+    assert!(!session.mnt_path("multi.txt").exists());
+}
+
+#[test]
+fn remount_empty_view_restores_generation() {
+    let session = YoloSession::new().expect("session setup");
+    std::fs::write(session.mnt_path("hello.txt"), "staged\n").unwrap();
+    session.cli(&["snapshot", "one"]).unwrap();
+    session.cli(&["travel", "0"]).unwrap();
+
+    session.cli(&["remount"]).expect("remount empty view");
+    let stderr = session.cli_stderr(&["snapshot", "after"]).unwrap();
+    assert!(
+        stderr.contains("snapshot 3"),
+        "generation should continue after snapshot 1 + travel 2: {stderr}"
+    );
+}
+
+#[test]
+fn remount_restores_dirty_state() {
+    let session = YoloSession::new().expect("session setup");
+    std::fs::write(session.mnt_path("hello.txt"), "snapshotted\n").unwrap();
+    session.cli(&["snapshot", "one"]).unwrap();
+
+    session.cli(&["remount"]).unwrap();
+    let clean = session
+        .cli_stderr(&["snapshot", "--if-changed", "clean"])
+        .unwrap();
+    assert!(
+        clean.is_empty(),
+        "snapshotted restore should remain clean: {clean}"
+    );
+
+    std::fs::write(session.mnt_path("hello.txt"), "unsnapshotted\n").unwrap();
+    session.cli(&["remount"]).unwrap();
+    let dirty = session
+        .cli_stderr(&["snapshot", "--if-changed", "dirty"])
+        .unwrap();
+    assert!(
+        dirty.contains("snapshot 2"),
+        "unsnapshotted restore should remain dirty: {dirty}"
+    );
+}
+
+#[test]
+fn remount_restores_allocator_from_dead_journal_records() {
+    let session = YoloSession::new().expect("session setup");
+    std::fs::write(session.mnt_path("a.txt"), "a\n").unwrap();
+    session.cli(&["snapshot", "one"]).unwrap();
+    std::fs::write(session.mnt_path("dead.txt"), "dead\n").unwrap();
+
+    let yolo_dir = session.root.join(".yolofs");
+    let max_before = yolofs::journal::Journal::read(&yolo_dir).unwrap().max_ino;
+    session.cli(&["travel", "one"]).unwrap();
+    session.cli(&["remount"]).unwrap();
+
+    std::fs::write(session.mnt_path("fresh.txt"), "fresh\n").unwrap();
+    let max_after = yolofs::journal::Journal::read(&yolo_dir).unwrap().max_ino;
+    assert!(
+        max_after > max_before,
+        "fresh inode {max_after} must exceed dead-branch inode {max_before}"
+    );
+}
+
+#[test]
+fn mount_restore_failure_preserves_artifact_for_offline_recovery() {
+    let session = YoloSession::new().expect("session setup");
+    std::fs::rename(
+        session.mnt_path("hello.txt"),
+        session.mnt_path("renamed.txt"),
+    )
+    .unwrap();
+    session.cli(&["unmount"]).unwrap();
+    std::fs::remove_file(session.base_path("hello.txt")).unwrap();
+
+    let (ok, _, stderr) = session.cli_output(&["mount"]).unwrap();
+    assert!(!ok, "mount should fail when a redirect source vanished");
+    assert!(
+        stderr.contains("staged changes could not be restored")
+            && stderr.contains("review")
+            && stderr.contains("commit")
+            && stderr.contains("abort"),
+        "mount failure should explain offline recovery: {stderr}"
+    );
+    assert!(
+        !session.mnt.exists(),
+        "failed restore must tear down the view"
+    );
+    assert!(
+        session
+            .root
+            .join(".yolofs/journal")
+            .metadata()
+            .unwrap()
+            .len()
+            > 0,
+        "failed restore must preserve the artifact"
+    );
+    assert!(
+        session.cli(&["review"]).is_ok(),
+        "review should work without a live view"
+    );
+    session.cli(&["abort", "--force"]).unwrap();
+    assert!(
+        session.root.join(".yolofs").exists(),
+        "offline abort must preserve the empty artifact"
+    );
+}
+
+#[test]
 fn unknown_subcommand_shows_help() {
     let output = std::process::Command::new(YOLO_BIN)
         .arg("notarealcommand")
@@ -112,7 +236,7 @@ fn mount_no_config_uses_defaults() {
 
     // Clean up — unmount the session we just created
     let _ = std::process::Command::new(YOLO_BIN)
-        .args(["unmount", "--force"])
+        .args(["unmount"])
         .current_dir(tmp.path())
         .env("NO_COLOR", "1")
         .output();
@@ -148,7 +272,7 @@ fn mount_invalid_config_fails() {
 
     // Clean up — mount may have partially succeeded before apply_rules failed
     let _ = std::process::Command::new(YOLO_BIN)
-        .args(["unmount", "--force"])
+        .args(["unmount"])
         .current_dir(tmp.path())
         .env("NO_COLOR", "1")
         .output();

@@ -171,9 +171,9 @@ impl YoloSession {
         Ok(output.status.code().unwrap_or(-1))
     }
 
-    /// Run a command under yolofs via `yolo run -q --` and return exit code.
+    /// Run a command under yolofs via `yolo run --no-review --` and return exit code.
     pub fn run_in_yolofs(&self, cmd: &[&str]) -> Result<i32> {
-        let mut args = vec!["run", "-q", "--"];
+        let mut args = vec!["run", "--no-review", "--"];
         args.extend_from_slice(cmd);
         self.cli_exit_code(&args)
     }
@@ -194,7 +194,7 @@ impl Drop for YoloSession {
 
         if self.mounted {
             let _ = Command::new(YOLO_BIN)
-                .args(["unmount", "--force"])
+                .args(["unmount"])
                 .current_dir(&self.root)
                 .output();
             self.mounted = false;

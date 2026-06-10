@@ -144,9 +144,13 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    let committed = apply_plan(&yolofs, &plan)?;
+    // When a live view exists, RESTORE(empty) is also the fd-count gate. Pass
+    // it before changing base so an EBUSY commit leaves both base and artifact
+    // untouched. Without a live view there is no kernel state to clear.
+    super::abort::restore_base_view(&yolofs)?;
 
-    super::abort::reset_staging(&yolofs)?;
+    let committed = apply_plan(&yolofs, &plan)?;
+    super::abort::clear_artifact(&yolofs)?;
 
     report::success(format!(
         "committed {committed} change{}",

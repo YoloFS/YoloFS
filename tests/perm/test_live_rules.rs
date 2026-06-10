@@ -20,7 +20,7 @@ fn newly_created_file_checked_on_reopen() {
     fs::write(s.mnt_path("newfile.txt"), "hello").expect("create should succeed");
 
     // Now change rules to deny and re-read.
-    s.cli(&["unmount", "--force"]).unwrap();
+    s.cli(&["unmount"]).unwrap();
     Config {
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()

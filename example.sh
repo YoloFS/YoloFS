@@ -32,7 +32,6 @@ note
 note "'yolo init <dir>' scaffolds a project: a default yolofs.toml plus agent hook templates."
 yolo init example --agents claude
 cd example
-yolo mount
 
 note
 note ──────────────────────────────────────────────────────────

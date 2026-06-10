@@ -67,7 +67,8 @@ fn config_path() -> Result<std::path::PathBuf> {
 }
 
 fn is_mounted() -> bool {
-    crate::utils::session_dir().is_ok_and(|d| crate::utils::mnt_dir(&d).exists())
+    crate::utils::session_dir()
+        .is_ok_and(|d| crate::cmd::mount::is_mountpoint(&crate::utils::mnt_dir(&d)))
 }
 
 /// Expand a leading `$HOME` or `~` to the home directory.

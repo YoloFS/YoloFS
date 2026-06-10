@@ -1050,7 +1050,7 @@ fn travel_then_immediate_unmount() {
     // Immediately unmount without reading any files.
     // YoloSession::drop checks for kernel warnings — if yolo_unstage_all
     // leaks dentry references, the kernel will WARN and this test fails.
-    let (ok, _, stderr) = s.cli_output(&["unmount", "--force"]).unwrap();
+    let (ok, _, stderr) = s.cli_output(&["unmount"]).unwrap();
     assert!(ok, "unmount after travel should succeed: {stderr}");
 }
 

@@ -86,6 +86,16 @@ struct yolo_ioc_travel {
 	__u64	tree_ptr;		/* in: userspace pointer to tree buffer */
 };
 
+/* userspace ↔ kernel: replace the in-memory staged view without journaling */
+struct yolo_ioc_restore {
+	__u64	gen;			/* in: latest journal marker generation */
+	__u64	tree_len;		/* in: byte length of serialized tree */
+	__u64	tree_ptr;		/* in: userspace pointer to tree buffer */
+	__u32	max_ino;		/* in: maximum S-record ino in full journal */
+	__u8	dirty;			/* in: live S/D/R exists after latest P/T */
+	__u8	_pad[3];
+};
+
 /* kernel → userspace: dequeued permission ask */
 struct yolo_ioc_ask {
 	__u64	id;
@@ -113,7 +123,7 @@ struct yolo_ioc_decision {
 #define YOLO_IOC_PUT_DECISION	_IOW('A', 31, struct yolo_ioc_decision)
 #define YOLO_IOC_SNAPSHOT	_IOWR('A', 40, struct yolo_ioc_snapshot)
 #define YOLO_IOC_TRAVEL		_IOWR('A', 41, struct yolo_ioc_travel)
-#define YOLO_IOC_RESET		_IO('A', 42)
+#define YOLO_IOC_RESTORE	_IOW('A', 42, struct yolo_ioc_restore)
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 

@@ -1,9 +1,10 @@
 // yolo CLI — mount.rs
 //
 // `yolo mount`    — create .yolofs/ layout and mount the filesystem.
-// `yolo unmount`  — unmount and clean up .yolofs/.
+// `yolo unmount`  — unmount the live view, preserving .yolofs/.
 // `yolo remount`  — unmount then mount again (picks up new yolofs.toml options).
 
+use crate::ioctl;
 use crate::journal::Journal;
 use crate::report;
 use anyhow::{Context, Result};
@@ -145,7 +146,7 @@ fn unbind_mount_pseudofs(mnt: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Full teardown of a YoloFS session directory: unbind pseudofs, unmount, remove symlinks, clean up.
+/// Tear down the live view while preserving the durable `.yolofs/` artifact.
 pub fn unmount_at(yolo_dir: &Path) -> Result<()> {
     let mnt = crate::utils::mnt_dir(yolo_dir);
 
@@ -158,11 +159,8 @@ pub fn unmount_at(yolo_dir: &Path) -> Result<()> {
         umount_or_prompt(&mnt).with_context(|| format!("unmounting {}", mnt.display()))?;
     }
 
-    // Remove the now-unmounted mountpoint dir (NOT its parent — that's the
-    // runtime base shared with other sessions), then the in-workspace .yolofs/
-    // (including its `mnt` convenience symlink).
+    // Remove the now-unmounted runtime mountpoint, but preserve `.yolofs/`.
     let _ = fs::remove_dir_all(&mnt);
-    let _ = fs::remove_dir_all(yolo_dir);
     Ok(())
 }
 
@@ -189,9 +187,24 @@ pub fn mount() -> Result<()> {
         return Ok(());
     }
 
+    let artifact_existed = yolo_dir.join("journal").exists();
     setup_yolo_dir(&yolo_dir)?;
     super::load::load()?;
     do_mount(&yolo_dir)?;
+
+    let restored_staging = if artifact_existed {
+        match restore_artifact(&yolo_dir) {
+            Ok(restored) => restored,
+            Err(e) => {
+                let _ = unmount_at(&yolo_dir);
+                return Err(e).context(
+                    "staged changes could not be restored — `yolo review`/`commit`/`abort` work without mounting",
+                );
+            }
+        }
+    } else {
+        false
+    };
 
     // Everything below runs against a live mount. If any step fails, roll the
     // mount back — yolofs stacks over /, so a dangling mount makes ordinary
@@ -203,54 +216,71 @@ pub fn mount() -> Result<()> {
         let _ = unmount_at(&yolo_dir);
         return Err(e);
     }
+    report::success(format!("mounted {}", yolo_dir.join("mnt").display()));
+    if restored_staging {
+        report::info("restored staged changes from a previous session — `yolo review` to inspect");
+    }
     hint_watch();
     Ok(())
 }
 
-/// Unmount the yolofs filesystem and remove the .yolofs/ directory.
-pub fn unmount(force: bool) -> Result<()> {
-    let yolo_dir = crate::utils::session_dir()?;
-    if !force {
-        prompt_if_staged(&yolo_dir)?;
+/// Return the current session, mounting on demand for the overlay exec path.
+pub fn ensure_mounted() -> Result<std::path::PathBuf> {
+    let cwd = env::current_dir().context("getting cwd")?;
+    let yolo_dir = cwd.join(".yolofs");
+    let mnt = crate::utils::mnt_dir(&yolo_dir);
+    if is_mountpoint(&mnt) {
+        return Ok(yolo_dir);
     }
+    if !is_yolofs_project(&cwd) {
+        anyhow::bail!(
+            "not a yolofs project — run `yolo init` first (or `yolo mount` to mount anyway)"
+        );
+    }
+    report::info("not mounted — mounting now (run `yolo unmount` when you're done)");
+    mount()?;
+    Ok(yolo_dir)
+}
+
+fn is_yolofs_project(cwd: &Path) -> bool {
+    cwd.join("yolofs.toml").exists()
+}
+
+fn restore_artifact(yolo_dir: &Path) -> Result<bool> {
+    let journal = Journal::read(yolo_dir)?;
+    let has_staged_changes = journal.has_staged_changes;
+    let latest_gen = journal.latest_gen;
+    let dirty = journal.dirty;
+    let max_ino = journal.max_ino;
+    let tree = journal.into_tree().serialize();
+    let ctl_file = ioctl::open(yolo_dir).context("opening ctl for restore")?;
+    ioctl::restore(&ctl_file, latest_gen, dirty, max_ino, &tree)?;
+    Ok(has_staged_changes)
+}
+
+/// Unmount the live view. The durable artifact is always preserved.
+pub fn unmount() -> Result<()> {
+    let yolo_dir = crate::utils::session_dir()?;
+    let mnt = crate::utils::mnt_dir(&yolo_dir);
+    let was_mounted = is_mountpoint(&mnt);
     unmount_at(&yolo_dir)?;
-    report::success(format!("unmounted {}", yolo_dir.join("mnt").display()));
+    if was_mounted {
+        report::success(format!("unmounted {}", yolo_dir.join("mnt").display()));
+    } else {
+        report::hint("view already unmounted");
+    }
     Ok(())
 }
 
 /// Unmount then mount again. Picks up new mount options from yolofs.toml.
-pub fn remount(force: bool) -> Result<()> {
+pub fn remount() -> Result<()> {
     let yolo_dir = crate::utils::session_dir()?;
-    if !force {
-        prompt_if_staged(&yolo_dir)?;
-    }
     unmount_at(&yolo_dir)?;
     mount()
 }
 
-/// If there are staged changes, ask the user to commit or abort before proceeding.
-fn prompt_if_staged(yolo_dir: &Path) -> Result<()> {
-    let journal = Journal::read(yolo_dir).unwrap_or_else(|_| Journal::new(vec![]));
-    if !journal.has_staged_changes() {
-        return Ok(());
-    }
-
-    report::warn("staged changes will be lost (`yolo review` to see them)");
-    report::prompt("[c]ommit, [a]bort, or [q]uit? [default: quit]:");
-
-    let mut line = String::new();
-    io::stdin().lock().read_line(&mut line)?;
-
-    match line.trim().to_ascii_lowercase().as_str() {
-        "c" | "commit" => super::commit::run()?,
-        "a" | "abort" => super::abort::reset_staging(yolo_dir)?,
-        _ => anyhow::bail!("unmount cancelled"),
-    }
-    Ok(())
-}
-
 /// Check if a path is a mount point by comparing device IDs with its parent.
-fn is_mountpoint(path: &Path) -> bool {
+pub(crate) fn is_mountpoint(path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     let Ok(meta) = fs::metadata(path) else {
         return false;
@@ -306,12 +336,6 @@ pub fn do_mount(yolo_dir: &Path) -> Result<()> {
     )
     .context("mounting YoloFS (is the kernel module loaded?)")?;
 
-    // Show the in-workspace `.yolofs/mnt` symlink rather than the runtime
-    // mountpoint path — it's the familiar, stable handle users interact with.
-    // The raw mount-option string stays internal; `yolo rule list`/`resolve`
-    // answer the "what's in effect?" question.
-    report::success(format!("mounted {}", yolo_dir.join("mnt").display()));
-
     Ok(())
 }
 
@@ -348,6 +372,17 @@ mod tests {
         if Path::new("/proc/self").exists() {
             assert!(is_mountpoint(Path::new("/proc")));
         }
+    }
+
+    #[test]
+    fn project_marker_is_config_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!is_yolofs_project(tmp.path()));
+        std::fs::write(tmp.path().join("yolofs.toml"), "").unwrap();
+        assert!(is_yolofs_project(tmp.path()));
+        std::fs::remove_file(tmp.path().join("yolofs.toml")).unwrap();
+        std::fs::create_dir(tmp.path().join(".yolofs")).unwrap();
+        assert!(!is_yolofs_project(tmp.path()));
     }
 
     /// Create `.yolofs/` with its `mnt` symlink already pointing at a tempdir, so

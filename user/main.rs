@@ -20,7 +20,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    // ── Setup ────────────────────────────────────────────────────────
+    // ── Workflow ─────────────────────────────────────────────────────
     /// Create yolofs.toml and scaffold agent hook templates
     Init {
         /// Project directory to initialize (created if missing). Defaults to the
@@ -32,37 +32,15 @@ enum Command {
         #[arg(long = "agents", num_args = 1.., ignore_case = true)]
         agents: Vec<init::AgentChoice>,
     },
-    /// Load the kernel module
-    Load,
-    /// Unmount all sessions and unload the kernel module
-    Unload,
-    /// Unload then reload the kernel module
-    Reload,
-    // ── Session ──────────────────────────────────────────────────────
-    /// Create .yolofs/ layout and mount the filesystem
-    Mount,
-    /// Run a command under yolofs, then review what it changed (requires mount)
+    /// Run a command under yolofs, mounting on first run, then review it
     Run {
         /// Skip the review summary; emit only the terse snapshot line (stderr)
-        #[arg(long, short)]
-        quiet: bool,
+        #[arg(long)]
+        no_review: bool,
         /// Command to run, after `--` (e.g. `yolo run -- make build`)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         exec_args: Vec<String>,
     },
-    /// Unmount and clean up the session
-    Unmount {
-        /// Skip staged-changes prompt
-        #[arg(long, short)]
-        force: bool,
-    },
-    /// Unmount then remount (picks up new yolofs.toml mount options)
-    Remount {
-        /// Skip staged-changes prompt
-        #[arg(long, short)]
-        force: bool,
-    },
-    // ── Review & commit ──────────────────────────────────────────────
     /// Review staged changes — a summary, or a git-style diff with `--diff`
     Review {
         /// Snapshot id or range: `N` = snapshot N's own change; `a..b` =
@@ -86,6 +64,19 @@ enum Command {
         /// Skip confirmation prompt
         #[arg(long, short)]
         force: bool,
+    },
+    // ── Permissions ──────────────────────────────────────────────────
+    /// Manage permission rules
+    #[command(arg_required_else_help = true)]
+    Rule {
+        #[command(subcommand)]
+        action: RuleAction,
+    },
+    /// Handle ask requests (daemon mode)
+    Watch {
+        /// Automatically allow all requests without prompting
+        #[arg(long)]
+        allow_all: bool,
     },
     // ── History ──────────────────────────────────────────────────────
     /// Create a snapshot
@@ -111,19 +102,19 @@ enum Command {
         #[arg(last = true)]
         path: Option<String>,
     },
-    // ── Permissions ──────────────────────────────────────────────────
-    /// Manage permission rules
-    #[command(arg_required_else_help = true)]
-    Rule {
-        #[command(subcommand)]
-        action: RuleAction,
-    },
-    /// Handle ask requests (daemon mode)
-    Watch {
-        /// Automatically allow all requests without prompting
-        #[arg(long)]
-        allow_all: bool,
-    },
+    // ── Manual control ───────────────────────────────────────────────
+    /// Create .yolofs/ layout and mount the filesystem
+    Mount,
+    /// Unmount the live view, preserving staged state
+    Unmount,
+    /// Unmount then remount (picks up new yolofs.toml mount options)
+    Remount,
+    /// Load the kernel module
+    Load,
+    /// Unmount all sessions and unload the kernel module
+    Unload,
+    /// Unload then reload the kernel module
+    Reload,
 }
 
 /// Each mutating verb names a permission state; `list`/`show` are queries.
@@ -210,7 +201,10 @@ fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
         Some(Command::Unload) => load::unload()?,
         Some(Command::Reload) => load::reload()?,
         Some(Command::Mount) => mount::mount()?,
-        Some(Command::Run { quiet, exec_args }) => {
+        Some(Command::Run {
+            no_review,
+            exec_args,
+        }) => {
             if exec_args.is_empty() {
                 anyhow::bail!("no command given — usage: `yolo run -- <cmd>`");
             }
@@ -221,11 +215,11 @@ fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
             return if exec_args.first().map(String::as_str) == Some("yolo") {
                 run_agent_yolo(&exec_args)
             } else {
-                run_and_review(&exec_args, quiet)
+                run_and_review(&exec_args, no_review)
             };
         }
-        Some(Command::Unmount { force }) => mount::unmount(force)?,
-        Some(Command::Remount { force }) => mount::remount(force)?,
+        Some(Command::Unmount) => mount::unmount()?,
+        Some(Command::Remount) => mount::remount()?,
         Some(Command::Review {
             range,
             diff,
@@ -258,12 +252,12 @@ fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// `yolo run [-q] -- <cmd>`: run a command under yolofs, then print a status
-/// summary of what it changed. With `quiet` (`-q`), skip the summary and emit
-/// only the terse snapshot line (to stderr). Returns the command's exit code.
-fn run_and_review(run_args: &[String], quiet: bool) -> anyhow::Result<u8> {
+/// `yolo run [--no-review] -- <cmd>`: run a command under yolofs, then print a
+/// status summary of what it changed. `--no-review` emits only the terse
+/// snapshot line. Returns the command's exit code.
+fn run_and_review(run_args: &[String], no_review: bool) -> anyhow::Result<u8> {
     let (code, snapshot) = exec::run(run_args)?;
-    if quiet {
+    if no_review {
         exec::announce(&snapshot);
     } else {
         let snapshot_id = match snapshot {
@@ -280,32 +274,30 @@ fn run_and_review(run_args: &[String], quiet: bool) -> anyhow::Result<u8> {
 fn print_overview() {
     #[rustfmt::skip]
     let groups: &[(&str, &[(&str, &str)])] = &[
-        ("Setup", &[
+        ("Workflow", &[
             ("init",     "Create yolofs.toml + agent hook templates"),
-            ("load",     "Load the kernel module"),
-            ("unload",   "Unmount all sessions and unload the module"),
-            ("reload",   "Unload then reload the kernel module"),
-        ]),
-        ("Session", &[
-            ("mount",    "Create .yolofs/ and mount the filesystem"),
-            ("run",      "Run a command under yolofs and review it (`run -- <cmd>`; `-q` to silence)"),
-            ("unmount",  "Tear down the session"),
-            ("remount",  "Unmount then remount (picks up yolofs.toml options)"),
-        ]),
-        ("Review & commit", &[
+            ("run",      "Run under yolofs, mounting on first run (`--no-review` skips review)"),
             ("review",   "Review staged changes (summary; `--diff` for the diff)"),
             ("commit",   "Apply staged changes to base"),
             ("abort",    "Discard staged changes"),
+        ]),
+        ("Permissions", &[
+            ("rule",     "Manage permission rules (allow/write-ask/read-only/ask/deny/hide)"),
+            ("watch",    "Permission-prompt daemon"),
         ]),
         ("History", &[
             ("snapshot", "Create a snapshot"),
             ("travel",   "Travel to a previous snapshot"),
             ("timeline", "Show the snapshot/travel timeline"),
-            ("journal",  "Raw record log over a range (`-- path` to filter)"),
+            ("journal",  "Raw record log (low-level; `timeline` is the curated view)"),
         ]),
-        ("Permissions", &[
-            ("rule",     "Manage permission rules (allow/write-ask/read-only/ask/deny/hide)"),
-            ("watch",    "Permission-prompt daemon"),
+        ("Manual control", &[
+            ("mount",    "Create .yolofs/ and mount the filesystem"),
+            ("unmount",  "Tear down the live view, preserving staged state"),
+            ("remount",  "Rebuild the view while preserving staged work"),
+            ("load",     "Load the kernel module"),
+            ("unload",   "Unmount all sessions and unload the module"),
+            ("reload",   "Unload then reload the kernel module"),
         ]),
     ];
 

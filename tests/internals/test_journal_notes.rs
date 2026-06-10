@@ -213,11 +213,18 @@ fn block_writes_do_not_set_dirty() {
 
     // Run a command that triggers only denied reads.
     let status = std::process::Command::new(YOLO_BIN)
-        .args(["run", "-q", "--", "sh", "-c", "cat hello.txt; true"])
+        .args([
+            "run",
+            "--no-review",
+            "--",
+            "sh",
+            "-c",
+            "cat hello.txt; true",
+        ])
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
         .status()
-        .expect("yolo run -q -- cmd");
+        .expect("yolo run --no-review -- cmd");
     let _ = status;
 
     let j = journal(&s);
@@ -275,7 +282,7 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
     let status = std::process::Command::new(YOLO_BIN)
         .args([
             "run",
-            "-q",
+            "--no-review",
             "--",
             "sh",
             "-c",
@@ -284,7 +291,7 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
         .current_dir(&s.root)
         .env("NO_COLOR", "1")
         .status()
-        .expect("yolo run -q -- cmd");
+        .expect("yolo run --no-review -- cmd");
     let _ = status;
 
     let j = journal(&s);

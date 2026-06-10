@@ -10,8 +10,9 @@ instantly.
 Two invariants simplify the kernel-side design. Both are **enforced** in
 the kernel, not merely assumed.
 
-1. **No open file handles during snapshot.** The snapshot ioctl rejects
-   with `-EBUSY` if any staging fds are open (`sbi->staging_fd_count > 0`).
+1. **No open file handles during view replacement.** Snapshot, restore, and
+   travel ioctls reject with `-EBUSY` if any staging fds are open
+   (`sbi->staging_fd_count > 0`).
    The CLI naturally satisfies this by taking snapshots between `yolo run -- <cmd>`
    invocations, never while agent processes are running. This means
    `sbi->gen` cannot change while any staging fd is open, so the
@@ -26,8 +27,9 @@ the kernel, not merely assumed.
    Pinned child dentries hold a ref on `dentry->d_parent`, which
    transitively keeps the parent inode alive through
    VFS refcounting — no `igrab()` is needed. Pins are released in bulk by the
-   reset/travel ioctls (`YOLO_IOC_RESET` for commit/abort, `YOLO_IOC_TRAVEL` for
-   travel — both via `yolo_dentry_unpin_all`) and during
+   restore/travel ioctls (`YOLO_IOC_RESTORE` with an empty tree for
+   commit/abort, `YOLO_IOC_TRAVEL` for travel — both via
+   `yolo_dentry_unpin_all`) and during
    `kill_sb` (unmount) via a recursive dentry tree walk from
    `sb->s_root`. Directories are never COW'd, so their inode
    identity (keyed by `lower_inode` in `iget5_locked`) is stable for
@@ -41,9 +43,9 @@ the kernel, not merely assumed.
 | **inode store**       | `.yolofs/inodes/` — a sharded store of inodes. Each entry lives under a shard directory: `inodes/<ino/100>/<ino>` (e.g., `inodes/0/1`, `inodes/0/2`, ..., `inodes/1/100`). Shards keep each directory small (~100 entries) for fast ext4 htree lookups. Regular files and symlinks are stored as inodes; directories created by `mkdir` are empty directory inodes (children live in their own entries). No mirrored directory tree. |
 | **staged dentry list** | Per-directory set of pinned staged VFS dentries, identified by `pinned == true` in the VFS `d_children` list. Each pinned dentry carries overlay state in its `yolo_dentry_info`. Records which children are added, modified, deleted, or renamed. This is the kernel's source of truth. |
 | **journal**           | `.yolofs/journal` — append-only log of all mutations. Written by the kernel, read by the CLI for commit/abort/review. The kernel never reads it back. |
-| **mount point**       | `.yolofs/mnt/` — the agent's view of the filesystem. Shows the merged base + staged changes with permission gating applied. |
+| **mount point**       | `.yolofs/mnt` — symlink to the runtime mountpoint for the agent's view. Shows the merged base + staged changes with permission gating applied. |
 | **commit**            | CLI reads the journal and applies all operations to the base filesystem. |
-| **abort**             | CLI deletes journal + inode store. O(1). |
+| **abort**             | CLI clears journal + inode store contents. O(1). |
 
 ## Inode Store Ownership
 
@@ -53,6 +55,37 @@ This means all kernel-side VFS operations on the inode store (create, mkdir,
 open, lookup) run under the user's own credentials — no credential override
 is needed. The YoloFS permission gating layer controls access through the mount
 point separately (see [permissions.md](permissions.md)).
+
+## Durable Artifact And Restored View
+
+`.yolofs/journal` plus `.yolofs/inodes/` is the durable staging artifact. The
+mount is an in-memory projection of that artifact: pinned dentries are rebuilt
+on mounting an existing session by parsing the journal in userspace and
+calling `YOLO_IOC_RESTORE`. The ioctl receives the serialized current tree,
+the latest P/T generation, whether the trailing live segment contains S/D/R
+records, and the maximum inode id across every journal S record. It writes no
+journal record.
+
+Restore runs for every surviving artifact, including an empty current tree,
+because generation continuity is independent of whether anything is currently
+staged. The kernel rejects restore and travel while staging write fds are
+open. Both operations replace the view through the same guarded helper.
+RESTORE conservatively stamps injected staged inodes one generation behind
+the restored current generation, so their first post-remount write re-COWs
+instead of mutating content retained by a snapshot. TRAVEL stamps its injected
+view at the newly created travel generation, preserving travel's existing
+write-in-place behavior.
+
+While the artifact is unmounted, the base can drift. In particular, a rename
+redirect's base source can disappear. Such a restore fails; the CLI tears down
+only the attempted live view and leaves the artifact untouched for
+`yolo review`, `yolo commit`, or `yolo abort`.
+
+View lifecycle and artifact disposition are orthogonal. `mount`, `unmount`,
+and `remount` create or tear down the live view; unmount never commits,
+aborts, or deletes `.yolofs/`. `commit` and `abort` work with or without a
+live view. When a live view exists, they restore it to base before changing
+base or clearing the artifact.
 
 ## Storage Layout
 
@@ -68,7 +101,7 @@ yolofs.toml                       # config file in CWD (mount options + rules)
 │   ├── 1/                       # shard 1 (inodes 100–199)
 │   │   └── ...
 │   └── ...
-└── mnt/                         # mount point -- agent works here
+└── mnt -> /run/user/<uid>/yolofs/...  # symlink to runtime mountpoint
 ```
 
 ## In-Kernel State
@@ -87,9 +120,9 @@ VFS `d_children` list.
 | `inodes_dir` | Pinned path to `.yolofs/inodes/` |
 | `journal_file` | Open file handle to `.yolofs/journal` (`O_APPEND`). The kernel only appends; it never reads the journal back. |
 | `sem` | rw\_semaphore serializing COW / re-COW, snapshot, and journal writes |
-| `next_ino` | Atomic counter for inode names (`1`, `2`, …) |
-| `gen` | Atomic counter, starts at 0 (the first snapshot bumps it to 1), bumped by each snapshot and travel ioctl. Compared against `staging_gen` on the inode at open time to decide COW / re-COW. |
-| `fd_count` | Atomic counter of open staging fds (opened for write). Snapshot ioctl rejects with `-EBUSY` when > 0. |
+| `next_ino` | Atomic counter for inode names (`1`, `2`, …). Mount-time restore advances it to the maximum inode id across every journal S record, including dead segments. |
+| `gen` | Atomic counter, starts at 0 on a fresh artifact and is restored from the journal for a surviving artifact. Bumped by each snapshot and travel ioctl. Compared against `staging_gen` on the inode at open time to decide COW / re-COW. |
+| `fd_count` | Atomic counter of open staging fds (opened for write). Snapshot, restore, and travel reject with `-EBUSY` when > 0. |
 | `dirty` | Boolean flag set on every data journal write (S/D/R), cleared on snapshot or travel. Used by `YOLO_SNAPSHOT_IF_CHANGED` to skip empty auto-snapshots. |
 
 **Per-inode** (`yolo_inode_info`) — one per cached inode:
@@ -614,17 +647,22 @@ I/O redirection. The `yolo` CLI reads the journal and applies or discards.
 3. Apply in order: saves &rarr; places &rarr; ops (deletes+stages).
    Principle: readers before writers — renames read from base paths, so
    saves must complete before any destination is written.
-4. Clean up: remove all files under `.yolofs/inodes/`, truncate `.yolofs/journal`.
-5. Signal kernel to reset staging state (`YOLO_IOC_RESET` &mdash; drops all
-   overlay dentries back to base and zeroes `gen`; no journal record written).
+4. If a live view exists, signal the kernel to restore the base view
+   (`YOLO_IOC_RESTORE` with a serialized empty tree, `gen = 0`,
+   `dirty = false`, and `max_ino = 0`; no journal record written). The ioctl
+   rejects open staging fds before the artifact is cleared.
+5. Remove all files under `.yolofs/inodes/` and truncate `.yolofs/journal`.
 
 **Abort** (`yolo abort`):
 
 1. If nothing is staged, print "nothing to discard" and exit.
 2. Prompt for confirmation: ``discard all staged changes? (`yolo review` to see them) [y/N]:``
    (`--force` skips the prompt).
-3. Remove all files under `.yolofs/inodes/` and truncate `.yolofs/journal`.
-4. Signal kernel to reset staging state (`YOLO_IOC_RESET` — drops all overlay dentries back to base and zeroes `gen`; no journal record written).
+3. If a live view exists, signal the kernel to restore the base view
+   (`YOLO_IOC_RESTORE` with a serialized empty tree; no journal record
+   written). The ioctl rejects open staging fds before the artifact is
+   cleared.
+4. Remove all files under `.yolofs/inodes/` and truncate `.yolofs/journal`.
 
 **Review** (`yolo review`, `yolo review --diff`):
 

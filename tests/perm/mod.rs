@@ -3,6 +3,7 @@ mod test_basic;
 mod test_dir_ops;
 mod test_hide;
 mod test_inheritance;
+mod test_ioctl_gating;
 mod test_live_rules;
 mod test_metadata_perm;
 mod test_modes;

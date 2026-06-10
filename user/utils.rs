@@ -54,7 +54,7 @@ pub fn session_dir() -> Result<PathBuf> {
         Ok(dir)
     } else {
         anyhow::bail!(
-            "no yolofs session in {} — run `yolo mount` first (or `yolo init` to set up a new project)",
+            "no yolofs session in {} — run `yolo init` to set up a project (a session starts with `yolo run` or `yolo mount`)",
             cwd.display()
         )
     }

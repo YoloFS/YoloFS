@@ -11,9 +11,56 @@ fn unmount_command_cleans_up() {
     let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
     assert!(ok, "unmount should succeed: {stderr}");
     assert!(
-        !yolo_dir.exists(),
-        ".yolofs/ should be removed after unmount"
+        yolo_dir.exists(),
+        ".yolofs/ artifact should remain after unmount"
     );
+}
+
+#[test]
+fn unmount_preserves_and_mount_restores_staging() {
+    let session = YoloSession::new().expect("session setup");
+    let yolo_dir = session.root.join(".yolofs");
+    std::fs::write(session.mnt_path("hello.txt"), "unmounted\n").unwrap();
+
+    let stderr = session.cli_stderr(&["unmount"]).unwrap();
+    assert!(stderr.contains("unmounted"), "stderr: {stderr}");
+    assert!(yolo_dir.exists(), "unmounted artifact should remain");
+    assert!(!session.mnt.exists(), "live view should be gone");
+
+    let stderr = session.cli_stderr(&["mount"]).unwrap();
+    assert!(
+        stderr.contains("restored staged changes"),
+        "stderr: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(session.mnt_path("hello.txt")).unwrap(),
+        "unmounted\n"
+    );
+}
+
+#[test]
+fn commit_and_abort_work_without_live_view() {
+    let session = YoloSession::new().expect("session setup");
+    let yolo_dir = session.root.join(".yolofs");
+
+    std::fs::write(session.mnt_path("hello.txt"), "commit offline\n").unwrap();
+    session.cli(&["unmount"]).unwrap();
+    session.cli(&["commit"]).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(session.base_path("hello.txt")).unwrap(),
+        "commit offline\n"
+    );
+    assert!(yolo_dir.exists(), "commit must not remove the artifact");
+
+    session.cli(&["mount"]).unwrap();
+    std::fs::write(session.mnt_path("hello.txt"), "abort offline\n").unwrap();
+    session.cli(&["unmount"]).unwrap();
+    session.cli(&["abort", "--force"]).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(session.base_path("hello.txt")).unwrap(),
+        "commit offline\n"
+    );
+    assert!(yolo_dir.exists(), "abort must not remove the artifact");
 }
 
 #[test]
@@ -83,8 +130,8 @@ fn unmount_cleans_up_pseudofs() {
     let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
     assert!(ok, "unmount should succeed with bind-mounts: {stderr}");
     assert!(
-        !session.root.join(".yolofs").exists(),
-        ".yolofs/ should be removed"
+        session.root.join(".yolofs").exists(),
+        ".yolofs/ artifact should remain"
     );
 }
 

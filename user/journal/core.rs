@@ -15,6 +15,14 @@ pub struct Journal {
     pub segments: Vec<Segment>,
     pub markers: MarkerIndex,
     alive: Vec<bool>,
+    /// Generation assigned to the most recent snapshot/travel marker.
+    pub latest_gen: u64,
+    /// Whether the live tail after the latest snapshot/travel marker has a mutation.
+    pub dirty: bool,
+    /// Highest inode id ever recorded by an S record, including dead segments.
+    pub max_ino: u32,
+    /// Whether any live segment carries a staging action.
+    pub has_staged_changes: bool,
 }
 
 impl Journal {
@@ -27,6 +35,9 @@ impl Journal {
         }];
         let mut current_records: Vec<Record> = Vec::new();
         let mut current_from: u64 = 0;
+        let mut latest_gen: u64 = 0;
+        let mut dirty = false;
+        let mut max_ino = 0;
 
         for record in records.into_iter() {
             match record {
@@ -36,17 +47,30 @@ impl Journal {
                         records: std::mem::take(&mut current_records),
                     });
                     current_from = gen_id;
+                    latest_gen = gen_id;
+                    dirty = false;
                     markers_vec.push(marker);
                 }
-                Record::Marker(marker @ Marker::Travel { target_gen, .. }) => {
+                Record::Marker(marker @ Marker::Travel { gen_id, target_gen }) => {
                     segments.push(Segment {
                         from: current_from,
                         records: std::mem::take(&mut current_records),
                     });
                     markers_vec.push(marker);
                     current_from = target_gen;
+                    latest_gen = gen_id;
+                    dirty = false;
                 }
-                Record::Action(_) | Record::Note(_) => {
+                Record::Action(Action::Stage { ino, .. }) => {
+                    max_ino = max_ino.max(ino);
+                    dirty = true;
+                    current_records.push(record);
+                }
+                Record::Action(Action::Delete { .. } | Action::Rename { .. }) => {
+                    dirty = true;
+                    current_records.push(record);
+                }
+                Record::Note(_) => {
                     current_records.push(record);
                 }
             }
@@ -60,11 +84,20 @@ impl Journal {
 
         let markers = MarkerIndex::new(markers_vec);
         let alive = markers.alive_segments(segments.len());
+        let has_staged_changes = segments
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| alive[*i])
+            .any(|(_, seg)| seg.records.iter().any(|r| matches!(r, Record::Action(_))));
 
         Journal {
             segments,
             markers,
             alive,
+            latest_gen,
+            dirty,
+            max_ino,
+            has_staged_changes,
         }
     }
 
@@ -113,19 +146,6 @@ impl Journal {
     /// Consume the journal and build a DirTree from live segments up to a snapshot.
     pub fn into_tree_at(self, gen_id: u64) -> DirTree {
         DirTree::build(self.into_live_segments_at(gen_id))
-    }
-
-    /// Whether any live segment carries a staging action (S/D/R) — i.e. there
-    /// are staged changes to commit or discard. Cheaper than
-    /// `into_tree().is_empty()` (builds no tree, early-exits) and correctly
-    /// ignores what isn't a staged change: audit notes, snapshot/travel markers,
-    /// and changes a `travel` left behind in a dead segment.
-    pub fn has_staged_changes(&self) -> bool {
-        self.segments
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| self.is_alive(*i))
-            .any(|(_, seg)| seg.records.iter().any(|r| matches!(r, Record::Action(_))))
     }
 
     /// Consume the journal and return owned live segments in `[start, end)`.
@@ -185,14 +205,14 @@ mod tests {
     #[test]
     fn has_staged_changes_ignores_notes_markers_and_dead() {
         // Empty journal → nothing staged.
-        assert!(!Journal::new(vec![]).has_staged_changes());
+        assert!(!Journal::new(vec![]).has_staged_changes);
 
         // A bare note (e.g. a blocked access) is not a staged change.
         let notes_only = Journal::new(vec![Record::Note(Note::Block {
             path: "/etc/x".into(),
             op: Op::Write,
         })]);
-        assert!(!notes_only.has_staged_changes());
+        assert!(!notes_only.has_staged_changes);
 
         // A live stage counts.
         let staged = Journal::new(vec![Record::Action(Action::Stage {
@@ -200,7 +220,7 @@ mod tests {
             ino: 1,
             preimage: None,
         })]);
-        assert!(staged.has_staged_changes());
+        assert!(staged.has_staged_changes);
 
         // A change a `travel` left in a dead segment does not count.
         let traveled = Journal::new(vec![
@@ -218,7 +238,59 @@ mod tests {
                 target_gen: 1,
             }),
         ]);
-        assert!(!traveled.has_staged_changes());
+        assert!(!traveled.has_staged_changes);
+    }
+
+    #[test]
+    fn restore_fields_track_latest_marker_and_live_tail() {
+        let clean = Journal::new(vec![
+            Record::Action(Action::Stage {
+                path: "/a".into(),
+                ino: 1,
+                preimage: None,
+            }),
+            Record::Marker(Marker::Snapshot {
+                gen_id: 1,
+                name: "one".into(),
+            }),
+        ]);
+        assert_eq!(clean.latest_gen, 1);
+        assert_eq!(clean.max_ino, 1);
+        assert!(!clean.dirty);
+
+        let dirty = Journal::new(vec![
+            Record::Marker(Marker::Snapshot {
+                gen_id: 1,
+                name: "one".into(),
+            }),
+            Record::Action(Action::Stage {
+                path: "/b".into(),
+                ino: 2,
+                preimage: None,
+            }),
+        ]);
+        assert_eq!(dirty.latest_gen, 1);
+        assert_eq!(dirty.max_ino, 2);
+        assert!(dirty.dirty);
+
+        let traveled = Journal::new(vec![
+            Record::Marker(Marker::Snapshot {
+                gen_id: 1,
+                name: "one".into(),
+            }),
+            Record::Action(Action::Stage {
+                path: "/dead".into(),
+                ino: 2,
+                preimage: None,
+            }),
+            Record::Marker(Marker::Travel {
+                gen_id: 2,
+                target_gen: 1,
+            }),
+        ]);
+        assert_eq!(traveled.latest_gen, 2);
+        assert_eq!(traveled.max_ino, 2);
+        assert!(!traveled.dirty);
     }
 
     // ── Segmentation tests (migrated from segment.rs) ────────────────

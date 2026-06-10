@@ -47,6 +47,17 @@ fn abort_rejects_while_staging_fd_open() {
         stderr.contains("Device or resource busy"),
         "should report EBUSY: {stderr}"
     );
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("hello.txt")).unwrap(),
+        "modified\n",
+        "rejected abort must preserve the staged view"
+    );
+    assert!(
+        fs::read_to_string(s.root.join(".yolofs/journal"))
+            .unwrap()
+            .contains("S\0/"),
+        "rejected abort must preserve the artifact"
+    );
 
     drop(_fd);
     s.cli(&["abort", "--force"])
@@ -74,7 +85,6 @@ fn travel_rejects_while_staging_fd_open() {
         stderr.contains("Device or resource busy"),
         "should report EBUSY: {stderr}"
     );
-
     drop(_fd);
     s.cli(&["travel", "v1"])
         .expect("travel should succeed after fd close");
@@ -97,6 +107,17 @@ fn commit_rejects_while_staging_fd_open() {
     assert!(
         stderr.contains("Device or resource busy"),
         "should report EBUSY: {stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(s.base_path("hello.txt")).unwrap(),
+        "base content\n",
+        "rejected commit must not change base"
+    );
+    assert!(
+        fs::read_to_string(s.root.join(".yolofs/journal"))
+            .unwrap()
+            .contains("S\0/"),
+        "rejected commit must preserve the artifact"
     );
 
     drop(_fd);

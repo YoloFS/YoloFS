@@ -8,6 +8,26 @@ interposition. It adds two orthogonal capabilities:
 | **Staging-commit**    | Every write goes to a staging layer. Changes are invisible to the lower FS until an explicit `commit`. An `abort` discards them instantly. |
 | **Permission gating** | Every file starts in the `ask` state. A rule engine promotes matching paths to `allow`, `write-ask`, `read-only`, `ask`, `deny`, or `hide`. When an access needs approval (`ask`, or a write under `write-ask`), the thread is put to sleep; a userspace daemon receives the request and writes back a decision that wakes the thread. |
 
+The `.yolofs/` directory is the durable session artifact; the mount is only
+its live, gated view. Mounting an existing artifact rebuilds that view from
+the journal and inode store with `YOLO_IOC_RESTORE`. Userspace supplies the
+serialized current tree, latest marker generation, dirty flag, and maximum
+inode id across all journal S records. Restore runs even when the current tree is empty so
+future marker ids remain monotonic. If restore fails, only the live view is
+torn down and the artifact remains available to `review`, `commit`, or
+`abort`.
+
+The project marker is `yolofs.toml`. The live mount handle is `.yolofs/mnt`,
+which records the runtime mountpoint; `.yolofs/` by itself is only the durable
+artifact.
+
+View-control commands and artifact-disposition commands are orthogonal:
+`mount`/`unmount`/`remount` manage the live view lifetime, while
+`commit`/`abort` decide staged artifact contents. If a live view exists,
+`commit`/`abort` restore it to base before changing base or clearing the
+artifact, but they never mount, unmount, or remove `.yolofs/`. `.yolofs/` may
+therefore exist without a live mount, including when it is empty.
+
 ## Design Goals
 
 - **In-kernel, zero-copy data path** — no FUSE overhead, no context switches
@@ -41,7 +61,7 @@ interposition. It adds two orthogonal capabilities:
  │    ← YOLO_IOC_GET_ASK:  dequeue an ask           │
  │    → YOLO_IOC_PUT_DECISION: post decision        │
  │    → YOLO_IOC_RULE_SET/RESOLVE: manage rules     │
- │    → YOLO_IOC_RESET: reset staging               │
+ │    → YOLO_IOC_RESTORE: rebuild staged view       │
  │    → YOLO_IOC_TRAVEL: travel                     │
  │    → YOLO_IOC_SNAPSHOT: create snapshot          │
  └──────────────────────────────────────────────────┘
@@ -109,14 +129,12 @@ single R record carrying both source and destination paths.
 ## Lifecycle Example
 
 ```
-# 1. Full interactive workflow (mount -> watch + run -> review -> commit/abort)
+# 1. Workflow-first path (`run` mounts on demand)
 $ cd /home/user/project
-$ yolo
-   -> creates .yolofs/, mounts / -> .yolofs/mnt, applies rules from yolofs.toml,
-     starts background watch daemon for permission requests, chroots into
-     .yolofs/mnt, spawns $SHELL with cwd preserved as the caller's original CWD
-   -> on shell exit: stops watch daemon, runs `yolo review`, prompts user to
-     commit, abort, or keep staged (user runs `yolo unmount` when done)
+$ yolo run -- make build
+   -> creates/opens .yolofs/, mounts / -> .yolofs/mnt when needed,
+     restores the staged view, applies rules, chroots, runs the command,
+     snapshots, and reviews
 
 # 1b. Or use individual commands for more control:
 $ yolo mount
@@ -174,10 +192,10 @@ $ echo x >> /etc/hosts
 
 # 7. Commit all staged changes to the real filesystem (userspace)
 $ yolo commit
-   -> userspace: replay journal -- apply renames, deletes, move inodes to base
-   -> userspace: ioctl(YOLO_IOC_RESET) on .yolofs/mnt
+   -> userspace: ioctl(YOLO_IOC_RESTORE, empty tree) on .yolofs/mnt
    -> kernel: release staged dentries, invalidate dentry + inode caches
-   -> umount .yolofs/mnt
+   -> userspace: replay journal -- apply renames, deletes, move inodes to base
+   -> userspace: clear the durable artifact; the live base view remains mounted
 
 # 8. Travel to a previous marker (appends T record, no truncation)
 $ yolo travel "after make build"
@@ -229,7 +247,7 @@ yolofs/
 │   │   ├── review.rs          # `yolo review` (summary, or git-style diff with `--diff`)
 │   │   ├── exec.rs
 │   │   ├── load.rs            # `yolo load/unload/reload` -- kernel module management
-│   │   ├── mount.rs           # mount, unmount, remount (auto-loads kmod, prompts on staged changes)
+│   │   ├── mount.rs           # mount, unmount, remount, and on-demand mount
 │   │   ├── travel.rs         # `yolo travel` -- travel to a previous snapshot
 │   │   ├── timeline.rs        # `yolo timeline` command (snapshot/travel DAG)
 │   │   └── watch.rs           # permission prompt daemon (handles TTY ownership)

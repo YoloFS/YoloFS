@@ -38,7 +38,7 @@ nix::ioctl_read!(ioctl_get_ask, b'A', 30, YoloIocAsk);
 nix::ioctl_write_ptr!(ioctl_put_decision, b'A', 31, YoloIocDecision);
 nix::ioctl_readwrite!(ioctl_snapshot, b'A', 40, YoloIocSnapshot);
 nix::ioctl_readwrite!(ioctl_travel, b'A', 41, YoloIocTravel);
-nix::ioctl_none!(ioctl_reset, b'A', 42);
+nix::ioctl_write_ptr!(ioctl_restore, b'A', 42, YoloIocRestore);
 
 /// Matches `struct yolo_ioc_rule` in the kernel.
 #[repr(C)]
@@ -93,6 +93,17 @@ pub struct YoloIocTravel {
     pub new_gen: u64,
     pub tree_len: u64,
     pub tree_ptr: u64,
+}
+
+/// Matches `struct yolo_ioc_restore` in the kernel.
+#[repr(C)]
+pub struct YoloIocRestore {
+    pub gen_id: u64,
+    pub tree_len: u64,
+    pub tree_ptr: u64,
+    pub max_ino: u32,
+    pub dirty: u8,
+    pub _pad: [u8; 3],
 }
 
 /// A dequeued ask with owned path data.
@@ -222,7 +233,7 @@ pub fn resolve_rule(fd: &File, path: &str) -> Result<u8> {
 
 /// Send YOLO_IOC_TRAVEL ioctl: travel to a generation (0 = base, >=1 =
 /// snapshot/travel) by injecting that generation's serialized DirTree. Returns
-/// the new generation assigned. Commit/abort cleanup uses [`reset`], not travel.
+/// the new generation assigned. Commit/abort cleanup uses [`restore`], not travel.
 pub fn travel(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
     let mut hdr = YoloIocTravel {
         target_gen,
@@ -238,10 +249,17 @@ pub fn travel(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
     Ok(hdr.new_gen)
 }
 
-/// Send YOLO_IOC_RESET ioctl: drop all staging back to the base (no journal
-/// record). Used by commit (after applying) and abort (to discard).
-pub fn reset(fd: &File) -> Result<()> {
-    unsafe { ioctl_reset(fd.as_raw_fd()) }.context("ioctl RESET")?;
+/// Replace the kernel's in-memory staged view without writing a journal record.
+pub fn restore(fd: &File, gen_id: u64, dirty: bool, max_ino: u32, tree_buf: &[u8]) -> Result<()> {
+    let hdr = YoloIocRestore {
+        gen_id,
+        tree_len: tree_buf.len() as u64,
+        tree_ptr: tree_buf.as_ptr() as u64,
+        max_ino,
+        dirty: dirty.into(),
+        _pad: [0; 3],
+    };
+    unsafe { ioctl_restore(fd.as_raw_fd(), &hdr) }.context("ioctl RESTORE")?;
     Ok(())
 }
 
@@ -276,6 +294,7 @@ mod tests {
         assert_eq!(size_of::<YoloIocRule>(), 16);
         assert_eq!(size_of::<YoloIocSnapshot>(), 24);
         assert_eq!(size_of::<YoloIocTravel>(), 32);
+        assert_eq!(size_of::<YoloIocRestore>(), 32);
     }
 
     #[test]

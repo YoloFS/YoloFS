@@ -7,14 +7,16 @@ For protocol and travel/snapshot details, see `docs/architecture.md` and
 
 ## Commands
 
-**Setup**
+**Workflow**
 
 ```bash
 $ yolo init              # create yolofs.toml + hooks for every supported agent
 $ yolo init --agents claude gemini   # scaffold only the named agent hooks
-$ yolo load              # load the kernel module
-$ yolo unload            # unmount all sessions and unload the kernel module
-$ yolo reload            # unload then reload the kernel module
+$ yolo run -- make build     # mounts on first run, stages the command, then reviews it
+$ yolo run --no-review -- make build  # skip only the review summary
+$ yolo review            # inspect staged changes
+$ yolo commit            # apply staged changes to base
+$ yolo abort             # discard staged changes
 ```
 
 `yolo unload` briefly waits (up to ~2s) for the module to quiesce after
@@ -34,24 +36,32 @@ filesystem, which only exists outside, so **every `yolo` command refuses to run
 inside the mount**. Stage your work with `yolo run -- <cmd>` and review/commit from
 outside. Bare `yolo` prints this command list.
 
-**Session management** — manual control over each step:
+**Manual control** — optional control over steps `run` normally performs:
 
 ```bash
 $ yolo mount             # create .yolofs/ layout and mount (auto-loads kmod if needed)
-$ yolo run -- make build     # run one command in the staging overlay, then review what it changed
-$ yolo run -q -- make build  # same, but quiet — skip the review summary (auto-snapshots after)
-$ yolo review            # staged changes for the latest snapshot (summary; default)
-$ yolo review --diff     # the same changes as a git-style diff
-$ yolo review all        # everything since base (`all` == `..` == `0..`)
-$ yolo review --each     # break a range out into one stanza per snapshot
-$ yolo review <id>       # snapshot <id>'s own change (the segment it sealed)
-$ yolo review <a>..<b>   # changes between two snapshots
-$ yolo review <id> --diff -- <path>   # diff one file within a range
-$ yolo commit            # apply staged changes to base
-$ yolo abort             # discard staged changes (prompts; `--force`/`-f` skips)
-$ yolo unmount           # tear down session (prompts if staged changes exist; `-f` skips)
-$ yolo remount           # unmount then remount (prompts if staged changes exist; `-f` skips)
+$ yolo unmount           # tear down only the live view; staged state remains
+$ yolo remount           # rebuild the view while preserving staging
+$ yolo load              # load the kernel module
+$ yolo unload            # unmount all sessions and unload the kernel module
+$ yolo reload            # unload then reload the kernel module
 ```
+
+`yolo run` mounts on demand when the current directory contains
+`yolofs.toml`. `.yolofs/` is the durable artifact, not the project marker for
+auto-run. Mounted state is discovered from `.yolofs/mnt`, the recorded
+mountpoint symlink. `run` announces the implicit mount and tells the user to
+run `yolo unmount` when finished. In a directory without `yolofs.toml` it
+fails without mounting. `--no-review` suppresses only the post-run review;
+mount and restore announcements still print.
+
+The commands are orthogonal: `mount`/`unmount`/`remount` manage the live view
+lifetime, while `commit`/`abort` decide staged artifact contents. If a live
+view exists, commit/abort restore it to base before changing base or clearing
+the artifact, but they never mount, unmount, or remove `.yolofs/`. Unmount
+always preserves `.yolofs/`; the next `mount` restores its current view, as
+does `run` when the directory is still a configured project. `review`,
+`commit`, and `abort` work directly while no live view exists.
 
 **Snapshots:**
 
@@ -204,7 +214,7 @@ command itself can neither `chroot` nor `mount`.
 | Command | Capability | Notes |
 |---|---|---|
 | `mount`, `unmount`, `remount` | `cap_sys_admin` | `mount()` / `umount()` / bind-mounts |
-| `yolo run -- <cmd>` | `cap_sys_chroot` | cleared for the spawned command |
+| `yolo run -- <cmd>` | `cap_sys_admin`, `cap_sys_chroot`, `cap_sys_module` | may mount/load on first run; capabilities are cleared for the spawned command |
 | `load`, `unload`, `reload` | `cap_sys_module` | `finit_module()` / `delete_module()` |
 | `rule`, `watch`, `commit`, `abort`, `snapshot`, `travel`, `review`, `journal`, `timeline`, `init` | none | run unprivileged as the user; ioctls go to a dir fd on the mount root |
 

@@ -9,8 +9,20 @@ use std::fs;
 use std::io::{self, BufRead};
 use std::path::Path;
 
-/// Clear inode store, truncate journal, and reset kernel staging state.
-pub fn reset_staging(yolofs: &Path) -> Result<()> {
+/// Restore a live kernel view to base, rejecting open staging fds. No-op when
+/// the artifact is not mounted.
+pub fn restore_base_view(yolofs: &Path) -> Result<()> {
+    let mnt = crate::utils::mnt_dir(yolofs);
+    if super::mount::is_mountpoint(&mnt) {
+        let tree = crate::journal::DirTree::default().serialize();
+        let ctl_file = crate::ioctl::open(yolofs).context("opening ctl for restore")?;
+        crate::ioctl::restore(&ctl_file, 0, false, 0, &tree).context("ioctl RESTORE")?;
+    }
+    Ok(())
+}
+
+/// Remove every durable staged inode and journal record.
+pub fn clear_artifact(yolofs: &Path) -> Result<()> {
     let inodes_dir = yolofs.join("inodes");
     if inodes_dir.exists() {
         // Remove each shard subdirectory but keep the inodes/ directory itself.
@@ -31,16 +43,20 @@ pub fn reset_staging(yolofs: &Path) -> Result<()> {
             .open(&journal_path)
             .context("truncating journal")?;
     }
-    let ctl_file = crate::ioctl::open(yolofs).context("opening ctl for reset")?;
-    crate::ioctl::reset(&ctl_file).context("ioctl RESET")?;
     Ok(())
+}
+
+/// Clear the live view if mounted, then clear the durable artifact.
+pub fn discard_staging(yolofs: &Path) -> Result<()> {
+    restore_base_view(yolofs)?;
+    clear_artifact(yolofs)
 }
 
 pub fn run(force: bool) -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
 
     let journal = Journal::read(&yolofs)?;
-    if !journal.has_staged_changes() {
+    if !journal.has_staged_changes {
         report::hint("nothing to discard");
         return Ok(());
     }
@@ -56,7 +72,7 @@ pub fn run(force: bool) -> Result<()> {
         }
     }
 
-    reset_staging(&yolofs)?;
+    discard_staging(&yolofs)?;
 
     report::success("staging discarded");
 

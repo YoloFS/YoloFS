@@ -528,8 +528,8 @@ static int travel_inject_entry(struct tree_cursor *cur,
 	}
 }
 
-static int yolo_travel_inject(struct file *file, struct yolo_sb_info *sbi,
-			    struct yolo_ioc_travel *hdr, u16 gen)
+static int yolo_view_inject(struct file *file, struct yolo_sb_info *sbi,
+			    u64 tree_ptr, u64 tree_len, u16 gen)
 {
 	struct dir_frame stack[YOLO_TRAVEL_MAX_DEPTH];
 	struct tree_cursor cur;
@@ -538,21 +538,20 @@ static int yolo_travel_inject(struct file *file, struct yolo_sb_info *sbi,
 	int err = 0;
 	u16 root_count;
 
-	if (hdr->tree_len > YOLO_TRAVEL_MAX_TREE_LEN)
+	if (tree_len > YOLO_TRAVEL_MAX_TREE_LEN)
 		return -EINVAL;
 
-	kbuf = vmalloc(hdr->tree_len);
+	kbuf = vmalloc(tree_len);
 	if (!kbuf)
 		return -ENOMEM;
 
-	if (copy_from_user(kbuf, (const void __user *)hdr->tree_ptr,
-			   hdr->tree_len)) {
+	if (copy_from_user(kbuf, (const void __user *)tree_ptr, tree_len)) {
 		vfree(kbuf);
 		return -EFAULT;
 	}
 
 	cur.buf = kbuf;
-	cur.end = kbuf + hdr->tree_len;
+	cur.end = kbuf + tree_len;
 
 	/* Read root child_count */
 	err = read_le16(&cur, &root_count);
@@ -659,29 +658,45 @@ static void yolo_staging_quiesce(struct super_block *sb,
 	}
 }
 
-/* YOLO_IOC_RESET — drop all staging back to the base, with no journal record.
- * Used by commit (after applying) and abort (to discard). Distinct from travel,
- * which moves to a real snapshot and journals a T record. */
-static long yolo_reset_ioctl(struct file *file)
+/* Replace the staged view. Caller holds staging.sem for write. */
+static int yolo_set_view_locked(struct file *file, struct yolo_sb_info *sbi,
+				u64 tree_ptr, u64 tree_len, u16 gen,
+				u16 inode_gen)
 {
 	struct super_block *sb = file_inode(file)->i_sb;
-	struct yolo_sb_info *sbi = YOLO_SB(sb);
+	if (atomic_read(&sbi->staging.fd_count) > 0)
+		return -EBUSY;
+
+	yolo_staging_quiesce(sb, sbi);
+	atomic_set(&sbi->staging.gen, gen);
+	return yolo_view_inject(file, sbi, tree_ptr, tree_len, inode_gen);
+}
+
+static long yolo_restore_ioctl(struct file *file, unsigned long arg)
+{
+	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
+	struct yolo_ioc_restore hdr;
+	int err;
 
 	if (!sbi->staging.enabled)
 		return -EOPNOTSUPP;
+	if (copy_from_user(&hdr, (void __user *)arg, sizeof(hdr)))
+		return -EFAULT;
+	if (hdr.gen > U16_MAX || hdr.dirty > 1)
+		return -EINVAL;
 
 	down_write(&sbi->staging.sem);
-	if (atomic_read(&sbi->staging.fd_count) > 0) {
-		up_write(&sbi->staging.sem);
-		return -EBUSY;
+	err = yolo_set_view_locked(file, sbi, hdr.tree_ptr, hdr.tree_len,
+				   (u16)hdr.gen,
+				   hdr.gen ? (u16)(hdr.gen - 1) : 0);
+	if (!err) {
+		if ((u32)atomic_read(&sbi->staging.next_ino) < hdr.max_ino)
+			atomic_set(&sbi->staging.next_ino, (int)hdr.max_ino);
+		WRITE_ONCE(sbi->staging.dirty, hdr.dirty);
 	}
 
-	yolo_staging_quiesce(sb, sbi);
-	atomic_set(&sbi->staging.gen, 0);
-	WRITE_ONCE(sbi->staging.dirty, false);
-
 	up_write(&sbi->staging.sem);
-	return 0;
+	return err;
 }
 
 static long yolo_travel_ioctl(struct file *file, unsigned long arg)
@@ -705,21 +720,19 @@ static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 		return -EINVAL;
 
 	down_write(&sbi->staging.sem);
+	/* Increment gen, inject entries, write T record */
 	if (atomic_read(&sbi->staging.fd_count) > 0) {
 		up_write(&sbi->staging.sem);
 		return -EBUSY;
 	}
-
-	yolo_staging_quiesce(sb, sbi);
-
-	/* Increment gen, inject entries, write T record */
 	if (atomic_read(&sbi->staging.gen) >= U16_MAX) {
 		up_write(&sbi->staging.sem);
 		return -EOVERFLOW;
 	}
-	new_gen = (u16)atomic_inc_return(&sbi->staging.gen);
+	new_gen = (u16)(atomic_read(&sbi->staging.gen) + 1);
 
-	err = yolo_travel_inject(file, sbi, &hdr, new_gen);
+	err = yolo_set_view_locked(file, sbi, hdr.tree_ptr, hdr.tree_len,
+				   new_gen, new_gen);
 	if (!err)
 		err = yolo_journal_travel(sbi, new_gen, hdr.target_gen);
 	/* Don't rollback gen on failure — dirents may already be injected
@@ -749,11 +762,14 @@ long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
 {
 	/* Gating-defeating ops must come from outside the mount: an agent (or
 	 * the interactive shell) could otherwise grant itself access or answer
-	 * its own ask prompts. SNAPSHOT/TRAVEL/RESOLVE are fine from inside. */
+	 * its own ask prompts or install arbitrary path redirects.
+	 * SNAPSHOT/RESOLVE are fine from inside. */
 	switch (cmd) {
 	case YOLO_IOC_RULE_SET:
 	case YOLO_IOC_GET_ASK:
 	case YOLO_IOC_PUT_DECISION:
+	case YOLO_IOC_RESTORE:
+	case YOLO_IOC_TRAVEL:
 		if (yolo_caller_inside(file_inode(file)->i_sb))
 			return -EPERM;
 		break;
@@ -780,8 +796,8 @@ long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
 	case YOLO_IOC_TRAVEL:
 		return yolo_travel_ioctl(file, arg);
 
-	case YOLO_IOC_RESET:
-		return yolo_reset_ioctl(file);
+	case YOLO_IOC_RESTORE:
+		return yolo_restore_ioctl(file, arg);
 
 	default:
 		return -ENOTTY;
