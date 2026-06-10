@@ -15,8 +15,11 @@ $ cd example
 # 'yolo run -- <cmd>' runs <cmd> in a staging overlay and prints what it changed.
 $ yolo run -- sh -c 'echo "hello, yolofs" > greeting.txt'
 yolo: not mounted — mounting now (run `yolo unmount` when you're done)
+yolo: loading kernel module /lib/modules/6.8.0-1052-azure/extra/yolofs.ko
 yolo: applying 12 rules from yolofs.toml
-yolo: mounted /users/szhong/YoloFS/filesystem/example/.yolofs/mnt
+yolo: skipping rule $HOME/.bash_history = allow: rule path does not exist: /home/runner/.bash_history: No such file or directory (os error 2)
+yolo: skipping rule $HOME/.ssh/id_ed25519 = ask: rule path does not exist: /home/runner/.ssh/id_ed25519: No such file or directory (os error 2)
+yolo: mounted /home/runner/work/filesystem/filesystem/example/.yolofs/mnt
 yolo: run `yolo watch` to answer permission prompts
 greeting.txt (added)
 yolo: 1 staged change in snapshot 1 · `yolo travel 1` to return
@@ -97,8 +100,8 @@ yolo: rule applied: apikey.txt = ask
 $ yolo watch --allow-all &
 yolo: watching for permission requests — allowing all (Ctrl-C to stop)
 $ yolo run -- sh -c 'cat apikey.txt'
-yolo: cat wants to read /users/szhong/YoloFS/filesystem/example/apikey.txt
-  rule: /users/szhong/YoloFS/filesystem/example/apikey.txt asks
+yolo: cat wants to read /home/runner/work/filesystem/filesystem/example/apikey.txt
+  rule: /home/runner/work/filesystem/filesystem/example/apikey.txt asks
   → allow (req #2)
 token
 
@@ -112,7 +115,7 @@ apikey.txt (asked read → allow)
 $ yolo abort --force
 yolo: staging discarded
 $ yolo unmount
-yolo: unmounted /users/szhong/YoloFS/filesystem/example/.yolofs/mnt
+yolo: unmounted /home/runner/work/filesystem/filesystem/example/.yolofs/mnt
 $ yolo unload
 yolo: unloading kernel module
 $ cd ..
