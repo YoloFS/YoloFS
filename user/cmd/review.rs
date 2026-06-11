@@ -94,13 +94,13 @@ enum ChangeKind {
     Renamed,
 }
 
-/// Classify a node from its `start` (range-start old side) and `end` (net
-/// state). `None` means nothing to show: a scaffold (`end = None`) or a no-op
-/// (absent → absent, a create+delete that nets out). A missing `start` on a
+/// Classify a node from its `old` (the range-start version) and `new` (net
+/// state). `None` means nothing to show: a scaffold (`new = None`) or a no-op
+/// (absent → absent, a create+delete that nets out). A missing `old` on a
 /// rendered node is treated defensively as `Absence` (absent).
-fn classify(start: Option<&Target>, end: Option<&Target>) -> Option<ChangeKind> {
-    let present = matches!(start, Some(Target::StagedFile(_) | Target::BasePath(_)));
-    match end {
+fn classify(old: Option<&Target>, new: Option<&Target>) -> Option<ChangeKind> {
+    let present = matches!(old, Some(Target::StagedFile(_) | Target::BasePath(_)));
+    match new {
         None => None, // scaffold
         Some(Target::StagedFile(_)) if present => Some(ChangeKind::Modified),
         Some(Target::StagedFile(_)) => Some(ChangeKind::Added),
@@ -129,14 +129,14 @@ fn read_target_lossy(yolofs: &Path, target: &Target) -> String {
     }
 }
 
-/// Print a change's one-line header. Renames read their source from `end`.
-fn print_header(kind: ChangeKind, shown: &str, end: Option<&Target>, root: &Path) {
+/// Print a change's one-line header. Renames read their source from `new`.
+fn print_header(kind: ChangeKind, shown: &str, new: Option<&Target>, root: &Path) {
     match kind {
         ChangeKind::Added => println!("{} {}", shown.bold(), "(added)".green()),
         ChangeKind::Modified => println!("{} {}", shown.bold(), "(modified)".yellow()),
         ChangeKind::Deleted => println!("{} {}", shown.bold(), "(deleted)".red()),
         ChangeKind::Renamed => {
-            if let Some(Target::BasePath(src)) = end {
+            if let Some(Target::BasePath(src)) = new {
                 println!(
                     "{} → {} {}",
                     rel(src, root).bold(),
@@ -149,25 +149,25 @@ fn print_header(kind: ChangeKind, shown: &str, end: Option<&Target>, root: &Path
 }
 
 /// Print one change as a git-style diff stanza (header + unified body). The old
-/// content comes from `start` (the range-start version); the new content from
-/// `end`'s staged inode. Returns whether it printed — nothing to show, or a
+/// content comes from `old` (the range-start version); the new content from
+/// `new`'s staged inode. Returns whether it printed — nothing to show, or a
 /// stage byte-identical to its old side, prints nothing.
 fn print_diff(yolofs: &Path, root: &Path, change: &Change) -> bool {
-    let Change { path, start, end } = change;
+    let Change { path, old, new } = change;
     let shown = rel(path, root);
-    let Some(kind) = classify(start.as_ref(), end.as_ref()) else {
+    let Some(kind) = classify(old.as_ref(), new.as_ref()) else {
         return false;
     };
-    let old_binary = start
+    let old_binary = old
         .as_ref()
         .is_some_and(|s| read_target_text(yolofs, s).is_none());
     match kind {
         ChangeKind::Added => {
-            let ino = end
+            let ino = new
                 .as_ref()
                 .and_then(Target::ino)
                 .expect("added ⇒ staged file");
-            print_header(kind, &shown, end.as_ref(), root);
+            print_header(kind, &shown, new.as_ref(), root);
             if is_binary_inode(yolofs, ino) {
                 println!("  {}", "Binary file (not shown)".dimmed());
             } else {
@@ -175,15 +175,15 @@ fn print_diff(yolofs: &Path, root: &Path, change: &Change) -> bool {
             }
         }
         ChangeKind::Modified => {
-            let ino = end
+            let ino = new
                 .as_ref()
                 .and_then(Target::ino)
                 .expect("modified ⇒ staged file");
             if is_binary_inode(yolofs, ino) || old_binary {
-                print_header(kind, &shown, end.as_ref(), root);
+                print_header(kind, &shown, new.as_ref(), root);
                 println!("  {}", "Binary files differ".dimmed());
             } else {
-                let old_text = start
+                let old_text = old
                     .as_ref()
                     .map(|s| read_target_lossy(yolofs, s))
                     .unwrap_or_default();
@@ -191,19 +191,19 @@ fn print_diff(yolofs: &Path, root: &Path, change: &Change) -> bool {
                 if old_text == new_text {
                     return false; // identical to the old side — not a real change
                 }
-                print_header(kind, &shown, end.as_ref(), root);
+                print_header(kind, &shown, new.as_ref(), root);
                 print_unified_diff(&old_text, &new_text);
             }
         }
         ChangeKind::Deleted => {
-            print_header(kind, &shown, end.as_ref(), root);
-            let old_text = start
+            print_header(kind, &shown, new.as_ref(), root);
+            let old_text = old
                 .as_ref()
                 .map(|s| read_target_lossy(yolofs, s))
                 .unwrap_or_default();
             print_unified_diff(&old_text, "");
         }
-        ChangeKind::Renamed => print_header(kind, &shown, end.as_ref(), root),
+        ChangeKind::Renamed => print_header(kind, &shown, new.as_ref(), root),
     }
     true
 }
@@ -218,7 +218,7 @@ fn classified(changeset: &Changeset) -> Vec<(&Change, ChangeKind)> {
     changeset
         .changes
         .iter()
-        .filter_map(|c| classify(c.start.as_ref(), c.end.as_ref()).map(|kind| (c, kind)))
+        .filter_map(|c| classify(c.old.as_ref(), c.new.as_ref()).map(|kind| (c, kind)))
         .collect()
 }
 
@@ -228,7 +228,7 @@ fn classified(changeset: &Changeset) -> Vec<(&Change, ChangeKind)> {
 fn render_summary(changeset: &Changeset, root: &Path) -> usize {
     let items = classified(changeset);
     for (change, kind) in &items {
-        print_header(*kind, &rel(&change.path, root), change.end.as_ref(), root);
+        print_header(*kind, &rel(&change.path, root), change.new.as_ref(), root);
     }
     items.len()
 }

@@ -1,8 +1,8 @@
 // yolo CLI — journal/tree.rs
 //
 // Dir tree builder. Applies journal records sequentially to build one sparse
-// tree carrying both ends of a review comparison: each node has a `start` (the
-// range-start old side, from the first touch's `pre`) and an `end` (the net
+// tree carrying both ends of a review comparison: each node has a `old` (the
+// range-start `old` side, from the first touch's `pre`) and an `new` (the net
 // overlay state, what commit/travel apply).
 //
 // Two rules govern absence (`end = Some(Target::Absence)`):
@@ -20,15 +20,15 @@ use super::types::*;
 
 /// A node in the dir tree.
 ///
-/// `end` is the net overlay state at the path (what commit/travel read); `start`
-/// is the range-start old side (what `review`/`--diff` read for the old
+/// `new` is the net overlay state at the path (what commit/travel read); `old`
+/// is the range-start `old` side (what `review`/`--diff` read for the old
 /// content). Both are `None` on a scaffold dir — one that exists only to provide
 /// a path to deeper nodes, with no touch of its own. A real touched entry has
 /// `Some(end)` (and, after a fold over a non-empty range, `Some(start)`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirNode {
-    pub start: Option<Target>,
-    pub end: Option<Target>,
+    pub old: Option<Target>,
+    pub new: Option<Target>,
     pub children: DirTree,
 }
 
@@ -36,8 +36,8 @@ impl DirNode {
     /// A scaffold node: a path container with no touch of its own.
     fn scaffold() -> Self {
         DirNode {
-            start: None,
-            end: None,
+            old: None,
+            new: None,
             children: DirTree::new(),
         }
     }
@@ -60,7 +60,7 @@ impl DirTree {
     }
 
     /// Apply a single journal action to the tree. First touch at a path assigns
-    /// `start` (the range-start old side); later touches update only `end`.
+    /// `old` (the range-start `old` side); later touches update only `new`.
     fn apply(&mut self, action: &Action) {
         match action {
             Action::Stage { path, ino, pre } => {
@@ -112,7 +112,7 @@ impl DirTree {
     pub fn len(&self) -> usize {
         self.nodes
             .values()
-            .map(|n| usize::from(n.end.is_some()) + n.children.len())
+            .map(|n| usize::from(n.new.is_some()) + n.children.len())
             .sum()
     }
 
@@ -153,7 +153,7 @@ impl DirTree {
     /// Look up the net (end) target by its full path (e.g. "/dir/file").
     /// Returns `None` if the path is not in the tree or is a scaffold.
     pub fn get(&self, path: &str) -> Option<&Target> {
-        self.get_node(path).and_then(|n| n.end.as_ref())
+        self.get_node(path).and_then(|n| n.new.as_ref())
     }
 
     /// Look up a node by its full path (e.g. "/dir/file").
@@ -187,8 +187,8 @@ impl DirTree {
     ///                   tag=2 Path:   path_len:le16  path:u8[path_len]
     ///                   tag=3 None:   (no payload)
     ///
-    /// Only the `end` target is serialized (commit/travel read `end` only).
-    /// Scaffold dirs (`end = None`) use tag=2, path_len=0.
+    /// Only the `new` target is serialized (commit/travel read `new` only).
+    /// Scaffold dirs (`new = None`) use tag=2, path_len=0.
     /// File nodes always have child_count=0.
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -209,13 +209,13 @@ impl DirTree {
             buf.extend_from_slice(&name_len.to_le_bytes());
             buf.extend_from_slice(name_bytes);
 
-            Self::serialize_end(&node.end, buf);
+            Self::serialize_new(&node.new, buf);
             node.children.serialize_into(buf);
         }
     }
 
-    fn serialize_end(end: &Option<Target>, buf: &mut Vec<u8>) {
-        match end {
+    fn serialize_new(new: &Option<Target>, buf: &mut Vec<u8>) {
+        match new {
             // Scaffold (no net state): tag=2 (Path), path_len=0.
             None => {
                 buf.push(2);
@@ -242,7 +242,7 @@ impl DirTree {
     // ── Internal helpers ──────────────────────────────────────────────
 
     /// Walk to a path (owned), creating intermediate scaffold Dir nodes
-    /// (`start`/`end = None`) as needed.  Extracts the leaf name from the path
+    /// (`old`/`end = None`) as needed.  Extracts the leaf name from the path
     /// in-place via `drain`, avoiding allocation for the leaf component.
     fn walk_or_create_parent(&mut self, mut path: String) -> Option<(&mut DirTree, String)> {
         let last_slash = path.rfind('/')?;
@@ -278,18 +278,18 @@ impl DirTree {
         Some((current, name))
     }
 
-    /// First touch at `path`: assign `start` from `pre` (once) and set `end`,
+    /// First touch at `path`: assign `old` from `pre` (once) and set `new`,
     /// preserving any existing subtree. Used for S (`end = StagedFile`) and D
     /// (`end = Absence`).
-    fn touch(&mut self, path: String, pre: Target, end: Target) {
+    fn touch(&mut self, path: String, pre: Target, new: Target) {
         let Some((parent, name)) = self.walk_or_create_parent(path) else {
             return;
         };
         let node = parent.nodes.entry(name).or_insert_with(DirNode::scaffold);
-        if node.start.is_none() {
-            node.start = Some(pre);
+        if node.old.is_none() {
+            node.old = Some(pre);
         }
-        node.end = Some(end);
+        node.new = Some(new);
     }
 
     /// Place a fresh leaf node at `path` (owned), replacing any existing leaf and
@@ -305,34 +305,34 @@ impl DirTree {
     /// re-derives a backing by walking the tree.
     ///
     /// The kernel re-pins the moved dentry with its own target, so `src_pre` is
-    /// also the destination's post-rename backing: `dst.end = src_pre` verbatim.
+    /// also the destination's post-rename backing: `dst.new = src_pre` verbatim.
     /// The detached source contributes only its children (which ride to `dst`)
-    /// and its `start` (the move-carry old side). The destination's own
-    /// first-touch `start` survives when the rename is not its first touch.
+    /// and its `old` (the move-carry old side). The destination's own
+    /// first-touch `old` survives when the rename is not its first touch.
     fn apply_rename(&mut self, dst: String, src: String, src_pre: Target, dst_pre: Target) {
         if dst == src {
             return;
         }
 
-        // Detach the source subtree: its children ride to dst; its own `start`
-        // is the move-carry old side (carried to both dst and the source tomb).
-        let (moved_start, moved_children) = match self.detach(&src) {
-            Some(n) => (n.start, n.children),
+        // Detach the source subtree: its children ride to dst; its own `old`
+        // side is the move-carry baseline (carried to both dst and the tomb).
+        let (moved_old, moved_children) = match self.detach(&src) {
+            Some(n) => (n.old, n.children),
             None => (None, DirTree::new()),
         };
 
-        // Source tombstone: old side is the moved node's start if it had one,
+        // Source tombstone: old side is the moved node's `old` if it had one,
         // else the source's own pre-op backing.
         self.place_node(
             src,
             DirNode {
-                start: moved_start.clone().or_else(|| Some(src_pre.clone())),
-                end: Some(Target::Absence),
+                old: moved_old.clone().or_else(|| Some(src_pre.clone())),
+                new: Some(Target::Absence),
                 children: DirTree::new(),
             },
         );
 
-        // A self-redirect (end would be BasePath(dst)) means the content
+        // A self-redirect (new would be BasePath(dst)) means the content
         // returned to its origin — a roundtrip (a→…→a). src_pre carries that
         // fact directly: a base/redirect source whose backing is dst itself.
         let is_self_redirect = matches!(&src_pre, Target::BasePath(p) if *p == dst);
@@ -345,13 +345,13 @@ impl DirTree {
         if is_self_redirect {
             // No-op self-move: drop the node so commit emits no self-rename.
             // Roundtrip dir: keep the moved children but drop the self-redirect
-            // end to a scaffold so commit doesn't self-move the directory.
+            // `new` to a scaffold so commit doesn't self-move the directory.
             if !moved_children.nodes.is_empty() {
                 parent.nodes.insert(
                     name,
                     DirNode {
-                        start: None,
-                        end: None,
+                        old: None,
+                        new: None,
                         children: moved_children,
                     },
                 );
@@ -359,19 +359,19 @@ impl DirTree {
             return;
         }
 
-        // Destination `start` precedence: the moved node's start (move-carry),
-        // then the destination's existing first-touch start (when the path was
+        // Destination `old` precedence: the moved node's `old` (move-carry),
+        // then the destination's existing first-touch `old` (when the path was
         // already touched in-range — preserved, not clobbered), then the
         // op-local backing the rename displaced.
-        let dst_start = moved_start
-            .or_else(|| existing.and_then(|n| n.start))
+        let dst_old = moved_old
+            .or_else(|| existing.and_then(|n| n.old))
             .or(Some(dst_pre));
 
         parent.nodes.insert(
             name,
             DirNode {
-                start: dst_start,
-                end: Some(src_pre),
+                old: dst_old,
+                new: Some(src_pre),
                 children: moved_children,
             },
         );
@@ -395,8 +395,8 @@ impl DirTree {
             prefix.push('/');
             prefix.push_str(name);
 
-            if node.start.is_some() || node.end.is_some() {
-                f(prefix, node.start.as_ref(), node.end.as_ref());
+            if node.old.is_some() || node.new.is_some() {
+                f(prefix, node.old.as_ref(), node.new.as_ref());
             }
             node.children.visit_nodes(f, prefix);
 
@@ -636,7 +636,7 @@ mod tests {
         assert!(matches!(tree.get("/b"), Some(Target::BasePath(src)) if src == "/a"));
     }
 
-    // ── Rename start/end composition (plan 58) ────────────────────────
+    // ── Rename old/new composition (plan 58) ────────────────────────
     //
     // These use explicit `Action::Rename` with the pre fields the *kernel*
     // would actually write (the `rename()` helper fabricates an unfaithful
@@ -645,8 +645,8 @@ mod tests {
     #[test]
     fn rename_over_touched_dest_keeps_dest_first_touch_start() {
         // S /b ino1 (base /b copied up), then mv /a /b (base /a clobbers the
-        // staged /b). /b's range-start old side is base /b — the rename must
-        // not overwrite that first-touch `start` with the intermediate inode.
+        // staged /b). /b's range-start `old` side is base /b — the rename must
+        // not overwrite that first-touch `old` with the intermediate inode.
         let tree = build(&[
             Action::Stage {
                 path: "/b".into(),
@@ -662,17 +662,17 @@ mod tests {
         ]);
         let node = tree.get_node("/b").expect("/b node");
         assert!(
-            matches!(node.start, Some(Target::BasePath(ref p)) if p == "/b"),
-            "dest first-touch start must survive the rename-over: {:?}",
-            node.start
+            matches!(node.old, Some(Target::BasePath(ref p)) if p == "/b"),
+            "dest first-touch `old` must survive the rename-over: {:?}",
+            node.old
         );
-        assert!(matches!(node.end, Some(Target::BasePath(ref p)) if p == "/a"));
+        assert!(matches!(node.new, Some(Target::BasePath(ref p)) if p == "/a"));
     }
 
     #[test]
     fn delete_rename_over_restage_classifies_modified_not_added() {
         // rm /b; mv /a /b; edit /b. /b existed in base, so the net change is a
-        // modify (base /b → new inode), not an add. The first-touch `start`
+        // modify (base /b → new inode), not an add. The first-touch `old`
         // (base /b, from the delete) must survive the rename-over so classify
         // sees a present old side.
         let tree = build(&[
@@ -694,18 +694,18 @@ mod tests {
         ]);
         let node = tree.get_node("/b").expect("/b node");
         assert!(
-            matches!(node.start, Some(Target::BasePath(ref p)) if p == "/b"),
+            matches!(node.old, Some(Target::BasePath(ref p)) if p == "/b"),
             "start should be base /b (the pre-delete content), got {:?}",
-            node.start
+            node.old
         );
-        assert!(matches!(node.end, Some(Target::StagedFile(2))));
+        assert!(matches!(node.new, Some(Target::StagedFile(2))));
     }
 
     #[test]
     fn rename_carries_moved_node_start_to_dest_child() {
         // Regression pin for move-carry (plan 56): vi /d/f (modify base d/f →
         // ino1), then mv /d /e. /e/f's old side is the moved child's own
-        // `start` (base /d/f), carried verbatim across the directory move.
+        // `old` (base /d/f), carried verbatim across the directory move.
         let tree = build(&[
             Action::Stage {
                 path: "/d/f".into(),
@@ -721,16 +721,16 @@ mod tests {
         ]);
         let node = tree.get_node("/e/f").expect("/e/f node");
         assert!(
-            matches!(node.start, Some(Target::BasePath(ref p)) if p == "/d/f"),
-            "moved child's first-touch start should ride to /e/f: {:?}",
-            node.start
+            matches!(node.old, Some(Target::BasePath(ref p)) if p == "/d/f"),
+            "moved child's first-touch `old` should ride to /e/f: {:?}",
+            node.old
         );
-        assert!(matches!(node.end, Some(Target::StagedFile(1))));
+        assert!(matches!(node.new, Some(Target::StagedFile(1))));
     }
 
     #[test]
     fn rename_staged_source_carries_inode_to_dest_end() {
-        // touch /a (ino1); mv /a /b. /b.end is the carried StagedFile(1) — the
+        // touch /a (ino1); mv /a /b. /b.new is the carried StagedFile(1) — the
         // record's src_pre verbatim, not re-derived. Pins the trust-the-record
         // contract for staged sources.
         let tree = build(&[
@@ -752,8 +752,8 @@ mod tests {
 
     #[test]
     fn first_touch_start_rides_across_a_later_rename() {
-        // Composition of the two rename behaviors: S /b ino1 seeds /b.start =
-        // base /b; R /b←/a preserves that first-touch start (finding 1); then
+        // Composition of the two rename behaviors: S /b ino1 seeds /b.old =
+        // base /b; R /b←/a preserves that first-touch `old` (finding 1); then
         // R /c←/b move-carries it to /c. The third hop's source /b redirects to
         // base /a, so its kernel-faithful src_pre is BasePath(/a).
         let tree = build(&[
@@ -772,15 +772,15 @@ mod tests {
         ]);
         let c = tree.get_node("/c").expect("/c node");
         assert!(
-            matches!(c.start, Some(Target::BasePath(ref p)) if p == "/b"),
-            "first-touch start (base /b) should ride across both moves: {:?}",
-            c.start
+            matches!(c.old, Some(Target::BasePath(ref p)) if p == "/b"),
+            "first-touch `old` (base /b) should ride across both moves: {:?}",
+            c.old
         );
-        assert!(matches!(c.end, Some(Target::BasePath(ref p)) if p == "/a"));
+        assert!(matches!(c.new, Some(Target::BasePath(ref p)) if p == "/a"));
         // The /b tombstone keeps the same first-touch old side.
         let b = tree.get_node("/b").expect("/b node");
-        assert!(matches!(b.end, Some(Target::Absence)));
-        assert!(matches!(b.start, Some(Target::BasePath(ref p)) if p == "/b"));
+        assert!(matches!(b.new, Some(Target::Absence)));
+        assert!(matches!(b.old, Some(Target::BasePath(ref p)) if p == "/b"));
     }
 
     // ── Rename then delete ────────────────────────────────────────────
@@ -1454,8 +1454,8 @@ mod tests {
         tree.nodes.insert(
             "empty".to_string(),
             DirNode {
-                start: None,
-                end: None,
+                old: None,
+                new: None,
                 children: DirTree::new(),
             },
         );
@@ -1551,16 +1551,16 @@ mod tests {
         sub.nodes.insert(
             "child".to_string(),
             DirNode {
-                start: None,
-                end: Some(Target::StagedFile(1)),
+                old: None,
+                new: Some(Target::StagedFile(1)),
                 children: DirTree::new(),
             },
         );
         tree.nodes.insert(
             "dir".to_string(),
             DirNode {
-                start: None,
-                end: None,
+                old: None,
+                new: None,
                 children: sub,
             },
         );
@@ -1739,8 +1739,8 @@ mod tests {
         tree.nodes.insert(
             "link".to_string(),
             DirNode {
-                start: None,
-                end: Some(Target::BasePath("a".repeat(u16::MAX as usize + 1))),
+                old: None,
+                new: Some(Target::BasePath("a".repeat(u16::MAX as usize + 1))),
                 children: DirTree::new(),
             },
         );

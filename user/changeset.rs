@@ -7,14 +7,14 @@
 use crate::journal::{DirTree, Journal, Note, Record, Target};
 use std::collections::HashSet;
 
-/// One net change at a path. `start` is the range-start old side (what `--diff`
-/// reads for the old content); `end` is the net overlay state. Their pairing
+/// One net change at a path. `old` is the range-start `old` side (what `--diff`
+/// reads for the old content); `new` is the net overlay state. Their pairing
 /// classifies added/modified/deleted/renamed — no rebuilt previous tree, no base
 /// stat. Both come straight off the folded tree node.
 pub struct Change {
     pub path: String,
-    pub start: Option<Target>,
-    pub end: Option<Target>,
+    pub old: Option<Target>,
+    pub new: Option<Target>,
 }
 
 /// What changed across a span of snapshots: the net per-path effect (what
@@ -35,7 +35,7 @@ impl Changeset {
     pub fn collect(journal: &Journal, start: usize, end: usize) -> Self {
         // One O(segment) pass over the live records collects the observational
         // A/B accesses, deduped (a summary shouldn't repeat what `yolo journal`
-        // lists in full). The start/end old-side + net state come from the folded
+        // lists in full). The `old`/`new` per-path state comes from the folded
         // tree below — no separate pre-image side map.
         let mut seen = HashSet::new();
         let mut notes = Vec::new();
@@ -52,7 +52,7 @@ impl Changeset {
             }
         }
 
-        // Fold the range into one tree → start/end per path. Borrowed, so the
+        // Fold the range into one tree → old/new per path. Borrowed, so the
         // journal isn't consumed — `--each` calls `collect` once per segment.
         let tree = DirTree::build(journal.live_segments_range(start, end));
         let mut all = Vec::new();
@@ -73,16 +73,16 @@ impl Changeset {
             .collect();
 
         let mut changes = Vec::new();
-        for (p, start, end) in &all {
-            let vacated_source = matches!(end, Some(Target::Absence))
-                && matches!(start, Some(Target::BasePath(l)) if moved_to.contains(l.as_str()));
+        for (p, old, new) in &all {
+            let vacated_source = matches!(new, Some(Target::Absence))
+                && matches!(old, Some(Target::BasePath(l)) if moved_to.contains(l.as_str()));
             if vacated_source {
                 continue; // already shown by the "(renamed)" line
             }
             changes.push(Change {
                 path: p.clone(),
-                start: start.clone(),
-                end: end.clone(),
+                old: old.clone(),
+                new: new.clone(),
             });
         }
 
@@ -146,15 +146,15 @@ mod tests {
         // Fresh create: start = Absence (no old side) ⇒ classifies as added.
         let cs = collect(vec![stage("/a", 1, Target::Absence)]);
         let c = find(&cs, "/a").unwrap();
-        assert!(matches!(c.start, Some(Target::Absence)));
-        assert!(matches!(c.end, Some(Target::StagedFile(1))));
+        assert!(matches!(c.old, Some(Target::Absence)));
+        assert!(matches!(c.new, Some(Target::StagedFile(1))));
     }
 
     #[test]
     fn modify_carries_base_start() {
         let cs = collect(vec![stage("/a", 1, base("/a"))]);
         assert!(
-            matches!(find(&cs, "/a").unwrap().start, Some(Target::BasePath(ref p)) if p == "/a")
+            matches!(find(&cs, "/a").unwrap().old, Some(Target::BasePath(ref p)) if p == "/a")
         );
     }
 
@@ -162,8 +162,8 @@ mod tests {
     fn delete_carries_start() {
         let cs = collect(vec![delete("/a", base("/a"))]);
         let c = find(&cs, "/a").unwrap();
-        assert!(matches!(c.start, Some(Target::BasePath(ref p)) if p == "/a"));
-        assert!(matches!(c.end, Some(Target::Absence)));
+        assert!(matches!(c.old, Some(Target::BasePath(ref p)) if p == "/a"));
+        assert!(matches!(c.new, Some(Target::Absence)));
     }
 
     #[test]
@@ -176,8 +176,8 @@ mod tests {
             stage("/a", 2, Target::Absence),
         ]);
         let c = find(&cs, "/a").unwrap();
-        assert!(matches!(c.start, Some(Target::Absence)));
-        assert!(matches!(c.end, Some(Target::StagedFile(2))));
+        assert!(matches!(c.old, Some(Target::Absence)));
+        assert!(matches!(c.new, Some(Target::StagedFile(2))));
     }
 
     #[test]
@@ -189,8 +189,8 @@ mod tests {
             delete("/a", base("/a")),
         ]);
         let c = find(&cs, "/a").unwrap();
-        assert!(matches!(c.start, Some(Target::Absence)));
-        assert!(matches!(c.end, Some(Target::Absence)));
+        assert!(matches!(c.old, Some(Target::Absence)));
+        assert!(matches!(c.new, Some(Target::Absence)));
     }
 
     #[test]
@@ -203,7 +203,7 @@ mod tests {
             "vacated source should be suppressed"
         );
         assert!(matches!(
-            find(&cs, "/b").unwrap().end,
+            find(&cs, "/b").unwrap().new,
             Some(Target::BasePath(_))
         ));
     }
@@ -217,7 +217,7 @@ mod tests {
             delete("/b", base("/a")),
         ]);
         let a = find(&cs, "/a").unwrap();
-        assert!(matches!(a.start, Some(Target::BasePath(ref p)) if p == "/a"));
-        assert!(matches!(a.end, Some(Target::Absence)));
+        assert!(matches!(a.old, Some(Target::BasePath(ref p)) if p == "/a"));
+        assert!(matches!(a.new, Some(Target::Absence)));
     }
 }

@@ -114,7 +114,7 @@ fn collect(tree: &DirTree, prefix: &mut String, renames: &mut Vec<CommitOp>, ops
         prefix.push_str(name);
 
         // Commit reads the net state (`end`) only.
-        match &node.end {
+        match &node.new {
             Some(Target::StagedFile(ino)) => {
                 ops.push(CommitOp::Stage {
                     path: prefix.clone(),
@@ -135,7 +135,7 @@ fn collect(tree: &DirTree, prefix: &mut String, renames: &mut Vec<CommitOp>, ops
             None => {} // scaffold
         }
 
-        if !matches!(node.end, Some(Target::Absence)) {
+        if !matches!(node.new, Some(Target::Absence)) {
             collect(&node.children, prefix, renames, ops);
         }
 

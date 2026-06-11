@@ -138,7 +138,7 @@ fn resolve_base_dir(s: &YoloSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
     for component in rel_dir.split('/') {
         tree_path = format!("{tree_path}/{component}");
         let link_target = cli.get_node(&tree_path).and_then(|node| {
-            if let Some(Target::BasePath(src)) = &node.end {
+            if let Some(Target::BasePath(src)) = &node.new {
                 Some(src.as_str())
             } else {
                 None

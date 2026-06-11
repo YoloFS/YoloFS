@@ -6,7 +6,7 @@
 /// value of a journal record's pre-op `pre` fields (the parser resolves the
 /// tagged wire form `a`/`s:<ino>`/`b:<path>` into this). One value type for both
 /// the operation-local axis (`pre`) and the range-scoped tree axis
-/// (`start`/`end`); the role is carried by the field name, not the type.
+/// (`old`/`new`); the role is carried by the field name, not the type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
     /// Content staged in flat file store at this inode ID.
@@ -33,7 +33,7 @@ impl Target {
 ///
 /// Each `*pre` field is the operation-local pre-op backing of that overlay name
 /// — the `Target` the kernel resolved immediately before the op (see
-/// [`Target`]). It seeds the range-start old side during the fold (first touch
+/// [`Target`]). It seeds the range-start `old` side during the fold (first touch
 /// wins) and `diff` reads it for the old content, so status/diff need neither a
 /// rebuilt previous tree nor a base stat (O(segment), not O(journal)). For an
 /// already-staged file it is the staged inode (`StagedFile`), not the base it

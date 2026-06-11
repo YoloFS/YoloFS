@@ -130,7 +130,7 @@ mod tests {
             pre: Target::Absence,
         }]);
         let node = tree.get_node("/newdir").expect("should exist");
-        assert!(matches!(node.end, Some(Target::StagedFile(1))));
+        assert!(matches!(node.new, Some(Target::StagedFile(1))));
     }
 
     #[test]
@@ -141,7 +141,7 @@ mod tests {
             pre: Target::Absence,
         }]);
         let node = tree.get_node("/link").expect("should exist");
-        assert!(matches!(node.end, Some(Target::StagedFile(1))));
+        assert!(matches!(node.new, Some(Target::StagedFile(1))));
     }
 
     #[test]
@@ -159,7 +159,7 @@ mod tests {
             dst_pre: Target::Absence,
         }]);
         let node = tree.get_node("/newdir").expect("should exist");
-        assert!(matches!(node.end, Some(Target::BasePath(ref src)) if src == "/mydir"));
+        assert!(matches!(node.new, Some(Target::BasePath(ref src)) if src == "/mydir"));
     }
 
     #[test]
@@ -171,6 +171,6 @@ mod tests {
             dst_pre: Target::Absence,
         }]);
         let node = tree.get_node("/newlink").expect("should exist");
-        assert!(matches!(node.end, Some(Target::BasePath(ref src)) if src == "/mylink"));
+        assert!(matches!(node.new, Some(Target::BasePath(ref src)) if src == "/mylink"));
     }
 }
