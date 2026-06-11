@@ -52,39 +52,38 @@ impl Changeset {
             }
         }
 
-        // Fold the range into one tree → old/new per path. Borrowed, so the
-        // journal isn't consumed — `--each` calls `collect` once per segment.
+        // Fold the range into one tree → `old`/`new` per path, flattened into
+        // review changes. Borrowed, so the journal isn't consumed — `--each`
+        // calls `collect` once per segment.
         let tree = DirTree::build(journal.live_segments_range(start, end));
-        let mut all = Vec::new();
-        tree.for_each_change(|p, s, e| {
-            all.push((p.to_string(), s.cloned(), e.cloned()));
+        let mut changes = Vec::new();
+        tree.for_each_change(|p, old, new| {
+            changes.push(Change {
+                path: p.to_string(),
+                old: old.cloned(),
+                new: new.cloned(),
+            });
         });
 
-        // A plain rename renders as a single "(renamed)" line, so drop the
-        // vacated source it leaves behind. Key on a *surviving* base-path
-        // destination: in `mv a b; rm b` the destination is deleted, so no
-        // `end = BasePath` survives and `/a`'s delete is *not* suppressed.
-        let moved_to: HashSet<&str> = all
+        // A base path is a unique content origin, so a vacated source `/a`
+        // (`new = Absence`, `old = BasePath(L)`) is a *moved* file, not a delete,
+        // exactly when some surviving node still redirects to `L` — then the
+        // rename renders as one "(renamed)" line instead of delete + rename.
+        // Keying on a *surviving* redirect is what keeps `mv a b; rm b` showing
+        // `/a` deleted: `rm b` clears the only `new = BasePath(/a)`, so `/a` stays.
+        // Owned (not `&str` into `changes`) so the `retain` below can mutate it.
+        let live_redirect_targets: HashSet<String> = changes
             .iter()
-            .filter_map(|(_, _, e)| match e {
-                Some(Target::BasePath(l)) => Some(l.as_str()),
+            .filter_map(|c| match &c.new {
+                Some(Target::BasePath(l)) => Some(l.clone()),
                 _ => None,
             })
             .collect();
-
-        let mut changes = Vec::new();
-        for (p, old, new) in &all {
-            let vacated_source = matches!(new, Some(Target::Absence))
-                && matches!(old, Some(Target::BasePath(l)) if moved_to.contains(l.as_str()));
-            if vacated_source {
-                continue; // already shown by the "(renamed)" line
-            }
-            changes.push(Change {
-                path: p.clone(),
-                old: old.clone(),
-                new: new.clone(),
-            });
-        }
+        changes.retain(|c| {
+            let moved_source = matches!(c.new, Some(Target::Absence))
+                && matches!(&c.old, Some(Target::BasePath(l)) if live_redirect_targets.contains(l));
+            !moved_source
+        });
 
         Changeset { changes, notes }
     }
