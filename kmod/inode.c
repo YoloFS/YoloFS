@@ -51,9 +51,10 @@ static int yolo_create_staged(struct inode *dir, struct dentry *dentry,
 
 	yolo_dentry_pin(dentry, YOLO_TARGET_INODE);
 	YOLO_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->staging.gen);
+	YOLO_I(d_inode(dentry))->staging_ino = ino;
 
-	/* Fresh create/mkdir/symlink — nothing existed before, so no pre-image. */
-	yolo_journal_stage(sbi, dentry, ino, "");
+	/* Fresh create/mkdir/symlink — nothing existed before, so pre = "A". */
+	yolo_journal_stage(sbi, dentry, ino, "A");
 
 	return 0;
 }

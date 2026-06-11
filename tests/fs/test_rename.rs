@@ -613,7 +613,7 @@ fn complex_multi_operation_commit() {
                 has_renamed_deep_to_top = true;
             }
         }
-        if matches!(target, Target::Tombstone) && path.ends_with("/deep.txt") {
+        if matches!(target, Target::Absence) && path.ends_with("/deep.txt") {
             has_deleted_deep = true;
         }
         if matches!(target, Target::StagedFile(_)) && path.ends_with("/link.txt") {
@@ -621,10 +621,10 @@ fn complex_multi_operation_commit() {
         }
         // Check temp.txt/brand_new.txt: only as tombstones (spurious), not as
         // redirects or inodes.
-        if path.ends_with("/temp.txt") && !matches!(target, Target::Tombstone) {
+        if path.ends_with("/temp.txt") && !matches!(target, Target::Absence) {
             has_temp = true;
         }
-        if path.ends_with("/brand_new.txt") && !matches!(target, Target::Tombstone) {
+        if path.ends_with("/brand_new.txt") && !matches!(target, Target::Absence) {
             has_brand_new = true;
         }
     });

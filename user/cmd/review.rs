@@ -94,28 +94,49 @@ enum ChangeKind {
     Renamed,
 }
 
-/// Classify a net target given whether its path existed at the baseline.
-/// `None` means nothing to show: a delete of something already absent (a
-/// create+delete that nets out), or a scaffold passthrough.
-fn classify(target: &Target, present: bool) -> Option<ChangeKind> {
-    match target {
-        Target::StagedFile(_) if !present => Some(ChangeKind::Added),
-        Target::StagedFile(_) => Some(ChangeKind::Modified),
-        Target::Tombstone if present => Some(ChangeKind::Deleted),
-        Target::Tombstone => None,
-        Target::BasePath(_) => Some(ChangeKind::Renamed),
-        Target::Passthrough => None,
+/// Classify a node from its `start` (range-start old side) and `end` (net
+/// state). `None` means nothing to show: a scaffold (`end = None`) or a no-op
+/// (absent → absent, a create+delete that nets out). A missing `start` on a
+/// rendered node is treated defensively as `Absence` (absent).
+fn classify(start: Option<&Target>, end: Option<&Target>) -> Option<ChangeKind> {
+    let present = matches!(start, Some(Target::StagedFile(_) | Target::BasePath(_)));
+    match end {
+        None => None, // scaffold
+        Some(Target::StagedFile(_)) if present => Some(ChangeKind::Modified),
+        Some(Target::StagedFile(_)) => Some(ChangeKind::Added),
+        Some(Target::BasePath(_)) => Some(ChangeKind::Renamed),
+        Some(Target::Absence) if present => Some(ChangeKind::Deleted),
+        Some(Target::Absence) => None, // no-op
     }
 }
 
-/// Print a change's one-line header. Renames read their source from the target.
-fn print_header(kind: ChangeKind, shown: &str, target: &Target, root: &Path) {
+/// Read a target's content for the old/new side of a diff, or `None` if binary
+/// (or, for the old side, absent). `Absence` reads as empty.
+fn read_target_text(yolofs: &Path, target: &Target) -> Option<String> {
+    match target {
+        Target::StagedFile(ino) => read_file_text(&crate::utils::inode_path(yolofs, *ino)),
+        Target::BasePath(p) => read_file_text(Path::new(p)),
+        Target::Absence => Some(String::new()),
+    }
+}
+
+/// Lossy content for a target (empty for `Absence` / unreadable).
+fn read_target_lossy(yolofs: &Path, target: &Target) -> String {
+    match target {
+        Target::StagedFile(ino) => read_inode(yolofs, *ino),
+        Target::BasePath(p) => read_file_lossy(Path::new(p)),
+        Target::Absence => String::new(),
+    }
+}
+
+/// Print a change's one-line header. Renames read their source from `end`.
+fn print_header(kind: ChangeKind, shown: &str, end: Option<&Target>, root: &Path) {
     match kind {
         ChangeKind::Added => println!("{} {}", shown.bold(), "(added)".green()),
         ChangeKind::Modified => println!("{} {}", shown.bold(), "(modified)".yellow()),
         ChangeKind::Deleted => println!("{} {}", shown.bold(), "(deleted)".red()),
         ChangeKind::Renamed => {
-            if let Target::BasePath(src) = target {
+            if let Some(Target::BasePath(src)) = end {
                 println!(
                     "{} → {} {}",
                     rel(src, root).bold(),
@@ -128,24 +149,25 @@ fn print_header(kind: ChangeKind, shown: &str, target: &Target, root: &Path) {
 }
 
 /// Print one change as a git-style diff stanza (header + unified body). The old
-/// content comes from the change's pre-image (the previous-snapshot version);
-/// the new content from the staged inode. Returns whether it printed — nothing
-/// to show, or a stage byte-identical to its pre-image, prints nothing.
+/// content comes from `start` (the range-start version); the new content from
+/// `end`'s staged inode. Returns whether it printed — nothing to show, or a
+/// stage byte-identical to its old side, prints nothing.
 fn print_diff(yolofs: &Path, root: &Path, change: &Change) -> bool {
-    let Change {
-        path,
-        target,
-        preimage,
-    } = change;
+    let Change { path, start, end } = change;
     let shown = rel(path, root);
-    let Some(kind) = classify(target, preimage.is_some()) else {
+    let Some(kind) = classify(start.as_ref(), end.as_ref()) else {
         return false;
     };
-    let pre = preimage.as_deref().map(Path::new);
+    let old_binary = start
+        .as_ref()
+        .is_some_and(|s| read_target_text(yolofs, s).is_none());
     match kind {
         ChangeKind::Added => {
-            let ino = target.ino().expect("added ⇒ staged file");
-            print_header(kind, &shown, target, root);
+            let ino = end
+                .as_ref()
+                .and_then(Target::ino)
+                .expect("added ⇒ staged file");
+            print_header(kind, &shown, end.as_ref(), root);
             if is_binary_inode(yolofs, ino) {
                 println!("  {}", "Binary file (not shown)".dimmed());
             } else {
@@ -153,25 +175,35 @@ fn print_diff(yolofs: &Path, root: &Path, change: &Change) -> bool {
             }
         }
         ChangeKind::Modified => {
-            let ino = target.ino().expect("modified ⇒ staged file");
-            if is_binary_inode(yolofs, ino) || pre.is_some_and(|p| read_file_text(p).is_none()) {
-                print_header(kind, &shown, target, root);
+            let ino = end
+                .as_ref()
+                .and_then(Target::ino)
+                .expect("modified ⇒ staged file");
+            if is_binary_inode(yolofs, ino) || old_binary {
+                print_header(kind, &shown, end.as_ref(), root);
                 println!("  {}", "Binary files differ".dimmed());
             } else {
-                let old_text = pre.map(read_file_lossy).unwrap_or_default();
+                let old_text = start
+                    .as_ref()
+                    .map(|s| read_target_lossy(yolofs, s))
+                    .unwrap_or_default();
                 let new_text = read_inode(yolofs, ino);
                 if old_text == new_text {
-                    return false; // identical to the pre-image — not a real change
+                    return false; // identical to the old side — not a real change
                 }
-                print_header(kind, &shown, target, root);
+                print_header(kind, &shown, end.as_ref(), root);
                 print_unified_diff(&old_text, &new_text);
             }
         }
         ChangeKind::Deleted => {
-            print_header(kind, &shown, target, root);
-            print_unified_diff(&pre.map(read_file_lossy).unwrap_or_default(), "");
+            print_header(kind, &shown, end.as_ref(), root);
+            let old_text = start
+                .as_ref()
+                .map(|s| read_target_lossy(yolofs, s))
+                .unwrap_or_default();
+            print_unified_diff(&old_text, "");
         }
-        ChangeKind::Renamed => print_header(kind, &shown, target, root),
+        ChangeKind::Renamed => print_header(kind, &shown, end.as_ref(), root),
     }
     true
 }
@@ -186,7 +218,7 @@ fn classified(changeset: &Changeset) -> Vec<(&Change, ChangeKind)> {
     changeset
         .changes
         .iter()
-        .filter_map(|c| classify(&c.target, c.preimage.is_some()).map(|kind| (c, kind)))
+        .filter_map(|c| classify(c.start.as_ref(), c.end.as_ref()).map(|kind| (c, kind)))
         .collect()
 }
 
@@ -196,7 +228,7 @@ fn classified(changeset: &Changeset) -> Vec<(&Change, ChangeKind)> {
 fn render_summary(changeset: &Changeset, root: &Path) -> usize {
     let items = classified(changeset);
     for (change, kind) in &items {
-        print_header(*kind, &rel(&change.path, root), &change.target, root);
+        print_header(*kind, &rel(&change.path, root), change.end.as_ref(), root);
     }
     items.len()
 }
@@ -221,14 +253,12 @@ fn render(changeset: &Changeset, yolofs: &Path, root: &Path) -> usize {
 //   N       → snapshot N's own change, `prev(N)..N`
 //   a..b    → state(a) → state(b); empty end means base (0) / tip
 //   all     → the whole session, base..tip (everything vs base); same as `..`
-// Ids are numbers (0 is the base/"(initial)" marker). The optional `--diff`
-// path filter is passed after `--`, so the positional is unambiguously a range.
+// Ids are numbers (0 is the base/"(initial)" marker).
 
 /// Translate a positional id/range spec into a segment range `[start, end)`,
 /// delegating the resolution to `MarkerIndex::segment_range`. Ids are numbers
-/// only (`0` = base); names are rejected here so the positional can't be
-/// mistaken for a path — the `--diff` path filter is passed after `--`. Shared
-/// with `yolo journal`, which takes the same `[<id>|a..b|all]` grammar.
+/// only (`0` = base); names are rejected here. Shared with `yolo journal`,
+/// which takes the same `[<id>|a..b|all]` grammar.
 pub(crate) fn parse_range(
     spec: Option<&str>,
     each: bool,
@@ -275,20 +305,19 @@ fn open_session() -> Result<(PathBuf, PathBuf, Journal)> {
     Ok((yolofs, root, journal))
 }
 
-/// `yolo review [<id>[..<id>]] [--diff] [--each] [-- <path>]` — review staged
+/// `yolo review [<id>[..<id>]] [--diff] [--each]` — review staged
 /// changes over a range. The default is a one-line-per-change summary; `--diff`
 /// renders the git-style unified body instead. Everything is classified vs the
 /// range's start (the pre-image baseline — no previous-tree rebuild; O(segment),
 /// not O(journal)).
-pub fn run_review(range: Option<&str>, path: Option<&str>, each: bool, diff: bool) -> Result<()> {
+pub fn run_review(range: Option<&str>, each: bool, diff: bool) -> Result<()> {
     let (yolofs, root, journal) = open_session()?;
     let (start, end) = parse_range(range, each, &journal)?;
-    let path = path.map(crate::utils::normalize_path);
     if each {
-        render_each(&journal, &yolofs, &root, path.as_deref(), start, end, diff);
+        render_each(&journal, &yolofs, &root, start, end, diff);
         return Ok(());
     }
-    let changeset = Changeset::collect(&journal, start, end, path.as_deref());
+    let changeset = Changeset::collect(&journal, start, end);
     let total = if diff {
         render(&changeset, &yolofs, &root)
     } else {
@@ -322,7 +351,6 @@ fn render_each(
     journal: &Journal,
     yolofs: &Path,
     root: &Path,
-    path: Option<&str>,
     start: usize,
     end: usize,
     verbose: bool,
@@ -332,7 +360,7 @@ fn render_each(
         if !journal.is_alive(i) || journal.segments[i].records.is_empty() {
             continue;
         }
-        let changeset = Changeset::collect(journal, i, i + 1, path);
+        let changeset = Changeset::collect(journal, i, i + 1);
         if classified(&changeset).is_empty() && changeset.notes.is_empty() {
             continue;
         }
@@ -388,7 +416,7 @@ pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
         }
         None => (journal.markers.last_snapshot_idx().unwrap_or(0), num),
     };
-    let changeset = Changeset::collect(&journal, start, end, None);
+    let changeset = Changeset::collect(&journal, start, end);
     let total = render_summary(&changeset, &root);
 
     if !changeset.notes.is_empty() {
@@ -466,29 +494,33 @@ mod tests {
     #[test]
     fn classify_all_combinations() {
         use ChangeKind::*;
-        // A staged file is added when absent before, modified when present.
+        let staged = Target::StagedFile(1);
+        let base = Target::BasePath("/x".into());
+        let absent = Target::Absence;
+        // A staged end is added when the old side is absent, modified when present.
         assert!(matches!(
-            classify(&Target::StagedFile(1), false),
+            classify(Some(&absent), Some(&staged)),
             Some(Added)
         ));
         assert!(matches!(
-            classify(&Target::StagedFile(1), true),
+            classify(Some(&base), Some(&staged)),
             Some(Modified)
         ));
-        // A tombstone is a real delete only if the path existed before.
-        assert!(matches!(classify(&Target::Tombstone, true), Some(Deleted)));
-        assert!(classify(&Target::Tombstone, false).is_none());
-        // A rename always reads as renamed, regardless of prior presence.
+        // An absent end is a real delete only if the old side was present.
         assert!(matches!(
-            classify(&Target::BasePath("/x".into()), true),
+            classify(Some(&base), Some(&absent)),
+            Some(Deleted)
+        ));
+        assert!(classify(Some(&absent), Some(&absent)).is_none());
+        // A base-path end always reads as renamed, regardless of the old side.
+        assert!(matches!(
+            classify(Some(&absent), Some(&base)),
             Some(Renamed)
         ));
-        assert!(matches!(
-            classify(&Target::BasePath("/x".into()), false),
-            Some(Renamed)
-        ));
-        // Scaffolds never show.
-        assert!(classify(&Target::Passthrough, true).is_none());
+        assert!(matches!(classify(Some(&base), Some(&base)), Some(Renamed)));
+        // Scaffolds (end = None) never show.
+        assert!(classify(Some(&base), None).is_none());
+        assert!(classify(None, None).is_none());
     }
 
     // ── id / range grammar ───────────────────────────────────────────

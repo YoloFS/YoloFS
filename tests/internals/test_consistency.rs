@@ -48,8 +48,7 @@ fn expected_backing_metadata(s: &YoloSession, target: &Target) -> std::fs::Metad
         Target::BasePath(src) => Path::new(src)
             .symlink_metadata()
             .unwrap_or_else(|e| panic!("redirect source '{src}' should exist: {e}")),
-        Target::Passthrough => panic!("passthrough dentry should not be visible"),
-        Target::Tombstone => panic!("negative dentry has no backing metadata"),
+        Target::Absence => panic!("negative dentry has no backing metadata"),
     }
 }
 
@@ -116,8 +115,7 @@ fn assert_overlay_visible(s: &YoloSession) {
                 let expected = expected_backing_metadata(s, target);
                 assert_same_file_type(rel, &meta, &expected);
             }
-            Target::Passthrough => unreachable!("passthrough dentries are skipped by for_each"),
-            Target::Tombstone => {
+            Target::Absence => {
                 assert!(
                     !path_visible(&mnt),
                     "negative dentry at '/{rel}' should not be visible"
@@ -140,7 +138,7 @@ fn resolve_base_dir(s: &YoloSession, rel_dir: &str, cli: &DirTree) -> PathBuf {
     for component in rel_dir.split('/') {
         tree_path = format!("{tree_path}/{component}");
         let link_target = cli.get_node(&tree_path).and_then(|node| {
-            if let Target::BasePath(src) = &node.target {
+            if let Some(Target::BasePath(src)) = &node.end {
                 Some(src.as_str())
             } else {
                 None
@@ -198,7 +196,7 @@ fn assert_dir_matches(s: &YoloSession, rel_dir: &str) {
         }
     }
     for (name, target) in &staged {
-        if !matches!(target, Target::Tombstone) {
+        if !matches!(target, Target::Absence) {
             expected.insert(name.clone());
         }
     }
@@ -273,10 +271,10 @@ fn delete_staged_file_tombstones() {
     fs::remove_file(s.mnt_path("temp.txt")).expect("delete");
     assert_consistent(&s);
 
-    // CLI should have a tombstone (Target::Tombstone)
+    // CLI should have a tombstone (Target::Absence)
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/temp.txt") && matches!(e, Target::Tombstone)),
+        t.any(|p, e| p.ends_with("/temp.txt") && matches!(e, Target::Absence)),
         "A+D on staged-only should produce tombstone: {t:?}"
     );
 }
@@ -290,7 +288,7 @@ fn delete_base_file_tombstones() {
 
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::Tombstone)),
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::Absence)),
         "D on base file should produce negative dentry: {t:?}"
     );
 }
@@ -479,7 +477,7 @@ fn modify_then_delete_base() {
 
     let t = tree(&s);
     assert!(
-        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::Tombstone)),
+        t.any(|p, e| p.ends_with("/hello.txt") && matches!(e, Target::Absence)),
         "A+D on base should produce negative dentry: {t:?}"
     );
 }

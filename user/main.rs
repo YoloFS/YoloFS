@@ -53,9 +53,6 @@ enum Command {
         /// One stanza per consecutive snapshot in the range
         #[arg(long)]
         each: bool,
-        /// Limit to a single file, passed after `--` (e.g. `-- foo.txt`)
-        #[arg(last = true)]
-        path: Option<String>,
     },
     /// Apply staged changes to base
     Commit,
@@ -220,12 +217,9 @@ fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
         }
         Some(Command::Unmount) => mount::unmount()?,
         Some(Command::Remount) => mount::remount()?,
-        Some(Command::Review {
-            range,
-            diff,
-            each,
-            path,
-        }) => review::run_review(range.as_deref(), path.as_deref(), each, diff)?,
+        Some(Command::Review { range, diff, each }) => {
+            review::run_review(range.as_deref(), each, diff)?
+        }
         Some(Command::Commit) => commit::run()?,
         Some(Command::Abort { force }) => abort::run(force)?,
         Some(Command::Snapshot { name, if_changed }) => {

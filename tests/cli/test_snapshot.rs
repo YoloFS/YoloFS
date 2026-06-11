@@ -513,9 +513,10 @@ fn status_from_to_same_snapshot_empty() {
     );
 }
 
-/// Path filter (after `--`) combined with a range.
+/// A range still diffs every changed file (the `-- <path>` review filter was
+/// removed; `yolo journal -- <path>` keeps its own).
 #[test]
-fn diff_from_with_path_filter() {
+fn diff_from_range_shows_all_changed_files() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write");
@@ -524,21 +525,14 @@ fn diff_from_with_path_filter() {
     fs::write(s.mnt_path("target.txt"), "target content\n").expect("write target");
     fs::write(s.mnt_path("other.txt"), "other content\n").expect("write other");
 
-    // `diff 1.. -- target.txt`: should show only target.txt
-    let output = s
-        .cli(&["review", "--diff", "1..", "--", "target.txt"])
-        .expect("diff 1.. -- target.txt");
+    let output = s.cli(&["review", "--diff", "1.."]).expect("diff 1..");
     assert!(
-        output.contains("target.txt"),
-        "should show target.txt: {output}"
+        output.contains("target.txt") && output.contains("+target content"),
+        "should show target.txt diff: {output}"
     );
     assert!(
-        output.contains("+target content"),
-        "should show target diff: {output}"
-    );
-    assert!(
-        !output.contains("other.txt"),
-        "should NOT show other.txt: {output}"
+        output.contains("other.txt"),
+        "should also show other.txt: {output}"
     );
 }
 

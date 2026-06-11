@@ -63,56 +63,9 @@ fn diff_renamed_file() {
     );
 }
 
-#[test]
-fn diff_single_file_shows_only_that_file() {
-    let s = YoloSession::new().expect("session setup");
-
-    fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
-    fs::write(s.mnt_path("other.txt"), "also changed\n").unwrap();
-
-    let output = s
-        .cli(&["review", "--diff", "--", "hello.txt"])
-        .expect("diff -- hello.txt");
-    assert!(
-        output.contains("hello.txt"),
-        "should show hello.txt: {output}"
-    );
-    assert!(
-        !output.contains("other.txt"),
-        "should NOT show other.txt: {output}"
-    );
-}
-
-#[test]
-fn diff_single_file_not_changed() {
-    let s = YoloSession::new().expect("session setup");
-
-    fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
-
-    let output = s
-        .cli(&["review", "--diff", "--", "other.txt"])
-        .expect("diff -- other.txt");
-    assert!(
-        output.contains("(no changes staged)"),
-        "no matching changes: {output}"
-    );
-}
-
-#[test]
-fn diff_single_file_with_absolute_path() {
-    let s = YoloSession::new().expect("session setup");
-
-    fs::write(s.mnt_path("hello.txt"), "changed\n").unwrap();
-
-    let abs = format!("{}/hello.txt", s.root.display());
-    let output = s
-        .cli(&["review", "--diff", "--", &abs])
-        .expect("diff -- absolute path");
-    assert!(
-        output.contains("hello.txt"),
-        "should find with absolute path: {output}"
-    );
-}
+// The `yolo review -- <path>` single-file filter was removed (a rename shifts
+// paths, making a path filter ambiguous under the start/end model). `yolo
+// journal -- <path>` keeps its own filter; review shows the whole range.
 
 /// Creating a staged-only file, then deleting it, should produce no diff
 /// output (the tombstone is spurious — nothing in base to hide).

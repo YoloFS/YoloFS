@@ -192,7 +192,7 @@ Callers read `YOLO_D(d)->target` and `YOLO_D(d)->pinned` directly.
 followed by variant-specific payload. Tags match `yolo_target` values:
 INODE → `ino:le32`; PATH → `path_len:le16 path:u8[path_len]`;
 NONE → nothing. Tombstones are identified by `target == NONE`.
-Passthrough dirs are encoded as PATH with `path_len=0`.
+Scaffold dirs (userspace `end = None`) are encoded as PATH with `path_len=0`.
 The full recursive travel tree format is documented in
 `docs/plans/33-dentry-state-redesign.md`.
 
@@ -337,21 +337,24 @@ yolo_create(dir, dentry, mode):
     create file inodes/<ino>
     yolo_dentry_pin(dentry, YOLO_TARGET_INODE)
     YOLO_I(d_inode(dentry))->staging_gen = sbi->gen
-    journal(S, path, ino)
+    YOLO_I(d_inode(dentry))->staging_ino = ino
+    journal(S, path, ino, A)        # pre = A: fresh create, nothing existed
 
 yolo_mkdir(dir, dentry, mode):
     ino = next_ino++
     create dir inodes/<ino>/
     yolo_dentry_pin(dentry, YOLO_TARGET_INODE)
     YOLO_I(d_inode(dentry))->staging_gen = sbi->gen
-    journal(S, path, ino)
+    YOLO_I(d_inode(dentry))->staging_ino = ino
+    journal(S, path, ino, A)
 
 yolo_symlink(dir, dentry, target):
     ino = next_ino++
     create symlink inodes/<ino> -> target
     yolo_dentry_pin(dentry, YOLO_TARGET_INODE)
     YOLO_I(d_inode(dentry))->staging_gen = sbi->gen
-    journal(S, path, ino)
+    YOLO_I(d_inode(dentry))->staging_ino = ino
+    journal(S, path, ino, A)
 ```
 
 `touch` (create + close, no write) produces an empty inode in the store —
@@ -366,12 +369,13 @@ content — a spurious tombstone is harmless and cleaned up on commit/reset.
 ```
 yolo_unlink(dir, dentry):
     staged = YOLO_D(dentry)->pinned
+    pre = target_preimage(dentry)   # pre-op backing, before the tombstone
 
     # Pre-allocate negative dentry before journal so we can fail cleanly.
     tomb = yolo_dentry_create(parent, name, namelen, YOLO_TARGET_NONE, NULL)
     if IS_ERR(tomb): return PTR_ERR(tomb)
 
-    journal(D, path)  # must be before d_drop (uses dentry path)
+    journal(D, path, pre)  # must be before d_drop (uses dentry path)
 
     if staged:
         yolo_dentry_unpin(dentry)   # reset to ground state + dput
@@ -379,7 +383,7 @@ yolo_unlink(dir, dentry):
 
 yolo_rmdir(dir, dentry):
     # Same logic as yolo_unlink.
-    journal(D, path)
+    journal(D, path, pre)
 ```
 
 Subsequent lookup of the name finds the negative dentry in the dcache
@@ -398,6 +402,12 @@ yolo_rename(old_parent, old_dentry, new_parent, new_dentry):
     dst = join(new_parent, new_name)
     src = join(old_parent, old_name)
 
+    # Capture both pre-op backings BEFORE any dentry state change.
+    src_pre = target_preimage(old_dentry)
+    dst_pre = d_is_positive(new_dentry) ? target_preimage(new_dentry) : A
+
+    journal(R, dst, src, src_pre, dst_pre)
+
     # Always tombstone at the old name, pre-allocate before
     # any irreversible changes.
     tomb = yolo_dentry_create(old_parent, old_name, old_namelen, YOLO_TARGET_NONE, NULL)
@@ -413,8 +423,6 @@ yolo_rename(old_parent, old_dentry, new_parent, new_dentry):
     else:
         # Base file being renamed — becomes a redirect via lower_path.
         yolo_dentry_pin(old_dentry, YOLO_TARGET_PATH)
-
-    journal(R, dst, src)
 
     # Clean up new_dentry if it was staged.
     new_staged = YOLO_D(new_dentry)->pinned
@@ -542,9 +550,9 @@ The journal is an append-only file at `.yolofs/journal`. Each record is a
 sequence of NUL-separated fields terminated by a newline.
 
 ```
-S\0<path>\0<ino>\0<preimage>\n    — Stage (staged content at path)
-D\0<path>\0<preimage>\n          — Delete
-R\0<dst>\0<src>\n                 — Rename
+S\0<path>\0<ino>\0<pre>\n        — Stage (staged content at path)
+D\0<path>\0<pre>\n              — Delete
+R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n   — Rename
 P\0<gen>\0<name>\n                — Snapshot
 T\0<gen>\0<target_gen>\n          — Travel
 A\0<access_path>\0<op>\0<decision>\n    — Ask resolved (records the decision)
@@ -552,16 +560,32 @@ B\0<path>\0<op>\n                — Blocked by a rule (permission denied)
 ```
 
 Each mutation type has its own record tag and carries exactly the fields
-it needs. The kernel always uses `S` for creates/COW and `R` for renames.
-`<preimage>` is the absolute path of the overwritten/removed content (empty for
-a fresh create or a no-op delete) — it lets `yolo review --diff` read the
-previous-snapshot content in O(segment) without rebuilding the prior tree:
+it needs. The kernel always uses `S` for creates/COW and `R` for renames. S and
+D stay separate tags — the tag carries the post-target (`S` ⇒ staged at `<ino>`,
+`D` ⇒ absent) — while R stays distinct because it carries move semantics.
+
+Every `*pre` field is an operation-local kernel fact: the `Target` that backed
+that overlay name *immediately before* the operation. It lets `yolo review
+--diff` read the previous-snapshot content in O(segment) without rebuilding the
+prior tree. It is encoded with an explicit tag so userspace never infers
+inode-store layout from `.yolofs/inodes/`:
+
+| Encoding | Target | Meaning |
+|----------|--------|---------|
+| `A` | `Absence` | no previous content (or the kernel could not resolve it) |
+| `I:<ino>` | `StagedFile(ino)` | content was a staged inode in the store |
+| `P:<abs-path>` | `BasePath(abs-path)` | content was the redirect-resolved base file |
+
+`<pre>` is the *exact* pre-op backing — for an already-staged file that is
+`I:<ino>` (the staged inode), not the base it was COW'd from. The userspace tree
+folds the first `pre` seen at each path in a review range into that path's
+range-start old side.
 
 | Tag | Fields | Meaning |
 |-----|--------|---------|
-| `S` | `<path>`, `<ino>`, `<preimage>` | Staged content at path (create or COW) |
-| `D` | `<path>`, `<preimage>` | Entry deleted |
-| `R` | `<dst>`, `<src>` | Rename |
+| `S` | `<path>`, `<ino>`, `<pre>` | Staged content at path (create or COW) |
+| `D` | `<path>`, `<pre>` | Entry deleted |
+| `R` | `<dst>`, `<src>`, `<src_pre>`, `<dst_pre>` | Rename |
 | `P` | `<gen>`, `<name>` | Snapshot marker |
 | `T` | `<gen>`, `<target_gen>` | Travel marker |
 | `A` | `<access_path>`, `<op>`, `<decision>` | An `ask` was resolved to `<decision>` — observational |
@@ -584,8 +608,9 @@ apply identically (a B in an unreachable segment is dimmed in journal
 output). Current scope is `-EACCES` only; `HIDE`/`-ENOENT` paths are
 not logged.
 
-Userspace derives the stage/modify distinction by checking the base
-filesystem — it does not need the kernel to encode it in the tag.
+The stage/modify distinction comes from the `S` record's `<pre>` field — `A`
+reads as added, a present `I:`/`P:` target reads as modified — so userspace
+needs neither a base stat nor a rebuilt prior tree.
 
 **Gen_id invariant.** The kernel increments `sbi->gen` via
 `atomic_inc_return()` on every P and T record. Gen_id values are
@@ -595,7 +620,10 @@ strictly sequential: marker\[i\] has gen_id = i (marker\[0\] is a phantom
 
 `<path>` is the full overlay path (e.g. `/dir/file`).
 `<src>` is the overlay path before the rename (R only).
-`<ino>` is the staged inode ID (decimal).
+`<ino>` is the staged inode ID (decimal); it is also the implicit post-target
+`StagedFile(<ino>)` of an `S` record.
+`<pre>` / `<src_pre>` / `<dst_pre>` are tagged pre-op targets (`A` / `I:<ino>` /
+`P:<path>`); `<dst_pre>` is `A` for a fresh destination or a pinned tombstone.
 
 All renames — staged or redirect, file or directory — emit a single R
 record. The tree builder always tombstones at the source path.
@@ -641,7 +669,7 @@ I/O redirection. The `yolo` CLI reads the journal and applies or discards.
      through temp paths. All sources are saved deepest-first, then placed
      at destinations in DFS order. Handles swaps and rotation cycles
      automatically.
-   - **Ops**: `Tombstone` entries &rarr; `remove(base/path)`;
+   - **Ops**: `Absence` entries &rarr; `remove(base/path)`;
      `StagedFile(ino)` entries &rarr; copy `inodes/<ino>` to `base/path`.
      Interleaved in DFS order.
 3. Apply in order: saves &rarr; places &rarr; ops (deletes+stages).

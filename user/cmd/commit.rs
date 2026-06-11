@@ -105,7 +105,7 @@ fn apply_plan(yolofs: &Path, plan: &crate::journal::CommitPlan) -> Result<usize>
 
     for action in plan.iter() {
         match action {
-            Action::Rename { src, dst } => {
+            Action::Rename { src, dst, .. } => {
                 apply_rename(
                     &crate::utils::to_base_path(src),
                     &crate::utils::to_base_path(dst),

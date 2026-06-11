@@ -46,6 +46,7 @@ static struct inode *yolo_alloc_inode(struct super_block *sb)
 	i->cached_perm = YOLO_PERM_UNSET;
 	i->perm_gen = 0;
 	i->staging_gen = 0;
+	i->staging_ino = 0;
 	return &i->vfs_inode;
 }
 

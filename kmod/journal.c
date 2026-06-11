@@ -6,16 +6,18 @@
  * commit/abort/status/diff. The kernel never reads it back.
  *
  * Record format (NUL-separated fields, newline-terminated):
- *   S\0<path>\0<ino>\0<preimage>\n     — Stage (preimage = absolute path of the
- *                                        overwritten content, empty for a create)
- *   D\0<path>\0<preimage>\n            — Delete (preimage = absolute path of the
- *                                        removed content, empty for a no-op)
- *   R\0<dst>\0<src>\n                  — Rename
+ *   S\0<path>\0<ino>\0<pre>\n          — Stage (post = StagedFile(ino))
+ *   D\0<path>\0<pre>\n                 — Delete (post = Absent)
+ *   R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n  — Rename
  *   P\0<gen>\0<name>\n                — Snapshot
  *   T\0<gen>\0<target_gen>\n          — Travel
  *   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
  *   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
  *   (op = r/w; decision = y/d — allow/deny)
+ *
+ * Each *pre field is the operation-local pre-op backing of that overlay name,
+ * tagged: "A" (Absent), "I:<ino>" (staged inode), "P:<abspath>" (base path).
+ * See yolo_preimage_target() and docs/staging.md.
  */
 
 #include "yolofs.h"
@@ -51,7 +53,8 @@ int yolo_journal_open(struct yolo_sb_info *sbi)
 static int journal_write(struct yolo_sb_info *sbi, char tag,
 			 const char **fields)
 {
-	char buf[3 * YOLO_PATH_MAX + 64];
+	const size_t bufsz = 4 * YOLO_PATH_MAX + 64;
+	char *buf;
 	size_t off = 0;
 	const char **fp;
 	struct file *f = sbi->staging.journal_file;
@@ -61,13 +64,20 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 	if (!f)
 		return -EIO;
 
+	/* Off the stack: a worst-case R record holds four path-sized fields. */
+	buf = kmalloc(bufsz, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
 	buf[off++] = tag;
 	buf[off++] = '\0';
 	for (fp = fields; *fp; fp++) {
 		size_t len = strlen(*fp);
 
-		if (off + len + 1 > sizeof(buf))
+		if (off + len + 1 > bufsz) {
+			kfree(buf);
 			return -ENAMETOOLONG;
+		}
 		memcpy(buf + off, *fp, len);
 		off += len;
 		buf[off++] = (*(fp + 1)) ? '\0' : '\n';
@@ -75,6 +85,7 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 
 	pos = f->f_pos;
 	err = kernel_write(f, buf, off, &pos);
+	kfree(buf);
 	/* Only data mutations (S/D/R) mark the session dirty. Markers (P/T) and
 	 * observational notes (A/B) are excluded — they must not trigger an
 	 * auto-snapshot under YOLO_SNAPSHOT_IF_CHANGED. */
@@ -88,7 +99,7 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 /* ── Public: typed journal record writers ──────────────────────────── */
 
 int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
-		      u32 ino, const char *preimage)
+		      u32 ino, const char *pre)
 {
 	char path_buf[YOLO_PATH_MAX];
 	char ino_str[11];
@@ -98,9 +109,11 @@ int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
 
 	snprintf(ino_str, sizeof(ino_str), "%u", ino);
 
+	/* `pre` is the tagged pre-op target (A / I:<ino> / P:<path>), captured by
+	 * the caller before the lower_path swap. The post-target is StagedFile(ino). */
 	return journal_write(sbi, 'S',
 			     (const char *[]){ path, ino_str,
-					       preimage ? preimage : "", NULL });
+					       pre ? pre : "A", NULL });
 }
 
 int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry)
@@ -111,30 +124,53 @@ int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry)
 	if (IS_ERR(path))
 		return PTR_ERR(path);
 
+	/* The dentry is still positive here (journal is before d_drop), so its
+	 * pre-op backing is the content being removed. */
 	return journal_write(sbi, 'D',
 			     (const char *[]){ path,
-					       yolo_lower_abspath(dentry, pre_buf,
-								   sizeof(pre_buf)),
+					       yolo_preimage_target(dentry, pre_buf,
+								    sizeof(pre_buf)),
 					       NULL });
 }
 
 int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 			struct dentry *new_dentry)
 {
-	char dst_buf[YOLO_PATH_MAX];
-	char src_buf[YOLO_PATH_MAX];
+	char *bufs, *dst_buf, *src_buf, *src_pre_buf, *dst_pre_buf;
 	char *dst_path, *src_path;
+	const char *src_pre, *dst_pre;
+	int err;
 
-	dst_path = dentry_path_raw(new_dentry, dst_buf, sizeof(dst_buf));
-	if (IS_ERR(dst_path))
-		return PTR_ERR(dst_path);
+	/* Four path-sized scratch buffers, off the stack as one block. */
+	bufs = kmalloc_array(4, YOLO_PATH_MAX, GFP_KERNEL);
+	if (!bufs)
+		return -ENOMEM;
+	dst_buf = bufs;
+	src_buf = bufs + YOLO_PATH_MAX;
+	src_pre_buf = bufs + 2 * YOLO_PATH_MAX;
+	dst_pre_buf = bufs + 3 * YOLO_PATH_MAX;
 
-	src_path = dentry_path_raw(old_dentry, src_buf, sizeof(src_buf));
-	if (IS_ERR(src_path))
-		return PTR_ERR(src_path);
+	dst_path = dentry_path_raw(new_dentry, dst_buf, YOLO_PATH_MAX);
+	src_path = dentry_path_raw(old_dentry, src_buf, YOLO_PATH_MAX);
+	if (IS_ERR(dst_path) || IS_ERR(src_path)) {
+		err = IS_ERR(dst_path) ? PTR_ERR(dst_path) : PTR_ERR(src_path);
+		kfree(bufs);
+		return err;
+	}
 
-	return journal_write(sbi, 'R',
-			     (const char *[]){ dst_path, src_path, NULL });
+	/* Capture both pre-op backings before any dentry state change (the caller
+	 * journals before d_move and the pin updates). A negative destination
+	 * (fresh name or pinned tombstone) has no backing → "A". */
+	src_pre = yolo_preimage_target(old_dentry, src_pre_buf, YOLO_PATH_MAX);
+	dst_pre = d_is_positive(new_dentry)
+		? yolo_preimage_target(new_dentry, dst_pre_buf, YOLO_PATH_MAX)
+		: "A";
+
+	err = journal_write(sbi, 'R',
+			    (const char *[]){ dst_path, src_path,
+					      src_pre, dst_pre, NULL });
+	kfree(bufs);
+	return err;
 }
 
 int yolo_journal_snapshot(struct yolo_sb_info *sbi, u16 id, const char *name)

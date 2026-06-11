@@ -491,6 +491,7 @@ static int travel_inject_entry(struct tree_cursor *cur,
 		if (IS_ERR(child))
 			return PTR_ERR(child);
 		YOLO_I(d_inode(child))->staging_gen = gen;
+		YOLO_I(d_inode(child))->staging_ino = ino;
 		return 0;
 	}
 

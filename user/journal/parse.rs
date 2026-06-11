@@ -3,16 +3,18 @@
 // Parse the append-only journal file.
 //
 // Record format (NUL-separated fields, newline-terminated):
-//   S\0<path>\0<ino>\0<preimage>\n     — Stage (preimage = absolute path of the
-//                                       overwritten content, empty for a create)
-//   D\0<path>\0<preimage>\n            — Delete (preimage = absolute path of the
-//                                       removed content, empty for a no-op)
-//   R\0<dst>\0<src>\n                  — Rename
+//   S\0<path>\0<ino>\0<pre>\n          — Stage (post = StagedFile(ino))
+//   D\0<path>\0<pre>\n                 — Delete (post = Absence)
+//   R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n  — Rename
 //   P\0<gen>\0<name>\n                — Snapshot
 //   T\0<gen>\0<target_gen>\n          — Travel
 //   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
 //   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
 //   (op = r/w; decision = y/d — allow/deny)
+//
+// Each *pre field is a tagged pre-op target: `A` (Absence), `I:<ino>`
+// (StagedFile), `P:<abs-path>` (BasePath). It is parsed into a `Target` once
+// here; a malformed tag or `I:` value skips the whole record.
 
 use super::types::*;
 use anyhow::{Context, Result};
@@ -23,10 +25,24 @@ fn field_str(field: &[u8]) -> String {
     String::from_utf8_lossy(field).into_owned()
 }
 
-/// A pre-image field: the absolute path of the old content, or `None` when
-/// empty (a fresh create / no-op delete — nothing existed to point at).
-fn preimage_field(field: &[u8]) -> Option<String> {
-    (!field.is_empty()).then(|| field_str(field))
+/// Parse a tagged pre-op `pre` field into a `Target`. Returns `None` for an
+/// unknown tag or a malformed `I:` value, which skips the enclosing record.
+fn parse_target(field: &[u8]) -> Option<Target> {
+    match field {
+        b"A" => Some(Target::Absence),
+        _ => match field.split_first() {
+            Some((b'I', rest)) if rest.first() == Some(&b':') => {
+                String::from_utf8_lossy(&rest[1..])
+                    .parse::<u32>()
+                    .ok()
+                    .map(Target::StagedFile)
+            }
+            Some((b'P', rest)) if rest.first() == Some(&b':') => {
+                Some(Target::BasePath(field_str(&rest[1..])))
+            }
+            _ => None,
+        },
+    }
 }
 
 /// Read and parse the journal file.
@@ -56,30 +72,33 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
             b"S" if fields.len() >= 4 => {
                 let path = field_str(fields[1]);
                 let ino_str = String::from_utf8_lossy(fields[2]);
-                // 4th field is the pre-image: the absolute path of the content
-                // this stage overwrote, empty for a fresh create. The kernel
-                // always writes it, so the field is required.
-                let preimage = preimage_field(fields[3]);
-
-                if let Ok(ino) = ino_str.parse::<u32>() {
-                    records.push(Record::Action(Action::Stage {
-                        path,
-                        ino,
-                        preimage,
-                    }));
+                // 4th field is the tagged pre-op backing; the post is
+                // StagedFile(ino). A bad ino or pre tag skips the record.
+                if let (Ok(ino), Some(pre)) = (ino_str.parse::<u32>(), parse_target(fields[3])) {
+                    records.push(Record::Action(Action::Stage { path, ino, pre }));
                 }
             }
             b"D" if fields.len() >= 3 => {
                 let path = field_str(fields[1]);
-                // 3rd field is the pre-image (empty for a no-op delete).
-                let preimage = preimage_field(fields[2]);
-                records.push(Record::Action(Action::Delete { path, preimage }));
+                // 3rd field is the tagged pre-op backing; the post is Absence.
+                if let Some(pre) = parse_target(fields[2]) {
+                    records.push(Record::Action(Action::Delete { path, pre }));
+                }
             }
-            b"R" if fields.len() >= 3 => {
+            b"R" if fields.len() >= 5 => {
                 let dst = field_str(fields[1]);
                 let src = field_str(fields[2]);
-
-                records.push(Record::Action(Action::Rename { src, dst }));
+                // 4th/5th fields are the source/destination pre-op backings.
+                if let (Some(src_pre), Some(dst_pre)) =
+                    (parse_target(fields[3]), parse_target(fields[4]))
+                {
+                    records.push(Record::Action(Action::Rename {
+                        src,
+                        dst,
+                        src_pre,
+                        dst_pre,
+                    }));
+                }
             }
             b"P" if fields.len() >= 3 => {
                 let gen_str = String::from_utf8_lossy(fields[1]);
@@ -134,46 +153,80 @@ mod tests {
 
     #[test]
     fn parse_multiple() {
-        let records = parse(b"S\0/a\01\0\nD\0/b\0\nR\0/d\0/c\n").unwrap();
+        let records = parse(b"S\0/a\01\0A\nD\0/b\0A\nR\0/d\0/c\0A\0A\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
             matches!(&records[0], Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/a")
         );
         assert!(matches!(&records[1], Record::Action(Action::Delete { path, .. }) if path == "/b"));
         assert!(
-            matches!(&records[2], Record::Action(Action::Rename { dst, src }) if dst == "/d" && src == "/c")
+            matches!(&records[2], Record::Action(Action::Rename { dst, src, .. }) if dst == "/d" && src == "/c")
         );
     }
 
     #[test]
-    fn parse_stage_and_delete_preimage() {
-        // S: 4th field is the pre-image path → Some; empty → None (create).
-        let r = parse(b"S\0/a\01\0/a\n").unwrap();
+    fn parse_target_tags() {
+        assert_eq!(parse_target(b"A"), Some(Target::Absence));
+        assert_eq!(parse_target(b"I:7"), Some(Target::StagedFile(7)));
+        assert_eq!(
+            parse_target(b"P:/base/f"),
+            Some(Target::BasePath("/base/f".into()))
+        );
+        // Malformed: bad ino, unknown tag, missing colon, empty.
+        assert_eq!(parse_target(b"I:x"), None);
+        assert_eq!(parse_target(b"Z:/f"), None);
+        assert_eq!(parse_target(b"I"), None);
+        assert_eq!(parse_target(b""), None);
+    }
+
+    #[test]
+    fn parse_stage_and_delete_pre() {
+        // S: 4th field is the tagged pre-op target.
+        let r = parse(b"S\0/a\01\0P:/a\n").unwrap();
         assert!(matches!(
             &r[0],
-            Record::Action(Action::Stage { preimage: Some(p), .. }) if p == "/a"
+            Record::Action(Action::Stage { pre: Target::BasePath(p), .. }) if p == "/a"
         ));
-        let r = parse(b"S\0/a\01\0\n").unwrap();
+        let r = parse(b"S\0/a\01\0A\n").unwrap();
         assert!(matches!(
             &r[0],
-            Record::Action(Action::Stage { preimage: None, .. })
+            Record::Action(Action::Stage {
+                pre: Target::Absence,
+                ..
+            })
         ));
-        // D: 3rd field is the pre-image path → Some; empty → None (no-op).
-        let r = parse(b"D\0/a\0/a\n").unwrap();
+        let r = parse(b"S\0/a\02\0I:9\n").unwrap();
         assert!(matches!(
             &r[0],
-            Record::Action(Action::Delete { preimage: Some(p), .. }) if p == "/a"
+            Record::Action(Action::Stage {
+                pre: Target::StagedFile(9),
+                ..
+            })
         ));
-        let r = parse(b"D\0/a\0\n").unwrap();
+        // D: 3rd field is the tagged pre-op target.
+        let r = parse(b"D\0/a\0P:/a\n").unwrap();
         assert!(matches!(
             &r[0],
-            Record::Action(Action::Delete { preimage: None, .. })
+            Record::Action(Action::Delete { pre: Target::BasePath(p), .. }) if p == "/a"
+        ));
+        // Malformed pre tag skips the record.
+        let r = parse(b"S\0/a\01\0Z:/x\nD\0/b\0bad\n").unwrap();
+        assert!(r.is_empty(), "records with malformed pre skipped: {r:?}");
+    }
+
+    #[test]
+    fn parse_rename_pres_roundtrip() {
+        let r = parse(b"R\0/dst\0/src\0P:/base/src\0I:4\n").unwrap();
+        assert!(matches!(
+            &r[0],
+            Record::Action(Action::Rename { dst, src, src_pre: Target::BasePath(sp), dst_pre: Target::StagedFile(4) })
+                if dst == "/dst" && src == "/src" && sp == "/base/src"
         ));
     }
 
     #[test]
     fn parse_snapshot_record() {
-        let records = parse(b"S\0/a\01\0\nP\01\0build\nS\0/a\02\0\n").unwrap();
+        let records = parse(b"S\0/a\01\0A\nP\01\0build\nS\0/a\02\0A\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
             matches!(&records[1], Record::Marker(Marker::Snapshot { gen_id, name }) if *gen_id == 1 && name == "build")
@@ -197,7 +250,7 @@ mod tests {
 
     #[test]
     fn parse_entry_full_path() {
-        let records = parse(b"S\0/src/main.rs\01\0\n").unwrap();
+        let records = parse(b"S\0/src/main.rs\01\0A\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
             matches!(&records[0], Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/src/main.rs")
@@ -209,7 +262,7 @@ mod tests {
     #[test]
     fn malformed_s_record_too_few_fields_skipped() {
         // S record missing fields (needs path, ino, preimage) — should be skipped
-        let records = parse(b"S\0/file\nS\0/good\02\0\n").unwrap();
+        let records = parse(b"S\0/file\nS\0/good\02\0A\n").unwrap();
         assert_eq!(
             records.len(),
             1,
@@ -225,7 +278,7 @@ mod tests {
     #[test]
     fn malformed_d_record_too_few_fields_skipped() {
         // D record with only tag (needs path) — should be skipped
-        let records = parse(b"D\nS\0/good\01\0\n").unwrap();
+        let records = parse(b"D\nS\0/good\01\0A\n").unwrap();
         assert_eq!(
             records.len(),
             1,
@@ -240,8 +293,8 @@ mod tests {
 
     #[test]
     fn malformed_r_record_too_few_fields_skipped() {
-        // R record with only 2 fields (needs dst + src) — should be skipped
-        let records = parse(b"R\0/file\nS\0/good\01\0\n").unwrap();
+        // R record with only dst+src (needs src_pre+dst_pre too) — skipped.
+        let records = parse(b"R\0/dst\0/src\0A\nS\0/good\01\0A\n").unwrap();
         assert_eq!(
             records.len(),
             1,
@@ -256,7 +309,7 @@ mod tests {
 
     #[test]
     fn parse_delete() {
-        let records = parse(b"D\0/foo\0\n").unwrap();
+        let records = parse(b"D\0/foo\0A\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
             matches!(&records[0], Record::Action(Action::Delete { path, .. }) if path == "/foo")
@@ -310,7 +363,7 @@ mod tests {
     #[test]
     fn parse_block_interleaved_with_actions() {
         // B records ride alongside S/D/R within a segment.
-        let records = parse(b"S\0/a\01\0\nB\0/etc/passwd\0w\nD\0/a\0\n").unwrap();
+        let records = parse(b"S\0/a\01\0A\nB\0/etc/passwd\0w\nD\0/a\0A\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(matches!(
             &records[0],
@@ -329,7 +382,7 @@ mod tests {
     #[test]
     fn malformed_b_record_too_few_fields_skipped() {
         // B record with only the tag (needs path) — should be skipped.
-        let records = parse(b"B\nS\0/good\01\0\n").unwrap();
+        let records = parse(b"B\nS\0/good\01\0A\n").unwrap();
         assert_eq!(
             records.len(),
             1,

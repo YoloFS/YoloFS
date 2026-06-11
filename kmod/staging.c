@@ -194,14 +194,16 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 	struct inode *parent = d_inode(dentry->d_parent);
 	struct path inode_path;
 	char pre_buf[YOLO_PATH_MAX];
-	const char *preimage;
+	const char *pre;
 	u32 ino;
 	int err;
 
-	/* Capture the pre-image — the lower we're about to copy up — before the
-	 * lower_path is swapped to the new inode below. Its absolute path lets
-	 * `yolo review --diff` read the previous-snapshot content in O(segment). */
-	preimage = yolo_lower_abspath(dentry, pre_buf, sizeof(pre_buf));
+	/* Capture the pre-op backing — the lower we're about to copy up — before
+	 * the lower_path is swapped to the new inode below. Tagged as A/I:/P: so
+	 * `yolo review --diff` can read the previous-snapshot content in O(segment).
+	 * For a re-COW of an already-staged file the dentry still carries the OLD
+	 * staging_ino here, so this resolves to the prior snapshot's I:<ino>. */
+	pre = yolo_preimage_target(dentry, pre_buf, sizeof(pre_buf));
 
 	err = yolo_inode_alloc(sbi, &ino, &inode_path,
 			       d_inode(dentry)->i_mode & ~S_IFMT, NULL);
@@ -225,6 +227,7 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 	inode_lock(parent);
 	yolo_dentry_pin(dentry, YOLO_TARGET_INODE);
 	YOLO_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->staging.gen);
+	YOLO_I(d_inode(dentry))->staging_ino = ino;
 	inode_unlock(parent);
 
 	path_get(&inode_path); /* extra ref for reopen below */
@@ -232,10 +235,10 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 	/* Update dentry lower_path to point at the inode (consumes original ref) */
 	yolo_replace_lower_path(dentry, &inode_path);
 
-	/* Append journal record (best-effort — target is already set). `preimage`
+	/* Append journal record (best-effort — target is already set). `pre`
 	 * (captured above, before the lower_path swap) is the previous-snapshot
-	 * content the CLI diffs against; empty if it couldn't be resolved. */
-	yolo_journal_stage(sbi, dentry, ino, preimage);
+	 * content the CLI diffs against; "A" if it couldn't be resolved. */
+	yolo_journal_stage(sbi, dentry, ino, pre);
 
 	/* Reopen with requested flags */
 	err = 0;

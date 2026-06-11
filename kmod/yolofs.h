@@ -234,6 +234,7 @@ struct yolo_inode_info {
 	enum yolo_perm		cached_perm;
 	u64			perm_gen;
 	u16			staging_gen;	/* generation when last staged/COW'd */
+	u32			staging_ino;	/* store id when target == INODE (0 = none) */
 
 	struct inode		vfs_inode;	/* must be last for container_of */
 };
@@ -319,21 +320,43 @@ static inline void yolo_put_lower_path(const struct dentry *dentry,
 	path_put(lower_path);
 }
 
-/* Absolute path of the dentry's current lower file, written into `buf`. Returns
- * the string, or "" if it can't be resolved (e.g. longer than the buffer). Used
- * to record the pre-image (previous-snapshot content) when journaling a stage or
- * delete; an empty result makes the CLI treat the change as having no previous
- * content. */
-static inline const char *yolo_lower_abspath(const struct dentry *dentry,
-					     char *buf, int len)
+/* Tagged operation-local pre-image target of @dentry, written into @buf:
+ *   "A"            negative dentry / tombstone / unresolvable
+ *   "I:<ino>"      staged inode (target == YOLO_TARGET_INODE)
+ *   "P:<abspath>"  redirect-resolved base content (PATH or ground state)
+ * This is the exact pre-op backing — an already-staged file reports its staged
+ * inode (I:), not the base it was COW'd from. The CLI parses this into a
+ * `Target` to seed a review range's old side; see docs/staging.md. */
+static inline const char *yolo_preimage_target(const struct dentry *dentry,
+					       char *buf, int len)
 {
+	struct yolo_dentry_info *di = YOLO_D(dentry);
 	struct path lower;
-	const char *p;
+	char *p;
 
+	if (d_is_negative(dentry) || di->target == YOLO_TARGET_NONE)
+		return "A";
+
+	if (di->target == YOLO_TARGET_INODE) {
+		u32 ino = YOLO_I(d_inode(dentry))->staging_ino;
+
+		if (!ino)
+			return "A";
+		snprintf(buf, len, "I:%u", ino);
+		return buf;
+	}
+
+	/* PATH or ground state: redirect-resolved base path, tagged "P:". Write
+	 * the path right-aligned into buf+2.. and prepend the tag just before
+	 * the returned pointer (d_path returns a right-aligned slice). */
 	yolo_get_lower_path(dentry, &lower);
-	p = d_path(&lower, buf, len);
+	p = d_path(&lower, buf + 2, len - 2);
 	yolo_put_lower_path(dentry, &lower);
-	return IS_ERR(p) ? "" : p;
+	if (IS_ERR(p))
+		return "A";
+	p[-2] = 'P';
+	p[-1] = ':';
+	return p - 2;
 }
 
 static inline void yolo_set_lower_path(const struct dentry *dentry,
@@ -443,7 +466,7 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 /* journal.c */
 int yolo_journal_open(struct yolo_sb_info *sbi);
 int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
-		       u32 ino, const char *preimage);
+		       u32 ino, const char *pre);
 int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry);
 int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 			  struct dentry *new_dentry);

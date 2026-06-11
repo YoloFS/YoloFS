@@ -218,7 +218,7 @@ mod tests {
         let staged = Journal::new(vec![Record::Action(Action::Stage {
             path: "/a".into(),
             ino: 1,
-            preimage: None,
+            pre: Target::Absence,
         })]);
         assert!(staged.has_staged_changes);
 
@@ -231,7 +231,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Travel {
                 gen_id: 2,
@@ -247,7 +247,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 1,
@@ -266,7 +266,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
         ]);
         assert_eq!(dirty.latest_gen, 1);
@@ -281,7 +281,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/dead".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Travel {
                 gen_id: 2,
@@ -305,7 +305,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -314,7 +314,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -343,7 +343,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -352,7 +352,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -365,7 +365,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -387,7 +387,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/orphan".into(),
                 ino: 999,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 1,
@@ -396,7 +396,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -446,7 +446,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Note(Note::Block {
                 path: "/etc/x".into(),
@@ -493,7 +493,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -502,7 +502,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -515,7 +515,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -538,7 +538,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -547,7 +547,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -560,7 +560,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -600,7 +600,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -623,7 +623,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -632,7 +632,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -645,7 +645,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -674,7 +674,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -683,7 +683,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -696,7 +696,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -705,7 +705,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/e".into(),
                 ino: 4,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 6,
@@ -731,7 +731,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -740,7 +740,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -753,7 +753,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -778,7 +778,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -807,7 +807,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -816,7 +816,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -849,7 +849,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -858,7 +858,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -871,7 +871,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -900,7 +900,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Travel {
                 gen_id: 2,
@@ -909,7 +909,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
         ];
         let actions = live_actions(records);
@@ -928,7 +928,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -937,7 +937,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -946,7 +946,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/c".into(),
                 ino: 3,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 4,
@@ -999,7 +999,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -1008,7 +1008,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,
@@ -1021,7 +1021,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/c".into(),
                 ino: 3,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 5,
@@ -1030,7 +1030,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 4,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 6,
@@ -1055,7 +1055,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -1078,7 +1078,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 1,
@@ -1087,7 +1087,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -1117,7 +1117,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 2,
@@ -1126,7 +1126,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                preimage: None,
+                pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
                 gen_id: 3,

@@ -63,7 +63,7 @@ mod tests {
         let tree = build(&[Action::Stage {
             path: "/src/main.rs".into(),
             ino: 1,
-            preimage: None,
+            pre: Target::Absence,
         }]);
         assert_eq!(tree.len(), 1);
         assert!(matches!(
@@ -78,15 +78,15 @@ mod tests {
             Action::Stage {
                 path: "/old.txt".into(),
                 ino: 1,
-                preimage: None,
+                pre: Target::Absence,
             },
             Action::Delete {
                 path: "/old.txt".into(),
-                preimage: None,
+                pre: Target::Absence,
             },
         ]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/old.txt"), Some(Target::Tombstone)));
+        assert!(matches!(tree.get("/old.txt"), Some(Target::Absence)));
     }
 
     #[test]
@@ -94,9 +94,11 @@ mod tests {
         let tree = build(&[Action::Rename {
             src: "/a.txt".into(),
             dst: "/b.txt".into(),
+            src_pre: Target::BasePath("/a.txt".into()),
+            dst_pre: Target::Absence,
         }]);
 
-        assert!(matches!(tree.get("/a.txt"), Some(Target::Tombstone)));
+        assert!(matches!(tree.get("/a.txt"), Some(Target::Absence)));
         assert!(matches!(tree.get("/b.txt"), Some(Target::BasePath(src)) if src == "/a.txt"));
     }
 
@@ -106,16 +108,18 @@ mod tests {
             Action::Rename {
                 src: "/old.rs".into(),
                 dst: "/new.rs".into(),
+                src_pre: Target::BasePath("/old.rs".into()),
+                dst_pre: Target::Absence,
             },
             Action::Stage {
                 path: "/new.rs".into(),
                 ino: 5,
-                preimage: None,
+                pre: Target::Absence,
             },
         ]);
 
         assert!(matches!(tree.get("/new.rs"), Some(Target::StagedFile(5))));
-        assert!(matches!(tree.get("/old.rs"), Some(Target::Tombstone)));
+        assert!(matches!(tree.get("/old.rs"), Some(Target::Absence)));
     }
 
     #[test]
@@ -123,10 +127,10 @@ mod tests {
         let tree = build(&[Action::Stage {
             path: "/newdir".into(),
             ino: 1,
-            preimage: None,
+            pre: Target::Absence,
         }]);
         let node = tree.get_node("/newdir").expect("should exist");
-        assert!(matches!(node.target, Target::StagedFile(1)));
+        assert!(matches!(node.end, Some(Target::StagedFile(1))));
     }
 
     #[test]
@@ -134,10 +138,10 @@ mod tests {
         let tree = build(&[Action::Stage {
             path: "/link".into(),
             ino: 1,
-            preimage: None,
+            pre: Target::Absence,
         }]);
         let node = tree.get_node("/link").expect("should exist");
-        assert!(matches!(node.target, Target::StagedFile(1)));
+        assert!(matches!(node.end, Some(Target::StagedFile(1))));
     }
 
     #[test]
@@ -151,9 +155,11 @@ mod tests {
         let tree = build(&[Action::Rename {
             src: "/mydir".into(),
             dst: "/newdir".into(),
+            src_pre: Target::BasePath("/mydir".into()),
+            dst_pre: Target::Absence,
         }]);
         let node = tree.get_node("/newdir").expect("should exist");
-        assert!(matches!(node.target, Target::BasePath(ref src) if src == "/mydir"));
+        assert!(matches!(node.end, Some(Target::BasePath(ref src)) if src == "/mydir"));
     }
 
     #[test]
@@ -161,8 +167,10 @@ mod tests {
         let tree = build(&[Action::Rename {
             src: "/mylink".into(),
             dst: "/newlink".into(),
+            src_pre: Target::BasePath("/mylink".into()),
+            dst_pre: Target::Absence,
         }]);
         let node = tree.get_node("/newlink").expect("should exist");
-        assert!(matches!(node.target, Target::BasePath(ref src) if src == "/mylink"));
+        assert!(matches!(node.end, Some(Target::BasePath(ref src)) if src == "/mylink"));
     }
 }

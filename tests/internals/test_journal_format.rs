@@ -1,185 +1,176 @@
 //! Verify the kernel writes journal records in the expected wire format
-//! (NUL-separated fields, including the stage `existed` bit).
+//! (NUL-separated fields) with tagged pre-op targets: `A` (Absence),
+//! `I:<ino>` (StagedFile), `P:<abs-path>` (BasePath).
 
 use crate::helpers::YoloSession;
 use std::fs;
 
-/// Parse a raw journal line into (tag, fields) for format assertions.
-fn parse_line(line: &[u8]) -> (u8, Vec<&[u8]>) {
-    let fields: Vec<&[u8]> = line.split(|&b| b == 0).collect();
-    (fields[0][0], fields)
+/// All records with the given tag, each split into its NUL-separated fields.
+fn records(root: &std::path::Path, tag: u8) -> Vec<Vec<Vec<u8>>> {
+    let journal = fs::read(root.join(".yolofs/journal")).expect("read journal");
+    journal
+        .split(|&b| b == b'\n')
+        .filter(|l| !l.is_empty() && l[0] == tag)
+        .map(|l| l.split(|&b| b == 0).map(|f| f.to_vec()).collect())
+        .collect()
 }
 
-/// Stage record format: S\0<path>\0<ino>\0<preimage>\n (4 fields, no dtype).
-/// The 4th field is the pre-image: the absolute path of the content the stage
-/// overwrote, or empty for a fresh create.
+/// The pre field of the latest record with `tag` whose path field (`path_idx`)
+/// ends with `suffix`.
+fn pre_of(root: &std::path::Path, tag: u8, path_idx: usize, pre_idx: usize, suffix: &str) -> Vec<u8> {
+    records(root, tag)
+        .into_iter()
+        .rev()
+        .find(|f| f.get(path_idx).is_some_and(|p| p.ends_with(suffix.as_bytes())))
+        .and_then(|f| f.into_iter().nth(pre_idx))
+        .unwrap_or_else(|| panic!("no {} record for {suffix}", tag as char))
+}
+
+/// Stage record: S\0<path>\0<ino>\0<pre>\n (4 fields). A fresh create carries
+/// `A`; overwriting a seeded base file carries `P:<base>`.
 #[test]
 fn stage_record_format() {
     let s = YoloSession::new().expect("session setup");
 
-    // A brand-new file → empty pre-image.
     fs::write(s.mnt_path("test.txt"), "content").expect("create file");
-    // Overwriting a seeded base file → copy-up → pre-image points at the base.
     fs::write(s.mnt_path("hello.txt"), "changed").expect("modify base file");
 
-    let journal_bytes = fs::read(s.root.join(".yolofs/journal")).expect("read journal");
-    let stage_lines: Vec<&[u8]> = journal_bytes
-        .split(|&b| b == b'\n')
-        .filter(|line| !line.is_empty() && line[0] == b'S')
-        .collect();
-
-    assert!(
-        !stage_lines.is_empty(),
-        "journal should contain an S record"
-    );
-    for line in &stage_lines {
-        let (tag, fields) = parse_line(line);
-        let shown: Vec<_> = fields.iter().map(|f| String::from_utf8_lossy(f)).collect();
-        assert_eq!(tag, b'S');
-        assert_eq!(
-            fields.len(),
-            4,
-            "S record should be (S, path, ino, preimage), got {}: {:?}",
-            fields.len(),
-            shown
-        );
+    for f in records(&s.root, b'S') {
+        assert_eq!(f.len(), 4, "S record should be (S, path, ino, pre): {f:?}");
     }
-
-    // The new file has an empty pre-image; the overwritten base file's pre-image
-    // is the base file it copied up.
-    let preimage_for = |suffix: &str| -> Option<&[u8]> {
-        stage_lines.iter().find_map(|line| {
-            let fields: Vec<&[u8]> = line.split(|&b| b == 0).collect();
-            (fields.len() == 4 && fields[1].ends_with(suffix.as_bytes())).then_some(fields[3])
-        })
-    };
-    assert_eq!(
-        preimage_for("/test.txt"),
-        Some(&b""[..]),
-        "fresh create → empty pre-image"
-    );
+    assert_eq!(pre_of(&s.root, b'S', 1, 3, "/test.txt"), b"A", "fresh create → A");
+    let pre = pre_of(&s.root, b'S', 1, 3, "/hello.txt");
     assert!(
-        preimage_for("/hello.txt").is_some_and(|p| !p.is_empty() && p.ends_with(b"hello.txt")),
-        "overwritten base file → pre-image points at the base file"
+        pre.starts_with(b"P:") && pre.ends_with(b"hello.txt"),
+        "overwritten base file → P:<base>, got {:?}",
+        String::from_utf8_lossy(&pre)
     );
 }
 
-/// Delete record format: D\0<path>\0<preimage>\n (3 fields, no dtype).
+/// Delete record: D\0<path>\0<pre>\n (3 fields). Deleting a seeded base file
+/// carries `P:<base>`.
 #[test]
-fn delete_record_has_no_dtype() {
+fn delete_record_format() {
     let s = YoloSession::new().expect("session setup");
 
-    fs::write(s.mnt_path("to_delete.txt"), "bye").expect("create");
-    fs::remove_file(s.mnt_path("to_delete.txt")).expect("delete");
+    fs::remove_file(s.mnt_path("hello.txt")).expect("delete base file");
 
-    let journal_bytes = fs::read(s.root.join(".yolofs/journal")).expect("read journal");
-    let delete_lines: Vec<&[u8]> = journal_bytes
-        .split(|&b| b == b'\n')
-        .filter(|line| !line.is_empty() && line[0] == b'D')
-        .collect();
-
-    assert!(
-        !delete_lines.is_empty(),
-        "journal should contain a D record"
-    );
-    for line in &delete_lines {
-        let (tag, fields) = parse_line(line);
-        assert_eq!(tag, b'D');
-        assert_eq!(
-            fields.len(),
-            3,
-            "D record should have 3 fields (D, path, preimage), got {}: {:?}",
-            fields.len(),
-            fields
-                .iter()
-                .map(|f| String::from_utf8_lossy(f))
-                .collect::<Vec<_>>()
-        );
+    for f in records(&s.root, b'D') {
+        assert_eq!(f.len(), 3, "D record should be (D, path, pre): {f:?}");
     }
+    let pre = pre_of(&s.root, b'D', 1, 2, "/hello.txt");
+    assert!(
+        pre.starts_with(b"P:") && pre.ends_with(b"hello.txt"),
+        "deleted base file → P:<base>, got {:?}",
+        String::from_utf8_lossy(&pre)
+    );
 }
 
-/// Rename record format: R\0<dst>\0<src>\n (exactly 3 fields, no dtype).
+/// Rename record: R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n (5 fields). Renaming a
+/// staged file onto a fresh name carries `I:<ino>` src_pre and `A` dst_pre.
 #[test]
-fn rename_record_has_no_dtype() {
+fn rename_record_format_staged_source() {
     let s = YoloSession::new().expect("session setup");
 
     fs::write(s.mnt_path("orig.txt"), "data").expect("create");
     fs::rename(s.mnt_path("orig.txt"), s.mnt_path("moved.txt")).expect("rename");
 
-    let journal_bytes = fs::read(s.root.join(".yolofs/journal")).expect("read journal");
-    let rename_lines: Vec<&[u8]> = journal_bytes
-        .split(|&b| b == b'\n')
-        .filter(|line| !line.is_empty() && line[0] == b'R')
-        .collect();
-
+    let rec = records(&s.root, b'R')
+        .into_iter()
+        .find(|f| f.get(1).is_some_and(|d| d.ends_with(b"/moved.txt")))
+        .expect("R record for the rename");
+    assert_eq!(rec.len(), 5, "R should be (R, dst, src, src_pre, dst_pre): {rec:?}");
     assert!(
-        !rename_lines.is_empty(),
-        "journal should contain an R record"
+        rec[3].starts_with(b"I:"),
+        "staged source → I:<ino> src_pre, got {:?}",
+        String::from_utf8_lossy(&rec[3])
     );
-    for line in &rename_lines {
-        let (tag, fields) = parse_line(line);
-        assert_eq!(tag, b'R');
-        assert_eq!(
-            fields.len(),
-            3,
-            "R record should have exactly 3 fields (R, dst, src), got {}: {:?}",
-            fields.len(),
-            fields
-                .iter()
-                .map(|f| String::from_utf8_lossy(f))
-                .collect::<Vec<_>>()
-        );
-    }
+    assert_eq!(rec[4], b"A", "fresh destination → A dst_pre");
 }
 
-/// The pre-image (4th field of an S record) for the S record whose path ends
-/// with `suffix`, read straight from the raw journal.
-fn stage_preimage(root: &std::path::Path, suffix: &str) -> Option<Vec<u8>> {
-    let journal = fs::read(root.join(".yolofs/journal")).expect("read journal");
-    journal
-        .split(|&b| b == b'\n')
-        .filter(|l| !l.is_empty() && l[0] == b'S')
-        .find_map(|l| {
-            let f: Vec<&[u8]> = l.split(|&b| b == 0).collect();
-            (f.len() == 4 && f[1].ends_with(suffix.as_bytes())).then(|| f[3].to_vec())
-        })
-}
-
-/// A file modified under a RENAMED base directory copies up its real backing
-/// (subdir/deep.txt), not the overlay path — the redirect is resolved at
-/// copy-up — so its pre-image points at the backing. The motivating case.
+/// Renaming a seeded base file carries `P:<base>` src_pre and `A` dst_pre.
 #[test]
-fn copy_up_under_renamed_dir_records_backing_preimage() {
+fn rename_record_base_source() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("hello2.txt")).expect("rename base file");
+
+    let rec = records(&s.root, b'R')
+        .into_iter()
+        .find(|f| f.get(1).is_some_and(|d| d.ends_with(b"/hello2.txt")))
+        .expect("R record");
+    assert!(
+        rec[3].starts_with(b"P:") && rec[3].ends_with(b"hello.txt"),
+        "base source → P:<base> src_pre, got {:?}",
+        String::from_utf8_lossy(&rec[3])
+    );
+    assert_eq!(rec[4], b"A", "fresh destination → A dst_pre");
+}
+
+/// Renaming onto an existing base file records that file as the `P:<base>`
+/// dst_pre (the clobbered destination).
+#[test]
+fn rename_onto_existing_base_records_dst_pre() {
+    let s = YoloSession::new().expect("session setup");
+
+    // Both `hello.txt` and `subdir/deep.txt` are seeded base files.
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("subdir/deep.txt")).expect("rename onto base");
+
+    let rec = records(&s.root, b'R')
+        .into_iter()
+        .find(|f| f.get(1).is_some_and(|d| d.ends_with(b"/subdir/deep.txt")))
+        .expect("R record");
+    assert!(
+        rec[4].starts_with(b"P:") && rec[4].ends_with(b"deep.txt"),
+        "clobbered base destination → P:<base> dst_pre, got {:?}",
+        String::from_utf8_lossy(&rec[4])
+    );
+}
+
+/// A file modified under a RENAMED base directory resolves the redirect at
+/// copy-up, so its stage pre points at the real backing as `P:<.../subdir/deep.txt>`.
+#[test]
+fn copy_up_under_renamed_dir_records_backing_pre() {
     let s = YoloSession::new().expect("session setup");
 
     fs::rename(s.mnt_path("subdir"), s.mnt_path("moved")).expect("rename dir");
     fs::write(s.mnt_path("moved/deep.txt"), "nested\nextra\n").expect("modify child");
 
-    let pre = stage_preimage(&s.root, "/moved/deep.txt").expect("stage record for the child");
+    let pre = pre_of(&s.root, b'S', 1, 3, "/moved/deep.txt");
     assert!(
-        pre.ends_with(b"subdir/deep.txt"),
-        "pre-image should point at the real backing (subdir/deep.txt), got {:?}",
+        pre.starts_with(b"P:") && pre.ends_with(b"subdir/deep.txt"),
+        "pre should point at the real backing P:<subdir/deep.txt>, got {:?}",
         String::from_utf8_lossy(&pre)
     );
 }
 
-/// mkdir and symlink create fresh nodes — nothing existed before — so their
-/// stage records carry an empty pre-image.
+/// Re-staging an already-staged file across a snapshot copies up from the prior
+/// snapshot's inode, so the re-stage pre is `I:<ino>`, not the base.
 #[test]
-fn create_dir_and_symlink_have_empty_preimage() {
+fn restage_after_snapshot_records_inode_pre() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("first stage");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    fs::write(s.mnt_path("hello.txt"), "v2\n").expect("re-stage after snapshot");
+
+    let pre = pre_of(&s.root, b'S', 1, 3, "/hello.txt");
+    assert!(
+        pre.starts_with(b"I:"),
+        "re-COW of a staged file → I:<ino> pre, got {:?}",
+        String::from_utf8_lossy(&pre)
+    );
+}
+
+/// mkdir and symlink create fresh nodes — nothing existed — so their stage
+/// records carry `A`.
+#[test]
+fn create_dir_and_symlink_have_absent_pre() {
     let s = YoloSession::new().expect("session setup");
 
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
     std::os::unix::fs::symlink("target", s.mnt_path("link")).expect("symlink");
 
-    assert_eq!(
-        stage_preimage(&s.root, "/newdir").as_deref(),
-        Some(&b""[..]),
-        "mkdir creates a new node → empty pre-image"
-    );
-    assert_eq!(
-        stage_preimage(&s.root, "/link").as_deref(),
-        Some(&b""[..]),
-        "symlink creates a new node → empty pre-image"
-    );
+    assert_eq!(pre_of(&s.root, b'S', 1, 3, "/newdir"), b"A", "mkdir → A");
+    assert_eq!(pre_of(&s.root, b'S', 1, 3, "/link"), b"A", "symlink → A");
 }

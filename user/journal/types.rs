@@ -2,19 +2,21 @@
 //
 // Pure data types for journal records. No I/O dependencies.
 
-/// The target of a dentry — where content lives.
+/// Where content lives at a path — the state at a dentry/tree node, and the
+/// value of a journal record's pre-op `pre` fields (the parser resolves the
+/// tagged wire form `A`/`I:<ino>`/`P:<path>` into this). One value type for both
+/// the operation-local axis (`pre`) and the range-scoped tree axis
+/// (`start`/`end`); the role is carried by the field name, not the type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
     /// Content staged in flat file store at this inode ID.
     StagedFile(u32),
-    /// Redirect: content lives at a path in the lower (base) filesystem.
-    /// The path is static — it references the immutable base filesystem,
-    /// not an overlay path created by a rename.
+    /// Redirect: content lives at a path in the base (lower) filesystem. Only
+    /// ever a real base-filesystem path — staged content resolves to
+    /// `StagedFile` at parse time, never a `.yolofs/inodes/` path here.
     BasePath(String),
-    /// Content absent (deleted).
-    Tombstone,
-    /// No staged change (scaffold dir for deeper nodes).
-    Passthrough,
+    /// Content absent — a deletion marker / nothing here.
+    Absence,
 }
 
 impl Target {
@@ -25,46 +27,31 @@ impl Target {
             _ => None,
         }
     }
-
-    /// True if this target involves the given path (as source or destination).
-    pub fn matches_path(&self, dentry_path: &str, query: &str) -> bool {
-        match self {
-            Target::BasePath(src) => dentry_path == query || src == query,
-            _ => dentry_path == query,
-        }
-    }
 }
 
 /// A data mutation applied to the dir tree (S/D/R).
+///
+/// Each `*pre` field is the operation-local pre-op backing of that overlay name
+/// — the `Target` the kernel resolved immediately before the op (see
+/// [`Target`]). It seeds the range-start old side during the fold (first touch
+/// wins) and `diff` reads it for the old content, so status/diff need neither a
+/// rebuilt previous tree nor a base stat (O(segment), not O(journal)). For an
+/// already-staged file it is the staged inode (`StagedFile`), not the base it
+/// was COW'd from; a pre the kernel could not resolve is `Absence`.
 #[derive(Debug, Clone)]
 pub enum Action {
-    /// `preimage` is the absolute path of the content this stage overwrote — the
-    /// file COW copied up (a base file, a redirect-resolved backing, or a prior
-    /// snapshot's staged inode), as it existed in the **previous snapshot**.
-    /// `None` for a fresh create (nothing existed). It is *not* relative to the
-    /// immutable base: a file created this session then modified after a snapshot
-    /// has a `Some` pre-image (it existed in that prior snapshot). Its presence
-    /// classifies added (`None`) vs modified (`Some`), and `diff` reads it for
-    /// the old content — so status/diff need neither a separate `existed` bit nor
-    /// a rebuilt previous tree (O(segment), not O(journal)). Resolved from the
-    /// first touch in changeset.rs. A pre-image the kernel can't resolve (a path
-    /// over YOLO_PATH_MAX, or an unreachable lower) is recorded empty → `None`,
-    /// so that change reads as added rather than modified.
-    Stage {
-        path: String,
-        ino: u32,
-        preimage: Option<String>,
-    },
-    /// `preimage` is the absolute path of the removed content (as in the previous
-    /// snapshot), or `None` when the path was created and deleted within the
-    /// range (a no-op delete). Lets `diff` show the deleted content in O(segment).
-    Delete {
-        path: String,
-        preimage: Option<String>,
-    },
+    /// Stage (create or COW). The post-target is `StagedFile(ino)`; `pre` is the
+    /// content this stage overwrote (`Absence` for a fresh create).
+    Stage { path: String, ino: u32, pre: Target },
+    /// Delete. The post-target is `Absence`; `pre` is the removed content.
+    Delete { path: String, pre: Target },
+    /// Rename. `src_pre`/`dst_pre` are the source's and destination's pre-op
+    /// backings (the destination's is `Absence` for a fresh name or a tombstone).
     Rename {
         src: String,
         dst: String,
+        src_pre: Target,
+        dst_pre: Target,
     },
 }
 

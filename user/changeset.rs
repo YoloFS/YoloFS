@@ -4,18 +4,17 @@
 // changed across a span of the journal. Rendering lives in cmd/review.rs; this
 // file only resolves *what* happened, not *how* to show it.
 
-use crate::journal::{Action, DirTree, Journal, Note, Record, Target};
-use std::collections::{HashMap, HashSet};
+use crate::journal::{DirTree, Journal, Note, Record, Target};
+use std::collections::HashSet;
 
-/// One net change. `preimage` is the absolute path of the content that was at
-/// this path at the start of the range (the previous snapshot), or `None` if
-/// nothing was. Its presence classifies added/modified/deleted; `diff` reads it
-/// for the old content. Both status and diff work from this alone — no rebuilt
-/// previous tree.
+/// One net change at a path. `start` is the range-start old side (what `--diff`
+/// reads for the old content); `end` is the net overlay state. Their pairing
+/// classifies added/modified/deleted/renamed — no rebuilt previous tree, no base
+/// stat. Both come straight off the folded tree node.
 pub struct Change {
     pub path: String,
-    pub target: Target,
-    pub preimage: Option<String>,
+    pub start: Option<Target>,
+    pub end: Option<Target>,
 }
 
 /// What changed across a span of snapshots: the net per-path effect (what
@@ -24,87 +23,66 @@ pub struct Change {
 /// The *same* structure describes the changes between two adjacent snapshots or
 /// across many: intermediate snapshots collapse into the net result.
 pub struct Changeset {
-    /// Net per-path changes (rename vacates already dropped), each carrying its
-    /// first-touch pre-image.
+    /// Net per-path changes (vacated rename sources already dropped).
     pub changes: Vec<Change>,
     /// Observational A/B notes (deduped) — an audit overlay, not staged changes.
     pub notes: Vec<Note>,
 }
 
 impl Changeset {
-    /// Resolve the net changes in segments `[start, end)`, keeping only `path`
-    /// when given. Borrows the journal so `--each` can call it once per segment.
-    pub fn collect(journal: &Journal, start: usize, end: usize, path: Option<&str>) -> Self {
-        // One O(segment) pass over the live records collects:
-        //   * `notes` — observational A/B accesses, deduped (a summary shouldn't
-        //     repeat what `yolo journal` lists in full).
-        //   * `preimage` — per path, the pre-image from its *first* touch in the
-        //     range. First-touch (not the net action) is what matters: a
-        //     create+delete must let the create's "no pre-image" win, and for a
-        //     multi-segment range the old content is the range-start version. A
-        //     stage carries the kernel's pre-image; a delete carries the removed
-        //     content's path; a rename-dest is created by the move (no pre-image).
+    /// Resolve the net changes in segments `[start, end)`. Borrows the journal so
+    /// `--each` can call it once per segment.
+    pub fn collect(journal: &Journal, start: usize, end: usize) -> Self {
+        // One O(segment) pass over the live records collects the observational
+        // A/B accesses, deduped (a summary shouldn't repeat what `yolo journal`
+        // lists in full). The start/end old-side + net state come from the folded
+        // tree below — no separate pre-image side map.
         let mut seen = HashSet::new();
         let mut notes = Vec::new();
-        let mut preimage: HashMap<String, Option<String>> = HashMap::new();
         for i in start..end {
             if !journal.is_alive(i) {
                 continue;
             }
             for record in &journal.segments[i].records {
-                match record {
-                    Record::Note(n) => {
-                        if seen.insert(note_key(n)) {
-                            notes.push(n.clone());
-                        }
-                    }
-                    Record::Action(Action::Stage {
-                        path, preimage: p, ..
-                    }) => {
-                        preimage.entry(path.clone()).or_insert_with(|| p.clone());
-                    }
-                    Record::Action(Action::Delete { path, preimage: p }) => {
-                        preimage.entry(path.clone()).or_insert_with(|| p.clone());
-                    }
-                    Record::Action(Action::Rename { dst, .. }) => {
-                        preimage.entry(dst.clone()).or_insert(None);
-                    }
-                    // Markers split segments and never appear inside one.
-                    Record::Marker(_) => {}
+                // Notes only; the net state comes from the folded tree below.
+                let Record::Note(n) = record else { continue };
+                if seen.insert(note_key(n)) {
+                    notes.push(n.clone());
                 }
             }
         }
 
-        // Replay the range into one tree → the net change per path. Borrowed,
-        // so the journal isn't consumed — `--each` calls `collect` once per
-        // segment on the same journal.
+        // Fold the range into one tree → start/end per path. Borrowed, so the
+        // journal isn't consumed — `--each` calls `collect` once per segment.
         let tree = DirTree::build(journal.live_segments_range(start, end));
         let mut all = Vec::new();
-        tree.for_each(|p, target| all.push((p.to_string(), target.clone())));
+        tree.for_each_change(|p, s, e| {
+            all.push((p.to_string(), s.cloned(), e.cloned()));
+        });
 
-        // A rename renders as a single "(renamed)" entry, so drop the tombstone
-        // the net tree leaves at the vacated source — its path is the source of
-        // some redirect (BasePath) target.
-        let rename_sources: HashSet<&str> = all
+        // A plain rename renders as a single "(renamed)" line, so drop the
+        // vacated source it leaves behind. Key on a *surviving* base-path
+        // destination: in `mv a b; rm b` the destination is deleted, so no
+        // `end = BasePath` survives and `/a`'s delete is *not* suppressed.
+        let moved_to: HashSet<&str> = all
             .iter()
-            .filter_map(|(_, t)| match t {
-                Target::BasePath(src) => Some(src.as_str()),
+            .filter_map(|(_, _, e)| match e {
+                Some(Target::BasePath(l)) => Some(l.as_str()),
                 _ => None,
             })
             .collect();
 
         let mut changes = Vec::new();
-        for (p, target) in &all {
-            if matches!(target, Target::Tombstone) && rename_sources.contains(p.as_str()) {
-                continue; // rename vacate — already shown by the "(renamed)" line
-            }
-            if path.is_some_and(|q| !target.matches_path(p, q)) {
-                continue;
+        for (p, start, end) in &all {
+            let vacated_source = matches!(end, Some(Target::Absence))
+                && matches!(start, Some(Target::BasePath(l)) if moved_to.contains(l.as_str()));
+            if vacated_source {
+                continue; // already shown by the "(renamed)" line
             }
             changes.push(Change {
                 path: p.clone(),
-                target: target.clone(),
-                preimage: preimage.get(p).cloned().flatten(),
+                start: start.clone(),
+                end: end.clone(),
             });
         }
 
@@ -123,33 +101,39 @@ fn note_key(note: &Note) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::Journal;
+    use crate::journal::{Action, Journal, Target};
 
     fn collect(records: Vec<Record>) -> Changeset {
         let journal = Journal::new(records);
         let end = journal.segments.len();
-        Changeset::collect(&journal, 0, end, None)
+        Changeset::collect(&journal, 0, end)
     }
 
-    fn stage(path: &str, ino: u32, preimage: Option<&str>) -> Record {
+    fn base(p: &str) -> Target {
+        Target::BasePath(p.into())
+    }
+
+    fn stage(path: &str, ino: u32, pre: Target) -> Record {
         Record::Action(Action::Stage {
             path: path.into(),
             ino,
-            preimage: preimage.map(Into::into),
+            pre,
         })
     }
 
-    fn delete(path: &str, preimage: Option<&str>) -> Record {
+    fn delete(path: &str, pre: Target) -> Record {
         Record::Action(Action::Delete {
             path: path.into(),
-            preimage: preimage.map(Into::into),
+            pre,
         })
     }
 
-    fn rename(dst: &str, src: &str) -> Record {
+    fn rename(dst: &str, src: &str, src_pre: Target, dst_pre: Target) -> Record {
         Record::Action(Action::Rename {
             src: src.into(),
             dst: dst.into(),
+            src_pre,
+            dst_pre,
         })
     }
 
@@ -158,56 +142,82 @@ mod tests {
     }
 
     #[test]
-    fn create_has_no_preimage() {
-        let cs = collect(vec![stage("/a", 1, None)]);
-        assert!(find(&cs, "/a").unwrap().preimage.is_none());
+    fn create_has_absent_start() {
+        // Fresh create: start = Absence (no old side) ⇒ classifies as added.
+        let cs = collect(vec![stage("/a", 1, Target::Absence)]);
+        let c = find(&cs, "/a").unwrap();
+        assert!(matches!(c.start, Some(Target::Absence)));
+        assert!(matches!(c.end, Some(Target::StagedFile(1))));
     }
 
     #[test]
-    fn modify_carries_preimage() {
-        let cs = collect(vec![stage("/a", 1, Some("/a"))]);
-        assert_eq!(find(&cs, "/a").unwrap().preimage.as_deref(), Some("/a"));
+    fn modify_carries_base_start() {
+        let cs = collect(vec![stage("/a", 1, base("/a"))]);
+        assert!(
+            matches!(find(&cs, "/a").unwrap().start, Some(Target::BasePath(ref p)) if p == "/a")
+        );
     }
 
     #[test]
-    fn delete_carries_preimage() {
-        let cs = collect(vec![delete("/a", Some("/a"))]);
-        assert_eq!(find(&cs, "/a").unwrap().preimage.as_deref(), Some("/a"));
+    fn delete_carries_start() {
+        let cs = collect(vec![delete("/a", base("/a"))]);
+        let c = find(&cs, "/a").unwrap();
+        assert!(matches!(c.start, Some(Target::BasePath(ref p)) if p == "/a"));
+        assert!(matches!(c.end, Some(Target::Absence)));
     }
 
     #[test]
     fn first_touch_wins_create_delete_recreate() {
-        // Create (no pre-image), delete, recreate: the first touch decides, so no
-        // pre-image ⇒ "added", not "modified".
+        // Create (Absence), delete, recreate: the first touch decides, so start =
+        // Absence ⇒ "added", not "modified".
         let cs = collect(vec![
-            stage("/a", 1, None),
-            delete("/a", Some("/a")),
-            stage("/a", 2, None),
+            stage("/a", 1, Target::Absence),
+            delete("/a", base("/a")),
+            stage("/a", 2, Target::Absence),
         ]);
-        assert!(find(&cs, "/a").unwrap().preimage.is_none());
+        let c = find(&cs, "/a").unwrap();
+        assert!(matches!(c.start, Some(Target::Absence)));
+        assert!(matches!(c.end, Some(Target::StagedFile(2))));
     }
 
     #[test]
-    fn create_then_delete_keeps_no_preimage() {
-        // Net tombstone, but first touch (the create) has no pre-image — review.rs
-        // classifies that as a no-op and skips it.
-        let cs = collect(vec![stage("/a", 1, None), delete("/a", Some("/a"))]);
+    fn create_then_delete_nets_to_absent() {
+        // Net tombstone, but first touch (the create) had no old side — review.rs
+        // classifies start=Absence, end=Absence as a no-op and skips it.
+        let cs = collect(vec![
+            stage("/a", 1, Target::Absence),
+            delete("/a", base("/a")),
+        ]);
         let c = find(&cs, "/a").unwrap();
-        assert!(matches!(c.target, Target::Tombstone));
-        assert!(c.preimage.is_none());
+        assert!(matches!(c.start, Some(Target::Absence)));
+        assert!(matches!(c.end, Some(Target::Absence)));
     }
 
     #[test]
     fn rename_shows_single_entry() {
-        // mv /a /b: only /b (renamed) appears; the vacated /a tombstone is dropped.
-        let cs = collect(vec![rename("/b", "/a")]);
+        // mv /a /b (base file): only /b (renamed) appears; the vacated /a is
+        // suppressed because /b's surviving end = BasePath("/a").
+        let cs = collect(vec![rename("/b", "/a", base("/a"), Target::Absence)]);
         assert!(
             find(&cs, "/a").is_none(),
-            "vacated source should be dropped"
+            "vacated source should be suppressed"
         );
         assert!(matches!(
-            find(&cs, "/b").unwrap().target,
-            Target::BasePath(_)
+            find(&cs, "/b").unwrap().end,
+            Some(Target::BasePath(_))
         ));
+    }
+
+    #[test]
+    fn rename_then_delete_keeps_source_delete() {
+        // mv /a /b; rm /b: no surviving end = BasePath, so /a's delete is NOT
+        // suppressed — review still shows /a deleted.
+        let cs = collect(vec![
+            rename("/b", "/a", base("/a"), Target::Absence),
+            delete("/b", base("/a")),
+        ]);
+        let a = find(&cs, "/a").unwrap();
+        assert!(matches!(a.start, Some(Target::BasePath(ref p)) if p == "/a"));
+        assert!(matches!(a.end, Some(Target::Absence)));
     }
 }

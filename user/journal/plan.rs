@@ -10,11 +10,11 @@
 // 1. **Collect**: DFS the tree, emitting actions for each node:
 //      - stages  (StagedFile)  — copy a staged inode to base
 //      - renames (BasePath)    — move a base path to a new location
-//      - deletes (Tombstone)   — remove a base path
+//      - deletes (Absence)   — remove a base path
 //    Passthrough nodes emit no action; they exist only as scaffolding.
-//    Recursion stops at Tombstone: a tombstoned dir is deleted whole
+//    Recursion stops at Absence: a tombstoned dir is deleted whole
 //    (`remove_dir_all`), so child actions are unnecessary.  Any children
-//    staged before the delete are dead — the Tombstone overwrites them.
+//    staged before the delete are dead — the Absence overwrites them.
 //
 // 2. **Process renames**: every rename source is moved to a temp path,
 //    deepest source first (so children are extracted before their parent
@@ -27,13 +27,13 @@
 //
 // ## Why this order is correct
 //
-// Ordering principle: **Tombstone/StagedFile must not clobber BasePath**.
+// Ordering principle: **Absence/StagedFile must not clobber BasePath**.
 // BasePath is the only target type that references existing base state
-// (it carries a source path it needs to read).  Tombstone and StagedFile
+// (it carries a source path it needs to read).  Absence and StagedFile
 // are pure writes — they destroy or create, referencing nothing in base.
-// If a Tombstone or StagedFile fires before a BasePath has read its
+// If a Absence or StagedFile fires before a BasePath has read its
 // source, it can clobber that source path.  Therefore all BasePath reads
-// (saves) must complete before any Tombstone/StagedFile writes execute.
+// (saves) must complete before any Absence/StagedFile writes execute.
 // Within the writers, places must precede deletes+stages because a
 // stage may target a child of a rename destination.  Deletes and stages
 // have no dependency on each other — the DirTree guarantees no stage
@@ -98,30 +98,37 @@ fn collect(tree: &DirTree, prefix: &mut String, renames: &mut Vec<Action>, ops: 
         prefix.push('/');
         prefix.push_str(name);
 
-        match &node.target {
-            Target::StagedFile(ino) => {
+        // Commit reads the net state (`end`) only; the `pre` fields are unused
+        // for commit ops (they apply against the base fs), so they are `Absence`.
+        match &node.end {
+            Some(Target::StagedFile(ino)) => {
                 ops.push(Action::Stage {
                     path: prefix.clone(),
                     ino: *ino,
-                    preimage: None, // unused for commit ops (applied vs the base fs)
+                    pre: Target::Absence,
                 });
             }
-            Target::BasePath(src) => {
+            Some(Target::BasePath(src)) => {
                 renames.push(Action::Rename {
                     dst: prefix.clone(),
+                    // `src_pre = BasePath(src)` so rebuilding the tree from the
+                    // plan reconstructs this redirect `end` (commit itself ignores
+                    // the pre fields). `dst_pre` is irrelevant to the net state.
+                    src_pre: Target::BasePath(src.clone()),
                     src: src.clone(),
+                    dst_pre: Target::Absence,
                 });
             }
-            Target::Tombstone => {
+            Some(Target::Absence) => {
                 ops.push(Action::Delete {
                     path: prefix.clone(),
-                    preimage: None,
+                    pre: Target::Absence,
                 });
             }
-            Target::Passthrough => {}
+            None => {} // scaffold
         }
 
-        if !matches!(node.target, Target::Tombstone) {
+        if !matches!(node.end, Some(Target::Absence)) {
             collect(&node.children, prefix, renames, ops);
         }
 
@@ -145,7 +152,7 @@ fn process_renames(renames: Vec<Action>, scratch: &Path) -> (Vec<Action>, Vec<Ac
     let pairs: Vec<(&str, &str)> = renames
         .iter()
         .map(|a| match a {
-            Action::Rename { dst, src } => (dst.as_str(), src.as_str()),
+            Action::Rename { dst, src, .. } => (dst.as_str(), src.as_str()),
             _ => unreachable!(),
         })
         .collect();
@@ -162,12 +169,16 @@ fn process_renames(renames: Vec<Action>, scratch: &Path) -> (Vec<Action>, Vec<Ac
         saves.push(Action::Rename {
             dst: tmp.clone(),
             src: pairs[orig_idx].1.to_string(),
+            src_pre: Target::Absence,
+            dst_pre: Target::Absence,
         });
         places.push((
             orig_idx,
             Action::Rename {
                 dst: pairs[orig_idx].0.to_string(),
                 src: tmp,
+                src_pre: Target::Absence,
+                dst_pre: Target::Absence,
             },
         ));
     }
@@ -206,14 +217,14 @@ mod tests {
         Action::Stage {
             path: path.into(),
             ino,
-            preimage: None,
+            pre: Target::Absence,
         }
     }
 
     fn delete(path: &str) -> Action {
         Action::Delete {
             path: path.into(),
-            preimage: None,
+            pre: Target::Absence,
         }
     }
 
@@ -221,6 +232,8 @@ mod tests {
         Action::Rename {
             dst: dest.into(),
             src: src.into(),
+            src_pre: Target::BasePath(src.into()),
+            dst_pre: Target::Absence,
         }
     }
 
@@ -229,7 +242,7 @@ mod tests {
         plan.ops
             .iter()
             .filter_map(|op| {
-                let Action::Rename { dst, src: tmp } = op else {
+                let Action::Rename { dst, src: tmp, .. } = op else {
                     return None;
                 };
                 let orig_src = plan
@@ -239,6 +252,7 @@ mod tests {
                         Action::Rename {
                             dst: save_dst,
                             src: save_src,
+                            ..
                         } if save_dst == tmp => Some(save_src.clone()),
                         _ => None,
                     })
@@ -471,15 +485,25 @@ mod tests {
     }
 
     #[test]
-    fn source_resolution_in_chain() {
-        // mv /a /b, mv /b /c, then mv /c/f /x.
-        // Chain collapse: /c ← /a. Source resolution: /x ← /a/f.
-        let plan = build(&[rename("/b", "/a"), rename("/c", "/b"), rename("/x", "/c/f")])
-            .into_plan(Path::new("/scratch"));
+    fn source_resolution_uses_record_pre() {
+        // mv /a /b, mv /b /c (chain collapses to /c ← /a via node moves), then
+        // mv /c/f /x. The kernel resolves /c/f's backing through the redirect and
+        // records src_pre = BasePath("/a/f"); userspace uses it directly (no
+        // tree-walk resolution), so /x ← /a/f.
+        let plan = build(&[
+            rename("/b", "/a"),
+            rename("/c", "/b"),
+            Action::Rename {
+                dst: "/x".into(),
+                src: "/c/f".into(),
+                src_pre: Target::BasePath("/a/f".into()),
+                dst_pre: Target::Absence,
+            },
+        ])
+        .into_plan(Path::new("/scratch"));
         let renames = get_renames(&plan);
-        // /x should have source /a/f (resolved through chain).
         let x_rename = renames.iter().find(|(dst, _)| dst == "/x").unwrap();
-        assert_eq!(x_rename.1, "/a/f", "source must be resolved to base path");
+        assert_eq!(x_rename.1, "/a/f", "uses the record's src_pre directly");
     }
 
     #[test]
@@ -535,12 +559,26 @@ mod tests {
     fn actions_without_temps(plan: &CommitPlan) -> Vec<Action> {
         get_renames(plan)
             .into_iter()
-            .map(|(dst, src)| Action::Rename { dst, src })
+            .map(|(dst, src)| Action::Rename {
+                src_pre: Target::BasePath(src.clone()),
+                dst,
+                src,
+                dst_pre: Target::Absence,
+            })
             .chain(plan.ops.iter().filter_map(|a| match a {
                 Action::Rename { .. } => None, // skip places (already resolved above)
                 other => Some(other.clone()),
             }))
             .collect()
+    }
+
+    /// The net (committable) state: (path, end) pairs, scaffolds skipped. The
+    /// `start` field is review-only metadata that `into_plan` discards, so
+    /// idempotence is over the `end` projection, not the full node.
+    fn ends(tree: &DirTree) -> Vec<(String, Target)> {
+        let mut v = Vec::new();
+        tree.for_each(|p, t| v.push((p.to_string(), t.clone())));
+        v
     }
 
     fn assert_idempotent(input: &[Action]) {
@@ -549,8 +587,9 @@ mod tests {
         let logical = actions_without_temps(&plan);
         let tree2 = build(&logical);
         assert_eq!(
-            tree1, tree2,
-            "tree should be a fixed point of build ∘ into_plan"
+            ends(&tree1),
+            ends(&tree2),
+            "net state should be a fixed point of build ∘ into_plan"
         );
     }
 
