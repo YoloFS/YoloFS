@@ -17,11 +17,20 @@ fn records(root: &std::path::Path, tag: u8) -> Vec<Vec<Vec<u8>>> {
 
 /// The pre field of the latest record with `tag` whose path field (`path_idx`)
 /// ends with `suffix`.
-fn pre_of(root: &std::path::Path, tag: u8, path_idx: usize, pre_idx: usize, suffix: &str) -> Vec<u8> {
+fn pre_of(
+    root: &std::path::Path,
+    tag: u8,
+    path_idx: usize,
+    pre_idx: usize,
+    suffix: &str,
+) -> Vec<u8> {
     records(root, tag)
         .into_iter()
         .rev()
-        .find(|f| f.get(path_idx).is_some_and(|p| p.ends_with(suffix.as_bytes())))
+        .find(|f| {
+            f.get(path_idx)
+                .is_some_and(|p| p.ends_with(suffix.as_bytes()))
+        })
         .and_then(|f| f.into_iter().nth(pre_idx))
         .unwrap_or_else(|| panic!("no {} record for {suffix}", tag as char))
 }
@@ -38,7 +47,11 @@ fn stage_record_format() {
     for f in records(&s.root, b'S') {
         assert_eq!(f.len(), 4, "S record should be (S, path, ino, pre): {f:?}");
     }
-    assert_eq!(pre_of(&s.root, b'S', 1, 3, "/test.txt"), b"A", "fresh create → A");
+    assert_eq!(
+        pre_of(&s.root, b'S', 1, 3, "/test.txt"),
+        b"A",
+        "fresh create → A"
+    );
     let pre = pre_of(&s.root, b'S', 1, 3, "/hello.txt");
     assert!(
         pre.starts_with(b"P:") && pre.ends_with(b"hello.txt"),
@@ -79,7 +92,11 @@ fn rename_record_format_staged_source() {
         .into_iter()
         .find(|f| f.get(1).is_some_and(|d| d.ends_with(b"/moved.txt")))
         .expect("R record for the rename");
-    assert_eq!(rec.len(), 5, "R should be (R, dst, src, src_pre, dst_pre): {rec:?}");
+    assert_eq!(
+        rec.len(),
+        5,
+        "R should be (R, dst, src, src_pre, dst_pre): {rec:?}"
+    );
     assert!(
         rec[3].starts_with(b"I:"),
         "staged source → I:<ino> src_pre, got {:?}",
