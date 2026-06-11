@@ -1,6 +1,6 @@
 // yolo CLI — journal/plan.rs
 //
-// DirTree → Actions: convert the collapsed overlay state back into a
+// DirTree → CommitOps: convert the collapsed overlay state back into a
 // minimal ordered list of filesystem mutations for commit.
 //
 // Implements `DirTree::into_plan()` — the inverse of `DirTree::build()`.
@@ -11,7 +11,7 @@
 //      - stages  (StagedFile)  — copy a staged inode to base
 //      - renames (BasePath)    — move a base path to a new location
 //      - deletes (Absence)   — remove a base path
-//    Passthrough nodes emit no action; they exist only as scaffolding.
+//    Scaffold nodes (end = None) emit no op; they exist only as scaffolding.
 //    Recursion stops at Absence: a tombstoned dir is deleted whole
 //    (`remove_dir_all`), so child actions are unnecessary.  Any children
 //    staged before the delete are dead — the Absence overwrites them.
@@ -40,8 +40,23 @@
 // writes under a deleted path — so they are interleaved in DFS order.
 
 use super::tree::DirTree;
-use super::types::*;
+use super::types::Target;
 use std::path::Path;
+
+/// One filesystem mutation in a commit plan.
+///
+/// Distinct from the journal's [`Action`](super::types::Action): commit applies
+/// against the base filesystem and reads no pre-op backing, so a plan op carries
+/// only what `apply_plan` needs — there are no `pre` fields to fabricate.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommitOp {
+    /// Copy staged inode `ino` onto base `path`.
+    Stage { path: String, ino: u32 },
+    /// Move base `src` to base `dst` (also the save/place temp moves).
+    Rename { dst: String, src: String },
+    /// Remove base `path`.
+    Delete { path: String },
+}
 
 /// A commit plan: the minimal set of filesystem mutations to apply.
 ///
@@ -50,10 +65,10 @@ use std::path::Path;
 /// mutations in the correct execution order.
 pub struct CommitPlan {
     /// Phase 1: save all rename sources to temp paths (deepest source first).
-    saves: Vec<Action>,
+    saves: Vec<CommitOp>,
     /// Phase 2: places (temp→destination, DFS order) then deletes+stages
     /// (interleaved in DFS order).
-    ops: Vec<Action>,
+    ops: Vec<CommitOp>,
 }
 
 impl CommitPlan {
@@ -66,8 +81,8 @@ impl CommitPlan {
         self.ops.len()
     }
 
-    /// Iterate all actions in execution order.
-    pub fn iter(&self) -> impl Iterator<Item = &Action> {
+    /// Iterate all ops in execution order.
+    pub fn iter(&self) -> impl Iterator<Item = &CommitOp> {
         self.saves.iter().chain(&self.ops)
     }
 }
@@ -92,37 +107,29 @@ pub(super) fn into_plan(tree: &DirTree, scratch: &Path) -> CommitPlan {
     }
 }
 
-fn collect(tree: &DirTree, prefix: &mut String, renames: &mut Vec<Action>, ops: &mut Vec<Action>) {
+fn collect(tree: &DirTree, prefix: &mut String, renames: &mut Vec<CommitOp>, ops: &mut Vec<CommitOp>) {
     for (name, node) in &tree.nodes {
         let path_len = prefix.len();
         prefix.push('/');
         prefix.push_str(name);
 
-        // Commit reads the net state (`end`) only; the `pre` fields are unused
-        // for commit ops (they apply against the base fs), so they are `Absence`.
+        // Commit reads the net state (`end`) only.
         match &node.end {
             Some(Target::StagedFile(ino)) => {
-                ops.push(Action::Stage {
+                ops.push(CommitOp::Stage {
                     path: prefix.clone(),
                     ino: *ino,
-                    pre: Target::Absence,
                 });
             }
             Some(Target::BasePath(src)) => {
-                renames.push(Action::Rename {
+                renames.push(CommitOp::Rename {
                     dst: prefix.clone(),
-                    // `src_pre = BasePath(src)` so rebuilding the tree from the
-                    // plan reconstructs this redirect `end` (commit itself ignores
-                    // the pre fields). `dst_pre` is irrelevant to the net state.
-                    src_pre: Target::BasePath(src.clone()),
                     src: src.clone(),
-                    dst_pre: Target::Absence,
                 });
             }
             Some(Target::Absence) => {
-                ops.push(Action::Delete {
+                ops.push(CommitOp::Delete {
                     path: prefix.clone(),
-                    pre: Target::Absence,
                 });
             }
             None => {} // scaffold
@@ -144,7 +151,7 @@ fn collect(tree: &DirTree, prefix: &mut String, renames: &mut Vec<Action>, ops: 
 ///   (so children are extracted before their parent directory moves).
 /// - **places**: move each temp to its destination, in DFS order
 ///   (parent destinations before children).
-fn process_renames(renames: Vec<Action>, scratch: &Path) -> (Vec<Action>, Vec<Action>) {
+fn process_renames(renames: Vec<CommitOp>, scratch: &Path) -> (Vec<CommitOp>, Vec<CommitOp>) {
     if renames.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -152,7 +159,7 @@ fn process_renames(renames: Vec<Action>, scratch: &Path) -> (Vec<Action>, Vec<Ac
     let pairs: Vec<(&str, &str)> = renames
         .iter()
         .map(|a| match a {
-            Action::Rename { dst, src, .. } => (dst.as_str(), src.as_str()),
+            CommitOp::Rename { dst, src } => (dst.as_str(), src.as_str()),
             _ => unreachable!(),
         })
         .collect();
@@ -166,19 +173,15 @@ fn process_renames(renames: Vec<Action>, scratch: &Path) -> (Vec<Action>, Vec<Ac
 
     for (temp_n, &orig_idx) in by_depth.iter().enumerate() {
         let tmp = temp_path(temp_n, scratch);
-        saves.push(Action::Rename {
+        saves.push(CommitOp::Rename {
             dst: tmp.clone(),
             src: pairs[orig_idx].1.to_string(),
-            src_pre: Target::Absence,
-            dst_pre: Target::Absence,
         });
         places.push((
             orig_idx,
-            Action::Rename {
+            CommitOp::Rename {
                 dst: pairs[orig_idx].0.to_string(),
                 src: tmp,
-                src_pre: Target::Absence,
-                dst_pre: Target::Absence,
             },
         ));
     }
@@ -205,6 +208,7 @@ fn temp_path(n: usize, scratch: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::journal::types::{Action, Record, Segment};
 
     fn build(actions: &[Action]) -> DirTree {
         DirTree::build(std::iter::once(Segment {
@@ -229,10 +233,17 @@ mod tests {
     }
 
     fn rename(dest: &str, src: &str) -> Action {
+        rename_from(dest, src, src)
+    }
+
+    /// A rename whose source resolves (through a redirect chain) to base path
+    /// `origin` — the kernel-faithful `src_pre`. A swap/rotation's return hop
+    /// (`mv tmp a` after `mv a tmp`) resolves to the original base, not `tmp`.
+    fn rename_from(dest: &str, src: &str, origin: &str) -> Action {
         Action::Rename {
             dst: dest.into(),
             src: src.into(),
-            src_pre: Target::BasePath(src.into()),
+            src_pre: Target::BasePath(origin.into()),
             dst_pre: Target::Absence,
         }
     }
@@ -242,17 +253,16 @@ mod tests {
         plan.ops
             .iter()
             .filter_map(|op| {
-                let Action::Rename { dst, src: tmp, .. } = op else {
+                let CommitOp::Rename { dst, src: tmp } = op else {
                     return None;
                 };
                 let orig_src = plan
                     .saves
                     .iter()
                     .find_map(|s| match s {
-                        Action::Rename {
+                        CommitOp::Rename {
                             dst: save_dst,
                             src: save_src,
-                            ..
                         } if save_dst == tmp => Some(save_src.clone()),
                         _ => None,
                     })
@@ -266,7 +276,7 @@ mod tests {
         plan.ops
             .iter()
             .filter_map(|op| match op {
-                Action::Stage { path, ino, .. } => Some((path.clone(), *ino)),
+                CommitOp::Stage { path, ino } => Some((path.clone(), *ino)),
                 _ => None,
             })
             .collect()
@@ -276,7 +286,7 @@ mod tests {
         plan.ops
             .iter()
             .filter_map(|op| match op {
-                Action::Delete { path, .. } => Some(path.clone()),
+                CommitOp::Delete { path } => Some(path.clone()),
                 _ => None,
             })
             .collect()
@@ -460,7 +470,7 @@ mod tests {
         let plan = build(&[rename("/x", "/dir/file"), rename("/y", "/dir")])
             .into_plan(Path::new("/scratch"));
         assert_eq!(plan.saves.len(), 2);
-        let Action::Rename { src, .. } = &plan.saves[0] else {
+        let CommitOp::Rename { src, .. } = &plan.saves[0] else {
             unreachable!()
         };
         assert_eq!(src, "/dir/file", "deeper source must be saved first");
@@ -522,7 +532,7 @@ mod tests {
         let plan = build(&[
             rename("/tmp", "/a"),
             rename("/a", "/b"),
-            rename("/b", "/tmp"),
+            rename_from("/b", "/tmp", "/a"),
         ])
         .into_plan(Path::new("/scratch"));
         let renames = get_renames(&plan);
@@ -536,7 +546,7 @@ mod tests {
             rename("/tmp", "/a"),
             rename("/a", "/c"),
             rename("/c", "/b"),
-            rename("/b", "/tmp"),
+            rename_from("/b", "/tmp", "/a"),
         ])
         .into_plan(Path::new("/scratch"));
         let renames = get_renames(&plan);
@@ -557,6 +567,9 @@ mod tests {
     // artifacts that don't represent logical state changes.
 
     fn actions_without_temps(plan: &CommitPlan) -> Vec<Action> {
+        // Map plan ops back to journal actions to rebuild a tree. Renames come
+        // from get_renames (which pairs places with saves to recover the
+        // original source); stages/deletes map directly.
         get_renames(plan)
             .into_iter()
             .map(|(dst, src)| Action::Rename {
@@ -565,9 +578,17 @@ mod tests {
                 src,
                 dst_pre: Target::Absence,
             })
-            .chain(plan.ops.iter().filter_map(|a| match a {
-                Action::Rename { .. } => None, // skip places (already resolved above)
-                other => Some(other.clone()),
+            .chain(plan.ops.iter().filter_map(|op| match op {
+                CommitOp::Rename { .. } => None, // places already resolved above
+                CommitOp::Stage { path, ino } => Some(Action::Stage {
+                    path: path.clone(),
+                    ino: *ino,
+                    pre: Target::Absence,
+                }),
+                CommitOp::Delete { path } => Some(Action::Delete {
+                    path: path.clone(),
+                    pre: Target::Absence,
+                }),
             }))
             .collect()
     }
@@ -652,7 +673,7 @@ mod tests {
         let plan = build(&[
             rename("/tmp", "/a"),
             rename("/a", "/b"),
-            rename("/b", "/tmp"),
+            rename_from("/b", "/tmp", "/a"),
         ])
         .into_plan(Path::new("/scratch"));
         let mut renames = get_renames(&plan);

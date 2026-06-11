@@ -4,7 +4,7 @@
 
 /// Where content lives at a path — the state at a dentry/tree node, and the
 /// value of a journal record's pre-op `pre` fields (the parser resolves the
-/// tagged wire form `A`/`I:<ino>`/`P:<path>` into this). One value type for both
+/// tagged wire form `a`/`s:<ino>`/`b:<path>` into this). One value type for both
 /// the operation-local axis (`pre`) and the range-scoped tree axis
 /// (`start`/`end`); the role is carried by the field name, not the type.
 #[derive(Debug, Clone, PartialEq)]

@@ -100,22 +100,22 @@ fn apply_delete(path: &Path) -> Result<()> {
 // ── Apply ─────────────────────────────────────────────────────────────
 
 fn apply_plan(yolofs: &Path, plan: &crate::journal::CommitPlan) -> Result<usize> {
-    use crate::journal::types::Action;
+    use crate::journal::CommitOp;
     let mut ensured: HashSet<PathBuf> = HashSet::new();
 
-    for action in plan.iter() {
-        match action {
-            Action::Rename { src, dst, .. } => {
+    for op in plan.iter() {
+        match op {
+            CommitOp::Rename { src, dst } => {
                 apply_rename(
                     &crate::utils::to_base_path(src),
                     &crate::utils::to_base_path(dst),
                     &mut ensured,
                 )?;
             }
-            Action::Delete { path, .. } => {
+            CommitOp::Delete { path } => {
                 apply_delete(&crate::utils::to_base_path(path))?;
             }
-            Action::Stage { path, ino, .. } => {
+            CommitOp::Stage { path, ino } => {
                 apply_stage(
                     yolofs,
                     *ino,

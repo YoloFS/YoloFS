@@ -282,8 +282,9 @@ yolo_open(inode, file):
             // already COW'd this file since our check above.
             atomic_inc(staging_fd_count)
             new_file = yolo_do_cow(sbi, dentry, flags, O_TRUNC in flags)
-            // yolo_do_cow updates: dentry target,
-            //   YOLO_I(inode)->staging_gen, dentry lower_path, journal
+            // yolo_do_cow appends the journal record first (a failed append
+            // fails the open with nothing published), then updates: dentry
+            // target, YOLO_I(inode)->staging_gen, dentry lower_path
             up_write(staging_sem)
             file_info->lower_file = new_file
 
@@ -332,30 +333,26 @@ file is recognised as already staged (preventing a spurious re-COW on
 next open-for-write):
 
 ```
-yolo_create(dir, dentry, mode):
-    ino = next_ino++
+yolo_create(dir, dentry, mode):        # mkdir/symlink differ only in the
+    ino = next_ino++                   # inode created in the store
     create file inodes/<ino>
+    journal(S, path, ino, a)           # pre = a: fresh create. Journal BEFORE
+                                       # publishing; on failure drop the store
+                                       # inode and fail the op (path is taken
+                                       # from the still-negative dentry).
+    interpose(dentry, inodes/<ino>)
     yolo_dentry_pin(dentry, YOLO_TARGET_INODE)
     YOLO_I(d_inode(dentry))->staging_gen = sbi->gen
     YOLO_I(d_inode(dentry))->staging_ino = ino
-    journal(S, path, ino, A)        # pre = A: fresh create, nothing existed
-
-yolo_mkdir(dir, dentry, mode):
-    ino = next_ino++
-    create dir inodes/<ino>/
-    yolo_dentry_pin(dentry, YOLO_TARGET_INODE)
-    YOLO_I(d_inode(dentry))->staging_gen = sbi->gen
-    YOLO_I(d_inode(dentry))->staging_ino = ino
-    journal(S, path, ino, A)
-
-yolo_symlink(dir, dentry, target):
-    ino = next_ino++
-    create symlink inodes/<ino> -> target
-    yolo_dentry_pin(dentry, YOLO_TARGET_INODE)
-    YOLO_I(d_inode(dentry))->staging_gen = sbi->gen
-    YOLO_I(d_inode(dentry))->staging_ino = ino
-    journal(S, path, ino, A)
 ```
+
+The journal append precedes the dentry publication (interpose + pin), matching
+delete and rename: if the append fails, the create fails and nothing is visible
+in the mount. The orphaned store inode is harmless, cleared on commit/abort. The
+one post-journal fallible step is interpose's `iget` (rare ENOMEM); it leaves a
+phantom `S` record for an empty orphan inode — the *safe* direction (at worst a
+spurious empty file at commit, never a mount-visible change missing from the
+journal).
 
 `touch` (create + close, no write) produces an empty inode in the store —
 visible in `yolo review` (`--diff` for the body) and cleanly discarded by abort.
@@ -404,7 +401,7 @@ yolo_rename(old_parent, old_dentry, new_parent, new_dentry):
 
     # Capture both pre-op backings BEFORE any dentry state change.
     src_pre = target_preimage(old_dentry)
-    dst_pre = d_is_positive(new_dentry) ? target_preimage(new_dentry) : A
+    dst_pre = d_is_positive(new_dentry) ? target_preimage(new_dentry) : a
 
     journal(R, dst, src, src_pre, dst_pre)
 
@@ -568,18 +565,30 @@ Every `*pre` field is an operation-local kernel fact: the `Target` that backed
 that overlay name *immediately before* the operation. It lets `yolo review
 --diff` read the previous-snapshot content in O(segment) without rebuilding the
 prior tree. It is encoded with an explicit tag so userspace never infers
-inode-store layout from `.yolofs/inodes/`:
+inode-store layout from `.yolofs/inodes/`. Pre tags are lowercase so they never
+share letters with the (uppercase) record tags:
 
 | Encoding | Target | Meaning |
 |----------|--------|---------|
-| `A` | `Absence` | no previous content (or the kernel could not resolve it) |
-| `I:<ino>` | `StagedFile(ino)` | content was a staged inode in the store |
-| `P:<abs-path>` | `BasePath(abs-path)` | content was the redirect-resolved base file |
+| `a` | `Absence` | no previous content (or the kernel could not resolve it) |
+| `s:<ino>` | `StagedFile(ino)` | content was a staged inode in the store |
+| `b:<abs-path>` | `BasePath(abs-path)` | content was the redirect-resolved base file |
+
+The tag is the lowercased first letter of the `Target` variant it parses to
+(`a`bsence / `s`tagedFile / `b`asePath), so the tag→variant mapping is one rule.
 
 `<pre>` is the *exact* pre-op backing — for an already-staged file that is
-`I:<ino>` (the staged inode), not the base it was COW'd from. The userspace tree
+`s:<ino>` (the staged inode), not the base it was COW'd from. The userspace tree
 folds the first `pre` seen at each path in a review range into that path's
 range-start old side.
+
+Path namespaces: `<path>`/`<src>`/`<dst>` are overlay paths (mount-relative,
+from `dentry_path_raw`), while `b:` carries a lower-filesystem absolute path
+(from `d_path` on the resolved backing). The two are interchangeable strings
+**only because base is always `/`** — the overlay mirrors the whole root, so an
+overlay path and its base path coincide. The CLI relies on this: commit moves
+`BasePath` sources by string, and review's rename suppression matches `BasePath`
+ends against overlay tree paths.
 
 | Tag | Fields | Meaning |
 |-----|--------|---------|
@@ -608,8 +617,8 @@ apply identically (a B in an unreachable segment is dimmed in journal
 output). Current scope is `-EACCES` only; `HIDE`/`-ENOENT` paths are
 not logged.
 
-The stage/modify distinction comes from the `S` record's `<pre>` field — `A`
-reads as added, a present `I:`/`P:` target reads as modified — so userspace
+The stage/modify distinction comes from the `S` record's `<pre>` field — `a`
+reads as added, a present `s:`/`b:` target reads as modified — so userspace
 needs neither a base stat nor a rebuilt prior tree.
 
 **Gen_id invariant.** The kernel increments `sbi->gen` via
@@ -622,8 +631,14 @@ strictly sequential: marker\[i\] has gen_id = i (marker\[0\] is a phantom
 `<src>` is the overlay path before the rename (R only).
 `<ino>` is the staged inode ID (decimal); it is also the implicit post-target
 `StagedFile(<ino>)` of an `S` record.
-`<pre>` / `<src_pre>` / `<dst_pre>` are tagged pre-op targets (`A` / `I:<ino>` /
-`P:<path>`); `<dst_pre>` is `A` for a fresh destination or a pinned tombstone.
+`<pre>` / `<src_pre>` / `<dst_pre>` are tagged pre-op targets (`a` / `s:<ino>` /
+`b:<path>`); `<dst_pre>` is `a` for a fresh destination or a pinned tombstone.
+
+A rename moves the source's backing to the destination verbatim (the kernel
+re-pins the moved dentry with its own target), so **`<src_pre>` is also the
+destination's post-rename backing**: `s:<ino>` for a staged source, `b:<path>`
+for a base or redirect source. The R record needs no separate post field, and
+the tree builder sets the destination's `end` from `<src_pre>` directly.
 
 All renames — staged or redirect, file or directory — emit a single R
 record. The tree builder always tombstones at the source path.
@@ -788,14 +803,14 @@ The generation counter collapses consecutive snapshots.
 ### Example Journal with Snapshots
 
 ```
-S\0/src/main.rs\01\0/src/main.rs\n      # COW main.rs from base -> ino 1
-S\0/src/lib.rs\02\0\n                    # create lib.rs -> ino 2 (no pre-image)
+S\0/src/main.rs\01\0b:/src/main.rs\n    # COW main.rs from base -> ino 1
+S\0/src/lib.rs\02\0a\n                   # create lib.rs -> ino 2 (no old side)
 P\01\0after make build\n                 # snapshot 1
-S\0/src/main.rs\03\0…/inodes/0/1\n      # re-COW main.rs -> ino 3 (pre-image: ino 1)
-D\0/src/lib.rs\0…/inodes/0/2\n           # delete lib.rs (pre-image: ino 2)
-S\0/src/new.rs\04\0\n                    # create new.rs -> ino 4
+S\0/src/main.rs\03\0s:1\n                # re-COW main.rs -> ino 3 (pre: ino 1)
+D\0/src/lib.rs\0s:2\n                    # delete lib.rs (pre: ino 2)
+S\0/src/new.rs\04\0a\n                   # create new.rs -> ino 4
 P\02\0after make test\n                  # snapshot 2
-S\0/src/new.rs\05\0…/inodes/0/4\n       # re-COW new.rs -> ino 5
+S\0/src/new.rs\05\0s:4\n                 # re-COW new.rs -> ino 5
 ```
 
 State at each point:
@@ -809,14 +824,14 @@ State at each point:
 ### Example Journal with Travel
 
 ```
-S\0/src/main.rs\01\0/src/main.rs\n      # COW main.rs from base -> ino 1
-S\0/src/lib.rs\02\0\n                    # create lib.rs -> ino 2
+S\0/src/main.rs\01\0b:/src/main.rs\n    # COW main.rs from base -> ino 1
+S\0/src/lib.rs\02\0a\n                   # create lib.rs -> ino 2
 P\01\0after make build\n                 # snapshot 1
-S\0/src/main.rs\03\0…/inodes/0/1\n      # re-COW main.rs -> ino 3
-D\0/src/lib.rs\0…/inodes/0/2\n           # delete lib.rs
+S\0/src/main.rs\03\0s:1\n                # re-COW main.rs -> ino 3
+D\0/src/lib.rs\0s:2\n                    # delete lib.rs
 P\02\0after make test\n                  # snapshot 2
 T\03\01\n                                # travel to snapshot 1 (gen bumped to 3)
-S\0/src/util.rs\04\0\n                   # create util.rs -> ino 4
+S\0/src/util.rs\04\0a\n                  # create util.rs -> ino 4
 P\04\0after make fix\n                   # snapshot 4
 ```
 

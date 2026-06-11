@@ -22,6 +22,33 @@ fn status_modified() {
     assert!(output.contains("1 staged change"), "output: {output}");
 }
 
+/// Finding-1 regression (end-to-end): renaming a base file over a path that
+/// was deleted in-range, then editing it, must classify the destination as
+/// MODIFIED — it existed in base — not ADDED. This drives the real
+/// kernel→journal→Changeset→classify pipeline (the unit tests build records by
+/// hand); a fold that dropped the destination's first-touch `start` would
+/// misreport it as added.
+#[test]
+fn status_rename_over_deleted_then_edit_is_modified() {
+    let s = YoloSession::new().expect("session setup");
+
+    // multi.txt and hello.txt are both seeded base files.
+    fs::remove_file(s.mnt_path("multi.txt")).unwrap();
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("multi.txt")).unwrap();
+    fs::write(s.mnt_path("multi.txt"), "edited after rename\n").unwrap();
+
+    // `all` forces the base→tip comparison regardless of snapshot state.
+    let output = s.cli(&["review", "all"]).expect("status");
+    let line = output
+        .lines()
+        .find(|l| l.contains("multi.txt"))
+        .unwrap_or_else(|| panic!("review should mention multi.txt: {output}"));
+    assert!(
+        line.contains("modified"),
+        "multi.txt existed in base, so it must classify as modified, not added: {output}"
+    );
+}
+
 #[test]
 fn status_multiple_changes() {
     let s = YoloSession::new().expect("session setup");

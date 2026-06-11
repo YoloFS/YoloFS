@@ -301,81 +301,80 @@ impl DirTree {
     }
 
     /// Apply R rename. Both pre fields are kernel-provided operation-local
-    /// backings (see [`Action::Rename`]); no tree-walk backing resolution.
+    /// backings (see [`Action::Rename`]); the fold trusts them and never
+    /// re-derives a backing by walking the tree.
+    ///
+    /// The kernel re-pins the moved dentry with its own target, so `src_pre` is
+    /// also the destination's post-rename backing: `dst.end = src_pre` verbatim.
+    /// The detached source contributes only its children (which ride to `dst`)
+    /// and its `start` (the move-carry old side). The destination's own
+    /// first-touch `start` survives when the rename is not its first touch.
     fn apply_rename(&mut self, dst: String, src: String, src_pre: Target, dst_pre: Target) {
         if dst == src {
             return;
         }
 
-        // 1. Detach the source node if it exists.
-        let detached = self.detach(&src);
-
-        // 2/3. Build the destination node, and pick the source tombstone's start.
-        let (dst_node, src_tomb_start) = match detached {
-            Some(mut node) => {
-                // 2. Source existed — move it to dst.
-                if node.end.is_none() {
-                    // Scaffold dir explicitly renamed — give it a redirect end.
-                    node.end = Some(src_pre.clone());
-                }
-                if node.start.is_none() {
-                    // Scaffold dir — seed start from the destination's pre.
-                    node.start = Some(dst_pre);
-                }
-                // 4. Source tombstone carries the moved node's start (its old side).
-                let tomb_start = node.start.clone();
-                (node, tomb_start)
-            }
-            None => {
-                // 3. No source node (e.g. a base file). Create a redirect at dst,
-                //    seeding start from the clobbered destination's pre.
-                let node = DirNode {
-                    start: Some(dst_pre),
-                    end: Some(src_pre.clone()),
-                    children: DirTree::new(),
-                };
-                // 4. else: the source tombstone's start is src_pre.
-                (node, Some(src_pre))
-            }
+        // Detach the source subtree: its children ride to dst; its own `start`
+        // is the move-carry old side (carried to both dst and the source tomb).
+        let (moved_start, moved_children) = match self.detach(&src) {
+            Some(n) => (n.start, n.children),
+            None => (None, DirTree::new()),
         };
 
-        // A net self-redirect (end = BasePath(dst)) means the content returned to
-        // its origin — a roundtrip (a→…→a).
-        let is_self_redirect = matches!(&dst_node.end, Some(Target::BasePath(p)) if *p == dst);
-
-        // 4. Always place an absent end at the source.
+        // Source tombstone: old side is the moved node's start if it had one,
+        // else the source's own pre-op backing.
         self.place_node(
             src,
             DirNode {
-                start: src_tomb_start,
+                start: moved_start.clone().or_else(|| Some(src_pre.clone())),
                 end: Some(Target::Absence),
                 children: DirTree::new(),
             },
         );
 
+        // A self-redirect (end would be BasePath(dst)) means the content
+        // returned to its origin — a roundtrip (a→…→a). src_pre carries that
+        // fact directly: a base/redirect source whose backing is dst itself.
+        let is_self_redirect = matches!(&src_pre, Target::BasePath(p) if *p == dst);
+
         let Some((parent, name)) = self.walk_or_create_parent(dst) else {
             return;
         };
+        let existing = parent.nodes.remove(name.as_str());
+
         if is_self_redirect {
-            if dst_node.children.nodes.is_empty() {
-                // 5. No-op self-move — remove the node entirely so commit doesn't
-                //    emit a `Rename { dst: p, src: p }`.
-                parent.nodes.remove(name.as_str());
-            } else {
-                // Roundtrip dir — keep the children, drop the self-redirect to a
-                // scaffold so commit doesn't self-move the directory.
+            // No-op self-move: drop the node so commit emits no self-rename.
+            // Roundtrip dir: keep the moved children but drop the self-redirect
+            // end to a scaffold so commit doesn't self-move the directory.
+            if !moved_children.nodes.is_empty() {
                 parent.nodes.insert(
                     name,
                     DirNode {
                         start: None,
                         end: None,
-                        children: dst_node.children,
+                        children: moved_children,
                     },
                 );
             }
-        } else {
-            parent.nodes.insert(name, dst_node);
+            return;
         }
+
+        // Destination `start` precedence: the moved node's start (move-carry),
+        // then the destination's existing first-touch start (when the path was
+        // already touched in-range — preserved, not clobbered), then the
+        // op-local backing the rename displaced.
+        let dst_start = moved_start
+            .or_else(|| existing.and_then(|n| n.start))
+            .or(Some(dst_pre));
+
+        parent.nodes.insert(
+            name,
+            DirNode {
+                start: dst_start,
+                end: Some(src_pre),
+                children: moved_children,
+            },
+        );
     }
 
     /// Detach a node from the tree, returning it. Returns None if not found.
@@ -432,15 +431,35 @@ mod tests {
         }
     }
 
-    /// A rename whose source is a base file: `src_pre = BasePath(src)` (the
-    /// common case the kernel records). When the source node already exists in
-    /// the tree (a staged file / scaffold), `apply_rename` keeps that node's
-    /// `end` and this `src_pre` is only used to seed a renamed scaffold.
+    /// A rename of an *untouched base file*: `src_pre = BasePath(src)`, which is
+    /// what the kernel records when the source resolves directly to its own base
+    /// path. For a source that's already staged or a redirect (a chain's second
+    /// hop), use [`rename_from`] / [`rename_staged`] — the kernel resolves those
+    /// to the *origin* backing, not the immediate source path.
     fn rename(dest: &str, src: &str) -> Action {
+        rename_from(dest, src, src)
+    }
+
+    /// A rename whose source resolves (through any redirect chain) to base path
+    /// `origin` — the kernel-faithful `src_pre = BasePath(origin)`. The second
+    /// hop of `mv a tmp; mv tmp a` resolves to the original base `a`, not the
+    /// intermediate `tmp`.
+    fn rename_from(dest: &str, src: &str, origin: &str) -> Action {
         Action::Rename {
             dst: dest.into(),
             src: src.into(),
-            src_pre: Target::BasePath(src.into()),
+            src_pre: Target::BasePath(origin.into()),
+            dst_pre: Target::Absence,
+        }
+    }
+
+    /// A rename of a staged source (inode `ino`): kernel-faithful
+    /// `src_pre = StagedFile(ino)`. The moved inode rides to the destination.
+    fn rename_staged(dest: &str, src: &str, ino: u32) -> Action {
+        Action::Rename {
+            dst: dest.into(),
+            src: src.into(),
+            src_pre: Target::StagedFile(ino),
             dst_pre: Target::Absence,
         }
     }
@@ -547,7 +566,7 @@ mod tests {
 
     #[test]
     fn rename_added_file() {
-        let tree = build(&[add("/a", 1), rename("/b", "/a")]);
+        let tree = build(&[add("/a", 1), rename_staged("/b", "/a", 1)]);
         // A + R: rename always tombstones at source.
         // Destination gets the Inode.
         assert_eq!(tree.len(), 2);
@@ -568,7 +587,9 @@ mod tests {
 
     #[test]
     fn rename_chain() {
-        let tree = build(&[rename("/b", "/a"), rename("/c", "/b")]);
+        // a→b→c: the second hop's source /b redirects to base /a, so its
+        // kernel-faithful src_pre is BasePath(/a), not BasePath(/b).
+        let tree = build(&[rename("/b", "/a"), rename_from("/c", "/b", "/a")]);
         // a→b→c: Absence at /a, tombstone at /b (always tombstones at source), Link at /c
         assert_eq!(tree.len(), 3);
         assert!(matches!(tree.get("/a"), Some(Target::Absence)));
@@ -613,6 +634,153 @@ mod tests {
         // mv /a /b — no redirect ancestor, source is already a base path.
         let tree = build(&[rename("/b", "/a")]);
         assert!(matches!(tree.get("/b"), Some(Target::BasePath(src)) if src == "/a"));
+    }
+
+    // ── Rename start/end composition (plan 58) ────────────────────────
+    //
+    // These use explicit `Action::Rename` with the pre fields the *kernel*
+    // would actually write (the `rename()` helper fabricates an unfaithful
+    // `src_pre = BasePath(src)` even for staged/redirect sources).
+
+    #[test]
+    fn rename_over_touched_dest_keeps_dest_first_touch_start() {
+        // S /b ino1 (base /b copied up), then mv /a /b (base /a clobbers the
+        // staged /b). /b's range-start old side is base /b — the rename must
+        // not overwrite that first-touch `start` with the intermediate inode.
+        let tree = build(&[
+            Action::Stage {
+                path: "/b".into(),
+                ino: 1,
+                pre: Target::BasePath("/b".into()),
+            },
+            Action::Rename {
+                dst: "/b".into(),
+                src: "/a".into(),
+                src_pre: Target::BasePath("/a".into()),
+                dst_pre: Target::StagedFile(1), // /b was staged when clobbered
+            },
+        ]);
+        let node = tree.get_node("/b").expect("/b node");
+        assert!(
+            matches!(node.start, Some(Target::BasePath(ref p)) if p == "/b"),
+            "dest first-touch start must survive the rename-over: {:?}",
+            node.start
+        );
+        assert!(matches!(node.end, Some(Target::BasePath(ref p)) if p == "/a"));
+    }
+
+    #[test]
+    fn delete_rename_over_restage_classifies_modified_not_added() {
+        // rm /b; mv /a /b; edit /b. /b existed in base, so the net change is a
+        // modify (base /b → new inode), not an add. The first-touch `start`
+        // (base /b, from the delete) must survive the rename-over so classify
+        // sees a present old side.
+        let tree = build(&[
+            Action::Delete {
+                path: "/b".into(),
+                pre: Target::BasePath("/b".into()),
+            },
+            Action::Rename {
+                dst: "/b".into(),
+                src: "/a".into(),
+                src_pre: Target::BasePath("/a".into()),
+                dst_pre: Target::Absence, // /b was a tombstone (negative) when clobbered
+            },
+            Action::Stage {
+                path: "/b".into(),
+                ino: 2,
+                pre: Target::BasePath("/a".into()),
+            },
+        ]);
+        let node = tree.get_node("/b").expect("/b node");
+        assert!(
+            matches!(node.start, Some(Target::BasePath(ref p)) if p == "/b"),
+            "start should be base /b (the pre-delete content), got {:?}",
+            node.start
+        );
+        assert!(matches!(node.end, Some(Target::StagedFile(2))));
+    }
+
+    #[test]
+    fn rename_carries_moved_node_start_to_dest_child() {
+        // Regression pin for move-carry (plan 56): vi /d/f (modify base d/f →
+        // ino1), then mv /d /e. /e/f's old side is the moved child's own
+        // `start` (base /d/f), carried verbatim across the directory move.
+        let tree = build(&[
+            Action::Stage {
+                path: "/d/f".into(),
+                ino: 1,
+                pre: Target::BasePath("/d/f".into()),
+            },
+            Action::Rename {
+                dst: "/e".into(),
+                src: "/d".into(),
+                src_pre: Target::BasePath("/d".into()),
+                dst_pre: Target::Absence,
+            },
+        ]);
+        let node = tree.get_node("/e/f").expect("/e/f node");
+        assert!(
+            matches!(node.start, Some(Target::BasePath(ref p)) if p == "/d/f"),
+            "moved child's first-touch start should ride to /e/f: {:?}",
+            node.start
+        );
+        assert!(matches!(node.end, Some(Target::StagedFile(1))));
+    }
+
+    #[test]
+    fn rename_staged_source_carries_inode_to_dest_end() {
+        // touch /a (ino1); mv /a /b. /b.end is the carried StagedFile(1) — the
+        // record's src_pre verbatim, not re-derived. Pins the trust-the-record
+        // contract for staged sources.
+        let tree = build(&[
+            Action::Stage {
+                path: "/a".into(),
+                ino: 1,
+                pre: Target::Absence,
+            },
+            Action::Rename {
+                dst: "/b".into(),
+                src: "/a".into(),
+                src_pre: Target::StagedFile(1),
+                dst_pre: Target::Absence,
+            },
+        ]);
+        assert!(matches!(tree.get("/b"), Some(Target::StagedFile(1))));
+        assert!(matches!(tree.get("/a"), Some(Target::Absence)));
+    }
+
+    #[test]
+    fn first_touch_start_rides_across_a_later_rename() {
+        // Composition of the two rename behaviors: S /b ino1 seeds /b.start =
+        // base /b; R /b←/a preserves that first-touch start (finding 1); then
+        // R /c←/b move-carries it to /c. The third hop's source /b redirects to
+        // base /a, so its kernel-faithful src_pre is BasePath(/a).
+        let tree = build(&[
+            Action::Stage {
+                path: "/b".into(),
+                ino: 1,
+                pre: Target::BasePath("/b".into()),
+            },
+            Action::Rename {
+                dst: "/b".into(),
+                src: "/a".into(),
+                src_pre: Target::BasePath("/a".into()),
+                dst_pre: Target::StagedFile(1),
+            },
+            rename_from("/c", "/b", "/a"),
+        ]);
+        let c = tree.get_node("/c").expect("/c node");
+        assert!(
+            matches!(c.start, Some(Target::BasePath(ref p)) if p == "/b"),
+            "first-touch start (base /b) should ride across both moves: {:?}",
+            c.start
+        );
+        assert!(matches!(c.end, Some(Target::BasePath(ref p)) if p == "/a"));
+        // The /b tombstone keeps the same first-touch old side.
+        let b = tree.get_node("/b").expect("/b node");
+        assert!(matches!(b.end, Some(Target::Absence)));
+        assert!(matches!(b.start, Some(Target::BasePath(ref p)) if p == "/b"));
     }
 
     // ── Rename then delete ────────────────────────────────────────────
@@ -684,7 +852,7 @@ mod tests {
     #[test]
     fn add_then_rename_preserves_inode() {
         // A(/a, ino=1) then R(/b, /a): staged file moved, inode preserved.
-        let tree = build(&[add("/a", 1), rename("/b", "/a")]);
+        let tree = build(&[add("/a", 1), rename_staged("/b", "/a", 1)]);
         // Rename always tombstones at source.
         // Inode moved to /b.
         assert_eq!(tree.len(), 2);
@@ -814,7 +982,8 @@ mod tests {
     fn roundtrip_rename_produces_passthrough() {
         // a→tmp→a: file roundtrip removes the node from the tree,
         // but /tmp gets a tombstone (rename always tombstones at source).
-        let tree = build(&[rename("/tmp", "/a"), rename("/a", "/tmp")]);
+        // The return hop's source /tmp redirects to base /a — src_pre = /a.
+        let tree = build(&[rename("/tmp", "/a"), rename_from("/a", "/tmp", "/a")]);
         assert_eq!(tree.len(), 1, "/tmp tombstone is the only staged change");
         // File roundtrip — node at /a removed entirely from tree.
         assert!(
@@ -834,7 +1003,7 @@ mod tests {
         // Dir roundtrip (a→tmp→a) — base-only renames with empty
         // children are removed (same as file roundtrip).
         // /tmp gets a tombstone (rename always tombstones at source).
-        let tree = build(&[rename("/tmp", "/a"), rename("/a", "/tmp")]);
+        let tree = build(&[rename("/tmp", "/a"), rename_from("/a", "/tmp", "/a")]);
         assert_eq!(tree.len(), 1, "/tmp tombstone is the only staged change");
         assert!(
             tree.nodes.get("a").is_none(),
@@ -850,11 +1019,12 @@ mod tests {
 
     #[test]
     fn three_cycle_swap() {
-        // a→tmp, b→a, tmp→b: swaps a and b via tmp.
+        // a→tmp, b→a, tmp→b: swaps a and b via tmp. The final hop's source
+        // /tmp redirects to base /a (from the first hop) — src_pre = /a.
         let tree = build(&[
             rename("/tmp", "/a"),
             rename("/a", "/b"),
-            rename("/b", "/tmp"),
+            rename_from("/b", "/tmp", "/a"),
         ]);
         assert!(!tree.is_empty(), "swap should produce dentries: {:?}", tree);
         // /a should be a Renamed from /b, /b should be a Renamed from /a
@@ -874,7 +1044,12 @@ mod tests {
     fn three_step_roundtrip_rename_produces_passthrough() {
         // a→b→c→a: file roundtrip removes /a from the tree,
         // but /b and /c get tombstones (rename always tombstones at source).
-        let tree = build(&[rename("/b", "/a"), rename("/c", "/b"), rename("/a", "/c")]);
+        // Each later hop's source redirects back to base /a — src_pre = /a.
+        let tree = build(&[
+            rename("/b", "/a"),
+            rename_from("/c", "/b", "/a"),
+            rename_from("/a", "/c", "/a"),
+        ]);
         assert_eq!(
             tree.len(),
             2,
@@ -1298,7 +1473,7 @@ mod tests {
     #[test]
     fn serialize_stale_intermediates_after_cancel() {
         // Add a deeply nested file then delete it. Delete always tombstones,
-        // so the leaf gets a tombstone. Passthrough Dir intermediates remain.
+        // so the leaf gets a tombstone. Scaffold dir intermediates remain.
         let tree = build(&[add("/a/b/c/file", 1), delete("/a/b/c/file")]);
         assert_eq!(tree.len(), 1, "tombstone at /a/b/c/file");
         // Serialization still succeeds (doesn't panic).
@@ -1439,7 +1614,7 @@ mod tests {
     fn serialize_after_roundtrip_rename_includes_tombstone() {
         // Roundtrip rename (a→tmp→a) removes the file node at /a,
         // but /tmp gets a tombstone which appears in serialization.
-        let tree = build(&[rename("/tmp", "/a"), rename("/a", "/tmp")]);
+        let tree = build(&[rename("/tmp", "/a"), rename_from("/a", "/tmp", "/a")]);
         assert_eq!(tree.len(), 1);
         let buf = tree.serialize();
         // Root child_count = 1 (tombstone at /tmp)
@@ -1454,7 +1629,7 @@ mod tests {
         let tree = build(&[
             add("/a/child", 1),
             rename("/tmp", "/a"),
-            rename("/a", "/tmp"),
+            rename_from("/a", "/tmp", "/a"),
         ]);
         assert_eq!(tree.len(), 2, "child + tombstone at /tmp");
         assert!(
@@ -1526,7 +1701,11 @@ mod tests {
     fn roundtrip_rename_with_sibling_changes() {
         // Roundtrip rename (a→tmp→a) should remove the roundtripped file
         // but leave other staged changes intact. /tmp gets tombstoned.
-        let tree = build(&[add("/other", 1), rename("/tmp", "/a"), rename("/a", "/tmp")]);
+        let tree = build(&[
+            add("/other", 1),
+            rename("/tmp", "/a"),
+            rename_from("/a", "/tmp", "/a"),
+        ]);
         // "a" removed (roundtrip), "other" survives, "tmp" tombstoned
         assert!(
             tree.nodes.get("a").is_none(),

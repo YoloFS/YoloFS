@@ -45,6 +45,20 @@ static int yolo_create_staged(struct inode *dir, struct dentry *dentry,
 	if (err)
 		return err;
 
+	/* Journal before publishing the dentry: a failed append (e.g. ENOSPC)
+	 * must fail the create with nothing visible in the mount, matching
+	 * delete/rename. dentry_path_raw works on the still-negative dentry.
+	 * Fresh create/mkdir/symlink — nothing existed before, so pre = "a". */
+	err = yolo_journal_stage(sbi, dentry, ino, "a");
+	if (err) {
+		path_put(&inode_path);
+		return err;
+	}
+
+	/* Publish. interpose consumes inode_path (stores on success, puts on
+	 * error). A post-journal interpose failure is the rare ENOMEM path: it
+	 * leaves a harmless phantom S record for an empty orphan inode (cleaned
+	 * on commit/abort) — the safe direction, never an unjournaled change. */
 	err = yolo_dentry_interpose(dentry, &inode_path);
 	if (err)
 		return err;
@@ -52,9 +66,6 @@ static int yolo_create_staged(struct inode *dir, struct dentry *dentry,
 	yolo_dentry_pin(dentry, YOLO_TARGET_INODE);
 	YOLO_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->staging.gen);
 	YOLO_I(d_inode(dentry))->staging_ino = ino;
-
-	/* Fresh create/mkdir/symlink — nothing existed before, so pre = "A". */
-	yolo_journal_stage(sbi, dentry, ino, "A");
 
 	return 0;
 }

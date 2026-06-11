@@ -5,6 +5,48 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use yolofs::journal::Action;
 
+/// Finding-3 (COW half): opening a base file for write copies it up via
+/// `yolo_do_cow`, which now journals the stage *before* swapping the dentry's
+/// backing. When the overlay path exceeds `YOLO_PATH_MAX` (256) the append
+/// can't be written, so the open must fail with `ENAMETOOLONG` and leave the
+/// previous mapping authoritative — never a COW visible in the mount with no
+/// journal record. (The create/mkdir half is covered in test_create.rs.)
+#[test]
+fn cow_at_deep_path_fails_instead_of_diverging() {
+    let s = YoloSession::new().expect("session setup");
+
+    // Seed a base file whose mount-relative path is > 256 bytes, writing
+    // directly to the base (each component stays under NAME_MAX).
+    let dir = format!("{}/{}", "d".repeat(150), "e".repeat(150));
+    fs::create_dir_all(s.base_path(&dir)).expect("create deep base dirs");
+    let rel = format!("{dir}/f.txt");
+    fs::write(s.base_path(&rel), "base content\n").expect("seed deep base file");
+
+    // Open-for-write through the mount → COW → stage append overflows.
+    let err = OpenOptions::new()
+        .write(true)
+        .open(s.mnt_path(&rel))
+        .expect_err("COW at a path past YOLO_PATH_MAX must fail");
+    assert_eq!(
+        err.raw_os_error(),
+        Some(libc::ENAMETOOLONG),
+        "expected ENAMETOOLONG from the failed COW journal append, got {err:?}"
+    );
+
+    // Previous mapping authoritative: base content still reads back, and the
+    // over-long path never reached the journal.
+    assert_eq!(
+        fs::read_to_string(s.mnt_path(&rel)).expect("read base file"),
+        "base content\n",
+        "base file must be untouched after the failed COW"
+    );
+    let journal = fs::read(s.root.join(".yolofs/journal")).expect("read journal");
+    assert!(
+        !journal.windows(rel.len()).any(|w| w == rel.as_bytes()),
+        "the over-long COW path must not appear in any journal record"
+    );
+}
+
 // ── Journal ──────────────────────────────────────────────────────────────────
 
 /// Modifying an existing file produces a Stage record.

@@ -15,9 +15,10 @@
  *   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
  *   (op = r/w; decision = y/d — allow/deny)
  *
- * Each *pre field is the operation-local pre-op backing of that overlay name,
- * tagged: "A" (Absent), "I:<ino>" (staged inode), "P:<abspath>" (base path).
- * See yolo_preimage_target() and docs/staging.md.
+ * Record tags are uppercase. Each *pre field is the operation-local pre-op
+ * backing of that overlay name, tagged with the lowercased first letter of the
+ * userspace Target variant: "a" (Absence), "s:<ino>" (StagedFile), "b:<abspath>"
+ * (BasePath). See yolo_preimage_target() and docs/staging.md.
  */
 
 #include "yolofs.h"
@@ -109,11 +110,11 @@ int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
 
 	snprintf(ino_str, sizeof(ino_str), "%u", ino);
 
-	/* `pre` is the tagged pre-op target (A / I:<ino> / P:<path>), captured by
+	/* `pre` is the tagged pre-op target (a / s:<ino> / b:<path>), captured by
 	 * the caller before the lower_path swap. The post-target is StagedFile(ino). */
 	return journal_write(sbi, 'S',
 			     (const char *[]){ path, ino_str,
-					       pre ? pre : "A", NULL });
+					       pre ? pre : "a", NULL });
 }
 
 int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry)
@@ -160,11 +161,11 @@ int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 
 	/* Capture both pre-op backings before any dentry state change (the caller
 	 * journals before d_move and the pin updates). A negative destination
-	 * (fresh name or pinned tombstone) has no backing → "A". */
+	 * (fresh name or pinned tombstone) has no backing → "a". */
 	src_pre = yolo_preimage_target(old_dentry, src_pre_buf, YOLO_PATH_MAX);
 	dst_pre = d_is_positive(new_dentry)
 		? yolo_preimage_target(new_dentry, dst_pre_buf, YOLO_PATH_MAX)
-		: "A";
+		: "a";
 
 	err = journal_write(sbi, 'R',
 			    (const char *[]){ dst_path, src_path,

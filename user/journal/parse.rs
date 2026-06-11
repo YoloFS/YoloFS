@@ -12,9 +12,10 @@
 //   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
 //   (op = r/w; decision = y/d — allow/deny)
 //
-// Each *pre field is a tagged pre-op target: `A` (Absence), `I:<ino>`
-// (StagedFile), `P:<abs-path>` (BasePath). It is parsed into a `Target` once
-// here; a malformed tag or `I:` value skips the whole record.
+// Record tags are uppercase. Each *pre field is a tagged pre-op target whose
+// tag is the lowercased first letter of the `Target` variant: `a` (Absence),
+// `s:<ino>` (StagedFile), `b:<abs-path>` (BasePath). It is parsed into a
+// `Target` once here; a malformed tag or `s:` value skips the whole record.
 
 use super::types::*;
 use anyhow::{Context, Result};
@@ -25,19 +26,20 @@ fn field_str(field: &[u8]) -> String {
     String::from_utf8_lossy(field).into_owned()
 }
 
-/// Parse a tagged pre-op `pre` field into a `Target`. Returns `None` for an
-/// unknown tag or a malformed `I:` value, which skips the enclosing record.
+/// Parse a tagged pre-op `pre` field into a `Target`. The tag is the lowercased
+/// first letter of the variant (`a`/`s`/`b`). Returns `None` for an unknown tag
+/// or a malformed `s:` value, which skips the enclosing record.
 fn parse_target(field: &[u8]) -> Option<Target> {
     match field {
-        b"A" => Some(Target::Absence),
+        b"a" => Some(Target::Absence),
         _ => match field.split_first() {
-            Some((b'I', rest)) if rest.first() == Some(&b':') => {
+            Some((b's', rest)) if rest.first() == Some(&b':') => {
                 String::from_utf8_lossy(&rest[1..])
                     .parse::<u32>()
                     .ok()
                     .map(Target::StagedFile)
             }
-            Some((b'P', rest)) if rest.first() == Some(&b':') => {
+            Some((b'b', rest)) if rest.first() == Some(&b':') => {
                 Some(Target::BasePath(field_str(&rest[1..])))
             }
             _ => None,
@@ -153,7 +155,7 @@ mod tests {
 
     #[test]
     fn parse_multiple() {
-        let records = parse(b"S\0/a\01\0A\nD\0/b\0A\nR\0/d\0/c\0A\0A\n").unwrap();
+        let records = parse(b"S\0/a\01\0a\nD\0/b\0a\nR\0/d\0/c\0a\0a\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
             matches!(&records[0], Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/a")
@@ -166,28 +168,32 @@ mod tests {
 
     #[test]
     fn parse_target_tags() {
-        assert_eq!(parse_target(b"A"), Some(Target::Absence));
-        assert_eq!(parse_target(b"I:7"), Some(Target::StagedFile(7)));
+        assert_eq!(parse_target(b"a"), Some(Target::Absence));
+        assert_eq!(parse_target(b"s:7"), Some(Target::StagedFile(7)));
         assert_eq!(
-            parse_target(b"P:/base/f"),
+            parse_target(b"b:/base/f"),
             Some(Target::BasePath("/base/f".into()))
         );
         // Malformed: bad ino, unknown tag, missing colon, empty.
-        assert_eq!(parse_target(b"I:x"), None);
+        assert_eq!(parse_target(b"s:x"), None);
         assert_eq!(parse_target(b"Z:/f"), None);
-        assert_eq!(parse_target(b"I"), None);
+        assert_eq!(parse_target(b"s"), None);
         assert_eq!(parse_target(b""), None);
+        // Uppercase (the old tags, and the record-tag letters) are not pre tags.
+        assert_eq!(parse_target(b"A"), None);
+        assert_eq!(parse_target(b"S:7"), None);
+        assert_eq!(parse_target(b"B:/f"), None);
     }
 
     #[test]
     fn parse_stage_and_delete_pre() {
         // S: 4th field is the tagged pre-op target.
-        let r = parse(b"S\0/a\01\0P:/a\n").unwrap();
+        let r = parse(b"S\0/a\01\0b:/a\n").unwrap();
         assert!(matches!(
             &r[0],
             Record::Action(Action::Stage { pre: Target::BasePath(p), .. }) if p == "/a"
         ));
-        let r = parse(b"S\0/a\01\0A\n").unwrap();
+        let r = parse(b"S\0/a\01\0a\n").unwrap();
         assert!(matches!(
             &r[0],
             Record::Action(Action::Stage {
@@ -195,7 +201,7 @@ mod tests {
                 ..
             })
         ));
-        let r = parse(b"S\0/a\02\0I:9\n").unwrap();
+        let r = parse(b"S\0/a\02\0s:9\n").unwrap();
         assert!(matches!(
             &r[0],
             Record::Action(Action::Stage {
@@ -204,7 +210,7 @@ mod tests {
             })
         ));
         // D: 3rd field is the tagged pre-op target.
-        let r = parse(b"D\0/a\0P:/a\n").unwrap();
+        let r = parse(b"D\0/a\0b:/a\n").unwrap();
         assert!(matches!(
             &r[0],
             Record::Action(Action::Delete { pre: Target::BasePath(p), .. }) if p == "/a"
@@ -216,7 +222,7 @@ mod tests {
 
     #[test]
     fn parse_rename_pres_roundtrip() {
-        let r = parse(b"R\0/dst\0/src\0P:/base/src\0I:4\n").unwrap();
+        let r = parse(b"R\0/dst\0/src\0b:/base/src\0s:4\n").unwrap();
         assert!(matches!(
             &r[0],
             Record::Action(Action::Rename { dst, src, src_pre: Target::BasePath(sp), dst_pre: Target::StagedFile(4) })
@@ -226,7 +232,7 @@ mod tests {
 
     #[test]
     fn parse_snapshot_record() {
-        let records = parse(b"S\0/a\01\0A\nP\01\0build\nS\0/a\02\0A\n").unwrap();
+        let records = parse(b"S\0/a\01\0a\nP\01\0build\nS\0/a\02\0a\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
             matches!(&records[1], Record::Marker(Marker::Snapshot { gen_id, name }) if *gen_id == 1 && name == "build")
@@ -250,7 +256,7 @@ mod tests {
 
     #[test]
     fn parse_entry_full_path() {
-        let records = parse(b"S\0/src/main.rs\01\0A\n").unwrap();
+        let records = parse(b"S\0/src/main.rs\01\0a\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
             matches!(&records[0], Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/src/main.rs")
@@ -262,7 +268,7 @@ mod tests {
     #[test]
     fn malformed_s_record_too_few_fields_skipped() {
         // S record missing fields (needs path, ino, preimage) — should be skipped
-        let records = parse(b"S\0/file\nS\0/good\02\0A\n").unwrap();
+        let records = parse(b"S\0/file\nS\0/good\02\0a\n").unwrap();
         assert_eq!(
             records.len(),
             1,
@@ -278,7 +284,7 @@ mod tests {
     #[test]
     fn malformed_d_record_too_few_fields_skipped() {
         // D record with only tag (needs path) — should be skipped
-        let records = parse(b"D\nS\0/good\01\0A\n").unwrap();
+        let records = parse(b"D\nS\0/good\01\0a\n").unwrap();
         assert_eq!(
             records.len(),
             1,
@@ -294,7 +300,7 @@ mod tests {
     #[test]
     fn malformed_r_record_too_few_fields_skipped() {
         // R record with only dst+src (needs src_pre+dst_pre too) — skipped.
-        let records = parse(b"R\0/dst\0/src\0A\nS\0/good\01\0A\n").unwrap();
+        let records = parse(b"R\0/dst\0/src\0a\nS\0/good\01\0a\n").unwrap();
         assert_eq!(
             records.len(),
             1,
@@ -309,7 +315,7 @@ mod tests {
 
     #[test]
     fn parse_delete() {
-        let records = parse(b"D\0/foo\0A\n").unwrap();
+        let records = parse(b"D\0/foo\0a\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(
             matches!(&records[0], Record::Action(Action::Delete { path, .. }) if path == "/foo")
@@ -363,7 +369,7 @@ mod tests {
     #[test]
     fn parse_block_interleaved_with_actions() {
         // B records ride alongside S/D/R within a segment.
-        let records = parse(b"S\0/a\01\0A\nB\0/etc/passwd\0w\nD\0/a\0A\n").unwrap();
+        let records = parse(b"S\0/a\01\0a\nB\0/etc/passwd\0w\nD\0/a\0a\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(matches!(
             &records[0],
@@ -382,7 +388,7 @@ mod tests {
     #[test]
     fn malformed_b_record_too_few_fields_skipped() {
         // B record with only the tag (needs path) — should be skipped.
-        let records = parse(b"B\nS\0/good\01\0A\n").unwrap();
+        let records = parse(b"B\nS\0/good\01\0a\n").unwrap();
         assert_eq!(
             records.len(),
             1,

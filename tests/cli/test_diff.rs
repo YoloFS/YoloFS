@@ -21,6 +21,33 @@ fn diff_modified_file() {
     assert!(output.contains("+new content"), "output: {output}");
 }
 
+/// Finding-1 regression (end-to-end --diff): after `rm b; mv a b; edit b`, the
+/// destination's diff old side must be base `b`'s content (it's a modify), not
+/// an empty old side (an add). Guards that the preserved first-touch `start`
+/// reaches `--diff`'s old-content reader through the real pipeline.
+#[test]
+fn diff_rename_over_deleted_then_edit_shows_base_old_side() {
+    let s = YoloSession::new().expect("session setup");
+
+    // multi.txt base content is "line1\nline2\n"; hello.txt is also base.
+    fs::remove_file(s.mnt_path("multi.txt")).unwrap();
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("multi.txt")).unwrap();
+    fs::write(s.mnt_path("multi.txt"), "edited after rename\n").unwrap();
+
+    let output = s.cli(&["review", "all", "--diff"]).expect("diff");
+    assert!(output.contains("multi.txt"), "output: {output}");
+    assert!(output.contains("modified"), "should be a modify: {output}");
+    // Old side is base multi.txt ("line1"/"line2" removed), new side is the edit.
+    assert!(
+        output.contains("-line1") && output.contains("-line2"),
+        "old side should be base multi.txt content: {output}"
+    );
+    assert!(
+        output.contains("+edited after rename"),
+        "new side should be the post-rename edit: {output}"
+    );
+}
+
 #[test]
 fn diff_new_file() {
     let s = YoloSession::new().expect("session setup");

@@ -1,6 +1,6 @@
 //! Verify the kernel writes journal records in the expected wire format
-//! (NUL-separated fields) with tagged pre-op targets: `A` (Absence),
-//! `I:<ino>` (StagedFile), `P:<abs-path>` (BasePath).
+//! (NUL-separated fields) with tagged pre-op targets: `a` (Absence),
+//! `s:<ino>` (StagedFile), `b:<abs-path>` (BasePath).
 
 use crate::helpers::YoloSession;
 use std::fs;
@@ -36,7 +36,7 @@ fn pre_of(
 }
 
 /// Stage record: S\0<path>\0<ino>\0<pre>\n (4 fields). A fresh create carries
-/// `A`; overwriting a seeded base file carries `P:<base>`.
+/// `a`; overwriting a seeded base file carries `b:<base>`.
 #[test]
 fn stage_record_format() {
     let s = YoloSession::new().expect("session setup");
@@ -49,19 +49,19 @@ fn stage_record_format() {
     }
     assert_eq!(
         pre_of(&s.root, b'S', 1, 3, "/test.txt"),
-        b"A",
-        "fresh create → A"
+        b"a",
+        "fresh create → a"
     );
     let pre = pre_of(&s.root, b'S', 1, 3, "/hello.txt");
     assert!(
-        pre.starts_with(b"P:") && pre.ends_with(b"hello.txt"),
-        "overwritten base file → P:<base>, got {:?}",
+        pre.starts_with(b"b:") && pre.ends_with(b"hello.txt"),
+        "overwritten base file → b:<base>, got {:?}",
         String::from_utf8_lossy(&pre)
     );
 }
 
 /// Delete record: D\0<path>\0<pre>\n (3 fields). Deleting a seeded base file
-/// carries `P:<base>`.
+/// carries `b:<base>`.
 #[test]
 fn delete_record_format() {
     let s = YoloSession::new().expect("session setup");
@@ -73,14 +73,14 @@ fn delete_record_format() {
     }
     let pre = pre_of(&s.root, b'D', 1, 2, "/hello.txt");
     assert!(
-        pre.starts_with(b"P:") && pre.ends_with(b"hello.txt"),
-        "deleted base file → P:<base>, got {:?}",
+        pre.starts_with(b"b:") && pre.ends_with(b"hello.txt"),
+        "deleted base file → b:<base>, got {:?}",
         String::from_utf8_lossy(&pre)
     );
 }
 
 /// Rename record: R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n (5 fields). Renaming a
-/// staged file onto a fresh name carries `I:<ino>` src_pre and `A` dst_pre.
+/// staged file onto a fresh name carries `s:<ino>` src_pre and `a` dst_pre.
 #[test]
 fn rename_record_format_staged_source() {
     let s = YoloSession::new().expect("session setup");
@@ -98,14 +98,14 @@ fn rename_record_format_staged_source() {
         "R should be (R, dst, src, src_pre, dst_pre): {rec:?}"
     );
     assert!(
-        rec[3].starts_with(b"I:"),
-        "staged source → I:<ino> src_pre, got {:?}",
+        rec[3].starts_with(b"s:"),
+        "staged source → s:<ino> src_pre, got {:?}",
         String::from_utf8_lossy(&rec[3])
     );
-    assert_eq!(rec[4], b"A", "fresh destination → A dst_pre");
+    assert_eq!(rec[4], b"a", "fresh destination → a dst_pre");
 }
 
-/// Renaming a seeded base file carries `P:<base>` src_pre and `A` dst_pre.
+/// Renaming a seeded base file carries `b:<base>` src_pre and `a` dst_pre.
 #[test]
 fn rename_record_base_source() {
     let s = YoloSession::new().expect("session setup");
@@ -117,14 +117,14 @@ fn rename_record_base_source() {
         .find(|f| f.get(1).is_some_and(|d| d.ends_with(b"/hello2.txt")))
         .expect("R record");
     assert!(
-        rec[3].starts_with(b"P:") && rec[3].ends_with(b"hello.txt"),
-        "base source → P:<base> src_pre, got {:?}",
+        rec[3].starts_with(b"b:") && rec[3].ends_with(b"hello.txt"),
+        "base source → b:<base> src_pre, got {:?}",
         String::from_utf8_lossy(&rec[3])
     );
-    assert_eq!(rec[4], b"A", "fresh destination → A dst_pre");
+    assert_eq!(rec[4], b"a", "fresh destination → a dst_pre");
 }
 
-/// Renaming onto an existing base file records that file as the `P:<base>`
+/// Renaming onto an existing base file records that file as the `b:<base>`
 /// dst_pre (the clobbered destination).
 #[test]
 fn rename_onto_existing_base_records_dst_pre() {
@@ -138,14 +138,14 @@ fn rename_onto_existing_base_records_dst_pre() {
         .find(|f| f.get(1).is_some_and(|d| d.ends_with(b"/subdir/deep.txt")))
         .expect("R record");
     assert!(
-        rec[4].starts_with(b"P:") && rec[4].ends_with(b"deep.txt"),
-        "clobbered base destination → P:<base> dst_pre, got {:?}",
+        rec[4].starts_with(b"b:") && rec[4].ends_with(b"deep.txt"),
+        "clobbered base destination → b:<base> dst_pre, got {:?}",
         String::from_utf8_lossy(&rec[4])
     );
 }
 
 /// A file modified under a RENAMED base directory resolves the redirect at
-/// copy-up, so its stage pre points at the real backing as `P:<.../subdir/deep.txt>`.
+/// copy-up, so its stage pre points at the real backing as `b:<.../subdir/deep.txt>`.
 #[test]
 fn copy_up_under_renamed_dir_records_backing_pre() {
     let s = YoloSession::new().expect("session setup");
@@ -155,14 +155,14 @@ fn copy_up_under_renamed_dir_records_backing_pre() {
 
     let pre = pre_of(&s.root, b'S', 1, 3, "/moved/deep.txt");
     assert!(
-        pre.starts_with(b"P:") && pre.ends_with(b"subdir/deep.txt"),
-        "pre should point at the real backing P:<subdir/deep.txt>, got {:?}",
+        pre.starts_with(b"b:") && pre.ends_with(b"subdir/deep.txt"),
+        "pre should point at the real backing b:<subdir/deep.txt>, got {:?}",
         String::from_utf8_lossy(&pre)
     );
 }
 
 /// Re-staging an already-staged file across a snapshot copies up from the prior
-/// snapshot's inode, so the re-stage pre is `I:<ino>`, not the base.
+/// snapshot's inode, so the re-stage pre is `s:<ino>`, not the base.
 #[test]
 fn restage_after_snapshot_records_inode_pre() {
     let s = YoloSession::new().expect("session setup");
@@ -173,14 +173,14 @@ fn restage_after_snapshot_records_inode_pre() {
 
     let pre = pre_of(&s.root, b'S', 1, 3, "/hello.txt");
     assert!(
-        pre.starts_with(b"I:"),
-        "re-COW of a staged file → I:<ino> pre, got {:?}",
+        pre.starts_with(b"s:"),
+        "re-COW of a staged file → s:<ino> pre, got {:?}",
         String::from_utf8_lossy(&pre)
     );
 }
 
 /// mkdir and symlink create fresh nodes — nothing existed — so their stage
-/// records carry `A`.
+/// records carry `a`.
 #[test]
 fn create_dir_and_symlink_have_absent_pre() {
     let s = YoloSession::new().expect("session setup");
@@ -188,6 +188,6 @@ fn create_dir_and_symlink_have_absent_pre() {
     fs::create_dir(s.mnt_path("newdir")).expect("mkdir");
     std::os::unix::fs::symlink("target", s.mnt_path("link")).expect("symlink");
 
-    assert_eq!(pre_of(&s.root, b'S', 1, 3, "/newdir"), b"A", "mkdir → A");
-    assert_eq!(pre_of(&s.root, b'S', 1, 3, "/link"), b"A", "symlink → A");
+    assert_eq!(pre_of(&s.root, b'S', 1, 3, "/newdir"), b"a", "mkdir → a");
+    assert_eq!(pre_of(&s.root, b'S', 1, 3, "/link"), b"a", "symlink → a");
 }
