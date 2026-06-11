@@ -245,8 +245,12 @@ fn live_hide_rule_hides_from_readdir() {
     // Visible before the rule.
     fs::metadata(s.mnt_path("hello.txt")).expect("stat should succeed before hide");
 
-    s.cli(&["rule", "hide", &s.root.join("hello.txt").display().to_string()])
-        .unwrap();
+    s.cli(&[
+        "rule",
+        "hide",
+        &s.root.join("hello.txt").display().to_string(),
+    ])
+    .unwrap();
 
     // stat (lookup path) sees ENOENT.
     assert!(
