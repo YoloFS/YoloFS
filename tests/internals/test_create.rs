@@ -31,9 +31,7 @@ fn deep_path_mutation_fails_instead_of_diverging() {
     // And nothing for the over-long path leaked into the journal.
     let journal = fs::read(s.root.join(".yolofs/journal")).expect("read journal");
     assert!(
-        !journal
-            .windows(long.len())
-            .any(|w| w == long.as_bytes()),
+        !journal.windows(long.len()).any(|w| w == long.as_bytes()),
         "the over-long path must not appear in any journal record"
     );
 }

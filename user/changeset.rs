@@ -153,9 +153,7 @@ mod tests {
     #[test]
     fn modify_carries_base_start() {
         let cs = collect(vec![stage("/a", 1, base("/a"))]);
-        assert!(
-            matches!(find(&cs, "/a").unwrap().old, Some(Target::BasePath(ref p)) if p == "/a")
-        );
+        assert!(matches!(find(&cs, "/a").unwrap().old, Some(Target::BasePath(ref p)) if p == "/a"));
     }
 
     #[test]

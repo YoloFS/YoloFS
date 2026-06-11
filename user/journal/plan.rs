@@ -107,7 +107,12 @@ pub(super) fn into_plan(tree: &DirTree, scratch: &Path) -> CommitPlan {
     }
 }
 
-fn collect(tree: &DirTree, prefix: &mut String, renames: &mut Vec<CommitOp>, ops: &mut Vec<CommitOp>) {
+fn collect(
+    tree: &DirTree,
+    prefix: &mut String,
+    renames: &mut Vec<CommitOp>,
+    ops: &mut Vec<CommitOp>,
+) {
     for (name, node) in &tree.nodes {
         let path_len = prefix.len();
         prefix.push('/');
