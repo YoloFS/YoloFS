@@ -191,3 +191,81 @@ fn unlink_in_hidden_fails() {
     let result = fs::remove_file(s.mnt_path("secret/key.pem"));
     assert!(result.is_err(), "unlink in hidden dir should fail");
 }
+
+/// readdir phase 1 (staged entries) and phase 2 (base entries) must agree:
+/// in one directory, staged names appear, base names overridden by staged
+/// entries or tombstones appear exactly once or not at all, and hidden base
+/// names stay hidden.
+#[test]
+fn readdir_hides_entry_alongside_staged_siblings() {
+    let s = hide_session();
+
+    // Stage a brand-new file, overwrite a base file (staged override of a
+    // base name), and delete another base file (pinned tombstone).
+    fs::write(s.mnt_path("staged.txt"), "new\n").expect("create staged file");
+    fs::write(s.mnt_path("hello.txt"), "overwritten\n").expect("overwrite base file");
+    fs::remove_file(s.mnt_path("test.sh")).expect("delete base file");
+
+    let entries: Vec<String> = fs::read_dir(s.mnt_path("."))
+        .expect("readdir should succeed")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+
+    assert!(
+        !entries.contains(&"secret".to_string()),
+        "hidden entry must stay hidden with staged siblings present: {entries:?}"
+    );
+    assert!(
+        !entries.contains(&"test.sh".to_string()),
+        "deleted entry must not reappear: {entries:?}"
+    );
+    assert!(
+        entries.contains(&"staged.txt".to_string()),
+        "staged file must be listed: {entries:?}"
+    );
+    assert_eq!(
+        entries.iter().filter(|e| *e == "hello.txt").count(),
+        1,
+        "overwritten base name must appear exactly once: {entries:?}"
+    );
+}
+
+/// A hide rule added live (after mount, via the rule ioctl) must take effect
+/// in readdir, and must survive a lookup/stat of the hidden name in between
+/// (the rule dentry must stay findable in the dcache).
+#[test]
+fn live_hide_rule_hides_from_readdir() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    // Visible before the rule.
+    fs::metadata(s.mnt_path("hello.txt")).expect("stat should succeed before hide");
+
+    s.cli(&["rule", "hide", &s.root.join("hello.txt").display().to_string()])
+        .unwrap();
+
+    // stat (lookup path) sees ENOENT.
+    assert!(
+        fs::metadata(s.mnt_path("hello.txt")).is_err(),
+        "stat should fail after live hide rule"
+    );
+
+    // readdir omits it — including after the stat above touched the name.
+    for round in 0..2 {
+        let entries: Vec<String> = fs::read_dir(s.mnt_path("."))
+            .expect("readdir should succeed")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !entries.contains(&"hello.txt".to_string()),
+            "live-hidden file listed in readdir round {round}: {entries:?}"
+        );
+        // Touch the name again between rounds.
+        let _ = fs::metadata(s.mnt_path("hello.txt"));
+    }
+}

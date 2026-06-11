@@ -184,9 +184,16 @@ struct yolo_staging {
 	struct rw_semaphore	sem;		/* protects staging + journal writes */
 	atomic_t		next_ino;	/* counter for inode store IDs */
 
-	/* Inode store shard cache (avoids repeated lookups) */
+	/* Inode store shard cache (avoids repeated lookups). shard_lock guards
+	 * shard_dentry + shard_id + shard_epoch: creates reach the cache without
+	 * staging.sem (they only hold the parent dir's i_rwsem, which doesn't
+	 * serialize creates in different directories). shard_epoch is bumped by
+	 * quiesce so a create that raced past it cannot re-publish a stale
+	 * shard dentry into the cache afterwards. */
+	spinlock_t		shard_lock;
 	struct dentry		*shard_dentry;	/* cached current shard dir dentry */
 	u32			shard_id;	/* which shard shard_dentry belongs to */
+	u64			shard_epoch;	/* invalidation count, under shard_lock */
 	atomic_t		gen;		/* bumped on each snapshot; triggers re-COW */
 	atomic_t		fd_count;	/* open staging write fds */
 	bool			dirty;		/* data records written since last P/T */
@@ -478,17 +485,17 @@ int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *dentry,
 		       enum yolo_op op);
 int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
 		     enum yolo_op op, enum yolo_decision decision);
-enum yolo_op yolo_open_op(int f_flags);
 
 /* perm.c */
 static inline void yolo_ask_release(struct kref *kref)
 {
 	kfree(container_of(kref, struct yolo_ask, ref));
 }
-enum yolo_perm yolo_resolve_perm(struct dentry *dentry, struct dentry **source);
-void yolo_cache_perm(struct inode *inode, struct dentry *dentry);
-int yolo_check_perm(enum yolo_perm perm, int f_flags);
-int yolo_check_dentry_perm(struct yolo_sb_info *sbi, struct dentry *dentry,
+enum yolo_op yolo_open_op(int f_flags);
+enum yolo_perm yolo_perm_walk(struct dentry *dentry, struct dentry **source);
+void yolo_perm_refresh(struct inode *inode, struct dentry *dentry);
+enum yolo_perm yolo_perm_get(struct inode *inode, struct dentry *dentry);
+int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *dentry,
 			   int f_flags);
 int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 		       const char *rule_path, enum yolo_perm rule_perm,

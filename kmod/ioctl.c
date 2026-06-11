@@ -33,34 +33,35 @@ static bool yolo_caller_inside(struct super_block *sb)
 	return inside;
 }
 
-/* ── Daemon release ──────────────────────────────────────────────────
- * Called from yolo_dir_release when a mount-root directory fd closes. Cleans
- * up only if this fd was the connected daemon — tracked by file identity, not
- * private_data (dir fds use private_data for the readdir cursor).
- */
+/* ── Daemon release ────────────────────────────────────────────────── */
+
+/* Deny every request on @head. Runs under pending_lock — completing under the
+ * lock serializes against the requester's settle path. @put_ref drops the
+ * extra reference carried by entries on the dispatched list. */
+static void yolo_deny_reqs(struct list_head *head, bool put_ref)
+{
+	struct yolo_ask *req, *tmp;
+
+	list_for_each_entry_safe(req, tmp, head, list) {
+		req->decision = YOLO_DECISION_DENY;
+		req->decided = true;
+		list_del_init(&req->list);
+		req->dispatched = false;
+		complete(&req->done);
+		if (put_ref)
+			kref_put(&req->ref, yolo_ask_release);
+	}
+}
+
 void yolo_ctl_release(struct file *file)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
 	struct yolo_permission *perm = &sbi->perm;
-	struct yolo_ask *req, *tmp;
 
 	spin_lock(&perm->pending_lock);
 	if (perm->daemon_file == file) {
-		list_for_each_entry_safe(req, tmp, &perm->pending_reqs, list) {
-			req->decision = YOLO_DECISION_DENY;
-			req->decided = true;
-			list_del_init(&req->list);
-			req->dispatched = false;
-			complete(&req->done);
-		}
-		list_for_each_entry_safe(req, tmp, &perm->dispatched, list) {
-			req->decision = YOLO_DECISION_DENY;
-			req->decided = true;
-			list_del_init(&req->list);
-			req->dispatched = false;
-			complete(&req->done);
-			kref_put(&req->ref, yolo_ask_release);
-		}
+		yolo_deny_reqs(&perm->pending_reqs, false);
+		yolo_deny_reqs(&perm->dispatched, true);
 		perm->daemon_file = NULL;
 	}
 	spin_unlock(&perm->pending_lock);
@@ -350,7 +351,7 @@ static long yolo_rule_resolve_ioctl(struct file *file, unsigned long arg)
 	if (err)
 		return err;
 
-	rule.perm = (__u8)yolo_resolve_perm(rule_path.dentry, NULL);
+	rule.perm = (__u8)yolo_perm_walk(rule_path.dentry, NULL);
 	path_put(&rule_path);
 
 	if (copy_to_user((void __user *)arg, &rule, sizeof(rule)))
@@ -651,12 +652,21 @@ out_free:
 static void yolo_staging_quiesce(struct super_block *sb,
 				 struct yolo_sb_info *sbi)
 {
+	struct dentry *old;
+
 	atomic64_inc(&sbi->perm.gen);
 	yolo_dentry_unpin_all(sb);
-	if (sbi->staging.shard_dentry) {
-		dput(sbi->staging.shard_dentry);
-		sbi->staging.shard_dentry = NULL;
-	}
+
+	/* shard_lock, not just staging.sem: creates reach the shard cache
+	 * without taking staging.sem (see get_shard_dir). The epoch bump keeps
+	 * an in-flight create from re-publishing its stale shard afterwards. */
+	spin_lock(&sbi->staging.shard_lock);
+	old = sbi->staging.shard_dentry;
+	sbi->staging.shard_dentry = NULL;
+	sbi->staging.shard_epoch++;
+	spin_unlock(&sbi->staging.shard_lock);
+	if (old)
+		dput(old);
 }
 
 /* Replace the staged view. Caller holds staging.sem for write. */

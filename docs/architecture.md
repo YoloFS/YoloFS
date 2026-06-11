@@ -153,7 +153,7 @@ $ yolo rule read-only /etc/hosts
 $ echo "hello" > /src/main.rs
    -> kernel: yolo_lookup("src") -> explicit rule on dentry -> perm=ALLOW
    -> kernel: yolo_lookup("main.rs") -> no rule on dentry (UNSET)
-              -> yolo_cache_perm() walks up: main.rs(UNSET) -> src(ALLOW)
+              -> yolo_perm_refresh() walks up: main.rs(UNSET) -> src(ALLOW)
               -> caches ALLOW on main.rs inode
    -> kernel: yolo_open() -> cached_perm=ALLOW, O_WRONLY -> pass
    -> kernel: yolo_write_iter() -> pass-through to staged inode
@@ -162,21 +162,21 @@ $ echo "hello" > /src/main.rs
 $ cat /etc/passwd
    -> kernel: yolo_lookup("etc") -> explicit rule on dentry -> perm=WRITE_ASK
    -> kernel: yolo_lookup("passwd") -> no rule on dentry (UNSET)
-              -> yolo_cache_perm() walks up: passwd(UNSET) -> etc(WRITE_ASK)
+              -> yolo_perm_refresh() walks up: passwd(UNSET) -> etc(WRITE_ASK)
               -> caches WRITE_ASK on passwd inode
    -> kernel: yolo_open("passwd") -> cached_perm=WRITE_ASK, O_RDONLY -> pass
 
 # 4. Agent reads /etc/hosts (explicit override -> read-only)
 $ cat /etc/hosts
    -> kernel: yolo_lookup("hosts") -> explicit rule on dentry -> perm=READ_ONLY
-              -> yolo_cache_perm() -> caches READ_ONLY on hosts inode
+              -> yolo_perm_refresh() -> caches READ_ONLY on hosts inode
    -> kernel: yolo_open() -> cached_perm=READ_ONLY -> pass
 
 # 5. Agent reads /tmp/secrets (no rule anywhere -> walk up reaches root -> ask)
 $ cat /tmp/secrets
    -> kernel: yolo_lookup("tmp") -> no rule on dentry (UNSET)
    -> kernel: yolo_lookup("secrets") -> no rule on dentry (UNSET)
-              -> yolo_cache_perm() walks up: secrets(UNSET) -> tmp(UNSET) -> root(UNSET)
+              -> yolo_perm_refresh() walks up: secrets(UNSET) -> tmp(UNSET) -> root(UNSET)
               -> no rule found, caches built-in default ASK on secrets inode
    -> kernel: yolo_open() -> cached_perm=ASK
    -> kernel: enqueue request, thread sleeps

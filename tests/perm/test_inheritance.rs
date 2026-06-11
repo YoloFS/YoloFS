@@ -4,7 +4,7 @@ use std::fs;
 use yolofs::config::Config;
 use yolofs::perm::Perm;
 
-// ── Rule inheritance (perm.c: yolo_resolve_perm walks dentry chain) ──
+// ── Rule inheritance (perm.c: yolo_perm_walk walks dentry chain) ──
 
 /// A more specific (child) rule should override a broader (parent) rule.
 /// "/" = deny, but session root = allow → files in session are accessible.

@@ -9,8 +9,6 @@
 #include <linux/file.h>
 #include <linux/dcache.h>
 
-extern struct dentry *file_dentry(const struct file *file);
-
 static struct dentry *yolo_alloc_cursor(struct dentry *parent)
 {
 	struct dentry *cursor = d_alloc_anon(parent->d_sb);
@@ -33,14 +31,9 @@ static int yolo_dir_open(struct inode *inode, struct file *file)
 
 	/* Hidden directories are invisible — return ENOENT.
 	 * All other perms (including deny) allow readdir. */
-	if (sbi->perm.enabled) {
-		struct dentry *dentry = file->f_path.dentry;
-		struct yolo_inode_info *ii = YOLO_I(d_inode(dentry));
-		if (ii->perm_gen != atomic64_read(&sbi->perm.gen))
-			yolo_cache_perm(d_inode(dentry), dentry);
-		if (ii->cached_perm == YOLO_PERM_HIDE)
-			return -ENOENT;
-	}
+	if (sbi->perm.enabled &&
+	    yolo_perm_get(inode, file->f_path.dentry) == YOLO_PERM_HIDE)
+		return -ENOENT;
 
 	di = kzalloc(sizeof(*di), GFP_KERNEL);
 	if (!di)
@@ -106,21 +99,33 @@ struct yolo_readdir_data {
 	loff_t			*off;
 };
 
-static bool yolo_base_entry_overridden(struct dentry *parent,
-				       const char *name, int namelen)
+/*
+ * True if @name must not be emitted from the base directory: either
+ * overridden by a pinned overlay entry (staged file, tombstone, redirect),
+ * or carrying an explicit YOLO_PERM_HIDE rule. Rule dentries are pinned in
+ * the dcache via dget at rule-set time and stay hashed (the d_drop in
+ * yolo_lookup only hits freshly looked-up dentries, which by definition
+ * were not in the dcache), so one d_lookup finds both kinds.
+ */
+static bool yolo_base_entry_skipped(struct dentry *parent,
+				    const char *name, int namelen)
 {
 	struct qstr qname = QSTR_INIT(name, namelen);
 	struct dentry *child;
-	bool overridden;
+	bool skip;
 
 	qname.hash = full_name_hash(parent, name, namelen);
 	child = d_lookup(parent, &qname);
 	if (!child)
 		return false;
 
-	overridden = YOLO_D(child)->pinned;
+	/* di->perm is read without di->lock, like yolo_perm_walk: a racing
+	 * rule update is tolerated — perm.gen invalidation handles staleness. */
+	skip = YOLO_D(child)->pinned ||
+	       (YOLO_SB(parent->d_sb)->perm.enabled &&
+		YOLO_D(child)->perm == YOLO_PERM_HIDE);
 	dput(child);
-	return overridden;
+	return skip;
 }
 
 static bool yolo_fill_base(struct dir_context *ctx, const char *name,
@@ -130,33 +135,9 @@ static bool yolo_fill_base(struct dir_context *ctx, const char *name,
 	struct yolo_readdir_data *rdd =
 		container_of(ctx, struct yolo_readdir_data, ctx);
 
-	/* Check if this base entry is overridden by a pinned entry */
-	if (yolo_base_entry_overridden(rdd->dentry, name, namelen))
-		return true; /* skip — overridden */
-
-	/* Check if this entry is hidden by permission rules.
-	 * Scan the parent's pinned rule dentries for a matching name
-	 * with YOLO_PERM_HIDE. Rule dentries are pinned (dget'd) so
-	 * they're always in the dcache as children of the parent. */
-	if (YOLO_SB(rdd->dentry->d_sb)->perm.enabled) {
-		struct dentry *child;
-		bool is_hidden = false;
-
-		spin_lock(&rdd->dentry->d_lock);
-		hlist_for_each_entry(child, &rdd->dentry->d_children, d_sib) {
-			struct yolo_dentry_info *cdi = YOLO_D(child);
-			if (cdi && cdi->perm == YOLO_PERM_HIDE &&
-			    child->d_name.len == namelen &&
-			    !memcmp(child->d_name.name, name, namelen)) {
-				is_hidden = true;
-				break;
-			}
-		}
-		spin_unlock(&rdd->dentry->d_lock);
-
-		if (is_hidden)
-			return true; /* skip — hidden */
-	}
+	/* Skip entries overridden by the overlay or hidden by a rule. */
+	if (yolo_base_entry_skipped(rdd->dentry, name, namelen))
+		return true;
 
 	if (*rdd->off < rdd->caller_ctx->pos) {
 		(*rdd->off)++;

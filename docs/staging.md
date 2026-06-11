@@ -364,7 +364,7 @@ The kernel always tombstones regardless of whether the path had base
 content — a spurious tombstone is harmless and cleaned up on commit/reset.
 
 ```
-yolo_unlink(dir, dentry):
+yolo_delete_entry(dir, dentry):   # serves both .unlink and .rmdir
     staged = YOLO_D(dentry)->pinned
     pre = target_preimage(dentry)   # pre-op backing, before the tombstone
 
@@ -377,10 +377,6 @@ yolo_unlink(dir, dentry):
     if staged:
         yolo_dentry_unpin(dentry)   # reset to ground state + dput
     d_drop(dentry)
-
-yolo_rmdir(dir, dentry):
-    # Same logic as yolo_unlink.
-    journal(D, path, pre)
 ```
 
 Subsequent lookup of the name finds the negative dentry in the dcache
@@ -491,16 +487,16 @@ yolo_readdir(dir, ctx):
                  fs_umode_to_dtype(d_inode(child)->i_mode))
 
     # Phase 2 (yolo_fill_base): emit base entries not overridden by
-    # staged entries. Uses d_lookup() (O(1) dcache hash) per base
-    # entry to check if overridden.
+    # staged entries and not hidden by a rule. Uses one d_lookup()
+    # (O(1) dcache hash) per base entry for both checks.
     lower_file.f_pos = file_info.base_pos   # resume, not restart
     for entry in base_readdir(dir):
         result = d_lookup(dir_dentry, &entry.name)
-        if result and YOLO_D(result)->pinned:
-            dput(result)
-            continue   # overridden by staged entry
         if result:
+            skip = YOLO_D(result)->pinned or YOLO_D(result)->perm == HIDE
             dput(result)
+            if skip:
+                continue   # overridden by staged entry, or hidden
         dir_emit(ctx, entry.name)
     file_info.base_pos = lower_file.f_pos   # save for next call
 ```
@@ -600,11 +596,12 @@ ends against overlay tree paths.
 | `A` | `<access_path>`, `<op>`, `<decision>` | An `ask` was resolved to `<decision>` — observational |
 | `B` | `<path>`, `<op>` | Access blocked by a rule (`-EACCES`) — observational |
 
-`op` is a single letter (`r`/`w`); `decision` is a single letter (`y`/`d` —
-allow/deny). Decisions answer only the current blocked operation; persistent
-policy changes are separate rule updates. A records carry the attempted access
-path, not the rule path. `hide` is rule-only: hidden paths return `ENOENT`
-without producing ask or block notes.
+`op` is a single letter (`r`/`w`); `decision` is a single letter (`y`/`n` —
+the yes/no answer to the ask; `a` and `d` would collide with the Absence
+pre-target tag and the `D` record tag). Decisions answer only the current
+blocked operation; persistent policy changes are separate rule updates.
+A records carry the attempted access path, not the rule path. `hide` is
+rule-only: hidden paths return `ENOENT` without producing ask or block notes.
 S/D/R are state mutations. P/T are control markers. **A and B are
 observational notes**: they record that a rule blocked an access (`B`) or
 that an `ask` was resolved (`A`, by the daemon or the timeout default) but

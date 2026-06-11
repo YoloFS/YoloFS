@@ -12,7 +12,7 @@
 
 /* ── Resolve permission by walking up dentry chain ─────────────────── */
 
-enum yolo_perm yolo_resolve_perm(struct dentry *dentry, struct dentry **source)
+enum yolo_perm yolo_perm_walk(struct dentry *dentry, struct dentry **source)
 {
 	struct dentry *cur = dentry;
 
@@ -35,18 +35,29 @@ enum yolo_perm yolo_resolve_perm(struct dentry *dentry, struct dentry **source)
 
 /* ── Cache resolved perm on inode ──────────────────────────────────── */
 
-void yolo_cache_perm(struct inode *inode, struct dentry *dentry)
+void yolo_perm_refresh(struct inode *inode, struct dentry *dentry)
 {
 	struct yolo_inode_info *info = YOLO_I(inode);
 	struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
 
-	info->cached_perm = yolo_resolve_perm(dentry, NULL);
+	info->cached_perm = yolo_perm_walk(dentry, NULL);
 	info->perm_gen = atomic64_read(&sbi->perm.gen);
+}
+
+/* The inode's effective perm, re-resolved via @dentry if the cache is stale. */
+enum yolo_perm yolo_perm_get(struct inode *inode, struct dentry *dentry)
+{
+	struct yolo_inode_info *info = YOLO_I(inode);
+	struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
+
+	if (info->perm_gen != atomic64_read(&sbi->perm.gen))
+		yolo_perm_refresh(inode, dentry);
+	return info->cached_perm;
 }
 
 /* ── Check perm against file flags ─────────────────────────────────── */
 
-int yolo_check_perm(enum yolo_perm perm, int f_flags)
+static int yolo_perm_check(enum yolo_perm perm, int f_flags)
 {
 	bool wants_write = yolo_open_op(f_flags) == YOLO_OP_WRITE;
 
@@ -54,7 +65,6 @@ int yolo_check_perm(enum yolo_perm perm, int f_flags)
 	case YOLO_PERM_ALLOW:
 		return 0;
 	case YOLO_PERM_WRITE_ASK:
-		return wants_write ? -EACCES : 0;
 	case YOLO_PERM_READ_ONLY:
 		return wants_write ? -EACCES : 0;
 	case YOLO_PERM_DENY:
@@ -89,7 +99,7 @@ static bool yolo_perm_needs_ask(enum yolo_perm perm, enum yolo_op op)
  * if unresolved, then check against the given flags.  Used by both
  * yolo_open (via file.c) and metadata ops (via inode.c).
  */
-int yolo_check_dentry_perm(struct yolo_sb_info *sbi, struct dentry *dentry,
+int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *dentry,
 			   int f_flags)
 {
 	struct inode *inode = d_inode(dentry);
@@ -99,9 +109,7 @@ int yolo_check_dentry_perm(struct yolo_sb_info *sbi, struct dentry *dentry,
 	enum yolo_op op = yolo_open_op(f_flags);
 	int err;
 
-	if (ii->perm_gen != atomic64_read(&sbi->perm.gen))
-		yolo_cache_perm(inode, dentry);
-	perm = ii->cached_perm;
+	perm = yolo_perm_get(inode, dentry);
 
 	if (yolo_perm_needs_ask(perm, op)) {
 		char buf[YOLO_PATH_MAX];
@@ -114,13 +122,13 @@ int yolo_check_dentry_perm(struct yolo_sb_info *sbi, struct dentry *dentry,
 		if (IS_ERR(relpath))
 			return PTR_ERR(relpath);
 
-		perm = yolo_resolve_perm(dentry, &source);
+		perm = yolo_perm_walk(dentry, &source);
 		ii->cached_perm = perm;
 		ii->perm_gen = atomic64_read(&sbi->perm.gen);
 		if (!yolo_perm_needs_ask(perm, op)) {
 			if (source)
 				dput(source);
-			return yolo_check_perm(perm, f_flags);
+			return yolo_perm_check(perm, f_flags);
 		}
 
 		if (source) {
@@ -138,7 +146,7 @@ int yolo_check_dentry_perm(struct yolo_sb_info *sbi, struct dentry *dentry,
 		return decision == YOLO_DECISION_ALLOW ? 0 : -EACCES;
 	}
 
-	return yolo_check_perm(perm, f_flags);
+	return yolo_perm_check(perm, f_flags);
 }
 
 /* ── Ask Protocol ─────────────────────────────────────────────────── */
@@ -191,9 +199,7 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 	req->op = op;
 	req->pid = current->pid;
 	get_task_comm(req->comm, current);
-	req->decision = YOLO_DECISION_DENY;
-	req->decided = false;
-	req->dispatched = false;
+	/* kzalloc already set decision = DENY (0), decided/dispatched = false */
 	init_completion(&req->done);
 	INIT_LIST_HEAD(&req->list);
 

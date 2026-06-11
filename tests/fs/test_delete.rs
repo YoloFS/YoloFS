@@ -1,7 +1,7 @@
 use crate::helpers::YoloSession;
 use std::fs;
 
-// ── inode.c: yolo_unlink — adds DELETED dirent ──
+// ── inode.c: yolo_delete_entry (unlink) — adds DELETED dirent ──
 
 /// Deleting a file through the mount hides it from the mount view.
 #[test]

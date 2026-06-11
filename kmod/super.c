@@ -145,6 +145,7 @@ static void yolo_init_sbi(struct yolo_sb_info *sbi,
 
 	/* Staging state */
 	init_rwsem(&sbi->staging.sem);
+	spin_lock_init(&sbi->staging.shard_lock);
 	atomic_set(&sbi->staging.next_ino, 0);
 	atomic_set(&sbi->staging.gen, 0);
 	atomic_set(&sbi->staging.fd_count, 0);

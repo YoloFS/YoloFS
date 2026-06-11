@@ -170,7 +170,7 @@ On mount, the CLI reads `yolofs.toml` and applies all `[rules]` via ioctl.
 
 ```c
 // Resolve by walking up dentry chain (only called on cache miss).
-enum yolo_perm yolo_resolve_perm(struct dentry *dentry)
+enum yolo_perm yolo_perm_walk(struct dentry *dentry)
 {
     struct dentry *cur = dentry;
     while (cur) {
@@ -185,37 +185,42 @@ enum yolo_perm yolo_resolve_perm(struct dentry *dentry)
 }
 
 // Called during lookup() -- cache the resolved perm on the inode.
-void yolo_cache_perm(struct inode *inode, struct dentry *dentry)
+void yolo_perm_refresh(struct inode *inode, struct dentry *dentry)
 {
     struct yolo_inode_info *info = YOLO_I(inode);
     struct yolo_sb_info *sb = YOLO_SB(inode->i_sb);
 
-    info->cached_perm = yolo_resolve_perm(dentry);
+    info->cached_perm = yolo_perm_walk(dentry);
     info->perm_gen = atomic64_read(&sb->perm.gen);
+}
+
+// Cached read: refresh first if perm_gen is stale.
+enum yolo_perm yolo_perm_get(struct inode *inode, struct dentry *dentry)
+{
+    if (YOLO_I(inode)->perm_gen != atomic64_read(&YOLO_SB(inode->i_sb)->perm.gen))
+        yolo_perm_refresh(inode, dentry);
+    return YOLO_I(inode)->cached_perm;
 }
 
 // Shared permission check: resolve, ask if needed, check the requested op.
 // Used by yolo_open (for file access) and yolo_check_mutate_perm (for
 // metadata ops).  Lives in perm.c.
-int yolo_check_dentry_perm(struct yolo_sb_info *sbi,
+int yolo_perm_check_dentry(struct yolo_sb_info *sbi,
                            struct dentry *dentry,
                            int f_flags)
 {
-    struct yolo_inode_info *ii = YOLO_I(d_inode(dentry));
     enum yolo_perm perm;
     enum yolo_decision decision;
     enum yolo_op op = yolo_open_op(f_flags);
 
-    if (ii->perm_gen != atomic64_read(&sbi->perm.gen))
-        yolo_cache_perm(d_inode(dentry), dentry);
-    perm = ii->cached_perm;
+    perm = yolo_perm_get(d_inode(dentry), dentry);
 
     if (perm == YOLO_PERM_ASK ||
         (perm == YOLO_PERM_WRITE_ASK && op == YOLO_OP_WRITE)) {
         // ... ask daemon, or deny if none answers; fills decision ...
         return decision == YOLO_DECISION_ALLOW ? 0 : -EACCES;
     }
-    return yolo_check_perm(perm, f_flags);
+    return yolo_perm_check(perm, f_flags);
 }
 
 // Metadata ops check write permission on the parent directory.
@@ -224,7 +229,7 @@ static int yolo_check_mutate_perm(struct dentry *dentry)
     struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
     if (!sbi->perm.enabled)
         return 0;
-    return yolo_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY);
+    return yolo_perm_check_dentry(sbi, dentry->d_parent, O_WRONLY);
 }
 
 // yolo_permission() for VFS MAY_READ/MAY_WRITE/MAY_EXEC checks.
@@ -254,7 +259,7 @@ static int yolo_open(struct inode *inode, struct file *file)
     struct dentry *dentry = file->f_path.dentry;
 
     if (sbi->perm.enabled) {
-        err = yolo_check_dentry_perm(sbi, dentry, file->f_flags);
+        err = yolo_perm_check_dentry(sbi, dentry, file->f_flags);
         if (err)
             return err;
     }
@@ -301,7 +306,7 @@ file whose effective permission is `write-ask`:
 ```
   Thread (kernel)                          Daemon (userspace)
   ──────────────                           ──────────────────
-  1. yolo_check_perm() -> perm asks for this op
+  1. yolo_perm_check_dentry() -> perm asks for this op
   2. Allocate yolo_ask {
        id, access_path, rule_path, rule_perm, op, pid, comm
      }
@@ -394,7 +399,7 @@ longest-prefix-match for free. This satisfies all three principles:
 
 | Operation | Check | Gate point |
 |-----------|-------|------------|
-| open (read/write/exec) | file's own perm | `yolo_open` → `yolo_check_dentry_perm` |
+| open (read/write/exec) | file's own perm | `yolo_open` → `yolo_perm_check_dentry` |
 | readdir | hidden only | `yolo_dir_open` (inline hidden check) |
 | stat | hidden only | `yolo_getattr` (inline hidden check) |
 | lookup / traversal | not gated | — |

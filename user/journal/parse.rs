@@ -10,7 +10,7 @@
 //   T\0<gen>\0<target_gen>\n          — Travel
 //   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
 //   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
-//   (op = r/w; decision = y/d — allow/deny)
+//   (op = r/w; decision = y/n — the yes/no answer to the ask)
 //
 // Record tags are uppercase. Each *pre field is a tagged pre-op target whose
 // tag is the lowercased first letter of the `Target` variant: `a` (Absence),
@@ -326,8 +326,8 @@ mod tests {
 
     #[test]
     fn parse_ask_record() {
-        // A\0<path>\0<op>\0<decision>  (op = r = read, decision = d = deny)
-        let records = parse(b"A\0/etc/hosts\0r\0d\n").unwrap();
+        // A\0<path>\0<op>\0<decision>  (op = r = read, decision = n = deny)
+        let records = parse(b"A\0/etc/hosts\0r\0n\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(matches!(
             &records[0],

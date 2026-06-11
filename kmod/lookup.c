@@ -93,11 +93,9 @@ struct dentry *yolo_lookup(struct inode *dir, struct dentry *dentry,
 	if (!lower_dir_dentry || !lower_mnt)
 		return ERR_PTR(-ENOENT);
 
-	inode_lock_shared(d_inode(lower_dir_dentry));
-	lower_dentry = lookup_one_len(dentry->d_name.name,
-				      lower_dir_dentry,
-				      dentry->d_name.len);
-	inode_unlock_shared(d_inode(lower_dir_dentry));
+	lower_dentry = lookup_one_len_unlocked(dentry->d_name.name,
+					       lower_dir_dentry,
+					       dentry->d_name.len);
 	if (IS_ERR(lower_dentry))
 		return ERR_CAST(lower_dentry);
 
@@ -109,7 +107,7 @@ struct dentry *yolo_lookup(struct inode *dir, struct dentry *dentry,
 		return ERR_PTR(err);
 
 	if (d_inode(dentry)) {
-		yolo_cache_perm(d_inode(dentry), dentry);
+		yolo_perm_refresh(d_inode(dentry), dentry);
 
 		/* Hidden entries appear as if they don't exist. */
 		if (YOLO_SB(dentry->d_sb)->perm.enabled &&

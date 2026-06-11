@@ -23,14 +23,6 @@ static struct file *yolo_open_lower(struct dentry *dentry, int flags)
 	return f;
 }
 
-static int yolo_check_open_perm(struct yolo_sb_info *sbi,
-				struct dentry *dentry,
-				struct file *file, char *buf)
-{
-	(void)buf;
-	return yolo_check_dentry_perm(sbi, dentry, file->f_flags);
-}
-
 /*
  * Open a staged inode via lower_path, incrementing staging_fd_count.
  * On error, decrements the count and returns ERR_PTR.
@@ -122,21 +114,19 @@ static int yolo_open(struct inode *inode, struct file *file)
 	struct file *lower_file;
 	int err;
 
-	fi = kzalloc(sizeof(*fi), GFP_KERNEL);
-	if (!fi)
-		return -ENOMEM;
-
 	if (sbi->perm.enabled) {
-		char buf[YOLO_PATH_MAX];
-
-		err = yolo_check_open_perm(sbi, dentry, file, buf);
+		err = yolo_perm_check_dentry(sbi, dentry, file->f_flags);
 		if (err) {
 			if (err == -EACCES)
 				yolo_journal_block(sbi, dentry,
 					yolo_open_op(file->f_flags));
-			goto out_free;
+			return err;
 		}
 	}
+
+	fi = kzalloc(sizeof(*fi), GFP_KERNEL);
+	if (!fi)
+		return -ENOMEM;
 
 	if (sbi->staging.enabled) {
 		lower_file = yolo_open_staged(sbi, dentry, file);
@@ -145,17 +135,13 @@ static int yolo_open(struct inode *inode, struct file *file)
 	}
 
 	if (IS_ERR(lower_file)) {
-		err = PTR_ERR(lower_file);
-		goto out_free;
+		kfree(fi);
+		return PTR_ERR(lower_file);
 	}
 
 	fi->lower_file = lower_file;
 	file->private_data = fi;
 	return 0;
-
-out_free:
-	kfree(fi);
-	return err;
 }
 
 /* ── read_iter ─────────────────────────────────────────────────────── */

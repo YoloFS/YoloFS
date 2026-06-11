@@ -4,7 +4,7 @@ use std::fs;
 use yolofs::config::Config;
 use yolofs::perm::Perm;
 
-// ── ro tests (perm.c: yolo_check_perm, inode.c: yolo_permission) ──
+// ── ro tests (perm.c: yolo_perm_check, inode.c: yolo_permission) ──
 
 /// ro should permit reads but deny writes.
 #[test]
@@ -24,7 +24,7 @@ fn ro_permits_read_denies_write() {
     assert!(result.is_err(), "write should be denied with ro rule");
 }
 
-// ── allow tests (perm.c: yolo_check_perm, inode.c: yolo_permission) ──
+// ── allow tests (perm.c: yolo_perm_check, inode.c: yolo_permission) ──
 
 /// allow should permit reads.
 #[test]
@@ -67,7 +67,7 @@ fn allow_permits_exec() {
     assert!(output.status.success(), "exec should succeed with allow");
 }
 
-// ── ro tests (perm.c: yolo_check_perm, inode.c: yolo_permission) ──
+// ── ro tests (perm.c: yolo_perm_check, inode.c: yolo_permission) ──
 
 /// ro should permit exec.
 #[test]

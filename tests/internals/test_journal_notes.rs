@@ -369,7 +369,7 @@ fn hidden_paths_do_not_log_block() {
 fn ask_resolved_to_default_deny_emits_block() {
     // No daemon connected; the ask is denied immediately when an
     // unruled file is opened. The deny decision is made inside
-    // `yolo_check_dentry_perm` and surfaces from `yolo_open`, not from
+    // `yolo_perm_check_dentry` and surfaces from `yolo_open`, not from
     // `yolo_permission` (which returned 0 for the ASK perm).
     let s = YoloSession::new_with_config(Config {
         rules: BTreeMap::new(),

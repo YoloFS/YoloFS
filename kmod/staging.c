@@ -26,13 +26,20 @@ static struct dentry *get_shard_dir(struct yolo_sb_info *sbi, u32 ino)
 {
 	u32 shard = ino / YOLO_SHARD_SIZE;
 	char shard_name[11];
-	struct dentry *shard_dentry;
+	struct dentry *shard_dentry, *old;
 	struct inode *dir;
+	u64 epoch;
 	int err, len;
 
 	/* Fast path: cached shard matches. */
-	if (sbi->staging.shard_dentry && sbi->staging.shard_id == shard)
-		return dget(sbi->staging.shard_dentry);
+	spin_lock(&sbi->staging.shard_lock);
+	if (sbi->staging.shard_dentry && sbi->staging.shard_id == shard) {
+		shard_dentry = dget(sbi->staging.shard_dentry);
+		spin_unlock(&sbi->staging.shard_lock);
+		return shard_dentry;
+	}
+	epoch = sbi->staging.shard_epoch;
+	spin_unlock(&sbi->staging.shard_lock);
 
 	len = snprintf(shard_name, sizeof(shard_name), "%u", shard);
 	dir = d_inode(sbi->staging.inodes_dir.dentry);
@@ -56,11 +63,20 @@ static struct dentry *get_shard_dir(struct yolo_sb_info *sbi, u32 ino)
 	}
 	inode_unlock(dir);
 
-	/* Update cache. */
-	if (sbi->staging.shard_dentry)
-		dput(sbi->staging.shard_dentry);
-	sbi->staging.shard_dentry = dget(shard_dentry);
-	sbi->staging.shard_id = shard;
+	/* Update cache; drop the displaced entry's ref outside the lock. Skip
+	 * the publish if quiesce invalidated the cache while we looked up —
+	 * this dentry belongs to the old view and must not outlive it there. */
+	spin_lock(&sbi->staging.shard_lock);
+	if (sbi->staging.shard_epoch == epoch) {
+		old = sbi->staging.shard_dentry;
+		sbi->staging.shard_dentry = dget(shard_dentry);
+		sbi->staging.shard_id = shard;
+	} else {
+		old = NULL;
+	}
+	spin_unlock(&sbi->staging.shard_lock);
+	if (old)
+		dput(old);
 
 	return shard_dentry;
 }

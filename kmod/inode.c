@@ -25,7 +25,7 @@ static int yolo_check_mutate_perm(struct dentry *dentry)
 	if (!sbi->perm.enabled)
 		return 0;
 
-	err = yolo_check_dentry_perm(sbi, dentry->d_parent, O_WRONLY);
+	err = yolo_perm_check_dentry(sbi, dentry->d_parent, O_WRONLY);
 	if (err == -EACCES)
 		yolo_journal_block(sbi, dentry, YOLO_OP_WRITE);
 	return err;
@@ -93,11 +93,12 @@ static int yolo_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 static int yolo_delete_entry(struct inode *dir, struct dentry *dentry)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
-	int perm_err = yolo_check_mutate_perm(dentry);
-	if (perm_err)
-		return perm_err;
-	struct dentry *tomb = NULL;
+	struct dentry *tomb;
 	int err;
+
+	err = yolo_check_mutate_perm(dentry);
+	if (err)
+		return err;
 
 	/* Pre-allocate negative dentry (tombstone) */
 	tomb = yolo_dentry_create(dentry->d_parent,
@@ -120,16 +121,6 @@ static int yolo_delete_entry(struct inode *dir, struct dentry *dentry)
 	return 0;
 }
 
-static int yolo_unlink(struct inode *dir, struct dentry *dentry)
-{
-	return yolo_delete_entry(dir, dentry);
-}
-
-static int yolo_rmdir(struct inode *dir, struct dentry *dentry)
-{
-	return yolo_delete_entry(dir, dentry);
-}
-
 /* ── symlink ───────────────────────────────────────────────────────── */
 
 static int yolo_symlink(struct mnt_idmap *idmap, struct inode *dir,
@@ -149,17 +140,16 @@ static int yolo_rename(struct mnt_idmap *idmap,
 		       unsigned int flags)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(old_dentry->d_sb);
-	struct dentry *tomb = NULL;
-	int perm_err;
+	struct dentry *tomb;
+	int err;
 
 	/* Check write permission on both source and destination dirs. */
-	perm_err = yolo_check_mutate_perm(old_dentry);
-	if (perm_err)
-		return perm_err;
-	perm_err = yolo_check_mutate_perm(new_dentry);
-	if (perm_err)
-		return perm_err;
-	int err;
+	err = yolo_check_mutate_perm(old_dentry);
+	if (err)
+		return err;
+	err = yolo_check_mutate_perm(new_dentry);
+	if (err)
+		return err;
 
 	if (flags)
 		return -EINVAL;
@@ -212,6 +202,7 @@ static int yolo_permission(struct mnt_idmap *idmap,
 	struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
 	enum yolo_perm perm;
 	struct inode *lower_inode = yolo_lower_inode(inode);
+	struct dentry *alias;
 
 	/* Skip all permission gating if disabled */
 	if (!sbi->perm.enabled)
@@ -221,7 +212,7 @@ static int yolo_permission(struct mnt_idmap *idmap,
 	if (info->perm_gen != atomic64_read(&sbi->perm.gen)) {
 		struct dentry *dentry = d_find_alias(inode);
 		if (dentry) {
-			yolo_cache_perm(inode, dentry);
+			yolo_perm_refresh(inode, dentry);
 			dput(dentry);
 		}
 	}
@@ -235,31 +226,24 @@ static int yolo_permission(struct mnt_idmap *idmap,
 	if (!S_ISREG(inode->i_mode))
 		return inode_permission(idmap, lower_inode, mask);
 
-	/* Ask is handled in open(), not here */
-	if (perm == YOLO_PERM_ASK)
-		return 0;
-
+	/* ALLOW passes. ASK and WRITE_ASK pass too — asks are resolved in
+	 * open()/metadata-op paths where sleeping is safe. Only READ_ONLY
+	 * writes, DENY, and unexpected values fall through to -EACCES. */
 	switch (perm) {
 	case YOLO_PERM_ALLOW:
-		return 0;
+	case YOLO_PERM_ASK:
 	case YOLO_PERM_WRITE_ASK:
-		if (!(mask & MAY_WRITE))
-			return 0;
-		/* Write asks are resolved in open()/metadata op paths where
-		 * sleeping is safe. */
 		return 0;
 	case YOLO_PERM_READ_ONLY:
 		if (!(mask & MAY_WRITE))
 			return 0;
-		break;
-	case YOLO_PERM_DENY:
 		break;
 	default:
 		break;
 	}
 
 	/* -EACCES path: log a block note against the inode's dentry. */
-	struct dentry *alias = d_find_alias(inode);
+	alias = d_find_alias(inode);
 	if (alias) {
 		enum yolo_op op = (mask & MAY_WRITE) ? YOLO_OP_WRITE : YOLO_OP_READ;
 		yolo_journal_block(sbi, alias, op);
@@ -289,7 +273,7 @@ static int yolo_setattr(struct mnt_idmap *idmap,
 	int err;
 
 	if (sbi->perm.enabled && yolo_setattr_needs_write_check(ia)) {
-		err = yolo_check_dentry_perm(sbi, dentry, O_WRONLY);
+		err = yolo_perm_check_dentry(sbi, dentry, O_WRONLY);
 		if (err) {
 			if (err == -EACCES)
 				yolo_journal_block(sbi, dentry, YOLO_OP_WRITE);
@@ -351,13 +335,9 @@ static int yolo_getattr(struct mnt_idmap *idmap,
 	int err;
 
 	/* Hidden paths return ENOENT on stat. */
-	if (sbi->perm.enabled) {
-		struct yolo_inode_info *ii = YOLO_I(inode);
-		if (ii->perm_gen != atomic64_read(&sbi->perm.gen))
-			yolo_cache_perm(inode, dentry);
-		if (ii->cached_perm == YOLO_PERM_HIDE)
-			return -ENOENT;
-	}
+	if (sbi->perm.enabled &&
+	    yolo_perm_get(inode, dentry) == YOLO_PERM_HIDE)
+		return -ENOENT;
 
 	yolo_get_lower_path(dentry, &lower_path);
 	lower_inode = d_inode(lower_path.dentry);
@@ -413,8 +393,8 @@ const struct inode_operations yolo_dir_iops = {
 	.lookup		= yolo_lookup,
 	.create		= yolo_create,
 	.mkdir		= yolo_mkdir,
-	.unlink		= yolo_unlink,
-	.rmdir		= yolo_rmdir,
+	.unlink		= yolo_delete_entry,
+	.rmdir		= yolo_delete_entry,
 	.symlink	= yolo_symlink,
 	.rename		= yolo_rename,
 	.permission	= yolo_permission,

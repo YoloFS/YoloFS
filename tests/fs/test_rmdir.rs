@@ -1,7 +1,7 @@
 use crate::helpers::YoloSession;
 use std::fs;
 
-// ── inode.c: yolo_rmdir — adds DELETED dirent ──
+// ── inode.c: yolo_delete_entry (rmdir) — adds DELETED dirent ──
 
 /// rmdir a directory that was created through the mount (staged dir).
 #[test]
@@ -28,7 +28,7 @@ fn rmdir_base_dir_adds_dirent() {
     let s = YoloSession::new().expect("session setup");
 
     // subdir/ exists in base with files inside.
-    // yolo_rmdir adds a DELETED dirent.
+    // yolo_delete_entry adds a DELETED dirent.
     let result = fs::remove_dir(s.mnt_path("subdir"));
     if result.is_ok() {
         // Base should be untouched

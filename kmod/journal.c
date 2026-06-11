@@ -13,7 +13,7 @@
  *   T\0<gen>\0<target_gen>\n          — Travel
  *   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
  *   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
- *   (op = r/w; decision = y/d — allow/deny)
+ *   (op = r/w; decision = y/n — the yes/no answer to the ask)
  *
  * Record tags are uppercase. Each *pre field is the operation-local pre-op
  * backing of that overlay name, tagged with the lowercased first letter of the
@@ -209,18 +209,9 @@ static char op_char(enum yolo_op op)
 	return op == YOLO_OP_WRITE ? 'w' : 'r';
 }
 
-static int decision_char(enum yolo_decision decision, char *out)
+static char decision_char(enum yolo_decision decision)
 {
-	switch (decision) {
-	case YOLO_DECISION_ALLOW:
-		*out = 'y';
-		return 0;
-	case YOLO_DECISION_DENY:
-		*out = 'd';
-		return 0;
-	default:
-		return -EINVAL;
-	}
+	return decision == YOLO_DECISION_ALLOW ? 'y' : 'n';
 }
 
 /**
@@ -231,18 +222,13 @@ static int decision_char(enum yolo_decision decision, char *out)
  * @decision: allow/deny decision from the daemon or timeout default
  *
  * Observational note (does not set sbi->staging.dirty). Format:
- *   A\0<path>\0<op>\0<decision>\n   (op = r/w; decision = y/d)
+ *   A\0<path>\0<op>\0<decision>\n   (op = r/w; decision = y/n)
  */
 int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
 		     enum yolo_op op, enum yolo_decision decision)
 {
 	char op_str[2] = { op_char(op), '\0' };
-	char dec_str[2] = { 0, '\0' };
-	int err;
-
-	err = decision_char(decision, &dec_str[0]);
-	if (err)
-		return err;
+	char dec_str[2] = { decision_char(decision), '\0' };
 
 	return journal_write(sbi, 'A',
 			     (const char *[]){ path, op_str, dec_str, NULL });

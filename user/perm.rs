@@ -58,11 +58,13 @@ impl Decision {
         }
     }
 
-    /// The journal's single-letter code for an ask decision.
+    /// The journal's single-letter code for an ask decision: the yes/no
+    /// answer to the ask. `a`/`d` are avoided — they would collide with the
+    /// Absence pre-target tag and the `D` record tag.
     pub fn to_letter(self) -> char {
         match self {
             Decision::Allow => 'y',
-            Decision::Deny => 'd',
+            Decision::Deny => 'n',
         }
     }
 
@@ -70,7 +72,7 @@ impl Decision {
     pub fn from_letter(b: u8) -> Option<Self> {
         match b {
             b'y' => Some(Decision::Allow),
-            b'd' => Some(Decision::Deny),
+            b'n' => Some(Decision::Deny),
             _ => None,
         }
     }
@@ -133,8 +135,9 @@ mod tests {
             assert_eq!(Decision::from_letter(p.to_letter() as u8), Some(p));
         }
         assert_eq!(Decision::Allow.to_letter(), 'y');
-        assert_eq!(Decision::Deny.to_letter(), 'd');
+        assert_eq!(Decision::Deny.to_letter(), 'n');
         assert_eq!(Decision::from_letter(b'a'), None);
+        assert_eq!(Decision::from_letter(b'd'), None);
         assert_eq!(Decision::from_letter(b'w'), None);
         assert_eq!(Decision::from_letter(b'r'), None);
         assert_eq!(Decision::from_letter(b'h'), None);
