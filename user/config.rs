@@ -155,6 +155,12 @@ fn resolve_through_mount(abs_path: &str, mnt: &Path) -> String {
         .to_string()
 }
 
+/// Open `abs_path` as a rule-target fd, resolved through the mount.
+fn open_target_through_mount(abs_path: &str, mnt: &Path) -> Result<std::fs::File> {
+    ioctl::open_rule_target(resolve_through_mount(abs_path, mnt))
+        .with_context(|| format!("opening rule target {abs_path}"))
+}
+
 // ── Mount options ─────────────────────────────────────────────────────
 
 /// Build kernel mount option string from yolofs.toml.
@@ -194,17 +200,18 @@ pub fn load_config() -> Config {
 ///
 /// On a typical system `/run/user/<uid>` is its own tmpfs mount, which yolofs's
 /// root-fs overlay doesn't expose — so the mountpoint isn't reachable from
-/// inside the mount and the kernel returns ENOENT for the rule. That's the safe
-/// case: no reachable recursion point means nothing to hide, so we tolerate it.
+/// inside the mount and opening the rule target fails with ENOENT. That's the
+/// safe case: no reachable recursion point means nothing to hide, so we
+/// tolerate it.
 fn hide_mountpoint(ctl_file: &std::fs::File, mnt: &Path) -> Result<()> {
     let resolved = resolve_through_mount(&mnt.to_string_lossy(), mnt);
-    match ioctl::set_rule(ctl_file, &resolved, Perm::Hide.to_ioctl()) {
-        Ok(()) => Ok(()),
-        Err(e) if e.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::ENOENT) => {
-            Ok(())
-        }
-        Err(e) => Err(e.context("hiding the mountpoint to prevent recursion")),
-    }
+    let target = match ioctl::open_rule_target(&resolved) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).context("hiding the mountpoint to prevent recursion"),
+    };
+    ioctl::set_rule(ctl_file, &target, Perm::Hide.to_ioctl())
+        .context("hiding the mountpoint to prevent recursion")
 }
 
 /// Read [rules] from yolofs.toml and apply via ioctl. Called during mount.
@@ -243,8 +250,14 @@ pub fn apply_rules(yolo_dir: &Path) -> Result<()> {
                 continue;
             }
         };
-        let resolved = resolve_through_mount(&abs_path, &mnt);
-        if let Err(e) = ioctl::set_rule(&ctl_file, &resolved, perm.to_ioctl()) {
+        let target = match open_target_through_mount(&abs_path, &mnt) {
+            Ok(f) => f,
+            Err(e) => {
+                report::warn(format!("skipping rule {abs_path} = {perm}: {e:#}"));
+                continue;
+            }
+        };
+        if let Err(e) = ioctl::set_rule(&ctl_file, &target, perm.to_ioctl()) {
             report::warn(format!("skipping rule {abs_path} = {perm}: {e:#}"));
         }
     }
@@ -293,9 +306,9 @@ pub fn set_rule(path: &str, perm: Perm) -> Result<()> {
         let yolofs = crate::utils::session_dir()?;
         let mnt = crate::utils::mnt_dir(&yolofs);
         let abs_path = resolve_to_abs(path)?;
-        let resolved = resolve_through_mount(&abs_path, &mnt);
+        let target = open_target_through_mount(&abs_path, &mnt)?;
         let ctl_file = ioctl::open(&yolofs)?;
-        ioctl::set_rule(&ctl_file, &resolved, perm.to_ioctl())?;
+        ioctl::set_rule(&ctl_file, &target, perm.to_ioctl())?;
         // Pushed to the running mount: applied now. Otherwise it's only written
         // to yolofs.toml and takes effect at the next mount — say which.
         report::success(format!("rule applied: {path} = {perm}"));
@@ -320,9 +333,9 @@ pub fn unset_rule(path: &str) -> Result<()> {
         let yolofs = crate::utils::session_dir()?;
         let mnt = crate::utils::mnt_dir(&yolofs);
         let abs_path = resolve_to_abs(path)?;
-        let resolved = resolve_through_mount(&abs_path, &mnt);
+        let target = open_target_through_mount(&abs_path, &mnt)?;
         let ctl_file = ioctl::open(&yolofs)?;
-        ioctl::set_rule(&ctl_file, &resolved, ioctl::YOLO_PERM_UNSET)?;
+        ioctl::set_rule(&ctl_file, &target, ioctl::YOLO_PERM_UNSET)?;
         // An unset removes the path's own rule (it reverts to inheriting from its
         // ancestors); report that, plus whether it's applied now or saved.
         report::success(format!("rule applied: {path} = unset"));
@@ -407,9 +420,9 @@ fn kernel_resolve_perm(path: &str) -> Result<Perm> {
     let yolofs = crate::utils::session_dir()?;
     let mnt = crate::utils::mnt_dir(&yolofs);
     let abs_path = resolve_to_abs(path)?;
-    let through = resolve_through_mount(&abs_path, &mnt);
+    let target = open_target_through_mount(&abs_path, &mnt)?;
     let ctl_file = ioctl::open(&yolofs)?;
-    let raw = ioctl::resolve_rule(&ctl_file, &through)?;
+    let raw = ioctl::resolve_rule(&ctl_file, &target)?;
     Perm::from_ioctl(raw).context("kernel returned an unknown perm value")
 }
 

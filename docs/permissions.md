@@ -147,13 +147,29 @@ Two levels:
    the directory containing `.yolofs/` (equivalently, the CWD where `yolo`
    was launched). For example, `src` resolves to
    `/home/user/project/src`.
-2. If a mount exists (`.yolofs/mnt` is mounted), also apply live:
-   `ioctl(YOLO_IOC_RULE_SET)` -> kernel resolves the normalized absolute path
-   to a dentry, sets `YOLO_D(dentry)->perm`, pins the dentry, and bumps
-   `perm_gen` to invalidate all cached inode perms.
+2. If a mount exists (`.yolofs/mnt` is mounted), also apply live: the CLI
+   opens the target *through the mount* (`<mnt>/<abs-path>`) with `O_PATH`
+   and passes the fd in `ioctl(YOLO_IOC_RULE_SET, { fd, perm })` -> the
+   kernel verifies the fd's dentry belongs to this mount, sets
+   `YOLO_D(dentry)->perm`, pins the dentry, and bumps `perm_gen` to
+   invalidate all cached inode perms. Passing an fd instead of a path string
+   means the kernel never re-resolves the path (one resolution, at `open()`
+   time), the in-mount check is exact (it tests the object the rule attaches
+   to), and rule paths are not subject to `YOLO_PATH_MAX`.
 
 If no mount exists, the rule is persisted to `yolofs.toml` only. It will be
 applied on the next `yolo mount`.
+
+**Rules require the target to exist.** This is a deliberate decision, not a
+gap: a rule on a not-yet-existing path would need either off-spec dcache
+topology (children under negative dentries) or a parallel pending-rule
+structure, and inheritance already covers the common case — a rule on the
+nearest existing ancestor applies to everything created underneath it. A
+rule whose path doesn't exist stays in `yolofs.toml` (mount-time apply warns
+and skips it) and takes effect once the path exists, on the next mount or
+`yolo rule` invocation. To gate a future path ahead of time (e.g. `hide` a
+directory the agent has not created yet), create the directory first, then
+set the rule.
 
 On mount, the CLI reads `yolofs.toml` and applies all `[rules]` via ioctl.
 
@@ -162,9 +178,13 @@ On mount, the CLI reads `yolofs.toml` and applies all `[rules]` via ioctl.
 **Removing a rule** (`yolo rule unset /foo/bar`):
 
 1. Remove the rule from `yolofs.toml`.
-2. If a mount exists, also apply live:
-   `ioctl(YOLO_IOC_RULE_SET)` with perm `UNSET` -> kernel sets
-   `YOLO_D(dentry)->perm = UNSET`, unpins the dentry, and bumps `perm_gen`.
+2. If a mount exists, also apply live: open the target through the mount
+   with `O_PATH` and send `ioctl(YOLO_IOC_RULE_SET)` with perm `UNSET` ->
+   kernel sets `YOLO_D(dentry)->perm = UNSET`, unpins the dentry, and bumps
+   `perm_gen`. Rule dentries are pinned in the dcache and `hide` is enforced
+   at readdir/getattr/open — not at lookup — so a hidden path still resolves
+   for the owning user outside the mount, which is what makes unsetting a
+   `hide` rule possible.
 
 **Permission resolution — cached on inode, resolved lazily**:
 
@@ -468,11 +488,14 @@ Landlock is a Linux Security Module (LSM) for unprivileged process
 sandboxing. It shares the goal of path-based access control but differs
 significantly in design.
 
-**Rule interface**: Landlock uses file descriptors to identify paths. The
-userspace process opens a path with `O_PATH`, passes the fd to
-`landlock_add_rule()`, and the kernel resolves it to an inode. Rules follow
-the inode, not the name — immune to rename attacks. YoloFS uses path strings
-resolved to dentries; rules are name-based and stay on the dentry.
+**Rule interface**: both use file descriptors to identify rule targets — the
+userspace process opens the path with `O_PATH` and passes the fd
+(`landlock_add_rule()` / `YOLO_IOC_RULE_SET`), so registration is a single
+resolution with no kernel-side re-walk. They diverge in what the rule
+attaches to: Landlock resolves the fd to an *inode*, so rules follow the
+object across renames; YoloFS takes the fd's *dentry*, so rules are
+name-based — a file renamed away from a ruled path falls back to its new
+location's inherited rule.
 
 **Rule storage**: Landlock stores rules in an rb-tree keyed by inode object
 pointer, one tree per ruleset. On access, it walks up every ancestor of the
@@ -504,7 +527,7 @@ rules and staging area).
 
 | Aspect | Landlock | YoloFS |
 |---|---|---|
-| Rule target | fd -> inode (follows renames) | path -> dentry (name-based) |
+| Rule target | fd -> inode (follows renames) | fd -> dentry (name-based) |
 | Rule storage | rb-tree per ruleset | `perm` field on dentry |
 | Access check | O(depth x log n) per ancestor | O(1) via inode cache + gen counter |
 | Overlap support | Additive only (can't deny child of allowed parent) | Nearest-ancestor wins (both directions) |

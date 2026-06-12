@@ -206,6 +206,39 @@ fn assert_errno(result: anyhow::Result<()>, expected: nix::errno::Errno) {
     );
 }
 
+/// Open a non-blocking ctl fd and claim daemon status with a first GET_ASK
+/// (which must report EAGAIN). Claiming *before* spawning a reader thread
+/// closes a race: with no daemon connected the kernel denies asks instantly
+/// without enqueuing them, so a blocking GET_ASK issued after the reader
+/// could wait forever for an ask that was already settled.
+fn claim_daemon(s: &YoloSession) -> std::fs::File {
+    let ctl_file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(s.root.join(".yolofs/mnt"))
+        .expect("open nonblocking ioctl fd");
+    assert_eq!(
+        ioctl::get_ask(&ctl_file).expect_err("no ask should be pending yet"),
+        nix::errno::Errno::EAGAIN
+    );
+    ctl_file
+}
+
+/// Dequeue the next ask from a non-blocking ctl fd, polling with a deadline
+/// so a missing ask fails the test instead of hanging it.
+fn poll_get_ask(ctl_file: &std::fs::File) -> ioctl::Ask {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match ioctl::get_ask(ctl_file) {
+            Ok(req) => return req,
+            Err(nix::errno::Errno::EAGAIN) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("no ask delivered within the deadline: {e}"),
+        }
+    }
+}
+
 /// Interactive `yolofs watch` — daemon reads "y\n" from piped stdin and
 /// responds Allow.  A subsequent read through the mount should succeed.
 #[test]
@@ -329,11 +362,11 @@ fn interactive_watch_unknown_input_denies_read() {
 #[test]
 fn put_decision_rejects_invalid_decisions() {
     let (s, _path) = session_with_ask_file();
-    let ctl_file = ioctl::open(&s.root.join(".yolofs")).expect("open ioctl fd");
+    let ctl_file = claim_daemon(&s);
     let path = s.mnt_path("hello.txt");
 
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
-    let req = ioctl::get_ask(&ctl_file).expect("dequeue ask");
+    let req = poll_get_ask(&ctl_file);
 
     assert_errno(
         ioctl::put_decision_raw(&ctl_file, req.id, 2),
@@ -353,12 +386,12 @@ fn put_decision_rejects_invalid_decisions() {
 #[test]
 fn put_decision_rejects_non_daemon_fd() {
     let (s, _path) = session_with_ask_file();
-    let daemon_fd = ioctl::open(&s.root.join(".yolofs")).expect("open daemon ioctl fd");
+    let daemon_fd = claim_daemon(&s);
     let other_fd = ioctl::open(&s.root.join(".yolofs")).expect("open second ioctl fd");
     let path = s.mnt_path("hello.txt");
 
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
-    let req = ioctl::get_ask(&daemon_fd).expect("dequeue ask");
+    let req = poll_get_ask(&daemon_fd);
 
     assert_errno(
         ioctl::put_decision(&other_fd, req.id, Decision::Allow),
@@ -375,11 +408,11 @@ fn put_decision_rejects_non_daemon_fd() {
 #[test]
 fn daemon_close_denies_dispatched_ask() {
     let (s, _path) = session_with_ask_file();
-    let ctl_file = ioctl::open(&s.root.join(".yolofs")).expect("open ioctl fd");
+    let ctl_file = claim_daemon(&s);
     let path = s.mnt_path("hello.txt");
 
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
-    let _req = ioctl::get_ask(&ctl_file).expect("dequeue ask");
+    let _req = poll_get_ask(&ctl_file);
     drop(ctl_file);
 
     let result = reader.join().expect("reader thread should not panic");
@@ -391,15 +424,7 @@ fn daemon_close_denies_dispatched_ask() {
 #[test]
 fn daemon_close_denies_pending_ask() {
     let (s, _path) = session_with_ask_file();
-    let ctl_file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(s.root.join(".yolofs/mnt"))
-        .expect("open nonblocking ioctl fd");
-    assert_eq!(
-        ioctl::get_ask(&ctl_file).expect_err("no ask should be pending yet"),
-        nix::errno::Errno::EAGAIN
-    );
+    let ctl_file = claim_daemon(&s);
 
     let path = s.mnt_path("hello.txt");
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
@@ -421,15 +446,15 @@ fn dispatched_ask_times_out_to_deny() {
     .expect("session setup");
     s.cli(&["rule", "ask", "hello.txt"]).unwrap();
 
-    let ctl_file = ioctl::open(&s.root.join(".yolofs")).expect("open ioctl fd");
+    let ctl_file = claim_daemon(&s);
     let path = s.mnt_path("hello.txt");
 
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
-    let _req = ioctl::get_ask(&ctl_file).expect("dequeue ask");
+    let req = poll_get_ask(&ctl_file);
 
     let result = reader.join().expect("reader thread should not panic");
     assert_errno(
-        ioctl::put_decision(&ctl_file, _req.id, Decision::Allow),
+        ioctl::put_decision(&ctl_file, req.id, Decision::Allow),
         nix::errno::Errno::ENOENT,
     );
     drop(ctl_file);
@@ -449,15 +474,7 @@ fn pending_ask_times_out_and_is_removed() {
     .expect("session setup");
     s.cli(&["rule", "ask", "hello.txt"]).unwrap();
 
-    let ctl_file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(s.root.join(".yolofs/mnt"))
-        .expect("open nonblocking ioctl fd");
-    assert_eq!(
-        ioctl::get_ask(&ctl_file).expect_err("no ask should be pending yet"),
-        nix::errno::Errno::EAGAIN
-    );
+    let ctl_file = claim_daemon(&s);
 
     let path = s.mnt_path("hello.txt");
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
@@ -495,11 +512,11 @@ fn get_ask_reports_rule_source() {
         ..Default::default()
     })
     .expect("session setup");
-    let ctl_file = ioctl::open(&s.root.join(".yolofs")).expect("open ioctl fd");
+    let ctl_file = claim_daemon(&s);
     let path = s.mnt_path("hello.txt");
 
     let writer = std::thread::spawn(move || std::fs::write(path, "modified\n"));
-    let req = ioctl::get_ask(&ctl_file).expect("dequeue ask");
+    let req = poll_get_ask(&ctl_file);
 
     assert_eq!(req.access_path, format!("{}/hello.txt", s.root.display()));
     assert_eq!(req.rule_path.as_deref(), Some("/"));

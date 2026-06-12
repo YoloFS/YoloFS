@@ -205,3 +205,68 @@ fn rename_across_permission_boundary() {
         .expect("file should still be in allowed dir");
     assert_eq!(content, "content\n");
 }
+
+// ── fd-based rule targets ──
+
+/// Rule targets reach the kernel as O_PATH fds, so a rule path is not capped
+/// by the kernel's YOLO_PATH_MAX (256 bytes) — which the through-mount form
+/// (`<mnt>/<abs-path>`) used to overflow easily on deep trees.
+#[test]
+fn rule_on_path_longer_than_yolo_path_max() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    // Build a directory whose absolute path alone exceeds 256 bytes.
+    let mut rel = std::path::PathBuf::new();
+    for _ in 0..5 {
+        rel = rel.join("d".repeat(60));
+    }
+    let deep = s.root.join(&rel);
+    fs::create_dir_all(&deep).expect("mkdir deep");
+    fs::write(deep.join("file.txt"), "deep\n").expect("seed deep file");
+    let deep_str = deep.display().to_string();
+    assert!(
+        deep_str.len() > 256,
+        "test premise: rule path must exceed YOLO_PATH_MAX, got {}",
+        deep_str.len()
+    );
+
+    s.cli(&["rule", "deny", &deep_str])
+        .expect("setting a rule on a >256-byte path should succeed");
+
+    let through = s.mnt_path(&rel.join("file.txt").display().to_string());
+    assert!(
+        fs::read_to_string(&through).is_err(),
+        "deny rule on the deep path must be enforced"
+    );
+}
+
+/// Unsetting a `hide` rule live must work: the rule's pinned dentry stays
+/// findable in the dcache and hide is enforced at readdir/getattr/open — not
+/// at the path walk — so the CLI (outside the mount, owning uid) can still
+/// open the hidden target with O_PATH to manage its rule.
+#[test]
+fn hide_rule_unset_live_restores_visibility() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let secret = s.root.join("subdir").display().to_string();
+    s.cli(&["rule", "hide", &secret]).expect("set hide rule");
+    assert!(
+        fs::metadata(s.mnt_path("subdir")).is_err(),
+        "hidden path must stat ENOENT through the mount"
+    );
+
+    s.cli(&["rule", "unset", &secret])
+        .expect("unsetting a hide rule must succeed while the path is hidden");
+    assert!(
+        fs::metadata(s.mnt_path("subdir")).is_ok(),
+        "path must be visible again after the hide rule is unset"
+    );
+}

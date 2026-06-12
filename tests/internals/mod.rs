@@ -13,6 +13,7 @@ mod test_mkdir;
 mod test_ownership;
 mod test_rename;
 mod test_resolution;
+mod test_rule_fd;
 mod test_snapshot;
 mod test_symlink;
 mod test_travel;

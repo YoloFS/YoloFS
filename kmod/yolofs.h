@@ -59,11 +59,14 @@ enum yolo_decision {
 	YOLO_DECISION_ALLOW	= 1,	/* allow the current operation */
 };
 
+/* userspace ↔ kernel: YOLO_IOC_RULE_SET / RULE_RESOLVE. The target is an
+ * O_PATH fd opened through the mount — resolved once, by the caller's own
+ * open(); the kernel never re-walks a path string, checks the exact dentry
+ * the rule attaches to, and rule paths are not capped by YOLO_PATH_MAX. */
 struct yolo_ioc_rule {
-	__u64	path_ptr;		/* userspace pointer to path string */
-	__u16	path_len;		/* length excluding NUL */
-	__u8	perm;			/* enum yolo_perm value */
-	__u8	_pad[5];
+	__s32	fd;			/* in: O_PATH fd of the rule target */
+	__u8	perm;			/* in: enum yolo_perm (UNSET clears); out for RESOLVE */
+	__u8	_pad[3];
 };
 
 /* Snapshot flags */

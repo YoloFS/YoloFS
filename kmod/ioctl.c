@@ -216,12 +216,13 @@ void yolo_release_pinned_rules(struct yolo_sb_info *sbi)
 	}
 }
 
-/* ── Path copy helper ──────────────────────────────────────────────── */
+/* ── String copy helper ────────────────────────────────────────────── */
 
 /*
- * Copy a variable-length path from userspace into a caller-provided buffer.
- * The buffer must be at least YOLO_PATH_MAX bytes.
- * Paths are limited to YOLO_PATH_MAX-1 bytes (same as internal buffers).
+ * Copy a variable-length string from userspace into a caller-provided buffer.
+ * The buffer must be at least YOLO_PATH_MAX bytes; values are limited to
+ * YOLO_PATH_MAX-1 bytes (same as internal buffers). Used by SNAPSHOT for the
+ * snapshot name — rule targets are passed as fds, not strings.
  */
 static int yolo_copy_user_path(__u64 ptr, __u16 len, char *buf)
 {
@@ -235,37 +236,47 @@ static int yolo_copy_user_path(__u64 ptr, __u16 len, char *buf)
 	return 0;
 }
 
+/*
+ * Resolve the rule target from the O_PATH fd in the ioctl payload. The fd was
+ * opened by the CLI through the mount, so the path walk already happened in
+ * userspace; here we only validate the object: it must live on this mount
+ * (-EXDEV) and still be reachable by name (-EINVAL on unlinked — an fd can
+ * outlive its path, which kern_path never produced; a rule there would pin a
+ * dentry no lookup reaches). On success *rule_path holds its own reference,
+ * independent of the fd; callers drop it with path_put().
+ */
 static int yolo_resolve_rule(struct file *file, unsigned long arg,
 			     struct yolo_ioc_rule *rule,
 			     struct path *rule_path,
 			     struct yolo_dentry_info **di_out)
 {
-	char path_buf[YOLO_PATH_MAX];
-	int err;
+	struct file *target;
+	int err = 0;
 
 	if (copy_from_user(rule, (void __user *)arg, sizeof(*rule)))
 		return -EFAULT;
 
-	err = yolo_copy_user_path(rule->path_ptr, rule->path_len, path_buf);
-	if (err)
-		return err;
+	/* fget_raw, not fget: plain fget masks out O_PATH (FMODE_PATH) files,
+	 * and the CLI opens rule targets with O_PATH (fdget_raw would do, but
+	 * its __fdget_raw helper is not exported to modules). */
+	target = fget_raw(rule->fd);
+	if (!target)
+		return -EBADF;
 
-	err = kern_path(path_buf, LOOKUP_FOLLOW, rule_path);
-	if (err)
-		return err;
+	if (target->f_path.dentry->d_sb != file_inode(file)->i_sb)
+		err = -EXDEV;
+	else if (d_unlinked(target->f_path.dentry))
+		err = -EINVAL;
+	else if (!YOLO_D(target->f_path.dentry))
+		err = -ENOENT;
 
-	if (rule_path->dentry->d_sb != file_inode(file)->i_sb) {
-		path_put(rule_path);
-		return -EXDEV;
+	if (!err) {
+		*rule_path = target->f_path;
+		path_get(rule_path);
+		*di_out = YOLO_D(rule_path->dentry);
 	}
-
-	*di_out = YOLO_D(rule_path->dentry);
-	if (!*di_out) {
-		path_put(rule_path);
-		return -ENOENT;
-	}
-
-	return 0;
+	fput(target);
+	return err;
 }
 
 /* ── Rule / snapshot ioctl handlers ─────────────────────────────────── */

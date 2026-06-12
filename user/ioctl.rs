@@ -11,7 +11,9 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
-/// Maximum path length (including NUL) — must match kmod/yolofs.h.
+/// Maximum path length (including NUL) for the ask protocol's path buffers —
+/// must match kmod/yolofs.h. Rule targets are not subject to it (they are
+/// passed as O_PATH fds, not paths).
 pub const YOLO_PATH_MAX: usize = 256;
 
 // Operation types
@@ -40,13 +42,15 @@ nix::ioctl_readwrite!(ioctl_snapshot, b'A', 40, YoloIocSnapshot);
 nix::ioctl_readwrite!(ioctl_travel, b'A', 41, YoloIocTravel);
 nix::ioctl_write_ptr!(ioctl_restore, b'A', 42, YoloIocRestore);
 
-/// Matches `struct yolo_ioc_rule` in the kernel.
+/// Matches `struct yolo_ioc_rule` in the kernel. The rule target is an
+/// O_PATH fd opened through the mount (see [`open_rule_target`]): the path
+/// walk happens once, in our `open()`, and the kernel validates the exact
+/// dentry the rule attaches to instead of re-resolving a string.
 #[repr(C)]
 pub struct YoloIocRule {
-    pub path_ptr: u64,
-    pub path_len: u16,
+    pub fd: i32,
     pub perm: u8,
-    pub _pad: [u8; 5],
+    pub _pad: [u8; 3],
 }
 
 /// Matches `struct yolo_ioc_ask` in the kernel (kernel → userspace).
@@ -204,31 +208,52 @@ pub fn open(yolo_dir: &Path) -> Result<File> {
     }
 }
 
-fn make_rule(path: &str, perm: u8) -> Result<YoloIocRule> {
-    let bytes = path.as_bytes();
-    let path_len: u16 = bytes.len().try_into().context("path too long")?;
-    Ok(YoloIocRule {
-        path_ptr: bytes.as_ptr() as u64,
-        path_len,
+/// Open a rule target for [`set_rule`] / [`resolve_rule`]: an O_PATH fd of
+/// `path` as seen through the mount. O_PATH skips the filesystem's open hook
+/// and read-permission checks, so even `deny`-ruled targets can have their
+/// rules managed; symlinks are followed, matching the old kern_path contract.
+/// Returns `io::Result` so callers can match on `ErrorKind::NotFound`.
+pub fn open_rule_target(path: impl AsRef<Path>) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // The access mode is ignored under O_PATH; read(true) only satisfies
+    // OpenOptions' requirement that one is set.
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+        .open(path)
+}
+
+/// Issue RULE_SET with a raw target fd, returning the bare errno. White-box
+/// tests use this to probe the kernel's fd validation with fds no
+/// [`open_rule_target`] would produce (closed, outside the mount, unlinked).
+pub fn set_rule_raw(
+    fd: &File,
+    target_fd: i32,
+    perm: u8,
+) -> std::result::Result<(), nix::errno::Errno> {
+    let rule = YoloIocRule {
+        fd: target_fd,
         perm,
-        _pad: [0u8; 5],
-    })
+        _pad: [0u8; 3],
+    };
+    unsafe { ioctl_rule_set(fd.as_raw_fd(), &rule) }.map(drop)
 }
 
 /// Send YOLO_IOC_RULE_SET ioctl. `perm == YOLO_PERM_UNSET` clears the rule.
-pub fn set_rule(fd: &File, path: &str, perm: u8) -> Result<()> {
-    let rule = make_rule(path, perm)?;
-    unsafe { ioctl_rule_set(fd.as_raw_fd(), &rule) }
-        .with_context(|| format!("ioctl RULE_SET for {path}"))?;
+pub fn set_rule(fd: &File, target: &File, perm: u8) -> Result<()> {
+    set_rule_raw(fd, target.as_raw_fd(), perm).context("ioctl RULE_SET")?;
     Ok(())
 }
 
 /// Send YOLO_IOC_RULE_RESOLVE ioctl. Returns the effective perm the kernel
-/// would enforce for `path` (resolved by walking up to the nearest rule).
-pub fn resolve_rule(fd: &File, path: &str) -> Result<u8> {
-    let mut rule = make_rule(path, YOLO_PERM_UNSET)?;
-    unsafe { ioctl_rule_resolve(fd.as_raw_fd(), &mut rule) }
-        .with_context(|| format!("ioctl RULE_RESOLVE for {path}"))?;
+/// would enforce for `target` (resolved by walking up to the nearest rule).
+pub fn resolve_rule(fd: &File, target: &File) -> Result<u8> {
+    let mut rule = YoloIocRule {
+        fd: target.as_raw_fd(),
+        perm: YOLO_PERM_UNSET,
+        _pad: [0u8; 3],
+    };
+    unsafe { ioctl_rule_resolve(fd.as_raw_fd(), &mut rule) }.context("ioctl RULE_RESOLVE")?;
     Ok(rule.perm)
 }
 
@@ -303,7 +328,7 @@ mod tests {
         // Must match the kernel struct sizes for binary protocol compat
         assert_eq!(size_of::<YoloIocAsk>(), 552);
         assert_eq!(size_of::<YoloIocDecision>(), 16);
-        assert_eq!(size_of::<YoloIocRule>(), 16);
+        assert_eq!(size_of::<YoloIocRule>(), 8);
         assert_eq!(size_of::<YoloIocSnapshot>(), 24);
         assert_eq!(size_of::<YoloIocTravel>(), 32);
         assert_eq!(size_of::<YoloIocRestore>(), 40);
@@ -346,16 +371,23 @@ mod tests {
     }
 
     #[test]
-    fn make_rule_basic() {
-        let rule = make_rule("/foo/bar", YOLO_PERM_ALLOW).unwrap();
-        assert_eq!(rule.path_len, 8);
-        assert_eq!(rule.perm, YOLO_PERM_ALLOW);
-        assert_eq!(rule.path_ptr, "/foo/bar".as_ptr() as u64);
+    fn open_rule_target_missing_path_is_not_found() {
+        let err = open_rule_target("/nonexistent/rule/target").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
-    fn make_rule_rejects_oversized_path() {
-        let long = "a".repeat(u16::MAX as usize + 1);
-        assert!(make_rule(&long, YOLO_PERM_DENY).is_err());
+    fn open_rule_target_opens_unreadable_file() {
+        // O_PATH must succeed even where a normal read open would fail.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("yolo-opath-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secret");
+        std::fs::write(&path, b"x").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let opened = open_rule_target(path.to_str().unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+        let f = opened.unwrap();
+        assert!(f.as_raw_fd() >= 0);
     }
 }
