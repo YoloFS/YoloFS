@@ -458,42 +458,49 @@ struct dir_frame {
 
 /*
  * Parse the target-specific payload from @cur and inject the corresponding
- * dentry under @parent.  Scaffold (tag 0) entries have no payload.
+ * dentry under @parent. Scaffold entries (TARGET_PATH with path_len == 0)
+ * have no overlay state and create no dentry.
+ *
+ * Returns the injected dentry (borrowed — its ref is the staging pin), NULL
+ * for a scaffold, or ERR_PTR. Staged inodes are stamped by @cow_ino_floor:
+ * above it (live-segment edits) at @gen, write-in-place; at or below it
+ * (snapshot-retained content) one generation behind, so the first write
+ * re-COWs.
  */
-static int travel_inject_entry(struct tree_cursor *cur,
-				struct yolo_sb_info *sbi,
-				struct dentry *parent,
-				const u8 *name_ptr, u16 name_len,
-				u8 target, u16 gen)
+static struct dentry *travel_inject_entry(struct tree_cursor *cur,
+					  struct yolo_sb_info *sbi,
+					  struct dentry *parent,
+					  const u8 *name_ptr, u16 name_len,
+					  u8 target, u16 gen,
+					  u32 cow_ino_floor)
 {
 	struct path lower_path;
 	struct dentry *child;
 	int err;
 
 	switch (target) {
-	case YOLO_TARGET_NONE: { /* tombstone */
-		child = yolo_dentry_create(parent, (const char *)name_ptr,
-					   name_len, YOLO_TARGET_NONE, NULL);
-		return IS_ERR(child) ? PTR_ERR(child) : 0;
-	}
+	case YOLO_TARGET_NONE: /* tombstone */
+		return yolo_dentry_create(parent, (const char *)name_ptr,
+					  name_len, YOLO_TARGET_NONE, NULL);
 
 	case YOLO_TARGET_INODE: { /* staged inode */
 		u32 ino;
 
 		err = read_le32(cur, &ino);
 		if (err)
-			return err;
+			return ERR_PTR(err);
 		err = yolo_inode_path(sbi, ino, &lower_path);
 		if (err)
-			return err;
+			return ERR_PTR(err);
 		child = yolo_dentry_create(parent, (const char *)name_ptr,
 					   name_len, YOLO_TARGET_INODE,
 					   &lower_path);
 		if (IS_ERR(child))
-			return PTR_ERR(child);
-		YOLO_I(d_inode(child))->staging_gen = gen;
+			return child;
+		YOLO_I(d_inode(child))->staging_gen =
+			(ino > cow_ino_floor) ? gen : (gen ? gen - 1 : 0);
 		YOLO_I(d_inode(child))->staging_ino = ino;
-		return 0;
+		return child;
 	}
 
 	case YOLO_TARGET_PATH: { /* redirect, or passthrough if path_len == 0 */
@@ -503,35 +510,35 @@ static int travel_inject_entry(struct tree_cursor *cur,
 
 		err = read_le16(cur, &base_len);
 		if (err)
-			return err;
+			return ERR_PTR(err);
 
-		if (base_len == 0) /* passthrough — no state to set */
-			return 0;
+		if (base_len == 0) /* passthrough scaffold — no state to set */
+			return NULL;
 
 		if (base_len >= YOLO_PATH_MAX)
-			return -EINVAL;
+			return ERR_PTR(-EINVAL);
 		err = read_bytes(cur, base_len, &base_ptr);
 		if (err)
-			return err;
+			return ERR_PTR(err);
 
 		memcpy(path_buf, base_ptr, base_len);
 		path_buf[base_len] = '\0';
 		err = kern_path(path_buf, LOOKUP_FOLLOW, &lower_path);
 		if (err)
-			return err;
-		child = yolo_dentry_create(parent, (const char *)name_ptr,
-					   name_len, YOLO_TARGET_PATH,
-					   &lower_path);
-		return IS_ERR(child) ? PTR_ERR(child) : 0;
+			return ERR_PTR(err);
+		return yolo_dentry_create(parent, (const char *)name_ptr,
+					  name_len, YOLO_TARGET_PATH,
+					  &lower_path);
 	}
 
 	default:
-		return -EINVAL;
+		return ERR_PTR(-EINVAL);
 	}
 }
 
 static int yolo_view_inject(struct file *file, struct yolo_sb_info *sbi,
-			    u64 tree_ptr, u64 tree_len, u16 gen)
+			    u64 tree_ptr, u64 tree_len, u16 gen,
+			    u32 cow_ino_floor)
 {
 	struct dir_frame stack[YOLO_TRAVEL_MAX_DEPTH];
 	struct tree_cursor cur;
@@ -570,6 +577,7 @@ static int yolo_view_inject(struct file *file, struct yolo_sb_info *sbi,
 	while (depth >= 0) {
 		u16 name_len, child_count;
 		const u8 *name_ptr;
+		struct dentry *child;
 		u8 target;
 
 		if (stack[depth].remaining == 0) {
@@ -595,10 +603,13 @@ static int yolo_view_inject(struct file *file, struct yolo_sb_info *sbi,
 		err = read_u8(&cur, &target);
 		if (err)
 			goto out_unwind;
-		err = travel_inject_entry(&cur, sbi, stack[depth].dentry,
-					   name_ptr, name_len, target, gen);
-		if (err)
+		child = travel_inject_entry(&cur, sbi, stack[depth].dentry,
+					    name_ptr, name_len, target, gen,
+					    cow_ino_floor);
+		if (IS_ERR(child)) {
+			err = PTR_ERR(child);
 			goto out_unwind;
+		}
 
 		/* Read child_count */
 		err = read_le16(&cur, &child_count);
@@ -609,13 +620,15 @@ static int yolo_view_inject(struct file *file, struct yolo_sb_info *sbi,
 		if (child_count == 0)
 			continue;
 
-		{
-			struct dentry *child;
-
-			if (depth + 1 >= YOLO_TRAVEL_MAX_DEPTH) {
-				err = -EINVAL;
-				goto out_unwind;
-			}
+		if (depth + 1 >= YOLO_TRAVEL_MAX_DEPTH) {
+			err = -EINVAL;
+			goto out_unwind;
+		}
+		if (child) {
+			/* Descend into the dentry just injected. */
+			dget(child);
+		} else {
+			/* Scaffold — the name resolves through base. */
 			child = lookup_one_len_unlocked(
 					(const char *)name_ptr,
 					stack[depth].dentry, name_len);
@@ -623,10 +636,10 @@ static int yolo_view_inject(struct file *file, struct yolo_sb_info *sbi,
 				err = PTR_ERR(child);
 				goto out_unwind;
 			}
-			depth++;
-			stack[depth].dentry = child;
-			stack[depth].remaining = child_count;
 		}
+		depth++;
+		stack[depth].dentry = child;
+		stack[depth].remaining = child_count;
 	}
 
 check_trailing:
@@ -672,15 +685,25 @@ static void yolo_staging_quiesce(struct super_block *sb,
 /* Replace the staged view. Caller holds staging.sem for write. */
 static int yolo_set_view_locked(struct file *file, struct yolo_sb_info *sbi,
 				u64 tree_ptr, u64 tree_len, u16 gen,
-				u16 inode_gen)
+				u32 cow_ino_floor)
 {
 	struct super_block *sb = file_inode(file)->i_sb;
+	int err;
+
 	if (atomic_read(&sbi->staging.fd_count) > 0)
 		return -EBUSY;
 
 	yolo_staging_quiesce(sb, sbi);
 	atomic_set(&sbi->staging.gen, gen);
-	return yolo_view_inject(file, sbi, tree_ptr, tree_len, inode_gen);
+	err = yolo_view_inject(file, sbi, tree_ptr, tree_len, gen,
+			       cow_ino_floor);
+	if (err) {
+		/* Drop the partial view — a failed inject (e.g. base drift
+		 * broke a redirect) falls back to the clean base, never a
+		 * half-injected overlay. */
+		yolo_staging_quiesce(sb, sbi);
+	}
+	return err;
 }
 
 static long yolo_restore_ioctl(struct file *file, unsigned long arg)
@@ -695,14 +718,18 @@ static long yolo_restore_ioctl(struct file *file, unsigned long arg)
 		return -EFAULT;
 	if (hdr.gen > U16_MAX || hdr.dirty > 1)
 		return -EINVAL;
+	/* A nonzero floor implies a marker, whose gen is >= 1. Accepting it with
+	 * gen 0 would stamp snapshot-retained inos (<= floor) at gen 0 == current
+	 * and let writes mutate them in place. */
+	if (hdr.cow_ino_floor && !hdr.gen)
+		return -EINVAL;
 
 	down_write(&sbi->staging.sem);
 	err = yolo_set_view_locked(file, sbi, hdr.tree_ptr, hdr.tree_len,
-				   (u16)hdr.gen,
-				   hdr.gen ? (u16)(hdr.gen - 1) : 0);
+				   (u16)hdr.gen, hdr.cow_ino_floor);
 	if (!err) {
-		if ((u32)atomic_read(&sbi->staging.next_ino) < hdr.max_ino)
-			atomic_set(&sbi->staging.next_ino, (int)hdr.max_ino);
+		if ((u32)atomic_read(&sbi->staging.next_ino) < hdr.alloc_ino_floor)
+			atomic_set(&sbi->staging.next_ino, (int)hdr.alloc_ino_floor);
 		WRITE_ONCE(sbi->staging.dirty, hdr.dirty);
 	}
 
@@ -742,14 +769,17 @@ static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 	}
 	new_gen = (u16)(atomic_read(&sbi->staging.gen) + 1);
 
+	/* floor 0: every store ino is > 0, so the whole injected view stamps
+	 * at new_gen — travel keeps its write-in-place behavior. */
 	err = yolo_set_view_locked(file, sbi, hdr.tree_ptr, hdr.tree_len,
-				   new_gen, new_gen);
+				   new_gen, 0);
 	if (!err)
 		err = yolo_journal_travel(sbi, new_gen, hdr.target_gen);
-	/* Don't rollback gen on failure — dirents may already be injected
-	 * with new_gen.  Rolling back would leave those dirents with a gen
-	 * higher than sbi->staging.gen, breaking COW checks.  The CLI can retry
-	 * the operation or abort (which resets gen to 0). */
+	/* Don't rollback gen on failure — a failed inject quiesces back to
+	 * base, but inodes touched during injection may keep new_gen stamps
+	 * in the icache; rolling gen back would make those read as current
+	 * and skip COW.  Gen stays monotonic; the CLI can retry the
+	 * operation or abort (which resets gen to 0). */
 	if (!err)
 		WRITE_ONCE(sbi->staging.dirty, false);
 

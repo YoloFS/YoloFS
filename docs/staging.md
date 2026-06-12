@@ -63,18 +63,31 @@ mount is an in-memory projection of that artifact: pinned dentries are rebuilt
 on mounting an existing session by parsing the journal in userspace and
 calling `YOLO_IOC_RESTORE`. The ioctl receives the serialized current tree,
 the latest P/T generation, whether the trailing live segment contains S/D/R
-records, and the maximum inode id across every journal S record. It writes no
-journal record.
+records, and two distinct ino high-water marks: `alloc_ino_floor` (the maximum across
+every journal S record, including dead segments) and `cow_ino_floor` (the
+maximum at or before the latest marker). `alloc_ino_floor` re-arms the allocator —
+`next_ino` must clear every ino ever allocated, because dead-segment and
+deleted-live inodes still occupy the store until commit/abort cleans them.
+`cow_ino_floor` is the content boundary for COW stamping (store inos are
+monotonic, so any ino above it was created by the live segment). The two
+coincide exactly when the live segment has no S records; neither is derivable
+from the tree, which omits inos whose files were later deleted or
+renamed-over. The ioctl writes no journal record.
 
 Restore runs for every surviving artifact, including an empty current tree,
 because generation continuity is independent of whether anything is currently
 staged. The kernel rejects restore and travel while staging write fds are
 open. Both operations replace the view through the same guarded helper.
-RESTORE conservatively stamps injected staged inodes one generation behind
+RESTORE stamps each injected staged inode by `cow_ino_floor`: inos at or
+below the floor (content retained by a snapshot) stamp one generation behind
 the restored current generation, so their first post-remount write re-COWs
-instead of mutating content retained by a snapshot. TRAVEL stamps its injected
-view at the newly created travel generation, preserving travel's existing
-write-in-place behavior.
+instead of mutating snapshot content; inos above it (the live segment's own
+edits) stamp at the current generation and resume write-in-place — no
+spurious re-COW after a remount. TRAVEL passes floor 0, so its whole injected
+view stamps at the newly created travel generation, preserving travel's
+existing write-in-place behavior. If injection fails partway (e.g. base
+drift broke a redirect), the kernel quiesces again, so a failed restore or
+travel always leaves the clean base view, never a partial overlay.
 
 While the artifact is unmounted, the base can drift. In particular, a rename
 redirect's base source can disappear. Such a restore fails; the CLI tears down
@@ -689,7 +702,8 @@ I/O redirection. The `yolo` CLI reads the journal and applies or discards.
    saves must complete before any destination is written.
 4. If a live view exists, signal the kernel to restore the base view
    (`YOLO_IOC_RESTORE` with a serialized empty tree, `gen = 0`,
-   `dirty = false`, and `max_ino = 0`; no journal record written). The ioctl
+   `dirty = false`, `alloc_ino_floor = 0`, and `cow_ino_floor = 0`; no journal
+   record written). The ioctl
    rejects open staging fds before the artifact is cleared.
 5. Remove all files under `.yolofs/inodes/` and truncate `.yolofs/journal`.
 

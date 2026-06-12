@@ -1130,3 +1130,41 @@ fn travel_to_base_is_non_destructive() {
         "base by name should not show a.txt"
     );
 }
+
+/// A travel whose view injection fails mid-tree (base drift broke a rename
+/// redirect) must leave the clean base view — not a partially injected
+/// overlay — and the session must stay recoverable.
+#[test]
+fn failed_travel_injection_falls_back_to_clean_base() {
+    let s = YoloSession::new().expect("session setup");
+
+    // aa.txt sorts before the redirect name, so it injects first; before the
+    // auto-quiesce fix a failed travel would have left it behind.
+    fs::write(s.mnt_path("aa.txt"), "staged\n").expect("stage aa.txt");
+    fs::rename(s.mnt_path("hello.txt"), s.mnt_path("renamed.txt")).expect("rename");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    fs::write(s.mnt_path("aa.txt"), "edited\n").expect("live edit");
+
+    // Base drift: the redirect's base source disappears.
+    fs::remove_file(s.base_path("hello.txt")).expect("drop base source");
+
+    let (ok, _, stderr) = s.cli_output(&["travel", "s1"]).expect("run travel");
+    assert!(!ok, "travel must fail when a redirect source is gone: {stderr}");
+
+    // The mount is still alive and shows the clean base — no partial overlay.
+    assert!(
+        s.mnt_path("yolofs.toml").exists(),
+        "mount should still be alive and show base content"
+    );
+    assert!(
+        !s.mnt_path("aa.txt").exists(),
+        "entries injected before the failure must be dropped too"
+    );
+    assert!(
+        !s.mnt_path("renamed.txt").exists(),
+        "the failed redirect must not be visible"
+    );
+
+    // The artifact is intact and the session recoverable.
+    s.cli(&["abort"]).expect("abort still works after failed travel");
+}

@@ -16,7 +16,7 @@ pub fn restore_base_view(yolofs: &Path) -> Result<()> {
     if super::mount::is_mountpoint(&mnt) {
         let tree = crate::journal::DirTree::default().serialize();
         let ctl_file = crate::ioctl::open(yolofs).context("opening ctl for restore")?;
-        crate::ioctl::restore(&ctl_file, 0, false, 0, &tree).context("ioctl RESTORE")?;
+        crate::ioctl::restore(&ctl_file, 0, false, 0, 0, &tree).context("ioctl RESTORE")?;
     }
     Ok(())
 }

@@ -22,11 +22,11 @@ else:
 #[test]
 fn restore_rejected_from_inside_mount() {
     let session = YoloSession::new().expect("session setup");
-    let restore_iow = (1u64 << 30) | (32u64 << 16) | (u64::from(b'A') << 8) | 42;
+    let restore_iow = (1u64 << 30) | (40u64 << 16) | (u64::from(b'A') << 8) | 42;
     assert_raw_ioctl_rejected_from_inside(
         &session,
         restore_iow,
-        "struct.pack('QQQIB3x', 0, 0, 0, 0, 0)",
+        "struct.pack('QQQIIB7x', 0, 0, 0, 0, 0, 0)",
     );
 }
 

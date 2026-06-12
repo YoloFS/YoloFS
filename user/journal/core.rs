@@ -19,8 +19,16 @@ pub struct Journal {
     pub latest_gen: u64,
     /// Whether the live tail after the latest snapshot/travel marker has a mutation.
     pub dirty: bool,
-    /// Highest inode id ever recorded by an S record, including dead segments.
-    pub max_ino: u32,
+    /// Highest inode id ever recorded by an S record, including dead segments
+    /// and deleted files — they still occupy the store until commit/abort, so
+    /// the kernel's allocator must resume above this.
+    pub alloc_ino_floor: u32,
+    /// Highest S-record ino as of the latest snapshot/travel marker. Inos
+    /// above it were created by the live segment (store inos are monotonic);
+    /// on restore the kernel stamps them current so they resume
+    /// write-in-place, while inos at or below it re-COW on first write
+    /// (snapshot-retained content).
+    pub cow_ino_floor: u32,
     /// Whether any live segment carries a staging action.
     pub has_staged_changes: bool,
 }
@@ -37,7 +45,8 @@ impl Journal {
         let mut current_from: u64 = 0;
         let mut latest_gen: u64 = 0;
         let mut dirty = false;
-        let mut max_ino = 0;
+        let mut alloc_ino_floor = 0;
+        let mut cow_ino_floor = 0;
 
         for record in records.into_iter() {
             match record {
@@ -49,6 +58,7 @@ impl Journal {
                     current_from = gen_id;
                     latest_gen = gen_id;
                     dirty = false;
+                    cow_ino_floor = alloc_ino_floor;
                     markers_vec.push(marker);
                 }
                 Record::Marker(marker @ Marker::Travel { gen_id, target_gen }) => {
@@ -60,9 +70,10 @@ impl Journal {
                     current_from = target_gen;
                     latest_gen = gen_id;
                     dirty = false;
+                    cow_ino_floor = alloc_ino_floor;
                 }
                 Record::Action(Action::Stage { ino, .. }) => {
-                    max_ino = max_ino.max(ino);
+                    alloc_ino_floor = alloc_ino_floor.max(ino);
                     dirty = true;
                     current_records.push(record);
                 }
@@ -96,7 +107,8 @@ impl Journal {
             alive,
             latest_gen,
             dirty,
-            max_ino,
+            alloc_ino_floor,
+            cow_ino_floor,
             has_staged_changes,
         }
     }
@@ -255,7 +267,9 @@ mod tests {
             }),
         ]);
         assert_eq!(clean.latest_gen, 1);
-        assert_eq!(clean.max_ino, 1);
+        assert_eq!(clean.alloc_ino_floor, 1);
+        // Clean tail: the floor catches up to alloc_ino_floor at the marker.
+        assert_eq!(clean.cow_ino_floor, 1);
         assert!(!clean.dirty);
 
         let dirty = Journal::new(vec![
@@ -270,7 +284,9 @@ mod tests {
             }),
         ]);
         assert_eq!(dirty.latest_gen, 1);
-        assert_eq!(dirty.max_ino, 2);
+        assert_eq!(dirty.alloc_ino_floor, 2);
+        // Live-tail S record: above the floor frozen at the marker.
+        assert_eq!(dirty.cow_ino_floor, 0);
         assert!(dirty.dirty);
 
         let traveled = Journal::new(vec![
@@ -289,8 +305,43 @@ mod tests {
             }),
         ]);
         assert_eq!(traveled.latest_gen, 2);
-        assert_eq!(traveled.max_ino, 2);
+        assert_eq!(traveled.alloc_ino_floor, 2);
+        // The floor catches up at the T marker even though ino 2 is now in a
+        // dead segment — conservative: the injected tree omits dead inos, so
+        // an over-high floor never mislabels a live ino as snapshot-retained.
+        assert_eq!(traveled.cow_ino_floor, 2);
         assert!(!traveled.dirty);
+
+        // Live tail after a travel: the floor freezes at the T marker while
+        // alloc keeps tracking the live segment's allocations.
+        let traveled_dirty = Journal::new(vec![
+            Record::Action(Action::Stage {
+                path: "/a".into(),
+                ino: 1,
+                pre: Target::Absence,
+            }),
+            Record::Marker(Marker::Snapshot {
+                gen_id: 1,
+                name: "one".into(),
+            }),
+            Record::Action(Action::Stage {
+                path: "/b".into(),
+                ino: 2,
+                pre: Target::Absence,
+            }),
+            Record::Marker(Marker::Travel {
+                gen_id: 2,
+                target_gen: 1,
+            }),
+            Record::Action(Action::Stage {
+                path: "/c".into(),
+                ino: 3,
+                pre: Target::Absence,
+            }),
+        ]);
+        assert_eq!(traveled_dirty.alloc_ino_floor, 3);
+        assert_eq!(traveled_dirty.cow_ino_floor, 2);
+        assert!(traveled_dirty.dirty);
     }
 
     // ── Segmentation tests (migrated from segment.rs) ────────────────

@@ -86,14 +86,22 @@ struct yolo_ioc_travel {
 	__u64	tree_ptr;		/* in: userspace pointer to tree buffer */
 };
 
-/* userspace ↔ kernel: replace the in-memory staged view without journaling */
+/* userspace ↔ kernel: replace the in-memory staged view without journaling.
+ * The two floors are both "max S-record ino" thresholds, differing in scope:
+ * alloc_ino_floor spans the full journal (dead segments and deleted files
+ * still occupy the store, so allocation must resume above every ino ever
+ * issued); cow_ino_floor stops at the latest P/T marker (injected inodes
+ * above it are live-segment edits and stamp at gen, write-in-place; at or
+ * below it they are snapshot-retained and stamp at gen-1, re-COW on first
+ * write). They coincide exactly when the live segment has no S records. */
 struct yolo_ioc_restore {
 	__u64	gen;			/* in: latest journal marker generation */
 	__u64	tree_len;		/* in: byte length of serialized tree */
 	__u64	tree_ptr;		/* in: userspace pointer to tree buffer */
-	__u32	max_ino;		/* in: maximum S-record ino in full journal */
+	__u32	alloc_ino_floor;	/* in: allocate store inos above this */
+	__u32	cow_ino_floor;		/* in: write-in-place only above this */
 	__u8	dirty;			/* in: live S/D/R exists after latest P/T */
-	__u8	_pad[3];
+	__u8	_pad[7];
 };
 
 /* kernel → userspace: dequeued permission ask */

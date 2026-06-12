@@ -101,9 +101,10 @@ pub struct YoloIocRestore {
     pub gen_id: u64,
     pub tree_len: u64,
     pub tree_ptr: u64,
-    pub max_ino: u32,
+    pub alloc_ino_floor: u32,
+    pub cow_ino_floor: u32,
     pub dirty: u8,
-    pub _pad: [u8; 3],
+    pub _pad: [u8; 7],
 }
 
 /// A dequeued ask with owned path data.
@@ -235,29 +236,40 @@ pub fn resolve_rule(fd: &File, path: &str) -> Result<u8> {
 /// snapshot/travel) by injecting that generation's serialized DirTree. Returns
 /// the new generation assigned. Commit/abort cleanup uses [`restore`], not travel.
 pub fn travel(fd: &File, target_gen: u64, tree_buf: &[u8]) -> Result<u64> {
+    // An empty DirTree still serializes to 2 bytes (the root child count),
+    // so tree_buf is never empty here.
     let mut hdr = YoloIocTravel {
         target_gen,
         new_gen: 0,
         tree_len: tree_buf.len() as u64,
-        tree_ptr: if tree_buf.is_empty() {
-            0
-        } else {
-            tree_buf.as_ptr() as u64
-        },
+        tree_ptr: tree_buf.as_ptr() as u64,
     };
     unsafe { ioctl_travel(fd.as_raw_fd(), &mut hdr) }.context("ioctl TRAVEL")?;
     Ok(hdr.new_gen)
 }
 
 /// Replace the kernel's in-memory staged view without writing a journal record.
-pub fn restore(fd: &File, gen_id: u64, dirty: bool, max_ino: u32, tree_buf: &[u8]) -> Result<()> {
+/// Both floors are "max S-record ino" thresholds: `alloc_ino_floor` over the
+/// full journal (the allocator resumes above it — dead/deleted inos still
+/// occupy the store), `cow_ino_floor` at the latest marker (injected inos
+/// above it resume write-in-place; at or below, they are snapshot-retained
+/// and re-COW on first write).
+pub fn restore(
+    fd: &File,
+    gen_id: u64,
+    dirty: bool,
+    alloc_ino_floor: u32,
+    cow_ino_floor: u32,
+    tree_buf: &[u8],
+) -> Result<()> {
     let hdr = YoloIocRestore {
         gen_id,
         tree_len: tree_buf.len() as u64,
         tree_ptr: tree_buf.as_ptr() as u64,
-        max_ino,
+        alloc_ino_floor,
+        cow_ino_floor,
         dirty: dirty.into(),
-        _pad: [0; 3],
+        _pad: [0; 7],
     };
     unsafe { ioctl_restore(fd.as_raw_fd(), &hdr) }.context("ioctl RESTORE")?;
     Ok(())
@@ -294,7 +306,7 @@ mod tests {
         assert_eq!(size_of::<YoloIocRule>(), 16);
         assert_eq!(size_of::<YoloIocSnapshot>(), 24);
         assert_eq!(size_of::<YoloIocTravel>(), 32);
-        assert_eq!(size_of::<YoloIocRestore>(), 32);
+        assert_eq!(size_of::<YoloIocRestore>(), 40);
     }
 
     #[test]

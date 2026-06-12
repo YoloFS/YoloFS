@@ -11,10 +11,13 @@ interposition. It adds two orthogonal capabilities:
 The `.yolofs/` directory is the durable session artifact; the mount is only
 its live, gated view. Mounting an existing artifact rebuilds that view from
 the journal and inode store with `YOLO_IOC_RESTORE`. Userspace supplies the
-serialized current tree, latest marker generation, dirty flag, and maximum
-inode id across all journal S records. Restore runs even when the current tree is empty so
-future marker ids remain monotonic. If restore fails, only the live view is
-torn down and the artifact remains available to `review`, `commit`, or
+serialized current tree, latest marker generation, dirty flag, and two ino
+floors digested from the journal: `alloc_ino_floor` (allocation resumes above
+the highest ino ever issued) and `cow_ino_floor` (the snapshot/live content
+boundary for COW stamping; see [staging.md](staging.md)). Restore runs even
+when the current tree is empty so future marker ids remain monotonic. If
+restore fails, the kernel falls back to the clean base view; the CLI tears
+down the mount and the artifact remains available to `review`, `commit`, or
 `abort`.
 
 The project marker is `yolofs.toml`. The live mount handle is `.yolofs/mnt`,

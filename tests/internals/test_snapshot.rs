@@ -239,3 +239,73 @@ fn untouched_base_file_cow_after_snapshot() {
         "COW inode should contain written content"
     );
 }
+
+// ── Restore stamping across remount (cow_ino_floor) ────────────────────────
+
+/// A file re-COW'd after the latest snapshot (a live-segment ino) must resume
+/// write-in-place after remount — no spurious third Stage record.
+#[test]
+fn remount_resumes_write_in_place_for_live_inos() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
+    let v1_ino = ino_for(&tree(&s), "/hello.txt");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
+    fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 (re-COW, live)");
+
+    s.cli(&["remount"]).expect("remount");
+    fs::write(s.mnt_path("hello.txt"), "v3\n").expect("write v3 after remount");
+
+    let recs = records(&journal(&s));
+    let stages = recs
+        .iter()
+        .filter(|r| {
+            matches!(r, Record::Action(Action::Stage { path, .. }) if path.ends_with("/hello.txt"))
+        })
+        .count();
+    assert_eq!(
+        stages, 2,
+        "post-remount write of a live ino must not re-COW: {recs:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(s.mnt_path("hello.txt")).expect("read"),
+        "v3\n"
+    );
+    // The snapshot-retained inode is untouched by the in-place write.
+    assert_eq!(
+        fs::read_to_string(inode_path(&s, v1_ino)).expect("read v1 inode"),
+        "v1\n",
+        "snapshot content must not be mutated by a post-remount write"
+    );
+}
+
+/// Content retained by a snapshot (ino at or below `cow_ino_floor`) must
+/// still re-COW on its first post-remount write.
+#[test]
+fn remount_still_recows_snapshot_content() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("hello.txt"), "v1\n").expect("write v1");
+    s.cli(&["snapshot", "s1"]).expect("snapshot");
+
+    s.cli(&["remount"]).expect("remount");
+    fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2 after remount");
+
+    let recs = records(&journal(&s));
+    let inos: Vec<u32> = recs
+        .iter()
+        .filter_map(|r| match r {
+            Record::Action(Action::Stage { path, ino, .. }) if path.ends_with("/hello.txt") => {
+                Some(*ino)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        inos.len(),
+        2,
+        "post-remount write must re-COW snapshot content: {recs:?}"
+    );
+    assert_ne!(inos[0], inos[1], "re-COW must allocate a new ino");
+    assert_eq!(fs::read_to_string(s.mnt_path("hello.txt")).unwrap(), "v2\n");
+}
