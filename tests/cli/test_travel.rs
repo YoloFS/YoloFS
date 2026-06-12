@@ -1149,7 +1149,10 @@ fn failed_travel_injection_falls_back_to_clean_base() {
     fs::remove_file(s.base_path("hello.txt")).expect("drop base source");
 
     let (ok, _, stderr) = s.cli_output(&["travel", "s1"]).expect("run travel");
-    assert!(!ok, "travel must fail when a redirect source is gone: {stderr}");
+    assert!(
+        !ok,
+        "travel must fail when a redirect source is gone: {stderr}"
+    );
 
     // The mount is still alive and shows the clean base — no partial overlay.
     assert!(
@@ -1166,5 +1169,6 @@ fn failed_travel_injection_falls_back_to_clean_base() {
     );
 
     // The artifact is intact and the session recoverable.
-    s.cli(&["abort"]).expect("abort still works after failed travel");
+    s.cli(&["abort"])
+        .expect("abort still works after failed travel");
 }

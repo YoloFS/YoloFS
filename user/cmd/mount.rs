@@ -255,7 +255,14 @@ fn restore_artifact(yolo_dir: &Path) -> Result<bool> {
     let cow_ino_floor = journal.cow_ino_floor;
     let tree = journal.into_tree().serialize();
     let ctl_file = ioctl::open(yolo_dir).context("opening ctl for restore")?;
-    ioctl::restore(&ctl_file, latest_gen, dirty, alloc_ino_floor, cow_ino_floor, &tree)?;
+    ioctl::restore(
+        &ctl_file,
+        latest_gen,
+        dirty,
+        alloc_ino_floor,
+        cow_ino_floor,
+        &tree,
+    )?;
     Ok(has_staged_changes)
 }
 
