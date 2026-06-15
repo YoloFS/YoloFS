@@ -78,9 +78,11 @@ impl MarkerIndex {
     /// Index of the most recent snapshot marker (highest index > 0),
     /// or `None` when only the phantom initial marker exists.
     pub fn last_snapshot_idx(&self) -> Option<usize> {
-        self.0.iter().enumerate().rev().find_map(|(i, m)| {
-            (i > 0 && matches!(m, Marker::Snapshot { .. })).then_some(i)
-        })
+        self.0
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, m)| (i > 0 && matches!(m, Marker::Snapshot { .. })).then_some(i))
     }
 
     /// Index of the nearest snapshot marker before `idx` (skipping the phantom
@@ -243,17 +245,13 @@ mod tests {
     #[test]
     fn find_snapshot_duplicate_names_returns_last() {
         let records = vec![
-            Record::Marker(Marker::Snapshot {
-                name: "dup".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "dup".into() }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "dup".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "dup".into() }),
         ];
         let j = Journal::new(records);
         let gen_id = j.markers.find_snapshot_by_name("dup").unwrap();
@@ -271,12 +269,8 @@ mod tests {
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 1,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
+            Record::Marker(Marker::Travel { target_gen: 1 }),
         ];
         let j = Journal::new(records);
         assert!(
@@ -293,9 +287,7 @@ mod tests {
 
     #[test]
     fn find_marker_by_gen_id_resolves_phantom() {
-        let records = vec![Record::Marker(Marker::Snapshot {
-            name: "c1".into(),
-        })];
+        let records = vec![Record::Marker(Marker::Snapshot { name: "c1".into() })];
         let j = Journal::new(records);
         // gen 0 is the base/"(initial)" marker — addressable like its name.
         assert_eq!(j.markers.find_marker_by_gen_id(0).unwrap(), 0);
@@ -309,25 +301,19 @@ mod tests {
         // Travel to gen_id=0 (initial state) should kill all segments
         // between the phantom and the travel marker.
         let records = vec![
-            Record::Marker(Marker::Snapshot {
-                name: "c1".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c1".into() }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Travel {
-                target_gen: 0,
-            }),
+            Record::Marker(Marker::Travel { target_gen: 0 }),
         ];
         let j = Journal::new(records);
         // markers: [phantom(0), P(1), P(2), T(3→0)]
@@ -342,9 +328,7 @@ mod tests {
 
     #[test]
     fn segment_range_at_phantom_is_empty() {
-        let records = vec![Record::Marker(Marker::Snapshot {
-            name: "c1".into(),
-        })];
+        let records = vec![Record::Marker(Marker::Snapshot { name: "c1".into() })];
         let j = Journal::new(records);
         // Snapshot 0 (the base) resolves to an empty range — the base introduced
         // no changes, so `status 0` shows nothing (no longer an error).
@@ -358,17 +342,13 @@ mod tests {
     #[test]
     fn segment_range_from_phantom_is_full() {
         let records = vec![
-            Record::Marker(Marker::Snapshot {
-                name: "c1".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c1".into() }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
         ];
         let j = Journal::new(records);
         // `from 0` spans everything since the base — i.e. the full range `..`.
@@ -382,25 +362,19 @@ mod tests {
     #[test]
     fn segment_range_from_after_to_is_error() {
         let records = vec![
-            Record::Marker(Marker::Snapshot {
-                name: "c1".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c1".into() }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c3".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c3".into() }),
         ];
         let j = Journal::new(records);
         let result = j
@@ -412,17 +386,13 @@ mod tests {
     #[test]
     fn segment_range_at_first_snapshot() {
         let records = vec![
-            Record::Marker(Marker::Snapshot {
-                name: "c1".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c1".into() }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
         ];
         let j = Journal::new(records);
         let (start, end) = j
@@ -436,25 +406,19 @@ mod tests {
     #[test]
     fn segment_range_at_middle_snapshot() {
         let records = vec![
-            Record::Marker(Marker::Snapshot {
-                name: "c1".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c1".into() }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c3".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c3".into() }),
         ];
         let j = Journal::new(records);
         // at=c2: the previous snapshot is P1 (marker 1), so start=1, end=2
@@ -470,36 +434,26 @@ mod tests {
     fn segment_range_at_snapshot_after_travel() {
         // P1 [A] P2 [B] P3 T4(P2) [D] P5
         let records = vec![
-            Record::Marker(Marker::Snapshot {
-                name: "c1".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c1".into() }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c3".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 2,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c3".into() }),
+            Record::Marker(Marker::Travel { target_gen: 2 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c5".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c5".into() }),
         ];
         let j = Journal::new(records);
         // at=c5: the previous snapshot is P3 (marker 2), so start=3, end=5
@@ -524,28 +478,20 @@ mod tests {
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c3".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 2,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c3".into() }),
+            Record::Marker(Marker::Travel { target_gen: 2 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c5".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c5".into() }),
         ];
         let j = Journal::new(records);
         let alive = j.markers.alive_segments(j.segments.len());
@@ -568,20 +514,14 @@ mod tests {
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c3".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 1,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c3".into() }),
+            Record::Marker(Marker::Travel { target_gen: 1 }),
         ];
         let j = Journal::new(records);
         let alive = j.markers.alive_segments_range(0..2, 2);
@@ -629,9 +569,7 @@ mod tests {
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Travel {
-                target_gen: 99,
-            }),
+            Record::Marker(Marker::Travel { target_gen: 99 }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
@@ -659,9 +597,7 @@ mod tests {
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
         ];
         let j = Journal::new(records);
         let alive = j.markers.alive_segments(j.segments.len());
@@ -688,31 +624,21 @@ mod tests {
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c3".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 2,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c3".into() }),
+            Record::Marker(Marker::Travel { target_gen: 2 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c5".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 1,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c5".into() }),
+            Record::Marker(Marker::Travel { target_gen: 1 }),
         ];
         let j = Journal::new(records);
         let alive = j.markers.alive_segments(j.segments.len());
@@ -737,23 +663,15 @@ mod tests {
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c3".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 2,
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 1,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c3".into() }),
+            Record::Marker(Marker::Travel { target_gen: 2 }),
+            Record::Marker(Marker::Travel { target_gen: 1 }),
         ];
         let j = Journal::new(records);
         let alive = j.markers.alive_segments(j.segments.len());
@@ -765,20 +683,14 @@ mod tests {
     fn alive_travel_to_first_snapshot() {
         // P1 [A] P2 T3(P1)
         let records = vec![
-            Record::Marker(Marker::Snapshot {
-                name: "c1".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c1".into() }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 1,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
+            Record::Marker(Marker::Travel { target_gen: 1 }),
         ];
         let j = Journal::new(records);
         let alive = j.markers.alive_segments(j.segments.len());
@@ -800,39 +712,27 @@ mod tests {
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c3".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 1,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c3".into() }),
+            Record::Marker(Marker::Travel { target_gen: 1 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c5".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c5".into() }),
             Record::Action(Action::Stage {
                 path: "/e".into(),
                 ino: 4,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c6".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 5,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c6".into() }),
+            Record::Marker(Marker::Travel { target_gen: 5 }),
         ];
         let j = Journal::new(records);
         let alive = j.markers.alive_segments(j.segments.len());
@@ -858,31 +758,21 @@ mod tests {
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c3".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 1,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c3".into() }),
+            Record::Marker(Marker::Travel { target_gen: 1 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c5".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 3,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c5".into() }),
+            Record::Marker(Marker::Travel { target_gen: 3 }),
         ];
         let j = Journal::new(records);
         let alive = j.markers.alive_segments(j.segments.len());
@@ -900,20 +790,14 @@ mod tests {
     #[test]
     fn find_marker_accepts_travel_gen_id() {
         let records = vec![
-            Record::Marker(Marker::Snapshot {
-                name: "c1".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c1".into() }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 1,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
+            Record::Marker(Marker::Travel { target_gen: 1 }),
         ];
         let j = Journal::new(records);
         assert_eq!(j.markers.find_marker("3").unwrap(), 3);
@@ -930,31 +814,21 @@ mod tests {
         // P1 [A] P2 T3(→P1) [D] P4 T5(→T3)
         // T5 targets T3, so dead zone is 3..5 (seg_3, seg_4).
         let records = vec![
-            Record::Marker(Marker::Snapshot {
-                name: "c1".into(),
-            }),
+            Record::Marker(Marker::Snapshot { name: "c1".into() }),
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c2".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 1,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c2".into() }),
+            Record::Marker(Marker::Travel { target_gen: 1 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
                 pre: Target::Absence,
             }),
-            Record::Marker(Marker::Snapshot {
-                name: "c4".into(),
-            }),
-            Record::Marker(Marker::Travel {
-                target_gen: 3,
-            }),
+            Record::Marker(Marker::Snapshot { name: "c4".into() }),
+            Record::Marker(Marker::Travel { target_gen: 3 }),
         ];
         let j = Journal::new(records);
         let alive = j.markers.alive_segments(j.segments.len());

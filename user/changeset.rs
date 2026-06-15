@@ -94,7 +94,11 @@ impl Changeset {
 /// kept distinct.
 fn note_key(note: &Note) -> String {
     match note {
-        Note::Block { path, op, rule_path } => {
+        Note::Block {
+            path,
+            op,
+            rule_path,
+        } => {
             format!("B\0{path}\0{}\0{rule_path}", op.label())
         }
         Note::Ask { path, op, decision } => format!("A\0{path}\0{}\0{decision}", op.label()),

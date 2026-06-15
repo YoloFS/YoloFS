@@ -389,10 +389,16 @@ fn ask_deny_records_only_ask_note_no_block() {
     // Exactly one A (read -> deny) for hello.txt.
     let asks: Vec<_> = ns
         .iter()
-        .filter(|n| matches!(n, Note::Ask { path, op, decision }
-            if path.ends_with("/hello.txt") && *op == Op::Read && *decision == Decision::Deny))
+        .filter(|n| {
+            matches!(n, Note::Ask { path, op, decision }
+            if path.ends_with("/hello.txt") && *op == Op::Read && *decision == Decision::Deny)
+        })
         .collect();
-    assert_eq!(asks.len(), 1, "expected exactly one A(read->deny), got: {ns:?}");
+    assert_eq!(
+        asks.len(),
+        1,
+        "expected exactly one A(read->deny), got: {ns:?}"
+    );
     // And zero B for that path — the ask-deny must not double-log a block.
     assert!(
         !ns.iter()
@@ -412,7 +418,8 @@ fn block_record_carries_blocking_rule_path() {
         ..Default::default()
     })
     .expect("session setup");
-    s.cli(&["rule", "deny", "subdir"]).expect("install deny rule");
+    s.cli(&["rule", "deny", "subdir"])
+        .expect("install deny rule");
 
     let _ = fs::read_to_string(s.mnt_path("subdir/deep.txt"));
 
@@ -439,7 +446,8 @@ fn mutate_block_records_child_target_and_parent_rule_path() {
         ..Default::default()
     })
     .expect("session setup");
-    s.cli(&["rule", "deny", "subdir"]).expect("install deny rule");
+    s.cli(&["rule", "deny", "subdir"])
+        .expect("install deny rule");
 
     let _ = fs::write(s.mnt_path("subdir/new.txt"), "x");
 
@@ -474,7 +482,11 @@ fn write_ask_mutate_deny_records_only_ask_no_block() {
     assert!(
         ns.iter().any(|n| matches!(
             n,
-            Note::Ask { op: Op::Write, decision: Decision::Deny, .. }
+            Note::Ask {
+                op: Op::Write,
+                decision: Decision::Deny,
+                ..
+            }
         )),
         "expected an A(write->deny) for the mutate, got: {ns:?}"
     );

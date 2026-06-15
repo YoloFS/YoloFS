@@ -136,7 +136,11 @@ fn format_note(note: &journal::Note) -> String {
                 decision
             )
         }
-        journal::Note::Block { path, op, rule_path } => {
+        journal::Note::Block {
+            path,
+            op,
+            rule_path,
+        } => {
             if rule_path.is_empty() {
                 format!("{:10} {:5} {}", "blocked".yellow(), op.label(), path)
             } else {
@@ -244,7 +248,10 @@ mod tests {
         let s = strip_ansi(&format_note(&note));
         assert!(s.contains("blocked"), "should say blocked: {s}");
         assert!(s.contains("/etc/passwd"), "should contain path: {s}");
-        assert!(!s.contains(" by "), "no dangling 'by' for empty rule_path: {s}");
+        assert!(
+            !s.contains(" by "),
+            "no dangling 'by' for empty rule_path: {s}"
+        );
     }
 
     #[test]

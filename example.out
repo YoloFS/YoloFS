@@ -91,7 +91,7 @@ $ yolo run -- sh -c 'cat secret.txt'
 cat: secret.txt: Permission denied
 
 not staged:
-secret.txt (blocked read)
+secret.txt (blocked read by /home/runner/work/filesystem/filesystem/example/secret.txt)
 # 'ask' defers to the 'yolo watch' daemon (no daemon => denied). Interactively
 # it prompts allow [y]es/[d]eny; here it runs --allow-all in the background.
 $ yolo rule ask apikey.txt
@@ -106,7 +106,7 @@ yolo: cat wants to read /home/runner/work/filesystem/filesystem/example/apikey.t
 token
 
 not staged:
-secret.txt (blocked read)
+secret.txt (blocked read by /home/runner/work/filesystem/filesystem/example/secret.txt)
 apikey.txt (asked read → allow)
 
 # ──────────────────────────────────────────────────────────
