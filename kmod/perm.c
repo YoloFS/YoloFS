@@ -95,27 +95,44 @@ static bool yolo_perm_needs_ask(enum yolo_perm perm, enum yolo_op op)
 /* ── Combined resolve + ask + check ───────────────────────────────── */
 
 /*
- * Full permission check for a dentry: resolve cached perm, ask daemon
- * if unresolved, then check against the given flags.  Used by both
- * yolo_open (via file.c) and metadata ops (via inode.c).
- *
- * @ask_resolved (nullable out): set to true only when an ask/write-ask was run
- * to a decision via yolo_ask_userspace (which already wrote the A note). Left
- * false on every static-block path. Callers use it to keep A and B disjoint:
- * emit a B only on a static block (err == -EACCES && !*ask_resolved), never for
- * an ask-resolved deny (already recorded as A).
+ * Apply a static (no-prompt) perm decision and journal a B note on a deny.
+ * @target is recorded as the B's path; @check supplies the blocking rule. An
+ * ask-resolved deny is journaled as an A by yolo_ask_userspace, never here, so
+ * A and B stay disjoint with no signal threaded back to callers.
  */
-int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *dentry,
-			   int f_flags, bool *ask_resolved)
+static int yolo_perm_check_static(struct yolo_sb_info *sbi,
+				  struct dentry *target, struct dentry *check,
+				  enum yolo_perm perm, int f_flags)
 {
-	struct inode *inode = d_inode(dentry);
+	int err = yolo_perm_check(perm, f_flags);
+
+	if (err == -EACCES)
+		yolo_journal_block(sbi, target, check, yolo_open_op(f_flags));
+	return err;
+}
+
+/*
+ * Full permission check: resolve @check's cached perm, ask the daemon if
+ * unresolved, then check against the given flags.  Used by yolo_open (via
+ * file.c) and metadata ops (via inode.c).
+ *
+ * Journaling lives here, next to the decision: an ask writes its A inside
+ * yolo_ask_userspace; a static block writes a B (see yolo_perm_check_static).
+ * Callers just propagate the returned errno. @check is the dentry whose perm
+ * gates the access; @target is what a B reports (the file itself for opens, the
+ * child for parent-gated mutates) — usually the same dentry as @check.
+ */
+int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
+			   struct dentry *target, int f_flags)
+{
+	struct inode *inode = d_inode(check);
 	struct yolo_inode_info *ii = YOLO_I(inode);
 	enum yolo_perm perm;
 	enum yolo_decision decision;
 	enum yolo_op op = yolo_open_op(f_flags);
 	int err;
 
-	perm = yolo_perm_get(inode, dentry);
+	perm = yolo_perm_get(inode, check);
 
 	if (yolo_perm_needs_ask(perm, op)) {
 		char buf[YOLO_PATH_MAX];
@@ -124,17 +141,19 @@ int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *dentry,
 		const char *rule_path = "";
 		struct dentry *source = NULL;
 
-		relpath = dentry_path_raw(dentry, buf, sizeof(buf));
+		relpath = dentry_path_raw(check, buf, sizeof(buf));
 		if (IS_ERR(relpath))
 			return PTR_ERR(relpath);
 
-		perm = yolo_perm_walk(dentry, &source);
+		perm = yolo_perm_walk(check, &source);
 		ii->cached_perm = perm;
 		ii->perm_gen = atomic64_read(&sbi->perm.gen);
 		if (!yolo_perm_needs_ask(perm, op)) {
+			/* Race: rules changed and it is now a static perm. */
 			if (source)
 				dput(source);
-			return yolo_perm_check(perm, f_flags);
+			return yolo_perm_check_static(sbi, target, check, perm,
+						      f_flags);
 		}
 
 		if (source) {
@@ -149,14 +168,11 @@ int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *dentry,
 					 &decision);
 		if (err)
 			return err;
-		/* The ask was resolved (A note written by yolo_ask_userspace);
-		 * the caller must not also emit a B for this deny. */
-		if (ask_resolved)
-			*ask_resolved = true;
+		/* Ask resolved (A already written); a deny is never also a B. */
 		return decision == YOLO_DECISION_ALLOW ? 0 : -EACCES;
 	}
 
-	return yolo_perm_check(perm, f_flags);
+	return yolo_perm_check_static(sbi, target, check, perm, f_flags);
 }
 
 /* ── Ask Protocol ─────────────────────────────────────────────────── */

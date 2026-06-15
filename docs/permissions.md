@@ -227,44 +227,37 @@ enum yolo_perm yolo_perm_get(struct inode *inode, struct dentry *dentry)
 }
 
 // Shared permission check: resolve, ask if needed, check the requested op.
-// Used by yolo_open (for file access) and yolo_check_mutate_perm (for
-// metadata ops).  Lives in perm.c.  *ask_resolved is set true only when an
-// ask was run to a decision (the A note is then already written), so callers
-// know to suppress a B for that deny — keeping A and B disjoint.
-int yolo_perm_check_dentry(struct yolo_sb_info *sbi,
-                           struct dentry *dentry,
-                           int f_flags, bool *ask_resolved)
+// Used by yolo_open (for file access) and yolo_check_mutate_perm (for metadata
+// ops).  Lives in perm.c.  Journaling lives next to the decision: an ask writes
+// its A note internally; a static block writes a B.  `check` is whose perm
+// gates; `target` is what a B reports (the child for parent-gated mutates,
+// otherwise the same dentry).  Callers just propagate the returned errno.
+int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
+                           struct dentry *target, int f_flags)
 {
     enum yolo_perm perm;
     enum yolo_decision decision;
     enum yolo_op op = yolo_open_op(f_flags);
 
-    perm = yolo_perm_get(d_inode(dentry), dentry);
+    perm = yolo_perm_get(d_inode(check), check);
 
     if (perm == YOLO_PERM_ASK ||
         (perm == YOLO_PERM_WRITE_ASK && op == YOLO_OP_WRITE)) {
         // ... ask daemon, or deny if none answers; writes the A note ...
-        if (ask_resolved)
-            *ask_resolved = true;
-        return decision == YOLO_DECISION_ALLOW ? 0 : -EACCES;
+        return decision == YOLO_DECISION_ALLOW ? 0 : -EACCES;  // ask-deny: no B
     }
-    return yolo_perm_check(perm, f_flags);  // static block: ask_resolved stays false
+    // Static block: writes B(target, rule-from-check) on a deny.
+    return yolo_perm_check_static(sbi, target, check, perm, f_flags);
 }
 
-// Metadata ops check write permission on the parent directory. On a static
-// block, record a B against the child (target) resolved from the parent
-// (checked); an ask-resolved deny is left to its A note.
+// Metadata ops check write permission on the parent directory; a block reports
+// the child (target). A and B disjointness is handled inside the shared check.
 static int yolo_check_mutate_perm(struct dentry *dentry)
 {
     struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
-    bool ask_resolved = false;
-    int err;
     if (!sbi->perm.enabled)
         return 0;
-    err = yolo_perm_check_dentry(sbi, dentry->d_parent, O_WRONLY, &ask_resolved);
-    if (err == -EACCES && !ask_resolved)
-        yolo_journal_block(sbi, dentry, dentry->d_parent, YOLO_OP_WRITE);
-    return err;
+    return yolo_perm_check_dentry(sbi, dentry->d_parent, dentry, O_WRONLY);
 }
 
 // yolo_permission() for VFS MAY_READ/MAY_WRITE/MAY_EXEC checks.
@@ -294,13 +287,10 @@ static int yolo_open(struct inode *inode, struct file *file)
     struct dentry *dentry = file->f_path.dentry;
 
     if (sbi->perm.enabled) {
-        bool ask_resolved = false;
-        err = yolo_perm_check_dentry(sbi, dentry, file->f_flags, &ask_resolved);
-        if (err) {
-            if (err == -EACCES && !ask_resolved)  // static block → B (ask-deny is an A)
-                yolo_journal_block(sbi, dentry, dentry, yolo_open_op(file->f_flags));
+        // check == target: the file's own perm gates its open.
+        err = yolo_perm_check_dentry(sbi, dentry, dentry, file->f_flags);
+        if (err)
             return err;
-        }
     }
     // ... staging redirect (lazy COW, see staging.md#open--read--write-path) ...
 }

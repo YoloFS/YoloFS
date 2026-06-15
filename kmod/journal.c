@@ -248,8 +248,8 @@ int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
  *
  * Observational note: written only for a *static*-rule block (deny, or
  * read-only on a write) — an ask resolved to deny is recorded solely as an A
- * note (see yolo_perm_check_dentry's @ask_resolved), never here. Does not set
- * sbi->staging.dirty (see journal_write).
+ * note by yolo_ask_userspace, never here (see yolo_perm_check_dentry). Does not
+ * set sbi->staging.dirty (see journal_write).
  *
  * Format: B\0<path>\0<op>\0<rule_path>\n
  */

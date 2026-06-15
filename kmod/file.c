@@ -115,17 +115,10 @@ static int yolo_open(struct inode *inode, struct file *file)
 	int err;
 
 	if (sbi->perm.enabled) {
-		bool ask_resolved = false;
-
-		err = yolo_perm_check_dentry(sbi, dentry, file->f_flags,
-					     &ask_resolved);
-		if (err) {
-			/* Static block only — an ask-resolved deny is already an A. */
-			if (err == -EACCES && !ask_resolved)
-				yolo_journal_block(sbi, dentry, dentry,
-					yolo_open_op(file->f_flags));
+		/* check == target: the file's own perm gates its open. */
+		err = yolo_perm_check_dentry(sbi, dentry, dentry, file->f_flags);
+		if (err)
 			return err;
-		}
 	}
 
 	fi = kzalloc(sizeof(*fi), GFP_KERNEL);

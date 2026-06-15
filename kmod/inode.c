@@ -20,19 +20,13 @@
 static int yolo_check_mutate_perm(struct dentry *dentry)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
-	bool ask_resolved = false;
-	int err;
 
 	if (!sbi->perm.enabled)
 		return 0;
 
-	/* Mutates are gated on the parent's perm; record the child as the
-	 * target but resolve the blocking rule from the parent (checked). */
-	err = yolo_perm_check_dentry(sbi, dentry->d_parent, O_WRONLY,
-				     &ask_resolved);
-	if (err == -EACCES && !ask_resolved)
-		yolo_journal_block(sbi, dentry, dentry->d_parent, YOLO_OP_WRITE);
-	return err;
+	/* Mutates are gated on the parent's perm (check); a block reports the
+	 * child (target). */
+	return yolo_perm_check_dentry(sbi, dentry->d_parent, dentry, O_WRONLY);
 }
 
 /* ── create/mkdir/symlink — allocate inode + set up dentry ────────── */
@@ -279,17 +273,10 @@ static int yolo_setattr(struct mnt_idmap *idmap,
 	int err;
 
 	if (sbi->perm.enabled && yolo_setattr_needs_write_check(ia)) {
-		bool ask_resolved = false;
-
-		err = yolo_perm_check_dentry(sbi, dentry, O_WRONLY,
-					     &ask_resolved);
-		if (err) {
-			/* Static block only — an ask-resolved deny is already an A. */
-			if (err == -EACCES && !ask_resolved)
-				yolo_journal_block(sbi, dentry, dentry,
-						   YOLO_OP_WRITE);
+		/* check == target: the file's own perm gates the setattr. */
+		err = yolo_perm_check_dentry(sbi, dentry, dentry, O_WRONLY);
+		if (err)
 			return err;
-		}
 	}
 
 	err = setattr_prepare(idmap, dentry, ia);

@@ -506,8 +506,8 @@ enum yolo_op yolo_open_op(int f_flags);
 enum yolo_perm yolo_perm_walk(struct dentry *dentry, struct dentry **source);
 void yolo_perm_refresh(struct inode *inode, struct dentry *dentry);
 enum yolo_perm yolo_perm_get(struct inode *inode, struct dentry *dentry);
-int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *dentry,
-			   int f_flags, bool *ask_resolved);
+int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
+			   struct dentry *target, int f_flags);
 int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 		       const char *rule_path, enum yolo_perm rule_perm,
 		       enum yolo_op op, enum yolo_decision *result);
