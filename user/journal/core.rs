@@ -41,37 +41,20 @@ impl Journal {
             name: "(initial)".into(),
         }];
         let mut current_records: Vec<Record> = Vec::new();
-        let mut current_from: u64 = 0;
-        let mut latest_gen: u64 = 0;
         let mut dirty = false;
         let mut alloc_ino_floor = 0;
         let mut cow_ino_floor = 0;
 
         for record in records.into_iter() {
             match record {
-                Record::Marker(marker @ Marker::Snapshot { .. }) => {
-                    // A marker's gen is its index; the phantom holds index 0, so
-                    // the next marker takes the current vector length.
-                    let gen_id = markers_vec.len() as u64;
+                // P and T both split a segment and clear the dirty/COW state;
+                // a marker's gen is its index, so no per-arm bookkeeping is
+                // needed (the Travel target lives on the marker itself).
+                Record::Marker(marker) => {
                     segments.push(Segment {
-                        from: current_from,
-                        records: std::mem::take(&mut current_records),
-                    });
-                    current_from = gen_id;
-                    latest_gen = gen_id;
-                    dirty = false;
-                    cow_ino_floor = alloc_ino_floor;
-                    markers_vec.push(marker);
-                }
-                Record::Marker(marker @ Marker::Travel { target_gen }) => {
-                    let gen_id = markers_vec.len() as u64;
-                    segments.push(Segment {
-                        from: current_from,
                         records: std::mem::take(&mut current_records),
                     });
                     markers_vec.push(marker);
-                    current_from = target_gen;
-                    latest_gen = gen_id;
                     dirty = false;
                     cow_ino_floor = alloc_ino_floor;
                 }
@@ -92,11 +75,13 @@ impl Journal {
 
         // Trailing segment.
         segments.push(Segment {
-            from: current_from,
             records: current_records,
         });
 
         let markers = MarkerIndex::new(markers_vec);
+        // gen ≡ position: the latest marker's gen is the last index (phantom at
+        // 0 ⇒ 0 when there are no real markers).
+        let latest_gen = markers.len() as u64 - 1;
         let alive = markers.alive_segments(segments.len());
         let has_staged_changes = segments
             .iter()
@@ -366,13 +351,9 @@ mod tests {
         ];
         let j = Journal::new(records);
         assert_eq!(j.segments.len(), 4);
-        assert_eq!(j.segments[0].from, 0);
         assert!(j.segments[0].records.is_empty());
-        assert_eq!(j.segments[1].from, 1);
         assert_eq!(j.segments[1].records.len(), 1);
-        assert_eq!(j.segments[2].from, 2);
         assert_eq!(j.segments[2].records.len(), 1);
-        assert_eq!(j.segments[3].from, 3);
         assert!(j.segments[3].records.is_empty());
     }
 
@@ -412,7 +393,6 @@ mod tests {
         ];
         let j = Journal::new(records);
         assert_eq!(j.segments.len(), 6);
-        assert_eq!(j.segments[4].from, 2);
         assert_eq!(j.segments[4].records.len(), 1);
         assert!(
             matches!(&j.segments[4].records[0], Record::Action(Action::Stage { path, .. }) if path == "/d")
@@ -441,7 +421,6 @@ mod tests {
         ];
         let j = Journal::new(records);
         assert_eq!(j.segments.len(), 3);
-        assert_eq!(j.segments[0].from, 0);
         assert_eq!(j.segments[0].records.len(), 1);
         assert!(
             matches!(&j.segments[0].records[0], Record::Action(Action::Stage { path, .. }) if path == "/orphan")
@@ -456,7 +435,6 @@ mod tests {
     fn segmentation_empty_journal() {
         let j = Journal::new(vec![]);
         assert_eq!(j.segments.len(), 1);
-        assert_eq!(j.segments[0].from, 0);
         assert!(j.segments[0].records.is_empty());
         assert_eq!(j.markers.len(), 1, "phantom marker only");
     }
@@ -468,9 +446,12 @@ mod tests {
         })];
         let j = Journal::new(records);
         assert_eq!(j.segments.len(), 2);
-        assert_eq!(j.segments[0].from, 0);
-        assert_eq!(j.segments[1].from, 99);
         assert_eq!(j.markers.len(), 2);
+        // The lone T record is captured as a Travel marker carrying its target.
+        assert!(matches!(
+            j.markers.get(1),
+            Some(Marker::Travel { target_gen: 99 })
+        ));
     }
 
     #[test]
@@ -950,7 +931,6 @@ mod tests {
             .map(|(_, s)| s)
             .collect();
         assert_eq!(live.len(), 1);
-        assert_eq!(live[0].from, 2);
         assert!(
             matches!(&live[0].records[0], Record::Action(Action::Stage { path, .. }) if path == "/b")
         );

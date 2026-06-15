@@ -125,9 +125,6 @@ pub enum Record {
 /// appear here.
 #[derive(Debug)]
 pub struct Segment {
-    /// The gen_id of the snapshot this segment builds on.
-    /// 0 for the 0-th segment (records before the first snapshot).
-    pub from: u64,
     /// The S/D/R + B records in this segment (no P/T records).
     pub records: Vec<Record>,
 }

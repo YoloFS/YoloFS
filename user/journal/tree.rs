@@ -411,7 +411,6 @@ mod tests {
 
     fn build(actions: &[Action]) -> DirTree {
         DirTree::build(std::iter::once(Segment {
-            from: 0,
             records: actions.iter().cloned().map(Record::Action).collect(),
         }))
     }
@@ -1752,7 +1751,6 @@ mod tests {
     #[test]
     fn notes_interleaved_with_actions_do_not_affect_tree() {
         let with_notes = DirTree::build(std::iter::once(Segment {
-            from: 0,
             records: vec![
                 Record::Note(Note::Block {
                     path: "/etc/passwd".into(),
