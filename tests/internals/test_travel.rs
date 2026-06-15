@@ -451,27 +451,30 @@ fn travel_j_record_has_correct_gen() {
     let j = journal(&s);
     let mkrs = markers(&j);
 
-    // Find the snapshot gen_ids and the travel record.
+    // Find the snapshot gens (= marker index) and the travel record.
     let chk1_gen = mkrs
         .iter()
-        .find_map(|m| match m {
-            Marker::Snapshot { gen_id, name } if name == "chk1" => Some(*gen_id),
+        .enumerate()
+        .find_map(|(gen_id, m)| match m {
+            Marker::Snapshot { name } if name == "chk1" => Some(gen_id),
             _ => None,
         })
         .expect("chk1 should exist");
 
     let chk2_gen = mkrs
         .iter()
-        .find_map(|m| match m {
-            Marker::Snapshot { gen_id, name } if name == "chk2" => Some(*gen_id),
+        .enumerate()
+        .find_map(|(gen_id, m)| match m {
+            Marker::Snapshot { name } if name == "chk2" => Some(gen_id),
             _ => None,
         })
         .expect("chk2 should exist");
 
     let (s_gen, s_target) = mkrs
         .iter()
-        .find_map(|m| match m {
-            Marker::Travel { gen_id, target_gen } => Some((*gen_id, *target_gen)),
+        .enumerate()
+        .find_map(|(gen_id, m)| match m {
+            Marker::Travel { target_gen } => Some((gen_id, *target_gen as usize)),
             _ => None,
         })
         .expect("travel record should exist");

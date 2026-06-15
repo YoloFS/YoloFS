@@ -9,8 +9,8 @@
  *   S\0<path>\0<ino>\0<pre>\n          — Stage (post = StagedFile(ino))
  *   D\0<path>\0<pre>\n                 — Delete (post = Absent)
  *   R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n  — Rename
- *   P\0<gen>\0<name>\n                — Snapshot
- *   T\0<gen>\0<target_gen>\n          — Travel
+ *   P\0<name>\n                       — Snapshot
+ *   T\0<target_gen>\n                 — Travel
  *   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
  *   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
  *   (op = r/w; decision = y/n — the yes/no answer to the ask)
@@ -174,33 +174,30 @@ int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 	return err;
 }
 
-int yolo_journal_snapshot(struct yolo_sb_info *sbi, u16 id, const char *name)
+int yolo_journal_snapshot(struct yolo_sb_info *sbi, const char *name)
 {
-	char id_str[6];
-
-	snprintf(id_str, sizeof(id_str), "%u", (unsigned)id);
+	/* A marker's gen is its position in the journal's P/T sequence, so no
+	 * gen field is written — userspace derives it on parse. */
 	return journal_write(sbi, 'P',
-			     (const char *[]){ id_str, name, NULL });
+			     (const char *[]){ name, NULL });
 }
 
 /**
  * yolo_journal_travel - Append a travel record to the journal.
  * @sbi: superblock info (has journal_file)
- * @gen: new generation assigned to this travel
  * @target_gen: the snapshot gen being traveled to
  *
- * Format: T\0<gen>\0<target_gen>\n
+ * Format: T\0<target_gen>\n  (the new gen is this record's own position,
+ * derived by userspace on parse, so it is not written.)
  */
-int yolo_journal_travel(struct yolo_sb_info *sbi, u16 gen, u16 target_gen)
+int yolo_journal_travel(struct yolo_sb_info *sbi, u16 target_gen)
 {
-	char gen_str[6];
 	char target_str[6];
 
-	snprintf(gen_str, sizeof(gen_str), "%u", (unsigned)gen);
 	snprintf(target_str, sizeof(target_str), "%u",
 		 (unsigned)target_gen);
 	return journal_write(sbi, 'T',
-			     (const char *[]){ gen_str, target_str, NULL });
+			     (const char *[]){ target_str, NULL });
 }
 
 /* Single-letter journal encodings (self-describing, like the record tags). */

@@ -28,13 +28,13 @@ pub fn run(marker_name: &str) -> Result<()> {
     let _new_gen = ioctl::travel(&ctl_file, target_gen, &buf).context("ioctl TRAVEL")?;
 
     let label = match &marker {
-        Some(Marker::Snapshot { name, .. }) => {
+        Some(Marker::Snapshot { name }) => {
             format!("snapshot \"{name}\"")
         }
-        Some(Marker::Travel {
-            gen_id, target_gen, ..
-        }) => {
-            format!("travel {gen_id} → {target_gen}")
+        // The resolved `target_gen` is this marker's own index (gen); `dest` is
+        // where that travel marker points.
+        Some(Marker::Travel { target_gen: dest }) => {
+            format!("travel {target_gen} → {dest}")
         }
         None => format!("marker {target_gen}"),
     };

@@ -81,8 +81,10 @@ fn multiple_snapshots_have_distinct_ids() {
     let mkrs = markers(&j);
     let snaps: Vec<_> = mkrs
         .iter()
-        .filter_map(|m| match m {
-            Marker::Snapshot { gen_id, name } => Some((gen_id, name)),
+        .enumerate()
+        .filter_map(|(gen_id, m)| match m {
+            // A marker's gen is its index in the P/T sequence.
+            Marker::Snapshot { name } => Some((gen_id, name)),
             _ => None,
         })
         .collect();

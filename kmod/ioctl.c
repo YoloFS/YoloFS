@@ -405,7 +405,7 @@ static long yolo_snapshot_ioctl(struct file *file, unsigned long arg)
 		return -EOVERFLOW;
 	}
 	gen = (u16)atomic_inc_return(&sbi->staging.gen);
-	yolo_journal_snapshot(sbi, gen, name_buf);
+	yolo_journal_snapshot(sbi, name_buf);
 	WRITE_ONCE(sbi->staging.dirty, false);
 	up_write(&sbi->staging.sem);
 
@@ -785,7 +785,7 @@ static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 	err = yolo_set_view_locked(file, sbi, hdr.tree_ptr, hdr.tree_len,
 				   new_gen, 0);
 	if (!err)
-		err = yolo_journal_travel(sbi, new_gen, hdr.target_gen);
+		err = yolo_journal_travel(sbi, hdr.target_gen);
 	/* Don't rollback gen on failure — a failed inject quiesces back to
 	 * base, but inodes touched during injection may keep new_gen stamps
 	 * in the icache; rolling gen back would make those read as current

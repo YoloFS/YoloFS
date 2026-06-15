@@ -559,8 +559,8 @@ sequence of NUL-separated fields terminated by a newline.
 S\0<path>\0<ino>\0<pre>\n        — Stage (staged content at path)
 D\0<path>\0<pre>\n              — Delete
 R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n   — Rename
-P\0<gen>\0<name>\n                — Snapshot
-T\0<gen>\0<target_gen>\n          — Travel
+P\0<name>\n                       — Snapshot
+T\0<target_gen>\n                 — Travel
 A\0<access_path>\0<op>\0<decision>\n    — Ask resolved (records the decision)
 B\0<path>\0<op>\n                — Blocked by a rule (permission denied)
 ```
@@ -604,8 +604,8 @@ ends against overlay tree paths.
 | `S` | `<path>`, `<ino>`, `<pre>` | Staged content at path (create or COW) |
 | `D` | `<path>`, `<pre>` | Entry deleted |
 | `R` | `<dst>`, `<src>`, `<src_pre>`, `<dst_pre>` | Rename |
-| `P` | `<gen>`, `<name>` | Snapshot marker |
-| `T` | `<gen>`, `<target_gen>` | Travel marker |
+| `P` | `<name>` | Snapshot marker |
+| `T` | `<target_gen>` | Travel marker |
 | `A` | `<access_path>`, `<op>`, `<decision>` | An `ask` was resolved to `<decision>` — observational |
 | `B` | `<path>`, `<op>` | Access blocked by a rule (`-EACCES`) — observational |
 
@@ -631,11 +631,22 @@ The stage/modify distinction comes from the `S` record's `<pre>` field — `a`
 reads as added, a present `s:`/`b:` target reads as modified — so userspace
 needs neither a base stat nor a rebuilt prior tree.
 
-**Gen_id invariant.** The kernel increments `sbi->gen` via
-`atomic_inc_return()` on every P and T record. Gen_id values are
-strictly sequential: marker\[i\] has gen_id = i (marker\[0\] is a phantom
-`Snapshot { gen_id: 0, name: "(initial)" }` inserted by the CLI). The
-`MarkerIndex` type relies on this for O(1) snapshot lookup by gen_id.
+**Gen = position.** Markers carry no generation field on the wire — a
+marker's gen *is* its index in the journal's P/T sequence. The CLI assigns
+it during parse: `Journal::new` prepends a phantom `Snapshot { name:
+"(initial)" }` at index 0, then each subsequent P/T record takes the next
+index (marker\[i\] has gen = i). `MarkerIndex` looks up snapshots by gen via
+direct indexing, and a travel's `<target_gen>` is used directly as the
+target marker's index.
+
+The kernel still keeps a runtime `sbi->gen` counter (incremented via
+`atomic_inc_return()` on every snapshot/travel) — it drives re-COW (stamped
+into each inode's `staging_gen`) and is returned by the SNAPSHOT/TRAVEL
+ioctls — but it is no longer written into the journal. On mount the CLI
+re-seeds the kernel counter from the journal's marker count (`latest_gen`)
+via `RESTORE`, keeping the runtime gen and the journal position aligned.
+Because the journal is append-only (never compacted) and the kernel never
+skips a gen, position and runtime gen never drift.
 
 `<path>` is the full overlay path (e.g. `/dir/file`).
 `<src>` is the overlay path before the rename (R only).
@@ -759,8 +770,9 @@ This is the re-COW mechanism.
 1. Returns `-EOPNOTSUPP` if `staging` is disabled (snapshots require staging).
 2. Takes `staging_sem` write lock.
 3. If `staging_fd_count > 0`, releases sem and returns `-EBUSY`.
-4. Increments `sbi->gen` (atomic counter).
-5. Appends `P\0<gen>\0<name>\n` to the journal.
+4. Increments `sbi->gen` (atomic counter) — for re-COW stamping and the
+   returned gen, not the journal.
+5. Appends `P\0<name>\n` to the journal.
 6. Releases `staging_sem`.
 7. Returns the gen to userspace.
 
@@ -816,11 +828,11 @@ The generation counter collapses consecutive snapshots.
 ```
 S\0/src/main.rs\01\0b:/src/main.rs\n    # COW main.rs from base -> ino 1
 S\0/src/lib.rs\02\0a\n                   # create lib.rs -> ino 2 (no old side)
-P\01\0after make build\n                 # snapshot 1
+P\0after make build\n                    # snapshot 1 (gen = position)
 S\0/src/main.rs\03\0s:1\n                # re-COW main.rs -> ino 3 (pre: ino 1)
 D\0/src/lib.rs\0s:2\n                    # delete lib.rs (pre: ino 2)
 S\0/src/new.rs\04\0a\n                   # create new.rs -> ino 4
-P\02\0after make test\n                  # snapshot 2
+P\0after make test\n                     # snapshot 2
 S\0/src/new.rs\05\0s:4\n                 # re-COW new.rs -> ino 5
 ```
 
@@ -837,13 +849,13 @@ State at each point:
 ```
 S\0/src/main.rs\01\0b:/src/main.rs\n    # COW main.rs from base -> ino 1
 S\0/src/lib.rs\02\0a\n                   # create lib.rs -> ino 2
-P\01\0after make build\n                 # snapshot 1
+P\0after make build\n                    # snapshot 1
 S\0/src/main.rs\03\0s:1\n                # re-COW main.rs -> ino 3
 D\0/src/lib.rs\0s:2\n                    # delete lib.rs
-P\02\0after make test\n                  # snapshot 2
-T\03\01\n                                # travel to snapshot 1 (gen bumped to 3)
+P\0after make test\n                     # snapshot 2
+T\01\n                                   # travel to snapshot 1 (runtime gen bumped to 3)
 S\0/src/util.rs\04\0a\n                  # create util.rs -> ino 4
-P\04\0after make fix\n                   # snapshot 4
+P\0after make fix\n                      # snapshot 4
 ```
 
 Reachable records (after `reachable`): S(main.rs→1), S(lib.rs→2), P1, S(util.rs→4), P4
@@ -893,10 +905,12 @@ O(R) backward walk to build reachable ranges, skip unreachable T records.
    `vmalloc`s + `copy_from_user`s the tree buffer, walks it iteratively
    with a directory stack to inject VFS dentries with new gen (via
    `d_alloc()`, set target/pinned, `d_add()`, `dget()` to pin), appends
-   `T\0<new_gen>\0<target_gen>\n`, returns new_gen.  The
-   `YOLO_IOC_TRAVEL` ioctl **increments** gen (monotonically) instead
-   of setting it to the target value — this avoids gen collisions.
-   Injected inodes receive the new gen value in `staging_gen`.
+   `T\0<target_gen>\n`, returns new_gen.  The
+   `YOLO_IOC_TRAVEL` ioctl **increments** the runtime gen (monotonically)
+   instead of setting it to the target value — this avoids gen collisions.
+   Injected inodes receive the new gen value in `staging_gen`. The new gen
+   is not written to the journal (the T record's position is its gen); it is
+   only the returned value and the inode stamp.
 6. No journal truncation.
 7. Orphaned inodes (from post-snapshot mutations) remain in the inode
    store — cleaned up on the next `commit` or `abort`.

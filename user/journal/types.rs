@@ -58,8 +58,8 @@ pub enum Action {
 /// A control marker (P/T).
 #[derive(Debug, Clone)]
 pub enum Marker {
-    Snapshot { gen_id: u64, name: String },
-    Travel { gen_id: u64, target_gen: u64 },
+    Snapshot { name: String },
+    Travel { target_gen: u64 },
 }
 
 /// The operation an access attempted, as recorded in a note's `op` field.

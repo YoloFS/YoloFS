@@ -6,8 +6,8 @@
 //   S\0<path>\0<ino>\0<pre>\n          — Stage (post = StagedFile(ino))
 //   D\0<path>\0<pre>\n                 — Delete (post = Absence)
 //   R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n  — Rename
-//   P\0<gen>\0<name>\n                — Snapshot
-//   T\0<gen>\0<target_gen>\n          — Travel
+//   P\0<name>\n                       — Snapshot (gen = record's P/T position)
+//   T\0<target_gen>\n                 — Travel  (gen = record's P/T position)
 //   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
 //   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
 //   (op = r/w; decision = y/n — the yes/no answer to the ask)
@@ -102,20 +102,16 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
                     }));
                 }
             }
-            b"P" if fields.len() >= 3 => {
-                let gen_str = String::from_utf8_lossy(fields[1]);
-                let name = field_str(fields[2]);
-                if let Ok(gen_id) = gen_str.parse::<u64>() {
-                    records.push(Record::Marker(Marker::Snapshot { gen_id, name }));
-                }
+            b"P" if fields.len() >= 2 => {
+                // The marker's gen is its position in the P/T sequence, assigned
+                // by `Journal::new`; only the name is on the wire.
+                let name = field_str(fields[1]);
+                records.push(Record::Marker(Marker::Snapshot { name }));
             }
-            b"T" if fields.len() >= 3 => {
-                let gen_str = String::from_utf8_lossy(fields[1]);
-                let target_str = String::from_utf8_lossy(fields[2]);
-                if let (Ok(gen_id), Ok(target_gen)) =
-                    (gen_str.parse::<u64>(), target_str.parse::<u64>())
-                {
-                    records.push(Record::Marker(Marker::Travel { gen_id, target_gen }));
+            b"T" if fields.len() >= 2 => {
+                let target_str = String::from_utf8_lossy(fields[1]);
+                if let Ok(target_gen) = target_str.parse::<u64>() {
+                    records.push(Record::Marker(Marker::Travel { target_gen }));
                 }
             }
             b"A" if fields.len() >= 4 => {
@@ -232,24 +228,45 @@ mod tests {
 
     #[test]
     fn parse_snapshot_record() {
-        let records = parse(b"S\0/a\01\0a\nP\01\0build\nS\0/a\02\0a\n").unwrap();
+        let records = parse(b"S\0/a\01\0a\nP\0build\nS\0/a\02\0a\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(
-            matches!(&records[1], Record::Marker(Marker::Snapshot { gen_id, name }) if *gen_id == 1 && name == "build")
+            matches!(&records[1], Record::Marker(Marker::Snapshot { name }) if name == "build")
         );
     }
 
     #[test]
     fn parse_travel_record() {
-        let records = parse(b"T\x004\x002\n").unwrap();
+        let records = parse(b"T\x002\n").unwrap();
         assert_eq!(records.len(), 1);
         match &records[0] {
-            Record::Marker(Marker::Travel { gen_id, target_gen }) => {
-                assert_eq!(*gen_id, 4);
+            Record::Marker(Marker::Travel { target_gen }) => {
                 assert_eq!(*target_gen, 2);
             }
             _ => panic!("expected Travel record"),
         }
+    }
+
+    #[test]
+    fn malformed_p_record_too_few_fields_skipped() {
+        // P with only the tag (needs a name) — should be skipped.
+        let records = parse(b"P\nS\0/good\01\0a\n").unwrap();
+        assert_eq!(records.len(), 1, "bare P skipped: {records:?}");
+        assert!(matches!(
+            &records[0],
+            Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/good"
+        ));
+    }
+
+    #[test]
+    fn malformed_t_record_skipped() {
+        // T with no target, and T with a non-numeric target — both skipped.
+        let records = parse(b"T\nT\0nope\nS\0/good\01\0a\n").unwrap();
+        assert_eq!(records.len(), 1, "bare/non-numeric T skipped: {records:?}");
+        assert!(matches!(
+            &records[0],
+            Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/good"
+        ));
     }
 
     // ── Path tests ────────────────────────────────────────────────────

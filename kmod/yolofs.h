@@ -490,8 +490,8 @@ int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
 int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry);
 int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 			  struct dentry *new_dentry);
-int yolo_journal_snapshot(struct yolo_sb_info *sbi, u16 id, const char *name);
-int yolo_journal_travel(struct yolo_sb_info *sbi, u16 gen, u16 target_gen);
+int yolo_journal_snapshot(struct yolo_sb_info *sbi, const char *name);
+int yolo_journal_travel(struct yolo_sb_info *sbi, u16 target_gen);
 int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *dentry,
 		       enum yolo_op op);
 int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,

@@ -21,17 +21,17 @@ pub fn run() -> anyhow::Result<()> {
         }
         let reachable = journal.is_alive(m_idx - 1);
         let line = match marker {
-            journal::Marker::Snapshot { gen_id, name } => {
+            journal::Marker::Snapshot { name } => {
                 format!(
                     "{} {}",
-                    format!("snapshot {gen_id}").cyan().bold(),
+                    format!("snapshot {m_idx}").cyan().bold(),
                     name.dimmed(),
                 )
             }
-            journal::Marker::Travel { gen_id, target_gen } => {
+            journal::Marker::Travel { target_gen } => {
                 format!(
                     "{} {}",
-                    format!("travel   {gen_id}").yellow().bold(),
+                    format!("travel   {m_idx}").yellow().bold(),
                     format!("→ {target_gen}").dimmed(),
                 )
             }

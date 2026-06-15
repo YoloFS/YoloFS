@@ -60,7 +60,7 @@ pub fn run(range: Option<&str>, path: Option<&str>) -> Result<()> {
 
         // Print the marker after this segment (if any).
         if let Some(marker) = journal.markers.get(seg_idx + 1) {
-            let line = format_marker(marker);
+            let line = format_marker(seg_idx + 1, marker);
             if reachable {
                 println!("  {line}");
             } else {
@@ -96,14 +96,12 @@ fn note_matches_path(note: &journal::Note, filter: &str) -> bool {
     }
 }
 
-fn format_marker(marker: &journal::Marker) -> String {
+fn format_marker(gen_id: usize, marker: &journal::Marker) -> String {
     match marker {
-        journal::Marker::Snapshot { gen_id, name } => {
+        journal::Marker::Snapshot { name } => {
             format!("{} {}", format!("snapshot {gen_id}").cyan().bold(), name)
         }
-        journal::Marker::Travel {
-            gen_id, target_gen, ..
-        } => {
+        journal::Marker::Travel { target_gen } => {
             format!(
                 "{} → {}",
                 format!("travel {gen_id}").yellow().bold(),
@@ -170,22 +168,18 @@ mod tests {
     #[test]
     fn format_snapshot() {
         let marker = Marker::Snapshot {
-            gen_id: 3,
             name: "build".into(),
         };
-        let s = strip_ansi(&format_marker(&marker));
-        assert!(s.contains("snapshot 3"), "should contain gen_id: {s}");
+        let s = strip_ansi(&format_marker(3, &marker));
+        assert!(s.contains("snapshot 3"), "should contain gen: {s}");
         assert!(s.contains("build"), "should contain name: {s}");
     }
 
     #[test]
     fn format_travel() {
-        let marker = Marker::Travel {
-            gen_id: 5,
-            target_gen: 2,
-        };
-        let s = strip_ansi(&format_marker(&marker));
-        assert!(s.contains("travel 5"), "should contain gen_id: {s}");
+        let marker = Marker::Travel { target_gen: 2 };
+        let s = strip_ansi(&format_marker(5, &marker));
+        assert!(s.contains("travel 5"), "should contain gen: {s}");
         assert!(s.contains("→ 2"), "should reference target: {s}");
     }
 

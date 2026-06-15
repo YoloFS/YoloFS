@@ -38,7 +38,6 @@ impl Journal {
     pub fn new(records: Vec<Record>) -> Self {
         let mut segments = Vec::new();
         let mut markers_vec: Vec<Marker> = vec![Marker::Snapshot {
-            gen_id: 0,
             name: "(initial)".into(),
         }];
         let mut current_records: Vec<Record> = Vec::new();
@@ -50,7 +49,10 @@ impl Journal {
 
         for record in records.into_iter() {
             match record {
-                Record::Marker(marker @ Marker::Snapshot { gen_id, .. }) => {
+                Record::Marker(marker @ Marker::Snapshot { .. }) => {
+                    // A marker's gen is its index; the phantom holds index 0, so
+                    // the next marker takes the current vector length.
+                    let gen_id = markers_vec.len() as u64;
                     segments.push(Segment {
                         from: current_from,
                         records: std::mem::take(&mut current_records),
@@ -61,7 +63,8 @@ impl Journal {
                     cow_ino_floor = alloc_ino_floor;
                     markers_vec.push(marker);
                 }
-                Record::Marker(marker @ Marker::Travel { gen_id, target_gen }) => {
+                Record::Marker(marker @ Marker::Travel { target_gen }) => {
+                    let gen_id = markers_vec.len() as u64;
                     segments.push(Segment {
                         from: current_from,
                         records: std::mem::take(&mut current_records),
@@ -237,7 +240,6 @@ mod tests {
         // A change a `travel` left in a dead segment does not count.
         let traveled = Journal::new(vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "c1".into(),
             }),
             Record::Action(Action::Stage {
@@ -246,7 +248,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 2,
                 target_gen: 1,
             }),
         ]);
@@ -262,7 +263,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "one".into(),
             }),
         ]);
@@ -274,7 +274,6 @@ mod tests {
 
         let dirty = Journal::new(vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "one".into(),
             }),
             Record::Action(Action::Stage {
@@ -291,7 +290,6 @@ mod tests {
 
         let traveled = Journal::new(vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "one".into(),
             }),
             Record::Action(Action::Stage {
@@ -300,7 +298,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 2,
                 target_gen: 1,
             }),
         ]);
@@ -321,7 +318,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "one".into(),
             }),
             Record::Action(Action::Stage {
@@ -330,7 +326,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 2,
                 target_gen: 1,
             }),
             Record::Action(Action::Stage {
@@ -350,7 +345,6 @@ mod tests {
     fn segmentation_basic() {
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -359,7 +353,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Action(Action::Stage {
@@ -368,7 +361,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 3,
                 name: "c3".into(),
             }),
         ];
@@ -388,7 +380,6 @@ mod tests {
     fn segmentation_splits_at_t_boundary() {
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -397,7 +388,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Action(Action::Stage {
@@ -406,11 +396,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 3,
                 name: "c3".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 4,
                 target_gen: 2,
             }),
             Record::Action(Action::Stage {
@@ -419,7 +407,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 5,
                 name: "c5".into(),
             }),
         ];
@@ -441,7 +428,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -450,7 +436,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
         ];
@@ -479,7 +464,6 @@ mod tests {
     #[test]
     fn segmentation_only_t_records() {
         let records = vec![Record::Marker(Marker::Travel {
-            gen_id: 1,
             target_gen: 99,
         })];
         let j = Journal::new(records);
@@ -504,7 +488,6 @@ mod tests {
                 op: Op::Write,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "c1".into(),
             }),
             Record::Note(Note::Block {
@@ -538,7 +521,6 @@ mod tests {
     fn live_segments_basic() {
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -547,7 +529,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Action(Action::Stage {
@@ -556,11 +537,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 3,
                 name: "c3".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 4,
                 target_gen: 2,
             }),
             Record::Action(Action::Stage {
@@ -569,7 +548,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 5,
                 name: "c5".into(),
             }),
         ];
@@ -583,7 +561,6 @@ mod tests {
     fn live_segments_at_basic() {
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -592,7 +569,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Action(Action::Stage {
@@ -601,11 +577,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 3,
                 name: "c3".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 4,
                 target_gen: 1,
             }),
             Record::Action(Action::Stage {
@@ -614,7 +588,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 5,
                 name: "c5".into(),
             }),
         ];
@@ -645,7 +618,6 @@ mod tests {
     fn reachable_no_travels() {
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -654,7 +626,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
         ];
@@ -668,7 +639,6 @@ mod tests {
         // P1 [A] P2 [B] P3 T4(P2) [D] P5 T6(P1)
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -677,7 +647,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Action(Action::Stage {
@@ -686,11 +655,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 3,
                 name: "c3".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 4,
                 target_gen: 2,
             }),
             Record::Action(Action::Stage {
@@ -699,11 +666,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 5,
                 name: "c5".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 6,
                 target_gen: 1,
             }),
         ];
@@ -719,7 +684,6 @@ mod tests {
         // P1 [A] P2 [B] P3 T4(P1) [D] P5 [E] P6 T7(P5)
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -728,7 +692,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Action(Action::Stage {
@@ -737,11 +700,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 3,
                 name: "c3".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 4,
                 target_gen: 1,
             }),
             Record::Action(Action::Stage {
@@ -750,7 +711,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 5,
                 name: "c5".into(),
             }),
             Record::Action(Action::Stage {
@@ -759,11 +719,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 6,
                 name: "c6".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 7,
                 target_gen: 5,
             }),
         ];
@@ -776,7 +734,6 @@ mod tests {
         // P1 [A] P2 [B] P3 T4(P1) [D] P5 T6(P3)
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -785,7 +742,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Action(Action::Stage {
@@ -794,11 +750,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 3,
                 name: "c3".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 4,
                 target_gen: 1,
             }),
             Record::Action(Action::Stage {
@@ -807,11 +761,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 5,
                 name: "c5".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 6,
                 target_gen: 3,
             }),
         ];
@@ -823,7 +775,6 @@ mod tests {
     fn reachable_travel_to_first_snapshot() {
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "c1".into(),
             }),
             Record::Action(Action::Stage {
@@ -832,11 +783,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 3,
                 target_gen: 1,
             }),
         ];
@@ -852,7 +801,6 @@ mod tests {
         // P1 [A] P2 [B] P3 T4(P2) T5(P1)
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -861,7 +809,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Action(Action::Stage {
@@ -870,15 +817,12 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 3,
                 name: "c3".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 4,
                 target_gen: 2,
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 5,
                 target_gen: 1,
             }),
         ];
@@ -894,7 +838,6 @@ mod tests {
         // P1 [A] P2 [B] P3 T4(P2) [D] P5
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -903,7 +846,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Action(Action::Stage {
@@ -912,11 +854,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 3,
                 name: "c3".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 4,
                 target_gen: 2,
             }),
             Record::Action(Action::Stage {
@@ -925,7 +865,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 5,
                 name: "c5".into(),
             }),
         ];
@@ -945,7 +884,6 @@ mod tests {
         // T targets nonexistent P99 — skipped, all segments alive.
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -954,7 +892,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 2,
                 target_gen: 99,
             }),
             Record::Action(Action::Stage {
@@ -973,7 +910,6 @@ mod tests {
     fn live_segments_slice_from_to() {
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -982,7 +918,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Action(Action::Stage {
@@ -991,7 +926,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 3,
                 name: "c3".into(),
             }),
             Record::Action(Action::Stage {
@@ -1000,7 +934,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 4,
                 name: "c4".into(),
             }),
         ];
@@ -1026,7 +959,6 @@ mod tests {
     #[test]
     fn live_segments_slice_not_found() {
         let records = vec![Record::Marker(Marker::Snapshot {
-            gen_id: 1,
             name: "init".into(),
         })];
         let j = Journal::new(records);
@@ -1044,7 +976,6 @@ mod tests {
         // T4(P1) kills seg1,seg2,seg3 → live: seg0 (empty) + seg4 ([C])
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -1053,7 +984,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Action(Action::Stage {
@@ -1062,11 +992,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 3,
                 name: "c3".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 4,
                 target_gen: 1,
             }),
             Record::Action(Action::Stage {
@@ -1075,7 +1003,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 5,
                 name: "c5".into(),
             }),
             Record::Action(Action::Stage {
@@ -1084,7 +1011,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 6,
                 name: "c6".into(),
             }),
         ];
@@ -1100,7 +1026,6 @@ mod tests {
     fn live_segments_at_clamps_invalid_gen_id() {
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "c1".into(),
             }),
             Record::Action(Action::Stage {
@@ -1109,7 +1034,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
         ];
@@ -1132,7 +1056,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "c1".into(),
             }),
             Record::Action(Action::Stage {
@@ -1141,11 +1064,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 3,
                 target_gen: 1,
             }),
         ];
@@ -1162,7 +1083,6 @@ mod tests {
     fn is_alive_basic() {
         let records = vec![
             Record::Marker(Marker::Snapshot {
-                gen_id: 1,
                 name: "init".into(),
             }),
             Record::Action(Action::Stage {
@@ -1171,7 +1091,6 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 2,
                 name: "c2".into(),
             }),
             Record::Action(Action::Stage {
@@ -1180,11 +1099,9 @@ mod tests {
                 pre: Target::Absence,
             }),
             Record::Marker(Marker::Snapshot {
-                gen_id: 3,
                 name: "c3".into(),
             }),
             Record::Marker(Marker::Travel {
-                gen_id: 4,
                 target_gen: 2,
             }),
         ];
