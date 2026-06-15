@@ -1,11 +1,15 @@
 # Permission Gating Layer
 
 The permission gating layer controls which files an agent can access and how.
-Every path starts in the `ask` state. A rule engine promotes matching paths to
-`allow`, `write-ask`, `read-only`, `ask`, `deny`, or `hide`. When an access
-needs approval (`ask`, or a write under `write-ask`), the thread is put to
-sleep; a userspace daemon receives the request and writes back a decision that
-wakes the thread.
+Absent any matching rule, a path resolves to the built-in default `ask` state
+(a dentry with no rule is `UNSET` and inherits from its nearest ancestor; the
+root falls back to `ask`). A rule engine promotes matching paths to `allow`,
+`write-ask`, `read-only`, `ask`, `deny`, or `hide` — and the shipped default
+config (`user/templates/yolofs.toml`) installs such rules out of the box (e.g.
+`/usr` read-only, `/etc` write-ask, `.` allow), so most paths resolve to those
+rather than `ask` in practice. When an access needs approval (`ask`, or a write
+under `write-ask`), the thread is put to sleep; a userspace daemon receives the
+request and writes back a decision that wakes the thread.
 
 Permission gating applies to **file access** (open for read/write/exec)
 and **metadata mutations** (create, mkdir, unlink, rmdir, rename,
