@@ -94,9 +94,15 @@ impl Op {
 /// summaries and `yolo journal` surface them. The `decision` is a
 /// [`Decision`](crate::perm::Decision), journal-encoded as a single letter.
 ///
+/// A and B are disjoint, one per access: an `ask` resolved to deny is recorded
+/// solely as `Ask`; `Block` is only for static-rule blocks that never prompted.
+///
 /// - `Ask` — an `ask` path was resolved to `decision` (by the daemon or the
 ///   timeout default). Wire: `A\0<path>\0<op>\0<decision>\n`.
-/// - `Block` — a rule returned `-EACCES`. Wire: `B\0<path>\0<op>\n`.
+/// - `Block` — a static rule (`deny`, `read-only`-on-write) returned `-EACCES`.
+///   `rule_path` is the overlay path of the blocking rule (same namespace as
+///   `path`; empty only in the rare unresolvable case).
+///   Wire: `B\0<path>\0<op>\0<rule_path>\n`.
 #[derive(Debug, Clone)]
 pub enum Note {
     Ask {
@@ -107,6 +113,7 @@ pub enum Note {
     Block {
         path: String,
         op: Op,
+        rule_path: String,
     },
 }
 

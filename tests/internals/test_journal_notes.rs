@@ -35,7 +35,7 @@ fn ro_session() -> YoloSession {
     .expect("session setup")
 }
 
-/// Block record format: B\0<path>\0<op>\n (3 fields).
+/// Block record format: B\0<path>\0<op>\0<rule_path>\n (4 fields).
 #[test]
 fn block_record_format() {
     let s = deny_session();
@@ -52,8 +52,8 @@ fn block_record_format() {
         let fields: Vec<&[u8]> = line.split(|&b| b == 0).collect();
         assert_eq!(
             fields.len(),
-            3,
-            "B record should be (B, path, op), got {} fields: {:?}",
+            4,
+            "B record should be (B, path, op, rule_path), got {} fields: {:?}",
             fields.len(),
             fields
                 .iter()
@@ -67,6 +67,11 @@ fn block_record_format() {
             fields[2] == b"r" || fields[2] == b"w",
             "op should be r/w, got {:?}",
             String::from_utf8_lossy(fields[2])
+        );
+        // A static block always has a source rule (here `/` = deny).
+        assert!(
+            !fields[3].is_empty(),
+            "rule_path field must be non-empty for a static block"
         );
     }
 }
@@ -362,15 +367,15 @@ fn hidden_paths_do_not_log_block() {
     );
 }
 
-/// `ask` resolving to deny via the default policy exercises the
-/// `yolo_open` emit site (which catches the case `yolo_permission` doesn't,
-/// because `yolo_permission` returns 0 for ASK and lets `yolo_open` resolve).
+/// A/B are disjoint: an `ask` resolved to deny (here via the no-daemon default
+/// policy) is recorded **solely as A** (decision `n`) — never also a B, even
+/// though the access returns `-EACCES`. The deny is decided inside
+/// `yolo_perm_check_dentry`, which already wrote the A; the `yolo_open` emit
+/// site must suppress its B (`ask_resolved` gate).
 #[test]
-fn ask_resolved_to_default_deny_emits_block() {
-    // No daemon connected; the ask is denied immediately when an
-    // unruled file is opened. The deny decision is made inside
-    // `yolo_perm_check_dentry` and surfaces from `yolo_open`, not from
-    // `yolo_permission` (which returned 0 for the ASK perm).
+fn ask_deny_records_only_ask_note_no_block() {
+    // No rules → everything resolves to `ask`; no daemon → the ask is denied
+    // immediately when an unruled file is opened.
     let s = YoloSession::new_with_config(Config {
         rules: BTreeMap::new(),
         ..Default::default()
@@ -380,12 +385,102 @@ fn ask_resolved_to_default_deny_emits_block() {
     let _ = fs::read_to_string(s.mnt_path("hello.txt"));
 
     let j = journal(&s);
-    let bs = notes(&j);
+    let ns = notes(&j);
+    // Exactly one A (read -> deny) for hello.txt.
+    let asks: Vec<_> = ns
+        .iter()
+        .filter(|n| matches!(n, Note::Ask { path, op, decision }
+            if path.ends_with("/hello.txt") && *op == Op::Read && *decision == Decision::Deny))
+        .collect();
+    assert_eq!(asks.len(), 1, "expected exactly one A(read->deny), got: {ns:?}");
+    // And zero B for that path — the ask-deny must not double-log a block.
     assert!(
-        bs.iter()
+        !ns.iter()
             .any(|n| matches!(n, Note::Block { path, .. } if path.ends_with("/hello.txt"))),
-        "expected B for ask-resolved-deny on hello.txt, got: {:?}",
-        bs
+        "ask-resolved deny must not emit a B, got: {ns:?}"
+    );
+}
+
+/// A B record names the *rule* that blocked the access, not just the access
+/// target: a `deny` rule on `subdir` blocks `subdir/deep.txt`, and the B's
+/// `rule_path` points at the ancestor rule's path, distinct from the deeper
+/// access path.
+#[test]
+fn block_record_carries_blocking_rule_path() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+    s.cli(&["rule", "deny", "subdir"]).expect("install deny rule");
+
+    let _ = fs::read_to_string(s.mnt_path("subdir/deep.txt"));
+
+    let j = journal(&s);
+    let ns = notes(&j);
+    assert!(
+        ns.iter().any(|n| matches!(
+            n,
+            Note::Block { path, rule_path, .. }
+                if path.ends_with("/subdir/deep.txt") && rule_path.ends_with("/subdir")
+        )),
+        "expected B for subdir/deep.txt blocked by the rule on /subdir, got: {ns:?}"
+    );
+}
+
+/// Mutate blocks resolve the rule from the *parent* (checked) while recording
+/// the *child* (target): with `/`=allow and `deny` on `subdir`, creating
+/// `subdir/new.txt` is gated on the parent rule. The B's `path` is the child
+/// but `rule_path` is the parent's rule — proving `checked` ≠ `target`.
+#[test]
+fn mutate_block_records_child_target_and_parent_rule_path() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+    s.cli(&["rule", "deny", "subdir"]).expect("install deny rule");
+
+    let _ = fs::write(s.mnt_path("subdir/new.txt"), "x");
+
+    let j = journal(&s);
+    let ns = notes(&j);
+    assert!(
+        ns.iter().any(|n| matches!(
+            n,
+            Note::Block { path, op: Op::Write, rule_path }
+                if path.ends_with("/subdir/new.txt") && rule_path.ends_with("/subdir")
+        )),
+        "expected mutate B with child target + parent rule_path, got: {ns:?}"
+    );
+}
+
+/// Disjoint A/B at a *non-open* emit site: a `write-ask` mutate denied by the
+/// no-daemon default is recorded solely as A — the `yolo_check_mutate_perm`
+/// emit site must suppress its B (`ask_resolved` gate), just like `yolo_open`.
+#[test]
+fn write_ask_mutate_deny_records_only_ask_no_block() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::WriteAsk)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    // Creating a file asks on the parent (write) and defaults to deny.
+    let _ = fs::write(s.mnt_path("subdir/new.txt"), "x");
+
+    let j = journal(&s);
+    let ns = notes(&j);
+    assert!(
+        ns.iter().any(|n| matches!(
+            n,
+            Note::Ask { op: Op::Write, decision: Decision::Deny, .. }
+        )),
+        "expected an A(write->deny) for the mutate, got: {ns:?}"
+    );
+    assert!(
+        !ns.iter().any(|n| matches!(n, Note::Block { .. })),
+        "write-ask mutate deny must not emit a B, got: {ns:?}"
     );
 }
 

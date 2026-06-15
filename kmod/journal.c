@@ -12,8 +12,12 @@
  *   P\0<name>\n                       — Snapshot
  *   T\0<target_gen>\n                 — Travel
  *   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
- *   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
+ *   B\0<path>\0<op>\0<rule_path>\n     — Blocked by a static rule (observational)
  *   (op = r/w; decision = y/n — the yes/no answer to the ask)
+ *
+ * A and B are disjoint, one per access: an ask resolved to deny is recorded
+ * solely as A; B is only for static-rule blocks (deny, read-only-on-write)
+ * that never prompted, and carries the blocking rule's path.
  *
  * Record tags are uppercase. Each *pre field is the operation-local pre-op
  * backing of that overlay name, tagged with the lowercased first letter of the
@@ -234,26 +238,45 @@ int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
 /**
  * yolo_journal_block - Append a "permission blocked" note to the journal.
  * @sbi: superblock info (has journal_file)
- * @dentry: the target dentry whose access was denied
+ * @target: the dentry whose access was denied — the agent's intended target
+ *          (the file for opens/setattr; the child for parent-write-denied
+ *          mutates). Recorded as the <path> field.
+ * @checked: the dentry whose rule gated the access (the file itself, or the
+ *           parent for mutates). Its nearest ruled ancestor is the blocking
+ *           rule, recorded as the <rule_path> field.
  * @op: the attempted operation (enum yolo_op)
  *
- * Observational note: written when a yolofs rule causes the kernel to
- * return -EACCES for an access. The path is the agent's intended target
- * (file for opens; child for parent-write-denied mutates), not the
- * parent dentry whose perm caused the denial. Does not set sbi->staging.dirty
- * (see journal_write).
+ * Observational note: written only for a *static*-rule block (deny, or
+ * read-only on a write) — an ask resolved to deny is recorded solely as an A
+ * note (see yolo_perm_check_dentry's @ask_resolved), never here. Does not set
+ * sbi->staging.dirty (see journal_write).
  *
- * Format: B\0<path>\0<op>\n
+ * Format: B\0<path>\0<op>\0<rule_path>\n
  */
-int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *dentry,
-		       enum yolo_op op)
+int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *target,
+		       struct dentry *checked, enum yolo_op op)
 {
 	char path_buf[YOLO_PATH_MAX];
+	char rule_buf[YOLO_PATH_MAX];
 	char op_str[2] = { op_char(op), '\0' };
-	char *path = dentry_path_raw(dentry, path_buf, sizeof(path_buf));
+	const char *rule_path = "";
+	struct dentry *rule = NULL;
+	char *path = dentry_path_raw(target, path_buf, sizeof(path_buf));
 	if (IS_ERR(path))
 		return PTR_ERR(path);
 
+	/* Resolve the blocking rule from the *checked* dentry — its nearest
+	 * ruled ancestor (the parent for mutates), not the target's. A static
+	 * block always has a source; the NULL/format-error fallback to "" keeps
+	 * this best-effort. */
+	yolo_perm_walk(checked, &rule);
+	if (rule) {
+		const char *p = dentry_path_raw(rule, rule_buf, sizeof(rule_buf));
+		if (!IS_ERR(p))
+			rule_path = p;
+		dput(rule);
+	}
+
 	return journal_write(sbi, 'B',
-			     (const char *[]){ path, op_str, NULL });
+			     (const char *[]){ path, op_str, rule_path, NULL });
 }

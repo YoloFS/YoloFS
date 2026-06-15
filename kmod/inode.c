@@ -20,14 +20,18 @@
 static int yolo_check_mutate_perm(struct dentry *dentry)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
+	bool ask_resolved = false;
 	int err;
 
 	if (!sbi->perm.enabled)
 		return 0;
 
-	err = yolo_perm_check_dentry(sbi, dentry->d_parent, O_WRONLY);
-	if (err == -EACCES)
-		yolo_journal_block(sbi, dentry, YOLO_OP_WRITE);
+	/* Mutates are gated on the parent's perm; record the child as the
+	 * target but resolve the blocking rule from the parent (checked). */
+	err = yolo_perm_check_dentry(sbi, dentry->d_parent, O_WRONLY,
+				     &ask_resolved);
+	if (err == -EACCES && !ask_resolved)
+		yolo_journal_block(sbi, dentry, dentry->d_parent, YOLO_OP_WRITE);
 	return err;
 }
 
@@ -242,11 +246,13 @@ static int yolo_permission(struct mnt_idmap *idmap,
 		break;
 	}
 
-	/* -EACCES path: log a block note against the inode's dentry. */
+	/* -EACCES path: a static deny/read-only block (ASK/WRITE_ASK returned 0
+	 * above and never reach here, so this is never an ask-resolved deny).
+	 * Log a B against the inode's dentry; it is both target and checked. */
 	alias = d_find_alias(inode);
 	if (alias) {
 		enum yolo_op op = (mask & MAY_WRITE) ? YOLO_OP_WRITE : YOLO_OP_READ;
-		yolo_journal_block(sbi, alias, op);
+		yolo_journal_block(sbi, alias, alias, op);
 		dput(alias);
 	}
 	return -EACCES;
@@ -273,10 +279,15 @@ static int yolo_setattr(struct mnt_idmap *idmap,
 	int err;
 
 	if (sbi->perm.enabled && yolo_setattr_needs_write_check(ia)) {
-		err = yolo_perm_check_dentry(sbi, dentry, O_WRONLY);
+		bool ask_resolved = false;
+
+		err = yolo_perm_check_dentry(sbi, dentry, O_WRONLY,
+					     &ask_resolved);
 		if (err) {
-			if (err == -EACCES)
-				yolo_journal_block(sbi, dentry, YOLO_OP_WRITE);
+			/* Static block only — an ask-resolved deny is already an A. */
+			if (err == -EACCES && !ask_resolved)
+				yolo_journal_block(sbi, dentry, dentry,
+						   YOLO_OP_WRITE);
 			return err;
 		}
 	}

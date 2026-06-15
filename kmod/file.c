@@ -115,10 +115,14 @@ static int yolo_open(struct inode *inode, struct file *file)
 	int err;
 
 	if (sbi->perm.enabled) {
-		err = yolo_perm_check_dentry(sbi, dentry, file->f_flags);
+		bool ask_resolved = false;
+
+		err = yolo_perm_check_dentry(sbi, dentry, file->f_flags,
+					     &ask_resolved);
 		if (err) {
-			if (err == -EACCES)
-				yolo_journal_block(sbi, dentry,
+			/* Static block only — an ask-resolved deny is already an A. */
+			if (err == -EACCES && !ask_resolved)
+				yolo_journal_block(sbi, dentry, dentry,
 					yolo_open_op(file->f_flags));
 			return err;
 		}

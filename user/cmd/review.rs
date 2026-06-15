@@ -447,7 +447,14 @@ fn print_notes(notes: &[Note], root: &Path) {
     println!("\n{}", "not staged:".dimmed());
     for note in notes {
         let (path, kind) = match note {
-            Note::Block { path, op } => (path, format!("blocked {}", op.label())),
+            Note::Block { path, op, rule_path } => {
+                let kind = if rule_path.is_empty() {
+                    format!("blocked {}", op.label())
+                } else {
+                    format!("blocked {} by {rule_path}", op.label())
+                };
+                (path, kind)
+            }
             Note::Ask { path, op, decision } => {
                 (path, format!("asked {} → {decision}", op.label()))
             }

@@ -211,6 +211,7 @@ mod tests {
         let notes_only = Journal::new(vec![Record::Note(Note::Block {
             path: "/etc/x".into(),
             op: Op::Write,
+            rule_path: "/etc".into(),
         })]);
         assert!(!notes_only.has_staged_changes);
 
@@ -467,6 +468,7 @@ mod tests {
             Record::Note(Note::Block {
                 path: "/etc/x".into(),
                 op: Op::Write,
+                rule_path: "/etc".into(),
             }),
             Record::Marker(Marker::Snapshot {
                 name: "c1".into(),
@@ -474,6 +476,7 @@ mod tests {
             Record::Note(Note::Block {
                 path: "/etc/y".into(),
                 op: Op::Write,
+                rule_path: "/etc".into(),
             }),
         ];
         let j = Journal::new(records);

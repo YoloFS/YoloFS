@@ -9,7 +9,7 @@
 //   P\0<name>\n                       — Snapshot (gen = record's P/T position)
 //   T\0<target_gen>\n                 — Travel  (gen = record's P/T position)
 //   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
-//   B\0<path>\0<op>\n                  — Blocked by a rule (observational)
+//   B\0<path>\0<op>\0<rule_path>\n     — Blocked by a static rule (observational)
 //   (op = r/w; decision = y/n — the yes/no answer to the ask)
 //
 // Record tags are uppercase. Each *pre field is a tagged pre-op target whose
@@ -124,10 +124,15 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
                     records.push(Record::Note(Note::Ask { path, op, decision }));
                 }
             }
-            b"B" if fields.len() >= 3 => {
+            b"B" if fields.len() >= 4 => {
                 let path = field_str(fields[1]);
+                let rule_path = field_str(fields[3]);
                 if let Some(op) = fields[2].first().and_then(|&b| Op::from_byte(b)) {
-                    records.push(Record::Note(Note::Block { path, op }));
+                    records.push(Record::Note(Note::Block {
+                        path,
+                        op,
+                        rule_path,
+                    }));
                 }
             }
             _ => {}
@@ -374,19 +379,20 @@ mod tests {
 
     #[test]
     fn parse_block_record() {
-        // B\0<path>\0<op>  (op = w = write)
-        let records = parse(b"B\0/etc/passwd\0w\n").unwrap();
+        // B\0<path>\0<op>\0<rule_path>  (op = w = write)
+        let records = parse(b"B\0/etc/passwd\0w\0/etc\n").unwrap();
         assert_eq!(records.len(), 1);
         assert!(matches!(
             &records[0],
-            Record::Note(Note::Block { path, op: Op::Write }) if path == "/etc/passwd"
+            Record::Note(Note::Block { path, op: Op::Write, rule_path })
+                if path == "/etc/passwd" && rule_path == "/etc"
         ));
     }
 
     #[test]
     fn parse_block_interleaved_with_actions() {
         // B records ride alongside S/D/R within a segment.
-        let records = parse(b"S\0/a\01\0a\nB\0/etc/passwd\0w\nD\0/a\0a\n").unwrap();
+        let records = parse(b"S\0/a\01\0a\nB\0/etc/passwd\0w\0/etc\nD\0/a\0a\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(matches!(
             &records[0],
@@ -394,7 +400,8 @@ mod tests {
         ));
         assert!(matches!(
             &records[1],
-            Record::Note(Note::Block { path, op: Op::Write }) if path == "/etc/passwd"
+            Record::Note(Note::Block { path, op: Op::Write, rule_path })
+                if path == "/etc/passwd" && rule_path == "/etc"
         ));
         assert!(matches!(
             &records[2],
@@ -404,12 +411,12 @@ mod tests {
 
     #[test]
     fn malformed_b_record_too_few_fields_skipped() {
-        // B record with only the tag (needs path) — should be skipped.
-        let records = parse(b"B\nS\0/good\01\0a\n").unwrap();
+        // A 3-field B (no rule_path) is now malformed — B needs 4 fields.
+        let records = parse(b"B\0/etc/passwd\0w\nS\0/good\01\0a\n").unwrap();
         assert_eq!(
             records.len(),
             1,
-            "malformed B record should be skipped: {:?}",
+            "3-field B record should be skipped: {:?}",
             records
         );
         assert!(matches!(

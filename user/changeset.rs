@@ -89,10 +89,14 @@ impl Changeset {
     }
 }
 
-/// A dedup key for a note: its kind, path, op, and (for asks) decision.
+/// A dedup key for a note: its kind, path, op, (for asks) decision, and (for
+/// blocks) the rule path — so blocks differing only by which rule fired are
+/// kept distinct.
 fn note_key(note: &Note) -> String {
     match note {
-        Note::Block { path, op } => format!("B\0{path}\0{}", op.label()),
+        Note::Block { path, op, rule_path } => {
+            format!("B\0{path}\0{}\0{rule_path}", op.label())
+        }
         Note::Ask { path, op, decision } => format!("A\0{path}\0{}\0{decision}", op.label()),
     }
 }
@@ -216,5 +220,26 @@ mod tests {
         let a = find(&cs, "/a").unwrap();
         assert!(matches!(a.old, Some(Target::BasePath(ref p)) if p == "/a"));
         assert!(matches!(a.new, Some(Target::Absence)));
+    }
+
+    #[test]
+    fn blocks_differing_by_rule_path_are_not_deduped() {
+        use crate::journal::{Note, Op};
+        let block = |rule: &str| {
+            Record::Note(Note::Block {
+                path: "/a".into(),
+                op: Op::Write,
+                rule_path: rule.into(),
+            })
+        };
+        // Same path/op but different blocking rules stay distinct; an exact
+        // duplicate folds. rule_path is part of the dedup key.
+        let cs = collect(vec![block("/x"), block("/y"), block("/x")]);
+        assert_eq!(
+            cs.notes.len(),
+            2,
+            "distinct rule_paths kept, dup folded: {:?}",
+            cs.notes
+        );
     }
 }

@@ -228,10 +228,12 @@ enum yolo_perm yolo_perm_get(struct inode *inode, struct dentry *dentry)
 
 // Shared permission check: resolve, ask if needed, check the requested op.
 // Used by yolo_open (for file access) and yolo_check_mutate_perm (for
-// metadata ops).  Lives in perm.c.
+// metadata ops).  Lives in perm.c.  *ask_resolved is set true only when an
+// ask was run to a decision (the A note is then already written), so callers
+// know to suppress a B for that deny — keeping A and B disjoint.
 int yolo_perm_check_dentry(struct yolo_sb_info *sbi,
                            struct dentry *dentry,
-                           int f_flags)
+                           int f_flags, bool *ask_resolved)
 {
     enum yolo_perm perm;
     enum yolo_decision decision;
@@ -241,19 +243,28 @@ int yolo_perm_check_dentry(struct yolo_sb_info *sbi,
 
     if (perm == YOLO_PERM_ASK ||
         (perm == YOLO_PERM_WRITE_ASK && op == YOLO_OP_WRITE)) {
-        // ... ask daemon, or deny if none answers; fills decision ...
+        // ... ask daemon, or deny if none answers; writes the A note ...
+        if (ask_resolved)
+            *ask_resolved = true;
         return decision == YOLO_DECISION_ALLOW ? 0 : -EACCES;
     }
-    return yolo_perm_check(perm, f_flags);
+    return yolo_perm_check(perm, f_flags);  // static block: ask_resolved stays false
 }
 
-// Metadata ops check write permission on the parent directory.
+// Metadata ops check write permission on the parent directory. On a static
+// block, record a B against the child (target) resolved from the parent
+// (checked); an ask-resolved deny is left to its A note.
 static int yolo_check_mutate_perm(struct dentry *dentry)
 {
     struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
+    bool ask_resolved = false;
+    int err;
     if (!sbi->perm.enabled)
         return 0;
-    return yolo_perm_check_dentry(sbi, dentry->d_parent, O_WRONLY);
+    err = yolo_perm_check_dentry(sbi, dentry->d_parent, O_WRONLY, &ask_resolved);
+    if (err == -EACCES && !ask_resolved)
+        yolo_journal_block(sbi, dentry, dentry->d_parent, YOLO_OP_WRITE);
+    return err;
 }
 
 // yolo_permission() for VFS MAY_READ/MAY_WRITE/MAY_EXEC checks.
@@ -283,9 +294,13 @@ static int yolo_open(struct inode *inode, struct file *file)
     struct dentry *dentry = file->f_path.dentry;
 
     if (sbi->perm.enabled) {
-        err = yolo_perm_check_dentry(sbi, dentry, file->f_flags);
-        if (err)
+        bool ask_resolved = false;
+        err = yolo_perm_check_dentry(sbi, dentry, file->f_flags, &ask_resolved);
+        if (err) {
+            if (err == -EACCES && !ask_resolved)  // static block → B (ask-deny is an A)
+                yolo_journal_block(sbi, dentry, dentry, yolo_open_op(file->f_flags));
             return err;
+        }
     }
     // ... staging redirect (lazy COW, see staging.md#open--read--write-path) ...
 }
@@ -431,15 +446,23 @@ longest-prefix-match for free. This satisfies all three principles:
 | unlink, rmdir | parent dir's perm (write) | `yolo_check_mutate_perm` |
 | rename | both parents' perm (write) | `yolo_check_mutate_perm` × 2 |
 
-Whenever a gate returns `-EACCES`, the kernel appends a `B\0<path>\0<op>\n`
-record to the journal (the *target* path the agent tried to act on, not
-the parent whose perm was the source of denial; `op` is `r`/`w`). And
-whenever an `ask` is resolved — by the daemon or the timeout default — the
-kernel appends an `A\0<access_path>\0<op>\0<decision>\n` record capturing
-the verdict. A records carry the attempted access path, not the rule path.
-`yolo review` summaries and `yolo journal` surface both so the user can review
-what was blocked or asked, in order, relative to snapshots. `HIDE` paths return
-`-ENOENT`, never issue asks, and are not logged. See
+When a **static** rule (`deny`, or `read-only` on a write) gates an access to
+`-EACCES` with no prompt, the kernel appends a
+`B\0<path>\0<op>\0<rule_path>\n` record: `<path>` is the *target* the agent
+tried to act on (not the parent whose perm was the source of denial), `op` is
+`r`/`w`, and `<rule_path>` is the overlay path of the rule that blocked it (the
+`/etc` in "blocked because of the rule on `/etc`"). And whenever an `ask` /
+`write-ask` is resolved — by the daemon or the timeout default — the kernel
+appends an `A\0<access_path>\0<op>\0<decision>\n` record capturing the verdict.
+A records carry the attempted access path, not the rule path.
+
+**A and B are disjoint, one record per access.** An `ask`/`write-ask` that
+resolves to deny is recorded **solely as A (decision `n`)** — never also a B,
+even though the access returns `-EACCES`. B is exclusively for static-rule
+blocks that never prompted. `yolo review` summaries and `yolo journal` surface
+both so the user can review what was blocked or asked, in order, relative to
+snapshots. `HIDE` paths return `-ENOENT`, never issue asks, and are not logged.
+See
 [staging.md §Journal Format](staging.md#journal-format) for the record
 shape and semantics.
 

@@ -136,8 +136,18 @@ fn format_note(note: &journal::Note) -> String {
                 decision
             )
         }
-        journal::Note::Block { path, op } => {
-            format!("{:10} {:5} {}", "blocked".yellow(), op.label(), path)
+        journal::Note::Block { path, op, rule_path } => {
+            if rule_path.is_empty() {
+                format!("{:10} {:5} {}", "blocked".yellow(), op.label(), path)
+            } else {
+                format!(
+                    "{:10} {:5} {} by {}",
+                    "blocked".yellow(),
+                    op.label(),
+                    path,
+                    rule_path
+                )
+            }
         }
     }
 }
@@ -215,10 +225,26 @@ mod tests {
         let note = Note::Block {
             path: "/etc/passwd".into(),
             op: Op::Write,
+            rule_path: "/etc".into(),
         };
         let s = strip_ansi(&format_note(&note));
         assert!(s.contains("blocked"), "should say blocked: {s}");
         assert!(s.contains("/etc/passwd"), "should contain path: {s}");
+        assert!(s.contains("/etc"), "should contain rule path: {s}");
+    }
+
+    #[test]
+    fn format_blocked_empty_rule_path() {
+        // The rare unresolvable-rule case: render cleanly, no dangling " by ".
+        let note = Note::Block {
+            path: "/etc/passwd".into(),
+            op: Op::Write,
+            rule_path: String::new(),
+        };
+        let s = strip_ansi(&format_note(&note));
+        assert!(s.contains("blocked"), "should say blocked: {s}");
+        assert!(s.contains("/etc/passwd"), "should contain path: {s}");
+        assert!(!s.contains(" by "), "no dangling 'by' for empty rule_path: {s}");
     }
 
     #[test]
@@ -226,6 +252,7 @@ mod tests {
         let note = Note::Block {
             path: "/etc/passwd".into(),
             op: Op::Write,
+            rule_path: "/etc".into(),
         };
         assert!(note_matches_path(&note, "/etc/passwd"));
         assert!(!note_matches_path(&note, "/etc/shadow"));

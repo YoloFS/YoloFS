@@ -492,8 +492,8 @@ int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 			  struct dentry *new_dentry);
 int yolo_journal_snapshot(struct yolo_sb_info *sbi, const char *name);
 int yolo_journal_travel(struct yolo_sb_info *sbi, u16 target_gen);
-int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *dentry,
-		       enum yolo_op op);
+int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *target,
+		       struct dentry *checked, enum yolo_op op);
 int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
 		     enum yolo_op op, enum yolo_decision decision);
 
@@ -507,7 +507,7 @@ enum yolo_perm yolo_perm_walk(struct dentry *dentry, struct dentry **source);
 void yolo_perm_refresh(struct inode *inode, struct dentry *dentry);
 enum yolo_perm yolo_perm_get(struct inode *inode, struct dentry *dentry);
 int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *dentry,
-			   int f_flags);
+			   int f_flags, bool *ask_resolved);
 int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 		       const char *rule_path, enum yolo_perm rule_perm,
 		       enum yolo_op op, enum yolo_decision *result);

@@ -562,7 +562,7 @@ R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n   — Rename
 P\0<name>\n                       — Snapshot
 T\0<target_gen>\n                 — Travel
 A\0<access_path>\0<op>\0<decision>\n    — Ask resolved (records the decision)
-B\0<path>\0<op>\n                — Blocked by a rule (permission denied)
+B\0<path>\0<op>\0<rule_path>\n     — Blocked by a static rule (permission denied)
 ```
 
 Each mutation type has its own record tag and carries exactly the fields
@@ -607,18 +607,22 @@ ends against overlay tree paths.
 | `P` | `<name>` | Snapshot marker |
 | `T` | `<target_gen>` | Travel marker |
 | `A` | `<access_path>`, `<op>`, `<decision>` | An `ask` was resolved to `<decision>` — observational |
-| `B` | `<path>`, `<op>` | Access blocked by a rule (`-EACCES`) — observational |
+| `B` | `<path>`, `<op>`, `<rule_path>` | Access blocked by a static rule (`-EACCES`) — observational |
 
 `op` is a single letter (`r`/`w`); `decision` is a single letter (`y`/`n` —
 the yes/no answer to the ask; `a` and `d` would collide with the Absence
 pre-target tag and the `D` record tag). Decisions answer only the current
 blocked operation; persistent policy changes are separate rule updates.
-A records carry the attempted access path, not the rule path. `hide` is
-rule-only: hidden paths return `ENOENT` without producing ask or block notes.
-S/D/R are state mutations. P/T are control markers. **A and B are
-observational notes**: they record that a rule blocked an access (`B`) or
-that an `ask` was resolved (`A`, by the daemon or the timeout default) but
-do not affect any state. The CLI's dir-tree builder, commit, abort, and diff
+A records carry the attempted access path, not the rule path; B's `<rule_path>`
+is an overlay path in the same namespace as `<path>` (from `dentry_path_raw` on
+the blocking rule's dentry). `hide` is rule-only: hidden paths return `ENOENT`
+without producing ask or block notes. **A and B are disjoint, one record per
+access**: an `ask`/`write-ask` resolved to deny is recorded **solely as A**
+(decision `n`), never also a B — B is exclusively for static-rule blocks
+(`deny`, `read-only`-on-write) that never prompted. S/D/R are state mutations.
+P/T are control markers. **A and B are observational notes**: they record that
+a static rule blocked an access (`B`) or that an `ask` was resolved (`A`, by the
+daemon or the timeout default) but do not affect any state. The CLI's dir-tree builder, commit, abort, and diff
 ignore them; `yolo review` summaries and `yolo journal` surface them. A/B writes do not set
 `sbi->dirty`, so a command that only triggers blocks/asks does not cause an
 auto-snapshot under `YOLO_SNAPSHOT_IF_CHANGED`. They ride within segments

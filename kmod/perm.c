@@ -98,9 +98,15 @@ static bool yolo_perm_needs_ask(enum yolo_perm perm, enum yolo_op op)
  * Full permission check for a dentry: resolve cached perm, ask daemon
  * if unresolved, then check against the given flags.  Used by both
  * yolo_open (via file.c) and metadata ops (via inode.c).
+ *
+ * @ask_resolved (nullable out): set to true only when an ask/write-ask was run
+ * to a decision via yolo_ask_userspace (which already wrote the A note). Left
+ * false on every static-block path. Callers use it to keep A and B disjoint:
+ * emit a B only on a static block (err == -EACCES && !*ask_resolved), never for
+ * an ask-resolved deny (already recorded as A).
  */
 int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *dentry,
-			   int f_flags)
+			   int f_flags, bool *ask_resolved)
 {
 	struct inode *inode = d_inode(dentry);
 	struct yolo_inode_info *ii = YOLO_I(inode);
@@ -143,6 +149,10 @@ int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *dentry,
 					 &decision);
 		if (err)
 			return err;
+		/* The ask was resolved (A note written by yolo_ask_userspace);
+		 * the caller must not also emit a B for this deny. */
+		if (ask_resolved)
+			*ask_resolved = true;
 		return decision == YOLO_DECISION_ALLOW ? 0 : -EACCES;
 	}
 
