@@ -2,12 +2,12 @@
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use yolofs::AGENT_ALLOWED;
 use yolofs::cmd::{
     abort, commit, exec, init, journal, load, mount, review, snapshot, timeline, travel, watch,
 };
 use yolofs::config;
 use yolofs::perm;
-use yolofs::AGENT_ALLOWED;
 
 #[derive(Parser)]
 #[command(
