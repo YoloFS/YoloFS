@@ -30,6 +30,17 @@ run through yolofs. Supported agents: `claude` (`.claude/`), `gemini` (`.gemini/
 `--agents <name>...` (repeatable) to scaffold only specific ones. Existing hook
 files are never overwritten.
 
+Alongside the hooks, each agent gets an **always-loaded guide** written to that
+agent's native context file — `CLAUDE.md` (claude), `GEMINI.md` (gemini), or
+`AGENTS.md` (copilot) — at the project root. The hook makes commands run through
+yolofs; the guide tells the agent what that means: every command is staged, so
+it should inspect with `yolo review`/`review --diff`, rewind mistakes with `yolo
+travel`, and leave the result staged for a human rather than committing. All
+three files share one source (`user/templates/agent-guide.md`) and list exactly
+the navigation-only subcommands the agent is allowed to run — the same set the
+CLI enforces (`AGENT_ALLOWED`: `review`, `journal`, `timeline`, `travel`,
+`snapshot`). An existing guide file is never overwritten.
+
 `yolo` is a host-side tool — like `docker`, you run it **outside** the mount and
 it manages the session. `review`/`commit`/`abort` need the base
 filesystem, which only exists outside, so **every `yolo` command refuses to run

@@ -29,7 +29,7 @@ note ─────────────────────────
 note Setup
 note ──────────────────────────────────────────────────────────
 note
-note "'yolo init <dir>' scaffolds a project: a default yolofs.toml plus agent hook templates."
+note "'yolo init <dir>' scaffolds a project: a default yolofs.toml, agent hook templates, and an always-loaded agent guide (CLAUDE.md)."
 yolo init example --agents claude
 cd example
 

@@ -19,7 +19,7 @@ it manages the session; every `yolo` command refuses to run inside the mount.
 make install                     # build + install CLI and kernel module
 
 cd /path/to/project
-yolo init                        # initialize a session (yolofs.toml + agent hooks)
+yolo init                        # initialize a session (yolofs.toml + agent hooks + agent guide)
 yolo mount                       # mount the session
 yolo watch &                     # permission prompt daemon
 yolo run -- make build               # run a command in the staging overlay (shows changes)

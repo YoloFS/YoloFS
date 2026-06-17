@@ -7,6 +7,7 @@ use yolofs::cmd::{
 };
 use yolofs::config;
 use yolofs::perm;
+use yolofs::AGENT_ALLOWED;
 
 #[derive(Parser)]
 #[command(
@@ -161,13 +162,6 @@ fn run_cli() -> anyhow::Result<u8> {
 
     dispatch(cli.command)
 }
-
-/// Subcommands the agent may run via its hook's `yolo run -- yolo <sub>` — read
-/// and navigation only. Everything else (commit/abort/rule/session control/…) is
-/// the human's, so this is default-deny: an unlisted or unknown subcommand is
-/// rejected. Centralizing the policy here keeps agent hooks trivial
-/// (`yolo run -- <cmd>`) and prevents them from drifting.
-const AGENT_ALLOWED: &[&str] = &["review", "journal", "timeline", "travel", "snapshot"];
 
 /// The agent ran `yolo <sub> …` (its hook wraps every command as
 /// `yolo run -- <cmd>`, so a `yolo` command arrives here as `run`'s exec_args).

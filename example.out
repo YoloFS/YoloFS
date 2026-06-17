@@ -2,11 +2,12 @@
 # Setup
 # ──────────────────────────────────────────────────────────
 
-# 'yolo init <dir>' scaffolds a project: a default yolofs.toml plus agent hook templates.
+# 'yolo init <dir>' scaffolds a project: a default yolofs.toml, agent hook templates, and an always-loaded agent guide (CLAUDE.md).
 $ yolo init example --agents claude
 yolo: created example/yolofs.toml
 yolo: created example/.claude/settings.json
 yolo: created example/.claude/yolofs.sh
+yolo: created example/CLAUDE.md
 $ cd example
 
 # ──────────────────────────────────────────────────────────

@@ -23,50 +23,62 @@ pub enum AgentChoice {
     Copilot,
 }
 
-/// A hook template: where its files go and what they contain.
+/// The always-loaded agent guide: one canonical source, written under each
+/// agent's native context-file name (`CLAUDE.md`/`GEMINI.md`/`AGENTS.md`) so the
+/// agent auto-loads it. It explains that commands are staged and lists exactly
+/// the subcommands the agent may run (`yolofs::AGENT_ALLOWED`).
+const AGENT_GUIDE: &str = include_str!("../templates/agent-guide.md");
+
+/// A scaffold template: the files an agent gets and what they contain.
 #[derive(Clone, Copy)]
 struct AgentTemplate {
-    /// Directory the files land in, under the project root (e.g. `.claude`).
-    dir: &'static str,
-    /// `(filename, contents)` pairs, written into `dir`.
+    /// `(path-relative-to-project-root, contents)` pairs. The pre-tool-use hook
+    /// lives under a dotdir (e.g. `.claude/`); the guide lives at the root under
+    /// the agent's native context-file name.
     files: &'static [(&'static str, &'static str)],
 }
 
 impl AgentChoice {
-    /// Where this agent's hook files go and what they contain.
+    /// Which files this agent gets and what they contain.
     fn template(self) -> AgentTemplate {
         match self {
             AgentChoice::Claude => AgentTemplate {
-                dir: ".claude",
                 files: &[
                     (
-                        "settings.json",
+                        ".claude/settings.json",
                         include_str!("../templates/.claude/settings.json"),
                     ),
-                    ("yolofs.sh", include_str!("../templates/.claude/yolofs.sh")),
+                    (
+                        ".claude/yolofs.sh",
+                        include_str!("../templates/.claude/yolofs.sh"),
+                    ),
+                    ("CLAUDE.md", AGENT_GUIDE),
                 ],
             },
             AgentChoice::Gemini => AgentTemplate {
-                dir: ".gemini",
                 files: &[
                     (
-                        "settings.json",
+                        ".gemini/settings.json",
                         include_str!("../templates/.gemini/settings.json"),
                     ),
-                    ("yolofs.sh", include_str!("../templates/.gemini/yolofs.sh")),
+                    (
+                        ".gemini/yolofs.sh",
+                        include_str!("../templates/.gemini/yolofs.sh"),
+                    ),
+                    ("GEMINI.md", AGENT_GUIDE),
                 ],
             },
             AgentChoice::Copilot => AgentTemplate {
-                dir: ".github/hooks",
                 files: &[
                     (
-                        "yolofs.json",
+                        ".github/hooks/yolofs.json",
                         include_str!("../templates/.github/hooks/yolofs.json"),
                     ),
                     (
-                        "yolofs.sh",
+                        ".github/hooks/yolofs.sh",
                         include_str!("../templates/.github/hooks/yolofs.sh"),
                     ),
+                    ("AGENTS.md", AGENT_GUIDE),
                 ],
             },
         }
@@ -123,9 +135,8 @@ fn write_default_config(dir: &Path) -> Result<bool> {
 fn scaffold_agents(dir: &Path, selected: &[AgentTemplate]) -> Result<usize> {
     let mut created = 0;
     for agent in selected {
-        for (name, contents) in agent.files {
-            let rel = format!("{}/{}", agent.dir, name);
-            let path = dir.join(&rel);
+        for (rel, contents) in agent.files {
+            let path = dir.join(rel);
             if path.exists() {
                 continue;
             }
@@ -133,7 +144,7 @@ fn scaffold_agents(dir: &Path, selected: &[AgentTemplate]) -> Result<usize> {
                 fs::create_dir_all(parent)?;
             }
             fs::write(&path, contents)?;
-            if name.ends_with(".sh") {
+            if rel.ends_with(".sh") {
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
             }
             report::success(format!("created {}", path.display()));
@@ -147,27 +158,54 @@ fn scaffold_agents(dir: &Path, selected: &[AgentTemplate]) -> Result<usize> {
 mod tests {
     use super::*;
 
+    /// The guide is the last file of each template; its name identifies the agent.
+    fn guide_names(templates: &[AgentTemplate]) -> Vec<&'static str> {
+        templates
+            .iter()
+            .map(|t| t.files.last().expect("template has files").0)
+            .collect()
+    }
+
     #[test]
     fn resolve_choices_defaults_to_all_and_dedups() {
         use AgentChoice::*;
 
-        // Empty selection scaffolds every agent.
+        // Empty selection scaffolds every agent, each with its native guide file.
         assert_eq!(
-            resolve_choices(&[])
-                .iter()
-                .map(|t| t.dir)
-                .collect::<Vec<_>>(),
-            [".claude", ".gemini", ".github/hooks"]
+            guide_names(&resolve_choices(&[])),
+            ["CLAUDE.md", "GEMINI.md", "AGENTS.md"]
         );
 
-        let two = resolve_choices(&[Claude, Gemini]);
         assert_eq!(
-            two.iter().map(|t| t.dir).collect::<Vec<_>>(),
-            [".claude", ".gemini"]
+            guide_names(&resolve_choices(&[Claude, Gemini])),
+            ["CLAUDE.md", "GEMINI.md"]
         );
 
         // Duplicates collapse.
         assert_eq!(resolve_choices(&[Claude, Claude]).len(), 1);
+    }
+
+    #[test]
+    fn guide_matches_agent_allowed_command_set() {
+        // The scaffolded guide is the agent's contract; it must list exactly the
+        // subcommands the CLI gate (`yolofs::AGENT_ALLOWED`) lets the agent run,
+        // so the two cannot drift. Human-only commands must not be advertised.
+        let allow_line = AGENT_GUIDE
+            .lines()
+            .find(|l| l.starts_with("You may run only"))
+            .expect("guide must state the allow-list on one line");
+        for cmd in crate::AGENT_ALLOWED {
+            assert!(
+                allow_line.contains(&format!("`{cmd}`")),
+                "allow-list line must include `{cmd}`"
+            );
+        }
+        for human_only in ["commit", "abort", "rule"] {
+            assert!(
+                !allow_line.contains(&format!("`{human_only}`")),
+                "allow-list line must not advertise human-only `{human_only}`"
+            );
+        }
     }
 
     #[test]
@@ -204,19 +242,25 @@ mod tests {
 
         assert_eq!(
             scaffold_agents(dir, &[claude]).unwrap(),
-            2,
-            "two files created"
+            3,
+            "settings.json + yolofs.sh hook + CLAUDE.md guide"
         );
 
         let settings = dir.join(".claude/settings.json");
         let hook = dir.join(".claude/yolofs.sh");
+        let guide = dir.join("CLAUDE.md");
         assert!(settings.exists());
         assert!(hook.exists());
-        // .sh hook is executable, .json is not forced executable.
+        // The guide lands at the project root (where Claude auto-loads it), not
+        // under the hook dir, and carries the canonical guide content.
+        assert_eq!(fs::read_to_string(&guide).unwrap(), AGENT_GUIDE);
+        // .sh hook is executable, .json/.md are not forced executable.
         assert_eq!(hook.metadata().unwrap().permissions().mode() & 0o111, 0o111);
+        assert_eq!(guide.metadata().unwrap().permissions().mode() & 0o111, 0);
 
         // Unselected agents are untouched.
         assert!(!dir.join(".gemini").exists());
+        assert!(!dir.join("GEMINI.md").exists());
 
         // Re-running creates nothing and does not clobber an edited file.
         fs::write(&hook, "edited\n").unwrap();
@@ -226,5 +270,44 @@ mod tests {
             "nothing re-created"
         );
         assert_eq!(fs::read_to_string(&hook).unwrap(), "edited\n");
+    }
+
+    #[test]
+    fn scaffold_writes_each_agents_native_guide_without_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        // All three agents at once: 3 files each, distinct guide filenames.
+        let all = resolve_choices(&[]);
+        assert_eq!(scaffold_agents(dir, &all).unwrap(), 9, "3 files per agent");
+
+        for guide in ["CLAUDE.md", "GEMINI.md", "AGENTS.md"] {
+            let path = dir.join(guide);
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                AGENT_GUIDE,
+                "{guide} carries the canonical guide"
+            );
+            assert_eq!(
+                path.metadata().unwrap().permissions().mode() & 0o111,
+                0,
+                "{guide} is not executable"
+            );
+        }
+        // Copilot's nested hook dir was created.
+        assert!(dir.join(".github/hooks/yolofs.sh").exists());
+    }
+
+    #[test]
+    fn scaffold_never_overwrites_an_existing_guide() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // A user already has their own CLAUDE.md — init must leave it intact.
+        let existing = dir.join("CLAUDE.md");
+        fs::write(&existing, "my own memory\n").unwrap();
+
+        let created = scaffold_agents(dir, &[AgentChoice::Claude.template()]).unwrap();
+        assert_eq!(created, 2, "hook files created, existing guide skipped");
+        assert_eq!(fs::read_to_string(&existing).unwrap(), "my own memory\n");
     }
 }
