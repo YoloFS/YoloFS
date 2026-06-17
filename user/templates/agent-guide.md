@@ -19,9 +19,11 @@ Every command auto-snapshots, so you can rewind instead of trying to hand-repair
 a bad state:
 
 - `yolo snapshot <name>` — bookmark the current state before something risky.
-- `yolo travel <name|gen>` — rewind the working tree to an earlier snapshot
-  (e.g. `yolo travel 3`, or `yolo travel initial`). The abandoned branch stays
-  visible in `yolo timeline`.
+  The name is just a label shown in `yolo timeline`.
+- `yolo travel <gen>` — rewind the working tree to an earlier snapshot by its
+  generation id (e.g. `yolo travel 3`, or `yolo travel 0` for the initial
+  state). Run `yolo timeline` to see the generation ids. The abandoned branch
+  stays visible in `yolo timeline`.
 
 ## Leave the result for a human
 

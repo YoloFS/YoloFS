@@ -201,8 +201,8 @@ $ yolo commit
    -> userspace: clear the durable artifact; the live base view remains mounted
 
 # 8. Travel to a previous marker (appends T record, no truncation)
-$ yolo travel "after make build"
-   -> CLI: Journal → find_marker → live_segments_at_name → build tree → serialize tree
+$ yolo travel 2
+   -> CLI: Journal → resolve_gen → into_tree_at → build tree → serialize tree
    -> CLI: ioctl(YOLO_IOC_TRAVEL, { target_gen=2, tree_buf })
    -> kernel: release staged dentries, inject VFS dentries from tree, increment gen to 4,
       append T record to journal
@@ -257,7 +257,7 @@ yolofs/
 │   ├── journal/               # journal parsing, timeline, and resolution
 │   │   ├── types.rs           # Action, Marker, Record, Segment, Target, Op, Note
 │   │   ├── parse.rs           # parse()  (pub(super))
-│   │   ├── marker.rs          # MarkerIndex (find_marker + marker_at + segment_range + alive_segments)
+│   │   ├── marker.rs          # MarkerIndex (resolve_gen + marker_at + segment_range + alive_segments)
 │   │   ├── core.rs            # Journal (struct + new + read + live_segments_*)
 │   │   ├── tree.rs            # DirTree, DirNode
 │   │   └── plan.rs            # DirTree::into_plan() -- commit mutation planner

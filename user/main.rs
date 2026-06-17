@@ -87,8 +87,8 @@ enum Command {
     },
     /// Travel to a previous snapshot
     Travel {
-        /// Snapshot name or numeric ID
-        name: String,
+        /// Snapshot/travel generation id (see `yolo timeline`)
+        id: String,
     },
     /// Show snapshot/travel timeline (unreachable branches dimmed)
     Timeline,
@@ -219,7 +219,7 @@ fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
         Some(Command::Snapshot { name, if_changed }) => {
             snapshot::create(name.as_deref(), if_changed)?;
         }
-        Some(Command::Travel { name }) => travel::run(&name)?,
+        Some(Command::Travel { id }) => travel::run(&id)?,
         Some(Command::Timeline) => timeline::run()?,
         Some(Command::Journal { range, path }) => journal::run(range.as_deref(), path.as_deref())?,
         Some(Command::Rule { action }) => match action {

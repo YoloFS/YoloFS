@@ -15,7 +15,7 @@ fn travel_journal_contains_snapshot_marker() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let j = journal(&s);
     let mkrs = markers(&j);
@@ -36,7 +36,7 @@ fn travel_journal_has_no_post_snapshot_records() {
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
     fs::remove_file(s.mnt_path("a.txt")).expect("rm a");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let j = journal(&s);
     let mkrs = markers(&j);
@@ -72,7 +72,7 @@ fn travel_keeps_pre_snapshot_inodes() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert!(
         inode_path(&s, pre_ino).exists(),
@@ -96,7 +96,7 @@ fn travel_orphans_post_snapshot_inodes() {
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
     let post_ino = ino_for(&tree(&s), "/b.txt");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // Inode file still on disk (orphaned)
     assert!(
@@ -121,7 +121,7 @@ fn abort_after_travel_cleans_orphans() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
     s.cli(&["abort", "--force"]).expect("abort");
 
     assert!(
@@ -147,7 +147,7 @@ fn travel_new_files_get_fresh_inodes() {
     let max_ino_before = *inos_before.last().expect("should have inodes");
 
     // Travel — b.txt's inode becomes orphaned.
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // Create new files after travel.
     fs::write(s.mnt_path("c.txt"), "c\n").expect("write c");
@@ -187,7 +187,7 @@ fn write_after_travel_without_snapshot_reuses_inode() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2");
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // snapshot_gen is now set to chk1's gen, and the dirent's
     // snapshot_gen matches. So writing should open the inode directly
@@ -212,7 +212,7 @@ fn write_after_travel_and_snapshot_triggers_recow() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
     s.cli(&["snapshot", "post-travel"]).expect("new snapshot");
 
     let inos_before = inos(&s);
@@ -238,7 +238,7 @@ fn recow_after_travel_preserves_old_inode() {
 
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2 (re-COW)");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
     s.cli(&["snapshot", "post-travel"]).expect("new snapshot");
 
     fs::write(s.mnt_path("file.txt"), "v3\n").expect("write v3 (re-COW)");
@@ -265,7 +265,7 @@ fn resolved_changes_match_snapshot_state() {
     fs::write(s.mnt_path("c.txt"), "c\n").expect("write c");
     fs::remove_file(s.mnt_path("a.txt")).expect("delete a");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let t = tree(&s);
     assert_eq!(t.len(), 2, "exactly 2 dentries: {t:?}");
@@ -303,7 +303,7 @@ fn travel_renamed_directory_in_resolved_changes() {
 
     fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write post");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let t = tree(&s);
     let debug = format!("{t:?}");
@@ -342,7 +342,7 @@ fn travel_renamed_symlink_in_resolved_changes() {
 
     fs::write(s.mnt_path("post.txt"), "post\n").expect("write post");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let t = tree(&s);
     let debug = format!("{t:?}");
@@ -388,7 +388,7 @@ fn travel_preserves_journal_inode() {
 
     let ino_before = fs::metadata(&journal_path).expect("stat before").ino();
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let ino_after = fs::metadata(&journal_path).expect("stat after").ino();
     assert_eq!(
@@ -410,7 +410,7 @@ fn travel_journal_is_byte_prefix() {
 
     let bytes_before = fs::read(&journal_path).expect("read before");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let bytes_after = fs::read(&journal_path).expect("read after");
     assert!(
@@ -446,7 +446,7 @@ fn travel_j_record_has_correct_gen() {
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
     s.cli(&["snapshot", "chk2"]).expect("snapshot 2");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let j = journal(&s);
     let mkrs = markers(&j);

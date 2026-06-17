@@ -108,7 +108,7 @@ fn travel_to_snapshot() {
     fs::write(s.mnt_path("new_after.txt"), "staged only\n").expect("write new");
 
     // Travel to the snapshot
-    s.cli(&["travel", "snapshot"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // hello.txt should still be staged (visible through mount)
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read through mount");
@@ -610,7 +610,7 @@ fn timeline_shows_travel_events() {
 
     fs::write(s.mnt_path("hello.txt"), "v2\n").unwrap();
 
-    s.cli(&["travel", "build"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let timeline = s.cli(&["timeline"]).expect("timeline");
     assert!(
@@ -634,7 +634,7 @@ fn timeline_interleaves_snapshots_and_travels() {
     fs::write(s.mnt_path("hello.txt"), "v2\n").unwrap();
     s.cli(&["snapshot", "chk2"]).expect("snapshot 2");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     s.cli(&["snapshot", "chk3"]).expect("snapshot 3");
 

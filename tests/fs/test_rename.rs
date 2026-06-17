@@ -789,7 +789,7 @@ fn rename_chain_follows_link_base_path() {
     // Snapshot + travel to verify the chain survives serialization
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write post");
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let content = fs::read_to_string(s.mnt_path("step2.txt")).expect("read after travel");
     assert_eq!(content, "base content\n");
@@ -827,7 +827,7 @@ fn replace_then_delete_tombstones_both() {
     // Snapshot + travel to verify tombstones survive serialization
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write post");
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert!(
         !s.mnt_path("hello.txt").exists(),

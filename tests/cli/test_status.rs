@@ -185,7 +185,7 @@ fn status_after_travel_excludes_dead_zone() {
     // Create a new file after snapshot (dead zone after travel)
     fs::write(s.mnt_path("post_chk.txt"), "dead\n").unwrap();
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let output = s.cli(&["review"]).expect("status");
     assert!(
@@ -210,7 +210,7 @@ fn status_at_snapshot_after_travel() {
     fs::write(s.mnt_path("extra.txt"), "extra\n").unwrap();
     s.cli(&["snapshot", "chk2"]).expect("snapshot 2");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let output = s.cli(&["review", "1"]).expect("status 1");
     assert!(

@@ -11,7 +11,7 @@ fn travel_shows_snapshot_state() {
 
     fs::write(s.mnt_path("hello.txt"), "version 2\n").expect("write v2");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let content = fs::read_to_string(s.mnt_path("hello.txt")).expect("read");
     assert_eq!(content, "version 1\n", "should see snapshot state");
@@ -28,7 +28,7 @@ fn travel_hides_post_snapshot_creates() {
     fs::write(s.mnt_path("after.txt"), "after\n").expect("write after");
     assert!(s.mnt_path("after.txt").exists());
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert!(
         s.mnt_path("before.txt").exists(),
@@ -51,7 +51,7 @@ fn travel_undoes_post_snapshot_deletes() {
     fs::remove_file(s.mnt_path("doomed.txt")).expect("delete");
     assert!(!s.mnt_path("doomed.txt").exists());
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert!(
         s.mnt_path("doomed.txt").exists(),
@@ -72,7 +72,7 @@ fn cow_works_after_travel() {
     fs::write(s.mnt_path("hello.txt"), "v2\n").expect("write v2");
     s.cli(&["snapshot", "chk2"]).expect("snapshot 2");
 
-    s.cli(&["travel", "chk1"]).expect("travel to chk1");
+    s.cli(&["travel", "1"]).expect("travel to chk1");
 
     // Take a new snapshot so writes trigger re-COW
     s.cli(&["snapshot", "post-travel"])
@@ -94,7 +94,7 @@ fn commit_after_travel() {
 
     fs::write(s.mnt_path("hello.txt"), "unwanted\n").expect("overwrite");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
     s.cli(&["commit"]).expect("commit");
 
     let base_content = fs::read_to_string(s.base_path("hello.txt")).expect("read base");
@@ -116,7 +116,7 @@ fn travel_preserves_renames() {
     // Do something after snapshot
     fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write extra");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert!(!s.mnt_path("old.txt").exists(), "old name should not exist");
     assert!(s.mnt_path("new.txt").exists(), "new name should exist");
@@ -154,7 +154,7 @@ fn travel_prints_summary() {
 
     fs::write(s.mnt_path("c.txt"), "c\n").expect("write c");
 
-    let output = s.cli_stderr(&["travel", "two-files"]).expect("travel");
+    let output = s.cli_stderr(&["travel", "1"]).expect("travel");
     assert!(
         output.contains("two-files"),
         "status (stderr) should mention snapshot name: {output}"
@@ -170,10 +170,28 @@ fn travel_prints_summary() {
 fn travel_nonexistent_fails() {
     let s = YoloSession::new().expect("session setup");
 
-    let result = s.cli(&["travel", "nonexistent"]);
+    let result = s.cli(&["travel", "99"]);
     assert!(
         result.is_err(),
-        "traveling to nonexistent snapshot should fail"
+        "traveling to out-of-range generation id should fail"
+    );
+}
+
+/// A non-numeric travel argument is rejected at parse time (gen-only addressing):
+/// snapshot names are not valid travel targets.
+#[test]
+fn travel_non_numeric_arg_fails() {
+    let s = YoloSession::new().expect("session setup");
+
+    fs::write(s.mnt_path("a.txt"), "v1\n").expect("write");
+    s.cli(&["snapshot", "my-label"]).expect("snapshot");
+
+    // The label exists, but names no longer resolve — only the gen id does.
+    let (ok, _, stderr) = s.cli_output(&["travel", "my-label"]).expect("run travel");
+    assert!(!ok, "non-numeric travel arg should fail: {stderr}");
+    assert!(
+        stderr.contains("is not a generation id"),
+        "should report a parse error, got: {stderr}"
     );
 }
 
@@ -194,12 +212,12 @@ fn travel_backward_through_snapshots() {
     fs::write(s.mnt_path("file.txt"), "v3\n").expect("write v3");
 
     // Travel to chk2
-    s.cli(&["travel", "chk2"]).expect("travel to chk2");
+    s.cli(&["travel", "2"]).expect("travel to chk2");
     assert_eq!(fs::read_to_string(s.mnt_path("file.txt")).unwrap(), "v2\n");
     assert!(s.mnt_path("extra.txt").exists());
 
     // Travel further back to chk1
-    s.cli(&["travel", "chk1"]).expect("travel to chk1");
+    s.cli(&["travel", "1"]).expect("travel to chk1");
     assert_eq!(fs::read_to_string(s.mnt_path("file.txt")).unwrap(), "v1\n");
     assert!(
         !s.mnt_path("extra.txt").exists(),
@@ -219,7 +237,7 @@ fn travel_edit_snapshot_travel_cycle() {
     s.cli(&["snapshot", "chk2"]).expect("snapshot 2");
 
     // Travel to chk1
-    s.cli(&["travel", "chk1"]).expect("travel to chk1");
+    s.cli(&["travel", "1"]).expect("travel to chk1");
     assert_eq!(
         fs::read_to_string(s.mnt_path("file.txt")).unwrap(),
         "original\n"
@@ -234,7 +252,7 @@ fn travel_edit_snapshot_travel_cycle() {
     fs::write(s.mnt_path("file.txt"), "throwaway\n").expect("write throwaway");
 
     // Travel to chk3
-    s.cli(&["travel", "chk3"]).expect("travel to chk3");
+    s.cli(&["travel", "5"]).expect("travel to chk3");
     assert_eq!(
         fs::read_to_string(s.mnt_path("file.txt")).unwrap(),
         "new version\n"
@@ -255,7 +273,7 @@ fn travel_with_nested_directory() {
     fs::remove_file(s.mnt_path("mydir/a.txt")).expect("rm a");
     fs::write(s.mnt_path("mydir/c.txt"), "c\n").expect("write c");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert!(s.mnt_path("mydir/a.txt").exists(), "a.txt should be back");
     assert!(s.mnt_path("mydir/b.txt").exists(), "b.txt should exist");
@@ -281,7 +299,7 @@ fn travel_keeps_deep_file_through_passthrough_dirs() {
     fs::remove_file(s.mnt_path("base/a/b/c/deep.txt")).expect("remove deep");
     fs::write(s.mnt_path("base/a/b/c/post.txt"), "post\n").expect("write post");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert_eq!(
         fs::read_to_string(s.mnt_path("base/a/b/c/deep.txt")).unwrap(),
@@ -336,7 +354,7 @@ fn travel_rename_chain() {
     // Modify c after snapshot
     fs::write(s.mnt_path("c.txt"), "changed\n").expect("modify c");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert!(!s.mnt_path("a.txt").exists(), "a.txt renamed away");
     assert!(!s.mnt_path("b.txt").exists(), "b.txt renamed away");
@@ -362,7 +380,7 @@ fn travel_then_commit_full_roundtrip() {
     fs::write(s.mnt_path("new.txt"), "new\n").expect("create new");
 
     // Travel to chk1 and commit
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
     s.cli(&["commit"]).expect("commit");
 
     // Base should have chk1 state
@@ -391,7 +409,7 @@ fn travel_preserves_symlinks() {
 
     fs::remove_file(s.mnt_path("link.txt")).expect("remove link");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert!(
         s.mnt_path("link.txt").exists(),
@@ -422,7 +440,7 @@ fn travel_many_files_across_dirs() {
     fs::write(s.mnt_path("dir1/f1.txt"), "overwritten\n").expect("overwrite");
     fs::write(s.mnt_path("dir2/new.txt"), "new\n").expect("create");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // Verify all 15 original files are intact
     for dir_i in 0..3 {
@@ -454,7 +472,7 @@ fn readdir_after_travel() {
     fs::remove_file(s.mnt_path("staged.txt")).expect("remove staged");
     fs::write(s.mnt_path("post.txt"), "post\n").expect("write post");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let entries: Vec<String> = fs::read_dir(s.mnt_path("."))
         .expect("readdir")
@@ -481,7 +499,7 @@ fn status_after_travel() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let status = s.cli(&["review"]).expect("status");
     assert!(
@@ -503,7 +521,7 @@ fn diff_after_travel() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "b\n").expect("write b");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let diff = s.cli(&["review", "--diff"]).expect("diff");
     assert!(diff.contains("a.txt"), "a.txt should be in diff: {diff}");
@@ -522,7 +540,7 @@ fn journal_appends_after_travel() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("gone.txt"), "gone\n").expect("write gone");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // New mutation after travel
     fs::write(s.mnt_path("new.txt"), "new\n").expect("write new after travel");
@@ -552,10 +570,10 @@ fn travel_idempotent() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("overwrite");
 
-    s.cli(&["travel", "chk1"]).expect("travel 1");
+    s.cli(&["travel", "1"]).expect("travel 1");
     assert_eq!(fs::read_to_string(s.mnt_path("file.txt")).unwrap(), "v1\n");
 
-    s.cli(&["travel", "chk1"]).expect("travel 2");
+    s.cli(&["travel", "1"]).expect("travel 2");
     assert_eq!(
         fs::read_to_string(s.mnt_path("file.txt")).unwrap(),
         "v1\n",
@@ -585,7 +603,7 @@ fn travel_base_file_deletion() {
     // Recreate it after snapshot
     fs::write(s.mnt_path("base_file.txt"), "recreated\n").expect("recreate");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // After travel, the delete should be active — file should be gone
     assert!(
@@ -609,7 +627,7 @@ fn travel_deeply_nested_new_dirs() {
 
     fs::write(s.mnt_path("a/b/c/deep.txt"), "overwritten\n").expect("overwrite");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert_eq!(
         fs::read_to_string(s.mnt_path("a/b/c/deep.txt")).unwrap(),
@@ -632,7 +650,7 @@ fn travel_rename_then_recreate() {
     fs::remove_file(s.mnt_path("a.txt")).expect("delete a");
     fs::remove_file(s.mnt_path("b.txt")).expect("delete b");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // Both a.txt (new) and b.txt (renamed from original a) should exist
     assert_eq!(fs::read_to_string(s.mnt_path("a.txt")).unwrap(), "new a\n");
@@ -652,7 +670,7 @@ fn timeline_after_travel() {
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write");
     s.cli(&["snapshot", "second"]).expect("snapshot 2");
 
-    s.cli(&["travel", "first"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let timeline = s.cli(&["timeline"]).expect("timeline");
     assert!(
@@ -678,7 +696,7 @@ fn write_after_travel_modifies_in_place() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
 
     fs::write(s.mnt_path("file.txt"), "v2\n").expect("write v2");
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // Write without taking a new snapshot — should modify in place
     fs::write(s.mnt_path("file.txt"), "v1-edited\n").expect("edit after travel");
@@ -708,7 +726,7 @@ fn travel_renamed_directory_dtype() {
 
     fs::write(s.mnt_path("post.txt"), "post\n").expect("write post");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert!(!s.mnt_path("old_dir").exists(), "old dir gone");
     assert!(s.mnt_path("new_dir").exists(), "new dir exists");
@@ -741,7 +759,7 @@ fn travel_renamed_symlink_dtype() {
 
     fs::write(s.mnt_path("post.txt"), "post\n").expect("write post");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert!(!s.mnt_path("old_link").exists(), "old link gone");
     assert!(s.mnt_path("new_link").exists(), "new link exists");
@@ -772,7 +790,7 @@ fn kernel_appends_to_journal_after_travel() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("discarded.txt"), "gone\n").expect("write discarded");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // This write goes through the kernel, which appends to the journal
     // using the same O_APPEND fd that was open before the truncation.
@@ -803,7 +821,7 @@ fn timeline_shows_travel_event() {
     fs::write(s.mnt_path("a.txt"), "v2\n").expect("write v2");
     s.cli(&["snapshot", "test"]).expect("snapshot");
 
-    s.cli(&["travel", "build"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let timeline = s.cli(&["timeline"]).expect("timeline");
     assert!(
@@ -828,13 +846,13 @@ fn multiple_travels_in_session() {
     s.cli(&["snapshot", "c2"]).expect("snapshot c2");
 
     // First travel: back to c1
-    s.cli(&["travel", "c1"]).expect("travel to c1");
+    s.cli(&["travel", "1"]).expect("travel to c1");
 
     fs::write(s.mnt_path("b.txt"), "new\n").expect("write b");
     s.cli(&["snapshot", "c3"]).expect("snapshot c3");
 
     // Second travel: back to c1 again (discards b.txt)
-    s.cli(&["travel", "c1"]).expect("travel to c1 again");
+    s.cli(&["travel", "1"]).expect("travel to c1 again");
 
     let status = s.cli(&["review"]).expect("status");
     assert!(
@@ -854,7 +872,7 @@ fn commit_after_multiple_travels() {
     fs::write(s.mnt_path("a.txt"), "v2\n").expect("write v2");
     s.cli(&["snapshot", "c2"]).expect("snapshot c2");
 
-    s.cli(&["travel", "c1"]).expect("travel to c1");
+    s.cli(&["travel", "1"]).expect("travel to c1");
 
     fs::write(s.mnt_path("extra.txt"), "extra\n").expect("write extra");
 
@@ -880,13 +898,13 @@ fn undo_travel() {
     s.cli(&["snapshot", "c2"]).expect("snapshot c2");
 
     // Travel back to c1 — kills the c1→c2 segment (v2 and b.txt).
-    s.cli(&["travel", "c1"]).expect("travel to c1");
+    s.cli(&["travel", "1"]).expect("travel to c1");
     let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
     assert_eq!(content, "v1\n", "should see v1 after first travel");
     assert!(!s.mnt_path("b.txt").exists(), "b.txt should be gone");
 
     // Undo the travel — travel forward to c2 (which is in the dead zone).
-    s.cli(&["travel", "c2"]).expect("undo travel to c2");
+    s.cli(&["travel", "2"]).expect("undo travel to c2");
     let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
     assert_eq!(content, "v2\n", "should see v2 after undo travel");
     assert!(s.mnt_path("b.txt").exists(), "b.txt should reappear");
@@ -912,7 +930,7 @@ fn travel_created_file_after_recow_then_commit() {
     fs::write(s.mnt_path("newfile.txt"), "v2\n").expect("write v2 (re-COW)");
 
     // Travel to chk1 — should see v1 content.
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
     assert_eq!(
         fs::read_to_string(s.mnt_path("newfile.txt")).unwrap(),
         "v1\n",
@@ -940,7 +958,7 @@ fn travel_created_file_after_recow_then_abort() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("newfile.txt"), "v2\n").expect("write v2 (re-COW)");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
     s.cli(&["abort"]).expect("abort");
 
     assert!(
@@ -987,7 +1005,7 @@ fn travel_deep_tree_near_max_depth() {
     fs::write(s.mnt_path("d0/f.txt"), "modified\n").expect("modify shallow");
     fs::write(s.mnt_path(&format!("{path}/f.txt")), "modified\n").expect("modify deep");
 
-    s.cli(&["travel", "deep"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // Verify files at both extremes reverted.
     assert_eq!(
@@ -1045,7 +1063,7 @@ fn travel_then_immediate_unmount() {
     fs::remove_file(s.mnt_path("rb/f1.txt")).expect("delete");
     fs::write(s.mnt_path("rc/extra.txt"), "extra\n").expect("create extra");
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // Immediately unmount without reading any files.
     // YoloSession::drop checks for kernel warnings — if yolo_unstage_all
@@ -1069,7 +1087,7 @@ fn travel_to_travel_meta() {
     s.cli(&["snapshot", "c2"]).expect("snapshot c2");
 
     // Travel to c1 — creates a travel meta (gen_id = 3).
-    s.cli(&["travel", "c1"]).expect("travel to c1");
+    s.cli(&["travel", "1"]).expect("travel to c1");
     assert_eq!(fs::read_to_string(s.mnt_path("a.txt")).unwrap(), "v1\n");
     assert!(!s.mnt_path("b.txt").exists());
 
@@ -1092,7 +1110,7 @@ fn travel_to_travel_meta() {
 
     // Verify we can still undo to c2 (it should still be reachable since
     // the unreachable region only starts at meta 3).
-    s.cli(&["travel", "c2"]).expect("undo to c2");
+    s.cli(&["travel", "2"]).expect("undo to c2");
     let content = fs::read_to_string(s.mnt_path("a.txt")).expect("read a");
     assert_eq!(content, "v2\n", "should see v2 after undo to c2");
     assert!(s.mnt_path("b.txt").exists(), "b.txt should reappear");
@@ -1119,12 +1137,11 @@ fn travel_to_base_is_non_destructive() {
     );
 
     // Travelling forward to c1 restores it — nothing was destroyed.
-    s.cli(&["travel", "c1"]).expect("travel back to c1");
+    s.cli(&["travel", "1"]).expect("travel back to c1");
     assert_eq!(fs::read_to_string(s.mnt_path("a.txt")).unwrap(), "v1\n");
 
     // The base is reachable by its name too.
-    s.cli(&["travel", "(initial)"])
-        .expect("travel to base by name");
+    s.cli(&["travel", "0"]).expect("travel to base by name");
     assert!(
         !s.mnt_path("a.txt").exists(),
         "base by name should not show a.txt"
@@ -1148,7 +1165,7 @@ fn failed_travel_injection_falls_back_to_clean_base() {
     // Base drift: the redirect's base source disappears.
     fs::remove_file(s.base_path("hello.txt")).expect("drop base source");
 
-    let (ok, _, stderr) = s.cli_output(&["travel", "s1"]).expect("run travel");
+    let (ok, _, stderr) = s.cli_output(&["travel", "1"]).expect("run travel");
     assert!(
         !ok,
         "travel must fail when a redirect source is gone: {stderr}"

@@ -17,7 +17,7 @@ fn travel_to_snapshot_appends_jmp_record() {
 
     let count_before = records(&journal(&s)).len();
 
-    s.cli(&["travel", "s1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let recs = records(&journal(&s));
 
@@ -219,7 +219,7 @@ fn travel_preserves_all_inodes() {
     let ch = tree(&s);
     let post_id = ino_for(&ch, "/multi.txt");
 
-    s.cli(&["travel", "s1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // Post-snapshot inode should still exist on disk (orphaned)
     let remaining = inos(&s);

@@ -530,7 +530,7 @@ fn travel_state() {
     fs::write(s.mnt_path("dead.txt"), "gone\n").expect("create dead");
     fs::remove_file(s.mnt_path("a.txt")).expect("delete a");
 
-    s.cli(&["travel", "snap"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     assert_overlay_visible(&s);
     assert_dir_matches(&s, "");
@@ -549,7 +549,7 @@ fn travel_to_earlier_snapshot() {
     fs::write(s.mnt_path("b.txt"), "v2\n").expect("create");
     s.cli(&["snapshot", "c2"]).expect("snapshot 2");
 
-    s.cli(&["travel", "c1"]).expect("travel to c1");
+    s.cli(&["travel", "1"]).expect("travel to c1");
     assert_overlay_visible(&s);
     assert_dir_matches(&s, "");
 
@@ -569,7 +569,7 @@ fn travel_with_renames() {
     // Dead zone
     fs::remove_file(s.mnt_path("moved.txt")).expect("delete");
 
-    s.cli(&["travel", "snap"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
     assert_overlay_visible(&s);
     assert_dir_matches(&s, "");
 

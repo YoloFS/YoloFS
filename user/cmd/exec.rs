@@ -96,9 +96,9 @@ pub fn run(exec_args: &[String]) -> Result<(u8, Snapshot)> {
     let code = status.code().unwrap_or(1) as u8;
 
     // Snapshot after the command so it captures what the command did (skipped
-    // when nothing was staged, to avoid empty snapshots). The name — still
-    // stored for `timeline`/`journal`/travel-by-name — is just the command; how
-    // the outcome is surfaced is left to the caller.
+    // when nothing was staged, to avoid empty snapshots). The name — a
+    // display-only label shown in `timeline`/`journal` — is just the command;
+    // how the outcome is surfaced is left to the caller.
     let snapshot = if config::load_config().auto_snapshot {
         let cmd_desc = exec_args.join(" ");
         match auto_snapshot(&format!("after {cmd_desc}")) {

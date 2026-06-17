@@ -77,9 +77,9 @@ does `run` when the directory is still a configured project. `review`,
 **Snapshots:**
 
 ```bash
-$ yolo snapshot              # snapshot with timestamp as name
-$ yolo snapshot "my label"   # snapshot with explicit name
-$ yolo travel <name|gen>      # travel to a previous snapshot or travel point
+$ yolo snapshot              # snapshot with timestamp as label
+$ yolo snapshot "my label"   # snapshot with explicit label
+$ yolo travel <gen>           # travel to a previous snapshot or travel point
 $ yolo timeline                # show snapshot/travel DAG (unreachable dimmed)
 $ yolo journal               # raw journal records for the latest snapshot (default)
 $ yolo journal all           # the entire journal (unreachable dimmed)

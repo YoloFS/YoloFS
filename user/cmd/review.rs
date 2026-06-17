@@ -255,9 +255,9 @@ fn render(changeset: &Changeset, yolofs: &Path, root: &Path) -> usize {
 //   all     → the whole session, base..tip (everything vs base); same as `..`
 // Ids are numbers (0 is the base/"(initial)" marker).
 
-/// Translate a positional id/range spec into a segment range `[start, end)`,
-/// delegating the resolution to `MarkerIndex::segment_range`. Ids are numbers
-/// only (`0` = base); names are rejected here. Shared with `yolo journal`,
+/// Translate a positional id/range spec into a segment range `[start, end)`.
+/// This parses the generation ids out of the spec and hands `u64`s to
+/// `MarkerIndex::segment_range` (`0` = base). Shared with `yolo journal`,
 /// which takes the same `[<id>|a..b|all]` grammar.
 pub(crate) fn parse_range(
     spec: Option<&str>,
@@ -279,18 +279,23 @@ pub(crate) fn parse_range(
     if spec == "all" {
         return Ok((0, num));
     }
-    // Endpoints must be numeric (empty = an open end).
-    let numeric = |t: &str| t.is_empty() || t.bytes().all(|b| b.is_ascii_digit());
+    // Endpoints are generation ids; an empty endpoint is an open end (base/tip).
+    let endpoint = |t: &str| -> Result<Option<u64>> {
+        (!t.is_empty())
+            .then(|| crate::utils::parse_gen(t))
+            .transpose()
+    };
     match spec.split_once("..") {
         // `a..b`: a range (empty ends → base / tip).
-        Some((a, b)) if numeric(a) && numeric(b) => {
-            let from = (!a.is_empty()).then_some(a);
-            let to = (!b.is_empty()).then_some(b);
+        Some((a, b)) => {
+            let from = endpoint(a)?;
+            let to = endpoint(b)?;
             journal.markers.segment_range(None, from, to, num)
         }
         // Bare id N: that snapshot's own change (`prev(N)..N`).
-        None if numeric(spec) => journal.markers.segment_range(Some(spec), None, None, num),
-        _ => anyhow::bail!("`{spec}` is not a snapshot id or range (see `yolo timeline`)"),
+        None => journal
+            .markers
+            .segment_range(endpoint(spec)?, None, None, num),
     }
 }
 

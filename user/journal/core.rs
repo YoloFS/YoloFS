@@ -811,7 +811,7 @@ mod tests {
         let num = j.segments.len();
         let (start, end) = j
             .markers
-            .segment_range(None, Some("c2"), Some("c3"), num)
+            .segment_range(None, Some(2), Some(3), num)
             .unwrap();
         let live: Vec<_> = j.segments[start..end]
             .iter()
@@ -833,7 +833,7 @@ mod tests {
         let j = Journal::new(records);
         assert!(
             j.markers
-                .segment_range(Some("nonexistent"), None, None, j.segments.len())
+                .segment_range(Some(99), None, None, j.segments.len())
                 .is_err()
         );
     }
@@ -874,7 +874,7 @@ mod tests {
             Record::Marker(Marker::Snapshot { name: "c6".into() }),
         ];
         let j = Journal::new(records);
-        let gen_id = j.markers.find_marker("c5").unwrap();
+        let gen_id = j.markers.resolve_gen(5).unwrap();
         let live: Vec<_> = j.into_live_segments_at(gen_id).collect();
         let actions: Vec<_> = live.iter().flat_map(|s| &s.records).collect();
         assert_eq!(actions.len(), 1);

@@ -1,19 +1,21 @@
 // yolo CLI — travel.rs
 //
-// `yolo travel <name|id>` — travel to a previous marker.
+// `yolo travel <gen>` — travel to the marker with that generation id.
 
 use crate::ioctl;
 use crate::journal::{Journal, Marker};
 use crate::report;
 use anyhow::{Context, Result};
 
-pub fn run(marker_name: &str) -> Result<()> {
+pub fn run(gen_arg: &str) -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
 
-    // Search all markers (including dead zones) for the target,
-    // so that undo-travel (traveling to a dead marker) works.
+    let gen_id = crate::utils::parse_gen(gen_arg)?;
+
+    // Resolve against all markers (including dead zones) so undo-travel
+    // (traveling to a dead marker) works.
     let journal = Journal::read(&yolofs)?;
-    let target_gen = journal.markers.find_marker(marker_name)?;
+    let target_gen = journal.markers.resolve_gen(gen_id)?;
     let marker = journal.markers.get(target_gen as usize).cloned();
 
     // Extract live records from the prefix up to the target marker,

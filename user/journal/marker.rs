@@ -1,7 +1,7 @@
 // yolo CLI — journal/markers.rs
 //
 // The P/T skeleton: snapshot and travel records extracted from the journal.
-// Provides lookup by gen_id or name, and segment range computation.
+// Provides lookup by gen_id and segment range computation.
 
 use super::types::*;
 use anyhow::Result;
@@ -30,40 +30,19 @@ impl MarkerIndex {
         self.0.iter()
     }
 
-    /// Find any marker by numeric gen ID. O(1) via direct indexing.
+    /// Resolve a generation id to itself, bounds-checked. O(1).
     ///
     /// A marker's gen *is* its index: the phantom "(initial)" marker sits at
     /// index 0, and `Journal::new` assigns each P/T record the next index. So
     /// resolving a gen is a bounds check — gen 0 is the base marker, the rest
-    /// address snapshots/travels in order.
-    fn find_marker_by_gen_id(&self, gen_id: u64) -> Result<u64> {
+    /// address snapshots/travels in order. Snapshot names are display-only
+    /// labels and are never resolved.
+    pub fn resolve_gen(&self, gen_id: u64) -> Result<u64> {
         if (gen_id as usize) < self.0.len() {
             Ok(gen_id)
         } else {
-            anyhow::bail!("marker not found: {gen_id}")
+            anyhow::bail!("generation {gen_id} does not exist (see `yolo timeline`)")
         }
-    }
-
-    /// Find a snapshot by name. Returns the last match (names may repeat).
-    fn find_snapshot_by_name(&self, name: &str) -> Result<u64> {
-        let mut last = None;
-        for (idx, marker) in self.0.iter().enumerate() {
-            if let Marker::Snapshot { name: n } = marker
-                && n == name
-            {
-                last = Some(idx as u64);
-            }
-        }
-        last.ok_or_else(|| anyhow::anyhow!("marker not found: {name}"))
-    }
-
-    /// Find a marker (snapshot or travel) by name or numeric ID.
-    /// Names only match snapshots (travel markers have no names).
-    pub fn find_marker(&self, name_or_id: &str) -> Result<u64> {
-        if let Ok(id) = name_or_id.parse::<u64>() {
-            return self.find_marker_by_gen_id(id);
-        }
-        self.find_snapshot_by_name(name_or_id)
     }
 
     /// Get the marker at this index (returns `None` for the phantom
@@ -99,24 +78,24 @@ impl MarkerIndex {
     /// bound a range, defaulting to the base (0) and the tip.
     pub fn segment_range(
         &self,
-        at: Option<&str>,
-        from: Option<&str>,
-        to: Option<&str>,
+        at: Option<u64>,
+        from: Option<u64>,
+        to: Option<u64>,
         num_segments: usize,
     ) -> Result<(usize, usize)> {
-        if let Some(name) = at {
-            let m_idx = self.find_marker(name)? as usize;
+        if let Some(gen_id) = at {
+            let m_idx = self.resolve_gen(gen_id)? as usize;
             return Ok((self.prev_snapshot_idx(m_idx), m_idx));
         }
 
-        let start = if let Some(from_name) = from {
-            self.find_marker(from_name)? as usize
+        let start = if let Some(gen_id) = from {
+            self.resolve_gen(gen_id)? as usize
         } else {
             0
         };
 
-        let end = if let Some(to_name) = to {
-            self.find_marker(to_name)? as usize
+        let end = if let Some(gen_id) = to {
+            self.resolve_gen(gen_id)? as usize
         } else {
             num_segments
         };
@@ -194,7 +173,7 @@ mod tests {
     // ── Marker lookup tests (migrated from segment.rs) ───────────────
 
     #[test]
-    fn find_marker_by_gen_id() {
+    fn resolve_gen_bounds_checks() {
         let records = vec![
             Record::Marker(Marker::Snapshot {
                 name: "first".into(),
@@ -209,53 +188,11 @@ mod tests {
             }),
         ];
         let j = Journal::new(records);
-        let gen_id = j.markers.find_marker_by_gen_id(1).unwrap();
-        assert_eq!(gen_id, 1);
-    }
-
-    #[test]
-    fn find_snapshot_by_name() {
-        let records = vec![
-            Record::Marker(Marker::Snapshot {
-                name: "first".into(),
-            }),
-            Record::Action(Action::Stage {
-                path: "/a".into(),
-                ino: 1,
-                pre: Target::Absence,
-            }),
-            Record::Marker(Marker::Snapshot {
-                name: "second".into(),
-            }),
-        ];
-        let j = Journal::new(records);
-        let gen_id = j.markers.find_snapshot_by_name("second").unwrap();
-        assert_eq!(gen_id, 2);
-    }
-
-    #[test]
-    fn find_snapshot_not_found() {
-        let records = vec![Record::Marker(Marker::Snapshot {
-            name: "first".into(),
-        })];
-        let j = Journal::new(records);
-        assert!(j.markers.find_snapshot_by_name("nonexistent").is_err());
-    }
-
-    #[test]
-    fn find_snapshot_duplicate_names_returns_last() {
-        let records = vec![
-            Record::Marker(Marker::Snapshot { name: "dup".into() }),
-            Record::Action(Action::Stage {
-                path: "/a".into(),
-                ino: 1,
-                pre: Target::Absence,
-            }),
-            Record::Marker(Marker::Snapshot { name: "dup".into() }),
-        ];
-        let j = Journal::new(records);
-        let gen_id = j.markers.find_snapshot_by_name("dup").unwrap();
-        assert_eq!(gen_id, 2, "should return the last matching snapshot");
+        // Every in-range gen resolves to itself; names are never consulted.
+        assert_eq!(j.markers.resolve_gen(1).unwrap(), 1);
+        assert_eq!(j.markers.resolve_gen(2).unwrap(), 2);
+        // Out-of-range gens error.
+        assert!(j.markers.resolve_gen(99).is_err());
     }
 
     #[test]
@@ -286,14 +223,14 @@ mod tests {
     }
 
     #[test]
-    fn find_marker_by_gen_id_resolves_phantom() {
+    fn resolve_gen_resolves_phantom() {
         let records = vec![Record::Marker(Marker::Snapshot { name: "c1".into() })];
         let j = Journal::new(records);
-        // gen 0 is the base/"(initial)" marker — addressable like its name.
-        assert_eq!(j.markers.find_marker_by_gen_id(0).unwrap(), 0);
-        assert!(j.markers.find_marker_by_gen_id(1).is_ok());
+        // gen 0 is the base/"(initial)" marker.
+        assert_eq!(j.markers.resolve_gen(0).unwrap(), 0);
+        assert!(j.markers.resolve_gen(1).is_ok());
         // Out-of-range ids still error.
-        assert!(j.markers.find_marker_by_gen_id(99).is_err());
+        assert!(j.markers.resolve_gen(99).is_err());
     }
 
     #[test]
@@ -334,7 +271,7 @@ mod tests {
         // no changes, so `status 0` shows nothing (no longer an error).
         let r = j
             .markers
-            .segment_range(Some("0"), None, None, j.segments.len())
+            .segment_range(Some(0), None, None, j.segments.len())
             .unwrap();
         assert_eq!(r, (0, 0));
     }
@@ -354,7 +291,7 @@ mod tests {
         // `from 0` spans everything since the base — i.e. the full range `..`.
         let r = j
             .markers
-            .segment_range(None, Some("0"), None, j.segments.len())
+            .segment_range(None, Some(0), None, j.segments.len())
             .unwrap();
         assert_eq!(r, (0, j.segments.len()));
     }
@@ -379,7 +316,7 @@ mod tests {
         let j = Journal::new(records);
         let result = j
             .markers
-            .segment_range(None, Some("c3"), Some("c1"), j.segments.len());
+            .segment_range(None, Some(3), Some(1), j.segments.len());
         assert!(result.is_err(), "from > to should be an error");
     }
 
@@ -397,7 +334,7 @@ mod tests {
         let j = Journal::new(records);
         let (start, end) = j
             .markers
-            .segment_range(Some("c1"), None, None, j.segments.len())
+            .segment_range(Some(1), None, None, j.segments.len())
             .unwrap();
         assert_eq!(start, 0);
         assert_eq!(end, 1);
@@ -424,7 +361,7 @@ mod tests {
         // at=c2: the previous snapshot is P1 (marker 1), so start=1, end=2
         let (start, end) = j
             .markers
-            .segment_range(Some("c2"), None, None, j.segments.len())
+            .segment_range(Some(2), None, None, j.segments.len())
             .unwrap();
         assert_eq!(start, 1);
         assert_eq!(end, 2);
@@ -459,7 +396,7 @@ mod tests {
         // at=c5: the previous snapshot is P3 (marker 2), so start=3, end=5
         let (start, end) = j
             .markers
-            .segment_range(Some("c5"), None, None, j.segments.len())
+            .segment_range(Some(5), None, None, j.segments.len())
             .unwrap();
         assert_eq!(start, 3);
         assert_eq!(end, 5);
@@ -785,10 +722,10 @@ mod tests {
         assert!(alive[6], "seg6 alive (trailing, empty)");
     }
 
-    // ── find_marker tests for travel markers ───────────────────────
+    // ── resolve_gen accepts travel-marker gens ──────────────────────
 
     #[test]
-    fn find_marker_accepts_travel_gen_id() {
+    fn resolve_gen_accepts_travel_gen_id() {
         let records = vec![
             Record::Marker(Marker::Snapshot { name: "c1".into() }),
             Record::Action(Action::Stage {
@@ -800,13 +737,13 @@ mod tests {
             Record::Marker(Marker::Travel { target_gen: 1 }),
         ];
         let j = Journal::new(records);
-        assert_eq!(j.markers.find_marker("3").unwrap(), 3);
-        assert_eq!(j.markers.find_marker("1").unwrap(), 1);
-        assert_eq!(j.markers.find_marker("c1").unwrap(), 1);
-        // gen 0 is the base "(initial)" marker, resolvable like its name.
-        assert_eq!(j.markers.find_marker("0").unwrap(), 0);
+        // A travel marker's own gen is a valid target (undo-travel).
+        assert_eq!(j.markers.resolve_gen(3).unwrap(), 3);
+        assert_eq!(j.markers.resolve_gen(1).unwrap(), 1);
+        // gen 0 is the base "(initial)" marker.
+        assert_eq!(j.markers.resolve_gen(0).unwrap(), 0);
         // Out-of-range ids still error.
-        assert!(j.markers.find_marker("99").is_err());
+        assert!(j.markers.resolve_gen(99).is_err());
     }
 
     #[test]

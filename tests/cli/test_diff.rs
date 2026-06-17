@@ -145,7 +145,7 @@ fn diff_after_travel_excludes_dead_zone() {
     // Create a new file after snapshot (becomes dead zone)
     fs::write(s.mnt_path("post_chk.txt"), "dead\n").unwrap();
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let output = s.cli(&["review", "--diff"]).expect("diff");
     assert!(
@@ -211,7 +211,7 @@ fn diff_between_snapshots_spanning_travel() {
     s.cli(&["snapshot", "chk2"]).expect("snapshot 2");
 
     // Travel to chk1, then work and snapshot again
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
     s.cli(&["snapshot", "post-travel"])
         .expect("snapshot post-travel");
     fs::write(s.mnt_path("hello.txt"), "v3\n").unwrap();

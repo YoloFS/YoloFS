@@ -564,7 +564,7 @@ fn commit_after_travel_excludes_dead_zone() {
     fs::write(s.mnt_path("dead.txt"), "dead\n").unwrap();
     fs::remove_file(s.mnt_path("keep.txt")).unwrap();
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
     s.cli(&["commit"]).expect("commit");
 
     // Base should have snapshot state, not post-snapshot mutations

@@ -40,7 +40,7 @@ fn abort_after_travel_discards_all() {
 
     fs::write(s.mnt_path("hello.txt"), "v2\n").unwrap();
 
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     // Verify we're at chk1 state
     assert_eq!(fs::read_to_string(s.mnt_path("hello.txt")).unwrap(), "v1\n");

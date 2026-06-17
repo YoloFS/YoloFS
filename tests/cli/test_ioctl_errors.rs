@@ -79,14 +79,14 @@ fn travel_rejects_while_staging_fd_open() {
         .open(s.mnt_path("hello.txt"))
         .expect("open staged file for write");
 
-    let (ok, _, stderr) = s.cli_output(&["travel", "v1"]).unwrap();
+    let (ok, _, stderr) = s.cli_output(&["travel", "1"]).unwrap();
     assert!(!ok, "travel should fail while staging fd is open");
     assert!(
         stderr.contains("Device or resource busy"),
         "should report EBUSY: {stderr}"
     );
     drop(_fd);
-    s.cli(&["travel", "v1"])
+    s.cli(&["travel", "1"])
         .expect("travel should succeed after fd close");
 }
 

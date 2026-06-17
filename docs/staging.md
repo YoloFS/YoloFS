@@ -884,8 +884,8 @@ within the requested range.
 - `all` (== `..` == `0..`) — everything from base to tip.
 - omitted — the latest segment (vs prev), or the whole session under `--each`.
 
-**`yolo travel <name|gen>`**: Move the mounted view to the state at the
-named marker (snapshot or travel). The journal is **append-only** —
+**`yolo travel <gen>`**: Move the mounted view to the state at the marker
+(snapshot or travel) with that generation id. The journal is **append-only** —
 travel appends a T record instead of truncating. T records create
 unreachable records — records between the target marker and the T record that no longer reflect
 current state. All CLI consumers (commit, review, journal, travel) build a
@@ -894,12 +894,12 @@ current state. All CLI consumers (commit, review, journal, travel) build a
 The reachability algorithm: O(N) single pass to collect P/T positions,
 O(R) backward walk to build reachable ranges, skip unreachable T records.
 
-1. CLI builds a `Journal` and finds the target marker via
-   `MarkerIndex::find_marker()` (including unreachable regions, to support undo-travel).
-2. CLI calls `Journal::into_tree_at(target_gen)` (name resolution already
-   happened in step 1), which selects the live segments of the prefix up to the
-   target marker via the private `into_live_segments_at`, handling any T records
-   in that prefix.
+1. CLI builds a `Journal` and bounds-checks the target generation id via
+   `MarkerIndex::resolve_gen()` (which accepts unreachable regions too, to
+   support undo-travel).
+2. CLI calls `Journal::into_tree_at(target_gen)`, which selects the live
+   segments of the prefix up to the target marker via the private
+   `into_live_segments_at`, handling any T records in that prefix.
 3. `into_tree_at` builds the dir tree from those live segments.
 4. CLI serializes the dir tree into a contiguous byte buffer (depth-first,
    children sorted by name).

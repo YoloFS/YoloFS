@@ -19,6 +19,13 @@ pub fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
 }
 
+/// Parse a CLI argument into a generation id, with a uniform error message.
+/// Shared by `travel` and the `review`/`journal` range grammar.
+pub fn parse_gen(arg: &str) -> Result<u64> {
+    arg.parse::<u64>()
+        .map_err(|_| anyhow::anyhow!("`{arg}` is not a generation id (see `yolo timeline`)"))
+}
+
 /// Convert an yolofs-relative path (e.g. "/src/main.rs") to a base filesystem path.
 pub fn to_base_path(rel: &str) -> PathBuf {
     Path::new("/").join(rel.trim_start_matches('/'))

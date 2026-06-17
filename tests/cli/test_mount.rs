@@ -131,7 +131,7 @@ fn remount_restores_allocator_from_dead_journal_records() {
     let max_before = yolofs::journal::Journal::read(&yolo_dir)
         .unwrap()
         .alloc_ino_floor;
-    session.cli(&["travel", "one"]).unwrap();
+    session.cli(&["travel", "1"]).unwrap();
     session.cli(&["remount"]).unwrap();
 
     std::fs::write(session.mnt_path("fresh.txt"), "fresh\n").unwrap();

@@ -27,7 +27,7 @@ fn journal_shows_snapshots_and_travels() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "v2\n").expect("write");
     s.cli(&["snapshot", "chk2"]).expect("snapshot");
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let output = s.cli(&["journal", "all"]).expect("journal");
     assert!(output.contains("chk1"), "should show chk1: {output}");
@@ -47,7 +47,7 @@ fn journal_dims_unreachable_after_travel() {
     s.cli(&["snapshot", "chk1"]).expect("snapshot");
     fs::write(s.mnt_path("b.txt"), "v2\n").expect("write");
     s.cli(&["snapshot", "chk2"]).expect("snapshot");
-    s.cli(&["travel", "chk1"]).expect("travel");
+    s.cli(&["travel", "1"]).expect("travel");
 
     let output = s.cli(&["journal"]).expect("journal");
     let unreachable: Vec<&str> = output
