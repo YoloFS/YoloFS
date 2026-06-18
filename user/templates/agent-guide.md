@@ -13,17 +13,24 @@ and decides whether to keep or discard it. You cannot damage the real tree.
 - `yolo journal -- <path>` — the operation history for one path.
 - `yolo timeline` — the snapshot/travel graph.
 
-## Undo a mistake
+## Recover from a mistake
 
-Every command auto-snapshots, so you can rewind instead of trying to hand-repair
-a bad state:
+If a command corrupted or deleted files — a bad script, an over-aggressive
+clean, a failed build — **rewind; do not hand-restore.** Re-typing the old
+contents or reaching for `git` will not reproduce the originals (they may differ
+byte-for-byte, and there may be no git history). YoloFS auto-snapshots before
+every command, so the exact originals are one rewind away:
 
-- `yolo snapshot <name>` — bookmark the current state before something risky.
-  The name is just a label shown in `yolo timeline`.
-- `yolo travel <gen>` — rewind the working tree to an earlier snapshot by its
-  generation id (e.g. `yolo travel 3`, or `yolo travel 0` for the initial
-  state). Run `yolo timeline` to see the generation ids. The abandoned branch
-  stays visible in `yolo timeline`.
+- `yolo timeline` — show the snapshots; find the generation to return to (the
+  `initial` snapshot, or the one just before the command that did the damage).
+- `yolo travel <gen>` — rewind the working tree to it, e.g. `yolo travel initial`
+  (or `yolo travel 0` for the base). This restores the files exactly. The
+  abandoned branch stays visible in `yolo timeline`.
+- `yolo snapshot <name>` — optionally bookmark a good state before something
+  risky; the name is just a label shown in `yolo timeline`.
+
+When something looks wrong, reach for `yolo travel` first — it is faster and
+exact, where hand-repair is slow and error-prone.
 
 ## Leave the result for a human
 
