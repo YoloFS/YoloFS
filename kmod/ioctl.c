@@ -16,7 +16,6 @@
 #include <linux/file.h>
 #include <linux/fs_struct.h>
 #include <linux/vmalloc.h>
-#include <asm/unaligned.h>
 
 /* True if the caller is chrooted into this mount (an agent command or the
  * interactive `yolo` shell), as opposed to a normal terminal outside it.
@@ -439,7 +438,7 @@ static inline int read_le16(struct tree_cursor *c, u16 *out)
 {
 	if (c->buf + 2 > c->end)
 		return -EINVAL;
-	*out = get_unaligned_le16(c->buf);
+	*out = (u16)c->buf[0] | ((u16)c->buf[1] << 8);
 	c->buf += 2;
 	return 0;
 }
@@ -448,7 +447,8 @@ static inline int read_le32(struct tree_cursor *c, u32 *out)
 {
 	if (c->buf + 4 > c->end)
 		return -EINVAL;
-	*out = get_unaligned_le32(c->buf);
+	*out = (u32)c->buf[0] | ((u32)c->buf[1] << 8) |
+	       ((u32)c->buf[2] << 16) | ((u32)c->buf[3] << 24);
 	c->buf += 4;
 	return 0;
 }
@@ -640,9 +640,10 @@ static int yolo_view_inject(struct file *file, struct yolo_sb_info *sbi,
 			dget(child);
 		} else {
 			/* Scaffold — the name resolves through base. */
-			child = lookup_one_len_unlocked(
-					(const char *)name_ptr,
-					stack[depth].dentry, name_len);
+			child = yolo_lower_lookup_unlocked(
+					mnt_idmap(file->f_path.mnt),
+					stack[depth].dentry,
+					(const char *)name_ptr, name_len);
 			if (IS_ERR(child)) {
 				err = PTR_ERR(child);
 				goto out_unwind;

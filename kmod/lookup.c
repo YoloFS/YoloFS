@@ -37,7 +37,12 @@ struct inode *yolo_iget(struct super_block *sb, struct inode *lower_inode)
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
 
+	/* i_state became a struct behind accessors in 7.0 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	if (!(inode_state_read_once(inode) & I_NEW))
+#else
 	if (!(inode->i_state & I_NEW))
+#endif
 		return inode;
 
 	/* New inode — set up ops based on file type */
@@ -72,6 +77,23 @@ struct inode *yolo_iget(struct super_block *sb, struct inode *lower_inode)
 /* ── Lookup ────────────────────────────────────────────────────────── */
 
 /*
+ * Look up @name in lower directory @parent (lock-free). lookup_one_len*()
+ * became qstr-based lookup_one*() in 7.0. This is the only lower-fs shim used
+ * by more than one file (here and ioctl.c), so it lives with the lookup code.
+ */
+struct dentry *yolo_lower_lookup_unlocked(struct mnt_idmap *idmap, struct dentry *parent,
+				 const char *name, unsigned int len)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	struct qstr q = QSTR_LEN(name, len);
+
+	return lookup_one_unlocked(idmap, &q, parent);
+#else
+	return lookup_one_len_unlocked(name, parent, len);
+#endif
+}
+
+/*
  * All pinned entries are held in the dcache via dget(), so
  * lookup_fast() finds them directly — this callback is only invoked
  * for unpinned names.  Fall through to the base filesystem.
@@ -93,9 +115,8 @@ struct dentry *yolo_lookup(struct inode *dir, struct dentry *dentry,
 	if (!lower_dir_dentry || !lower_mnt)
 		return ERR_PTR(-ENOENT);
 
-	lower_dentry = lookup_one_len_unlocked(dentry->d_name.name,
-					       lower_dir_dentry,
-					       dentry->d_name.len);
+	lower_dentry = yolo_lower_lookup_unlocked(mnt_idmap(lower_mnt), lower_dir_dentry,
+					 dentry->d_name.name, dentry->d_name.len);
 	if (IS_ERR(lower_dentry))
 		return ERR_CAST(lower_dentry);
 

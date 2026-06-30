@@ -31,13 +31,17 @@ static int yolo_check_mutate_perm(struct dentry *dentry)
 
 /* ── create/mkdir/symlink — allocate inode + set up dentry ────────── */
 
-static int yolo_create_staged(struct inode *dir, struct dentry *dentry,
+static int yolo_stage_inode(struct inode *dir, struct dentry *dentry,
 			      umode_t mode, const char *symname)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(dir->i_sb);
 	struct path inode_path;
 	u32 ino;
 	int err;
+
+	err = yolo_check_mutate_perm(dentry);
+	if (err)
+		return err;
 
 	err = yolo_inode_alloc(sbi, &ino, &inode_path, mode, symname);
 	if (err)
@@ -71,19 +75,34 @@ static int yolo_create_staged(struct inode *dir, struct dentry *dentry,
 static int yolo_create(struct mnt_idmap *idmap, struct inode *dir,
 		       struct dentry *dentry, umode_t mode, bool excl)
 {
-	int err = yolo_check_mutate_perm(dentry);
-	if (err)
-		return err;
-	return yolo_create_staged(dir, dentry, mode, NULL);
+	return yolo_stage_inode(dir, dentry, mode, NULL);
 }
 
+/*
+ * ->mkdir's return type changed from int to struct dentry * (NULL on success)
+ * in 6.15. Both forms are a thin wrapper over the shared int-returning
+ * yolo_stage_inode(); only the signature and the success/error mapping differ.
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
+static struct dentry *yolo_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+				 struct dentry *dentry, umode_t mode)
+{
+	int err = yolo_stage_inode(dir, dentry, S_IFDIR | mode, NULL);
+
+	return err ? ERR_PTR(err) : NULL;
+}
+#else
 static int yolo_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 		      struct dentry *dentry, umode_t mode)
 {
-	int err = yolo_check_mutate_perm(dentry);
-	if (err)
-		return err;
-	return yolo_create_staged(dir, dentry, S_IFDIR | mode, NULL);
+	return yolo_stage_inode(dir, dentry, S_IFDIR | mode, NULL);
+}
+#endif
+
+static int yolo_symlink(struct mnt_idmap *idmap, struct inode *dir,
+			struct dentry *dentry, const char *symname)
+{
+	return yolo_stage_inode(dir, dentry, S_IFLNK, symname);
 }
 
 /* ── unlink/rmdir — negative entry or remove entry ───────────────── */
@@ -117,17 +136,6 @@ static int yolo_delete_entry(struct inode *dir, struct dentry *dentry)
 	yolo_dentry_unpin(dentry);
 	d_drop(dentry);
 	return 0;
-}
-
-/* ── symlink ───────────────────────────────────────────────────────── */
-
-static int yolo_symlink(struct mnt_idmap *idmap, struct inode *dir,
-			struct dentry *dentry, const char *symname)
-{
-	int err = yolo_check_mutate_perm(dentry);
-	if (err)
-		return err;
-	return yolo_create_staged(dir, dentry, S_IFLNK, symname);
 }
 
 /* ── rename ────────────────────────────────────────────────────────── */

@@ -10,6 +10,73 @@
 #include <linux/file.h>
 #include <linux/namei.h>
 
+/* ── Lower-fs helpers (used only here; version-compat lives in them) ─── */
+
+/*
+ * Look up @name in lower directory @base; caller holds i_rwsem on @base.
+ * lookup_one_len() became qstr-based lookup_one() in 7.0.
+ */
+static struct dentry *yolo_lower_lookup_locked(struct mnt_idmap *idmap, const char *name,
+					       struct dentry *base, unsigned int len)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	struct qstr q = QSTR_LEN(name, len);
+
+	return lookup_one(idmap, &q, base);
+#else
+	return lookup_one_len(name, base, len);
+#endif
+}
+
+/*
+ * Create a node of any type under @dentry in the lower fs, dispatching by mode:
+ * directory -> vfs_mkdir, symlink -> vfs_symlink, else vfs_create. Caller holds
+ * i_rwsem on @dir. The three helpers' signatures all changed across 6.8..7.0
+ * (vfs_mkdir's dentry return in 6.15, delegated-inode args in 7.0), so the
+ * version handling is confined here.
+ *
+ * Returns the dentry now backing the entry. The caller owns a reference to it;
+ * for mkdir on >= 6.15 it may be a *different* dentry than @dentry, in which
+ * case the caller must dput() the one it passed in. Returns ERR_PTR on failure.
+ */
+static struct dentry *yolo_lower_create(struct mnt_idmap *idmap, struct inode *dir,
+					struct dentry *dentry, umode_t mode,
+					const char *symname)
+{
+	int err;
+
+	if (S_ISDIR(mode)) {
+		struct dentry *made;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+		made = vfs_mkdir(idmap, dir, dentry, mode, NULL);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
+		made = vfs_mkdir(idmap, dir, dentry, mode);
+#else
+		err = vfs_mkdir(idmap, dir, dentry, mode);
+		made = err ? ERR_PTR(err) : dentry;
+#endif
+		if (IS_ERR(made))
+			return made;
+		return made ? made : dentry;	/* NULL ⇒ passed-in dentry was used */
+	}
+
+	if (S_ISLNK(mode))
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+		err = vfs_symlink(idmap, dir, dentry, symname, NULL);
+#else
+		err = vfs_symlink(idmap, dir, dentry, symname);
+#endif
+	else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+		err = vfs_create(idmap, dentry, mode, NULL);
+#else
+		err = vfs_create(idmap, dir, dentry, mode, true);
+#endif
+
+	return err ? ERR_PTR(err) : dentry;
+}
+
 #define YOLO_SHARD_SIZE	100
 
 /* ── Shard Helpers ─────────────────────────────────────────────────── */
@@ -29,7 +96,7 @@ static struct dentry *get_shard_dir(struct yolo_sb_info *sbi, u32 ino)
 	struct dentry *shard_dentry, *old;
 	struct inode *dir;
 	u64 epoch;
-	int err, len;
+	int len;
 
 	/* Fast path: cached shard matches. */
 	spin_lock(&sbi->staging.shard_lock);
@@ -45,7 +112,9 @@ static struct dentry *get_shard_dir(struct yolo_sb_info *sbi, u32 ino)
 	dir = d_inode(sbi->staging.inodes_dir.dentry);
 
 	inode_lock(dir);
-	shard_dentry = lookup_one_len(shard_name, sbi->staging.inodes_dir.dentry, len);
+	shard_dentry = yolo_lower_lookup_locked(mnt_idmap(sbi->staging.inodes_dir.mnt),
+				       shard_name,
+				       sbi->staging.inodes_dir.dentry, len);
 	if (IS_ERR(shard_dentry)) {
 		inode_unlock(dir);
 		return shard_dentry;
@@ -53,12 +122,18 @@ static struct dentry *get_shard_dir(struct yolo_sb_info *sbi, u32 ino)
 
 	if (!d_inode(shard_dentry)) {
 		/* Shard dir doesn't exist yet — create it. */
-		err = vfs_mkdir(mnt_idmap(sbi->staging.inodes_dir.mnt),
-				dir, shard_dentry, 0755);
-		if (err) {
+		struct dentry *made = yolo_lower_create(
+				mnt_idmap(sbi->staging.inodes_dir.mnt),
+				dir, shard_dentry, S_IFDIR | 0755, NULL);
+		if (IS_ERR(made)) {
 			inode_unlock(dir);
 			dput(shard_dentry);
-			return ERR_PTR(err);
+			return made;
+		}
+		/* vfs_mkdir() may hand back a different dentry (>= 6.15). */
+		if (made != shard_dentry) {
+			dput(shard_dentry);
+			shard_dentry = made;
 		}
 	}
 	inode_unlock(dir);
@@ -100,8 +175,8 @@ int yolo_inode_path(struct yolo_sb_info *sbi, u32 ino,
 /* ── Inode Store Allocation ────────────────────────────────────────── */
 
 /*
- * Allocate a new inode ID, create the inode in the sharded store.
- * Regular files get vfs_create; dirs get vfs_mkdir; symlinks get vfs_symlink.
+ * Allocate a new inode ID and create its backing object (file/dir/symlink,
+ * per @mode) in the sharded store via yolo_lower_create().
  */
 int yolo_inode_alloc(struct yolo_sb_info *sbi, u32 *out_ino,
 		     struct path *inode_path, umode_t mode,
@@ -110,6 +185,7 @@ int yolo_inode_alloc(struct yolo_sb_info *sbi, u32 *out_ino,
 	char name[11];
 	struct dentry *shard_dentry;
 	struct dentry *ino_dentry;
+	struct dentry *created;
 	struct inode *shard_inode;
 	u32 ino;
 	int err, len;
@@ -129,22 +205,26 @@ int yolo_inode_alloc(struct yolo_sb_info *sbi, u32 *out_ino,
 	shard_inode = d_inode(shard_dentry);
 
 	inode_lock(shard_inode);
-	ino_dentry = lookup_one_len(name, shard_dentry, len);
+	ino_dentry = yolo_lower_lookup_locked(mnt_idmap(sbi->staging.inodes_dir.mnt),
+				     name, shard_dentry, len);
 	if (IS_ERR(ino_dentry)) {
 		inode_unlock(shard_inode);
 		dput(shard_dentry);
 		return PTR_ERR(ino_dentry);
 	}
 
-	if (S_ISDIR(mode))
-		err = vfs_mkdir(mnt_idmap(sbi->staging.inodes_dir.mnt),
-				shard_inode, ino_dentry, mode);
-	else if (S_ISLNK(mode))
-		err = vfs_symlink(mnt_idmap(sbi->staging.inodes_dir.mnt),
-				  shard_inode, ino_dentry, symname);
-	else
-		err = vfs_create(mnt_idmap(sbi->staging.inodes_dir.mnt),
-				 shard_inode, ino_dentry, mode, true);
+	created = yolo_lower_create(mnt_idmap(sbi->staging.inodes_dir.mnt),
+				    shard_inode, ino_dentry, mode, symname);
+	if (IS_ERR(created)) {
+		err = PTR_ERR(created);
+	} else {
+		/* mkdir may hand back a different dentry (>= 6.15). */
+		if (created != ino_dentry) {
+			dput(ino_dentry);
+			ino_dentry = created;
+		}
+		err = 0;
+	}
 
 	inode_unlock(shard_inode);
 	dput(shard_dentry);

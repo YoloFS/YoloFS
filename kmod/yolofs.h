@@ -24,6 +24,7 @@
 #include <linux/uaccess.h>
 #include <linux/magic.h>
 #include <linux/module.h>
+#include <linux/version.h>
 
 /* ── User/Kernel ABI ───────────────────────────────────────────────────
  *
@@ -473,6 +474,8 @@ void yolo_dentry_unpin_all(struct super_block *sb);
 struct dentry *yolo_lookup(struct inode *dir, struct dentry *dentry,
 			   unsigned int flags);
 struct inode *yolo_iget(struct super_block *sb, struct inode *lower_inode);
+struct dentry *yolo_lower_lookup_unlocked(struct mnt_idmap *idmap, struct dentry *parent,
+				 const char *name, unsigned int len);
 
 /* staging.c */
 int yolo_inode_path(struct yolo_sb_info *sbi, u32 ino,
