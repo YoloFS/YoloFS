@@ -364,7 +364,6 @@ static int __init yolo_init(void)
 	int err;
 
 	BUILD_BUG_ON(ARCH_KMALLOC_MINALIGN < 8);
-	BUILD_BUG_ON(!IS_ENABLED(CONFIG_X86_64));
 
 	yolo_inode_cachep = kmem_cache_create("yolo_inode_cache",
 					      sizeof(struct yolo_inode_info), 0,
