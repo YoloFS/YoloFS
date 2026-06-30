@@ -4,16 +4,20 @@
 import argparse
 import json
 import os
+import platform
 import secrets
+import shutil
 import subprocess
 import sys
 import textwrap
 import time
 from pathlib import Path
 
+GUEST_ARCH = "arm64" if platform.machine() in ("arm64", "aarch64") else "amd64"
+
 REPO_DIR = Path(__file__).resolve().parent
 DATA_DIR = REPO_DIR / "vm"
-IMAGE_NAME = "ubuntu-24.04-minimal-cloudimg-amd64.img"
+IMAGE_NAME = f"ubuntu-24.04-minimal-cloudimg-{GUEST_ARCH}.img"
 IMAGE_PATH = DATA_DIR / IMAGE_NAME
 IMAGE_URL = f"https://cloud-images.ubuntu.com/minimal/releases/noble/release/{IMAGE_NAME}"
 DISK_PATH = DATA_DIR / "disk.qcow2"
@@ -30,6 +34,7 @@ DEFAULT_CPUS = os.cpu_count()
 DEFAULT_SSH_PORT = 2222
 DEFAULT_USER = "ubuntu"
 PASSWORD_PATH = DATA_DIR / "password"
+VM_HOSTNAME = "ubuntu-vm"
 
 
 def download_image():
@@ -142,7 +147,7 @@ def create_seed_iso(host_cwd: Path, reset: bool = False):
 
     user_data = (
         "#cloud-config\n"
-        "hostname: ubuntu-vm\n"
+        f"hostname: {VM_HOSTNAME}\n"
         "manage_etc_hosts: true\n"
         "users:\n"
         f"  - name: {DEFAULT_USER}\n"
@@ -161,8 +166,8 @@ def create_seed_iso(host_cwd: Path, reset: bool = False):
     )
 
     meta_data = textwrap.dedent(f"""\
-        instance-id: ubuntu-vm-001
-        local-hostname: ubuntu-vm
+        instance-id: {VM_HOSTNAME}-001
+        local-hostname: {VM_HOSTNAME}
     """)
 
     user_data_path = DATA_DIR / "user-data"
@@ -170,14 +175,23 @@ def create_seed_iso(host_cwd: Path, reset: bool = False):
     user_data_path.write_text(user_data)
     meta_data_path.write_text(meta_data)
 
-    print("Creating cloud-init seed ISO...")
+    _write_seed_iso(SEED_PATH, [user_data_path, meta_data_path])
+
+
+def _write_seed_iso(iso_path: Path, files: list[Path]):
+    """Build a cloud-init NoCloud seed ISO, replacing cloud-localds with xorriso.
+
+    The NoCloud datasource finds the seed by its volume label (-V CIDATA;
+    uppercase to satisfy ISO 9660) and reads user-data/meta-data from the root.
+    -R (Rock Ridge) preserves those lowercase hyphenated names, and the sources
+    are already named that way, so they can be passed directly.
+    """
+    if not shutil.which("xorriso"):
+        raise RuntimeError("xorriso not found; install it (e.g. apt-get install xorriso)")
+    print("Creating cloud-init seed ISO with xorriso...")
     subprocess.run(
-        [
-            "cloud-localds",
-            str(SEED_PATH),
-            str(user_data_path),
-            str(meta_data_path),
-        ],
+        ["xorriso", "-as", "mkisofs", "-o", str(iso_path), "-V", "CIDATA", "-R",
+         *(str(f) for f in files)],
         check=True,
     )
 
@@ -240,16 +254,49 @@ def ensure_vm_started():
     wait_for_vm(str(Path.cwd()))
 
 
-def _ensure_kvm_access():
-    """Ensure /dev/kvm is accessible, chmod if needed."""
+def _detect_accel() -> str:
+    """Pick a QEMU accelerator. The guest arch matches the host, so the native
+    accelerator (KVM on Linux, HVF on macOS) always applies; TCG is a last
+    resort (e.g. Linux without /dev/kvm)."""
     kvm = Path("/dev/kvm")
-    if not kvm.exists():
-        print("Warning: /dev/kvm does not exist; KVM acceleration unavailable.")
-        return
-    if os.access(kvm, os.R_OK | os.W_OK):
-        return
-    print("/dev/kvm not accessible, attempting chmod 666...")
-    subprocess.run(["sudo", "chmod", "666", str(kvm)], check=True)
+    if kvm.exists():
+        if not os.access(kvm, os.R_OK | os.W_OK):
+            print("/dev/kvm not accessible, attempting chmod 666...")
+            subprocess.run(["sudo", "chmod", "666", str(kvm)], check=True)
+        return "kvm"
+    if sys.platform == "darwin":
+        return "hvf"
+    print("Warning: no KVM; falling back to slow TCG software emulation.")
+    return "tcg"
+
+
+def _find_aarch64_firmware() -> str:
+    """Locate the aarch64 UEFI firmware the 'virt' machine boots from."""
+    names = ("edk2-aarch64-code.fd", "QEMU_EFI.fd", "AAVMF_CODE.fd")
+    dirs = [Path(p) / "share/qemu" for p in ("/opt/homebrew", "/usr/local", "/usr")]
+    dirs += [Path("/usr/share/AAVMF"), Path("/usr/share/qemu-efi-aarch64")]
+    for d in dirs:
+        for name in names:
+            if (d / name).exists():
+                return str(d / name)
+    raise RuntimeError("aarch64 UEFI firmware not found; install qemu.")
+
+
+def _qemu_base() -> tuple[str, list[str]]:
+    """QEMU binary plus machine/cpu/firmware args for the host architecture.
+
+    -cpu host gives near-native speed under a hardware accelerator; the TCG
+    fallback needs a concrete model, so it uses -cpu max instead.
+    """
+    accel = _detect_accel()
+    cpu = "host" if accel != "tcg" else "max"
+    if GUEST_ARCH == "arm64":
+        # 'virt' is the standard arm64 board; it boots via UEFI firmware.
+        return "qemu-system-aarch64", [
+            "-machine", f"virt,accel={accel}", "-cpu", cpu,
+            "-bios", _find_aarch64_firmware(),
+        ]
+    return "qemu-system-x86_64", ["-machine", f"q35,accel={accel}", "-cpu", cpu]
 
 
 def run_vm(
@@ -258,12 +305,10 @@ def run_vm(
     extra_args: list[str],
     foreground: bool = False,
 ):
-    _ensure_kvm_access()
+    qemu, base_args = _qemu_base()
     cmd = [
-        "qemu-system-x86_64",
-        "-enable-kvm",
-        "-machine", "q35",
-        "-cpu", "host",
+        qemu,
+        *base_args,
         "-m", ram,
         "-smp", str(cpus),
         "-drive", f"file={DISK_PATH},format=qcow2,if=virtio",
@@ -325,6 +370,10 @@ def ssh_vm(ssh_args: list[str]):
 
 
 def main():
+    # vm.py is a host-side tool; running it inside the guest would just nest VMs.
+    if platform.node() == VM_HOSTNAME:
+        print("Error: vm.py is running inside the YoloFS VM; run it on the host.")
+        sys.exit(1)
     # ./vm.py          → auto-start VM + interactive shell
     # ./vm.py -- <cmd> → auto-start VM + run command via SSH
     if len(sys.argv) == 1 or sys.argv[1] == "--":
