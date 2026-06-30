@@ -16,7 +16,7 @@ $ cd example
 # 'yolo run -- <cmd>' runs <cmd> in a staging overlay and prints what it changed.
 $ yolo run -- sh -c 'echo "hello, yolofs" > greeting.txt'
 yolo: not mounted — mounting now (run `yolo unmount` when you're done)
-yolo: loading kernel module /lib/modules/6.8.0-1052-azure/extra/yolofs.ko
+yolo: loading kernel module /lib/modules/6.8.0-1059-azure/extra/yolofs.ko
 yolo: applying 12 rules from yolofs.toml
 yolo: skipping rule $HOME/.bash_history = allow: rule path does not exist: /home/runner/.bash_history: No such file or directory (os error 2)
 yolo: skipping rule $HOME/.ssh/id_ed25519 = ask: rule path does not exist: /home/runner/.ssh/id_ed25519: No such file or directory (os error 2)
