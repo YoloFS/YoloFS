@@ -89,7 +89,7 @@ static struct dentry *yolo_lower_create(struct mnt_idmap *idmap, struct inode *d
  * The last shard dentry is cached in sbi to avoid repeated lookups
  * (sequential inos hit the same shard ~1000 times in a row).
  */
-static struct dentry *get_shard_dir(struct yolo_sb_info *sbi, u32 ino)
+static struct dentry *yolo_get_shard_dir(struct yolo_sb_info *sbi, u32 ino)
 {
 	u32 shard = ino / YOLO_SHARD_SIZE;
 	char shard_name[11];
@@ -197,7 +197,7 @@ int yolo_inode_alloc(struct yolo_sb_info *sbi, u32 *out_ino,
 	if (unlikely(ino == 0))
 		return -ENOSPC;
 
-	shard_dentry = get_shard_dir(sbi, ino);
+	shard_dentry = yolo_get_shard_dir(sbi, ino);
 	if (IS_ERR(shard_dentry))
 		return PTR_ERR(shard_dentry);
 
@@ -334,8 +334,7 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 	 */
 	inode_lock(parent);
 	yolo_dentry_pin(dentry, YOLO_TARGET_INODE);
-	YOLO_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->staging.gen);
-	YOLO_I(d_inode(dentry))->staging_ino = ino;
+	yolo_stamp_staged(dentry, (u16)atomic_read(&sbi->staging.gen), ino);
 	inode_unlock(parent);
 
 	path_get(&inode_path); /* extra ref for reopen below */

@@ -66,8 +66,7 @@ static int yolo_stage_inode(struct inode *dir, struct dentry *dentry,
 		return err;
 
 	yolo_dentry_pin(dentry, YOLO_TARGET_INODE);
-	YOLO_I(d_inode(dentry))->staging_gen = (u16)atomic_read(&sbi->staging.gen);
-	YOLO_I(d_inode(dentry))->staging_ino = ino;
+	yolo_stamp_staged(dentry, (u16)atomic_read(&sbi->staging.gen), ino);
 
 	return 0;
 }

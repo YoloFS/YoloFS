@@ -310,6 +310,15 @@ static inline bool yolo_dentry_is_current(const struct dentry *d,
 	       YOLO_I(d_inode(d))->staging_gen >= (u16)atomic_read(&sbi->staging.gen);
 }
 
+/* Stamp @d as a staged inode at generation @gen backed by store ino @ino.
+ * Pairs with yolo_dentry_is_current(): a stamp at the live gen reads as
+ * current (write-in-place); a lower gen forces re-COW on the next write. */
+static inline void yolo_stamp_staged(const struct dentry *d, u16 gen, u32 ino)
+{
+	YOLO_I(d_inode(d))->staging_gen = gen;
+	YOLO_I(d_inode(d))->staging_ino = ino;
+}
+
 static inline struct yolo_file_info *YOLO_F(const struct file *file)
 {
 	return file->private_data;
@@ -337,47 +346,6 @@ static inline void yolo_put_lower_path(const struct dentry *dentry,
 					struct path *lower_path)
 {
 	path_put(lower_path);
-}
-
-/* Tagged operation-local pre-image target of @dentry, written into @buf. The
- * tag is the lowercased first letter of the userspace `Target` variant it
- * parses to, so the pre namespace never shares letters with the record tags:
- *   "a"            Absence: negative dentry / tombstone / unresolvable
- *   "s:<ino>"      StagedFile: staged inode (target == YOLO_TARGET_INODE)
- *   "b:<abspath>"  BasePath: redirect-resolved base content (PATH or ground)
- * This is the exact pre-op backing — an already-staged file reports its staged
- * inode (s:), not the base it was COW'd from. The CLI parses this into a
- * `Target` to seed a review range's old side; see docs/staging.md. */
-static inline const char *yolo_preimage_target(const struct dentry *dentry,
-					       char *buf, int len)
-{
-	struct yolo_dentry_info *di = YOLO_D(dentry);
-	struct path lower;
-	char *p;
-
-	if (d_is_negative(dentry) || di->target == YOLO_TARGET_NONE)
-		return "a";
-
-	if (di->target == YOLO_TARGET_INODE) {
-		u32 ino = YOLO_I(d_inode(dentry))->staging_ino;
-
-		if (!ino)
-			return "a";
-		snprintf(buf, len, "s:%u", ino);
-		return buf;
-	}
-
-	/* PATH or ground state: redirect-resolved base path, tagged "b:". Write
-	 * the path right-aligned into buf+2.. and prepend the tag just before
-	 * the returned pointer (d_path returns a right-aligned slice). */
-	yolo_get_lower_path(dentry, &lower);
-	p = d_path(&lower, buf + 2, len - 2);
-	yolo_put_lower_path(dentry, &lower);
-	if (IS_ERR(p))
-		return "a";
-	p[-2] = 'b';
-	p[-1] = ':';
-	return p - 2;
 }
 
 static inline void yolo_set_lower_path(const struct dentry *dentry,
@@ -487,6 +455,8 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 		struct file **new_file, int flags, bool truncate);
 
 /* journal.c */
+const char *yolo_preimage_target(const struct dentry *dentry,
+				 char *buf, int len);
 int yolo_journal_open(struct yolo_sb_info *sbi);
 int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
 		       u32 ino, const char *pre);

@@ -508,9 +508,9 @@ static struct dentry *travel_inject_entry(struct tree_cursor *cur,
 					   &lower_path);
 		if (IS_ERR(child))
 			return child;
-		YOLO_I(d_inode(child))->staging_gen =
-			(ino > cow_ino_floor) ? gen : (gen ? gen - 1 : 0);
-		YOLO_I(d_inode(child))->staging_ino = ino;
+		yolo_stamp_staged(child,
+				  (ino > cow_ino_floor) ? gen : (gen ? gen - 1 : 0),
+				  ino);
 		return child;
 	}
 
@@ -683,7 +683,7 @@ static void yolo_staging_quiesce(struct super_block *sb,
 	yolo_dentry_unpin_all(sb);
 
 	/* shard_lock, not just staging.sem: creates reach the shard cache
-	 * without taking staging.sem (see get_shard_dir). The epoch bump keeps
+	 * without taking staging.sem (see yolo_get_shard_dir). The epoch bump keeps
 	 * an in-flight create from re-publishing its stale shard afterwards. */
 	spin_lock(&sbi->staging.shard_lock);
 	old = sbi->staging.shard_dentry;
