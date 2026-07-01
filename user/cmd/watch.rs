@@ -114,13 +114,41 @@ pub fn run(allow_all: bool) -> Result<()> {
     let yolofs = crate::utils::session_dir()?;
 
     let ctl_file = ioctl::open(&yolofs)?;
+
+    // Claim the daemon slot before announcing readiness: until a daemon has
+    // claimed, the kernel fast-denies asks, so an op racing our startup would be
+    // wrongly denied. Claiming up front (a non-blocking GET_ASK) closes that —
+    // and may hand back an ask that raced in as we claimed, which we answer now.
+    let pending = ioctl::claim_daemon(&ctl_file)?;
+
     if allow_all {
         report::info("watching for permission requests — allowing all (Ctrl-C to stop)");
     } else {
         report::info("watching for permission requests (Ctrl-C to stop)");
     }
 
+    if let Some(req) = pending {
+        handle_ask(&ctl_file, req, allow_all);
+    }
     watch_loop(&ctl_file, allow_all)
+}
+
+/// Decide one ask (auto-allow under --allow-all, else prompt) and write it back.
+fn handle_ask(ctl_file: &std::fs::File, req: Ask, allow_all: bool) {
+    let decision = if allow_all {
+        print_ask(&req);
+        Decision::Allow
+    } else {
+        prompt_decision(&req)
+    };
+
+    if let Err(e) = ioctl::put_decision(ctl_file, req.id, decision) {
+        report::warn(format!("write error: {e}"));
+    } else {
+        // claim_tty/release_tty is not needed here because TOSTOP
+        // is normally unset, so background stderr writes succeed.
+        report::detail(format!("→ {} (req #{})", decision, req.id));
+    }
 }
 
 fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
@@ -133,20 +161,7 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
             Err(_) => return Ok(()),
         };
 
-        let decision = if allow_all {
-            print_ask(&req);
-            Decision::Allow
-        } else {
-            prompt_decision(&req)
-        };
-
-        if let Err(e) = ioctl::put_decision(ctl_file, req.id, decision) {
-            report::warn(format!("write error: {e}"));
-        } else {
-            // claim_tty/release_tty is not needed here because TOSTOP
-            // is normally unset, so background stderr writes succeed.
-            report::detail(format!("→ {} (req #{})", decision, req.id));
-        }
+        handle_ask(ctl_file, req, allow_all);
     }
 }
 

@@ -224,14 +224,14 @@ pub struct Watch {
 
 impl Watch {
     /// Spawn `yolo watch <extra_args>` from @root and block until it prints its
-    /// readiness line. stdin is piped (write decisions via `stdin_write`).
+    /// readiness line, draining stderr on a background thread.
     pub fn spawn(root: &Path, extra_args: &[&str]) -> Self {
         let mut child = Command::new(YOLO_BIN)
             .arg("watch")
             .args(extra_args)
             .current_dir(root)
             .env("NO_COLOR", "1")
-            .stdin(Stdio::piped())
+            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
