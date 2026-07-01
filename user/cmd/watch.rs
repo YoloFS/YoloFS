@@ -140,7 +140,10 @@ fn handle_ask(ctl_file: &std::fs::File, req: Ask, allow_all: bool) {
         // The ask timed out (or its process was killed) before we answered —
         // the kernel already resolved it. Benign; not a write failure.
         Err(e) if e.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::ENOENT) => {
-            report::detail(format!("→ {} (req #{}) — already resolved", decision, req.id));
+            report::detail(format!(
+                "→ {} (req #{}) — already resolved",
+                decision, req.id
+            ));
         }
         Err(e) => report::warn(format!("write error: {e}")),
     }
