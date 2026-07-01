@@ -6,16 +6,22 @@ KMOD_OUT         := $(CURDIR)/build/$(KVER)/yolofs.ko
 USER_OUT         := $(CURDIR)/target/release/yolo
 BEAR             := $(shell command -v bear >/dev/null 2>&1 && echo bear --)
 
+.DEFAULT_GOAL := all
+.PHONY: all build lint
+
+all: lint build
+build: user kmod
+
+lint:
+	cargo fmt
+	cargo clippy --release --fix --allow-dirty
+
 # ── Build ─────────────────────────────────────────────────────────────
 
-.PHONY: build user kmod
-
-build: user kmod
+.PHONY: user kmod
 
 user: $(USER_OUT)
 $(USER_OUT): $(shell find user -type f -name '*.rs' 2>/dev/null) Cargo.toml Cargo.lock
-	cargo fmt
-	cargo clippy --release --fix --allow-dirty
 	cargo build --release
 
 kmod: $(KMOD_OUT)
