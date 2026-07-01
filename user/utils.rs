@@ -74,7 +74,7 @@ pub fn session_dir() -> Result<PathBuf> {
 /// of `/`. `/run/user/<uid>` is the systemd per-user runtime dir: tmpfs, mode
 /// 0700, wiped on logout. The CLI runs as the invoking user, so `getuid()`
 /// lands this in *their* runtime dir.
-fn runtime_base() -> PathBuf {
+pub(crate) fn runtime_base() -> PathBuf {
     let uid = nix::unistd::getuid().as_raw();
     PathBuf::from(format!("/run/user/{uid}/yolofs"))
 }

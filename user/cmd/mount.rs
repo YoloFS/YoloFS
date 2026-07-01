@@ -15,7 +15,7 @@ use std::os::unix;
 use std::path::Path;
 
 /// Try to unmount a path. If busy, show blocking processes and offer to kill them.
-fn umount_or_prompt(target: &Path) -> Result<()> {
+pub(crate) fn umount_or_prompt(target: &Path) -> Result<()> {
     use nix::errno::Errno;
 
     match nix::mount::umount(target) {

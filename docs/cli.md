@@ -23,6 +23,16 @@ $ yolo abort             # discard staged changes
 unmounting — superblock teardown can finish asynchronously after `umount(2)`
 returns — and fails with the live reference count if it never does.
 
+`unload` finds live sessions in `/proc/mounts` and unmounts each by the
+mountpoint the **kernel** reports there, not the one recorded in `.yolofs/mnt`.
+So it recovers even when the user deleted the project directory before
+unmounting (which takes the `.yolofs/mnt` symlink with it but leaves the kernel
+mount — and the module reference it holds — alive). After unmounting it also
+`rmdir`s stale, now-empty leftover mountpoint dirs under `/run/user/<uid>/yolofs/`.
+`yolo unmount`/`remount` are different: they act on a named live session, so
+they still need `.yolofs/` to exist — `unload` is the recovery path when the
+whole project is gone.
+
 `yolo init` always writes a default `yolofs.toml` (skipped if one exists) and can
 scaffold pre-tool-use hook templates that wrap an agent's shell commands so they
 run through yolofs. Supported agents: `claude` (`.claude/`), `gemini` (`.gemini/`),

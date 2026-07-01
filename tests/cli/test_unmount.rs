@@ -1,4 +1,5 @@
 use crate::helpers::YoloSession;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 #[test]
@@ -217,4 +218,91 @@ fn unmount_reports_blocking_process() {
 
     let (ok, _, stderr) = session.cli_output(&["unmount"]).unwrap();
     assert!(ok, "unmount should succeed after blocker killed: {stderr}");
+}
+
+/// Regression: deleting the project directory *before* unmounting used to
+/// orphan the kernel mount. `unmount_at`/`unmount_all` resolved the live
+/// mountpoint through the `.yolofs/mnt` symlink, which the delete removed — so
+/// the umount was skipped, the module reference never dropped, and `yolo
+/// unload` failed with "module still has 1 reference(s)". `unload` now unmounts
+/// the mountpoint the kernel reports in `/proc/mounts`, independent of any
+/// in-workspace symlink, and sweeps the stale mountpoint dir left behind.
+///
+/// This drives the *global* kernel module (unload then load), so it manages
+/// that state directly rather than through `YoloSession`, and restores the
+/// module to loaded before asserting — the serial e2e runner shares one loaded
+/// module across tests, and a stray "module loaded" line would trip the next
+/// test's kmsg check.
+#[test]
+fn unload_after_project_dir_deleted() {
+    use yolofs::config::Config;
+
+    // A throwaway project on the root fs (yolofs can't see submounts).
+    let dir = crate::helpers::session_tempdir().unwrap().keep();
+    Config {
+        permission: false,
+        ..Default::default()
+    }
+    .save(&dir.join("yolofs.toml"))
+    .unwrap();
+    std::fs::write(dir.join("file.txt"), "hi\n").unwrap();
+
+    let out = Command::new("yolo")
+        .arg("mount")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "mount: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let source = dir.join(".yolofs");
+    let mountpoint = yolofs_mountpoint(&source).expect("mount should be listed in /proc/mounts");
+
+    // The user's mistake: `rm -rf project/` before unmounting — takes the
+    // `.yolofs/mnt` symlink with it, orphaning the kernel mount.
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let unload = Command::new("yolo")
+        .arg("unload")
+        .current_dir("/")
+        .output()
+        .unwrap();
+    let still_mounted = yolofs_mountpoint(&source).is_some();
+    let mountpoint_dir_left = Path::new(&mountpoint).exists();
+
+    // Restore the module for the rest of the serial suite BEFORE any assert can
+    // unwind. A failed unload leaves it loaded; a successful one leaves it
+    // unloaded, so reload it (a no-op if already loaded).
+    let _ = Command::new("yolo").arg("load").current_dir("/").output();
+
+    let stderr = String::from_utf8_lossy(&unload.stderr);
+    assert!(
+        unload.status.success(),
+        "unload should succeed after project dir deleted: {stderr}"
+    );
+    assert!(
+        !still_mounted,
+        "orphaned mount should be gone from /proc/mounts"
+    );
+    assert!(
+        !mountpoint_dir_left,
+        "stale runtime mountpoint dir should be swept: {mountpoint}"
+    );
+}
+
+/// The mountpoint the kernel records for a YoloFS `source` (its `.yolofs` dir),
+/// read from `/proc/mounts`. `None` if it is not mounted.
+fn yolofs_mountpoint(source: &Path) -> Option<String> {
+    let src = source.to_string_lossy();
+    let content = std::fs::read_to_string("/proc/mounts").ok()?;
+    content.lines().find_map(|line| {
+        let mut cols = line.split_whitespace();
+        let s = cols.next()?;
+        let mp = cols.next()?;
+        let fstype = cols.next()?;
+        (fstype == "yolofs" && s == src).then(|| mp.to_string())
+    })
 }

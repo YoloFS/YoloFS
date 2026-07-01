@@ -169,31 +169,73 @@ fn dev_ko_path() -> Option<PathBuf> {
     Some(cwd.join("build").join("yolofs.ko"))
 }
 
-/// Find all active YoloFS session directories by reading /proc/mounts.
-fn find_yolo_dirs() -> Vec<String> {
+/// Find all active YoloFS sessions by reading /proc/mounts, as `(source,
+/// mountpoint)` pairs.
+fn find_yolo_mounts() -> Vec<(String, String)> {
     let Ok(content) = std::fs::read_to_string("/proc/mounts") else {
         return Vec::new();
     };
     parse_mounts(&content)
 }
 
-/// Parse /proc/mounts content and return the source column for YoloFS entries.
-fn parse_mounts(content: &str) -> Vec<String> {
+/// Parse /proc/mounts content into `(source, mountpoint)` pairs for YoloFS
+/// entries. Both columns matter: the mountpoint is what we actually unmount
+/// (the kernel's authoritative location, valid even if `.yolofs/` was deleted),
+/// and the source locates the `.yolofs/` dir for best-effort cleanup.
+fn parse_mounts(content: &str) -> Vec<(String, String)> {
     content
         .lines()
-        .filter(|line| line.contains(" yolofs "))
-        .filter_map(|line| line.split_whitespace().next())
-        .map(String::from)
+        .filter_map(|line| {
+            let mut cols = line.split_whitespace();
+            let source = cols.next()?;
+            let mountpoint = cols.next()?;
+            let fstype = cols.next()?;
+            (fstype == "yolofs").then(|| (source.to_string(), mountpoint.to_string()))
+        })
         .collect()
 }
 
-/// Unmount all active YoloFS sessions.
+/// Unmount all active YoloFS sessions, drop their `cwd` symlinks, then sweep
+/// stale runtime mountpoint dirs.
+///
+/// Unmounts each session by the mountpoint the *kernel* reports in
+/// /proc/mounts, not the one recorded in `.yolofs/mnt`. If the user deleted the
+/// project dir before unmounting, that symlink is gone but the kernel mount —
+/// and the module reference it holds — lives on; going straight to the
+/// kernel-reported mountpoint tears it down regardless, so `delete_module`
+/// isn't blocked by an orphaned mount.
 fn unmount_all() -> Result<()> {
-    for yolo_dir in find_yolo_dirs() {
-        report::info(format!("unmounting {yolo_dir}"));
-        crate::cmd::mount::unmount_at(Path::new(&yolo_dir))?;
+    for (source, mountpoint) in find_yolo_mounts() {
+        report::info(format!("unmounting {mountpoint}"));
+        crate::cmd::mount::umount_or_prompt(Path::new(&mountpoint))
+            .with_context(|| format!("unmounting {mountpoint}"))?;
+        // The cwd symlink points into the (now gone) mount. Drop it if the
+        // project dir still exists; harmless if `.yolofs/` was already deleted.
+        let _ = std::fs::remove_file(Path::new(&source).join("cwd"));
     }
+    sweep_runtime_mountpoints();
     Ok(())
+}
+
+/// Remove empty, now-unmounted leftover mountpoint dirs under the per-user
+/// runtime base. A session whose project dir was deleted before unmount leaves
+/// its mountpoint dir behind (the `.yolofs/mnt` symlink that pointed at it is
+/// gone), so these accumulate. `rmdir` fails on a non-empty dir — an active
+/// mountpoint shows the `/` view and so is never empty — which is exactly the
+/// safety we want: only truly stale empties are removed.
+///
+/// This runs only as the tail of `unload`, a deliberate global teardown that
+/// unmounts every session anyway. It therefore assumes no `yolo mount` is
+/// racing it — such a mount's freshly `mkdtemp`'d (still-empty) mountpoint could
+/// be swept, but racing a new mount against a global unload is unsound
+/// regardless of the sweep.
+fn sweep_runtime_mountpoints() {
+    let Ok(entries) = std::fs::read_dir(crate::utils::runtime_base()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let _ = std::fs::remove_dir(entry.path());
+    }
 }
 
 #[cfg(test)]
@@ -229,17 +271,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_mounts_extracts_yolo_sources() {
+    fn parse_mounts_extracts_source_and_mountpoint() {
         let content = "\
 /dev/sda1 / ext4 rw,relatime 0 0
-/home/user/.yolofs/abc /.yolofs/abc/mnt yolofs rw 0 0
+/home/user/.yolofs/abc /run/user/1000/yolofs/abc yolofs rw 0 0
 proc /proc proc rw,nosuid 0 0
-/tmp/project/.yolofs /.yolofs/mnt yolofs rw 0 0
+/tmp/project/.yolofs /run/user/1000/yolofs/xyz yolofs rw 0 0
 ";
-        let dirs = parse_mounts(content);
+        let mounts = parse_mounts(content);
         assert_eq!(
-            dirs,
-            vec!["/home/user/.yolofs/abc", "/tmp/project/.yolofs",]
+            mounts,
+            vec![
+                (
+                    "/home/user/.yolofs/abc".to_string(),
+                    "/run/user/1000/yolofs/abc".to_string()
+                ),
+                (
+                    "/tmp/project/.yolofs".to_string(),
+                    "/run/user/1000/yolofs/xyz".to_string()
+                ),
+            ]
         );
     }
 
@@ -259,9 +310,37 @@ proc /proc proc rw,nosuid 0 0
 
     #[test]
     fn parse_mounts_ignores_substring_matches() {
-        // "myolofs" contains "yolofs" but should not match " yolofs "
+        // "myolofs" contains "yolofs" but is a different fstype, so it must not match.
         let content = "src /mnt myolofs rw 0 0\n";
         assert!(parse_mounts(content).is_empty());
+    }
+
+    #[test]
+    fn parse_mounts_skips_truncated_lines() {
+        // Lines without all three of source/mountpoint/fstype are skipped rather
+        // than panicking (the `?` chain bails on the missing column). A complete
+        // yolofs line on either side is still parsed.
+        let content = "\
+/tmp/a/.yolofs /run/user/1000/yolofs/a yolofs rw 0 0
+src /mnt
+onlyone
+
+/tmp/b/.yolofs /run/user/1000/yolofs/b yolofs rw 0 0
+";
+        let mounts = parse_mounts(content);
+        assert_eq!(
+            mounts,
+            vec![
+                (
+                    "/tmp/a/.yolofs".to_string(),
+                    "/run/user/1000/yolofs/a".to_string()
+                ),
+                (
+                    "/tmp/b/.yolofs".to_string(),
+                    "/run/user/1000/yolofs/b".to_string()
+                ),
+            ]
+        );
     }
 
     #[test]
@@ -319,10 +398,10 @@ proc /proc proc rw,nosuid 0 0
     }
 
     #[test]
-    fn find_yolo_dirs_matches_proc_mounts() {
-        let dirs = find_yolo_dirs();
+    fn find_yolo_mounts_matches_proc_mounts() {
+        let mounts = find_yolo_mounts();
         let content = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
         let expected = parse_mounts(&content);
-        assert_eq!(dirs, expected);
+        assert_eq!(mounts, expected);
     }
 }
