@@ -199,7 +199,8 @@ pub fn ask_decide(fd: &File, id: u64, decision: Decision) -> Result<()> {
 pub fn open(yolo_dir: &Path) -> Result<File> {
     // Control ioctls go to a directory fd in the mount. From outside that's the
     // mount root (`<session>/mnt`); inside the mount that path is hidden, so
-    // fall back to "/" (the mount root as seen from within the chroot).
+    // fall back to "/" (the mount root as seen from inside, where `yolo run`
+    // has pivoted the command's root onto the mount).
     let mnt = crate::utils::mnt_dir(yolo_dir);
     match OpenOptions::new().read(true).open(&mnt) {
         Ok(f) => Ok(f),

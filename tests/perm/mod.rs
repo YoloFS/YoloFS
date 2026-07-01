@@ -7,3 +7,4 @@ mod test_live_rules;
 mod test_metadata_perm;
 mod test_modes;
 mod test_open_flags;
+mod test_proc_escape;

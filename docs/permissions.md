@@ -105,8 +105,9 @@ instantly; `timeout_ms = 0` (wait forever) blocks until some watcher answers.
 
 Control ioctls live on a directory fd in the mount (there is no separate `.ctl`
 file). Operations that could defeat gating — `RULE_SET`, `ASK_PEEK`,
-`ASK_DECIDE` — are refused when the caller is chrooted *inside* the mount (a
-command run via `yolo run -- <cmd>`), so nothing running inside the
+`ASK_DECIDE` — are refused when the caller's root is *inside* the mount (a
+command run via `yolo run -- <cmd>`, whose root was pivoted onto the mount), so
+nothing running inside the
 mount can un-gate itself or answer its own ask prompts. `RESTORE` and `TRAVEL`
 are also refused because their serialized trees can redirect a visible name
 to an arbitrary host path. `SNAPSHOT` and `RULE_RESOLVE` remain allowed from

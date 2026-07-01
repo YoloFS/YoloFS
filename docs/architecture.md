@@ -136,8 +136,8 @@ single R record carrying both source and destination paths.
 $ cd /home/user/project
 $ yolo run -- make build
    -> creates/opens .yolofs/, mounts / -> .yolofs/mnt when needed,
-     restores the staged view, applies rules, chroots, runs the command,
-     snapshots, and reviews
+     restores the staged view, applies rules, enters a private pid + mount
+     namespace, pivots root, runs the command, snapshots, and reviews
 
 # 1b. Or use individual commands for more control:
 $ yolo mount

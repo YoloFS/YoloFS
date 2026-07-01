@@ -173,10 +173,14 @@ Configured via top-level keys in `yolofs.toml`:
 
 ## Execution Environment
 
-Inside the launched shell or command, YoloFS `chroot`s into `.yolofs/mnt` so
-that the mounted view becomes `/`. The working directory remains the
-caller's original CWD. For example, launching from `/home/user/project`
-chroots into `.yolofs/mnt` and sets the working directory to
+Inside the launched shell or command, YoloFS enters a private pid + mount
+namespace with a fresh `/proc`, then `pivot_root`s onto `.yolofs/mnt` so that
+the mounted view becomes `/` and detaches the old (host) root so it is
+unreachable. The fresh `/proc` in the new pid namespace exposes only the
+command's own processes, so a neighbour's `/proc/<pid>/root` can no longer be
+used to reach the host filesystem behind the mount. The working directory
+remains the caller's original CWD. For example, launching from
+`/home/user/project` pivots onto `.yolofs/mnt` and sets the working directory to
 `/home/user/project` — same absolute path, but now resolved through the
 YoloFS mount. That is why runtime examples use absolute paths like `/src` and
 `/etc` even when a rule was added as the relative path `src` from the
@@ -189,11 +193,13 @@ The YoloFS binary is installed with file capabilities, not setuid root:
 
 ```
 install -m 0755 … /usr/local/bin/yolo
-setcap cap_sys_admin,cap_sys_chroot,cap_sys_module+ep /usr/local/bin/yolo
+setcap cap_sys_admin,cap_sys_module+ep /usr/local/bin/yolo
 ```
 
-- `cap_sys_admin` — `mount()`, `umount()`, bind-mounting `/proc` `/sys` `/dev`
-- `cap_sys_chroot` — `chroot()` into the session mountpoint when running `yolo run -- <cmd>`
+- `cap_sys_admin` — `mount()`, `umount()`, and, for `yolo run -- <cmd>`,
+  `unshare(CLONE_NEWPID | CLONE_NEWNS)` + a fresh `/proc` + `/dev` `/sys` binds
+  + `pivot_root()` to isolate the command and remap its root onto the session
+  mountpoint
 - `cap_sys_module` — `finit_module()` / `delete_module()` for `load` / `unload`
 
 The binary therefore runs as the **invoking user** (euid = real uid) with just
@@ -210,22 +216,43 @@ step.
 
 ### Command execution lifecycle
 
-The `pre_exec` hook in `exec.rs` runs in the child (after fork, before execvp):
+Before spawning, `exec.rs` calls `unshare(CLONE_NEWPID)` in the parent so the
+command it is about to fork becomes PID 1 in a new pid namespace (`unshare`
+places *future children* in the new pidns, not the caller, so this cannot be
+done from the child). The `pre_exec` hook then runs in that child (after fork,
+before execvp), as PID 1, all using `cap_sys_admin`:
 
-1. `chroot()` into `.yolofs/mnt` so the mounted view becomes `/` (uses `cap_sys_chroot`).
-2. `chdir()` back to the caller's original working directory.
+1. `unshare(CLONE_NEWNS)` — a private mount namespace for this command.
+2. Recursively remount `/` as `MS_PRIVATE` so root-tree propagation is private.
+3. Mount a **fresh** `procfs` at `.yolofs/mnt/proc`. In the new pid namespace it
+   shows only the command's own processes.
+4. Bind `/dev` and `/sys` into `.yolofs/mnt` (they expose no per-process roots).
+5. `pivot_root(".", ".")` onto `.yolofs/mnt` so the mounted view becomes `/`.
+6. `umount2(".", MNT_DETACH)` to detach the old host root — unreachable now.
+7. `chdir()` back to the caller's original working directory.
 
 No uid/gid drop is needed — the process is already the invoking user. `execve`
-then clears both capabilities for the spawned command (a non-setuid image with
+then clears the capabilities for the spawned command (a non-setuid image with
 no file caps, run by a non-root euid, receives an empty capability set), so the
-command itself can neither `chroot` nor `mount`.
+command itself can neither `mount` nor `pivot_root`.
+
+This closes the `/proc/<pid>/root` bypass: under a plain `chroot` the command
+shared the host pid and mount namespaces, so an ordinary same-uid process
+outside the mount had a `/proc/<pid>/root` magic symlink that reached the real
+filesystem behind the mount. With a private pid namespace and a fresh `/proc`,
+no outside process is visible; with the old root detached, no host mount is
+reachable. (The unprivileged-userns double-`chroot` escape was never reachable —
+the kernel blocks `unshare(CLONE_NEWUSER)` from inside a chroot. After
+`pivot_root` the command *can* create user namespaces again, but with a private
+mount namespace, detached root, and isolated `/proc` there is nothing outside
+for it to reach.)
 
 ### Capabilities by command
 
 | Command | Capability | Notes |
 |---|---|---|
-| `mount`, `unmount`, `remount` | `cap_sys_admin` | `mount()` / `umount()` / bind-mounts |
-| `yolo run -- <cmd>` | `cap_sys_admin`, `cap_sys_chroot`, `cap_sys_module` | may mount/load on first run; capabilities are cleared for the spawned command |
+| `mount`, `unmount`, `remount` | `cap_sys_admin` | `mount()` / `umount()` of the yolofs view |
+| `yolo run -- <cmd>` | `cap_sys_admin`, `cap_sys_module` | `unshare(CLONE_NEWPID\|CLONE_NEWNS)` + fresh `/proc` + `pivot_root()` to isolate and remap root; may mount/load on first run; capabilities are cleared for the spawned command |
 | `load`, `unload`, `reload` | `cap_sys_module` | `finit_module()` / `delete_module()` |
 | `rule`, `watch`, `commit`, `abort`, `snapshot`, `travel`, `review`, `journal`, `timeline`, `init` | none | run unprivileged as the user; ioctls go to a dir fd on the mount root |
 

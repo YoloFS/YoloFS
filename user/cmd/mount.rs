@@ -14,9 +14,6 @@ use std::io::{self, BufRead};
 use std::os::unix;
 use std::path::Path;
 
-/// Bind-mount host pseudo filesystems into the YoloFS mount so they're visible inside the chroot.
-const BIND_MOUNTS: &[&str] = &["/proc", "/sys", "/dev"];
-
 /// Try to unmount a path. If busy, show blocking processes and offer to kill them.
 fn umount_or_prompt(target: &Path) -> Result<()> {
     use nix::errno::Errno;
@@ -111,41 +108,6 @@ fn get_blocking_pids(mount_path: &Path) -> Vec<u32> {
     pids
 }
 
-fn bind_mount_pseudofs(mnt: &Path) -> Result<()> {
-    for source in BIND_MOUNTS {
-        let source_path = Path::new(source);
-        if !source_path.exists() {
-            continue;
-        }
-        let target = mnt.join(source.trim_start_matches('/'));
-        if !target.exists() {
-            continue;
-        }
-        if is_mountpoint(&target) {
-            continue;
-        }
-        nix::mount::mount(
-            Some(*source),
-            &target,
-            None::<&str>,
-            nix::mount::MsFlags::MS_BIND,
-            None::<&str>,
-        )
-        .with_context(|| format!("bind-mounting {source}"))?;
-    }
-    Ok(())
-}
-
-fn unbind_mount_pseudofs(mnt: &Path) -> Result<()> {
-    for source in BIND_MOUNTS.iter().rev() {
-        let target = mnt.join(source.trim_start_matches('/'));
-        if target.exists() && is_mountpoint(&target) {
-            umount_or_prompt(&target).with_context(|| format!("unbinding {source}"))?;
-        }
-    }
-    Ok(())
-}
-
 /// Tear down the live view while preserving the durable `.yolofs/` artifact.
 pub fn unmount_at(yolo_dir: &Path) -> Result<()> {
     let mnt = crate::utils::mnt_dir(yolo_dir);
@@ -153,8 +115,9 @@ pub fn unmount_at(yolo_dir: &Path) -> Result<()> {
     // Remove symlinks first (they point into the mount)
     let _ = fs::remove_file(yolo_dir.join("cwd"));
 
-    // Unbind pseudo filesystems, then unmount YoloFS
-    unbind_mount_pseudofs(&mnt)?;
+    // `/proc` `/sys` `/dev` are mounted per-command inside each `yolo run`'s
+    // private namespace (see exec.rs), not here, so there is nothing to unbind —
+    // just unmount the yolofs view itself.
     if mnt.exists() && is_mountpoint(&mnt) {
         umount_or_prompt(&mnt).with_context(|| format!("unmounting {}", mnt.display()))?;
     }
@@ -209,9 +172,8 @@ pub fn mount() -> Result<()> {
     // Everything below runs against a live mount. If any step fails, roll the
     // mount back — yolofs stacks over /, so a dangling mount makes ordinary
     // tools (cp, rm) walk the entire rootfs.
-    let finish = bind_mount_pseudofs(&mnt)
-        .and_then(|()| create_cwd_symlink(&yolo_dir, &cwd))
-        .and_then(|()| crate::config::apply_rules(&yolo_dir));
+    let finish =
+        create_cwd_symlink(&yolo_dir, &cwd).and_then(|()| crate::config::apply_rules(&yolo_dir));
     if let Err(e) = finish {
         let _ = unmount_at(&yolo_dir);
         return Err(e);

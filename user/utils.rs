@@ -108,7 +108,7 @@ pub fn mnt_dir(yolo_dir: &Path) -> PathBuf {
 /// is a reliable (and syscall-free) signal. yolo is a host-side tool — its
 /// base-fs operations only work outside — so every subcommand refuses when this
 /// is true. The kernel is the real boundary regardless (it refuses
-/// gating-changing ioctls from a chrooted caller).
+/// gating-changing ioctls from a caller whose root is inside the mount).
 pub fn inside_mount() -> bool {
     std::env::var_os("YOLO_SESSION").is_some()
 }

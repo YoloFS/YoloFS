@@ -154,8 +154,9 @@ fn run_cli() -> anyhow::Result<u8> {
     let cli = Cli::parse();
 
     // yolo is a host-side tool: its base-fs operations only work outside the
-    // mount, so refuse every subcommand when run inside the chroot. Run
-    // commands through `yolo run -- <cmd>` and manage from outside.
+    // mount, so refuse every subcommand when run inside it (a command whose root
+    // was pivoted onto the mount by `yolo run`). Run commands through
+    // `yolo run -- <cmd>` and manage from outside.
     if cli.command.is_some() && yolofs::utils::inside_mount() {
         anyhow::bail!("yolo cannot run inside the mount — run it from outside");
     }
