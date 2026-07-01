@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-build_deps=(build-essential 'linux-headers-$(uname -r)' bc kmod libcap2-bin)
-dev_deps=(qemu-system-x86 qemu-utils xorriso clangd bear)
+deps=(build-essential linux-headers-$(uname -r) bc kmod libcap2-bin clangd bear)
+vm_deps=(qemu-system-x86 qemu-utils xorriso)
 
-install='sudo apt-get update && sudo apt-get install -y --no-install-recommends'
+if [[ "$(hostname)" != "ubuntu-vm" ]]; then
+    deps+=("${vm_deps[@]}")
+fi
 
-# Host: build deps + dev tooling ($(uname -r) resolves here).
-eval "$install ${build_deps[*]} ${dev_deps[*]}"
-
-# VM: build deps only ($(uname -r) resolves inside the VM).
-./vm.py -- "$install ${build_deps[*]}"
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends "${deps[@]}"
