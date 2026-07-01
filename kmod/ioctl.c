@@ -408,11 +408,12 @@ static long yolo_snapshot_ioctl(struct file *file, unsigned long arg)
 	WRITE_ONCE(sbi->staging.dirty, false);
 	up_write(&sbi->staging.sem);
 
-	/* Best-effort: snapshot is already committed to the journal,
-	 * so return success even if copy_to_user fails. */
+	/* The snapshot is already committed to the journal; a copy_to_user
+	 * failure here means userspace passed a bad buffer, so report -EFAULT.
+	 * The gen remains recoverable from the journal. */
 	snap.gen = gen;
 	if (copy_to_user((void __user *)arg, &snap, sizeof(snap)))
-		/* gen already in journal — userspace can read it back */;
+		return -EFAULT;
 
 	return 0;
 }
@@ -798,11 +799,12 @@ static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 	up_write(&sbi->staging.sem);
 
 	if (!err) {
-		/* Best-effort: travel is already committed to the journal,
-		 * so return success even if copy_to_user fails. */
+		/* The travel is already committed to the journal; a copy_to_user
+		 * failure here means userspace passed a bad buffer, so report
+		 * -EFAULT. new_gen remains recoverable from the journal. */
 		hdr.new_gen = new_gen;
 		if (copy_to_user((void __user *)arg, &hdr, sizeof(hdr)))
-			/* new_gen already in journal — userspace can recover */;
+			return -EFAULT;
 	}
 
 	return err;
