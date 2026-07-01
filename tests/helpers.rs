@@ -73,7 +73,19 @@ pub fn session_tempdir() -> Result<tempfile::TempDir> {
 
 impl YoloSession {
     /// Create a new test session with a custom yolofs.toml config.
-    pub fn new_with_config(config: Config) -> Result<Self> {
+    pub fn new_with_config(mut config: Config) -> Result<Self> {
+        // Cap the ask timeout for tests. With no daemon-connected tracking, an
+        // unanswered ask blocks until prompt_timeout, and the production default
+        // (30s) would hang any no-watcher test. 100ms denies quickly while still
+        // dwarfing the ~ms daemon round-trip, so watcher tests never prematurely
+        // time out. Tests that set a shorter value keep it.
+        const TEST_PROMPT_TIMEOUT_S: f64 = 0.1;
+        config.prompt_timeout = Some(
+            config
+                .prompt_timeout
+                .map_or(TEST_PROMPT_TIMEOUT_S, |t| t.min(TEST_PROMPT_TIMEOUT_S)),
+        );
+
         let root = session_tempdir().context("creating temp dir")?.keep();
 
         // Seed base test files
