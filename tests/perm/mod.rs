@@ -1,4 +1,3 @@
-mod test_ask;
 mod test_basic;
 mod test_dir_ops;
 mod test_hide;
