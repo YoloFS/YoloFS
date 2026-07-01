@@ -26,14 +26,16 @@ pub struct YoloSession {
     cursor: Option<kmsg::KmsgCursor>,
 }
 
-/// Create a session temp dir under $HOME, for any test that builds a yolofs
-/// session (seeded base files + `.yolofs` storage).
+/// Parent dir for all test session dirs. Kept under $HOME, which must be on the
+/// root mount: yolofs overlays `/` and can't see submounts (a tmpfs /tmp, an
+/// NFS home, …), so a session there would be invisible and base files would
+/// read back as ENOENT.
 ///
-/// yolofs overlays `/` and does not cross submounts, so a session under a
-/// submounted tmpfs (the usual `/tmp`) is invisible through the mount and base
-/// files read back as ENOENT. $HOME is normally on the root mount; every test
-/// must create its session dir through this rather than `tempfile::tempdir()`.
-pub fn session_tempdir() -> Result<tempfile::TempDir> {
+/// Grouping every session under one dir makes cleanup a single `remove_dir_all`
+/// instead of pattern-matching scattered dirs. It's reaped once per test binary,
+/// before the first session exists — so it never touches a session live in this
+/// run — to clear leftovers from earlier runs killed before Drop could clean up.
+fn sessions_root() -> Result<PathBuf> {
     let home = PathBuf::from(std::env::var_os("HOME").context("$HOME is not set")?);
 
     let root_dev = fs::metadata("/").context("stat /")?.dev();
@@ -48,10 +50,25 @@ pub fn session_tempdir() -> Result<tempfile::TempDir> {
         );
     }
 
+    let base = home.join(".yolofs-tests");
+
+    static REAP: std::sync::Once = std::sync::Once::new();
+    REAP.call_once(|| {
+        let _ = fs::remove_dir_all(&base);
+    });
+    fs::create_dir_all(&base).with_context(|| format!("creating {}", base.display()))?;
+    Ok(base)
+}
+
+/// Create a session temp dir (seeded base files + `.yolofs` storage) under the
+/// shared sessions root. Every test must create its session dir through this
+/// rather than `tempfile::tempdir()`.
+pub fn session_tempdir() -> Result<tempfile::TempDir> {
+    let base = sessions_root()?;
     tempfile::Builder::new()
-        .prefix(".yolofs-test-")
-        .tempdir_in(&home)
-        .with_context(|| format!("creating session dir in {}", home.display()))
+        .prefix("session-")
+        .tempdir_in(&base)
+        .with_context(|| format!("creating session dir in {}", base.display()))
 }
 
 impl YoloSession {
