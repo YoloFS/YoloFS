@@ -4,13 +4,13 @@
  *
  * All control operations are ioctls on a directory fd in the mount (the CLI
  * opens the mount root; commands run inside the mount open "."). Only the
- * owning uid (or CAP_SYS_ADMIN) may issue them. The permission daemon claims
- * exclusive status on its first ASK_PEEK call; only that fd may issue ASK_PEEK
- * and ASK_DECIDE. All other operations may be issued from any fd.
+ * owning uid (or CAP_SYS_ADMIN) may issue them.
  *
  * ASK_PEEK reads the head of the ask queue without removing it; ASK_DECIDE
- * answers an ask by id and removes it. On close of the daemon fd, every
- * still-queued ask gets the default decision (deny).
+ * answers an ask by id and removes it. There is no daemon registration — any
+ * fd (from outside the mount) may issue them, and asks are matched by id, so a
+ * late or duplicate ASK_DECIDE simply returns -ENOENT. An ask nobody answers
+ * is denied once its prompt_timeout elapses.
  */
 
 #include "yolofs.h"
@@ -33,35 +33,6 @@ static bool yolo_caller_inside(struct super_block *sb)
 	return inside;
 }
 
-/* ── Daemon release ────────────────────────────────────────────────── */
-
-/* Deny every queued ask. Runs under pending_lock — completing under the lock
- * serializes against the requester's settle path, so a woken requester cannot
- * free the req until we have finished with it. */
-static void yolo_deny_reqs(struct list_head *head)
-{
-	struct yolo_ask *req, *tmp;
-
-	list_for_each_entry_safe(req, tmp, head, list) {
-		req->decision = YOLO_DECISION_DENY;
-		list_del_init(&req->list);
-		complete(&req->done);
-	}
-}
-
-void yolo_ctl_release(struct file *file)
-{
-	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
-	struct yolo_permission *perm = &sbi->perm;
-
-	spin_lock(&perm->pending_lock);
-	if (perm->daemon_file == file) {
-		yolo_deny_reqs(&perm->pending_reqs);
-		perm->daemon_file = NULL;
-	}
-	spin_unlock(&perm->pending_lock);
-}
-
 /* ── ASK_PEEK: read the head ask without removing it ───────────────── */
 
 static long yolo_ask_peek_ioctl(struct file *file, unsigned long arg)
@@ -71,17 +42,6 @@ static long yolo_ask_peek_ioctl(struct file *file, unsigned long arg)
 	struct yolo_ask *req;
 	struct yolo_ioc_ask out;
 	int err;
-
-	/* Claim daemon status on first call; reject if another fd already has it.
-	 * Tracked by file identity (private_data holds the dir's readdir cursor). */
-	spin_lock(&perm->pending_lock);
-	if (perm->daemon_file != file && perm->daemon_file != NULL) {
-		spin_unlock(&perm->pending_lock);
-		return -EBUSY;
-	}
-	if (perm->daemon_file == NULL)
-		perm->daemon_file = file;
-	spin_unlock(&perm->pending_lock);
 
 	memset(&out, 0, sizeof(out));
 
@@ -151,16 +111,12 @@ static long yolo_ask_decide_ioctl(struct file *file, unsigned long arg)
 	if (in.decision > YOLO_DECISION_ALLOW)
 		return -EINVAL;
 
-	spin_lock(&perm->pending_lock);
-	if (perm->daemon_file != file) {
-		spin_unlock(&perm->pending_lock);
-		return -EPERM;
-	}
-	/* Anything still on pending_reqs is unanswered: settling an ask — here,
-	 * on timeout, or on daemon close — sets its decision and unlinks it in
-	 * the same locked section, so being on the list means "not yet resolved".
+	/* Anything still on pending_reqs is unanswered: settling an ask — here or
+	 * on the requester's timeout — sets its decision and unlinks it in the
+	 * same locked section, so being on the list means "not yet resolved".
 	 * Complete under the lock so the woken requester cannot free the req
 	 * before we are done touching it. */
+	spin_lock(&perm->pending_lock);
 	list_for_each_entry(req, &perm->pending_reqs, list) {
 		if (req->id == in.id) {
 			req->decision = (enum yolo_decision)in.decision;

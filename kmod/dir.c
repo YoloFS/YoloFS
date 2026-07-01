@@ -64,9 +64,6 @@ static int yolo_dir_release(struct inode *inode, struct file *file)
 {
 	struct yolo_dir_info *di = YOLO_DI(file);
 
-	/* If this fd was the connected ask daemon, tear the connection down. */
-	yolo_ctl_release(file);
-
 	if (di) {
 		if (di->phase1_cursor) {
 			dput(di->phase1_cursor);

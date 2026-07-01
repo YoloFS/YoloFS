@@ -115,13 +115,6 @@ pub fn run(allow_all: bool) -> Result<()> {
 
     let ctl_file = ioctl::open(&yolofs)?;
 
-    // Claim the daemon slot before announcing readiness: until a daemon has
-    // claimed, the kernel fast-denies asks, so an op racing our startup would be
-    // wrongly denied. Claiming up front (a non-blocking ASK_PEEK) closes that.
-    // A peek does not consume, so any ask that raced in stays queued for the
-    // loop below to handle.
-    ioctl::claim_daemon(&ctl_file)?;
-
     if allow_all {
         report::info("watching for permission requests — allowing all (Ctrl-C to stop)");
     } else {
@@ -157,9 +150,6 @@ fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
     loop {
         let req = match ioctl::ask_peek(ctl_file) {
             Ok(r) => r,
-            Err(nix::errno::Errno::EBUSY) => {
-                anyhow::bail!("another yolo watch is already running");
-            }
             Err(_) => return Ok(()),
         };
 

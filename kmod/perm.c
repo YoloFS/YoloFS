@@ -200,13 +200,6 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 		return 0;
 	}
 
-	/* No daemon connected — deny immediately (an unanswered ask is a deny) */
-	if (!READ_ONCE(sbi->perm.daemon_file)) {
-		*result = YOLO_DECISION_DENY;
-		yolo_journal_ask(sbi, access_path, op, *result);
-		return 0;
-	}
-
 	req = kzalloc(sizeof(*req), GFP_KERNEL);
 	if (!req)
 		return -ENOMEM;
@@ -228,19 +221,13 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 	init_completion(&req->done);
 	INIT_LIST_HEAD(&req->list);
 
-	/* Enqueue */
+	/* Enqueue and wait for a daemon to answer (or time out -> deny). With no
+	 * daemon connected the ask simply waits until prompt_timeout elapses. */
 	spin_lock(&sbi->perm.pending_lock);
-	if (!READ_ONCE(sbi->perm.daemon_file)) {
-		spin_unlock(&sbi->perm.pending_lock);
-		*result = YOLO_DECISION_DENY;
-		yolo_journal_ask(sbi, access_path, op, *result);
-		kfree(req);
-		return 0;
-	}
 	list_add_tail(&req->list, &sbi->perm.pending_reqs);
 	spin_unlock(&sbi->perm.pending_lock);
 
-	/* Wake daemon */
+	/* Wake any daemon blocked in ASK_PEEK */
 	wake_up_interruptible(&sbi->perm.request_waitq);
 
 	/* Wait for decision */

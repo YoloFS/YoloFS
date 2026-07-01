@@ -51,6 +51,25 @@ If reading an ask does **not** consume it, all of that collapses.
 - The watch loop tolerates `ENOENT` from `ASK_DECIDE`: a peeked ask can time
   out before the user answers it.
 
+## Follow-on: remove daemon tracking entirely
+
+Because `ASK_DECIDE` is now id-based and idempotent, the single-daemon
+machinery is no longer needed for correctness, so it is removed too:
+
+- Drop `perm->daemon_file` and the exclusivity checks (`ASK_PEEK` no longer
+  returns `-EBUSY`; `ASK_DECIDE` no longer returns `-EPERM` for a non-owner).
+  Any control fd may peek/decide; the `yolo_caller_inside` gate is now the
+  sole boundary preventing an in-mount process from answering its own asks.
+- Drop the no-daemon fast-deny in `yolo_ask_userspace`. An ask with no watcher
+  now enqueues and waits up to `timeout_ms` before denying (instead of denying
+  instantly). Fail-safe is preserved (still denies), just delayed;
+  `timeout_ms = 0` blocks until some watcher answers.
+- Drop `yolo_ctl_release`/`yolo_deny_reqs` (and the `yolo_dir_release` call):
+  there is no daemon fd whose close must deny pending asks — they resolve via
+  answer or timeout.
+- Userspace: drop `ioctl::claim_daemon` and the readiness/startup-race dance;
+  `yolo watch` just opens the fd and loops. Drop the "already running" path.
+
 ## Out of scope
 
 Out-of-order / concurrent answering of multiple in-flight asks (the old

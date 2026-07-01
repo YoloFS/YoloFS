@@ -219,19 +219,14 @@ struct yolo_permission {
 	spinlock_t		pinned_rules_lock;/* protects pinned_rules */
 
 	/* Ask protocol. pending_lock guards pending_reqs, the FIFO of asks
-	 * awaiting a decision. PEEK_ASK reads the head without removing it;
-	 * ASK_DECIDE removes it on answer. */
+	 * awaiting a decision. ASK_PEEK reads the head without removing it;
+	 * ASK_DECIDE removes it on answer. There is no daemon registration: any
+	 * caller may peek/decide, and an unanswered ask is denied on timeout. */
 	struct list_head	pending_reqs;	/* asks awaiting a decision */
 	spinlock_t		pending_lock;	/* protects pending_reqs */
-	wait_queue_head_t	request_waitq;	/* daemon blocks here */
+	wait_queue_head_t	request_waitq;	/* daemon blocks in ASK_PEEK here */
 	atomic64_t		next_req_id;	/* unique request ID counter */
 	unsigned int		timeout_ms;	/* ms to wait before denying (0 = forever) */
-
-	/* Daemon connection (at most one). The control ioctls live on the mount
-	 * root directory, whose fd already uses private_data for the readdir
-	 * cursor — so the daemon is tracked by file identity, not private_data.
-	 * A non-NULL daemon_file is itself the "daemon connected" flag. */
-	struct file		*daemon_file;	/* the fd that claimed the daemon */
 };
 
 /* ── Per-Superblock Info ───────────────────────────────────────────── */
@@ -481,7 +476,6 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 
 /* ioctl.c — control ioctls live on the mount-root directory (yolo_dir_fops). */
 long yolo_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
-void yolo_ctl_release(struct file *file);
 void yolo_release_pinned_rules(struct yolo_sb_info *sbi);
 
 #endif /* _YOLO_H_ */

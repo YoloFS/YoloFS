@@ -25,8 +25,8 @@ fn no_daemon_denies_ask() {
     );
 }
 
-/// `prompt_timeout` is accepted as a mount option; with no daemon the ask is
-/// denied immediately regardless of the timeout.
+/// With no daemon answering, an ask waits for `prompt_timeout` (here 100ms)
+/// and is then denied.
 #[test]
 fn prompt_timeout_no_daemon_denies() {
     let s = YoloSession::new_with_config(Config {

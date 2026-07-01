@@ -104,30 +104,6 @@ fn watch_allow_all_answers_each_plain_ask() {
     );
 }
 
-/// Starting a second watch while one is already running should fail
-/// with a clear "already running" message (kernel returns EBUSY).
-#[test]
-fn second_watch_reports_already_running() {
-    let s = YoloSession::new_with_config(Config {
-        rules: BTreeMap::new(),
-        ..Default::default()
-    })
-    .expect("session setup");
-
-    // Start the first watch and wait until it has claimed the daemon slot.
-    let watch1 = Watch::spawn(&s.root, &[]);
-
-    // Second watch should fail with "already running".
-    let (ok, _, stderr) = s.cli_output(&["watch"]).unwrap();
-    assert!(!ok, "second watch should fail");
-    assert!(
-        stderr.contains("already running"),
-        "error should mention 'already running': {stderr}"
-    );
-
-    let _ = watch1.kill_and_collect();
-}
-
 // ── Interactive daemon tests (PTY-free: pipe stdin/stderr) ──────────
 
 /// Helper: mount with "/" = Allow (so dir traversal never triggers an ask),
@@ -154,12 +130,10 @@ fn assert_errno(result: anyhow::Result<()>, expected: nix::errno::Errno) {
     );
 }
 
-/// Open a non-blocking ctl fd and claim daemon status with a first ASK_PEEK
-/// (which must report EAGAIN). Claiming *before* spawning a reader thread
-/// closes a race: with no daemon connected the kernel denies asks instantly
-/// without enqueuing them, so a blocking ASK_PEEK issued after the reader
-/// could wait forever for an ask that was already settled.
-fn claim_daemon(s: &YoloSession) -> std::fs::File {
+/// Open a non-blocking control fd on the mount root. Non-blocking so `ask_peek`
+/// returns EAGAIN on an empty queue (via `poll_ask`) instead of hanging the
+/// test; the initial peek also sanity-checks that the queue starts empty.
+fn open_ctl(s: &YoloSession) -> std::fs::File {
     let ctl_file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
@@ -193,7 +167,7 @@ fn poll_ask(ctl_file: &std::fs::File) -> ioctl::Ask {
 #[test]
 fn ask_peek_does_not_consume() {
     let (s, _path) = session_with_ask_file();
-    let ctl_file = claim_daemon(&s);
+    let ctl_file = open_ctl(&s);
 
     let path = s.mnt_path("hello.txt");
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
@@ -220,7 +194,7 @@ fn ask_peek_does_not_consume() {
 #[test]
 fn ask_decide_rejects_invalid_decisions() {
     let (s, _path) = session_with_ask_file();
-    let ctl_file = claim_daemon(&s);
+    let ctl_file = open_ctl(&s);
     let path = s.mnt_path("hello.txt");
 
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
@@ -240,46 +214,6 @@ fn ask_decide_rejects_invalid_decisions() {
     assert!(result.is_err(), "read should fail after final deny");
 }
 
-/// Only the fd that claimed daemon ownership with ASK_PEEK may answer the ask.
-#[test]
-fn ask_decide_rejects_non_daemon_fd() {
-    let (s, _path) = session_with_ask_file();
-    let daemon_fd = claim_daemon(&s);
-    let other_fd = ioctl::open(&s.root.join(".yolofs")).expect("open second ioctl fd");
-    let path = s.mnt_path("hello.txt");
-
-    let reader = std::thread::spawn(move || std::fs::read_to_string(path));
-    let req = poll_ask(&daemon_fd);
-
-    assert_errno(
-        ioctl::ask_decide(&other_fd, req.id, Decision::Allow),
-        nix::errno::Errno::EPERM,
-    );
-    ioctl::ask_decide(&daemon_fd, req.id, Decision::Deny)
-        .expect("daemon fd should answer the ask");
-
-    let result = reader.join().expect("reader thread should not panic");
-    assert!(result.is_err(), "read should fail after daemon deny");
-}
-
-/// Closing the daemon fd denies any ask still on the queue. Peeking does not
-/// remove the ask, so this covers both a peeked and an un-answered ask — with
-/// a single queue they are the same state.
-#[test]
-fn daemon_close_denies_queued_ask() {
-    let (s, _path) = session_with_ask_file();
-    let ctl_file = claim_daemon(&s);
-    let path = s.mnt_path("hello.txt");
-
-    let reader = std::thread::spawn(move || std::fs::read_to_string(path));
-    // Confirm the ask reached the queue (peek leaves it queued), then close.
-    let _req = poll_ask(&ctl_file);
-    drop(ctl_file);
-
-    let result = reader.join().expect("reader thread should not panic");
-    assert!(result.is_err(), "read should fail after daemon fd close");
-}
-
 /// A connected daemon that peeked an ask but never answers still gets the
 /// timeout default, and a late answer for it fails with ENOENT.
 #[test]
@@ -292,7 +226,7 @@ fn peeked_ask_times_out_to_deny() {
     .expect("session setup");
     s.cli(&["rule", "ask", "hello.txt"]).unwrap();
 
-    let ctl_file = claim_daemon(&s);
+    let ctl_file = open_ctl(&s);
     let path = s.mnt_path("hello.txt");
 
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
@@ -320,7 +254,7 @@ fn pending_ask_times_out_and_is_removed() {
     .expect("session setup");
     s.cli(&["rule", "ask", "hello.txt"]).unwrap();
 
-    let ctl_file = claim_daemon(&s);
+    let ctl_file = open_ctl(&s);
 
     let path = s.mnt_path("hello.txt");
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
@@ -358,7 +292,7 @@ fn ask_peek_reports_rule_source() {
         ..Default::default()
     })
     .expect("session setup");
-    let ctl_file = claim_daemon(&s);
+    let ctl_file = open_ctl(&s);
     let path = s.mnt_path("hello.txt");
 
     let writer = std::thread::spawn(move || std::fs::write(path, "modified\n"));

@@ -195,36 +195,6 @@ pub fn ask_decide(fd: &File, id: u64, decision: Decision) -> Result<()> {
     ask_decide_raw(fd, id, decision.to_ioctl())
 }
 
-/// Claim the daemon slot before `yolo watch` announces readiness.
-///
-/// The kernel only recognises a daemon once it has claimed the slot (on its
-/// first ASK_PEEK); until then it fast-denies asks as "no daemon". If we
-/// printed "watching" before claiming, an operation racing startup would be
-/// wrongly denied. A non-blocking ASK_PEEK claims the slot and returns EAGAIN
-/// when nothing is queued — no extra ioctl.
-///
-/// ASK_PEEK does not consume, so an op that raced in the instant after we
-/// claimed simply stays queued for the main loop's blocking `ask_peek` — we
-/// discard whatever this peek returns and let the loop handle it uniformly.
-pub fn claim_daemon(fd: &File) -> Result<()> {
-    let raw = fd.as_raw_fd();
-    let flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
-    if flags < 0 {
-        return Err(std::io::Error::last_os_error()).context("F_GETFL on ctl fd");
-    }
-    // Toggle O_NONBLOCK around one ASK_PEEK, then restore blocking mode for the loop.
-    unsafe { libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-    let res = ask_peek(fd);
-    unsafe { libc::fcntl(raw, libc::F_SETFL, flags) };
-
-    match res {
-        // Claimed. Ok(ask) means one raced in; it stays queued for the loop.
-        Ok(_) | Err(nix::errno::Errno::EAGAIN) => Ok(()),
-        Err(nix::errno::Errno::EBUSY) => anyhow::bail!("another yolo watch is already running"),
-        Err(e) => Err(anyhow::Error::from(e)).context("claiming daemon slot"),
-    }
-}
-
 /// Open a directory fd in the mount (the mount root) for control ioctls.
 pub fn open(yolo_dir: &Path) -> Result<File> {
     // Control ioctls go to a directory fd in the mount. From outside that's the

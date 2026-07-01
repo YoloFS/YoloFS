@@ -85,22 +85,23 @@ thread sleeps until a userspace daemon decides. Ask state lives in
 
 | Field | Purpose |
 |-------|---------|
-| `pending_reqs` | FIFO of `yolo_ask` structs awaiting a decision. `ASK_PEEK` reads the head without removing it; an ask is unlinked only when resolved (answered, timed out, or denied on daemon close) |
+| `pending_reqs` | FIFO of `yolo_ask` structs awaiting a decision. `ASK_PEEK` reads the head without removing it; an ask is unlinked only when resolved (answered via `ASK_DECIDE`, or timed out) |
 | `pending_lock` | Spinlock protecting `pending_reqs` |
-| `request_waitq` | Wait queue — the daemon's blocking `ASK_PEEK` ioctl waits here for a non-empty queue |
+| `request_waitq` | Wait queue — a daemon's blocking `ASK_PEEK` ioctl waits here for a non-empty queue |
 | `next_req_id` | Atomic counter for unique request IDs |
 | `timeout_ms` | Milliseconds to wait for an answer before denying (0 = infinite) |
-| `daemon_file` | Pointer to the daemon's open `struct file` (a directory fd in the mount); NULL if no daemon connected (NULL is itself the "connected" flag). Set atomically on the first `ASK_PEEK` ioctl, cleared in `yolo_ctl_release()`. Only one daemon allowed — a second `ASK_PEEK` from a different fd returns `-EBUSY`. |
 
-The daemon connects by opening the mount root (a directory fd) and issuing its
-first `ASK_PEEK` ioctl to claim exclusive daemon status. On close, every ask
-still on `pending_reqs` is denied and `daemon_file` is reset to NULL.
+There is **no daemon registration**. A watcher just opens the mount root (a
+directory fd) and loops `ASK_PEEK` (blocking) → decide → `ASK_DECIDE`.
+`ASK_PEEK` is non-consuming — it returns the head ask but leaves it queued —
+and `ASK_DECIDE` resolves and removes an ask *by id*. Because matching is by
+id, multiple watchers are harmless (the first `ASK_DECIDE` wins; a late or
+duplicate one returns `-ENOENT`), and no exclusivity check is needed.
 
-`ASK_PEEK` is non-consuming: it returns the head ask but leaves it queued, so
-the daemon loops `ASK_PEEK` (blocking) → decide → `ASK_DECIDE` (which resolves
-and removes the ask by id). A peeked ask that times out before the daemon
-answers is removed by its requester, so a late `ASK_DECIDE` for it returns
-`-ENOENT` (benign).
+An ask that no watcher answers is denied once its `timeout_ms` elapses (the
+requester itself unlinks and denies it). With no watcher connected, an ask
+therefore waits up to `timeout_ms` before denying rather than failing
+instantly; `timeout_ms = 0` (wait forever) blocks until some watcher answers.
 
 Control ioctls live on a directory fd in the mount (there is no separate `.ctl`
 file). Operations that could defeat gating — `RULE_SET`, `ASK_PEEK`,
