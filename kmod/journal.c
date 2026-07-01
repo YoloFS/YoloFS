@@ -101,6 +101,47 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
+/* Tagged operation-local pre-image target of @dentry, written into @buf. The
+ * tag is the lowercased first letter of the userspace `Target` variant it
+ * parses to, so the pre namespace never shares letters with the record tags:
+ *   "a"            Absence: negative dentry / tombstone / unresolvable
+ *   "s:<ino>"      StagedFile: staged inode (target == YOLO_TARGET_INODE)
+ *   "b:<abspath>"  BasePath: redirect-resolved base content (PATH or ground)
+ * This is the exact pre-op backing — an already-staged file reports its staged
+ * inode (s:), not the base it was COW'd from. The CLI parses this into a
+ * `Target` to seed a review range's old side; see docs/staging.md. */
+const char *yolo_preimage_target(const struct dentry *dentry,
+				 char *buf, int len)
+{
+	struct yolo_dentry_info *di = YOLO_D(dentry);
+	struct path lower;
+	char *p;
+
+	if (d_is_negative(dentry) || di->target == YOLO_TARGET_NONE)
+		return "a";
+
+	if (di->target == YOLO_TARGET_INODE) {
+		u32 ino = YOLO_I(d_inode(dentry))->staging_ino;
+
+		if (!ino)
+			return "a";
+		snprintf(buf, len, "s:%u", ino);
+		return buf;
+	}
+
+	/* PATH or ground state: redirect-resolved base path, tagged "b:". Write
+	 * the path right-aligned into buf+2.. and prepend the tag just before
+	 * the returned pointer (d_path returns a right-aligned slice). */
+	yolo_get_lower_path(dentry, &lower);
+	p = d_path(&lower, buf + 2, len - 2);
+	yolo_put_lower_path(dentry, &lower);
+	if (IS_ERR(p))
+		return "a";
+	p[-2] = 'b';
+	p[-1] = ':';
+	return p - 2;
+}
+
 /* ── Public: typed journal record writers ──────────────────────────── */
 
 int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,

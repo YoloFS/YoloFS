@@ -16,7 +16,6 @@
 #include <linux/file.h>
 #include <linux/fs_struct.h>
 #include <linux/vmalloc.h>
-#include <asm/unaligned.h>
 
 /* True if the caller is chrooted into this mount (an agent command or the
  * interactive `yolo` shell), as opposed to a normal terminal outside it.
@@ -409,11 +408,12 @@ static long yolo_snapshot_ioctl(struct file *file, unsigned long arg)
 	WRITE_ONCE(sbi->staging.dirty, false);
 	up_write(&sbi->staging.sem);
 
-	/* Best-effort: snapshot is already committed to the journal,
-	 * so return success even if copy_to_user fails. */
+	/* The snapshot is already committed to the journal; a copy_to_user
+	 * failure here means userspace passed a bad buffer, so report -EFAULT.
+	 * The gen remains recoverable from the journal. */
 	snap.gen = gen;
 	if (copy_to_user((void __user *)arg, &snap, sizeof(snap)))
-		/* gen already in journal — userspace can read it back */;
+		return -EFAULT;
 
 	return 0;
 }
@@ -439,7 +439,7 @@ static inline int read_le16(struct tree_cursor *c, u16 *out)
 {
 	if (c->buf + 2 > c->end)
 		return -EINVAL;
-	*out = get_unaligned_le16(c->buf);
+	*out = (u16)c->buf[0] | ((u16)c->buf[1] << 8);
 	c->buf += 2;
 	return 0;
 }
@@ -448,7 +448,8 @@ static inline int read_le32(struct tree_cursor *c, u32 *out)
 {
 	if (c->buf + 4 > c->end)
 		return -EINVAL;
-	*out = get_unaligned_le32(c->buf);
+	*out = (u32)c->buf[0] | ((u32)c->buf[1] << 8) |
+	       ((u32)c->buf[2] << 16) | ((u32)c->buf[3] << 24);
 	c->buf += 4;
 	return 0;
 }
@@ -508,9 +509,9 @@ static struct dentry *travel_inject_entry(struct tree_cursor *cur,
 					   &lower_path);
 		if (IS_ERR(child))
 			return child;
-		YOLO_I(d_inode(child))->staging_gen =
-			(ino > cow_ino_floor) ? gen : (gen ? gen - 1 : 0);
-		YOLO_I(d_inode(child))->staging_ino = ino;
+		yolo_stamp_staged(child,
+				  (ino > cow_ino_floor) ? gen : (gen ? gen - 1 : 0),
+				  ino);
 		return child;
 	}
 
@@ -640,9 +641,10 @@ static int yolo_view_inject(struct file *file, struct yolo_sb_info *sbi,
 			dget(child);
 		} else {
 			/* Scaffold — the name resolves through base. */
-			child = lookup_one_len_unlocked(
-					(const char *)name_ptr,
-					stack[depth].dentry, name_len);
+			child = yolo_lower_lookup_unlocked(
+					mnt_idmap(file->f_path.mnt),
+					stack[depth].dentry,
+					(const char *)name_ptr, name_len);
 			if (IS_ERR(child)) {
 				err = PTR_ERR(child);
 				goto out_unwind;
@@ -682,7 +684,7 @@ static void yolo_staging_quiesce(struct super_block *sb,
 	yolo_dentry_unpin_all(sb);
 
 	/* shard_lock, not just staging.sem: creates reach the shard cache
-	 * without taking staging.sem (see get_shard_dir). The epoch bump keeps
+	 * without taking staging.sem (see yolo_get_shard_dir). The epoch bump keeps
 	 * an in-flight create from re-publishing its stale shard afterwards. */
 	spin_lock(&sbi->staging.shard_lock);
 	old = sbi->staging.shard_dentry;
@@ -797,11 +799,12 @@ static long yolo_travel_ioctl(struct file *file, unsigned long arg)
 	up_write(&sbi->staging.sem);
 
 	if (!err) {
-		/* Best-effort: travel is already committed to the journal,
-		 * so return success even if copy_to_user fails. */
+		/* The travel is already committed to the journal; a copy_to_user
+		 * failure here means userspace passed a bad buffer, so report
+		 * -EFAULT. new_gen remains recoverable from the journal. */
 		hdr.new_gen = new_gen;
 		if (copy_to_user((void __user *)arg, &hdr, sizeof(hdr)))
-			/* new_gen already in journal — userspace can recover */;
+			return -EFAULT;
 	}
 
 	return err;

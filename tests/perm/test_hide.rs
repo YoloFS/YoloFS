@@ -7,7 +7,7 @@ use yolofs::perm::Perm;
 /// Helper: create a session with a hidden rule on a subdirectory.
 fn hide_session() -> YoloSession {
     // Create base with a "secret" subdirectory.
-    let root = tempfile::tempdir().unwrap().keep();
+    let root = crate::helpers::session_tempdir().unwrap().keep();
     fs::write(root.join("hello.txt"), "visible\n").unwrap();
     fs::create_dir_all(root.join("secret")).unwrap();
     fs::write(root.join("secret/key.pem"), "private\n").unwrap();
@@ -119,7 +119,7 @@ fn opendir_hidden_fails() {
 /// Hide on a single file (not a directory).
 #[test]
 fn hide_single_file() {
-    let root = tempfile::tempdir().unwrap().keep();
+    let root = crate::helpers::session_tempdir().unwrap().keep();
     fs::write(root.join("visible.txt"), "ok\n").unwrap();
     fs::write(root.join("hidden.txt"), "secret\n").unwrap();
     fs::create_dir_all(root.join("subdir")).unwrap();

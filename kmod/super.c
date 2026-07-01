@@ -233,17 +233,12 @@ static int yolo_fill_super(struct super_block *sb, struct fs_context *fc)
 	if (err)
 		goto out_put;
 
-	/*
-	 * Reject lower filesystems that need d_revalidate (e.g. NFS).
-	 * YoloFS only supports local filesystems (ext4, xfs, btrfs, …).
-	 */
-	if (base_path.dentry->d_flags & DCACHE_OP_REVALIDATE) {
-		pr_err("yolofs: lower filesystem requires d_revalidate; "
-		       "only local filesystems are supported\n");
-		err = -EINVAL;
-		goto out_put;
-	}
+	/* sb->s_d_op removed in favour of set_default_d_op() in 7.0 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	set_default_d_op(sb, &yolo_dops);
+#else
 	sb->s_d_op = &yolo_dops;
+#endif
 
 	/* Create root inode from lower root */
 	inode = yolo_iget(sb, d_inode(base_path.dentry));

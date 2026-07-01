@@ -325,7 +325,6 @@ const struct file_operations yolo_dir_fops = {
 	.open		= yolo_dir_open,
 	.release	= yolo_dir_release,
 	.iterate_shared	= yolo_readdir,
-	.llseek		= no_llseek,
 	.fsync		= noop_fsync,
 	/* Control interface: ioctls are issued on a directory fd in the mount. */
 	.unlocked_ioctl	= yolo_ctl_ioctl,

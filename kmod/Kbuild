@@ -1,5 +1,3 @@
-src := $(KBUILD_KMOD_SRC)
-
 obj-m += yolofs.o
 yolofs-y := $(patsubst $(src)/%.c,%.o,$(wildcard $(src)/*.c))
 

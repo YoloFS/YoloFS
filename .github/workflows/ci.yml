@@ -9,8 +9,13 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-22.04
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-26.04]
     steps:
       - uses: actions/checkout@v6
 
@@ -20,8 +25,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-cargo-
 
       - name: Auto-fix lint
         run: make fix
@@ -38,7 +43,8 @@ jobs:
       - name: Example script
         run: ./example.sh
 
-      - name: Push lint fixes (only after tests pass)
+      - name: Push lint fixes
+        if: matrix.os == 'ubuntu-22.04'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

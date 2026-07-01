@@ -19,11 +19,11 @@ $(USER_OUT): $(shell find user -type f -name '*.rs' 2>/dev/null) Cargo.toml Carg
 kmod: $(KMOD_OUT)
 $(KMOD_OUT): $(wildcard kmod/*.c kmod/*.h kmod/Kbuild)
 	mkdir -p $(@D)
-	ln -sf $(CURDIR)/kmod/Kbuild $(@D)/Kbuild
+	rm -f $(@D)/*.c $(@D)/*.h $(@D)/Kbuild
+	ln -sf $(CURDIR)/kmod/*.c $(CURDIR)/kmod/*.h $(CURDIR)/kmod/Kbuild $(@D)/
 	$(BEAR) $(MAKE) -j$$(nproc) \
 		-C $(KDIR)/build \
 		M=$(@D) \
-		KBUILD_KMOD_SRC=$(CURDIR)/kmod \
 		CONFIG_DEBUG_INFO_BTF_MODULES= \
 		modules
 

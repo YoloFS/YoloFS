@@ -1,8 +1,12 @@
 use anyhow::{Context, Result, bail};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use yolofs::config::Config;
 use yolofs::kmsg;
 
@@ -22,10 +26,38 @@ pub struct YoloSession {
     cursor: Option<kmsg::KmsgCursor>,
 }
 
+/// Create a session temp dir under $HOME, for any test that builds a yolofs
+/// session (seeded base files + `.yolofs` storage).
+///
+/// yolofs overlays `/` and does not cross submounts, so a session under a
+/// submounted tmpfs (the usual `/tmp`) is invisible through the mount and base
+/// files read back as ENOENT. $HOME is normally on the root mount; every test
+/// must create its session dir through this rather than `tempfile::tempdir()`.
+pub fn session_tempdir() -> Result<tempfile::TempDir> {
+    let home = PathBuf::from(std::env::var_os("HOME").context("$HOME is not set")?);
+
+    let root_dev = fs::metadata("/").context("stat /")?.dev();
+    let home_dev = fs::metadata(&home)
+        .with_context(|| format!("stat {}", home.display()))?
+        .dev();
+    if home_dev != root_dev {
+        bail!(
+            "$HOME ({}) is not on the root filesystem — yolofs overlays `/` and \
+             can't see submounts, so its session files would be invisible",
+            home.display()
+        );
+    }
+
+    tempfile::Builder::new()
+        .prefix(".yolofs-test-")
+        .tempdir_in(&home)
+        .with_context(|| format!("creating session dir in {}", home.display()))
+}
+
 impl YoloSession {
     /// Create a new test session with a custom yolofs.toml config.
     pub fn new_with_config(config: Config) -> Result<Self> {
-        let root = tempfile::tempdir().context("creating temp dir")?.keep();
+        let root = session_tempdir().context("creating temp dir")?.keep();
 
         // Seed base test files
         fs::write(root.join("hello.txt"), "base content\n")?;
@@ -176,6 +208,77 @@ impl YoloSession {
         let mut args = vec!["run", "--no-review", "--"];
         args.extend_from_slice(cmd);
         self.cli_exit_code(&args)
+    }
+}
+
+/// A spawned `yolo watch` daemon that has already claimed the ask slot.
+///
+/// Waits for the daemon's readiness line before returning (instead of a fixed
+/// sleep that races daemon startup under load) and drains stderr on a background
+/// thread so callers can `kill_and_collect()` everything it logged.
+pub struct Watch {
+    child: Child,
+    stderr: Arc<Mutex<String>>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Watch {
+    /// Spawn `yolo watch <extra_args>` from @root and block until it prints its
+    /// readiness line, draining stderr on a background thread.
+    pub fn spawn(root: &Path, extra_args: &[&str]) -> Self {
+        let mut child = Command::new(YOLO_BIN)
+            .arg("watch")
+            .args(extra_args)
+            .current_dir(root)
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawning yolo watch");
+
+        let err = child.stderr.take().expect("watch stderr piped");
+        let stderr = Arc::new(Mutex::new(String::new()));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let buf = Arc::clone(&stderr);
+        let reader = std::thread::spawn(move || {
+            let mut r = BufReader::new(err);
+            let mut line = String::new();
+            let mut ready = Some(ready_tx);
+            loop {
+                line.clear();
+                match r.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        buf.lock().unwrap().push_str(&line);
+                        if line.contains("watching for permission requests") {
+                            if let Some(tx) = ready.take() {
+                                let _ = tx.send(());
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("yolo watch never became ready");
+        Watch {
+            child,
+            stderr,
+            reader: Some(reader),
+        }
+    }
+
+    /// Kill the daemon and return everything it wrote to stderr.
+    pub fn kill_and_collect(mut self) -> String {
+        self.child.kill().ok();
+        let _ = self.child.wait();
+        if let Some(r) = self.reader.take() {
+            let _ = r.join();
+        }
+        std::mem::take(&mut *self.stderr.lock().unwrap())
     }
 }
 
