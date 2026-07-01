@@ -187,7 +187,6 @@ fn poll_get_ask(ctl_file: &std::fs::File) -> ioctl::Ask {
     }
 }
 
-
 /// Ask decisions are a separate allow/deny enum; out-of-range raw values are
 /// rejected.
 #[test]
