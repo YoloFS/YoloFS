@@ -213,7 +213,7 @@ fn unknown_subcommand_shows_help() {
 /// Without an yolofs.toml, mount should still succeed using default options.
 #[test]
 fn mount_no_config_uses_defaults() {
-    let tmp = tempfile::tempdir().expect("creating temp dir");
+    let tmp = crate::helpers::session_tempdir().expect("creating temp dir");
 
     let output = std::process::Command::new(YOLO_BIN)
         .arg("mount")
@@ -249,7 +249,7 @@ fn mount_no_config_uses_defaults() {
 /// Invalid yolofs.toml should cause `yolofs mount` to fail (at the apply_rules step).
 #[test]
 fn mount_invalid_config_fails() {
-    let tmp = tempfile::tempdir().expect("creating temp dir");
+    let tmp = crate::helpers::session_tempdir().expect("creating temp dir");
     std::fs::write(tmp.path().join("yolofs.toml"), "{{invalid toml")
         .expect("writing invalid config");
 

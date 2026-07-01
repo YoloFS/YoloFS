@@ -290,7 +290,7 @@ fn quiet_run_no_status() {
 
 #[test]
 fn run_mounts_initialized_project_on_demand() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::helpers::session_tempdir().unwrap();
     yolofs::config::Config {
         permission: false,
         ..Default::default()
@@ -362,7 +362,7 @@ fn run_mounts_existing_artifact_and_restores_staging() {
 
 #[test]
 fn run_outside_yolofs_project_fails_without_mounting() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::helpers::session_tempdir().unwrap();
     let output = std::process::Command::new(crate::helpers::YOLO_BIN)
         .args(["run", "--no-review", "--", "true"])
         .current_dir(root.path())
@@ -383,7 +383,7 @@ fn run_outside_yolofs_project_fails_without_mounting() {
 
 #[test]
 fn run_with_only_artifact_fails_without_mounting() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::helpers::session_tempdir().unwrap();
     std::fs::create_dir(root.path().join(".yolofs")).unwrap();
 
     let output = std::process::Command::new(crate::helpers::YOLO_BIN)

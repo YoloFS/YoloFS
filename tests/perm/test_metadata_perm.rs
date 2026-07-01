@@ -122,7 +122,7 @@ fn create_denied_with_ro_rule() {
     // Build config with session root in rules after session is created.
     // We need to know the root path to set the rule, but new_with_config
     // creates the root. Use a two-step approach.
-    let root = tempfile::tempdir().unwrap().keep();
+    let root = crate::helpers::session_tempdir().unwrap().keep();
     fs::write(root.join("hello.txt"), "base\n").unwrap();
     fs::create_dir_all(root.join("subdir")).ok();
     fs::write(root.join("subdir/deep.txt"), "nested\n").ok();

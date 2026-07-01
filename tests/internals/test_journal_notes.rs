@@ -257,7 +257,7 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
     use crate::helpers::YOLO_BIN;
     // Manual setup so we can install a deny rule on a specific file
     // whose host path canonicalizes correctly.
-    let root = tempfile::tempdir().unwrap().keep();
+    let root = crate::helpers::session_tempdir().unwrap().keep();
     fs::write(root.join("locked.txt"), "secret\n").unwrap();
 
     let mut rules = BTreeMap::new();
@@ -323,7 +323,7 @@ fn hidden_paths_do_not_log_block() {
     use crate::helpers::YOLO_BIN;
     // Manual setup — rule paths must canonicalize on the host, so use
     // an absolute host path inside the temp root.
-    let root = tempfile::tempdir().unwrap().keep();
+    let root = crate::helpers::session_tempdir().unwrap().keep();
     fs::write(root.join("hello.txt"), "base\n").unwrap();
     fs::write(root.join("visible.txt"), "ok\n").unwrap();
 

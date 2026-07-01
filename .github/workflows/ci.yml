@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   test:
+    name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     strategy:

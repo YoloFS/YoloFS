@@ -194,7 +194,7 @@ fn unmount_reports_blocking_process() {
 #[test]
 fn unload_retries_until_module_quiesces() {
     for cycle in 0..10 {
-        let root = tempfile::tempdir().expect("temp dir").keep();
+        let root = crate::helpers::session_tempdir().expect("temp dir").keep();
         std::fs::write(root.join("hello.txt"), "base content\n").unwrap();
         yolofs::config::Config {
             permission: false,

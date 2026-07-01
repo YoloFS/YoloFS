@@ -204,13 +204,25 @@ static int yolo_mmap(struct file *file, struct vm_area_struct *vma)
 	lower_file = fi->lower_file;
 	if (!lower_file)
 		return -EIO;
-	if (!lower_file->f_op || !lower_file->f_op->mmap)
+	if (!lower_file->f_op)
 		return -ENODEV;
 
-	/* Save original vm_file and swap */
+	/* Save original vm_file and swap to the lower before delegating. */
 	get_file(lower_file);
 	vma->vm_file = lower_file;
-	err = lower_file->f_op->mmap(lower_file, vma);
+
+	/*
+	 * 7.0 split f_op->mmap into the pre-vma f_op->mmap_prepare hook, and ext4
+	 * (our usual lower fs) moved to it. vfs_mmap() dispatches to whichever hook
+	 * the lower provides (can_mmap_file() rejects a lower with neither); on 6.8
+	 * only ->mmap exists. -ENODEV if the lower can't mmap; the err path below
+	 * drops the ref we just took.
+	 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	err = can_mmap_file(lower_file) ? vfs_mmap(lower_file, vma) : -ENODEV;
+#else
+	err = lower_file->f_op->mmap ? lower_file->f_op->mmap(lower_file, vma) : -ENODEV;
+#endif
 	if (err) {
 		fput(lower_file);
 		vma->vm_file = file;

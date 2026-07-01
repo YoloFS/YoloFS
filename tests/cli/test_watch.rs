@@ -1,8 +1,6 @@
-use crate::helpers::{YOLO_BIN, YoloSession};
+use crate::helpers::{Watch, YoloSession};
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 use yolofs::config::Config;
 use yolofs::ioctl;
@@ -24,26 +22,13 @@ fn watch_allow_all_daemon_allows_file_creation_inside_exec() {
 
     // Start the daemon before exec so it is already blocked in ioctl read
     // when the kernel raises the ask for the new file.
-    let mut watch = std::process::Command::new(YOLO_BIN)
-        .args(["watch", "--allow-all"])
-        .current_dir(&s.root)
-        .env("NO_COLOR", "1")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawning yolofs watch --allow-all");
-
-    // Give the daemon time to open the ioctl fd and block on the first read.
-    std::thread::sleep(Duration::from_millis(200));
+    let watch = Watch::spawn(&s.root, &["--allow-all"]);
 
     // touch creates a new file — the kernel must ask the daemon and receive
     // an allow response for this to succeed.
     let code = s.run_in_yolofs(&["touch", "a"]).unwrap_or(1);
 
-    watch.kill().ok();
-    let output = watch.wait_with_output().expect("collecting watch output");
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stderr = watch.kill_and_collect();
 
     // The daemon must have logged an ask whose path ends with /a.
     let expected_path = format!("{}/a", s.root.display());
@@ -69,25 +54,13 @@ fn watch_allow_all_answers_each_write_ask() {
     })
     .expect("session setup");
 
-    let mut watch = std::process::Command::new(YOLO_BIN)
-        .args(["watch", "--allow-all"])
-        .current_dir(&s.root)
-        .env("NO_COLOR", "1")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawning yolofs watch --allow-all");
-
-    std::thread::sleep(Duration::from_millis(200));
+    let watch = Watch::spawn(&s.root, &["--allow-all"]);
 
     let code = s
         .run_in_yolofs(&["sh", "-c", "printf one > hello.txt; printf two > hello.txt"])
         .unwrap_or(1);
 
-    watch.kill().ok();
-    let output = watch.wait_with_output().expect("collecting watch output");
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stderr = watch.kill_and_collect();
     let expected_path = format!("{}/hello.txt", s.root.display());
 
     assert_eq!(code, 0, "writes should succeed when watch allows them");
@@ -111,24 +84,12 @@ fn watch_allow_all_answers_each_plain_ask() {
     })
     .expect("session setup");
 
-    let mut watch = std::process::Command::new(YOLO_BIN)
-        .args(["watch", "--allow-all"])
-        .current_dir(&s.root)
-        .env("NO_COLOR", "1")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawning yolofs watch --allow-all");
-
-    std::thread::sleep(Duration::from_millis(200));
+    let watch = Watch::spawn(&s.root, &["--allow-all"]);
 
     let first = std::fs::read_to_string(s.mnt_path("hello.txt"));
     let second = std::fs::read_to_string(s.mnt_path("hello.txt"));
 
-    watch.kill().ok();
-    let output = watch.wait_with_output().expect("collecting watch output");
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stderr = watch.kill_and_collect();
     let expected_path = format!("{}/hello.txt", s.root.display());
 
     first.expect("first read should succeed when watch allows it");
@@ -153,19 +114,8 @@ fn second_watch_reports_already_running() {
     })
     .expect("session setup");
 
-    // Start first watch in background.
-    let mut watch1 = Command::new(YOLO_BIN)
-        .arg("watch")
-        .current_dir(&s.root)
-        .env("NO_COLOR", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn first watch");
-
-    // Give it time to register with the kernel (ensure_ctl claims daemon_file).
-    std::thread::sleep(Duration::from_millis(300));
+    // Start the first watch and wait until it has claimed the daemon slot.
+    let watch1 = Watch::spawn(&s.root, &[]);
 
     // Second watch should fail with "already running".
     let (ok, _, stderr) = s.cli_output(&["watch"]).unwrap();
@@ -175,9 +125,7 @@ fn second_watch_reports_already_running() {
         "error should mention 'already running': {stderr}"
     );
 
-    // Clean up.
-    let _ = Command::new("kill").arg(watch1.id().to_string()).status();
-    let _ = watch1.wait();
+    let _ = watch1.kill_and_collect();
 }
 
 // ── Interactive daemon tests (PTY-free: pipe stdin/stderr) ──────────
@@ -245,26 +193,15 @@ fn poll_get_ask(ctl_file: &std::fs::File) -> ioctl::Ask {
 fn interactive_watch_allow_permits_read() {
     let (s, _path) = session_with_ask_file();
 
-    let mut watch = Command::new(YOLO_BIN)
-        .args(["watch"])
-        .current_dir(&s.root)
-        .env("NO_COLOR", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn interactive watch");
-
-    std::thread::sleep(Duration::from_millis(200));
+    let mut watch = Watch::spawn(&s.root, &[]);
 
     // Pre-fill stdin with "y" (allow).
-    watch.stdin.as_mut().unwrap().write_all(b"y\n").unwrap();
+    watch.stdin_write(b"y\n");
 
     let content = std::fs::read_to_string(s.mnt_path("hello.txt"));
 
-    watch.kill().ok();
-    let output = watch.wait_with_output().unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    watch.wait_for("→ allow");
+    let stderr = watch.kill_and_collect();
 
     assert!(
         stderr.contains("wants to read"),
@@ -289,26 +226,15 @@ fn interactive_watch_allow_permits_read() {
 fn interactive_watch_deny_blocks_read() {
     let (s, _path) = session_with_ask_file();
 
-    let mut watch = Command::new(YOLO_BIN)
-        .args(["watch"])
-        .current_dir(&s.root)
-        .env("NO_COLOR", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn interactive watch");
-
-    std::thread::sleep(Duration::from_millis(200));
+    let mut watch = Watch::spawn(&s.root, &[]);
 
     // Pre-fill stdin with "d" (deny).
-    watch.stdin.as_mut().unwrap().write_all(b"d\n").unwrap();
+    watch.stdin_write(b"d\n");
 
     let result = std::fs::read_to_string(s.mnt_path("hello.txt"));
 
-    watch.kill().ok();
-    let output = watch.wait_with_output().unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    watch.wait_for("→ deny");
+    let stderr = watch.kill_and_collect();
 
     assert!(
         stderr.contains("wants to read"),
@@ -327,24 +253,13 @@ fn interactive_watch_deny_blocks_read() {
 fn interactive_watch_unknown_input_denies_read() {
     let (s, _path) = session_with_ask_file();
 
-    let mut watch = Command::new(YOLO_BIN)
-        .args(["watch"])
-        .current_dir(&s.root)
-        .env("NO_COLOR", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn interactive watch");
-
-    std::thread::sleep(Duration::from_millis(200));
-    watch.stdin.as_mut().unwrap().write_all(b"x\n").unwrap();
+    let mut watch = Watch::spawn(&s.root, &[]);
+    watch.stdin_write(b"x\n");
 
     let result = std::fs::read_to_string(s.mnt_path("hello.txt"));
 
-    watch.kill().ok();
-    let output = watch.wait_with_output().unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    watch.wait_for("→ deny");
+    let stderr = watch.kill_and_collect();
 
     assert!(
         stderr.contains("unknown: x, denying"),
