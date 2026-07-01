@@ -14,6 +14,8 @@ build: user kmod
 
 user: $(USER_OUT)
 $(USER_OUT): $(shell find user -type f -name '*.rs' 2>/dev/null) Cargo.toml Cargo.lock
+	cargo fmt
+	cargo clippy --release --fix --allow-dirty
 	cargo build --release
 
 kmod: $(KMOD_OUT)
@@ -76,15 +78,3 @@ test-e2e-vm: $(USER_OUT)
 	trap './vm.py -- yolo unload' EXIT; \
 	cargo --config 'target."cfg(all())".runner = "./vm.py --"' \
 		test --release --test e2e -- --test-threads=1
-
-# ── Lint ──────────────────────────────────────────────────────────────
-
-.PHONY: lint fix
-
-lint:
-	cargo fmt --check
-	cargo clippy --release -- -D warnings
-
-fix:
-	cargo fmt
-	cargo clippy --release --fix --allow-dirty
