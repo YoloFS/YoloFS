@@ -19,7 +19,6 @@
 #include <linux/stringhash.h>
 #include <linux/poll.h>
 #include <linux/ioctl.h>
-#include <linux/kref.h>
 #include <linux/ktime.h>
 #include <linux/uaccess.h>
 #include <linux/magic.h>
@@ -131,8 +130,8 @@ struct yolo_ioc_decision {
 
 #define YOLO_IOC_RULE_SET	_IOW('A', 10, struct yolo_ioc_rule)
 #define YOLO_IOC_RULE_RESOLVE	_IOWR('A', 11, struct yolo_ioc_rule)
-#define YOLO_IOC_GET_ASK	_IOR('A', 30, struct yolo_ioc_ask)
-#define YOLO_IOC_PUT_DECISION	_IOW('A', 31, struct yolo_ioc_decision)
+#define YOLO_IOC_ASK_PEEK	_IOR('A', 30, struct yolo_ioc_ask)
+#define YOLO_IOC_ASK_DECIDE	_IOW('A', 31, struct yolo_ioc_decision)
 #define YOLO_IOC_SNAPSHOT	_IOWR('A', 40, struct yolo_ioc_snapshot)
 #define YOLO_IOC_TRAVEL		_IOWR('A', 41, struct yolo_ioc_travel)
 #define YOLO_IOC_RESTORE	_IOW('A', 42, struct yolo_ioc_restore)
@@ -147,21 +146,23 @@ struct yolo_ioc_decision {
 
 /* ── Internal: Pending Permission Request ──────────────────────────────
  *
- * Ownership & locking (perm->pending_lock guards both request lists and the
- * `dispatched` flag):
- *   - The requesting thread holds one ref for the req's whole life: kref_init
- *     in yolo_ask_userspace() down to its final kref_put().
- *   - A req lives on exactly one of perm->pending_reqs (awaiting dequeue) or
- *     perm->dispatched (handed to the daemon), or on neither once resolved;
- *     `dispatched` records which.
- *   - While on the dispatched list it carries a second ref (taken in GET_ASK),
- *     dropped by whoever unlinks it there — PUT_DECISION, daemon cleanup, or a
- *     failed GET_ASK delivery. So a timed-out / interrupted requester leaves a
- *     dispatched req in place rather than unlinking it itself.
+ * Ownership & locking (perm->pending_lock guards pending_reqs):
+ *   - The requesting thread owns the req for its whole life: kzalloc in
+ *     yolo_ask_userspace() down to its final kfree(). No other context ever
+ *     frees it, so no refcount is needed.
+ *   - The req sits on perm->pending_reqs until it is resolved. ASK_PEEK reads
+ *     the head without removing it; ASK_DECIDE (on answer), the requester (on
+ *     timeout/kill), or daemon cleanup set req->decision and unlink it under
+ *     the lock. So "still on pending_reqs" means "not yet resolved" — no
+ *     separate `decided` flag is needed.
+ *   - Every complete(&req->done) runs under pending_lock, and the requester
+ *     always re-takes pending_lock after waking. So an answer can never race
+ *     the requester's free: the completer finishes touching the req under the
+ *     lock before the requester proceeds past its own lock acquisition, and a
+ *     requester that unlinked the req itself is never found by ASK_DECIDE.
  */
 
 struct yolo_ask {
-	struct kref		ref;
 	u64			id;
 	char			access_path[YOLO_PATH_MAX];
 	u16			access_path_len;
@@ -173,10 +174,8 @@ struct yolo_ask {
 	char			comm[TASK_COMM_LEN];
 
 	enum yolo_decision	decision;
-	bool			decided;
 	struct completion	done;
 	struct list_head	list;
-	bool			dispatched;	/* true while on perm->dispatched */
 };
 
 /* ── Dentry state ────────────────────────────────────────────── */
@@ -219,15 +218,14 @@ struct yolo_permission {
 	struct list_head	pinned_rules;	/* dget()'d dentries with perm rules */
 	spinlock_t		pinned_rules_lock;/* protects pinned_rules */
 
-	/* Ask protocol. pending_lock guards both request lists: pending_reqs
-	 * (waiting to be dequeued) and dispatched (handed to the daemon,
-	 * awaiting a decision). */
-	struct list_head	pending_reqs;	/* requests waiting for daemon */
-	struct list_head	dispatched;	/* requests sent to daemon */
-	spinlock_t		pending_lock;	/* protects pending_reqs + dispatched */
+	/* Ask protocol. pending_lock guards pending_reqs, the FIFO of asks
+	 * awaiting a decision. PEEK_ASK reads the head without removing it;
+	 * ASK_DECIDE removes it on answer. */
+	struct list_head	pending_reqs;	/* asks awaiting a decision */
+	spinlock_t		pending_lock;	/* protects pending_reqs */
 	wait_queue_head_t	request_waitq;	/* daemon blocks here */
 	atomic64_t		next_req_id;	/* unique request ID counter */
-	unsigned int		timeout_s;	/* seconds to wait before denying */
+	unsigned int		timeout_ms;	/* ms to wait before denying (0 = forever) */
 
 	/* Daemon connection (at most one). The control ioctls live on the mount
 	 * root directory, whose fd already uses private_data for the readdir
@@ -471,10 +469,6 @@ int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
 		     enum yolo_op op, enum yolo_decision decision);
 
 /* perm.c */
-static inline void yolo_ask_release(struct kref *kref)
-{
-	kfree(container_of(kref, struct yolo_ask, ref));
-}
 enum yolo_op yolo_open_op(int f_flags);
 enum yolo_perm yolo_perm_walk(struct dentry *dentry, struct dentry **source);
 void yolo_perm_refresh(struct inode *inode, struct dentry *dentry);

@@ -117,9 +117,10 @@ pub fn run(allow_all: bool) -> Result<()> {
 
     // Claim the daemon slot before announcing readiness: until a daemon has
     // claimed, the kernel fast-denies asks, so an op racing our startup would be
-    // wrongly denied. Claiming up front (a non-blocking GET_ASK) closes that —
-    // and may hand back an ask that raced in as we claimed, which we answer now.
-    let pending = ioctl::claim_daemon(&ctl_file)?;
+    // wrongly denied. Claiming up front (a non-blocking ASK_PEEK) closes that.
+    // A peek does not consume, so any ask that raced in stays queued for the
+    // loop below to handle.
+    ioctl::claim_daemon(&ctl_file)?;
 
     if allow_all {
         report::info("watching for permission requests — allowing all (Ctrl-C to stop)");
@@ -127,9 +128,6 @@ pub fn run(allow_all: bool) -> Result<()> {
         report::info("watching for permission requests (Ctrl-C to stop)");
     }
 
-    if let Some(req) = pending {
-        handle_ask(&ctl_file, req, allow_all);
-    }
     watch_loop(&ctl_file, allow_all)
 }
 
@@ -142,18 +140,22 @@ fn handle_ask(ctl_file: &std::fs::File, req: Ask, allow_all: bool) {
         prompt_decision(&req)
     };
 
-    if let Err(e) = ioctl::put_decision(ctl_file, req.id, decision) {
-        report::warn(format!("write error: {e}"));
-    } else {
-        // claim_tty/release_tty is not needed here because TOSTOP
-        // is normally unset, so background stderr writes succeed.
-        report::detail(format!("→ {} (req #{})", decision, req.id));
+    // claim_tty/release_tty is not needed here because TOSTOP is normally
+    // unset, so background stderr writes succeed.
+    match ioctl::ask_decide(ctl_file, req.id, decision) {
+        Ok(()) => report::detail(format!("→ {} (req #{})", decision, req.id)),
+        // The ask timed out (or its process was killed) before we answered —
+        // the kernel already resolved it. Benign; not a write failure.
+        Err(e) if e.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::ENOENT) => {
+            report::detail(format!("→ {} (req #{}) — already resolved", decision, req.id));
+        }
+        Err(e) => report::warn(format!("write error: {e}")),
     }
 }
 
 fn watch_loop(ctl_file: &std::fs::File, allow_all: bool) -> Result<()> {
     loop {
-        let req = match ioctl::get_ask(ctl_file) {
+        let req = match ioctl::ask_peek(ctl_file) {
             Ok(r) => r,
             Err(nix::errno::Errno::EBUSY) => {
                 anyhow::bail!("another yolo watch is already running");

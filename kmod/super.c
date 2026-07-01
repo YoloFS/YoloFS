@@ -14,20 +14,20 @@
 enum yolo_param {
 	Opt_permission,
 	Opt_staging,
-	Opt_prompt_timeout,
+	Opt_prompt_timeout_ms,
 };
 
 static const struct fs_parameter_spec yolo_fs_parameters[] = {
 	fsparam_bool("permission",	Opt_permission),
 	fsparam_bool("staging",		Opt_staging),
-	fsparam_u32("prompt_timeout",	Opt_prompt_timeout),
+	fsparam_u32("prompt_timeout_ms",	Opt_prompt_timeout_ms),
 	{}
 };
 
 struct yolo_fs_opts {
 	bool		permission;
 	bool		staging;
-	unsigned int	prompt_timeout_s;
+	unsigned int	prompt_timeout_ms;
 };
 
 /* ── Inode Slab Cache ──────────────────────────────────────────────── */
@@ -111,7 +111,7 @@ static int yolo_show_options(struct seq_file *m, struct dentry *root)
 
 	seq_printf(m, ",permission=%d", sbi->perm.enabled);
 	seq_printf(m, ",staging=%d", sbi->staging.enabled);
-	seq_printf(m, ",prompt_timeout=%u", sbi->perm.timeout_s);
+	seq_printf(m, ",prompt_timeout_ms=%u", sbi->perm.timeout_ms);
 	return 0;
 }
 
@@ -135,11 +135,10 @@ static void yolo_init_sbi(struct yolo_sb_info *sbi,
 	/* Permission gating state */
 	atomic64_set(&sbi->perm.gen, 1);
 	INIT_LIST_HEAD(&sbi->perm.pending_reqs);
-	INIT_LIST_HEAD(&sbi->perm.dispatched);
 	spin_lock_init(&sbi->perm.pending_lock);
 	init_waitqueue_head(&sbi->perm.request_waitq);
 	atomic64_set(&sbi->perm.next_req_id, 1);
-	sbi->perm.timeout_s = opts->prompt_timeout_s;
+	sbi->perm.timeout_ms = opts->prompt_timeout_ms;
 	INIT_LIST_HEAD(&sbi->perm.pinned_rules);
 	spin_lock_init(&sbi->perm.pinned_rules_lock);
 
@@ -287,8 +286,8 @@ static int yolo_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	case Opt_staging:
 		opts->staging = result.boolean;
 		break;
-	case Opt_prompt_timeout:
-		opts->prompt_timeout_s = result.uint_32;
+	case Opt_prompt_timeout_ms:
+		opts->prompt_timeout_ms = result.uint_32;
 		break;
 	default:
 		return -EINVAL;

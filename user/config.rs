@@ -30,8 +30,10 @@ pub struct Config {
     pub permission: bool,
     #[serde(default = "default_true")]
     pub staging: bool,
+    /// Seconds to wait for an `ask` answer before denying (fractional
+    /// allowed; `0` = wait forever). Passed to the kernel as milliseconds.
     #[serde(default)]
-    pub prompt_timeout: Option<u64>,
+    pub prompt_timeout: Option<f64>,
     #[serde(default)]
     pub auto_snapshot: bool,
     #[serde(default)]
@@ -174,8 +176,9 @@ pub fn mount_options(yolo_dir: &Path) -> String {
         format!("staging={}", config.staging as u8),
     ];
 
-    if let Some(v) = config.prompt_timeout {
-        opts.push(format!("prompt_timeout={v}"));
+    if let Some(secs) = config.prompt_timeout {
+        let ms = (secs * 1000.0).round() as u64;
+        opts.push(format!("prompt_timeout_ms={ms}"));
     }
 
     opts.join(",")
@@ -599,14 +602,34 @@ mod tests {
         let config = Config {
             permission: false,
             staging: false,
-            prompt_timeout: Some(5),
+            prompt_timeout: Some(5.0),
             ..Default::default()
         };
         config.save(&tmp.path().join("yolofs.toml")).unwrap();
         let opts = mount_options(&yolo_dir);
         assert!(opts.contains("permission=0"), "opts = {opts}");
         assert!(opts.contains("staging=0"), "opts = {opts}");
-        assert!(opts.contains("prompt_timeout=5"), "opts = {opts}");
+        assert!(opts.contains("prompt_timeout_ms=5000"), "opts = {opts}");
+    }
+
+    #[test]
+    fn mount_options_fractional_timeout_rounds_to_ms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let yolo_dir = tmp.path().join(".yolofs");
+        fs::create_dir_all(&yolo_dir).unwrap();
+        // Sub-second and rounding: 0.1s -> 100ms, 1.5555s -> 1556ms.
+        for (secs, ms) in [(0.1, 100u64), (1.5555, 1556)] {
+            let config = Config {
+                prompt_timeout: Some(secs),
+                ..Default::default()
+            };
+            config.save(&tmp.path().join("yolofs.toml")).unwrap();
+            let opts = mount_options(&yolo_dir);
+            assert!(
+                opts.contains(&format!("prompt_timeout_ms={ms}")),
+                "{secs}s should map to {ms}ms; opts = {opts}"
+            );
+        }
     }
 
     #[test]
@@ -615,12 +638,12 @@ mod tests {
         let yolo_dir = tmp.path().join(".yolofs");
         fs::create_dir_all(&yolo_dir).unwrap();
         let config = Config {
-            prompt_timeout: Some(10),
+            prompt_timeout: Some(10.0),
             ..Default::default()
         };
         config.save(&tmp.path().join("yolofs.toml")).unwrap();
         let opts = mount_options(&yolo_dir);
-        assert!(opts.contains("prompt_timeout=10"));
+        assert!(opts.contains("prompt_timeout_ms=10000"));
         assert!(opts.contains("permission=1"), "opts = {opts}");
         assert!(opts.contains("staging=1"), "opts = {opts}");
     }

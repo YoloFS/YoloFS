@@ -85,22 +85,26 @@ thread sleeps until a userspace daemon decides. Ask state lives in
 
 | Field | Purpose |
 |-------|---------|
-| `pending_reqs` | Linked list of `yolo_ask` structs waiting to be dequeued by the daemon |
-| `dispatched` | Linked list of requests handed to the daemon but not yet answered |
-| `pending_lock` | Spinlock protecting both `pending_reqs` and `dispatched` |
-| `request_waitq` | Wait queue — daemon's `GET_ASK` ioctl blocks here |
+| `pending_reqs` | FIFO of `yolo_ask` structs awaiting a decision. `ASK_PEEK` reads the head without removing it; an ask is unlinked only when resolved (answered, timed out, or denied on daemon close) |
+| `pending_lock` | Spinlock protecting `pending_reqs` |
+| `request_waitq` | Wait queue — the daemon's blocking `ASK_PEEK` ioctl waits here for a non-empty queue |
 | `next_req_id` | Atomic counter for unique request IDs |
-| `timeout_s` | Seconds to wait for an answer before denying (0 = infinite) |
-| `daemon_file` | Pointer to the daemon's open `struct file` (a directory fd in the mount); NULL if no daemon connected (NULL is itself the "connected" flag). Set atomically on the first `GET_ASK` ioctl, cleared in `yolo_ctl_release()`. Only one daemon allowed — a second `GET_ASK` from a different fd returns `-EBUSY`. |
+| `timeout_ms` | Milliseconds to wait for an answer before denying (0 = infinite) |
+| `daemon_file` | Pointer to the daemon's open `struct file` (a directory fd in the mount); NULL if no daemon connected (NULL is itself the "connected" flag). Set atomically on the first `ASK_PEEK` ioctl, cleared in `yolo_ctl_release()`. Only one daemon allowed — a second `ASK_PEEK` from a different fd returns `-EBUSY`. |
 
 The daemon connects by opening the mount root (a directory fd) and issuing its
-first `GET_ASK` ioctl to claim exclusive daemon status. On close, all
-dispatched-but-unanswered requests are denied and `daemon_file` is reset to
-NULL.
+first `ASK_PEEK` ioctl to claim exclusive daemon status. On close, every ask
+still on `pending_reqs` is denied and `daemon_file` is reset to NULL.
+
+`ASK_PEEK` is non-consuming: it returns the head ask but leaves it queued, so
+the daemon loops `ASK_PEEK` (blocking) → decide → `ASK_DECIDE` (which resolves
+and removes the ask by id). A peeked ask that times out before the daemon
+answers is removed by its requester, so a late `ASK_DECIDE` for it returns
+`-ENOENT` (benign).
 
 Control ioctls live on a directory fd in the mount (there is no separate `.ctl`
-file). Operations that could defeat gating — `RULE_SET`, `GET_ASK`,
-`PUT_DECISION` — are refused when the caller is chrooted *inside* the mount (a
+file). Operations that could defeat gating — `RULE_SET`, `ASK_PEEK`,
+`ASK_DECIDE` — are refused when the caller is chrooted *inside* the mount (a
 command run via `yolo run -- <cmd>`), so nothing running inside the
 mount can un-gate itself or answer its own ask prompts. `RESTORE` and `TRAVEL`
 are also refused because their serialized trees can redirect a visible name
@@ -117,9 +121,8 @@ only exists outside).
 | `id` | Unique request ID (from `next_req_id`) |
 | `access_path`, `op`, `pid`, `comm` | Access context sent to the daemon |
 | `rule_path`, `rule_perm` | Source rule context; `rule_path` is empty for the built-in default `ask` |
-| `decision` | Allow/deny decision set by the daemon's `PUT_DECISION` ioctl |
+| `decision` | Allow/deny decision set by the daemon's `ASK_DECIDE` ioctl |
 | `done` | Completion — the blocked thread sleeps here |
-| `ref` | Refcount (kernel thread + daemon fd each hold a ref) |
 
 ## Rule Engine
 
@@ -341,10 +344,10 @@ file whose effective permission is `write-ask`:
      }
   3. Enqueue request on sb->pending_reqs
   4. wake_up(&sb->request_waitq)
-  5. wait_event_interruptible(              ioctl(GET_ASK) blocks
-       req->done                             until request is available
+  5. wait_event_interruptible(              ioctl(ASK_PEEK) blocks
+       req->done                             until a request is queued
        (completion)                          |
-     )                                      dequeue request
+     )                                      read head request (not removed)
      ...thread sleeps...                     -> struct yolo_ioc_ask {
                                                        id, access_path,
                                                        rule_path, rule_perm, op, ...
@@ -352,21 +355,22 @@ file whose effective permission is `write-ask`:
                                              |
                                             Daemon shows prompt / decides
                                              |
-                                             ioctl(PUT_DECISION) -> struct yolo_ioc_decision {
+                                             ioctl(ASK_DECIDE) -> struct yolo_ioc_decision {
                                                          id: 42, decision: ALLOW }
                                               |
-   6. req->decision = ALLOW                  ioctl handler:
-   7. complete(&req->done)                     find request by id
-     ...thread wakes...                       set decision
-  8. Proceed/fail this operation             complete(&req->done)
+   6. req->decision = ALLOW                  ioctl handler (under pending_lock):
+   7. complete(&req->done)                     find request by id, set decision,
+     ...thread wakes...                        unlink it, complete(&req->done)
+  8. Proceed/fail this operation
 ```
 
 Key properties:
 
 - **Interruptible sleep**: The thread can be killed with `SIGKILL`. The
   request is removed from the pending list and `-EINTR` is returned.
-- **Timeout**: Configurable via mount option `prompt_timeout=<seconds>`.
-  If the daemon doesn't respond in time, the request is denied.
+- **Timeout**: Configured in `yolofs.toml` as `prompt_timeout` (seconds,
+  fractional allowed) and passed to the kernel as the `prompt_timeout_ms`
+  mount option. If the daemon doesn't respond in time, the request is denied.
 - **Minimal response**: `yolo_ioc_decision` only carries `{ id, decision }`.
   Valid decisions are always `allow` or `deny`; they answer only the current
   blocked operation.

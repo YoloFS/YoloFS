@@ -154,10 +154,10 @@ fn assert_errno(result: anyhow::Result<()>, expected: nix::errno::Errno) {
     );
 }
 
-/// Open a non-blocking ctl fd and claim daemon status with a first GET_ASK
+/// Open a non-blocking ctl fd and claim daemon status with a first ASK_PEEK
 /// (which must report EAGAIN). Claiming *before* spawning a reader thread
 /// closes a race: with no daemon connected the kernel denies asks instantly
-/// without enqueuing them, so a blocking GET_ASK issued after the reader
+/// without enqueuing them, so a blocking ASK_PEEK issued after the reader
 /// could wait forever for an ask that was already settled.
 fn claim_daemon(s: &YoloSession) -> std::fs::File {
     let ctl_file = std::fs::OpenOptions::new()
@@ -166,18 +166,19 @@ fn claim_daemon(s: &YoloSession) -> std::fs::File {
         .open(s.root.join(".yolofs/mnt"))
         .expect("open nonblocking ioctl fd");
     assert_eq!(
-        ioctl::get_ask(&ctl_file).expect_err("no ask should be pending yet"),
+        ioctl::ask_peek(&ctl_file).expect_err("no ask should be pending yet"),
         nix::errno::Errno::EAGAIN
     );
     ctl_file
 }
 
-/// Dequeue the next ask from a non-blocking ctl fd, polling with a deadline
-/// so a missing ask fails the test instead of hanging it.
-fn poll_get_ask(ctl_file: &std::fs::File) -> ioctl::Ask {
+/// Peek the next ask from a non-blocking ctl fd, polling with a deadline so a
+/// missing ask fails the test instead of hanging it. ASK_PEEK does not consume,
+/// so the ask stays queued until `ask_decide` answers it.
+fn poll_ask(ctl_file: &std::fs::File) -> ioctl::Ask {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        match ioctl::get_ask(ctl_file) {
+        match ioctl::ask_peek(ctl_file) {
             Ok(req) => return req,
             Err(nix::errno::Errno::EAGAIN) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
@@ -187,89 +188,104 @@ fn poll_get_ask(ctl_file: &std::fs::File) -> ioctl::Ask {
     }
 }
 
+/// `ask_peek` reads the head ask without removing it: repeated peeks return the
+/// same ask, and it stays queued until `ask_decide` answers it.
+#[test]
+fn ask_peek_does_not_consume() {
+    let (s, _path) = session_with_ask_file();
+    let ctl_file = claim_daemon(&s);
+
+    let path = s.mnt_path("hello.txt");
+    let reader = std::thread::spawn(move || std::fs::read_to_string(path));
+
+    // Peek returns the ask; peeking again returns the *same* ask — not consumed.
+    let first = poll_ask(&ctl_file);
+    let second = poll_ask(&ctl_file);
+    assert_eq!(first.id, second.id, "ask_peek must not consume the ask");
+
+    ioctl::ask_decide(&ctl_file, first.id, Decision::Deny).expect("deny should unblock the reader");
+
+    // Once answered, it is gone.
+    assert_eq!(
+        ioctl::ask_peek(&ctl_file).expect_err("answered ask should be removed"),
+        nix::errno::Errno::EAGAIN
+    );
+
+    let result = reader.join().expect("reader thread should not panic");
+    assert!(result.is_err(), "read should fail after deny");
+}
+
 /// Ask decisions are a separate allow/deny enum; out-of-range raw values are
 /// rejected.
 #[test]
-fn put_decision_rejects_invalid_decisions() {
+fn ask_decide_rejects_invalid_decisions() {
     let (s, _path) = session_with_ask_file();
     let ctl_file = claim_daemon(&s);
     let path = s.mnt_path("hello.txt");
 
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
-    let req = poll_get_ask(&ctl_file);
+    let req = poll_ask(&ctl_file);
 
     assert_errno(
-        ioctl::put_decision_raw(&ctl_file, req.id, 2),
+        ioctl::ask_decide_raw(&ctl_file, req.id, 2),
         nix::errno::Errno::EINVAL,
     );
     assert_errno(
-        ioctl::put_decision_raw(&ctl_file, req.id, u8::MAX),
+        ioctl::ask_decide_raw(&ctl_file, req.id, u8::MAX),
         nix::errno::Errno::EINVAL,
     );
-    ioctl::put_decision(&ctl_file, req.id, Decision::Deny).expect("deny should unblock the reader");
+    ioctl::ask_decide(&ctl_file, req.id, Decision::Deny).expect("deny should unblock the reader");
 
     let result = reader.join().expect("reader thread should not panic");
     assert!(result.is_err(), "read should fail after final deny");
 }
 
-/// Only the fd that claimed daemon ownership with GET_ASK may answer the ask.
+/// Only the fd that claimed daemon ownership with ASK_PEEK may answer the ask.
 #[test]
-fn put_decision_rejects_non_daemon_fd() {
+fn ask_decide_rejects_non_daemon_fd() {
     let (s, _path) = session_with_ask_file();
     let daemon_fd = claim_daemon(&s);
     let other_fd = ioctl::open(&s.root.join(".yolofs")).expect("open second ioctl fd");
     let path = s.mnt_path("hello.txt");
 
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
-    let req = poll_get_ask(&daemon_fd);
+    let req = poll_ask(&daemon_fd);
 
     assert_errno(
-        ioctl::put_decision(&other_fd, req.id, Decision::Allow),
+        ioctl::ask_decide(&other_fd, req.id, Decision::Allow),
         nix::errno::Errno::EPERM,
     );
-    ioctl::put_decision(&daemon_fd, req.id, Decision::Deny)
+    ioctl::ask_decide(&daemon_fd, req.id, Decision::Deny)
         .expect("daemon fd should answer the ask");
 
     let result = reader.join().expect("reader thread should not panic");
     assert!(result.is_err(), "read should fail after daemon deny");
 }
 
-/// Closing the daemon fd after dequeuing an ask denies the dispatched request.
+/// Closing the daemon fd denies any ask still on the queue. Peeking does not
+/// remove the ask, so this covers both a peeked and an un-answered ask — with
+/// a single queue they are the same state.
 #[test]
-fn daemon_close_denies_dispatched_ask() {
+fn daemon_close_denies_queued_ask() {
     let (s, _path) = session_with_ask_file();
     let ctl_file = claim_daemon(&s);
     let path = s.mnt_path("hello.txt");
 
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
-    let _req = poll_get_ask(&ctl_file);
+    // Confirm the ask reached the queue (peek leaves it queued), then close.
+    let _req = poll_ask(&ctl_file);
     drop(ctl_file);
 
     let result = reader.join().expect("reader thread should not panic");
     assert!(result.is_err(), "read should fail after daemon fd close");
 }
 
-/// Closing a daemon fd also denies asks that were still pending and had not yet
-/// been dequeued.
+/// A connected daemon that peeked an ask but never answers still gets the
+/// timeout default, and a late answer for it fails with ENOENT.
 #[test]
-fn daemon_close_denies_pending_ask() {
-    let (s, _path) = session_with_ask_file();
-    let ctl_file = claim_daemon(&s);
-
-    let path = s.mnt_path("hello.txt");
-    let reader = std::thread::spawn(move || std::fs::read_to_string(path));
-    std::thread::sleep(Duration::from_millis(200));
-    drop(ctl_file);
-
-    let result = reader.join().expect("reader thread should not panic");
-    assert!(result.is_err(), "read should fail after daemon fd close");
-}
-
-/// A connected daemon that never answers still gets the timeout default.
-#[test]
-fn dispatched_ask_times_out_to_deny() {
+fn peeked_ask_times_out_to_deny() {
     let s = YoloSession::new_with_config(Config {
-        prompt_timeout: Some(1),
+        prompt_timeout: Some(0.1),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
     })
@@ -280,11 +296,11 @@ fn dispatched_ask_times_out_to_deny() {
     let path = s.mnt_path("hello.txt");
 
     let reader = std::thread::spawn(move || std::fs::read_to_string(path));
-    let req = poll_get_ask(&ctl_file);
+    let req = poll_ask(&ctl_file);
 
     let result = reader.join().expect("reader thread should not panic");
     assert_errno(
-        ioctl::put_decision(&ctl_file, req.id, Decision::Allow),
+        ioctl::ask_decide(&ctl_file, req.id, Decision::Allow),
         nix::errno::Errno::ENOENT,
     );
     drop(ctl_file);
@@ -297,7 +313,7 @@ fn dispatched_ask_times_out_to_deny() {
 #[test]
 fn pending_ask_times_out_and_is_removed() {
     let s = YoloSession::new_with_config(Config {
-        prompt_timeout: Some(1),
+        prompt_timeout: Some(0.1),
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
     })
@@ -311,7 +327,7 @@ fn pending_ask_times_out_and_is_removed() {
     let result = reader.join().expect("reader thread should not panic");
     assert!(result.is_err(), "read should fail after prompt timeout");
     assert_eq!(
-        ioctl::get_ask(&ctl_file).expect_err("timed-out ask should be removed"),
+        ioctl::ask_peek(&ctl_file).expect_err("timed-out ask should be removed"),
         nix::errno::Errno::EAGAIN
     );
     assert_timeout_ask_note(&s);
@@ -333,10 +349,10 @@ fn assert_timeout_ask_note(s: &YoloSession) {
     assert!(found, "expected timeout A note for hello.txt");
 }
 
-/// GET_ASK includes the rule source path and rule permission that caused the
+/// ASK_PEEK includes the rule source path and rule permission that caused the
 /// prompt.
 #[test]
-fn get_ask_reports_rule_source() {
+fn ask_peek_reports_rule_source() {
     let s = YoloSession::new_with_config(Config {
         rules: BTreeMap::from([("/".into(), Perm::WriteAsk)]),
         ..Default::default()
@@ -346,13 +362,13 @@ fn get_ask_reports_rule_source() {
     let path = s.mnt_path("hello.txt");
 
     let writer = std::thread::spawn(move || std::fs::write(path, "modified\n"));
-    let req = poll_get_ask(&ctl_file);
+    let req = poll_ask(&ctl_file);
 
     assert_eq!(req.access_path, format!("{}/hello.txt", s.root.display()));
     assert_eq!(req.rule_path.as_deref(), Some("/"));
     assert_eq!(req.rule_perm, Perm::WriteAsk);
 
-    ioctl::put_decision(&ctl_file, req.id, Decision::Deny).expect("deny should unblock the writer");
+    ioctl::ask_decide(&ctl_file, req.id, Decision::Deny).expect("deny should unblock the writer");
     let result = writer.join().expect("writer thread should not panic");
     assert!(result.is_err(), "write should fail after deny");
 }

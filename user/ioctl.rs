@@ -36,8 +36,8 @@ pub const YOLO_DECISION_ALLOW: u8 = 1;
 // Ioctl command numbers — must match kmod/yolofs.h
 nix::ioctl_write_ptr!(ioctl_rule_set, b'A', 10, YoloIocRule);
 nix::ioctl_readwrite!(ioctl_rule_resolve, b'A', 11, YoloIocRule);
-nix::ioctl_read!(ioctl_get_ask, b'A', 30, YoloIocAsk);
-nix::ioctl_write_ptr!(ioctl_put_decision, b'A', 31, YoloIocDecision);
+nix::ioctl_read!(ioctl_ask_peek, b'A', 30, YoloIocAsk);
+nix::ioctl_write_ptr!(ioctl_ask_decide, b'A', 31, YoloIocDecision);
 nix::ioctl_readwrite!(ioctl_snapshot, b'A', 40, YoloIocSnapshot);
 nix::ioctl_readwrite!(ioctl_travel, b'A', 41, YoloIocTravel);
 nix::ioctl_write_ptr!(ioctl_restore, b'A', 42, YoloIocRestore);
@@ -142,8 +142,9 @@ impl Ask {
     }
 }
 
-/// Read one ask via ioctl. Returns an `Ask` with owned path data.
-pub fn get_ask(fd: &File) -> std::result::Result<Ask, nix::errno::Errno> {
+/// Read the head ask via ioctl, without removing it from the queue. Returns an
+/// `Ask` with owned path data; `ask_decide` is what resolves and removes it.
+pub fn ask_peek(fd: &File) -> std::result::Result<Ask, nix::errno::Errno> {
     let mut req = YoloIocAsk {
         id: 0,
         op: 0,
@@ -156,7 +157,7 @@ pub fn get_ask(fd: &File) -> std::result::Result<Ask, nix::errno::Errno> {
         access_path: [0u8; YOLO_PATH_MAX],
         rule_path: [0u8; YOLO_PATH_MAX],
     };
-    unsafe { ioctl_get_ask(fd.as_raw_fd(), &mut req) }?;
+    unsafe { ioctl_ask_peek(fd.as_raw_fd(), &mut req) }?;
     let access_path = std::str::from_utf8(&req.access_path[..req.access_path_len as usize])
         .unwrap_or("<invalid>")
         .to_string();
@@ -177,47 +178,48 @@ pub fn get_ask(fd: &File) -> std::result::Result<Ask, nix::errno::Errno> {
     })
 }
 
-/// Write one `YoloIocDecision` via ioctl on a directory fd.
-pub fn put_decision_raw(fd: &File, id: u64, decision: u8) -> Result<()> {
+/// Answer an ask by id via ioctl on a directory fd, which resolves and removes
+/// it. Returns `ENOENT` (wrapped) if the ask is already gone — e.g. it timed
+/// out before the daemon answered.
+pub fn ask_decide_raw(fd: &File, id: u64, decision: u8) -> Result<()> {
     let resp = YoloIocDecision {
         id,
         decision,
         _pad: [0u8; 7],
     };
-    unsafe { ioctl_put_decision(fd.as_raw_fd(), &resp) }.context("ioctl PUT_DECISION")?;
+    unsafe { ioctl_ask_decide(fd.as_raw_fd(), &resp) }.context("ioctl ASK_DECIDE")?;
     Ok(())
 }
 
-pub fn put_decision(fd: &File, id: u64, decision: Decision) -> Result<()> {
-    put_decision_raw(fd, id, decision.to_ioctl())
+pub fn ask_decide(fd: &File, id: u64, decision: Decision) -> Result<()> {
+    ask_decide_raw(fd, id, decision.to_ioctl())
 }
 
 /// Claim the daemon slot before `yolo watch` announces readiness.
 ///
 /// The kernel only recognises a daemon once it has claimed the slot (on its
-/// first GET_ASK); until then it fast-denies asks as "no daemon". If we printed
-/// "watching" before claiming, an operation racing startup would be wrongly
-/// denied. A non-blocking GET_ASK claims the slot and returns EAGAIN when
-/// nothing is queued — no kernel change, no extra ioctl.
+/// first ASK_PEEK); until then it fast-denies asks as "no daemon". If we
+/// printed "watching" before claiming, an operation racing startup would be
+/// wrongly denied. A non-blocking ASK_PEEK claims the slot and returns EAGAIN
+/// when nothing is queued — no extra ioctl.
 ///
-/// Because GET_ASK also *dequeues*, an op that raced into the pending list in
-/// the instant after we claimed comes back as `Some(ask)` — already dispatched
-/// to us, so the caller MUST answer it (dropping it would hang that op until
-/// its prompt timeout). The common case is `None` (EAGAIN).
-pub fn claim_daemon(fd: &File) -> Result<Option<Ask>> {
+/// ASK_PEEK does not consume, so an op that raced in the instant after we
+/// claimed simply stays queued for the main loop's blocking `ask_peek` — we
+/// discard whatever this peek returns and let the loop handle it uniformly.
+pub fn claim_daemon(fd: &File) -> Result<()> {
     let raw = fd.as_raw_fd();
     let flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
     if flags < 0 {
         return Err(std::io::Error::last_os_error()).context("F_GETFL on ctl fd");
     }
-    // Toggle O_NONBLOCK around one GET_ASK, then restore blocking mode for the loop.
+    // Toggle O_NONBLOCK around one ASK_PEEK, then restore blocking mode for the loop.
     unsafe { libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-    let res = get_ask(fd);
+    let res = ask_peek(fd);
     unsafe { libc::fcntl(raw, libc::F_SETFL, flags) };
 
     match res {
-        Ok(ask) => Ok(Some(ask)), // raced in after the claim — caller must answer it
-        Err(nix::errno::Errno::EAGAIN) => Ok(None), // normal: claimed, nothing queued
+        // Claimed. Ok(ask) means one raced in; it stays queued for the loop.
+        Ok(_) | Err(nix::errno::Errno::EAGAIN) => Ok(()),
         Err(nix::errno::Errno::EBUSY) => anyhow::bail!("another yolo watch is already running"),
         Err(e) => Err(anyhow::Error::from(e)).context("claiming daemon slot"),
     }

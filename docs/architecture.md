@@ -61,8 +61,8 @@ therefore exist without a live mount, including when it is empty.
 
  ┌──────────────────────────────────────────────────┐
  │  ioctl on mount-root directory fd                  │
- │    ← YOLO_IOC_GET_ASK:  dequeue an ask           │
- │    → YOLO_IOC_PUT_DECISION: post decision        │
+ │    ← YOLO_IOC_ASK_PEEK: read head ask (no remove)│
+ │    → YOLO_IOC_ASK_DECIDE: answer + remove ask    │
  │    → YOLO_IOC_RULE_SET/RESOLVE: manage rules     │
  │    → YOLO_IOC_RESTORE: rebuild staged view       │
  │    → YOLO_IOC_TRAVEL: travel                     │
@@ -183,10 +183,10 @@ $ cat /tmp/secrets
               -> no rule found, caches built-in default ASK on secrets inode
    -> kernel: yolo_open() -> cached_perm=ASK
    -> kernel: enqueue request, thread sleeps
-   -> daemon: ioctl(GET_ASK) -> yolo_ioc_ask { id:1, access_path:"/tmp/secrets",
+   -> daemon: ioctl(ASK_PEEK) -> yolo_ioc_ask { id:1, access_path:"/tmp/secrets",
                                                rule_path:"", rule_perm:ASK, ... }
    -> daemon: decision: allow
-   -> daemon: ioctl(PUT_DECISION, yolo_ioc_decision { id:1, decision:ALLOW })
+   -> daemon: ioctl(ASK_DECIDE, yolo_ioc_decision { id:1, decision:ALLOW })
    -> kernel: wake thread, allow this read once
 
 # 6. Agent tries to write /etc/hosts (walk up finds READ_ONLY)

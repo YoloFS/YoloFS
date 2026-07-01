@@ -30,7 +30,7 @@ fn no_daemon_denies_ask() {
 #[test]
 fn prompt_timeout_no_daemon_denies() {
     let s = YoloSession::new_with_config(Config {
-        prompt_timeout: Some(1),
+        prompt_timeout: Some(0.1),
         rules: BTreeMap::new(),
         ..Default::default()
     })

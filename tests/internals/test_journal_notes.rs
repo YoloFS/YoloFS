@@ -589,13 +589,16 @@ fn session_with_ask_file() -> YoloSession {
     s
 }
 
-/// Spawn `yolo watch`, pre-fill its stdin with `input` (one decision per
-/// line), give it time to block on the ioctl read, and return the child so
-/// the caller can trigger the ask and then stop the daemon.
+/// Spawn `yolo watch`, block until it has claimed the daemon slot and is
+/// waiting on the ioctl read, pre-fill its stdin with `input` (one decision
+/// per line), and return the child so the caller can trigger the ask and then
+/// stop the daemon.
 fn spawn_watch_with_input(s: &YoloSession, input: &str) -> std::process::Child {
     use crate::helpers::YOLO_BIN;
-    use std::io::Write;
+    use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     let mut watch = Command::new(YOLO_BIN)
         .args(["watch"])
@@ -603,12 +606,38 @@ fn spawn_watch_with_input(s: &YoloSession, input: &str) -> std::process::Child {
         .env("NO_COLOR", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawn watch");
 
-    // Let the daemon open the ioctl fd and block on the first read.
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Drain stderr on a background thread (so the pipe never blocks the
+    // daemon) and signal once it prints its readiness line — at which point it
+    // has claimed the daemon slot and is blocked on the ioctl read. The thread
+    // exits when the child dies and closes its stderr.
+    let err = watch.stderr.take().expect("watch stderr piped");
+    let (ready_tx, ready_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut r = BufReader::new(err);
+        let mut line = String::new();
+        let mut ready = Some(ready_tx);
+        loop {
+            line.clear();
+            match r.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if line.contains("watching for permission requests") {
+                        if let Some(tx) = ready.take() {
+                            let _ = tx.send(());
+                        }
+                    }
+                }
+            }
+        }
+    });
+    ready_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("yolo watch never became ready");
+
     watch
         .stdin
         .as_mut()

@@ -5,11 +5,12 @@
  * All control operations are ioctls on a directory fd in the mount (the CLI
  * opens the mount root; commands run inside the mount open "."). Only the
  * owning uid (or CAP_SYS_ADMIN) may issue them. The permission daemon claims
- * exclusive status on its first GET_ASK call; only that fd may issue GET_ASK
- * and PUT_DECISION. All other operations may be issued from any fd.
+ * exclusive status on its first ASK_PEEK call; only that fd may issue ASK_PEEK
+ * and ASK_DECIDE. All other operations may be issued from any fd.
  *
- * On close of the daemon fd, any dispatched-but-unanswered requests get the
- * default decision.
+ * ASK_PEEK reads the head of the ask queue without removing it; ASK_DECIDE
+ * answers an ask by id and removes it. On close of the daemon fd, every
+ * still-queued ask gets the default decision (deny).
  */
 
 #include "yolofs.h"
@@ -34,21 +35,17 @@ static bool yolo_caller_inside(struct super_block *sb)
 
 /* ── Daemon release ────────────────────────────────────────────────── */
 
-/* Deny every request on @head. Runs under pending_lock — completing under the
- * lock serializes against the requester's settle path. @put_ref drops the
- * extra reference carried by entries on the dispatched list. */
-static void yolo_deny_reqs(struct list_head *head, bool put_ref)
+/* Deny every queued ask. Runs under pending_lock — completing under the lock
+ * serializes against the requester's settle path, so a woken requester cannot
+ * free the req until we have finished with it. */
+static void yolo_deny_reqs(struct list_head *head)
 {
 	struct yolo_ask *req, *tmp;
 
 	list_for_each_entry_safe(req, tmp, head, list) {
 		req->decision = YOLO_DECISION_DENY;
-		req->decided = true;
 		list_del_init(&req->list);
-		req->dispatched = false;
 		complete(&req->done);
-		if (put_ref)
-			kref_put(&req->ref, yolo_ask_release);
 	}
 }
 
@@ -59,16 +56,15 @@ void yolo_ctl_release(struct file *file)
 
 	spin_lock(&perm->pending_lock);
 	if (perm->daemon_file == file) {
-		yolo_deny_reqs(&perm->pending_reqs, false);
-		yolo_deny_reqs(&perm->dispatched, true);
+		yolo_deny_reqs(&perm->pending_reqs);
 		perm->daemon_file = NULL;
 	}
 	spin_unlock(&perm->pending_lock);
 }
 
-/* ── GET_ASK: dequeue pending request ──────────────────────────── */
+/* ── ASK_PEEK: read the head ask without removing it ───────────────── */
 
-static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
+static long yolo_ask_peek_ioctl(struct file *file, unsigned long arg)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
 	struct yolo_permission *perm = &sbi->perm;
@@ -115,46 +111,39 @@ static long yolo_get_ask_ioctl(struct file *file, unsigned long arg)
 	memcpy(out.access_path, req->access_path, req->access_path_len);
 	memcpy(out.rule_path, req->rule_path, req->rule_path_len);
 
-	/* Hand off to the daemon: move pending -> dispatched and take a
-	 * reference, all under pending_lock (which guards both lists). The
-	 * reference keeps the req alive across the copies below; it is dropped
-	 * by PUT_DECISION / daemon cleanup when they remove it from dispatched. */
-	list_move_tail(&req->list, &perm->dispatched);
-	req->dispatched = true;
-	kref_get(&req->ref);
 	spin_unlock(&perm->pending_lock);
 
-	/* Write header back to userspace */
+	/* PEEK does not consume: the ask stays queued for ASK_DECIDE to
+	 * resolve. `out` is a private copy, so once we drop the lock we never
+	 * touch `req` again on the success path. */
 	if (copy_to_user((void __user *)arg, &out, sizeof(out))) {
-		err = -EFAULT;
-		goto deny;
+		/* Bad daemon buffer. Deny this ask by id (it may already be gone
+		 * if its requester timed out) so the queue head advances instead
+		 * of faulting on the same ask forever. */
+		spin_lock(&perm->pending_lock);
+		list_for_each_entry(req, &perm->pending_reqs, list) {
+			if (req->id == out.id) {
+				req->decision = YOLO_DECISION_DENY;
+				list_del_init(&req->list);
+				complete(&req->done);
+				break;
+			}
+		}
+		spin_unlock(&perm->pending_lock);
+		return -EFAULT;
 	}
 
 	return 0;
-
-deny:
-	/* Delivery failed (daemon passed a bad buffer). Deny this one req
-	 * rather than requeue it — a retry would fault on the same buffer. */
-	spin_lock(&perm->pending_lock);
-	list_del_init(&req->list);
-	req->dispatched = false;
-	spin_unlock(&perm->pending_lock);
-	req->decision = YOLO_DECISION_DENY;
-	req->decided = true;
-	complete(&req->done);
-	kref_put(&req->ref, yolo_ask_release);
-	return err;
 }
 
-/* ── PUT_DECISION: submit decision ─────────────────────────────────── */
+/* ── ASK_DECIDE: answer an ask by id and remove it ─────────────────── */
 
-static long yolo_put_decision_ioctl(struct file *file, unsigned long arg)
+static long yolo_ask_decide_ioctl(struct file *file, unsigned long arg)
 {
 	struct yolo_permission *perm = &YOLO_SB(file_inode(file)->i_sb)->perm;
 	struct yolo_ioc_decision in;
 	struct yolo_ask *req;
 	bool found = false;
-	bool stale = false;
 
 	if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
 		return -EFAULT;
@@ -167,28 +156,22 @@ static long yolo_put_decision_ioctl(struct file *file, unsigned long arg)
 		spin_unlock(&perm->pending_lock);
 		return -EPERM;
 	}
-	list_for_each_entry(req, &perm->dispatched, list) {
+	/* Anything still on pending_reqs is unanswered: settling an ask — here,
+	 * on timeout, or on daemon close — sets its decision and unlinks it in
+	 * the same locked section, so being on the list means "not yet resolved".
+	 * Complete under the lock so the woken requester cannot free the req
+	 * before we are done touching it. */
+	list_for_each_entry(req, &perm->pending_reqs, list) {
 		if (req->id == in.id) {
+			req->decision = (enum yolo_decision)in.decision;
 			list_del_init(&req->list);
-			req->dispatched = false;
-			if (req->decided) {
-				stale = true;
-			} else {
-				req->decision = (enum yolo_decision)in.decision;
-				req->decided = true;
-				found = true;
-			}
+			complete(&req->done);
+			found = true;
 			break;
 		}
 	}
 	spin_unlock(&perm->pending_lock);
 
-	if (!found && !stale)
-		return -ENOENT;
-
-	if (found)
-		complete(&req->done);
-	kref_put(&req->ref, yolo_ask_release);
 	return found ? 0 : -ENOENT;
 }
 
@@ -821,8 +804,8 @@ long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
 	 * SNAPSHOT/RESOLVE are fine from inside. */
 	switch (cmd) {
 	case YOLO_IOC_RULE_SET:
-	case YOLO_IOC_GET_ASK:
-	case YOLO_IOC_PUT_DECISION:
+	case YOLO_IOC_ASK_PEEK:
+	case YOLO_IOC_ASK_DECIDE:
 	case YOLO_IOC_RESTORE:
 	case YOLO_IOC_TRAVEL:
 		if (yolo_caller_inside(file_inode(file)->i_sb))
@@ -833,11 +816,11 @@ long yolo_ctl_ioctl(struct file *file, unsigned int cmd,
 	}
 
 	switch (cmd) {
-	case YOLO_IOC_GET_ASK:
-		return yolo_get_ask_ioctl(file, arg);
+	case YOLO_IOC_ASK_PEEK:
+		return yolo_ask_peek_ioctl(file, arg);
 
-	case YOLO_IOC_PUT_DECISION:
-		return yolo_put_decision_ioctl(file, arg);
+	case YOLO_IOC_ASK_DECIDE:
+		return yolo_ask_decide_ioctl(file, arg);
 
 	case YOLO_IOC_RULE_SET:
 		return yolo_rule_set_ioctl(file, arg);

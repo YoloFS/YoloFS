@@ -211,7 +211,6 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 	if (!req)
 		return -ENOMEM;
 
-	kref_init(&req->ref);
 	req->id = atomic64_inc_return(&sbi->perm.next_req_id);
 	err = yolo_store_ask_path(req->access_path, &req->access_path_len,
 				  access_path);
@@ -225,7 +224,7 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 	req->op = op;
 	req->pid = current->pid;
 	get_task_comm(req->comm, current);
-	/* kzalloc already set decision = DENY (0), decided/dispatched = false */
+	/* kzalloc already set decision = DENY (0) */
 	init_completion(&req->done);
 	INIT_LIST_HEAD(&req->list);
 
@@ -235,7 +234,7 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 		spin_unlock(&sbi->perm.pending_lock);
 		*result = YOLO_DECISION_DENY;
 		yolo_journal_ask(sbi, access_path, op, *result);
-		kref_put(&req->ref, yolo_ask_release);
+		kfree(req);
 		return 0;
 	}
 	list_add_tail(&req->list, &sbi->perm.pending_reqs);
@@ -245,41 +244,35 @@ int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 	wake_up_interruptible(&sbi->perm.request_waitq);
 
 	/* Wait for decision */
-	if (sbi->perm.timeout_s > 0)
-		timeout = msecs_to_jiffies(sbi->perm.timeout_s * 1000);
+	if (sbi->perm.timeout_ms > 0)
+		timeout = msecs_to_jiffies(sbi->perm.timeout_ms);
 	else
 		timeout = MAX_SCHEDULE_TIMEOUT;
 	timeout = wait_for_completion_interruptible_timeout(&req->done,
 							    timeout);
-	/* Settle under the lock: on timeout, default to deny unless the daemon
-	 * already answered; in every case, reclaim the req if it is still
-	 * pending. If the daemon has moved it to the dispatched list, leave it
-	 * there — PUT_DECISION or daemon cleanup owns it now and drops the
-	 * dispatched reference. */
+	/* Settle under the lock. If the req is still queued, nobody resolved it
+	 * (we timed out or were interrupted): default to deny and unlink. If it
+	 * is already unlinked, ASK_DECIDE or daemon close resolved it under this
+	 * same lock — it set req->decision before unlinking, so keep that. Either
+	 * way a racing ASK_DECIDE that arrives after us just won't find it
+	 * (ENOENT). kzalloc pre-set req->decision to DENY, so it is always valid
+	 * on the success path below. */
 	spin_lock(&sbi->perm.pending_lock);
-	if (timeout == 0 && !req->decided) {
+	if (!list_empty(&req->list)) {
 		req->decision = YOLO_DECISION_DENY;
-		req->decided = true;
-	}
-	if (!req->dispatched && !list_empty(&req->list))
 		list_del_init(&req->list);
+	}
 	spin_unlock(&sbi->perm.pending_lock);
 
 	if (timeout < 0)
 		err = -EINTR;
-
-	if (!err && !req->decided) {
-		/* Shouldn't happen — treat as deny */
-		req->decision = YOLO_DECISION_DENY;
-		req->decided = true;
-	}
 
 	if (!err) {
 		*result = req->decision;
 		yolo_journal_ask(sbi, access_path, op, req->decision);
 	}
 
-	kref_put(&req->ref, yolo_ask_release);
+	kfree(req);
 	return err;
 
 out_free:

@@ -169,7 +169,7 @@ Configured via top-level keys in `yolofs.toml`:
 | `permission` | true | Enable permission gating |
 | `staging` | true | Enable staging area |
 | `auto_snapshot` | true | Auto-snapshot after each command run through yolofs (`yolo run -- <cmd>`), skipped when no changes |
-| `prompt_timeout` | 30 | Seconds to wait for an `ask` answer before denying (`0` = wait forever; an unanswered ask is a deny) |
+| `prompt_timeout` | 30 | Seconds to wait for an `ask` answer before denying (fractional allowed, e.g. `0.5`; `0` = wait forever; an unanswered ask is a deny) |
 
 ## Execution Environment
 
