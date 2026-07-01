@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -268,37 +268,6 @@ impl Watch {
             child,
             stderr,
             reader: Some(reader),
-        }
-    }
-
-    /// Pre-fill the daemon's stdin with an interactive decision (e.g. b"d\n").
-    pub fn stdin_write(&mut self, bytes: &[u8]) {
-        self.child
-            .stdin
-            .as_mut()
-            .expect("watch stdin piped")
-            .write_all(bytes)
-            .expect("writing to watch stdin");
-    }
-
-    /// Block (bounded) until the daemon has written @needle to stderr.
-    ///
-    /// The daemon logs its decision ("→ allow"/"→ deny") *after* put_decision
-    /// unblocks the requester, so a caller that reads through the mount and then
-    /// immediately kills the daemon can race that log line. Wait for it first.
-    pub fn wait_for(&self, needle: &str) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if self.stderr.lock().unwrap().contains(needle) {
-                return;
-            }
-            if std::time::Instant::now() >= deadline {
-                panic!(
-                    "watch never logged {needle:?}; stderr so far:\n{}",
-                    self.stderr.lock().unwrap()
-                );
-            }
-            std::thread::sleep(Duration::from_millis(10));
         }
     }
 

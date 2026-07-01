@@ -192,35 +192,6 @@ pub fn put_decision(fd: &File, id: u64, decision: Decision) -> Result<()> {
     put_decision_raw(fd, id, decision.to_ioctl())
 }
 
-/// Claim the daemon slot without blocking, so `yolo watch` can announce
-/// readiness only once it will actually receive requests.
-///
-/// The kernel sets `perm->daemon_file` at the *start* of GET_ASK, so a
-/// non-blocking GET_ASK claims the slot and then returns EAGAIN when nothing is
-/// queued (the common case). If an operation already raced our startup, it
-/// returns that pending ask instead — the caller owns it and must answer it.
-pub fn claim_daemon(fd: &File) -> Result<Option<Ask>> {
-    let raw = fd.as_raw_fd();
-    let flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
-    if flags < 0 {
-        return Err(std::io::Error::last_os_error()).context("F_GETFL on ctl fd");
-    }
-    // Toggle O_NONBLOCK around a single GET_ASK, then restore blocking mode so
-    // the daemon's main loop still blocks waiting for requests.
-    unsafe { libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-    let res = get_ask(fd);
-    unsafe { libc::fcntl(raw, libc::F_SETFL, flags) };
-
-    match res {
-        Ok(ask) => Ok(Some(ask)),
-        Err(nix::errno::Errno::EAGAIN) => Ok(None),
-        Err(nix::errno::Errno::EBUSY) => {
-            anyhow::bail!("another yolo watch is already running")
-        }
-        Err(e) => Err(anyhow::Error::from(e)).context("claiming daemon slot"),
-    }
-}
-
 /// Open a directory fd in the mount (the mount root) for control ioctls.
 pub fn open(yolo_dir: &Path) -> Result<File> {
     // Control ioctls go to a directory fd in the mount. From outside that's the
