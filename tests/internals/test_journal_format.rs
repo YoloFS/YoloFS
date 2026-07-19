@@ -1,5 +1,5 @@
 //! Verify the kernel writes journal records in the expected wire format
-//! (NUL-separated fields) with tagged pre-op targets: `a` (Absence),
+//! (NUL-separated fields) with tagged pre-op targets: `a` (None),
 //! `s:<ino>` (StagedFile), `b:<abs-path>` (BasePath).
 
 use crate::helpers::YoloSession;

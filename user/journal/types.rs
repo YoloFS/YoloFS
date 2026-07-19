@@ -8,7 +8,7 @@
 /// the operation-local axis (`pre`) and the range-scoped tree axis
 /// (`old`/`new`); the role is carried by the field name, not the type.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Target {
+pub enum Backing {
     /// Content staged in flat file store at this inode ID.
     StagedFile(u32),
     /// Redirect: content lives at a path in the base (lower) filesystem. Only
@@ -16,14 +16,14 @@ pub enum Target {
     /// `StagedFile` at parse time, never a `.yolofs/inodes/` path here.
     BasePath(String),
     /// Content absent — a deletion marker / nothing here.
-    Absence,
+    None,
 }
 
-impl Target {
+impl Backing {
     /// Return the staged inode ID if this target carries one.
     pub fn ino(&self) -> Option<u32> {
         match self {
-            Target::StagedFile(ino) => Some(*ino),
+            Backing::StagedFile(ino) => Some(*ino),
             _ => None,
         }
     }
@@ -32,26 +32,26 @@ impl Target {
 /// A data mutation applied to the dir tree (S/D/R).
 ///
 /// Each `*pre` field is the operation-local pre-op backing of that overlay name
-/// — the `Target` the kernel resolved immediately before the op (see
-/// [`Target`]). It seeds the range-start `old` side during the fold (first touch
+/// — the `Backing` the kernel resolved immediately before the op (see
+/// [`Backing`]). It seeds the range-start `old` side during the fold (first touch
 /// wins) and `diff` reads it for the old content, so status/diff need neither a
 /// rebuilt previous tree nor a base stat (O(segment), not O(journal)). For an
 /// already-staged file it is the staged inode (`StagedFile`), not the base it
-/// was COW'd from; a pre the kernel could not resolve is `Absence`.
+/// was COW'd from; a pre the kernel could not resolve is `None`.
 #[derive(Debug, Clone)]
 pub enum Action {
     /// Stage (create or COW). The post-target is `StagedFile(ino)`; `pre` is the
-    /// content this stage overwrote (`Absence` for a fresh create).
-    Stage { path: String, ino: u32, pre: Target },
-    /// Delete. The post-target is `Absence`; `pre` is the removed content.
-    Delete { path: String, pre: Target },
+    /// content this stage overwrote (`None` for a fresh create).
+    Stage { path: String, ino: u32, pre: Backing },
+    /// Delete. The post-target is `None`; `pre` is the removed content.
+    Delete { path: String, pre: Backing },
     /// Rename. `src_pre`/`dst_pre` are the source's and destination's pre-op
-    /// backings (the destination's is `Absence` for a fresh name or a tombstone).
+    /// backings (the destination's is `None` for a fresh name or a tombstone).
     Rename {
         src: String,
         dst: String,
-        src_pre: Target,
-        dst_pre: Target,
+        src_pre: Backing,
+        dst_pre: Backing,
     },
 }
 

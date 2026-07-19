@@ -428,8 +428,8 @@ struct dir_frame {
 };
 
 /*
- * Parse the target-specific payload from @cur and inject the corresponding
- * dentry under @parent. Scaffold entries (TARGET_PATH with path_len == 0)
+ * Parse the backing-specific payload from @cur and inject the corresponding
+ * dentry under @parent. Scaffold entries (BACKING_BASE with path_len == 0)
  * have no overlay state and create no dentry.
  *
  * Returns the injected dentry (borrowed — its ref is the staging pin), NULL
@@ -442,19 +442,19 @@ static struct dentry *travel_inject_entry(struct tree_cursor *cur,
 					  struct yolo_sb_info *sbi,
 					  struct dentry *parent,
 					  const u8 *name_ptr, u16 name_len,
-					  u8 target, u16 gen,
+					  u8 backing, u16 gen,
 					  u32 cow_ino_floor)
 {
 	struct path lower_path;
 	struct dentry *child;
 	int err;
 
-	switch (target) {
-	case YOLO_TARGET_NONE: /* tombstone */
+	switch (backing) {
+	case YOLO_BACKING_NONE: /* tombstone */
 		return yolo_dentry_create(parent, (const char *)name_ptr,
-					  name_len, YOLO_TARGET_NONE, NULL);
+					  name_len, YOLO_BACKING_NONE, NULL);
 
-	case YOLO_TARGET_INODE: { /* staged inode */
+	case YOLO_BACKING_STAGED: { /* staged inode */
 		u32 ino;
 
 		err = read_le32(cur, &ino);
@@ -464,7 +464,7 @@ static struct dentry *travel_inject_entry(struct tree_cursor *cur,
 		if (err)
 			return ERR_PTR(err);
 		child = yolo_dentry_create(parent, (const char *)name_ptr,
-					   name_len, YOLO_TARGET_INODE,
+					   name_len, YOLO_BACKING_STAGED,
 					   &lower_path);
 		if (IS_ERR(child))
 			return child;
@@ -474,7 +474,7 @@ static struct dentry *travel_inject_entry(struct tree_cursor *cur,
 		return child;
 	}
 
-	case YOLO_TARGET_PATH: { /* redirect, or passthrough if path_len == 0 */
+	case YOLO_BACKING_BASE: { /* redirect, or passthrough if path_len == 0 */
 		char path_buf[YOLO_PATH_MAX];
 		const u8 *base_ptr;
 		u16 base_len;
@@ -498,7 +498,7 @@ static struct dentry *travel_inject_entry(struct tree_cursor *cur,
 		if (err)
 			return ERR_PTR(err);
 		return yolo_dentry_create(parent, (const char *)name_ptr,
-					  name_len, YOLO_TARGET_PATH,
+					  name_len, YOLO_BACKING_BASE,
 					  &lower_path);
 	}
 
@@ -549,7 +549,7 @@ static int yolo_view_inject(struct file *file, struct yolo_sb_info *sbi,
 		u16 name_len, child_count;
 		const u8 *name_ptr;
 		struct dentry *child;
-		u8 target;
+		u8 backing;
 
 		if (stack[depth].remaining == 0) {
 			dput(stack[depth].dentry);
@@ -570,12 +570,12 @@ static int yolo_view_inject(struct file *file, struct yolo_sb_info *sbi,
 		if (err)
 			goto out_unwind;
 
-		/* Read and handle entry target */
-		err = read_u8(&cur, &target);
+		/* Read and handle entry backing */
+		err = read_u8(&cur, &backing);
 		if (err)
 			goto out_unwind;
 		child = travel_inject_entry(&cur, sbi, stack[depth].dentry,
-					    name_ptr, name_len, target, gen,
+					    name_ptr, name_len, backing, gen,
 					    cow_ino_floor);
 		if (IS_ERR(child)) {
 			err = PTR_ERR(child);

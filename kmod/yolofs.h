@@ -188,10 +188,10 @@ struct yolo_ask {
 
 /* ── Dentry state ────────────────────────────────────────────── */
 
-enum yolo_target {
-	YOLO_TARGET_INODE	= 1,	/* staged inode in flat file store */
-	YOLO_TARGET_PATH	= 2,	/* redirect to base path (also ground state) */
-	YOLO_TARGET_NONE	= 3,	/* tombstone (pinned negative dentry) */
+enum yolo_backing {
+	YOLO_BACKING_STAGED	= 1,	/* staged inode in flat file store */
+	YOLO_BACKING_BASE	= 2,	/* redirect to base path (also ground state) */
+	YOLO_BACKING_NONE	= 3,	/* tombstone (pinned negative dentry) */
 };
 
 /* ── Staging ───────────────────────────────────────────────────────── */
@@ -255,7 +255,7 @@ struct yolo_inode_info {
 	enum yolo_perm		cached_perm;
 	u64			perm_gen;
 	u16			staging_gen;	/* generation when last staged/COW'd */
-	u32			staging_ino;	/* store id when target == INODE (0 = none) */
+	u32			staging_ino;	/* store id when backing == STAGED (0 = none) */
 
 	struct inode		vfs_inode;	/* must be last for container_of */
 };
@@ -265,7 +265,7 @@ struct yolo_inode_info {
 struct yolo_dentry_info {
 	spinlock_t		lock;
 	struct path		lower_path;	/* resolved lower path (inode entry or base) */
-	enum yolo_target	target;		/* where content lives */
+	enum yolo_backing	backing;		/* where content lives */
 	bool			pinned;		/* held via dget by staging */
 	enum yolo_perm		perm;		/* explicit rule or UNSET */
 	struct list_head	rule_pin;	/* node in sbi->perm.pinned_rules */
@@ -308,7 +308,7 @@ static inline struct yolo_dentry_info *YOLO_D(const struct dentry *dentry)
 static inline bool yolo_dentry_is_current(const struct dentry *d,
 					   struct yolo_sb_info *sbi)
 {
-	return YOLO_D(d)->target == YOLO_TARGET_INODE &&
+	return YOLO_D(d)->backing == YOLO_BACKING_STAGED &&
 	       YOLO_I(d_inode(d))->staging_gen >= (u16)atomic_read(&sbi->staging.gen);
 }
 
@@ -434,9 +434,9 @@ void yolo_destroy_dentry_cache(void);
 int yolo_dentry_interpose(struct dentry *dentry, struct path *lower_path);
 struct dentry *yolo_dentry_create(struct dentry *parent,
 				  const char *name, unsigned int len,
-				  enum yolo_target target,
+				  enum yolo_backing backing,
 				  struct path *lower_path);
-void yolo_dentry_pin(struct dentry *dentry, enum yolo_target target);
+void yolo_dentry_pin(struct dentry *dentry, enum yolo_backing backing);
 void yolo_dentry_unpin(struct dentry *dentry);
 void yolo_dentry_unpin_all(struct super_block *sb);
 
@@ -457,7 +457,7 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 		struct file **new_file, int flags, bool truncate);
 
 /* journal.c */
-const char *yolo_preimage_target(const struct dentry *dentry,
+const char *yolo_preimage_backing(const struct dentry *dentry,
 				 char *buf, int len);
 struct file *yolo_journal_open(const struct path *storage);
 int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,

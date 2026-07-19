@@ -583,7 +583,7 @@ fn complex_multi_operation_commit() {
 
     // ── Verify resolved dirents ──
     use yolofs::journal;
-    use yolofs::journal::Target;
+    use yolofs::journal::Backing;
 
     let yolo_dir = s.root.join(".yolofs");
     let journal_obj = journal::Journal::read(&yolo_dir).expect("read journal");
@@ -600,31 +600,31 @@ fn complex_multi_operation_commit() {
     ) = (false, false, false, false, false, false, false);
 
     t.for_each(|path, target| {
-        if matches!(target, Target::StagedFile(_)) && path.ends_with("/hello.txt") {
+        if matches!(target, Backing::StagedFile(_)) && path.ends_with("/hello.txt") {
             has_modified_hello = true;
         }
-        if matches!(target, Target::StagedFile(_)) && path.ends_with("/multi.txt") {
+        if matches!(target, Backing::StagedFile(_)) && path.ends_with("/multi.txt") {
             has_modified_multi = true;
         }
         // ── 4 + 5. Chained rename: subdir/deep.txt → subdir/shallow.txt → top.txt ──
         // Tree builder preserves original base path through rename chains.
-        if let Target::BasePath(src) = target {
+        if let Backing::BasePath(src) = target {
             if src.ends_with("/subdir/deep.txt") && path.ends_with("/top.txt") {
                 has_renamed_deep_to_top = true;
             }
         }
-        if matches!(target, Target::Absence) && path.ends_with("/deep.txt") {
+        if matches!(target, Backing::None) && path.ends_with("/deep.txt") {
             has_deleted_deep = true;
         }
-        if matches!(target, Target::StagedFile(_)) && path.ends_with("/link.txt") {
+        if matches!(target, Backing::StagedFile(_)) && path.ends_with("/link.txt") {
             has_added_link = true;
         }
         // Check temp.txt/brand_new.txt: only as tombstones (spurious), not as
         // redirects or inodes.
-        if path.ends_with("/temp.txt") && !matches!(target, Target::Absence) {
+        if path.ends_with("/temp.txt") && !matches!(target, Backing::None) {
             has_temp = true;
         }
-        if path.ends_with("/brand_new.txt") && !matches!(target, Target::Absence) {
+        if path.ends_with("/brand_new.txt") && !matches!(target, Backing::None) {
             has_brand_new = true;
         }
     });

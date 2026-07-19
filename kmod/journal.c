@@ -8,7 +8,7 @@
  *
  * Record format (NUL-separated fields, newline-terminated):
  *   S\0<path>\0<ino>\0<pre>\n          — Stage (post = StagedFile(ino))
- *   D\0<path>\0<pre>\n                 — Delete (post = Absent)
+ *   D\0<path>\0<pre>\n                 — Delete (post = None)
  *   R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n  — Rename
  *   P\0<name>\n                       — Snapshot
  *   T\0<target_gen>\n                 — Travel
@@ -18,8 +18,8 @@
  *
  * Record tags are uppercase. Each *pre field is the operation-local pre-op
  * backing of that overlay name, tagged with the lowercased first letter of the
- * userspace Target variant: "a" (Absence), "s:<ino>" (StagedFile), "b:<abspath>"
- * (BasePath). See yolo_preimage_target() and docs/staging.md.
+ * userspace Backing variant: "a" (None), "s:<ino>" (StagedFile), "b:<abspath>"
+ * (BasePath). See yolo_preimage_backing() and docs/staging.md.
  */
 
 #include "yolofs.h"
@@ -103,26 +103,26 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
-/* Tagged operation-local pre-image target of @dentry, written into @buf. The
- * tag is the lowercased first letter of the userspace `Target` variant it
+/* Tagged operation-local pre-image backing of @dentry, written into @buf. The
+ * tag is the lowercased first letter of the userspace `Backing` variant it
  * parses to, so the pre namespace never shares letters with the record tags:
- *   "a"            Absence: negative dentry / tombstone / unresolvable
- *   "s:<ino>"      StagedFile: staged inode (target == YOLO_TARGET_INODE)
+ *   "a"            None: negative dentry / tombstone / unresolvable
+ *   "s:<ino>"      StagedFile: staged inode (backing == YOLO_BACKING_STAGED)
  *   "b:<abspath>"  BasePath: redirect-resolved base content (PATH or ground)
  * This is the exact pre-op backing — an already-staged file reports its staged
  * inode (s:), not the base it was COW'd from. The CLI parses this into a
- * `Target` to seed a review range's old side; see docs/staging.md. */
-const char *yolo_preimage_target(const struct dentry *dentry,
+ * `Backing` to seed a review range's old side; see docs/staging.md. */
+const char *yolo_preimage_backing(const struct dentry *dentry,
 				 char *buf, int len)
 {
 	struct yolo_dentry_info *di = YOLO_D(dentry);
 	struct path lower;
 	char *p;
 
-	if (d_is_negative(dentry) || di->target == YOLO_TARGET_NONE)
+	if (d_is_negative(dentry) || di->backing == YOLO_BACKING_NONE)
 		return "a";
 
-	if (di->target == YOLO_TARGET_INODE) {
+	if (di->backing == YOLO_BACKING_STAGED) {
 		u32 ino = YOLO_I(d_inode(dentry))->staging_ino;
 
 		if (!ino)
@@ -157,8 +157,8 @@ int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
 
 	snprintf(ino_str, sizeof(ino_str), "%u", ino);
 
-	/* `pre` is the tagged pre-op target (a / s:<ino> / b:<path>), captured by
-	 * the caller before the lower_path swap. The post-target is StagedFile(ino). */
+	/* `pre` is the tagged pre-op backing (a / s:<ino> / b:<path>), captured by
+	 * the caller before the lower_path swap. The post-backing is StagedFile(ino). */
 	return journal_write(sbi, 'S',
 			     (const char *[]){ path, ino_str,
 					       pre ? pre : "a", NULL });
@@ -176,7 +176,7 @@ int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry)
 	 * pre-op backing is the content being removed. */
 	return journal_write(sbi, 'D',
 			     (const char *[]){ path,
-					       yolo_preimage_target(dentry, pre_buf,
+					       yolo_preimage_backing(dentry, pre_buf,
 								    sizeof(pre_buf)),
 					       NULL });
 }
@@ -209,9 +209,9 @@ int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 	/* Capture both pre-op backings before any dentry state change (the caller
 	 * journals before d_move and the pin updates). A negative destination
 	 * (fresh name or pinned tombstone) has no backing → "a". */
-	src_pre = yolo_preimage_target(old_dentry, src_pre_buf, YOLO_PATH_MAX);
+	src_pre = yolo_preimage_backing(old_dentry, src_pre_buf, YOLO_PATH_MAX);
 	dst_pre = d_is_positive(new_dentry)
-		? yolo_preimage_target(new_dentry, dst_pre_buf, YOLO_PATH_MAX)
+		? yolo_preimage_backing(new_dentry, dst_pre_buf, YOLO_PATH_MAX)
 		: "a";
 
 	err = journal_write(sbi, 'R',

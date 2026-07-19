@@ -22,7 +22,7 @@ the kernel, not merely assumed.
 2. **Staged child dentries are pinned.** When the first
    staged entry is added to a directory, the child dentry is pinned with
    `dget()`, keeping it in the dcache. The overlay state
-   (`target` + `pinned` in `yolo_dentry_info`) lives on the VFS dentry
+   (`backing` + `pinned` in `yolo_dentry_info`) lives on the VFS dentry
    (via `d_fsdata`), so it survives dentry cache pressure naturally.
    Pinned child dentries hold a ref on `dentry->d_parent`, which
    transitively keeps the parent inode alive through
@@ -156,8 +156,8 @@ on the dentry.
 | Field | Purpose |
 |-------|---------|
 | `lower_path` | Resolved path to the backing file for positive dentries — either `inodes/<ino>` or the base file. Updated in-place by COW. Redirect entries point at the base source. Lookup-miss negatives and tombstones keep `lower_path` empty. |
-| `target` | `enum yolo_target`: **INODE** (1 — staged in `inodes/<ino>`), **PATH** (2 — zero-copy rename redirect to base path), **NONE** (3 — no target). |
-| `pinned` | `bool` — whether this dentry is pinned (staged). A dentry is staged iff `pinned == true`. Ground state: `target=PATH, pinned=false`. |
+| `backing` | `enum yolo_backing`: **STAGED** (1 — staged in `inodes/<ino>`), **BASE** (2 — zero-copy rename redirect to base path), **NONE** (3 — no backing). |
+| `pinned` | `bool` — whether this dentry is pinned (staged). A dentry is staged iff `pinned == true`. Ground state: `backing=BASE, pinned=false`. |
 
 **Per-file** (`yolo_file_info`) — one per open file descriptor:
 
@@ -175,20 +175,20 @@ time is valid for the lifetime of the fd.
 
 Two fields define dentry state (`yolo_dentry_info`):
 
-- `target` (`enum yolo_target`): **INODE** (1) — content staged in `inodes/<ino>`.
-  **PATH** (2) — zero-copy rename redirect to a base path via `lower_path.dentry`.
-  **NONE** (3) — no target (ground state or tombstone).
+- `backing` (`enum yolo_backing`): **STAGED** (1) — content staged in `inodes/<ino>`.
+  **BASE** (2) — zero-copy rename redirect to a base path via `lower_path.dentry`.
+  **NONE** (3) — no backing (ground state or tombstone).
 - `pinned` (`bool`): whether the dentry is staged.
 
 A dentry is staged iff `pinned == true`. The ground state is
-`target=PATH, pinned=false` — the dentry follows the base filesystem.
+`backing=BASE, pinned=false` — the dentry follows the base filesystem.
 Set by `d_init` and `yolo_dentry_unpin`.
 
-- **Staged inode**: `target=INODE, pinned=true`. Content staged in `inodes/<ino>`.
-- **Redirect**: `target=PATH, pinned=true`. Zero-copy rename redirect
+- **Staged inode**: `backing=STAGED, pinned=true`. Content staged in `inodes/<ino>`.
+- **Redirect**: `backing=BASE, pinned=true`. Zero-copy rename redirect
   to a base path via `lower_path.dentry`.
-- **Tombstone**: `target=NONE, pinned=true`. Hides any base entry at this
-  path. `NONE` exclusively means tombstone — ground state uses `PATH`.
+- **Tombstone**: `backing=NONE, pinned=true`. Hides any base entry at this
+  path. `NONE` exclusively means tombstone — ground state uses `BASE`.
 
 Only positive staged dentries carry a populated `lower_path`. Ground-state
 lookups that miss in base and pinned tombstones both remain negative dentries
@@ -199,13 +199,13 @@ The `d_type` is derived on-the-fly from `d_inode(dentry)->i_mode` via
 `fs_umode_to_dtype()` for readdir only. It is not stored in the dentry
 state or the journal.
 
-Callers read `YOLO_D(d)->target` and `YOLO_D(d)->pinned` directly.
+Callers read `YOLO_D(d)->backing` and `YOLO_D(d)->pinned` directly.
 
 **Wire format**: The travel ioctl serializes dentry state as a `tag:u8`
-followed by variant-specific payload. Tags match `yolo_target` values:
-INODE → `ino:le32`; PATH → `path_len:le16 path:u8[path_len]`;
-NONE → nothing. Tombstones are identified by `target == NONE`.
-Scaffold dirs (userspace `end = None`) are encoded as PATH with `path_len=0`.
+followed by variant-specific payload. Tags match `yolo_backing` values:
+STAGED → `ino:le32`; BASE → `path_len:le16 path:u8[path_len]`;
+NONE → nothing. Tombstones are identified by `backing == NONE`.
+Scaffold dirs (userspace `end = None`) are encoded as BASE with `path_len=0`.
 The full recursive travel tree format is documented in
 `docs/plans/33-dentry-state-redesign.md`.
 
@@ -236,7 +236,7 @@ yolo_readdir(dir):
     for child in parent_dentry->d_children (via d_lock):
         if !YOLO_D(child)->pinned:
             continue
-        if YOLO_D(child)->target == YOLO_TARGET_NONE:
+        if YOLO_D(child)->backing == YOLO_BACKING_NONE:
             continue    # negative dentry
         dir_emit(child->d_name,
                  d_inode(child)->i_ino,
@@ -279,7 +279,7 @@ Create/mkdir/symlink/unlink/rmdir/rename are already serialized by the VFS
 ```
 yolo_open(inode, file):
     if file->f_flags & (O_WRONLY | O_RDWR):
-        if YOLO_D(dentry)->target == YOLO_TARGET_INODE && YOLO_I(d_inode(dentry))->staging_gen >= sbi->gen:
+        if YOLO_D(dentry)->backing == YOLO_BACKING_STAGED && YOLO_I(d_inode(dentry))->staging_gen >= sbi->gen:
             // Inode is current — open it directly (O_TRUNC truncates in place).
             down_read(staging_sem)
             atomic_inc(staging_fd_count)
@@ -297,7 +297,7 @@ yolo_open(inode, file):
             new_file = yolo_do_cow(sbi, dentry, flags, O_TRUNC in flags)
             // yolo_do_cow appends the journal record first (a failed append
             // fails the open with nothing published), then updates: dentry
-            // target, YOLO_I(inode)->staging_gen, dentry lower_path
+            // backing, YOLO_I(inode)->staging_gen, dentry lower_path
             up_write(staging_sem)
             file_info->lower_file = new_file
 
@@ -341,7 +341,7 @@ yolo_mmap(file, vma):
 ## Create / Mkdir / Symlink Path
 
 All creation operations allocate a new inode and stage the dentry with
-`target = YOLO_TARGET_INODE` and `staging_gen = sbi->gen` so the
+`backing = YOLO_BACKING_STAGED` and `staging_gen = sbi->gen` so the
 file is recognised as already staged (preventing a spurious re-COW on
 next open-for-write):
 
@@ -354,7 +354,7 @@ yolo_create(dir, dentry, mode):        # mkdir/symlink differ only in the
                                        # inode and fail the op (path is taken
                                        # from the still-negative dentry).
     interpose(dentry, inodes/<ino>)
-    yolo_dentry_pin(dentry, YOLO_TARGET_INODE)
+    yolo_dentry_pin(dentry, YOLO_BACKING_STAGED)
     YOLO_I(d_inode(dentry))->staging_gen = sbi->gen
     YOLO_I(d_inode(dentry))->staging_ino = ino
 ```
@@ -382,7 +382,7 @@ yolo_delete_entry(dir, dentry):   # serves both .unlink and .rmdir
     pre = target_preimage(dentry)   # pre-op backing, before the tombstone
 
     # Pre-allocate negative dentry before journal so we can fail cleanly.
-    tomb = yolo_dentry_create(parent, name, namelen, YOLO_TARGET_NONE, NULL)
+    tomb = yolo_dentry_create(parent, name, namelen, YOLO_BACKING_NONE, NULL)
     if IS_ERR(tomb): return PTR_ERR(tomb)
 
     journal(D, path, pre)  # must be before d_drop (uses dentry path)
@@ -416,19 +416,19 @@ yolo_rename(old_parent, old_dentry, new_parent, new_dentry):
 
     # Always tombstone at the old name, pre-allocate before
     # any irreversible changes.
-    tomb = yolo_dentry_create(old_parent, old_name, old_namelen, YOLO_TARGET_NONE, NULL)
+    tomb = yolo_dentry_create(old_parent, old_name, old_namelen, YOLO_BACKING_NONE, NULL)
     if IS_ERR(tomb): return PTR_ERR(tomb)
 
     # Build destination state.
-    if YOLO_D(old_dentry)->target == YOLO_TARGET_INODE:
+    if YOLO_D(old_dentry)->backing == YOLO_BACKING_STAGED:
         # Carry forward the staged inode.
-        yolo_dentry_pin(old_dentry, YOLO_TARGET_INODE)
-    elif YOLO_D(old_dentry)->target == YOLO_TARGET_PATH:
+        yolo_dentry_pin(old_dentry, YOLO_BACKING_STAGED)
+    elif YOLO_D(old_dentry)->backing == YOLO_BACKING_BASE:
         # Carry forward the redirect — base source is already in lower_path.
-        yolo_dentry_pin(old_dentry, YOLO_TARGET_PATH)
+        yolo_dentry_pin(old_dentry, YOLO_BACKING_BASE)
     else:
         # Base file being renamed — becomes a redirect via lower_path.
-        yolo_dentry_pin(old_dentry, YOLO_TARGET_PATH)
+        yolo_dentry_pin(old_dentry, YOLO_BACKING_BASE)
 
     # Clean up new_dentry if it was staged.
     new_staged = YOLO_D(new_dentry)->pinned
@@ -464,8 +464,8 @@ staged inode). Lookup of the old name finds the negative dentry ->
 returns `-ENOENT`.
 
 **Write after rename**: opening for write triggers COW at open time. The
-base file is copied into a new inode; the dentry's target changes
-from `YOLO_TARGET_PATH` to `YOLO_TARGET_INODE`.
+base file is copied into a new inode; the dentry's backing changes
+from `YOLO_BACKING_BASE` to `YOLO_BACKING_STAGED`.
 
 Commit and abort handling for renames is covered in
 [Staging Operations](#staging-operations-userspace).
@@ -493,7 +493,7 @@ yolo_readdir(dir, ctx):
     # d_children and resume from cursor successor on repeated calls.
     # This is robust against sibling-list mutations.
     for child in staged_children_from(cursor_or_head):
-        if !YOLO_D(child)->pinned or YOLO_D(child)->target == YOLO_TARGET_NONE:
+        if !YOLO_D(child)->pinned or YOLO_D(child)->backing == YOLO_BACKING_NONE:
             continue
         dir_emit(ctx, child->d_name,
                  d_inode(child)->i_ino,
@@ -567,23 +567,23 @@ C\0<path>\0<policy>\n             — Live explicit-policy configuration
 
 Each mutation type has its own record tag and carries exactly the fields
 it needs. The kernel always uses `S` for creates/COW and `R` for renames. S and
-D stay separate tags — the tag carries the post-target (`S` ⇒ staged at `<ino>`,
+D stay separate tags — the tag carries the post-backing (`S` ⇒ staged at `<ino>`,
 `D` ⇒ absent) — while R stays distinct because it carries move semantics.
 
-Every `*pre` field is an operation-local kernel fact: the `Target` that backed
+Every `*pre` field is an operation-local kernel fact: the `Backing` that backed
 that overlay name *immediately before* the operation. It lets `yolo review
 --diff` read the previous-snapshot content in O(segment) without rebuilding the
 prior tree. It is encoded with an explicit tag so userspace never infers
 inode-store layout from `.yolofs/inodes/`. Pre tags are lowercase so they never
 share letters with the (uppercase) record tags:
 
-| Encoding | Target | Meaning |
+| Encoding | Backing | Meaning |
 |----------|--------|---------|
-| `a` | `Absence` | no previous content (or the kernel could not resolve it) |
+| `a` | `None` | no previous content (or the kernel could not resolve it) |
 | `s:<ino>` | `StagedFile(ino)` | content was a staged inode in the store |
 | `b:<abs-path>` | `BasePath(abs-path)` | content was the redirect-resolved base file |
 
-The tag is the lowercased first letter of the `Target` variant it parses to
+The tag is the lowercased first letter of the `Backing` variant it parses to
 (`a`bsence / `s`tagedFile / `b`asePath), so the tag→variant mapping is one rule.
 
 `<pre>` is the *exact* pre-op backing — for an already-staged file that is
@@ -638,7 +638,7 @@ deduplicate repeated accesses; `yolo journal` remains the raw view that also
 shows the surrounding action and marker records.
 
 The stage/modify distinction comes from the `S` record's `<pre>` field — `a`
-reads as added, a present `s:`/`b:` target reads as modified — so userspace
+reads as added, a present `s:`/`b:` backing reads as modified — so userspace
 needs neither a base stat nor a rebuilt prior tree.
 
 **Gen = position.** Markers carry no generation field on the wire — a
@@ -660,13 +660,13 @@ skips a gen, position and runtime gen never drift.
 
 `<path>` is the full overlay path (e.g. `/dir/file`).
 `<src>` is the overlay path before the rename (R only).
-`<ino>` is the staged inode ID (decimal); it is also the implicit post-target
+`<ino>` is the staged inode ID (decimal); it is also the implicit post-backing
 `StagedFile(<ino>)` of an `S` record.
-`<pre>` / `<src_pre>` / `<dst_pre>` are tagged pre-op targets (`a` / `s:<ino>` /
+`<pre>` / `<src_pre>` / `<dst_pre>` are tagged pre-op backings (`a` / `s:<ino>` /
 `b:<path>`); `<dst_pre>` is `a` for a fresh destination or a pinned tombstone.
 
 A rename moves the source's backing to the destination verbatim (the kernel
-re-pins the moved dentry with its own target), so **`<src_pre>` is also the
+re-pins the moved dentry with its own backing), so **`<src_pre>` is also the
 destination's post-rename backing**: `s:<ino>` for a staged source, `b:<path>`
 for a base or redirect source. The R record needs no separate post field, and
 the tree builder sets the destination's `end` from `<src_pre>` directly.
@@ -716,7 +716,7 @@ I/O redirection. The `yolo` CLI reads the journal and applies or discards.
      through temp paths. All sources are saved deepest-first, then placed
      at destinations in DFS order. Handles swaps and rotation cycles
      automatically.
-   - **Ops**: `Absence` entries &rarr; `remove(base/path)`;
+   - **Ops**: `None` entries &rarr; `remove(base/path)`;
      `StagedFile(ino)` entries &rarr; copy `inodes/<ino>` to `base/path`.
      Interleaved in DFS order.
 3. Apply in order: saves &rarr; places &rarr; ops (deletes+stages).
@@ -748,7 +748,7 @@ I/O redirection. The `yolo` CLI reads the journal and applies or discards.
 2. `Changeset::collect` makes one O(segment) pass over the range, gathering the
    observational notes and, per path, the pre-image from its *first* touch (the
    range-start version), then replays the range into one dir tree for the net
-   per-path target.
+   per-path backing.
 3. Summary view: classify each net change from its pre-image alone — added (no
    pre-image), modified (pre-image differs), deleted (tombstone over a
    pre-image), or renamed — one line each. No previous-tree rebuild, no base
@@ -819,13 +819,13 @@ open-for-write.
 
 At open time, the COW check in `yolo_open` (see [Open / Read / Write
 Path](#open--read--write-path)) handles both base→staged COW and
-staged→staged re-COW: if the target is not `INODE`, or has a
+staged→staged re-COW: if the backing is not `STAGED`, or has a
 stale `staging_gen`, a fresh inode is created.
 
 `yolo_do_cow` copies from the dentry's current `lower_path` — which is
 the base file before any COW, or the current staged inode after one.
 The same function handles both cases; no separate re-COW path.
-`yolo_do_cow` also sets target on the dentry and `staging_gen`
+`yolo_do_cow` also sets backing on the dentry and `staging_gen`
 on the inode after a successful COW, and pins the dentry with `dget()`
 if not already staged.
 
@@ -917,7 +917,7 @@ O(R) backward walk to build reachable ranges, skip unreachable T records.
    tree walk from `sb->s_root`, `dput()` each), shrinks dcache,
    `vmalloc`s + `copy_from_user`s the tree buffer, walks it iteratively
    with a directory stack to inject VFS dentries with new gen (via
-   `d_alloc()`, set target/pinned, `d_add()`, `dget()` to pin), appends
+   `d_alloc()`, set backing/pinned, `d_add()`, `dget()` to pin), appends
    `T\0<target_gen>\n`, returns new_gen.  The
    `YOLO_IOC_TRAVEL` ioctl **increments** the runtime gen (monotonically)
    instead of setting it to the target value — this avoids gen collisions.

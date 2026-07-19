@@ -159,7 +159,7 @@ static bool yolo_should_emit_staged_child(const struct dentry *child)
 	 * can hide the base name, but phase 1 must not emit them as dirents.
 	 */
 	return YOLO_D(child)->pinned &&
-	       !(YOLO_D(child)->target == YOLO_TARGET_NONE);
+	       !(YOLO_D(child)->backing == YOLO_BACKING_NONE);
 }
 
 static struct dentry *yolo_next_staged_child(struct dentry *parent,

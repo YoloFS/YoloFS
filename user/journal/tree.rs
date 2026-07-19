@@ -5,10 +5,10 @@
 // range-start `old` side, from the first touch's `pre`) and an `new` (the net
 // overlay state, what commit/travel apply).
 //
-// Two rules govern absence (`end = Some(Target::Absence)`):
+// Two rules govern absence (`end = Some(Backing::None)`):
 //   1. Rename vacate: when R moves a node away, place an absent end at the
 //      vacated position.
-//   2. Delete always tombstones: D on any node → end = Absence.
+//   2. Delete always tombstones: D on any node → end = None.
 //
 // Scaffold dirs that exist only to provide a path to deeper nodes carry
 // `end = None` (and usually `start = None`).
@@ -27,8 +27,8 @@ use super::types::*;
 /// `Some(end)` (and, after a fold over a non-empty range, `Some(start)`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirNode {
-    pub old: Option<Target>,
-    pub new: Option<Target>,
+    pub old: Option<Backing>,
+    pub new: Option<Backing>,
     pub children: DirTree,
 }
 
@@ -64,10 +64,10 @@ impl DirTree {
     fn apply(&mut self, action: &Action) {
         match action {
             Action::Stage { path, ino, pre } => {
-                self.touch(path.clone(), pre.clone(), Target::StagedFile(*ino));
+                self.touch(path.clone(), pre.clone(), Backing::StagedFile(*ino));
             }
             Action::Delete { path, pre } => {
-                self.touch(path.clone(), pre.clone(), Target::Absence);
+                self.touch(path.clone(), pre.clone(), Backing::None);
             }
             Action::Rename {
                 dst,
@@ -122,7 +122,7 @@ impl DirTree {
 
     /// Visit each (full-path, end-target) pair by reference. Scaffold dirs
     /// (`end = None`) are skipped — they carry no net state.
-    pub fn for_each<F: FnMut(&str, &Target)>(&self, mut f: F) {
+    pub fn for_each<F: FnMut(&str, &Backing)>(&self, mut f: F) {
         self.visit_nodes(
             &mut |p, _start, end| {
                 if let Some(end) = end {
@@ -135,12 +135,12 @@ impl DirTree {
 
     /// Visit each (full-path, start, end) triple by reference, scaffolds
     /// included (review needs the old side and the net state together).
-    pub fn for_each_change<F: FnMut(&str, Option<&Target>, Option<&Target>)>(&self, mut f: F) {
+    pub fn for_each_change<F: FnMut(&str, Option<&Backing>, Option<&Backing>)>(&self, mut f: F) {
         self.visit_nodes(&mut f, &mut String::new());
     }
 
     /// Return true if any (path, target) pair matches the predicate.
-    pub fn any<F: FnMut(&str, &Target) -> bool>(&self, mut f: F) -> bool {
+    pub fn any<F: FnMut(&str, &Backing) -> bool>(&self, mut f: F) -> bool {
         let mut found = false;
         self.for_each(|p, d| {
             if !found && f(p, d) {
@@ -152,7 +152,7 @@ impl DirTree {
 
     /// Look up the net (end) target by its full path (e.g. "/dir/file").
     /// Returns `None` if the path is not in the tree or is a scaffold.
-    pub fn get(&self, path: &str) -> Option<&Target> {
+    pub fn get(&self, path: &str) -> Option<&Backing> {
         self.get_node(path).and_then(|n| n.new.as_ref())
     }
 
@@ -180,9 +180,9 @@ impl DirTree {
     /// Wire format (all integers little-endian):
     ///   DirTree      := child_count:le16  DirNode[child_count]
     ///   DirNode      := name_len:le16  name:u8[name_len]
-    ///                   Target
+    ///                   Backing
     ///                   child_count:le16  DirNode[child_count]   (children of this dir)
-    ///   Target       := tag:u8  [payload]
+    ///   Backing       := tag:u8  [payload]
     ///                   tag=1 Inode:  ino:le32
     ///                   tag=2 Path:   path_len:le16  path:u8[path_len]
     ///                   tag=3 None:   (no payload)
@@ -214,26 +214,26 @@ impl DirTree {
         }
     }
 
-    fn serialize_new(new: &Option<Target>, buf: &mut Vec<u8>) {
+    fn serialize_new(new: &Option<Backing>, buf: &mut Vec<u8>) {
         match new {
             // Scaffold (no net state): tag=2 (Path), path_len=0.
             None => {
                 buf.push(2);
                 buf.extend_from_slice(&0u16.to_le_bytes());
             }
-            Some(Target::StagedFile(ino)) => {
+            Some(Backing::StagedFile(ino)) => {
                 assert!(*ino > 0, "inode ino must be non-zero");
                 buf.push(1);
                 buf.extend_from_slice(&ino.to_le_bytes());
             }
-            Some(Target::BasePath(src)) => {
+            Some(Backing::BasePath(src)) => {
                 buf.push(2);
                 let bp = src.as_bytes();
                 let bp_len: u16 = bp.len().try_into().expect("base_path too long");
                 buf.extend_from_slice(&bp_len.to_le_bytes());
                 buf.extend_from_slice(bp);
             }
-            Some(Target::Absence) => {
+            Some(Backing::None) => {
                 buf.push(3);
             }
         }
@@ -280,8 +280,8 @@ impl DirTree {
 
     /// First touch at `path`: assign `old` from `pre` (once) and set `new`,
     /// preserving any existing subtree. Used for S (`end = StagedFile`) and D
-    /// (`end = Absence`).
-    fn touch(&mut self, path: String, pre: Target, new: Target) {
+    /// (`end = None`).
+    fn touch(&mut self, path: String, pre: Backing, new: Backing) {
         let Some((parent, name)) = self.walk_or_create_parent(path) else {
             return;
         };
@@ -309,7 +309,7 @@ impl DirTree {
     /// The detached source contributes only its children (which ride to `dst`)
     /// and its `old` (the move-carry old side). The destination's own
     /// first-touch `old` survives when the rename is not its first touch.
-    fn apply_rename(&mut self, dst: String, src: String, src_pre: Target, dst_pre: Target) {
+    fn apply_rename(&mut self, dst: String, src: String, src_pre: Backing, dst_pre: Backing) {
         if dst == src {
             return;
         }
@@ -327,7 +327,7 @@ impl DirTree {
             src,
             DirNode {
                 old: moved_old.clone().or_else(|| Some(src_pre.clone())),
-                new: Some(Target::Absence),
+                new: Some(Backing::None),
                 children: DirTree::new(),
             },
         );
@@ -335,7 +335,7 @@ impl DirTree {
         // A self-redirect (new would be BasePath(dst)) means the content
         // returned to its origin — a roundtrip (a→…→a). src_pre carries that
         // fact directly: a base/redirect source whose backing is dst itself.
-        let is_self_redirect = matches!(&src_pre, Target::BasePath(p) if *p == dst);
+        let is_self_redirect = matches!(&src_pre, Backing::BasePath(p) if *p == dst);
 
         let Some((parent, name)) = self.walk_or_create_parent(dst) else {
             return;
@@ -385,7 +385,7 @@ impl DirTree {
 
     /// Walk the tree by reference, calling `f` for each (path, start, end).
     /// Scaffold dirs (both `None`) are still visited — callers decide.
-    fn visit_nodes<F: FnMut(&str, Option<&Target>, Option<&Target>)>(
+    fn visit_nodes<F: FnMut(&str, Option<&Backing>, Option<&Backing>)>(
         &self,
         f: &mut F,
         prefix: &mut String,
@@ -419,14 +419,14 @@ mod tests {
         Action::Stage {
             path: path.into(),
             ino,
-            pre: Target::Absence,
+            pre: Backing::None,
         }
     }
 
     fn delete(path: &str) -> Action {
         Action::Delete {
             path: path.into(),
-            pre: Target::Absence,
+            pre: Backing::None,
         }
     }
 
@@ -447,8 +447,8 @@ mod tests {
         Action::Rename {
             dst: dest.into(),
             src: src.into(),
-            src_pre: Target::BasePath(origin.into()),
-            dst_pre: Target::Absence,
+            src_pre: Backing::BasePath(origin.into()),
+            dst_pre: Backing::None,
         }
     }
 
@@ -458,8 +458,8 @@ mod tests {
         Action::Rename {
             dst: dest.into(),
             src: src.into(),
-            src_pre: Target::StagedFile(ino),
-            dst_pre: Target::Absence,
+            src_pre: Backing::StagedFile(ino),
+            dst_pre: Backing::None,
         }
     }
 
@@ -469,14 +469,14 @@ mod tests {
     fn add_single_file() {
         let tree = build(&[add("/a", 1)]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/a"), Some(Target::StagedFile(1))));
+        assert!(matches!(tree.get("/a"), Some(Backing::StagedFile(1))));
     }
 
     #[test]
     fn modify_single_file() {
         let tree = build(&[add("/a", 1)]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/a"), Some(Target::StagedFile(1))));
+        assert!(matches!(tree.get("/a"), Some(Backing::StagedFile(1))));
     }
 
     #[test]
@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert!(matches!(
             tree.get("/dir/sub/file"),
-            Some(Target::StagedFile(1))
+            Some(Backing::StagedFile(1))
         ));
     }
 
@@ -544,21 +544,21 @@ mod tests {
         // Delete always tombstones — no cancel even for staged entries.
         let tree = build(&[add("/a", 1), delete("/a")]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/a"), Some(Target::Absence)));
+        assert!(matches!(tree.get("/a"), Some(Backing::None)));
     }
 
     #[test]
     fn modify_then_delete_tombstone() {
         let tree = build(&[add("/a", 1), delete("/a")]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/a"), Some(Target::Absence)));
+        assert!(matches!(tree.get("/a"), Some(Backing::None)));
     }
 
     #[test]
     fn delete_base_only_tombstone() {
         let tree = build(&[delete("/a")]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/a"), Some(Target::Absence)));
+        assert!(matches!(tree.get("/a"), Some(Backing::None)));
     }
 
     // ── Rename (R) ────────────────────────────────────────────────────
@@ -569,17 +569,17 @@ mod tests {
         // A + R: rename always tombstones at source.
         // Destination gets the Inode.
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/b"), Some(Target::StagedFile(1))));
+        assert!(matches!(tree.get("/a"), Some(Backing::None)));
+        assert!(matches!(tree.get("/b"), Some(Backing::StagedFile(1))));
     }
 
     #[test]
     fn rename_base_only_file() {
         let tree = build(&[rename("/b", "/a")]);
-        // Base-only: Link at /b, Absence at /a
+        // Base-only: Link at /b, None at /a
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/b"), Some(Target::BasePath(from)) if from == "/a"));
+        assert!(matches!(tree.get("/a"), Some(Backing::None)));
+        assert!(matches!(tree.get("/b"), Some(Backing::BasePath(from)) if from == "/a"));
     }
 
     // ── Rename chain ──────────────────────────────────────────────────
@@ -589,11 +589,11 @@ mod tests {
         // a→b→c: the second hop's source /b redirects to base /a, so its
         // kernel-faithful src_pre is BasePath(/a), not BasePath(/b).
         let tree = build(&[rename("/b", "/a"), rename_from("/c", "/b", "/a")]);
-        // a→b→c: Absence at /a, tombstone at /b (always tombstones at source), Link at /c
+        // a→b→c: None at /a, tombstone at /b (always tombstones at source), Link at /c
         assert_eq!(tree.len(), 3);
-        assert!(matches!(tree.get("/a"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/b"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/c"), Some(Target::BasePath(from)) if from == "/a"));
+        assert!(matches!(tree.get("/a"), Some(Backing::None)));
+        assert!(matches!(tree.get("/b"), Some(Backing::None)));
+        assert!(matches!(tree.get("/c"), Some(Backing::BasePath(from)) if from == "/a"));
     }
 
     // ── Source resolution (BasePath must reference immutable base) ────
@@ -608,11 +608,11 @@ mod tests {
             Action::Rename {
                 dst: "/x".into(),
                 src: "/dir/f".into(),
-                src_pre: Target::BasePath("/a/f".into()),
-                dst_pre: Target::Absence,
+                src_pre: Backing::BasePath("/a/f".into()),
+                dst_pre: Backing::None,
             },
         ]);
-        assert!(matches!(tree.get("/x"), Some(Target::BasePath(src)) if src == "/a/f"));
+        assert!(matches!(tree.get("/x"), Some(Backing::BasePath(src)) if src == "/a/f"));
     }
 
     #[test]
@@ -622,17 +622,17 @@ mod tests {
         let tree = build(&[Action::Rename {
             dst: "/x".into(),
             src: "/dir/sub/f".into(),
-            src_pre: Target::BasePath("/b/f".into()),
-            dst_pre: Target::Absence,
+            src_pre: Backing::BasePath("/b/f".into()),
+            dst_pre: Backing::None,
         }]);
-        assert!(matches!(tree.get("/x"), Some(Target::BasePath(src)) if src == "/b/f"));
+        assert!(matches!(tree.get("/x"), Some(Backing::BasePath(src)) if src == "/b/f"));
     }
 
     #[test]
     fn rename_no_redirect_keeps_base_path() {
         // mv /a /b — no redirect ancestor, source is already a base path.
         let tree = build(&[rename("/b", "/a")]);
-        assert!(matches!(tree.get("/b"), Some(Target::BasePath(src)) if src == "/a"));
+        assert!(matches!(tree.get("/b"), Some(Backing::BasePath(src)) if src == "/a"));
     }
 
     // ── Rename old/new composition (plan 58) ────────────────────────
@@ -650,22 +650,22 @@ mod tests {
             Action::Stage {
                 path: "/b".into(),
                 ino: 1,
-                pre: Target::BasePath("/b".into()),
+                pre: Backing::BasePath("/b".into()),
             },
             Action::Rename {
                 dst: "/b".into(),
                 src: "/a".into(),
-                src_pre: Target::BasePath("/a".into()),
-                dst_pre: Target::StagedFile(1), // /b was staged when clobbered
+                src_pre: Backing::BasePath("/a".into()),
+                dst_pre: Backing::StagedFile(1), // /b was staged when clobbered
             },
         ]);
         let node = tree.get_node("/b").expect("/b node");
         assert!(
-            matches!(node.old, Some(Target::BasePath(ref p)) if p == "/b"),
+            matches!(node.old, Some(Backing::BasePath(ref p)) if p == "/b"),
             "dest first-touch `old` must survive the rename-over: {:?}",
             node.old
         );
-        assert!(matches!(node.new, Some(Target::BasePath(ref p)) if p == "/a"));
+        assert!(matches!(node.new, Some(Backing::BasePath(ref p)) if p == "/a"));
     }
 
     #[test]
@@ -677,27 +677,27 @@ mod tests {
         let tree = build(&[
             Action::Delete {
                 path: "/b".into(),
-                pre: Target::BasePath("/b".into()),
+                pre: Backing::BasePath("/b".into()),
             },
             Action::Rename {
                 dst: "/b".into(),
                 src: "/a".into(),
-                src_pre: Target::BasePath("/a".into()),
-                dst_pre: Target::Absence, // /b was a tombstone (negative) when clobbered
+                src_pre: Backing::BasePath("/a".into()),
+                dst_pre: Backing::None, // /b was a tombstone (negative) when clobbered
             },
             Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::BasePath("/a".into()),
+                pre: Backing::BasePath("/a".into()),
             },
         ]);
         let node = tree.get_node("/b").expect("/b node");
         assert!(
-            matches!(node.old, Some(Target::BasePath(ref p)) if p == "/b"),
+            matches!(node.old, Some(Backing::BasePath(ref p)) if p == "/b"),
             "start should be base /b (the pre-delete content), got {:?}",
             node.old
         );
-        assert!(matches!(node.new, Some(Target::StagedFile(2))));
+        assert!(matches!(node.new, Some(Backing::StagedFile(2))));
     }
 
     #[test]
@@ -709,22 +709,22 @@ mod tests {
             Action::Stage {
                 path: "/d/f".into(),
                 ino: 1,
-                pre: Target::BasePath("/d/f".into()),
+                pre: Backing::BasePath("/d/f".into()),
             },
             Action::Rename {
                 dst: "/e".into(),
                 src: "/d".into(),
-                src_pre: Target::BasePath("/d".into()),
-                dst_pre: Target::Absence,
+                src_pre: Backing::BasePath("/d".into()),
+                dst_pre: Backing::None,
             },
         ]);
         let node = tree.get_node("/e/f").expect("/e/f node");
         assert!(
-            matches!(node.old, Some(Target::BasePath(ref p)) if p == "/d/f"),
+            matches!(node.old, Some(Backing::BasePath(ref p)) if p == "/d/f"),
             "moved child's first-touch `old` should ride to /e/f: {:?}",
             node.old
         );
-        assert!(matches!(node.new, Some(Target::StagedFile(1))));
+        assert!(matches!(node.new, Some(Backing::StagedFile(1))));
     }
 
     #[test]
@@ -736,17 +736,17 @@ mod tests {
             Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             },
             Action::Rename {
                 dst: "/b".into(),
                 src: "/a".into(),
-                src_pre: Target::StagedFile(1),
-                dst_pre: Target::Absence,
+                src_pre: Backing::StagedFile(1),
+                dst_pre: Backing::None,
             },
         ]);
-        assert!(matches!(tree.get("/b"), Some(Target::StagedFile(1))));
-        assert!(matches!(tree.get("/a"), Some(Target::Absence)));
+        assert!(matches!(tree.get("/b"), Some(Backing::StagedFile(1))));
+        assert!(matches!(tree.get("/a"), Some(Backing::None)));
     }
 
     #[test]
@@ -759,27 +759,27 @@ mod tests {
             Action::Stage {
                 path: "/b".into(),
                 ino: 1,
-                pre: Target::BasePath("/b".into()),
+                pre: Backing::BasePath("/b".into()),
             },
             Action::Rename {
                 dst: "/b".into(),
                 src: "/a".into(),
-                src_pre: Target::BasePath("/a".into()),
-                dst_pre: Target::StagedFile(1),
+                src_pre: Backing::BasePath("/a".into()),
+                dst_pre: Backing::StagedFile(1),
             },
             rename_from("/c", "/b", "/a"),
         ]);
         let c = tree.get_node("/c").expect("/c node");
         assert!(
-            matches!(c.old, Some(Target::BasePath(ref p)) if p == "/b"),
+            matches!(c.old, Some(Backing::BasePath(ref p)) if p == "/b"),
             "first-touch `old` (base /b) should ride across both moves: {:?}",
             c.old
         );
-        assert!(matches!(c.new, Some(Target::BasePath(ref p)) if p == "/a"));
+        assert!(matches!(c.new, Some(Backing::BasePath(ref p)) if p == "/a"));
         // The /b tombstone keeps the same first-touch old side.
         let b = tree.get_node("/b").expect("/b node");
-        assert!(matches!(b.new, Some(Target::Absence)));
-        assert!(matches!(b.old, Some(Target::BasePath(ref p)) if p == "/b"));
+        assert!(matches!(b.new, Some(Backing::None)));
+        assert!(matches!(b.old, Some(Backing::BasePath(ref p)) if p == "/b"));
     }
 
     // ── Rename then delete ────────────────────────────────────────────
@@ -787,12 +787,12 @@ mod tests {
     #[test]
     fn rename_then_delete_base_file() {
         let tree = build(&[rename("/b", "/a"), delete("/b")]);
-        // R(/b, /a): Link at /b, Absence at /a
-        // D(/b): always tombstones → Absence at /b
-        // Result: Absence at /a and Absence at /b
+        // R(/b, /a): Link at /b, None at /a
+        // D(/b): always tombstones → None at /b
+        // Result: None at /a and None at /b
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/b"), Some(Target::Absence)));
+        assert!(matches!(tree.get("/a"), Some(Backing::None)));
+        assert!(matches!(tree.get("/b"), Some(Backing::None)));
     }
 
     // ── Directory rename ──────────────────────────────────────────────
@@ -809,7 +809,7 @@ mod tests {
         assert!(tree.get("/newdir/f1").is_some(), "missing /newdir/f1");
         assert!(tree.get("/newdir/f2").is_some(), "missing /newdir/f2");
         // Rename always tombstones at source
-        assert!(matches!(tree.get("/dir"), Some(Target::Absence)));
+        assert!(matches!(tree.get("/dir"), Some(Backing::None)));
         assert!(tree.get("/dir/f1").is_none(), "stale /dir/f1");
     }
 
@@ -819,7 +819,7 @@ mod tests {
     fn multiple_modifies_last_wins() {
         let tree = build(&[add("/a", 1), add("/a", 2), add("/a", 3)]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/a"), Some(Target::StagedFile(3))));
+        assert!(matches!(tree.get("/a"), Some(Backing::StagedFile(3))));
     }
 
     // ── Rename + modify at dest ───────────────────────────────────────
@@ -827,11 +827,11 @@ mod tests {
     #[test]
     fn rename_then_modify_at_dest() {
         // R(/b, /a) then A(/b, ino=5): base file renamed, then overwritten at dest.
-        // Tree: Inode(ino=5) at /b, Absence at /a.
+        // Tree: Inode(ino=5) at /b, None at /a.
         let tree = build(&[rename("/b", "/a"), add("/b", 5)]);
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/b"), Some(Target::StagedFile(5))));
+        assert!(matches!(tree.get("/a"), Some(Backing::None)));
+        assert!(matches!(tree.get("/b"), Some(Backing::StagedFile(5))));
     }
 
     // ── Rename over tombstone ─────────────────────────────────────────
@@ -842,8 +842,8 @@ mod tests {
         // The rename replaces the tombstone with a Link.
         let tree = build(&[delete("/b"), rename("/b", "/a")]);
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/b"), Some(Target::BasePath(from)) if from == "/a"));
+        assert!(matches!(tree.get("/a"), Some(Backing::None)));
+        assert!(matches!(tree.get("/b"), Some(Backing::BasePath(from)) if from == "/a"));
     }
 
     // ── Add then rename (staged rename) ───────────────────────────────
@@ -855,8 +855,8 @@ mod tests {
         // Rename always tombstones at source.
         // Inode moved to /b.
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/b"), Some(Target::StagedFile(1))));
+        assert!(matches!(tree.get("/a"), Some(Backing::None)));
+        assert!(matches!(tree.get("/b"), Some(Backing::StagedFile(1))));
     }
 
     // ── Create-delete-recreate ────────────────────────────────────────
@@ -866,7 +866,7 @@ mod tests {
         // A + D → tombstone, then A replaces tombstone with new inode.
         let tree = build(&[add("/a", 1), delete("/a"), add("/a", 2)]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/a"), Some(Target::StagedFile(2))));
+        assert!(matches!(tree.get("/a"), Some(Backing::StagedFile(2))));
     }
 
     #[test]
@@ -874,8 +874,8 @@ mod tests {
         // A + D → tombstone, then A replaces tombstone with new inode.
         let tree = build(&[add("/a", 1), delete("/a"), add("/a", 2)]);
         assert_eq!(tree.len(), 1);
-        // A over Absence: the new inode replaces the tombstone.
-        assert!(matches!(tree.get("/a"), Some(Target::StagedFile(2))));
+        // A over None: the new inode replaces the tombstone.
+        assert!(matches!(tree.get("/a"), Some(Backing::StagedFile(2))));
     }
 
     // ── delete_dir ────────────────────────────────────────────────────
@@ -884,7 +884,7 @@ mod tests {
     fn delete_dir_base_only_tombstone() {
         let tree = build(&[delete("/d")]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/d"), Some(Target::Absence)));
+        assert!(matches!(tree.get("/d"), Some(Backing::None)));
     }
 
     #[test]
@@ -892,7 +892,7 @@ mod tests {
         // Delete always tombstones — no cancel even for staged dirs.
         let tree = build(&[add("/d", 1), delete("/d")]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/d"), Some(Target::Absence)));
+        assert!(matches!(tree.get("/d"), Some(Backing::None)));
     }
 
     #[test]
@@ -900,9 +900,9 @@ mod tests {
         // Deleting a dir tombstones it; children remain in the subtree.
         let tree = build(&[add("/d", 1), add("/d/f1", 2), add("/d/f2", 3), delete("/d")]);
         assert_eq!(tree.len(), 3);
-        assert!(matches!(tree.get("/d"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/d/f1"), Some(Target::StagedFile(2))));
-        assert!(matches!(tree.get("/d/f2"), Some(Target::StagedFile(3))));
+        assert!(matches!(tree.get("/d"), Some(Backing::None)));
+        assert!(matches!(tree.get("/d/f1"), Some(Backing::StagedFile(2))));
+        assert!(matches!(tree.get("/d/f2"), Some(Backing::StagedFile(3))));
     }
 
     #[test]
@@ -912,13 +912,13 @@ mod tests {
             add("/d/f", 2),
             Action::Delete {
                 path: "/d".into(),
-                pre: Target::Absence,
+                pre: Backing::None,
             },
         ]);
         // Delete always tombstones. Children remain in the subtree.
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/d"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/d/f"), Some(Target::StagedFile(2))));
+        assert!(matches!(tree.get("/d"), Some(Backing::None)));
+        assert!(matches!(tree.get("/d/f"), Some(Backing::StagedFile(2))));
     }
 
     #[test]
@@ -926,8 +926,8 @@ mod tests {
         // Delete a base directory, then add a file under it.
         // The tombstone should be a Dir node so walk_to_parent succeeds.
         let tree = build(&[delete("/d"), add("/d/f1", 1)]);
-        assert!(matches!(tree.get("/d"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/d/f1"), Some(Target::StagedFile(1))));
+        assert!(matches!(tree.get("/d"), Some(Backing::None)));
+        assert!(matches!(tree.get("/d/f1"), Some(Backing::StagedFile(1))));
     }
 
     // ── Delete intermediate directory ─────────────────────────────────
@@ -935,12 +935,12 @@ mod tests {
     #[test]
     fn delete_intermediate_dir_creates_tombstone() {
         // Add /a/b/c/file — creates intermediate /a, /a/b, /a/b/c.
-        // Delete /a/b → should create Absence for the intermediate dir.
+        // Delete /a/b → should create None for the intermediate dir.
         let tree = build(&[add("/a/b/c/file", 1), delete("/a/b")]);
         // /a/b was intermediate (Dir(passthrough,..)) → treated as base → negative dentry.
         assert!(
-            matches!(tree.get("/a/b"), Some(Target::Absence)),
-            "intermediate dir should get Absence: {:?}",
+            matches!(tree.get("/a/b"), Some(Backing::None)),
+            "intermediate dir should get None: {:?}",
             tree
         );
     }
@@ -954,19 +954,19 @@ mod tests {
             Action::Stage {
                 path: "/x".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             },
         ]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/x"), Some(Target::StagedFile(2))));
+        assert!(matches!(tree.get("/x"), Some(Backing::StagedFile(2))));
     }
 
     #[test]
     fn travel_records_ignored_in_stream() {
         let tree = build(&[add("/a", 1), add("/b", 2)]);
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/a"), Some(Target::StagedFile(1))));
-        assert!(matches!(tree.get("/b"), Some(Target::StagedFile(2))));
+        assert!(matches!(tree.get("/a"), Some(Backing::StagedFile(1))));
+        assert!(matches!(tree.get("/b"), Some(Backing::StagedFile(2))));
     }
 
     // ── Self-rename / roundtrip / cycle ───────────────────────────────
@@ -991,7 +991,7 @@ mod tests {
             tree.nodes.get("a")
         );
         assert!(
-            matches!(tree.get("/tmp"), Some(Target::Absence)),
+            matches!(tree.get("/tmp"), Some(Backing::None)),
             "/tmp should be tombstoned: {:?}",
             tree
         );
@@ -1010,7 +1010,7 @@ mod tests {
             tree.nodes.get("a")
         );
         assert!(
-            matches!(tree.get("/tmp"), Some(Target::Absence)),
+            matches!(tree.get("/tmp"), Some(Backing::None)),
             "/tmp should be tombstoned: {:?}",
             tree
         );
@@ -1028,12 +1028,12 @@ mod tests {
         assert!(!tree.is_empty(), "swap should produce dentries: {:?}", tree);
         // /a should be a Renamed from /b, /b should be a Renamed from /a
         assert!(
-            matches!(tree.get("/a"), Some(Target::BasePath(from)) if from == "/b"),
+            matches!(tree.get("/a"), Some(Backing::BasePath(from)) if from == "/b"),
             "a should come from b: {:?}",
             tree
         );
         assert!(
-            matches!(tree.get("/b"), Some(Target::BasePath(from)) if from == "/a"),
+            matches!(tree.get("/b"), Some(Backing::BasePath(from)) if from == "/a"),
             "b should come from a: {:?}",
             tree
         );
@@ -1060,12 +1060,12 @@ mod tests {
             tree.nodes.get("a")
         );
         assert!(
-            matches!(tree.get("/b"), Some(Target::Absence)),
+            matches!(tree.get("/b"), Some(Backing::None)),
             "/b should be tombstoned: {:?}",
             tree
         );
         assert!(
-            matches!(tree.get("/c"), Some(Target::Absence)),
+            matches!(tree.get("/c"), Some(Backing::None)),
             "/c should be tombstoned: {:?}",
             tree
         );
@@ -1085,15 +1085,15 @@ mod tests {
     fn add_symlink() {
         let tree = build(&[add("/link", 1)]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/link"), Some(Target::StagedFile(1))));
+        assert!(matches!(tree.get("/link"), Some(Backing::StagedFile(1))));
     }
 
     #[test]
     fn rename_symlink() {
         let tree = build(&[rename("/new", "/old")]);
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/old"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/new"), Some(Target::BasePath(_))));
+        assert!(matches!(tree.get("/old"), Some(Backing::None)));
+        assert!(matches!(tree.get("/new"), Some(Backing::BasePath(_))));
     }
 
     #[test]
@@ -1103,11 +1103,11 @@ mod tests {
             add("/link", 1),
             Action::Delete {
                 path: "/link".into(),
-                pre: Target::Absence,
+                pre: Backing::None,
             },
         ]);
         assert_eq!(tree.len(), 1);
-        assert!(matches!(tree.get("/link"), Some(Target::Absence)));
+        assert!(matches!(tree.get("/link"), Some(Backing::None)));
     }
 
     // ── Base-only directory rename ────────────────────────────────────
@@ -1116,8 +1116,8 @@ mod tests {
     fn rename_base_only_dir() {
         let tree = build(&[rename("/new", "/old")]);
         assert_eq!(tree.len(), 2);
-        assert!(matches!(tree.get("/old"), Some(Target::Absence)));
-        assert!(matches!(tree.get("/new"), Some(Target::BasePath(from)) if from == "/old"));
+        assert!(matches!(tree.get("/old"), Some(Backing::None)));
+        assert!(matches!(tree.get("/new"), Some(Backing::BasePath(from)) if from == "/old"));
     }
 
     #[test]
@@ -1128,12 +1128,12 @@ mod tests {
             Action::Rename {
                 src: "/old".into(),
                 dst: "/new".into(),
-                src_pre: Target::BasePath("/old".into()),
-                dst_pre: Target::Absence,
+                src_pre: Backing::BasePath("/old".into()),
+                dst_pre: Backing::None,
             },
         ]);
         // Rename always tombstones at source
-        assert!(matches!(tree.get("/old"), Some(Target::Absence)));
+        assert!(matches!(tree.get("/old"), Some(Backing::None)));
         assert!(
             tree.get("/old/file").is_none(),
             "old subtree should be gone"
@@ -1160,7 +1160,7 @@ mod tests {
             "missing /new/child.txt"
         );
         assert!(
-            matches!(tree.get("/new/child.txt"), Some(Target::StagedFile(2))),
+            matches!(tree.get("/new/child.txt"), Some(Backing::StagedFile(2))),
             "child should be Inode(ino=2): {:?}",
             tree
         );
@@ -1177,7 +1177,7 @@ mod tests {
         // Delete always tombstones. /new has the dir, /new/f1 is tombstoned.
         assert!(tree.get("/new").is_some(), "missing /new");
         assert!(
-            matches!(tree.get("/new/f1"), Some(Target::Absence)),
+            matches!(tree.get("/new/f1"), Some(Backing::None)),
             "/new/f1 should be tombstoned: {:?}",
             tree
         );
@@ -1192,20 +1192,20 @@ mod tests {
         let tree = build(&[add("/a/b/c/file", 1), rename("/other", "/a/b")]);
         // /a/b was an intermediate dir → source_had_base=true → negative dentry at /a/b.
         assert!(
-            matches!(tree.get("/a/b"), Some(Target::Absence)),
+            matches!(tree.get("/a/b"), Some(Backing::None)),
             "/a/b should be negative dentry: {:?}",
             tree
         );
         // /other gets the subtree with /other/c/file.
         assert!(tree.get("/other/c/file").is_some(), "missing /other/c/file");
         assert!(
-            matches!(tree.get("/other/c/file"), Some(Target::StagedFile(1))),
+            matches!(tree.get("/other/c/file"), Some(Backing::StagedFile(1))),
             "/other/c/file should be Inode(ino=1): {:?}",
             tree
         );
         // /other should have a redirect dentry (from intermediate dir rename)
         assert!(
-            matches!(tree.get("/other"), Some(Target::BasePath(from)) if from == "/a/b"),
+            matches!(tree.get("/other"), Some(Backing::BasePath(from)) if from == "/a/b"),
             "/other should be redirect from /a/b: {:?}",
             tree
         );
@@ -1214,29 +1214,29 @@ mod tests {
     #[test]
     fn replace_then_delete_tombstones_destination() {
         // Rename /a → /b (both base-only), then delete /b.
-        // /b existed in base, so deleting the Link must leave a Absence
+        // /b existed in base, so deleting the Link must leave a None
         // to hide the base content. Without it, base /b reappears.
         let cs = build(&[
             Action::Rename {
                 src: "/a".into(),
                 dst: "/b".into(),
-                src_pre: Target::BasePath("/a".into()),
-                dst_pre: Target::Absence,
+                src_pre: Backing::BasePath("/a".into()),
+                dst_pre: Backing::None,
             },
             Action::Delete {
                 path: "/b".into(),
-                pre: Target::Absence,
+                pre: Backing::None,
             },
         ]);
         // Both /a and /b should be tombstoned.
         assert!(
-            matches!(cs.get("/a"), Some(Target::Absence)),
-            "/a should be Absence: {:?}",
+            matches!(cs.get("/a"), Some(Backing::None)),
+            "/a should be None: {:?}",
             cs
         );
         assert!(
-            matches!(cs.get("/b"), Some(Target::Absence)),
-            "/b should be Absence (base content): {:?}",
+            matches!(cs.get("/b"), Some(Backing::None)),
+            "/b should be None (base content): {:?}",
             cs
         );
     }
@@ -1258,7 +1258,7 @@ mod tests {
         // Node "_f"
         expected.extend_from_slice(&2u16.to_le_bytes()); // name_len = 2
         expected.extend_from_slice(b"_f");
-        // Target: kind=1(StagedInode), ino=1
+        // Backing: kind=1(StagedInode), ino=1
         expected.push(1); // kind
         expected.extend_from_slice(&1u32.to_le_bytes()); // ino
         expected.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
@@ -1271,11 +1271,11 @@ mod tests {
             Action::Stage {
                 path: "/old".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             },
             Action::Delete {
                 path: "/old".into(),
-                pre: Target::Absence,
+                pre: Backing::None,
             },
         ]);
         let buf = tree.serialize();
@@ -1283,7 +1283,7 @@ mod tests {
         expected.extend_from_slice(&1u16.to_le_bytes()); // child_count = 1
         expected.extend_from_slice(&3u16.to_le_bytes()); // name_len = 3
         expected.extend_from_slice(b"old");
-        // Target: kind=3(None/negative)
+        // Backing: kind=3(None/negative)
         expected.push(3);
         expected.extend_from_slice(&0u16.to_le_bytes()); // child_count = 0
         assert_eq!(buf, expected);
@@ -1294,8 +1294,8 @@ mod tests {
         let tree = build(&[Action::Rename {
             src: "/a.txt".into(),
             dst: "/b.txt".into(),
-            src_pre: Target::BasePath("/a.txt".into()),
-            dst_pre: Target::Absence,
+            src_pre: Backing::BasePath("/a.txt".into()),
+            dst_pre: Backing::None,
         }]);
         let buf = tree.serialize();
         let mut cursor = 0usize;
@@ -1504,7 +1504,7 @@ mod tests {
         let tree = build(&[Action::Stage {
             path: "/f".into(),
             ino: 42,
-            pre: Target::Absence,
+            pre: Backing::None,
         }]);
         let buf = tree.serialize();
         // Skip: root child_count(2) + name_len(2) + name(1) = offset 5
@@ -1519,8 +1519,8 @@ mod tests {
         let tree = build(&[Action::Rename {
             src: "/src".into(),
             dst: "/dst".into(),
-            src_pre: Target::BasePath("/src".into()),
-            dst_pre: Target::Absence,
+            src_pre: Backing::BasePath("/src".into()),
+            dst_pre: Backing::None,
         }]);
         let buf = tree.serialize();
         // Find the "dst" node (children sorted: "dst" comes before "src")
@@ -1538,7 +1538,7 @@ mod tests {
         assert_eq!(&buf[cursor..cursor + base_len], b"/src");
     }
 
-    // serialize_unset_file_omitted test removed — File(Target::Unset) no longer
+    // serialize_unset_file_omitted test removed — File(Backing::Unset) no longer
     // exists.  File roundtrips remove the node entirely from the tree.
 
     #[test]
@@ -1551,7 +1551,7 @@ mod tests {
             "child".to_string(),
             DirNode {
                 old: None,
-                new: Some(Target::StagedFile(1)),
+                new: Some(Backing::StagedFile(1)),
                 children: DirTree::new(),
             },
         );
@@ -1603,7 +1603,7 @@ mod tests {
         // delete on a base-only symlink produces a negative dentry.
         let tree = build(&[Action::Delete {
             path: "/s".into(),
-            pre: Target::Absence,
+            pre: Backing::None,
         }]);
         let buf = tree.serialize();
         assert_eq!(buf[5], 3); // kind=None/negative
@@ -1632,12 +1632,12 @@ mod tests {
         ]);
         assert_eq!(tree.len(), 2, "child + tombstone at /tmp");
         assert!(
-            matches!(tree.get("/a/child"), Some(Target::StagedFile(1))),
+            matches!(tree.get("/a/child"), Some(Backing::StagedFile(1))),
             "/a/child should survive roundtrip: {:?}",
             tree
         );
         assert!(
-            matches!(tree.get("/tmp"), Some(Target::Absence)),
+            matches!(tree.get("/tmp"), Some(Backing::None)),
             "/tmp should be tombstoned: {:?}",
             tree
         );
@@ -1711,12 +1711,12 @@ mod tests {
             "roundtrip file should be removed"
         );
         assert!(
-            matches!(tree.get("/other"), Some(Target::StagedFile(1))),
+            matches!(tree.get("/other"), Some(Backing::StagedFile(1))),
             "sibling should survive: {:?}",
             tree
         );
         assert!(
-            matches!(tree.get("/tmp"), Some(Target::Absence)),
+            matches!(tree.get("/tmp"), Some(Backing::None)),
             "/tmp should be tombstoned: {:?}",
             tree
         );
@@ -1739,7 +1739,7 @@ mod tests {
             "link".to_string(),
             DirNode {
                 old: None,
-                new: Some(Target::BasePath("a".repeat(u16::MAX as usize + 1))),
+                new: Some(Backing::BasePath("a".repeat(u16::MAX as usize + 1))),
                 children: DirTree::new(),
             },
         );
@@ -1760,7 +1760,7 @@ mod tests {
                 Record::Action(Action::Stage {
                     path: "/a".into(),
                     ino: 1,
-                    pre: Target::Absence,
+                    pre: Backing::None,
                 }),
                 Record::Note(Note::Configure {
                     path: "/etc/shadow".into(),
@@ -1768,7 +1768,7 @@ mod tests {
                 }),
                 Record::Action(Action::Delete {
                     path: "/b".into(),
-                    pre: Target::Absence,
+                    pre: Backing::None,
                 }),
                 Record::Note(Note::Gate {
                     path: "/etc/group".into(),
@@ -1781,11 +1781,11 @@ mod tests {
             Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             },
             Action::Delete {
                 path: "/b".into(),
-                pre: Target::Absence,
+                pre: Backing::None,
             },
         ]);
         assert_eq!(with_notes, without_notes);

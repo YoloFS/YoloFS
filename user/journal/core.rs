@@ -226,7 +226,7 @@ mod tests {
         let staged = Journal::new(vec![Record::Action(Action::Stage {
             path: "/a".into(),
             ino: 1,
-            pre: Target::Absence,
+            pre: Backing::None,
         })]);
         assert!(staged.has_staged_changes);
 
@@ -236,7 +236,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Travel { target_gen: 1 }),
         ]);
@@ -249,7 +249,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "one".into() }),
         ]);
@@ -264,7 +264,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
         ]);
         assert_eq!(dirty.latest_gen, 1);
@@ -278,7 +278,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/dead".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Travel { target_gen: 1 }),
         ]);
@@ -296,19 +296,19 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "one".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Travel { target_gen: 1 }),
             Record::Action(Action::Stage {
                 path: "/c".into(),
                 ino: 3,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
         ]);
         assert_eq!(traveled_dirty.alloc_ino_floor, 3);
@@ -327,13 +327,13 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c3".into() }),
         ];
@@ -354,20 +354,20 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c3".into() }),
             Record::Marker(Marker::Travel { target_gen: 2 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c5".into() }),
         ];
@@ -385,7 +385,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/orphan".into(),
                 ino: 999,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot {
                 name: "init".into(),
@@ -393,7 +393,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
         ];
@@ -438,7 +438,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Note(Note::Gate {
                 path: "/etc/x".into(),
@@ -482,20 +482,20 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c3".into() }),
             Record::Marker(Marker::Travel { target_gen: 2 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c5".into() }),
         ];
@@ -514,20 +514,20 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c3".into() }),
             Record::Marker(Marker::Travel { target_gen: 1 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c5".into() }),
         ];
@@ -563,7 +563,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
         ];
@@ -582,20 +582,20 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c3".into() }),
             Record::Marker(Marker::Travel { target_gen: 2 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c5".into() }),
             Record::Marker(Marker::Travel { target_gen: 1 }),
@@ -617,26 +617,26 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c3".into() }),
             Record::Marker(Marker::Travel { target_gen: 1 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c5".into() }),
             Record::Action(Action::Stage {
                 path: "/e".into(),
                 ino: 4,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c6".into() }),
             Record::Marker(Marker::Travel { target_gen: 5 }),
@@ -655,20 +655,20 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c3".into() }),
             Record::Marker(Marker::Travel { target_gen: 1 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c5".into() }),
             Record::Marker(Marker::Travel { target_gen: 3 }),
@@ -684,7 +684,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Marker(Marker::Travel { target_gen: 1 }),
@@ -706,13 +706,13 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c3".into() }),
             Record::Marker(Marker::Travel { target_gen: 2 }),
@@ -735,20 +735,20 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c3".into() }),
             Record::Marker(Marker::Travel { target_gen: 2 }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 3,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c5".into() }),
         ];
@@ -773,13 +773,13 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Travel { target_gen: 99 }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
         ];
         let actions = live_actions(records);
@@ -797,19 +797,19 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c3".into() }),
             Record::Action(Action::Stage {
                 path: "/c".into(),
                 ino: 3,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c4".into() }),
         ];
@@ -856,26 +856,26 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c3".into() }),
             Record::Marker(Marker::Travel { target_gen: 1 }),
             Record::Action(Action::Stage {
                 path: "/c".into(),
                 ino: 3,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c5".into() }),
             Record::Action(Action::Stage {
                 path: "/d".into(),
                 ino: 4,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c6".into() }),
         ];
@@ -894,7 +894,7 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
         ];
@@ -914,13 +914,13 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c1".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Marker(Marker::Travel { target_gen: 1 }),
@@ -943,13 +943,13 @@ mod tests {
             Record::Action(Action::Stage {
                 path: "/a".into(),
                 ino: 1,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c2".into() }),
             Record::Action(Action::Stage {
                 path: "/b".into(),
                 ino: 2,
-                pre: Target::Absence,
+                pre: Backing::None,
             }),
             Record::Marker(Marker::Snapshot { name: "c3".into() }),
             Record::Marker(Marker::Travel { target_gen: 2 }),

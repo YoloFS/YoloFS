@@ -299,7 +299,7 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 	 * `yolo review --diff` can read the previous-snapshot content in O(segment).
 	 * For a re-COW of an already-staged file the dentry still carries the OLD
 	 * staging_ino here, so this resolves to the prior snapshot's s:<ino>. */
-	pre = yolo_preimage_target(dentry, pre_buf, sizeof(pre_buf));
+	pre = yolo_preimage_backing(dentry, pre_buf, sizeof(pre_buf));
 
 	err = yolo_inode_alloc(sbi, &ino, &inode_path,
 			       d_inode(dentry)->i_mode & ~S_IFMT, NULL);
@@ -328,12 +328,12 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 	}
 
 	/*
-	 * Publish: set target on dentry and pin if needed.
+	 * Publish: set backing on dentry and pin if needed.
 	 * Take inode_lock(parent) to serialize against VFS-driven
 	 * create/unlink/rename on the same directory.
 	 */
 	inode_lock(parent);
-	yolo_dentry_pin(dentry, YOLO_TARGET_INODE);
+	yolo_dentry_pin(dentry, YOLO_BACKING_STAGED);
 	yolo_stamp_staged(dentry, (u16)atomic_read(&sbi->staging.gen), ino);
 	inode_unlock(parent);
 

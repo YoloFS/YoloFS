@@ -9,7 +9,7 @@
 // stanza per consecutive snapshot. See the id/range grammar below.
 
 use crate::changeset::{Change, Changeset};
-use crate::journal::{Journal, Marker, Note, Target};
+use crate::journal::{Journal, Marker, Note, Backing};
 use crate::report;
 use anyhow::Result;
 use colored::Colorize;
@@ -97,46 +97,46 @@ enum ChangeKind {
 /// Classify a node from its `old` (the range-start version) and `new` (net
 /// state). `None` means nothing to show: a scaffold (`new = None`) or a no-op
 /// (absent → absent, a create+delete that nets out). A missing `old` on a
-/// rendered node is treated defensively as `Absence` (absent).
-fn classify(old: Option<&Target>, new: Option<&Target>) -> Option<ChangeKind> {
-    let present = matches!(old, Some(Target::StagedFile(_) | Target::BasePath(_)));
+/// rendered node is treated defensively as `None` (absent).
+fn classify(old: Option<&Backing>, new: Option<&Backing>) -> Option<ChangeKind> {
+    let present = matches!(old, Some(Backing::StagedFile(_) | Backing::BasePath(_)));
     match new {
         None => None, // scaffold
-        Some(Target::StagedFile(_)) if present => Some(ChangeKind::Modified),
-        Some(Target::StagedFile(_)) => Some(ChangeKind::Added),
-        Some(Target::BasePath(_)) => Some(ChangeKind::Renamed),
-        Some(Target::Absence) if present => Some(ChangeKind::Deleted),
-        Some(Target::Absence) => None, // no-op
+        Some(Backing::StagedFile(_)) if present => Some(ChangeKind::Modified),
+        Some(Backing::StagedFile(_)) => Some(ChangeKind::Added),
+        Some(Backing::BasePath(_)) => Some(ChangeKind::Renamed),
+        Some(Backing::None) if present => Some(ChangeKind::Deleted),
+        Some(Backing::None) => None, // no-op
     }
 }
 
 /// Read a target's content for the old/new side of a diff, or `None` if binary
-/// (or, for the old side, absent). `Absence` reads as empty.
-fn read_target_text(yolofs: &Path, target: &Target) -> Option<String> {
+/// (or, for the old side, absent). `None` reads as empty.
+fn read_target_text(yolofs: &Path, target: &Backing) -> Option<String> {
     match target {
-        Target::StagedFile(ino) => read_file_text(&crate::utils::inode_path(yolofs, *ino)),
-        Target::BasePath(p) => read_file_text(Path::new(p)),
-        Target::Absence => Some(String::new()),
+        Backing::StagedFile(ino) => read_file_text(&crate::utils::inode_path(yolofs, *ino)),
+        Backing::BasePath(p) => read_file_text(Path::new(p)),
+        Backing::None => Some(String::new()),
     }
 }
 
-/// Lossy content for a target (empty for `Absence` / unreadable).
-fn read_target_lossy(yolofs: &Path, target: &Target) -> String {
+/// Lossy content for a target (empty for `None` / unreadable).
+fn read_target_lossy(yolofs: &Path, target: &Backing) -> String {
     match target {
-        Target::StagedFile(ino) => read_inode(yolofs, *ino),
-        Target::BasePath(p) => read_file_lossy(Path::new(p)),
-        Target::Absence => String::new(),
+        Backing::StagedFile(ino) => read_inode(yolofs, *ino),
+        Backing::BasePath(p) => read_file_lossy(Path::new(p)),
+        Backing::None => String::new(),
     }
 }
 
 /// Print a change's one-line header. Renames read their source from `new`.
-fn print_header(kind: ChangeKind, shown: &str, new: Option<&Target>, root: &Path) {
+fn print_header(kind: ChangeKind, shown: &str, new: Option<&Backing>, root: &Path) {
     match kind {
         ChangeKind::Added => println!("{} {}", shown.bold(), "(added)".green()),
         ChangeKind::Modified => println!("{} {}", shown.bold(), "(modified)".yellow()),
         ChangeKind::Deleted => println!("{} {}", shown.bold(), "(deleted)".red()),
         ChangeKind::Renamed => {
-            if let Some(Target::BasePath(src)) = new {
+            if let Some(Backing::BasePath(src)) = new {
                 println!(
                     "{} → {} {}",
                     rel(src, root).bold(),
@@ -165,7 +165,7 @@ fn print_diff(yolofs: &Path, root: &Path, change: &Change) -> bool {
         ChangeKind::Added => {
             let ino = new
                 .as_ref()
-                .and_then(Target::ino)
+                .and_then(Backing::ino)
                 .expect("added ⇒ staged file");
             print_header(kind, &shown, new.as_ref(), root);
             if is_binary_inode(yolofs, ino) {
@@ -177,7 +177,7 @@ fn print_diff(yolofs: &Path, root: &Path, change: &Change) -> bool {
         ChangeKind::Modified => {
             let ino = new
                 .as_ref()
-                .and_then(Target::ino)
+                .and_then(Backing::ino)
                 .expect("modified ⇒ staged file");
             if is_binary_inode(yolofs, ino) || old_binary {
                 print_header(kind, &shown, new.as_ref(), root);
@@ -495,16 +495,16 @@ fn range_label(spec: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::Target;
+    use crate::journal::Backing;
 
     // ── classify (label rule shared by status + diff) ────────────────
 
     #[test]
     fn classify_all_combinations() {
         use ChangeKind::*;
-        let staged = Target::StagedFile(1);
-        let base = Target::BasePath("/x".into());
-        let absent = Target::Absence;
+        let staged = Backing::StagedFile(1);
+        let base = Backing::BasePath("/x".into());
+        let absent = Backing::None;
         // A staged end is added when the old side is absent, modified when present.
         assert!(matches!(
             classify(Some(&absent), Some(&staged)),

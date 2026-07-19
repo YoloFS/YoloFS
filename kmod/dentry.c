@@ -25,7 +25,7 @@ static int yolo_d_init(struct dentry *dentry)
 
 	spin_lock_init(&info->lock);
 	/* Ground state: unpinned, following base filesystem */
-	info->target = YOLO_TARGET_PATH;
+	info->backing = YOLO_BACKING_BASE;
 	info->perm = YOLO_PERM_UNSET;
 	INIT_LIST_HEAD(&info->rule_pin);
 	info->rule_dentry = NULL;
@@ -123,7 +123,7 @@ int yolo_dentry_interpose(struct dentry *dentry, struct path *lower_path)
 }
 
 /*
- * Allocate a child dentry under @parent, pin it with @target, and
+ * Allocate a child dentry under @parent, pin it with @backing, and
  * interpose into the dcache.  The child comes from d_alloc(), so the
  * interpose step always starts from a fresh negative dentry.
  * On success the caller loses ownership of @lower_path (if non-NULL).
@@ -131,7 +131,7 @@ int yolo_dentry_interpose(struct dentry *dentry, struct path *lower_path)
  */
 struct dentry *yolo_dentry_create(struct dentry *parent,
 				  const char *name, unsigned int len,
-				  enum yolo_target target,
+				  enum yolo_backing backing,
 				  struct path *lower_path)
 {
 	struct qstr qname;
@@ -149,7 +149,7 @@ struct dentry *yolo_dentry_create(struct dentry *parent,
 	}
 
 	YOLO_D(child)->pinned = true;	/* d_alloc ref counts as pin */
-	YOLO_D(child)->target = target;
+	YOLO_D(child)->backing = backing;
 
 	err = yolo_dentry_interpose(child, lower_path);
 	if (err) {
@@ -161,16 +161,16 @@ struct dentry *yolo_dentry_create(struct dentry *parent,
 }
 
 /*
- * Set a dentry's overlay target and pin it.  The only unpinned state
+ * Set a dentry's overlay backing and pin it.  The only unpinned state
  * is ground state, reached via yolo_dentry_unpin().
  * Caller must hold i_rwsem exclusive on the parent directory.
  */
-void yolo_dentry_pin(struct dentry *dentry, enum yolo_target target)
+void yolo_dentry_pin(struct dentry *dentry, enum yolo_backing backing)
 {
 	struct yolo_dentry_info *di = YOLO_D(dentry);
 	bool was_pinned = di->pinned;
 
-	di->target = target;
+	di->backing = backing;
 	di->pinned = true;
 
 	if (!was_pinned)
@@ -179,7 +179,7 @@ void yolo_dentry_pin(struct dentry *dentry, enum yolo_target target)
 
 /*
  * Return a dentry to ground state — staging no longer has interest
- * in it.  The target field becomes don't-care; lookups fall
+ * in it.  The backing field becomes don't-care; lookups fall
  * through to base as if staging never touched this entry.
  * Caller must hold i_rwsem exclusive on the parent directory.
  */
@@ -188,7 +188,7 @@ void yolo_dentry_unpin(struct dentry *dentry)
 	struct yolo_dentry_info *di = YOLO_D(dentry);
 	bool was_pinned = di->pinned;
 
-	di->target = YOLO_TARGET_PATH;
+	di->backing = YOLO_BACKING_BASE;
 	di->pinned = false;
 
 	if (was_pinned) {

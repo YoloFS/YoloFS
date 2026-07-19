@@ -65,7 +65,7 @@ static int yolo_stage_inode(struct inode *dir, struct dentry *dentry,
 	if (err)
 		return err;
 
-	yolo_dentry_pin(dentry, YOLO_TARGET_INODE);
+	yolo_dentry_pin(dentry, YOLO_BACKING_STAGED);
 	yolo_stamp_staged(dentry, (u16)atomic_read(&sbi->staging.gen), ino);
 
 	return 0;
@@ -120,7 +120,7 @@ static int yolo_delete_entry(struct inode *dir, struct dentry *dentry)
 	tomb = yolo_dentry_create(dentry->d_parent,
 				  dentry->d_name.name,
 				  dentry->d_name.len,
-				  YOLO_TARGET_NONE, NULL);
+				  YOLO_BACKING_NONE, NULL);
 	if (IS_ERR(tomb))
 		return PTR_ERR(tomb);
 
@@ -168,7 +168,7 @@ static int yolo_rename(struct mnt_idmap *idmap,
 	tomb = yolo_dentry_create(old_dentry->d_parent,
 				  old_dentry->d_name.name,
 				  old_dentry->d_name.len,
-				  YOLO_TARGET_NONE, NULL);
+				  YOLO_BACKING_NONE, NULL);
 	if (IS_ERR(tomb))
 		return PTR_ERR(tomb);
 
@@ -189,7 +189,7 @@ static int yolo_rename(struct mnt_idmap *idmap,
 	yolo_dentry_unpin(new_dentry);
 
 	/* Pin old_dentry at its new position so it survives dcache pressure */
-	yolo_dentry_pin(old_dentry, YOLO_D(old_dentry)->target);
+	yolo_dentry_pin(old_dentry, YOLO_D(old_dentry)->backing);
 
 	return 0;
 

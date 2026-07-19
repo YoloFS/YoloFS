@@ -256,7 +256,7 @@ yolofs/
 │   │   ├── timeline.rs        # `yolo timeline` command (snapshot/travel DAG)
 │   │   └── watch.rs           # permission prompt daemon (handles TTY ownership)
 │   ├── journal/               # journal parsing, timeline, and resolution
-│   │   ├── types.rs           # Action, Marker, Record, Segment, Target, Op, Note
+│   │   ├── types.rs           # Action, Marker, Record, Segment, Backing, Op, Note
 │   │   ├── parse.rs           # parse()  (pub(super))
 │   │   ├── marker.rs          # MarkerIndex (resolve_gen + marker_at + segment_range + alive_segments)
 │   │   ├── core.rs            # Journal (struct + new + read + live_segments_*)

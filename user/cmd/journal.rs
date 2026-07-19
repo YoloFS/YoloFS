@@ -191,7 +191,7 @@ mod tests {
         let action = Action::Stage {
             path: "/src/main.rs".into(),
             ino: 42,
-            pre: journal::Target::Absence,
+            pre: journal::Backing::None,
         };
         let s = strip_ansi(&format_action(&action));
         assert!(s.contains("staged"), "should say staged: {s}");
@@ -204,8 +204,8 @@ mod tests {
         let action = Action::Rename {
             src: "/a".into(),
             dst: "/b".into(),
-            src_pre: journal::Target::BasePath("/a".into()),
-            dst_pre: journal::Target::Absence,
+            src_pre: journal::Backing::BasePath("/a".into()),
+            dst_pre: journal::Backing::None,
         };
         let s = strip_ansi(&format_action(&action));
         assert!(s.contains("renamed"), "should say renamed: {s}");

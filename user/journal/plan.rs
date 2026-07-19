@@ -10,11 +10,11 @@
 // 1. **Collect**: DFS the tree, emitting actions for each node:
 //      - stages  (StagedFile)  — copy a staged inode to base
 //      - renames (BasePath)    — move a base path to a new location
-//      - deletes (Absence)   — remove a base path
+//      - deletes (None)   — remove a base path
 //    Scaffold nodes (end = None) emit no op; they exist only as scaffolding.
-//    Recursion stops at Absence: a tombstoned dir is deleted whole
+//    Recursion stops at None: a tombstoned dir is deleted whole
 //    (`remove_dir_all`), so child actions are unnecessary.  Any children
-//    staged before the delete are dead — the Absence overwrites them.
+//    staged before the delete are dead — the None overwrites them.
 //
 // 2. **Process renames**: every rename source is moved to a temp path,
 //    deepest source first (so children are extracted before their parent
@@ -27,20 +27,20 @@
 //
 // ## Why this order is correct
 //
-// Ordering principle: **Absence/StagedFile must not clobber BasePath**.
+// Ordering principle: **None/StagedFile must not clobber BasePath**.
 // BasePath is the only target type that references existing base state
-// (it carries a source path it needs to read).  Absence and StagedFile
+// (it carries a source path it needs to read).  None and StagedFile
 // are pure writes — they destroy or create, referencing nothing in base.
-// If a Absence or StagedFile fires before a BasePath has read its
+// If a None or StagedFile fires before a BasePath has read its
 // source, it can clobber that source path.  Therefore all BasePath reads
-// (saves) must complete before any Absence/StagedFile writes execute.
+// (saves) must complete before any None/StagedFile writes execute.
 // Within the writers, places must precede deletes+stages because a
 // stage may target a child of a rename destination.  Deletes and stages
 // have no dependency on each other — the DirTree guarantees no stage
 // writes under a deleted path — so they are interleaved in DFS order.
 
 use super::tree::DirTree;
-use super::types::Target;
+use super::types::Backing;
 use std::path::Path;
 
 /// One filesystem mutation in a commit plan.
@@ -120,19 +120,19 @@ fn collect(
 
         // Commit reads the net state (`end`) only.
         match &node.new {
-            Some(Target::StagedFile(ino)) => {
+            Some(Backing::StagedFile(ino)) => {
                 ops.push(CommitOp::Stage {
                     path: prefix.clone(),
                     ino: *ino,
                 });
             }
-            Some(Target::BasePath(src)) => {
+            Some(Backing::BasePath(src)) => {
                 renames.push(CommitOp::Rename {
                     dst: prefix.clone(),
                     src: src.clone(),
                 });
             }
-            Some(Target::Absence) => {
+            Some(Backing::None) => {
                 ops.push(CommitOp::Delete {
                     path: prefix.clone(),
                 });
@@ -140,7 +140,7 @@ fn collect(
             None => {} // scaffold
         }
 
-        if !matches!(node.new, Some(Target::Absence)) {
+        if !matches!(node.new, Some(Backing::None)) {
             collect(&node.children, prefix, renames, ops);
         }
 
@@ -225,14 +225,14 @@ mod tests {
         Action::Stage {
             path: path.into(),
             ino,
-            pre: Target::Absence,
+            pre: Backing::None,
         }
     }
 
     fn delete(path: &str) -> Action {
         Action::Delete {
             path: path.into(),
-            pre: Target::Absence,
+            pre: Backing::None,
         }
     }
 
@@ -247,8 +247,8 @@ mod tests {
         Action::Rename {
             dst: dest.into(),
             src: src.into(),
-            src_pre: Target::BasePath(origin.into()),
-            dst_pre: Target::Absence,
+            src_pre: Backing::BasePath(origin.into()),
+            dst_pre: Backing::None,
         }
     }
 
@@ -510,8 +510,8 @@ mod tests {
             Action::Rename {
                 dst: "/x".into(),
                 src: "/c/f".into(),
-                src_pre: Target::BasePath("/a/f".into()),
-                dst_pre: Target::Absence,
+                src_pre: Backing::BasePath("/a/f".into()),
+                dst_pre: Backing::None,
             },
         ])
         .into_plan(Path::new("/scratch"));
@@ -577,21 +577,21 @@ mod tests {
         get_renames(plan)
             .into_iter()
             .map(|(dst, src)| Action::Rename {
-                src_pre: Target::BasePath(src.clone()),
+                src_pre: Backing::BasePath(src.clone()),
                 dst,
                 src,
-                dst_pre: Target::Absence,
+                dst_pre: Backing::None,
             })
             .chain(plan.ops.iter().filter_map(|op| match op {
                 CommitOp::Rename { .. } => None, // places already resolved above
                 CommitOp::Stage { path, ino } => Some(Action::Stage {
                     path: path.clone(),
                     ino: *ino,
-                    pre: Target::Absence,
+                    pre: Backing::None,
                 }),
                 CommitOp::Delete { path } => Some(Action::Delete {
                     path: path.clone(),
-                    pre: Target::Absence,
+                    pre: Backing::None,
                 }),
             }))
             .collect()
@@ -600,7 +600,7 @@ mod tests {
     /// The net (committable) state: (path, end) pairs, scaffolds skipped. The
     /// `start` field is review-only metadata that `into_plan` discards, so
     /// idempotence is over the `end` projection, not the full node.
-    fn ends(tree: &DirTree) -> Vec<(String, Target)> {
+    fn ends(tree: &DirTree) -> Vec<(String, Backing)> {
         let mut v = Vec::new();
         tree.for_each(|p, t| v.push((p.to_string(), t.clone())));
         v
