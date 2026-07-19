@@ -111,6 +111,13 @@ impl Journal {
         self.alive.get(gen_id).copied().unwrap_or(false)
     }
 
+    /// Whether a record remains live for audit display. C records describe
+    /// policy that survives filesystem travel, so they are never killed with
+    /// the surrounding filesystem branch.
+    pub fn is_record_alive(&self, gen_id: usize, record: &Record) -> bool {
+        self.is_alive(gen_id) || matches!(record, Record::Note(Note::Configure { .. }))
+    }
+
     /// Segment range [start, end) for the default scoped ("latest") view — the
     /// most recent batch of changes. Each `yolo run -- <cmd>` auto-snapshots, so the
     /// usual tip is an empty trailing segment; in that case we show the segment
@@ -207,11 +214,11 @@ mod tests {
         // Empty journal → nothing staged.
         assert!(!Journal::new(vec![]).has_staged_changes);
 
-        // A bare note (e.g. a blocked access) is not a staged change.
-        let notes_only = Journal::new(vec![Record::Note(Note::Block {
+        // A bare note (e.g. a denied access) is not a staged change.
+        let notes_only = Journal::new(vec![Record::Note(Note::Gate {
             path: "/etc/x".into(),
             op: Op::Write,
-            rule_path: "/etc".into(),
+            result: GateResult::DirectDeny,
         })]);
         assert!(!notes_only.has_staged_changes);
 
@@ -433,16 +440,15 @@ mod tests {
                 ino: 1,
                 pre: Target::Absence,
             }),
-            Record::Note(Note::Block {
+            Record::Note(Note::Gate {
                 path: "/etc/x".into(),
                 op: Op::Write,
-                rule_path: "/etc".into(),
+                result: GateResult::DirectDeny,
             }),
             Record::Marker(Marker::Snapshot { name: "c1".into() }),
-            Record::Note(Note::Block {
+            Record::Note(Note::Configure {
                 path: "/etc/y".into(),
-                op: Op::Write,
-                rule_path: "/etc".into(),
+                policy: Policy::Deny,
             }),
         ];
         let j = Journal::new(records);
@@ -455,13 +461,13 @@ mod tests {
         ));
         assert!(matches!(
             &j.segments[0].records[1],
-            Record::Note(Note::Block { path, .. }) if path == "/etc/x"
+            Record::Note(Note::Gate { path, .. }) if path == "/etc/x"
         ));
         // seg1: trailing note.
         assert_eq!(j.segments[1].records.len(), 1);
         assert!(matches!(
             &j.segments[1].records[0],
-            Record::Note(Note::Block { path, .. }) if path == "/etc/y"
+            Record::Note(Note::Configure { path, .. }) if path == "/etc/y"
         ));
     }
 

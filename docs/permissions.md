@@ -233,10 +233,10 @@ enum yolo_perm yolo_perm_get(struct inode *inode, struct dentry *dentry)
 
 // Shared permission check: resolve, ask if needed, check the requested op.
 // Used by yolo_open (for file access) and yolo_check_mutate_perm (for metadata
-// ops).  Lives in perm.c.  Journaling lives next to the decision: an ask writes
-// its A note internally; a static block writes a B.  `check` is whose perm
-// gates; `target` is what a B reports (the child for parent-gated mutates,
-// otherwise the same dentry).  Callers just propagate the returned errno.
+// ops). Lives in perm.c. Journaling lives next to the result: an ask writes a
+// G result internally; a static denial writes G with result `d`. `check` is
+// whose perm gates; `target` is the attempted path recorded by G. Callers just
+// propagate the returned errno.
 int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
                            struct dentry *target, int f_flags)
 {
@@ -248,15 +248,15 @@ int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
 
     if (perm == YOLO_PERM_ASK ||
         (perm == YOLO_PERM_WRITE_ASK && op == YOLO_OP_WRITE)) {
-        // ... ask daemon, or deny if none answers; writes the A note ...
-        return decision == YOLO_DECISION_ALLOW ? 0 : -EACCES;  // ask-deny: no B
+        // ... ask daemon, or deny on timeout; writes one G result ...
+        return decision == YOLO_DECISION_ALLOW ? 0 : -EACCES;
     }
-    // Static block: writes B(target, rule-from-check) on a deny.
+    // Static denial: writes G(target, op, d).
     return yolo_perm_check_static(sbi, target, check, perm, f_flags);
 }
 
 // Metadata ops check write permission on the parent directory; a block reports
-// the child (target). A and B disjointness is handled inside the shared check.
+// the child (target). Exactly-one-G behavior is handled in the shared check.
 static int yolo_check_mutate_perm(struct dentry *dentry)
 {
     struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
@@ -442,22 +442,21 @@ longest-prefix-match for free. This satisfies all three principles:
 | unlink, rmdir | parent dir's perm (write) | `yolo_check_mutate_perm` |
 | rename | both parents' perm (write) | `yolo_check_mutate_perm` × 2 |
 
-When a **static** rule (`deny`, or `read-only` on a write) gates an access to
-`-EACCES` with no prompt, the kernel appends a
-`B\0<path>\0<op>\0<rule_path>\n` record: `<path>` is the *target* the agent
-tried to act on (not the parent whose perm was the source of denial), `op` is
-`r`/`w`, and `<rule_path>` is the overlay path of the rule that blocked it (the
-`/etc` in "blocked because of the rule on `/etc`"). And whenever an `ask` /
-`write-ask` is resolved — by the daemon or the timeout default — the kernel
-appends an `A\0<access_path>\0<op>\0<decision>\n` record capturing the verdict.
-A records carry the attempted access path, not the rule path.
-
-**A and B are disjoint, one record per access.** An `ask`/`write-ask` that
-resolves to deny is recorded **solely as A (decision `n`)** — never also a B,
-even though the access returns `-EACCES`. B is exclusively for static-rule
-blocks that never prompted. `yolo review` summaries and `yolo journal` surface
-both so the user can review what was blocked or asked, in order, relative to
+The kernel appends one `G\0<path>\0<op>\0<result>\n` record for each prompted
+or denied access. `<path>` is the target the agent tried to access, including
+the child of a parent-gated metadata mutation, and `op` is `r` or `w`. The
+result is `d` for a static-policy denial, `y` for an ask that allows, and `n`
+for an ask that denies, including timeout denial. Direct static allows are not
+logged. `yolo review` and `yolo journal` surface G records in order relative to
 snapshots. `HIDE` paths return `-ENOENT`, never issue asks, and are not logged.
+
+A successful `yolo rule` assignment on a live mount appends
+`C\0<path>\0<policy>\n`. C stands for Configure. The one-letter policy is `q`
+for ask, `a` for allow, `w` for write-ask, `r` for read-only, `d` for deny, `h`
+for hide, or `u` for unset. Applying saved rules during mount or remount does
+not emit C. C records are chronological audit events: travel does not restore
+policy or make an earlier C unreachable. Neither G nor C affects staged state
+or the dirty bit. Review retains repeated G and C records in journal order.
 See
 [staging.md §Journal Format](staging.md#journal-format) for the record
 shape and semantics.

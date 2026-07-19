@@ -2,8 +2,9 @@
 /*
  * yolofs — append-only journal.
  *
- * Written by the kernel on every mutation. Read by the CLI for
- * commit/abort/status/diff. The kernel never reads it back.
+ * Written by the kernel for mutations, control markers, and audit events.
+ * Read by the CLI for commit/abort/review/diff/journal. The kernel never reads
+ * it back.
  *
  * Record format (NUL-separated fields, newline-terminated):
  *   S\0<path>\0<ino>\0<pre>\n          — Stage (post = StagedFile(ino))
@@ -11,13 +12,9 @@
  *   R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n  — Rename
  *   P\0<name>\n                       — Snapshot
  *   T\0<target_gen>\n                 — Travel
- *   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
- *   B\0<path>\0<op>\0<rule_path>\n     — Blocked by a static rule (observational)
- *   (op = r/w; decision = y/n — the yes/no answer to the ask)
- *
- * A and B are disjoint, one per access: an ask resolved to deny is recorded
- * solely as A; B is only for static-rule blocks (deny, read-only-on-write)
- * that never prompted, and carries the blocking rule's path.
+ *   G\0<path>\0<op>\0<result>\n        — Prompted or denied access (observational)
+ *   C\0<path>\0<policy>\n           — Live policy configuration (observational)
+ *   (op = r/w; result = d/y/n; policy = q/a/w/r/d/h/u)
  *
  * Record tags are uppercase. Each *pre field is the operation-local pre-op
  * backing of that overlay name, tagged with the lowercased first letter of the
@@ -30,27 +27,24 @@
 #include <linux/file.h>
 #include <linux/namei.h>
 
-/* ── Open the journal file, cache on sbi ───────────────────────────── */
+/* ── Open the journal file for append ──────────────────────────────── */
 
-int yolo_journal_open(struct yolo_sb_info *sbi)
+/* Open <storage>/journal O_WRONLY|O_APPEND. Returns the file on success or an
+ * ERR_PTR; the caller owns the returned file and caches it where it wants. */
+struct file *yolo_journal_open(const struct path *storage)
 {
 	struct path journal_p;
 	struct file *f;
 	int err;
 
-	err = vfs_path_lookup(sbi->storage_path.dentry,
-			      sbi->storage_path.mnt,
+	err = vfs_path_lookup(storage->dentry, storage->mnt,
 			      "journal", 0, &journal_p);
 	if (err)
-		return err;
+		return ERR_PTR(err);
 
 	f = dentry_open(&journal_p, O_WRONLY | O_APPEND, current_cred());
 	path_put(&journal_p);
-	if (IS_ERR(f))
-		return PTR_ERR(f);
-
-	sbi->staging.journal_file = f;
-	return 0;
+	return f;
 }
 
 /* ── Write one record ───────────────────────────────────────────────── */
@@ -58,18 +52,25 @@ int yolo_journal_open(struct yolo_sb_info *sbi)
 static int journal_write(struct yolo_sb_info *sbi, char tag,
 			 const char **fields)
 {
-	const size_t bufsz = 4 * YOLO_PATH_MAX + 64;
 	char *buf;
+	size_t bufsz = 2;
 	size_t off = 0;
 	const char **fp;
 	struct file *f = sbi->staging.journal_file;
 	loff_t pos;
-	int err;
+	ssize_t written;
 
 	if (!f)
 		return -EIO;
 
-	/* Off the stack: a worst-case R record holds four path-sized fields. */
+	for (fp = fields; *fp; fp++) {
+		size_t len = strlen(*fp);
+
+		if (len > SIZE_MAX - bufsz - 1)
+			return -EOVERFLOW;
+		bufsz += len + 1;
+	}
+
 	buf = kmalloc(bufsz, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
@@ -79,24 +80,25 @@ static int journal_write(struct yolo_sb_info *sbi, char tag,
 	for (fp = fields; *fp; fp++) {
 		size_t len = strlen(*fp);
 
-		if (off + len + 1 > bufsz) {
-			kfree(buf);
-			return -ENAMETOOLONG;
-		}
 		memcpy(buf + off, *fp, len);
 		off += len;
 		buf[off++] = (*(fp + 1)) ? '\0' : '\n';
 	}
 
 	pos = f->f_pos;
-	err = kernel_write(f, buf, off, &pos);
+	written = kernel_write(f, buf, off, &pos);
 	kfree(buf);
+	if (written < 0)
+		return written;
+	if (written != off)
+		return -EIO;
+
 	/* Only data mutations (S/D/R) mark the session dirty. Markers (P/T) and
-	 * observational notes (A/B) are excluded — they must not trigger an
+	 * observational notes (G/C) are excluded — they must not trigger an
 	 * auto-snapshot under YOLO_SNAPSHOT_IF_CHANGED. */
-	if (err >= 0 && (tag == 'S' || tag == 'D' || tag == 'R'))
+	if (tag == 'S' || tag == 'D' || tag == 'R')
 		WRITE_ONCE(sbi->staging.dirty, true);
-	return err < 0 ? err : 0;
+	return 0;
 }
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
@@ -245,79 +247,118 @@ int yolo_journal_travel(struct yolo_sb_info *sbi, u16 target_gen)
 			     (const char *[]){ target_str, NULL });
 }
 
-/* Single-letter journal encodings (self-describing, like the record tags). */
-static char op_char(enum yolo_op op)
+static char gate_result_char(enum yolo_gate_result result)
 {
-	return op == YOLO_OP_WRITE ? 'w' : 'r';
+	switch (result) {
+	case YOLO_GATE_DIRECT_DENY:
+		return 'd';
+	case YOLO_GATE_ASK_ALLOW:
+		return 'y';
+	case YOLO_GATE_ASK_DENY:
+		return 'n';
+	default:
+		return '\0';
+	}
 }
 
-static char decision_char(enum yolo_decision decision)
+static char policy_code(enum yolo_perm perm)
 {
-	return decision == YOLO_DECISION_ALLOW ? 'y' : 'n';
+	switch (perm) {
+	case YOLO_PERM_UNSET:
+		return 'u';
+	case YOLO_PERM_ASK:
+		return 'q';
+	case YOLO_PERM_ALLOW:
+		return 'a';
+	case YOLO_PERM_WRITE_ASK:
+		return 'w';
+	case YOLO_PERM_READ_ONLY:
+		return 'r';
+	case YOLO_PERM_DENY:
+		return 'd';
+	case YOLO_PERM_HIDE:
+		return 'h';
+	default:
+		return '\0';
+	}
+}
+
+/* Resolve @dentry's overlay path into a freshly kmalloc'd PATH_MAX buffer.
+ * On success returns the path pointer (inside *bufp, which the caller frees);
+ * on failure returns an ERR_PTR and leaves nothing to free. A full PATH_MAX is
+ * used — journal notes cover arbitrary-depth paths that YOLO_PATH_MAX truncates.
+ */
+static char *journal_dentry_path(struct dentry *dentry, char **bufp)
+{
+	char *buf = kmalloc(PATH_MAX, GFP_KERNEL);
+	char *path;
+
+	if (!buf)
+		return ERR_PTR(-ENOMEM);
+	path = dentry_path_raw(dentry, buf, PATH_MAX);
+	if (IS_ERR(path)) {
+		kfree(buf);
+		return path;
+	}
+	*bufp = buf;
+	return path;
 }
 
 /**
- * yolo_journal_ask - Append an "ask resolved" note recording the decision.
+ * yolo_journal_gate - Append one prompted-or-denied access result.
  * @sbi: superblock info
- * @path: the asked path (relative, as sent to the daemon)
+ * @target: the dentry whose access reached the gate
  * @op: the attempted operation (enum yolo_op)
- * @decision: allow/deny decision from the daemon or timeout default
+ * @result: d (static deny), y (asked/allow), or n (asked/deny)
  *
  * Observational note (does not set sbi->staging.dirty). Format:
- *   A\0<path>\0<op>\0<decision>\n   (op = r/w; decision = y/n)
+ *   G\0<path>\0<op>\0<result>\n
  */
-int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
-		     enum yolo_op op, enum yolo_decision decision)
+int yolo_journal_gate(struct yolo_sb_info *sbi, struct dentry *target,
+		      enum yolo_op op, enum yolo_gate_result result)
 {
-	char op_str[2] = { op_char(op), '\0' };
-	char dec_str[2] = { decision_char(decision), '\0' };
+	char op_str[2] = { op == YOLO_OP_WRITE ? 'w' : 'r', '\0' };
+	char result_str[2] = { gate_result_char(result), '\0' };
+	char *buf;
+	char *path;
+	int err;
 
-	return journal_write(sbi, 'A',
-			     (const char *[]){ path, op_str, dec_str, NULL });
+	if (!result_str[0])
+		return -EINVAL;
+	path = journal_dentry_path(target, &buf);
+	if (IS_ERR(path))
+		return PTR_ERR(path);
+	err = journal_write(sbi, 'G',
+			    (const char *[]){ path, op_str, result_str, NULL });
+	kfree(buf);
+	return err;
 }
 
 /**
- * yolo_journal_block - Append a "permission blocked" note to the journal.
- * @sbi: superblock info (has journal_file)
- * @target: the dentry whose access was denied — the agent's intended target
- *          (the file for opens/setattr; the child for parent-write-denied
- *          mutates). Recorded as the <path> field.
- * @checked: the dentry whose rule gated the access (the file itself, or the
- *           parent for mutates). Its nearest ruled ancestor is the blocking
- *           rule, recorded as the <rule_path> field.
- * @op: the attempted operation (enum yolo_op)
+ * yolo_journal_configure - Append a successful live explicit-policy assignment.
+ * @sbi: superblock info
+ * @target: dentry on which the explicit policy is assigned
+ * @perm: assigned policy, including UNSET
  *
- * Observational note: written only for a *static*-rule block (deny, or
- * read-only on a write) — an ask resolved to deny is recorded solely as an A
- * note by yolo_ask_userspace, never here (see yolo_perm_check_dentry). Does not
- * set sbi->staging.dirty (see journal_write).
- *
- * Format: B\0<path>\0<op>\0<rule_path>\n
+ * Observational note (does not set sbi->staging.dirty). Format:
+ *   C\0<path>\0<policy>\n
  */
-int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *target,
-		       struct dentry *checked, enum yolo_op op)
+int yolo_journal_configure(struct yolo_sb_info *sbi, struct dentry *target,
+			   enum yolo_perm perm)
 {
-	char path_buf[YOLO_PATH_MAX];
-	char rule_buf[YOLO_PATH_MAX];
-	char op_str[2] = { op_char(op), '\0' };
-	const char *rule_path = "";
-	struct dentry *rule = NULL;
-	char *path = dentry_path_raw(target, path_buf, sizeof(path_buf));
+	char policy[2] = { policy_code(perm), '\0' };
+	char *buf;
+	char *path;
+	int err;
+
+	if (!policy[0])
+		return -EINVAL;
+
+	path = journal_dentry_path(target, &buf);
 	if (IS_ERR(path))
 		return PTR_ERR(path);
-
-	/* Resolve the blocking rule from the *checked* dentry — its nearest
-	 * ruled ancestor (the parent for mutates), not the target's. A static
-	 * block always has a source; the NULL/format-error fallback to "" keeps
-	 * this best-effort. */
-	yolo_perm_walk(checked, &rule);
-	if (rule) {
-		const char *p = dentry_path_raw(rule, rule_buf, sizeof(rule_buf));
-		if (!IS_ERR(p))
-			rule_path = p;
-		dput(rule);
-	}
-
-	return journal_write(sbi, 'B',
-			     (const char *[]){ path, op_str, rule_path, NULL });
+	err = journal_write(sbi, 'C',
+			    (const char *[]){ path, policy, NULL });
+	kfree(buf);
+	return err;
 }

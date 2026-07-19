@@ -85,25 +85,23 @@ fn journal_path_filter() {
     );
 }
 
-/// `yolofs journal` surfaces observational notes — a denied access (B note)
-/// must appear as "blocked <path>". This is the complement of
-/// `block_records_invisible_in_status_and_diff`: notes are hidden from
-/// status/diff but visible in journal.
+/// `yolo journal` surfaces observational notes: a direct denial appears with
+/// the target path.
 #[test]
-fn journal_shows_blocked_note() {
+fn journal_shows_denied_note() {
     let s = YoloSession::new_with_config(Config {
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
     .expect("session setup");
 
-    // Denied read emits a B note for hello.txt (no S/D/R action).
+    // Denied read emits G(..., d) for hello.txt (no S/D/R action).
     let _ = fs::read_to_string(s.mnt_path("hello.txt"));
 
     let output = s.cli(&["journal"]).expect("journal");
     assert!(
-        output.contains("blocked"),
-        "journal should show the blocked note: {output}"
+        output.contains("denied"),
+        "journal should show the denied note: {output}"
     );
     assert!(
         output.contains("hello.txt"),

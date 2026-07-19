@@ -88,33 +88,82 @@ impl Op {
     }
 }
 
-/// An observational note — does not affect overlay state, only audit.
+/// How a prompted or denied access was resolved.
+/// Journal encoding: `d` / `y` / `n`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateResult {
+    DirectDeny,
+    AskAllow,
+    AskDeny,
+}
+
+impl GateResult {
+    pub fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            b'd' => Some(Self::DirectDeny),
+            b'y' => Some(Self::AskAllow),
+            b'n' => Some(Self::AskDeny),
+            _ => None,
+        }
+    }
+}
+
+/// An explicit policy assignment recorded by C.
+/// Journal encoding: `q` / `a` / `w` / `r` / `d` / `h` / `u`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Policy {
+    Ask,
+    Allow,
+    WriteAsk,
+    ReadOnly,
+    Deny,
+    Hide,
+    Unset,
+}
+
+impl Policy {
+    pub fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            b'q' => Some(Self::Ask),
+            b'a' => Some(Self::Allow),
+            b'w' => Some(Self::WriteAsk),
+            b'r' => Some(Self::ReadOnly),
+            b'd' => Some(Self::Deny),
+            b'h' => Some(Self::Hide),
+            b'u' => Some(Self::Unset),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Allow => "allow",
+            Self::WriteAsk => "write-ask",
+            Self::ReadOnly => "read-only",
+            Self::Deny => "deny",
+            Self::Hide => "hide",
+            Self::Unset => "unset",
+        }
+    }
+}
+
+/// An observational note — does not affect override state, only audit.
 ///
 /// Emitted by the kernel and ignored by commit/abort/diff/replay; review
-/// summaries and `yolo journal` surface them. The `decision` is a
-/// [`Decision`](crate::perm::Decision), journal-encoded as a single letter.
-///
-/// A and B are disjoint, one per access: an `ask` resolved to deny is recorded
-/// solely as `Ask`; `Block` is only for static-rule blocks that never prompted.
-///
-/// - `Ask` — an `ask` path was resolved to `decision` (by the daemon or the
-///   timeout default). Wire: `A\0<path>\0<op>\0<decision>\n`.
-/// - `Block` — a static rule (`deny`, `read-only`-on-write) returned `-EACCES`.
-///   `rule_path` is the overlay path of the blocking rule (same namespace as
-///   `path`; empty only in the rare unresolvable case).
-///   Wire: `B\0<path>\0<op>\0<rule_path>\n`.
+/// summaries and `yolo journal` surface them.
 #[derive(Debug, Clone)]
 pub enum Note {
-    Ask {
+    /// Prompted or statically denied access.
+    /// Wire: `G\0<path>\0<op>\0<result>\n`.
+    Gate {
         path: String,
         op: Op,
-        decision: crate::perm::Decision,
+        result: GateResult,
     },
-    Block {
-        path: String,
-        op: Op,
-        rule_path: String,
-    },
+    /// Successful explicit policy assignment on a live mount.
+    /// Wire: `C\0<path>\0<policy>\n`.
+    Configure { path: String, policy: Policy },
 }
 
 /// A parsed journal record (interleaved actions, markers, and notes).
@@ -125,14 +174,14 @@ pub enum Record {
     Note(Note),
 }
 
-/// A group of records (S/D/R + B) between consecutive P/T boundaries.
+/// A group of records (S/D/R + G/C) between consecutive P/T boundaries.
 ///
 /// `Record::Marker` is never pushed into a segment by `Journal::new` —
 /// markers split segments. Only `Record::Action` and `Record::Note`
 /// appear here.
 #[derive(Debug)]
 pub struct Segment {
-    /// The S/D/R + B records in this segment (no P/T records).
+    /// The S/D/R + G/C records in this segment (no P/T records).
     pub records: Vec<Record>,
 }
 
@@ -152,5 +201,33 @@ mod tests {
         assert_eq!(Op::from_byte(b'x'), None);
         assert_eq!(Op::Read.label(), "read");
         assert_eq!(Op::Write.label(), "write");
+    }
+
+    #[test]
+    fn gate_result_byte_roundtrips() {
+        for (code, result) in [
+            (b'd', GateResult::DirectDeny),
+            (b'y', GateResult::AskAllow),
+            (b'n', GateResult::AskDeny),
+        ] {
+            assert_eq!(GateResult::from_byte(code), Some(result));
+        }
+        assert_eq!(GateResult::from_byte(b'x'), None);
+    }
+
+    #[test]
+    fn policy_codes_roundtrip() {
+        for (code, policy) in [
+            (b'q', Policy::Ask),
+            (b'a', Policy::Allow),
+            (b'w', Policy::WriteAsk),
+            (b'r', Policy::ReadOnly),
+            (b'd', Policy::Deny),
+            (b'h', Policy::Hide),
+            (b'u', Policy::Unset),
+        ] {
+            assert_eq!(Policy::from_byte(code), Some(policy));
+        }
+        assert_eq!(Policy::from_byte(b'x'), None);
     }
 }

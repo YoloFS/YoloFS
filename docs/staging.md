@@ -561,8 +561,8 @@ D\0<path>\0<pre>\n              — Delete
 R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n   — Rename
 P\0<name>\n                       — Snapshot
 T\0<target_gen>\n                 — Travel
-A\0<access_path>\0<op>\0<decision>\n    — Ask resolved (records the decision)
-B\0<path>\0<op>\0<rule_path>\n     — Blocked by a static rule (permission denied)
+G\0<path>\0<op>\0<result>\n          — Prompted or denied access
+C\0<path>\0<policy>\n             — Live explicit-policy configuration
 ```
 
 Each mutation type has its own record tag and carries exactly the fields
@@ -597,7 +597,7 @@ from `dentry_path_raw`), while `b:` carries a lower-filesystem absolute path
 **only because base is always `/`** — the overlay mirrors the whole root, so an
 overlay path and its base path coincide. The CLI relies on this: commit moves
 `BasePath` sources by string, and review's rename suppression matches `BasePath`
-ends against overlay tree paths.
+ends against override-tree paths.
 
 | Tag | Fields | Meaning |
 |-----|--------|---------|
@@ -606,30 +606,36 @@ ends against overlay tree paths.
 | `R` | `<dst>`, `<src>`, `<src_pre>`, `<dst_pre>` | Rename |
 | `P` | `<name>` | Snapshot marker |
 | `T` | `<target_gen>` | Travel marker |
-| `A` | `<access_path>`, `<op>`, `<decision>` | An `ask` was resolved to `<decision>` — observational |
-| `B` | `<path>`, `<op>`, `<rule_path>` | Access blocked by a static rule (`-EACCES`) — observational |
+| `G` | `<path>`, `<op>`, `<result>` | Result of a prompted or statically denied access — observational |
+| `C` | `<path>`, `<policy>` | Successful live explicit-policy assignment — observational |
 
-`op` is a single letter (`r`/`w`); `decision` is a single letter (`y`/`n` —
-the yes/no answer to the ask; `a` and `d` would collide with the Absence
-pre-target tag and the `D` record tag). Decisions answer only the current
-blocked operation; persistent policy changes are separate rule updates.
-A records carry the attempted access path, not the rule path; B's `<rule_path>`
-is an overlay path in the same namespace as `<path>` (from `dentry_path_raw` on
-the blocking rule's dentry). `hide` is rule-only: hidden paths return `ENOENT`
-without producing ask or block notes. **A and B are disjoint, one record per
-access**: an `ask`/`write-ask` resolved to deny is recorded **solely as A**
-(decision `n`), never also a B — B is exclusively for static-rule blocks
-(`deny`, `read-only`-on-write) that never prompted. S/D/R are state mutations.
-P/T are control markers. **A and B are observational notes**: they record that
-a static rule blocked an access (`B`) or that an `ask` was resolved (`A`, by the
-daemon or the timeout default) but do not affect any state. The CLI's dir-tree builder, commit, abort, and diff
-ignore them; `yolo review` summaries and `yolo journal` surface them. A/B writes do not set
-`sbi->dirty`, so a command that only triggers blocks/asks does not cause an
-auto-snapshot under `YOLO_SNAPSHOT_IF_CHANGED`. They ride within segments
-alongside S/D/R, so reachability and `-- <path>` filtering
-apply identically (a B in an unreachable segment is dimmed in journal
-output). Current scope is `-EACCES` only; `HIDE`/`-ENOENT` paths are
-not logged.
+`op` is a single letter (`r`/`w`). A G result is `d` when a static policy
+denies without prompting, `y` when an ask allows, and `n` when an ask denies.
+Timeout denial is `n`. G records omit the source rule path and are emitted only
+for prompted or denied accesses; direct allows are not logged. `hide` remains
+unlogged because recording its path would disclose a hidden name.
+
+C stands for Configure. `policy` is a single letter: `q` = ask, `a` = allow,
+`w` = write-ask, `r` = read-only, `d` = deny, `h` = hide, and `u` = unset.
+`unset` removes the explicit rule and restores inheritance. C records are
+emitted for successful live policy assignments made by `yolo rule`, not when
+mounting or remounting applies the saved configuration. Edits made while
+unmounted have no live journal in which to write C.
+
+S/D/R are state mutations and P/T are control markers. **G and C are
+observational notes**: the CLI's dir-tree builder, commit, abort, and diff ignore
+them, while `yolo review` and `yolo journal` surface them. G/C writes do not set
+`sbi->dirty`, so note-only commands do not cause an automatic snapshot under
+`YOLO_SNAPSHOT_IF_CHANGED`. G follows the reachability of the filesystem
+segment in which the access occurred. C is chronological and non-branching:
+travel does not restore policy, so a C remains live and undimmed even when
+adjacent filesystem records become unreachable. Commit and abort clear the
+journal but leave `yolofs.toml`; C is a session audit event, not a durable
+policy-history store.
+
+Review preserves every selected G and C note in journal order. It does not
+deduplicate repeated accesses; `yolo journal` remains the raw view that also
+shows the surrounding action and marker records.
 
 The stage/modify distinction comes from the `S` record's `<pre>` field — `a`
 reads as added, a present `s:`/`b:` target reads as modified — so userspace
@@ -680,8 +686,9 @@ including) marker\[i+1\]. The phantom marker at index 0 opens segment 0
 A P record names a snapshot. `review` and `journal` take a positional
 id/range spec (`[<id>|a..b|all]`); `parse_range` resolves it to a half-open
 segment range `[start, end)` via `MarkerIndex::segment_range`, and
-`Journal::live_segments_range(start, end)` yields just those (live) segments
-to resolve and display.
+`Journal::live_segments_range(start, end)` yields the live filesystem segments
+used to resolve staged state. Audit display additionally retains chronological
+`C` records from dead segments because travel does not revert policy.
 
 Range semantics (the spec → `[start, end)`):
 - `<id>` — that snapshot's own change: the single segment it sealed
@@ -749,8 +756,10 @@ I/O redirection. The `yolo` CLI reads the journal and applies or discards.
 4. `--diff` view: for each change, diff its pre-image (old content) against the
    staged `inodes/<ino>` (new content) as a git-style unified hunk; renames show
    metadata, deletes show the removed content.
-5. `--each` expands the range into one stanza per consecutive snapshot (the tip
-   — work past the last snapshot — is headed `working`).
+5. `--each` expands the range into one stanza per relevant journal segment,
+   headed by its sealing snapshot or travel marker; the unsealed tip is headed
+   `working`. Dead filesystem records stay filtered, while their `C` records
+   remain visible.
 
 ## Snapshot Mechanism
 

@@ -50,7 +50,8 @@ nix::ioctl_write_ptr!(ioctl_restore, b'A', 42, YoloIocRestore);
 pub struct YoloIocRule {
     pub fd: i32,
     pub perm: u8,
-    pub _pad: [u8; 3],
+    pub journal: u8,
+    pub _pad: [u8; 2],
 }
 
 /// Matches `struct yolo_ioc_ask` in the kernel (kernel → userspace).
@@ -230,22 +231,38 @@ pub fn open_rule_target(path: impl AsRef<Path>) -> std::io::Result<File> {
 /// Issue RULE_SET with a raw target fd, returning the bare errno. White-box
 /// tests use this to probe the kernel's fd validation with fds no
 /// [`open_rule_target`] would produce (closed, outside the mount, unlinked).
+fn set_rule_with_intent(
+    fd: &File,
+    target_fd: i32,
+    perm: u8,
+    journal: bool,
+) -> std::result::Result<(), nix::errno::Errno> {
+    let rule = YoloIocRule {
+        fd: target_fd,
+        perm,
+        journal: u8::from(journal),
+        _pad: [0u8; 2],
+    };
+    unsafe { ioctl_rule_set(fd.as_raw_fd(), &rule) }.map(drop)
+}
+
 pub fn set_rule_raw(
     fd: &File,
     target_fd: i32,
     perm: u8,
 ) -> std::result::Result<(), nix::errno::Errno> {
-    let rule = YoloIocRule {
-        fd: target_fd,
-        perm,
-        _pad: [0u8; 3],
-    };
-    unsafe { ioctl_rule_set(fd.as_raw_fd(), &rule) }.map(drop)
+    set_rule_with_intent(fd, target_fd, perm, false)
 }
 
 /// Send YOLO_IOC_RULE_SET ioctl. `perm == YOLO_PERM_UNSET` clears the rule.
 pub fn set_rule(fd: &File, target: &File, perm: u8) -> Result<()> {
     set_rule_raw(fd, target.as_raw_fd(), perm).context("ioctl RULE_SET")?;
+    Ok(())
+}
+
+/// Send a live user policy assignment and request a C journal record.
+pub fn set_rule_journaled(fd: &File, target: &File, perm: u8) -> Result<()> {
+    set_rule_with_intent(fd, target.as_raw_fd(), perm, true).context("ioctl RULE_SET")?;
     Ok(())
 }
 
@@ -255,7 +272,8 @@ pub fn resolve_rule(fd: &File, target: &File) -> Result<u8> {
     let mut rule = YoloIocRule {
         fd: target.as_raw_fd(),
         perm: YOLO_PERM_UNSET,
-        _pad: [0u8; 3],
+        journal: 0,
+        _pad: [0u8; 2],
     };
     unsafe { ioctl_rule_resolve(fd.as_raw_fd(), &mut rule) }.context("ioctl RULE_RESOLVE")?;
     Ok(rule.perm)

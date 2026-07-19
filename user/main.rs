@@ -92,7 +92,7 @@ enum Command {
     },
     /// Show snapshot/travel timeline (unreachable branches dimmed)
     Timeline,
-    /// Raw journal: every op + access note over a range (vs `review`'s net view)
+    /// Raw journal: every op + audit note over a range (vs `review`'s net view)
     Journal {
         /// Snapshot id or range (see `review`); `all` = the full log
         range: Option<String>,

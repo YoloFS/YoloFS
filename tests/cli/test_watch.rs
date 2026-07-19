@@ -276,11 +276,15 @@ fn assert_timeout_ask_note(s: &YoloSession) {
         .any(|record| {
             matches!(
                 record,
-                Record::Note(Note::Ask { path, op: Op::Read, decision: Decision::Deny })
+                Record::Note(Note::Gate {
+                    path,
+                    op: Op::Read,
+                    result: yolofs::journal::GateResult::AskDeny,
+                })
                     if path.ends_with("/hello.txt")
             )
         });
-    assert!(found, "expected timeout A note for hello.txt");
+    assert!(found, "expected timeout G note for hello.txt");
 }
 
 /// ASK_PEEK includes the rule source path and rule permission that caused the

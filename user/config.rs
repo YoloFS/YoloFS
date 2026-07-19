@@ -311,7 +311,7 @@ pub fn set_rule(path: &str, perm: Perm) -> Result<()> {
         let abs_path = resolve_to_abs(path)?;
         let target = open_target_through_mount(&abs_path, &mnt)?;
         let ctl_file = ioctl::open(&yolofs)?;
-        ioctl::set_rule(&ctl_file, &target, perm.to_ioctl())?;
+        ioctl::set_rule_journaled(&ctl_file, &target, perm.to_ioctl())?;
         // Pushed to the running mount: applied now. Otherwise it's only written
         // to yolofs.toml and takes effect at the next mount — say which.
         report::success(format!("rule applied: {path} = {perm}"));
@@ -338,7 +338,7 @@ pub fn unset_rule(path: &str) -> Result<()> {
         let abs_path = resolve_to_abs(path)?;
         let target = open_target_through_mount(&abs_path, &mnt)?;
         let ctl_file = ioctl::open(&yolofs)?;
-        ioctl::set_rule(&ctl_file, &target, ioctl::YOLO_PERM_UNSET)?;
+        ioctl::set_rule_journaled(&ctl_file, &target, ioctl::YOLO_PERM_UNSET)?;
         // An unset removes the path's own rule (it reverts to inheriting from its
         // ancestors); report that, plus whether it's applied now or saved.
         report::success(format!("rule applied: {path} = unset"));

@@ -2,6 +2,7 @@ use crate::helpers::{YOLO_BIN, YoloSession};
 use std::collections::BTreeMap;
 use std::fs;
 use yolofs::config::Config;
+use yolofs::journal::{GateResult, Journal, Note, Record};
 use yolofs::perm::Perm;
 
 // ── Newly created files respect permissions ──
@@ -241,6 +242,23 @@ fn rule_on_path_longer_than_yolo_path_max() {
     assert!(
         fs::read_to_string(&through).is_err(),
         "deny rule on the deep path must be enforced"
+    );
+
+    let journal = Journal::read(&s.root.join(".yolofs")).expect("read journal");
+    assert!(
+        journal
+            .segments
+            .iter()
+            .flat_map(|segment| &segment.records)
+            .any(|record| matches!(
+                record,
+                Record::Note(Note::Gate {
+                    path,
+                    result: GateResult::DirectDeny,
+                    ..
+                }) if path.ends_with("/file.txt") && path.len() > 256
+            )),
+        "a static denial on a long path must still emit G"
     );
 }
 

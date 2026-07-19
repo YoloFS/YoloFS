@@ -20,7 +20,7 @@ pub fn actions(j: &journal::Journal) -> Vec<&Action> {
         .collect()
 }
 
-/// Collect all block notes from the journal in order (B records only).
+/// Collect all observational G/C notes from the journal in order.
 pub fn notes(j: &journal::Journal) -> Vec<&Note> {
     j.segments
         .iter()

@@ -18,7 +18,7 @@ below are filesystem-specific and stack on top.
 
 Supporting rules:
 
-- Always verify changes with `make test-vm` (unit tests on host, e2e tests in VM).
+- Always verify changes with `make test`.
 - When adding new features or making changes, add tests if applicable: unit tests (inline `#[cfg(test)]`), white-box tests (`tests/internals/`), and black-box tests (`tests/fs/`, `tests/cli/`, `tests/perm/`).
 - Do not use git (commit, push, rebase, etc.) unless explicitly asked.
 - Do not read or maintain old plans in `docs/plans/done/`. They are kept for historical reference only.
@@ -41,9 +41,9 @@ Supporting rules:
 
 ```bash
 make user         # build userspace binary (host)
-make test-unit    # unit tests (host; pure userspace)
-make test-e2e-vm  # build + install + run e2e tests in VM
-make test-vm      # test-unit + test-e2e-vm
+make test-unit    # unit tests
+make test-e2e     # e2e tests
+make test         # run all tests (unit + e2e)
 ```
 
 ## Code Review

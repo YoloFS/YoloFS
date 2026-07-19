@@ -125,7 +125,8 @@ adds the progressive gating layer (`allow`, `write-ask`, `read-only`, `ask`,
 **On-disk format**: OverlayFS requires filesystem support for whiteouts
 (`RENAME_WHITEOUT`, ext4/xfs). YoloFS uses a flat inode store + append-only
 journal, working on any lower FS. The journal uses typed record tags
-(`S`/`D`/`R` for mutations, `P`/`T` for snapshots/travels) so
+(`S`/`D`/`R` for mutations, `P`/`T` for snapshots/travels, `G` for gate
+results, and `C` for live policy configurations) so
 each record is self-describing. All renames — staged or redirect — emit a
 single R record carrying both source and destination paths.
 

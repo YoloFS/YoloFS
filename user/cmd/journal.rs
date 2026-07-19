@@ -1,7 +1,7 @@
 // yolo CLI — journal.rs
 //
 // `yolo journal`                  — the raw record log over a range (every op +
-//                                   access note, dead branches dimmed).
+//                                   audit note, dead branches dimmed).
 // `yolo journal [<id>|a..b|all]`  — scope to a snapshot / range (review's grammar).
 // `yolo journal -- <path>`        — trace operations on a specific file.
 //
@@ -51,7 +51,8 @@ pub fn run(range: Option<&str>, path: Option<&str>) -> Result<()> {
                 // Markers never appear inside a segment (they split segments).
                 journal::Record::Marker(_) => continue,
             };
-            if reachable {
+            let record_reachable = journal.is_record_alive(seg_idx, record);
+            if record_reachable {
                 println!("  {line}");
             } else {
                 println!("  {} {}", line.dimmed(), "(unreachable)".dimmed());
@@ -92,7 +93,7 @@ fn action_matches_path(action: &journal::Action, filter: &str) -> bool {
 
 fn note_matches_path(note: &journal::Note, filter: &str) -> bool {
     match note {
-        journal::Note::Ask { path, .. } | journal::Note::Block { path, .. } => path == filter,
+        journal::Note::Gate { path, .. } | journal::Note::Configure { path, .. } => path == filter,
     }
 }
 
@@ -127,31 +128,19 @@ fn format_action(action: &journal::Action) -> String {
 
 fn format_note(note: &journal::Note) -> String {
     match note {
-        journal::Note::Ask { path, op, decision } => {
-            format!(
-                "{:10} {:5} {} → {}",
-                "ask".yellow(),
-                op.label(),
-                path,
-                decision
-            )
-        }
-        journal::Note::Block {
-            path,
-            op,
-            rule_path,
-        } => {
-            if rule_path.is_empty() {
-                format!("{:10} {:5} {}", "blocked".yellow(), op.label(), path)
-            } else {
-                format!(
-                    "{:10} {:5} {} by {}",
-                    "blocked".yellow(),
-                    op.label(),
-                    path,
-                    rule_path
-                )
+        journal::Note::Gate { path, op, result } => match result {
+            journal::GateResult::DirectDeny => {
+                format!("{:10} {:5} {}", "denied".yellow(), op.label(), path)
             }
+            journal::GateResult::AskAllow => {
+                format!("{:10} {:5} {} → yes", "asked".yellow(), op.label(), path)
+            }
+            journal::GateResult::AskDeny => {
+                format!("{:10} {:5} {} → no", "asked".yellow(), op.label(), path)
+            }
+        },
+        journal::Note::Configure { path, policy } => {
+            format!("{:10} {} = {}", "configured".yellow(), path, policy.label())
         }
     }
 }
@@ -159,7 +148,7 @@ fn format_note(note: &journal::Note) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{Action, Marker, Note, Op};
+    use crate::journal::{Action, GateResult, Marker, Note, Op, Policy};
 
     /// Strip ANSI escape codes for assertion matching.
     fn strip_ansi(s: &str) -> String {
@@ -225,43 +214,60 @@ mod tests {
     }
 
     #[test]
-    fn format_blocked() {
-        let note = Note::Block {
+    fn format_direct_deny() {
+        let note = Note::Gate {
             path: "/etc/passwd".into(),
             op: Op::Write,
-            rule_path: "/etc".into(),
+            result: GateResult::DirectDeny,
         };
         let s = strip_ansi(&format_note(&note));
-        assert!(s.contains("blocked"), "should say blocked: {s}");
+        assert!(s.contains("denied"), "should say denied: {s}");
         assert!(s.contains("/etc/passwd"), "should contain path: {s}");
-        assert!(s.contains("/etc"), "should contain rule path: {s}");
     }
 
     #[test]
-    fn format_blocked_empty_rule_path() {
-        // The rare unresolvable-rule case: render cleanly, no dangling " by ".
-        let note = Note::Block {
+    fn format_ask_allow() {
+        let note = Note::Gate {
             path: "/etc/passwd".into(),
-            op: Op::Write,
-            rule_path: String::new(),
+            op: Op::Read,
+            result: GateResult::AskAllow,
         };
         let s = strip_ansi(&format_note(&note));
-        assert!(s.contains("blocked"), "should say blocked: {s}");
-        assert!(s.contains("/etc/passwd"), "should contain path: {s}");
-        assert!(
-            !s.contains(" by "),
-            "no dangling 'by' for empty rule_path: {s}"
-        );
+        assert!(s.contains("asked"), "should say asked: {s}");
+        assert!(s.contains("yes"), "should contain result: {s}");
+    }
+
+    #[test]
+    fn format_ask_deny() {
+        let note = Note::Gate {
+            path: "/etc/passwd".into(),
+            op: Op::Read,
+            result: GateResult::AskDeny,
+        };
+        let s = strip_ansi(&format_note(&note));
+        assert!(s.contains("asked"), "should say asked: {s}");
+        assert!(s.contains("no"), "should contain result: {s}");
     }
 
     #[test]
     fn note_path_filter_matches() {
-        let note = Note::Block {
+        let note = Note::Configure {
             path: "/etc/passwd".into(),
-            op: Op::Write,
-            rule_path: "/etc".into(),
+            policy: Policy::ReadOnly,
         };
         assert!(note_matches_path(&note, "/etc/passwd"));
         assert!(!note_matches_path(&note, "/etc/shadow"));
+    }
+
+    #[test]
+    fn format_configure() {
+        let note = Note::Configure {
+            path: "/etc/passwd".into(),
+            policy: Policy::ReadOnly,
+        };
+        let s = strip_ansi(&format_note(&note));
+        assert!(s.contains("configured"));
+        assert!(s.contains("/etc/passwd"));
+        assert!(s.contains("read-only"));
     }
 }

@@ -230,15 +230,32 @@ static long yolo_rule_set_ioctl(struct file *file, unsigned long arg)
 	struct yolo_ioc_rule rule;
 	struct path rule_path;
 	struct yolo_dentry_info *di;
+	enum yolo_perm old_perm;
 	int err;
 
 	err = yolo_resolve_rule(file, arg, &rule, &rule_path, &di);
 	if (err)
 		return err;
 
-	if (rule.perm > YOLO_PERM_HIDE) {
+	if (rule.perm > YOLO_PERM_HIDE || rule.journal > 1) {
 		path_put(&rule_path);
 		return -EINVAL;
+	}
+
+	mutex_lock(&sbi->perm.update_lock);
+	spin_lock(&di->lock);
+	old_perm = di->perm;
+	spin_unlock(&di->lock);
+	if (old_perm == (enum yolo_perm)rule.perm) {
+		err = 0;
+		goto out_unlock;
+	}
+
+	if (rule.journal) {
+		err = yolo_journal_configure(sbi, rule_path.dentry,
+					     (enum yolo_perm)rule.perm);
+		if (err)
+			goto out_unlock;
 	}
 
 	if (rule.perm == YOLO_PERM_UNSET) {
@@ -280,8 +297,11 @@ static long yolo_rule_set_ioctl(struct file *file, unsigned long arg)
 	}
 
 	atomic64_inc(&sbi->perm.gen);
+	err = 0;
+out_unlock:
+	mutex_unlock(&sbi->perm.update_lock);
 	path_put(&rule_path);
-	return 0;
+	return err;
 }
 
 /*

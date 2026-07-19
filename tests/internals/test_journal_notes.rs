@@ -1,11 +1,10 @@
 //! Verify the kernel writes observational journal notes:
 //!
-//! - **B (Blocked)** records for accesses denied by yolofs rules, and
-//! - **A (Ask resolved)** records carrying the decision an `ask` path
-//!   resolved to (from the daemon or the no-daemon default).
+//! - **G (Gate result)** records for prompted and statically denied accesses,
+//! - **C (Configure)** records for live explicit-policy assignments.
 //!
 //! Both are observational — they do not set the dirty flag and they don't
-//! contribute to the dir tree. The A-note tests at the bottom of this file
+//! contribute to the dir tree. The G-note tests at the bottom of this file
 //! drive a live `yolo watch` daemon to confirm the daemon's interactive
 //! decision is the one persisted in the journal.
 
@@ -14,7 +13,8 @@ use crate::internals::helpers::{actions, journal, notes};
 use std::collections::BTreeMap;
 use std::fs;
 use yolofs::config::Config;
-use yolofs::journal::{Journal, Note, Op};
+use yolofs::ioctl;
+use yolofs::journal::{GateResult, Journal, Note, Op, Policy};
 use yolofs::perm::{Decision, Perm};
 
 /// Build a session where the entire mount denies access.
@@ -35,32 +35,32 @@ fn ro_session() -> YoloSession {
     .expect("session setup")
 }
 
-/// Block record format: B\0<path>\0<op>\0<rule_path>\n (4 fields).
+/// Gate record format: G\0<path>\0<op>\0<result>\n (4 fields).
 #[test]
-fn block_record_format() {
+fn gate_record_format() {
     let s = deny_session();
 
     let _ = fs::read_to_string(s.mnt_path("hello.txt"));
 
     let bytes = fs::read(s.root.join(".yolofs/journal")).expect("read journal");
-    let block_lines: Vec<&[u8]> = bytes
+    let gate_lines: Vec<&[u8]> = bytes
         .split(|&b| b == b'\n')
-        .filter(|line| !line.is_empty() && line[0] == b'B')
+        .filter(|line| !line.is_empty() && line[0] == b'G')
         .collect();
-    assert!(!block_lines.is_empty(), "expected at least one B record");
-    for line in &block_lines {
+    assert!(!gate_lines.is_empty(), "expected at least one G record");
+    for line in &gate_lines {
         let fields: Vec<&[u8]> = line.split(|&b| b == 0).collect();
         assert_eq!(
             fields.len(),
             4,
-            "B record should be (B, path, op, rule_path), got {} fields: {:?}",
+            "G record should be (G, path, op, result), got {} fields: {:?}",
             fields.len(),
             fields
                 .iter()
                 .map(|f| String::from_utf8_lossy(f))
                 .collect::<Vec<_>>()
         );
-        assert_eq!(fields[0], b"B");
+        assert_eq!(fields[0], b"G");
         assert!(!fields[1].is_empty(), "path field must be non-empty");
         // op is a single letter: 'r' (read) or 'w' (write).
         assert!(
@@ -68,20 +68,16 @@ fn block_record_format() {
             "op should be r/w, got {:?}",
             String::from_utf8_lossy(fields[2])
         );
-        // A static block always has a source rule (here `/` = deny).
-        assert!(
-            !fields[3].is_empty(),
-            "rule_path field must be non-empty for a static block"
-        );
+        assert_eq!(fields[3], b"d", "static denial result should be d");
     }
 }
 
-/// An `ask` path resolved with no daemon connected emits an A (ask) note
+/// An `ask` path resolved with no daemon connected emits a G note
 /// carrying the op and the applied default decision.
 #[test]
 fn ask_record_emitted_on_no_daemon() {
     // No rules → everything resolves to `ask`; no `yolo watch` daemon is
-    // running, so the kernel denies (unanswered ask) and logs an A note.
+    // running, so the kernel denies (unanswered ask) and logs G with n.
     let s = YoloSession::new_with_config(Config {
         rules: BTreeMap::new(),
         ..Default::default()
@@ -95,18 +91,18 @@ fn ask_record_emitted_on_no_daemon() {
     assert!(
         ns.iter().any(|n| matches!(
             n,
-            Note::Ask { path, op, decision }
+            Note::Gate { path, op, result }
                 if path.ends_with("/hello.txt")
                     && *op == Op::Read
-                    && *decision == Decision::Deny
+                    && *result == GateResult::AskDeny
         )),
-        "expected an A note (read -> deny) for hello.txt, got: {ns:?}"
+        "expected G(read, n) for hello.txt, got: {ns:?}"
     );
 }
 
-/// A denied read of a regular file produces a B record at the *target* path.
+/// A denied read produces G with d at the target path.
 #[test]
-fn denied_read_emits_block_for_file_path() {
+fn denied_read_emits_gate_for_file_path() {
     let s = deny_session();
 
     let _ = fs::read_to_string(s.mnt_path("hello.txt"));
@@ -115,15 +111,15 @@ fn denied_read_emits_block_for_file_path() {
     let bs = notes(&j);
     assert!(
         bs.iter()
-            .any(|n| matches!(n, Note::Block { path, .. } if path.ends_with("/hello.txt"))),
-        "expected B for hello.txt, got: {:?}",
+            .any(|n| matches!(n, Note::Gate { path, result: GateResult::DirectDeny, .. } if path.ends_with("/hello.txt"))),
+        "expected G(..., d) for hello.txt, got: {:?}",
         bs
     );
 }
 
-/// A denied write under a READ rule produces a B record.
+/// A denied write under a read-only rule produces G with d.
 #[test]
-fn ro_write_emits_block() {
+fn ro_write_emits_gate() {
     let s = ro_session();
 
     let _ = fs::write(s.mnt_path("hello.txt"), "x");
@@ -132,15 +128,15 @@ fn ro_write_emits_block() {
     let bs = notes(&j);
     assert!(
         bs.iter()
-            .any(|n| matches!(n, Note::Block { path, .. } if path.ends_with("/hello.txt"))),
-        "expected B for hello.txt under ro+write, got: {:?}",
+            .any(|n| matches!(n, Note::Gate { path, result: GateResult::DirectDeny, .. } if path.ends_with("/hello.txt"))),
+        "expected G(..., d) for hello.txt under ro+write, got: {:?}",
         bs
     );
 }
 
-/// A denied create logs the *child* path, not the parent.
+/// A denied create logs the child path, not the parent.
 #[test]
-fn denied_create_emits_block_for_child_path() {
+fn denied_create_emits_gate_for_child_path() {
     let s = deny_session();
 
     let _ = fs::write(s.mnt_path("new_file.txt"), "x");
@@ -149,14 +145,14 @@ fn denied_create_emits_block_for_child_path() {
     let bs = notes(&j);
     assert!(
         bs.iter()
-            .any(|n| matches!(n, Note::Block { path, .. } if path.ends_with("/new_file.txt"))),
-        "expected B for new_file.txt (child), got: {:?}",
+            .any(|n| matches!(n, Note::Gate { path, .. } if path.ends_with("/new_file.txt"))),
+        "expected G for new_file.txt (child), got: {:?}",
         bs
     );
     // The mutate-denial path must record the *child* target, never just
     // the parent directory. Confirm no record points at the parent only.
     assert!(
-        !bs.iter().any(|n| matches!(n, Note::Block { path, .. }
+        !bs.iter().any(|n| matches!(n, Note::Gate { path, .. }
             if !path.ends_with("/new_file.txt") && !path.ends_with(".txt"))),
         "should not log parent path for mutate denial: {:?}",
         bs
@@ -165,7 +161,7 @@ fn denied_create_emits_block_for_child_path() {
 
 /// A denied unlink logs the *target* path.
 #[test]
-fn denied_unlink_emits_block_for_target_path() {
+fn denied_unlink_emits_gate_for_target_path() {
     let s = ro_session();
 
     let _ = fs::remove_file(s.mnt_path("hello.txt"));
@@ -174,15 +170,15 @@ fn denied_unlink_emits_block_for_target_path() {
     let bs = notes(&j);
     assert!(
         bs.iter()
-            .any(|n| matches!(n, Note::Block { path, .. } if path.ends_with("/hello.txt"))),
-        "expected B for hello.txt, got: {:?}",
+            .any(|n| matches!(n, Note::Gate { path, .. } if path.ends_with("/hello.txt"))),
+        "expected G for hello.txt, got: {:?}",
         bs
     );
 }
 
-/// B records do not affect the dir tree (no Action contribution).
+/// G records do not affect the dir tree (no Action contribution).
 #[test]
-fn block_records_do_not_contribute_to_tree() {
+fn gate_records_do_not_contribute_to_tree() {
     let s = deny_session();
 
     for _ in 0..5 {
@@ -191,7 +187,7 @@ fn block_records_do_not_contribute_to_tree() {
 
     let j = journal(&s);
     let bs = notes(&j);
-    assert!(!bs.is_empty(), "expected B records");
+    assert!(!bs.is_empty(), "expected G records");
     let acts = actions(&j);
     assert!(
         acts.is_empty(),
@@ -200,14 +196,14 @@ fn block_records_do_not_contribute_to_tree() {
     );
 }
 
-/// B records do not set sbi->dirty: an auto-snapshot (SNAPSHOT_IF_CHANGED)
-/// must be skipped if only B writes happened since the last marker.
+/// G records do not set sbi->dirty: an auto-snapshot (SNAPSHOT_IF_CHANGED)
+/// must be skipped if only G writes happened since the last marker.
 ///
 /// We check this indirectly via `yolo run -- <cmd>`: a denied-read command produces
-/// only B records, and the kernel's SNAPSHOT_IF_CHANGED auto-snapshot should
+/// only G records, and the kernel's SNAPSHOT_IF_CHANGED auto-snapshot should
 /// be skipped, leaving the journal with no M record.
 #[test]
-fn block_writes_do_not_set_dirty() {
+fn gate_writes_do_not_set_dirty() {
     use crate::helpers::YOLO_BIN;
     let s = YoloSession::new_with_config(Config {
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
@@ -236,7 +232,7 @@ fn block_writes_do_not_set_dirty() {
     let bs = notes(&j);
     assert!(
         !bs.is_empty(),
-        "expected B records from the denied cat invocation"
+        "expected G records from the denied cat invocation"
     );
 
     // Phantom marker is index 0; if SNAPSHOT_IF_CHANGED skipped correctly, no
@@ -244,16 +240,16 @@ fn block_writes_do_not_set_dirty() {
     assert_eq!(
         j.markers.len(),
         1,
-        "SNAPSHOT_IF_CHANGED should skip auto-snapshot when only B records were written; markers={:?}",
+        "SNAPSHOT_IF_CHANGED should skip auto-snapshot when only G records were written; markers={:?}",
         j.markers.iter().collect::<Vec<_>>()
     );
 }
 
 /// Inverse of the above: when real mutations occur, dirty IS set and the
-/// auto-snapshot after the run completes. B records in the same session
+/// auto-snapshot after the run completes. G records in the same session
 /// must not cancel that out.
 #[test]
-fn mixed_mutations_and_blocks_still_set_dirty() {
+fn mixed_mutations_and_gates_still_set_dirty() {
     use crate::helpers::YOLO_BIN;
     // Manual setup so we can install a deny rule on a specific file
     // whose host path canonicalizes correctly.
@@ -302,7 +298,7 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
     let j = journal(&s);
     let bs = notes(&j);
     let acts = actions(&j);
-    assert!(!bs.is_empty(), "expected B from denied locked.txt read");
+    assert!(!bs.is_empty(), "expected G from denied locked.txt read");
     assert!(
         !acts.is_empty(),
         "expected at least one S record from /new.txt write"
@@ -315,11 +311,11 @@ fn mixed_mutations_and_blocks_still_set_dirty() {
     );
 }
 
-/// HIDE paths return -ENOENT, not -EACCES, and must NOT produce B records.
+/// HIDE paths return -ENOENT, not -EACCES, and must not produce G records.
 /// This protects the "no logging for HIDE" non-goal from accidental
 /// regressions.
 #[test]
-fn hidden_paths_do_not_log_block() {
+fn hidden_paths_do_not_log_gate() {
     use crate::helpers::YOLO_BIN;
     // Manual setup — rule paths must canonicalize on the host, so use
     // an absolute host path inside the temp root.
@@ -362,18 +358,14 @@ fn hidden_paths_do_not_log_block() {
     let bs = notes(&j);
     assert!(
         bs.is_empty(),
-        "HIDE -> -ENOENT must not log any B record, got: {:?}",
+        "HIDE -> -ENOENT must not log any G record, got: {:?}",
         bs
     );
 }
 
-/// A/B are disjoint: an `ask` resolved to deny (here via the no-daemon default
-/// policy) is recorded **solely as A** (decision `n`) — never also a B, even
-/// though the access returns `-EACCES`. The deny is decided inside
-/// `yolo_perm_check_dentry`, which already wrote the A; the `yolo_open` emit
-/// site must suppress its B (`ask_resolved` gate).
+/// An ask denial emits exactly one G with result n, not a second direct-deny G.
 #[test]
-fn ask_deny_records_only_ask_note_no_block() {
+fn ask_deny_records_one_gate_result() {
     // No rules → everything resolves to `ask`; no daemon → the ask is denied
     // immediately when an unruled file is opened.
     let s = YoloSession::new_with_config(Config {
@@ -386,33 +378,29 @@ fn ask_deny_records_only_ask_note_no_block() {
 
     let j = journal(&s);
     let ns = notes(&j);
-    // Exactly one A (read -> deny) for hello.txt.
+    // Exactly one G (read, asked no) for hello.txt.
     let asks: Vec<_> = ns
         .iter()
         .filter(|n| {
-            matches!(n, Note::Ask { path, op, decision }
-            if path.ends_with("/hello.txt") && *op == Op::Read && *decision == Decision::Deny)
+            matches!(n, Note::Gate { path, op, result: GateResult::AskDeny }
+            if path.ends_with("/hello.txt") && *op == Op::Read)
         })
         .collect();
     assert_eq!(
         asks.len(),
         1,
-        "expected exactly one A(read->deny), got: {ns:?}"
+        "expected exactly one G(read, n), got: {ns:?}"
     );
-    // And zero B for that path — the ask-deny must not double-log a block.
     assert!(
         !ns.iter()
-            .any(|n| matches!(n, Note::Block { path, .. } if path.ends_with("/hello.txt"))),
-        "ask-resolved deny must not emit a B, got: {ns:?}"
+            .any(|n| matches!(n, Note::Gate { path, result: GateResult::DirectDeny, .. } if path.ends_with("/hello.txt"))),
+        "ask denial must not emit a direct-deny G, got: {ns:?}"
     );
 }
 
-/// A B record names the *rule* that blocked the access, not just the access
-/// target: a `deny` rule on `subdir` blocks `subdir/deep.txt`, and the B's
-/// `rule_path` points at the ancestor rule's path, distinct from the deeper
-/// access path.
+/// A live `yolo rule` assignment emits C, then a denied access emits G.
 #[test]
-fn block_record_carries_blocking_rule_path() {
+fn live_rule_assignment_emits_configure_then_gate() {
     let s = YoloSession::new_with_config(Config {
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
@@ -428,19 +416,219 @@ fn block_record_carries_blocking_rule_path() {
     assert!(
         ns.iter().any(|n| matches!(
             n,
-            Note::Block { path, rule_path, .. }
-                if path.ends_with("/subdir/deep.txt") && rule_path.ends_with("/subdir")
+            Note::Configure { path, policy: Policy::Deny }
+                if path.ends_with("/subdir")
         )),
-        "expected B for subdir/deep.txt blocked by the rule on /subdir, got: {ns:?}"
+        "expected C for the deny assignment, got: {ns:?}"
+    );
+    assert!(
+        ns.iter().any(|n| matches!(
+            n,
+            Note::Gate { path, result: GateResult::DirectDeny, .. }
+                if path.ends_with("/subdir/deep.txt")
+        )),
+        "expected direct-deny G for subdir/deep.txt, got: {ns:?}"
     );
 }
 
-/// Mutate blocks resolve the rule from the *parent* (checked) while recording
-/// the *child* (target): with `/`=allow and `deny` on `subdir`, creating
-/// `subdir/new.txt` is gated on the parent rule. The B's `path` is the child
-/// but `rule_path` is the parent's rule — proving `checked` ≠ `target`.
 #[test]
-fn mutate_block_records_child_target_and_parent_rule_path() {
+fn configure_record_format_and_noop_suppression() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    // Mount-time configuration is initialization, not a C event.
+    assert!(notes(&journal(&s)).is_empty());
+
+    for (command, expected) in [
+        ("ask", Policy::Ask),
+        ("allow", Policy::Allow),
+        ("write-ask", Policy::WriteAsk),
+        ("read-only", Policy::ReadOnly),
+        ("deny", Policy::Deny),
+        ("deny", Policy::Deny), // exact no-op: no C
+        ("unset", Policy::Unset),
+        ("hide", Policy::Hide),
+    ] {
+        s.cli(&["rule", command, "subdir"])
+            .unwrap_or_else(|e| panic!("install {command} rule: {e}"));
+        let last = notes(&journal(&s))
+            .into_iter()
+            .filter_map(|note| match note {
+                Note::Configure { policy, .. } => Some(*policy),
+                Note::Gate { .. } => None,
+            })
+            .next_back();
+        assert_eq!(last, Some(expected));
+    }
+    s.cli(&["snapshot", "--if-changed", "notes-only"])
+        .expect("C-only activity should not snapshot");
+
+    let j = journal(&s);
+    assert_eq!(j.markers.len(), 1, "C records must not set the dirty bit");
+    let configured: Vec<_> = notes(&j)
+        .into_iter()
+        .filter_map(|note| match note {
+            Note::Configure { path, policy } => Some((path.as_str(), *policy)),
+            Note::Gate { .. } => None,
+        })
+        .collect();
+    assert_eq!(configured.len(), 7, "repeated assignment must be a no-op");
+    assert!(configured.iter().all(|(path, _)| path.ends_with("/subdir")));
+    assert_eq!(
+        configured
+            .iter()
+            .map(|(_, policy)| *policy)
+            .collect::<Vec<_>>(),
+        vec![
+            Policy::Ask,
+            Policy::Allow,
+            Policy::WriteAsk,
+            Policy::ReadOnly,
+            Policy::Deny,
+            Policy::Unset,
+            Policy::Hide,
+        ]
+    );
+
+    let bytes = fs::read(s.root.join(".yolofs/journal")).expect("read journal");
+    let policy_codes: Vec<_> = bytes
+        .split(|&b| b == b'\n')
+        .filter(|line| !line.is_empty() && line[0] == b'C')
+        .map(|line| {
+            let fields: Vec<_> = line.split(|&b| b == 0).collect();
+            assert_eq!(fields.len(), 3, "C is (tag, path, policy)");
+            assert_eq!(fields[0], b"C");
+            assert!(!fields[1].is_empty());
+            assert_eq!(fields[2].len(), 1, "C policy must be one byte");
+            fields[2][0]
+        })
+        .collect();
+    assert_eq!(policy_codes, b"qawrduh");
+}
+
+/// A journaled live assignment is published only after C was fully appended.
+#[test]
+fn configure_append_failure_preserves_old_live_policy() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+    let ctl = ioctl::open(&s.root.join(".yolofs")).expect("open control fd");
+    let target = ioctl::open_rule_target(s.mnt_path("subdir")).expect("open rule target");
+
+    // kernel_write observes RLIMIT_FSIZE. Temporarily setting the soft limit
+    // below the existing journal length forces the C append to return EFBIG.
+    let result = unsafe {
+        let mut old_limit: libc::rlimit = std::mem::zeroed();
+        assert_eq!(libc::getrlimit(libc::RLIMIT_FSIZE, &mut old_limit), 0);
+        let old_handler = libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+        let blocked = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: old_limit.rlim_max,
+        };
+        assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &blocked), 0);
+        let result = ioctl::set_rule_journaled(&ctl, &target, Perm::Deny.to_ioctl());
+        assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &old_limit), 0);
+        libc::signal(libc::SIGXFSZ, old_handler);
+        result
+    };
+
+    assert!(
+        result.is_err(),
+        "forced C append failure must fail RULE_SET"
+    );
+    assert_eq!(
+        ioctl::resolve_rule(&ctl, &target).expect("resolve unchanged policy"),
+        Perm::Allow.to_ioctl(),
+        "failed C append must not publish the deny rule"
+    );
+    assert!(
+        fs::read_to_string(s.mnt_path("subdir/deep.txt")).is_ok(),
+        "the old allow policy must remain enforced"
+    );
+    assert!(
+        notes(&journal(&s))
+            .iter()
+            .all(|note| !matches!(note, Note::Configure { .. })),
+        "a failed append must not leave a valid C record"
+    );
+}
+
+#[test]
+fn configure_is_not_made_unreachable_by_travel() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    s.cli(&["snapshot", "one"]).expect("snapshot one");
+    s.cli(&["rule", "deny", "subdir"])
+        .expect("install deny rule");
+    let _ = fs::read_to_string(s.mnt_path("subdir/deep.txt"));
+    s.cli(&["snapshot", "two"]).expect("snapshot two");
+    s.cli(&["rule", "read-only", "subdir"])
+        .expect("change live policy before travel");
+    s.cli(&["travel", "1"]).expect("travel to one");
+
+    let output = s.cli(&["journal", "all"]).expect("journal all");
+    let configure = output
+        .lines()
+        .find(|line| line.contains("configured") && line.contains("subdir"))
+        .expect("C line");
+    assert!(
+        !configure.contains("unreachable"),
+        "C must survive filesystem travel: {configure}"
+    );
+    let denied = output
+        .lines()
+        .find(|line| line.contains("denied") && line.contains("deep.txt"))
+        .expect("G line");
+    assert!(
+        denied.contains("unreachable"),
+        "G should follow its filesystem segment: {denied}"
+    );
+    assert!(
+        fs::write(s.mnt_path("subdir/deep.txt"), "blocked\n").is_err(),
+        "travel must not revert the live read-only policy"
+    );
+
+    let each = s
+        .cli(&["review", "--each", "all"])
+        .expect("review --each all");
+    assert!(
+        each.contains("configured") && each.contains("subdir"),
+        "review --each must retain C from a dead filesystem segment: {each}"
+    );
+    assert!(
+        each.contains("travel 3") && each.contains("→ 1"),
+        "a travel-sealed C stanza needs a travel heading: {each}"
+    );
+}
+
+#[test]
+fn directly_allowed_accesses_do_not_emit_gate() {
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    fs::read_to_string(s.mnt_path("hello.txt")).expect("direct read allow");
+    fs::write(s.mnt_path("hello.txt"), "allowed\n").expect("direct write allow");
+    assert!(
+        notes(&journal(&s)).is_empty(),
+        "directly allowed accesses must not emit G"
+    );
+}
+
+/// A parent-gated mutate records the attempted child path in G.
+#[test]
+fn mutate_gate_records_child_target() {
     let s = YoloSession::new_with_config(Config {
         rules: BTreeMap::from([("/".into(), Perm::Allow)]),
         ..Default::default()
@@ -456,18 +644,16 @@ fn mutate_block_records_child_target_and_parent_rule_path() {
     assert!(
         ns.iter().any(|n| matches!(
             n,
-            Note::Block { path, op: Op::Write, rule_path }
-                if path.ends_with("/subdir/new.txt") && rule_path.ends_with("/subdir")
+            Note::Gate { path, op: Op::Write, result: GateResult::DirectDeny }
+                if path.ends_with("/subdir/new.txt")
         )),
-        "expected mutate B with child target + parent rule_path, got: {ns:?}"
+        "expected mutate G with child target, got: {ns:?}"
     );
 }
 
-/// Disjoint A/B at a *non-open* emit site: a `write-ask` mutate denied by the
-/// no-daemon default is recorded solely as A — the `yolo_check_mutate_perm`
-/// emit site must suppress its B (`ask_resolved` gate), just like `yolo_open`.
+/// A write-ask mutate denied with no daemon emits one asked-no G.
 #[test]
-fn write_ask_mutate_deny_records_only_ask_no_block() {
+fn write_ask_mutate_deny_records_one_gate() {
     let s = YoloSession::new_with_config(Config {
         rules: BTreeMap::from([("/".into(), Perm::WriteAsk)]),
         ..Default::default()
@@ -482,34 +668,40 @@ fn write_ask_mutate_deny_records_only_ask_no_block() {
     assert!(
         ns.iter().any(|n| matches!(
             n,
-            Note::Ask {
+            Note::Gate {
+                path,
                 op: Op::Write,
-                decision: Decision::Deny,
+                result: GateResult::AskDeny,
+            } if path.ends_with("/subdir/new.txt")
+        )),
+        "expected G(write, n) for the mutate, got: {ns:?}"
+    );
+    assert!(
+        !ns.iter().any(|n| matches!(
+            n,
+            Note::Gate {
+                result: GateResult::DirectDeny,
                 ..
             }
         )),
-        "expected an A(write->deny) for the mutate, got: {ns:?}"
-    );
-    assert!(
-        !ns.iter().any(|n| matches!(n, Note::Block { .. })),
-        "write-ask mutate deny must not emit a B, got: {ns:?}"
+        "write-ask mutate deny must not emit direct-deny G, got: {ns:?}"
     );
 }
 
-/// B records surface in `yolo review` (as observed-but-not-staged accesses)
+/// G records surface in `yolo review` (as observed-but-not-staged accesses)
 /// but never in `yolo review --diff`, which shows staged content only. Repeated
-/// identical blocks are deduped to a single summary line.
+/// identical gates remain distinct audit events.
 #[test]
-fn block_records_shown_in_status_hidden_in_diff() {
+fn gate_records_shown_in_status_hidden_in_diff() {
     use crate::helpers::YOLO_BIN;
     let s = deny_session();
 
     for _ in 0..3 {
         let _ = fs::read_to_string(s.mnt_path("hello.txt"));
     }
-    // Sanity: B records did get emitted.
+    // Sanity: G records did get emitted.
     let j = journal(&s);
-    assert!(!notes(&j).is_empty(), "expected B records to be emitted");
+    assert!(!notes(&j).is_empty(), "expected G records to be emitted");
 
     let status = std::process::Command::new(YOLO_BIN)
         .args(["review"])
@@ -519,14 +711,14 @@ fn block_records_shown_in_status_hidden_in_diff() {
         .expect("yolo review");
     let stdout = String::from_utf8_lossy(&status.stdout);
     assert!(
-        stdout.contains("blocked") && stdout.contains("hello.txt"),
-        "yolo review should surface the B record: {stdout}"
+        stdout.contains("denied") && stdout.contains("hello.txt"),
+        "yolo review should surface the G record: {stdout}"
     );
-    // Three identical blocked reads collapse to one status line.
+    // All three identical denied reads remain visible.
     assert_eq!(
-        stdout.matches("blocked").count(),
-        1,
-        "identical blocks should be deduped in status: {stdout}"
+        stdout.matches("denied").count(),
+        3,
+        "review should preserve repeated gate records: {stdout}"
     );
 
     let diff = std::process::Command::new(YOLO_BIN)
@@ -537,13 +729,12 @@ fn block_records_shown_in_status_hidden_in_diff() {
         .expect("yolo review --diff");
     let stdout = String::from_utf8_lossy(&diff.stdout);
     assert!(
-        !stdout.contains("blocked") && !stdout.contains("hello.txt"),
-        "yolo review --diff must not show B records (staged content only): {stdout}"
+        !stdout.contains("denied") && !stdout.contains("hello.txt"),
+        "yolo review --diff must not show G records (staged content only): {stdout}"
     );
 }
 
-/// A (ask-resolved) notes also surface in `yolo review`. With no daemon the
-/// ask resolves to deny, producing an A note that status should display.
+/// Asked G notes also surface in `yolo review`.
 #[test]
 fn ask_records_shown_in_status() {
     let s = YoloSession::new_with_config(Config {
@@ -554,26 +745,26 @@ fn ask_records_shown_in_status() {
 
     let _ = fs::read_to_string(s.mnt_path("hello.txt"));
 
-    // Sanity: an A note was emitted.
+    // Sanity: a G note was emitted.
     assert!(
         !notes(&journal(&s)).is_empty(),
-        "expected an A note to be emitted"
+        "expected a G note to be emitted"
     );
 
     let out = s.cli(&["review"]).expect("yolo review");
     assert!(
         out.contains("ask") && out.contains("hello.txt"),
-        "yolo review should surface the A note: {out}"
+        "yolo review should surface the G note: {out}"
     );
 }
 
-// ── A (ask) notes: daemon decision → journal round-trip ─────────────
+// ── Asked G results: daemon decision → journal round-trip ───────────
 //
 // `ask_record_emitted_on_no_daemon` above covers the *no-daemon default*
 // path (decision = deny). These tests confirm the inverse: when a live
 // `yolo watch` daemon answers an ask interactively, the decision it gives
 // (allow / deny) is exactly what the kernel records in the
-// A note. This ties the userspace daemon (cli/test_watch.rs) to the journal
+// G result. This ties the userspace daemon (cli/test_watch.rs) to the journal
 // recording verified here.
 
 /// Mount with "/" = Allow (so directory traversal never asks), then live-add
@@ -647,21 +838,25 @@ fn spawn_watch_with_input(s: &YoloSession, input: &str) -> std::process::Child {
     watch
 }
 
-/// Assert the journal contains an A note for `suffix` with the given op and
+/// Assert the journal contains an asked G for `suffix` with the given op and
 /// resolved decision.
 fn assert_ask_note(j: &Journal, suffix: &str, op: Op, decision: Decision) {
     let ns = notes(j);
+    let result = match decision {
+        Decision::Allow => GateResult::AskAllow,
+        Decision::Deny => GateResult::AskDeny,
+    };
     assert!(
         ns.iter().any(|n| matches!(
             n,
-            Note::Ask { path, op: o, decision: d }
-                if path.ends_with(suffix) && *o == op && *d == decision
+            Note::Gate { path, op: o, result: r }
+                if path.ends_with(suffix) && *o == op && *r == result
         )),
-        "expected A note {suffix} ({op:?}) -> {decision:?}, got: {ns:?}"
+        "expected G note {suffix} ({op:?}) -> {result:?}, got: {ns:?}"
     );
 }
 
-/// Daemon answers `allow` → read succeeds and the A note records `allow`.
+/// Daemon answers allow, so read succeeds and G records asked-allow.
 #[test]
 fn daemon_allow_records_ask_note_allow() {
     let s = session_with_ask_file();
@@ -679,7 +874,7 @@ fn daemon_allow_records_ask_note_allow() {
     assert_ask_note(&journal(&s), "/hello.txt", Op::Read, Decision::Allow);
 }
 
-/// Daemon answers `deny` → read fails (EACCES) and the A note records `deny`.
+/// Daemon answers deny, so read fails and G records asked-deny.
 #[test]
 fn daemon_deny_records_ask_note_deny() {
     let s = session_with_ask_file();

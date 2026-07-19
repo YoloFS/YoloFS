@@ -11,6 +11,7 @@
 #include <linux/path.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/mutex.h>
 #include <linux/rwsem.h>
 #include <linux/atomic.h>
 #include <linux/wait.h>
@@ -59,6 +60,12 @@ enum yolo_decision {
 	YOLO_DECISION_ALLOW	= 1,	/* allow the current operation */
 };
 
+enum yolo_gate_result {
+	YOLO_GATE_DIRECT_DENY,
+	YOLO_GATE_ASK_ALLOW,
+	YOLO_GATE_ASK_DENY,
+};
+
 /* userspace ↔ kernel: YOLO_IOC_RULE_SET / RULE_RESOLVE. The target is an
  * O_PATH fd opened through the mount — resolved once, by the caller's own
  * open(); the kernel never re-walks a path string, checks the exact dentry
@@ -66,7 +73,8 @@ enum yolo_decision {
 struct yolo_ioc_rule {
 	__s32	fd;			/* in: O_PATH fd of the rule target */
 	__u8	perm;			/* in: enum yolo_perm (UNSET clears); out for RESOLVE */
-	__u8	_pad[3];
+	__u8	journal;		/* in for SET: append C for this live user assignment */
+	__u8	_pad[2];
 };
 
 /* Snapshot flags */
@@ -217,6 +225,7 @@ struct yolo_permission {
 	atomic64_t		gen;		/* cache invalidation counter */
 	struct list_head	pinned_rules;	/* dget()'d dentries with perm rules */
 	spinlock_t		pinned_rules_lock;/* protects pinned_rules */
+	struct mutex		update_lock;	/* serializes live rule assignment + C */
 
 	/* Ask protocol. pending_lock guards pending_reqs, the FIFO of asks
 	 * awaiting a decision. ASK_PEEK reads the head without removing it;
@@ -450,7 +459,7 @@ int yolo_do_cow(struct yolo_sb_info *sbi, struct dentry *dentry,
 /* journal.c */
 const char *yolo_preimage_target(const struct dentry *dentry,
 				 char *buf, int len);
-int yolo_journal_open(struct yolo_sb_info *sbi);
+struct file *yolo_journal_open(const struct path *storage);
 int yolo_journal_stage(struct yolo_sb_info *sbi, struct dentry *dentry,
 		       u32 ino, const char *pre);
 int yolo_journal_delete(struct yolo_sb_info *sbi, struct dentry *dentry);
@@ -458,13 +467,12 @@ int yolo_journal_rename(struct yolo_sb_info *sbi, struct dentry *old_dentry,
 			  struct dentry *new_dentry);
 int yolo_journal_snapshot(struct yolo_sb_info *sbi, const char *name);
 int yolo_journal_travel(struct yolo_sb_info *sbi, u16 target_gen);
-int yolo_journal_block(struct yolo_sb_info *sbi, struct dentry *target,
-		       struct dentry *checked, enum yolo_op op);
-int yolo_journal_ask(struct yolo_sb_info *sbi, const char *path,
-		     enum yolo_op op, enum yolo_decision decision);
+int yolo_journal_gate(struct yolo_sb_info *sbi, struct dentry *target,
+		      enum yolo_op op, enum yolo_gate_result result);
+int yolo_journal_configure(struct yolo_sb_info *sbi, struct dentry *target,
+			   enum yolo_perm perm);
 
 /* perm.c */
-enum yolo_op yolo_open_op(int f_flags);
 enum yolo_perm yolo_perm_walk(struct dentry *dentry, struct dentry **source);
 void yolo_perm_refresh(struct inode *inode, struct dentry *dentry);
 enum yolo_perm yolo_perm_get(struct inode *inode, struct dentry *dentry);

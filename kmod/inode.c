@@ -247,13 +247,13 @@ static int yolo_permission(struct mnt_idmap *idmap,
 		break;
 	}
 
-	/* -EACCES path: a static deny/read-only block (ASK/WRITE_ASK returned 0
-	 * above and never reach here, so this is never an ask-resolved deny).
-	 * Log a B against the inode's dentry; it is both target and checked. */
+	/* -EACCES path: a static deny/read-only result (ASK/WRITE_ASK returned 0
+	 * above and never reach here). Log G against the inode's dentry. */
 	alias = d_find_alias(inode);
 	if (alias) {
 		enum yolo_op op = (mask & MAY_WRITE) ? YOLO_OP_WRITE : YOLO_OP_READ;
-		yolo_journal_block(sbi, alias, alias, op);
+
+		yolo_journal_gate(sbi, alias, op, YOLO_GATE_DIRECT_DENY);
 		dput(alias);
 	}
 	return -EACCES;

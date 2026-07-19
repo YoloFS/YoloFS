@@ -57,25 +57,6 @@ impl Decision {
             Decision::Allow => ioctl::YOLO_DECISION_ALLOW,
         }
     }
-
-    /// The journal's single-letter code for an ask decision: the yes/no
-    /// answer to the ask. `a`/`d` are avoided — they would collide with the
-    /// Absence pre-target tag and the `D` record tag.
-    pub fn to_letter(self) -> char {
-        match self {
-            Decision::Allow => 'y',
-            Decision::Deny => 'n',
-        }
-    }
-
-    /// Inverse of [`to_letter`].
-    pub fn from_letter(b: u8) -> Option<Self> {
-        match b {
-            b'y' => Some(Decision::Allow),
-            b'n' => Some(Decision::Deny),
-            _ => None,
-        }
-    }
 }
 
 impl fmt::Display for Perm {
@@ -127,22 +108,6 @@ mod tests {
         Perm::Deny,
         Perm::Hide,
     ];
-
-    #[test]
-    fn decision_letter_roundtrips() {
-        let decisions = [Decision::Allow, Decision::Deny];
-        for p in decisions {
-            assert_eq!(Decision::from_letter(p.to_letter() as u8), Some(p));
-        }
-        assert_eq!(Decision::Allow.to_letter(), 'y');
-        assert_eq!(Decision::Deny.to_letter(), 'n');
-        assert_eq!(Decision::from_letter(b'a'), None);
-        assert_eq!(Decision::from_letter(b'd'), None);
-        assert_eq!(Decision::from_letter(b'w'), None);
-        assert_eq!(Decision::from_letter(b'r'), None);
-        assert_eq!(Decision::from_letter(b'h'), None);
-        assert_eq!(Decision::from_letter(b'?'), None);
-    }
 
     #[test]
     fn decision_ioctl_values() {

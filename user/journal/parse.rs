@@ -8,9 +8,9 @@
 //   R\0<dst>\0<src>\0<src_pre>\0<dst_pre>\n  — Rename
 //   P\0<name>\n                       — Snapshot (gen = record's P/T position)
 //   T\0<target_gen>\n                 — Travel  (gen = record's P/T position)
-//   A\0<path>\0<op>\0<decision>\n      — Ask resolved (observational)
-//   B\0<path>\0<op>\0<rule_path>\n     — Blocked by a static rule (observational)
-//   (op = r/w; decision = y/n — the yes/no answer to the ask)
+//   G\0<path>\0<op>\0<result>\n        — Gate result (observational)
+//   C\0<path>\0<policy>\n           — Live policy configuration (observational)
+//   (op = r/w; result = d/y/n; policy = q/a/w/r/d/h/u)
 //
 // Record tags are uppercase. Each *pre field is a tagged pre-op target whose
 // tag is the lowercased first letter of the `Target` variant: `a` (Absence),
@@ -114,25 +114,25 @@ pub(super) fn parse(data: &[u8]) -> Result<Vec<Record>> {
                     records.push(Record::Marker(Marker::Travel { target_gen }));
                 }
             }
-            b"A" if fields.len() >= 4 => {
+            b"G" if fields.len() == 4 => {
                 let path = field_str(fields[1]);
-                let op = fields[2].first().and_then(|&b| Op::from_byte(b));
-                let decision = (fields[3].len() == 1)
+                let op = (fields[2].len() == 1)
+                    .then(|| fields[2][0])
+                    .and_then(Op::from_byte);
+                let result = (fields[3].len() == 1)
                     .then(|| fields[3][0])
-                    .and_then(crate::perm::Decision::from_letter);
-                if let (Some(op), Some(decision)) = (op, decision) {
-                    records.push(Record::Note(Note::Ask { path, op, decision }));
+                    .and_then(GateResult::from_byte);
+                if let (Some(op), Some(result)) = (op, result) {
+                    records.push(Record::Note(Note::Gate { path, op, result }));
                 }
             }
-            b"B" if fields.len() >= 4 => {
+            b"C" if fields.len() == 3 => {
                 let path = field_str(fields[1]);
-                let rule_path = field_str(fields[3]);
-                if let Some(op) = fields[2].first().and_then(|&b| Op::from_byte(b)) {
-                    records.push(Record::Note(Note::Block {
-                        path,
-                        op,
-                        rule_path,
-                    }));
+                let policy = (fields[2].len() == 1)
+                    .then(|| fields[2][0])
+                    .and_then(Policy::from_byte);
+                if let Some(policy) = policy {
+                    records.push(Record::Note(Note::Configure { path, policy }));
                 }
             }
             _ => {}
@@ -344,55 +344,67 @@ mod tests {
         );
     }
 
-    // ── Note (A/B) record tests ────────────────────────────────────────
+    // ── Note (G/C) record tests ────────────────────────────────────────
 
     #[test]
-    fn parse_ask_record() {
-        // A\0<path>\0<op>\0<decision>  (op = r = read, decision = n = deny)
-        let records = parse(b"A\0/etc/hosts\0r\0n\n").unwrap();
-        assert_eq!(records.len(), 1);
+    fn parse_gate_records() {
+        let records = parse(b"G\0/etc/hosts\0r\0d\nG\0/a\0w\0y\nG\0/b\0r\0n\n").unwrap();
+        assert_eq!(records.len(), 3);
         assert!(matches!(
             &records[0],
-            Record::Note(Note::Ask { path, op: Op::Read, decision: crate::perm::Decision::Deny }) if path == "/etc/hosts"
+            Record::Note(Note::Gate { path, op: Op::Read, result: GateResult::DirectDeny }) if path == "/etc/hosts"
+        ));
+        assert!(matches!(
+            &records[1],
+            Record::Note(Note::Gate {
+                result: GateResult::AskAllow,
+                ..
+            })
+        ));
+        assert!(matches!(
+            &records[2],
+            Record::Note(Note::Gate {
+                result: GateResult::AskDeny,
+                ..
+            })
         ));
     }
 
     #[test]
-    fn parse_ask_record_rejects_rule_only_decisions() {
-        let records =
-            parse(b"A\0/ask\0r\0a\nA\0/write-ask\0r\0w\nA\0/read-only\0r\0r\nA\0/hide\0r\0h\n")
-                .unwrap();
-        assert!(
-            records.is_empty(),
-            "rule modes must not parse as ask decisions: {records:?}"
-        );
-    }
-
-    #[test]
-    fn parse_ask_record_rejects_multibyte_decisions() {
-        let records = parse(b"A\0/yes\0r\0yes\nA\0/deny\0r\0deny\n").unwrap();
-        assert!(
-            records.is_empty(),
-            "multi-byte decisions must not parse as ask decisions: {records:?}"
-        );
-    }
-
-    #[test]
-    fn parse_block_record() {
-        // B\0<path>\0<op>\0<rule_path>  (op = w = write)
-        let records = parse(b"B\0/etc/passwd\0w\0/etc\n").unwrap();
-        assert_eq!(records.len(), 1);
+    fn parse_configure_records() {
+        let records = parse(b"C\0/etc\0r\nC\0/etc\0u\n").unwrap();
+        assert_eq!(records.len(), 2);
         assert!(matches!(
             &records[0],
-            Record::Note(Note::Block { path, op: Op::Write, rule_path })
-                if path == "/etc/passwd" && rule_path == "/etc"
+            Record::Note(Note::Configure { path, policy: Policy::ReadOnly }) if path == "/etc"
+        ));
+        assert!(matches!(
+            &records[1],
+            Record::Note(Note::Configure {
+                policy: Policy::Unset,
+                ..
+            })
         ));
     }
 
     #[test]
-    fn parse_block_interleaved_with_actions() {
-        // B records ride alongside S/D/R within a segment.
-        let records = parse(b"S\0/a\01\0a\nB\0/etc/passwd\0w\0/etc\nD\0/a\0a\n").unwrap();
+    fn old_a_b_records_are_ignored() {
+        let records = parse(b"A\0/etc/hosts\0r\0n\nB\0/etc/passwd\0w\0/etc\n").unwrap();
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn malformed_gate_and_configure_records_are_skipped() {
+        let records = parse(
+            b"G\0/a\0r\nG\0/a\0x\0d\nG\0/a\0read\0d\nG\0/a\0r\0deny\nG\0/a\0r\0x\nG\0/a\0r\0d\0extra\nC\0/a\nC\0/a\0x\nC\0/a\0deny\nC\0/a\0d\0extra\n",
+        )
+        .unwrap();
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn gate_interleaved_with_actions() {
+        let records = parse(b"S\0/a\01\0a\nG\0/etc/passwd\0w\0d\nD\0/a\0a\n").unwrap();
         assert_eq!(records.len(), 3);
         assert!(matches!(
             &records[0],
@@ -400,28 +412,12 @@ mod tests {
         ));
         assert!(matches!(
             &records[1],
-            Record::Note(Note::Block { path, op: Op::Write, rule_path })
-                if path == "/etc/passwd" && rule_path == "/etc"
+            Record::Note(Note::Gate { path, op: Op::Write, result: GateResult::DirectDeny })
+                if path == "/etc/passwd"
         ));
         assert!(matches!(
             &records[2],
             Record::Action(Action::Delete { path, .. }) if path == "/a"
-        ));
-    }
-
-    #[test]
-    fn malformed_b_record_too_few_fields_skipped() {
-        // A 3-field B (no rule_path) is now malformed — B needs 4 fields.
-        let records = parse(b"B\0/etc/passwd\0w\nS\0/good\01\0a\n").unwrap();
-        assert_eq!(
-            records.len(),
-            1,
-            "3-field B record should be skipped: {:?}",
-            records
-        );
-        assert!(matches!(
-            &records[0],
-            Record::Action(Action::Stage { path, ino: 1, .. }) if path == "/good"
         ));
     }
 }

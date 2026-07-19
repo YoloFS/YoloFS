@@ -141,6 +141,7 @@ static void yolo_init_sbi(struct yolo_sb_info *sbi,
 	sbi->perm.timeout_ms = opts->prompt_timeout_ms;
 	INIT_LIST_HEAD(&sbi->perm.pinned_rules);
 	spin_lock_init(&sbi->perm.pinned_rules_lock);
+	mutex_init(&sbi->perm.update_lock);
 
 	/* Staging state */
 	init_rwsem(&sbi->staging.sem);
@@ -199,9 +200,13 @@ static int yolo_resolve_paths(struct yolo_sb_info *sbi,
 	}
 
 	/* Open the journal file */
-	err = yolo_journal_open(sbi);
-	if (err)
-		return err;
+	{
+		struct file *f = yolo_journal_open(&sbi->storage_path);
+
+		if (IS_ERR(f))
+			return PTR_ERR(f);
+		sbi->staging.journal_file = f;
+	}
 
 	return 0;
 }

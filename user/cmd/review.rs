@@ -335,7 +335,7 @@ pub fn run_review(range: Option<&str>, each: bool, diff: bool) -> Result<()> {
         // The summary closes with a count; the diff body speaks for itself.
         print_total(total);
     }
-    // Observed-access notes ride along the summary, not the diff body (which
+    // Audit notes ride along the summary, not the diff body (which
     // shows staged content only).
     if !diff && !changeset.notes.is_empty() {
         print_notes(&changeset.notes, &root);
@@ -347,11 +347,11 @@ pub fn run_review(range: Option<&str>, each: bool, diff: bool) -> Result<()> {
     Ok(())
 }
 
-/// `--each`: one stanza per consecutive snapshot in `[start, end)`. Each live,
-/// non-empty segment `i` is the change snapshot `i+1` captured (gen id == marker
-/// index), so it's headed `snapshot <i+1>` — except the tip (work after the last
-/// snapshot has no sealing marker, so no snapshot captures it), headed `working`.
-/// Empty/netted-out segments are skipped. Returns whether anything was shown.
+/// `--each`: one stanza per relevant journal segment in `[start, end)`, headed
+/// by its sealing snapshot/travel marker or `working` for the unsealed tip.
+/// Dead filesystem records stay filtered, while chronological C notes remain
+/// visible. Empty/netted-out segments are skipped. Returns whether anything was
+/// shown.
 fn render_each(
     journal: &Journal,
     yolofs: &Path,
@@ -362,7 +362,7 @@ fn render_each(
 ) -> bool {
     let mut shown_any = false;
     for i in start..end {
-        if !journal.is_alive(i) || journal.segments[i].records.is_empty() {
+        if journal.segments[i].records.is_empty() {
             continue;
         }
         let changeset = Changeset::collect(journal, i, i + 1);
@@ -372,22 +372,20 @@ fn render_each(
         if shown_any {
             println!();
         }
-        // Segment i is sealed by marker i+1 (a snapshot, since travel-sealed
-        // segments are dead and skipped above). The tip — uncommitted work past
-        // the last snapshot — has no sealing marker, so it isn't a snapshot yet.
-        // Head it like `timeline` does: `snapshot <id> <name>`.
-        if i + 1 < journal.markers.len() {
-            let name = match journal.markers.get(i + 1) {
-                Some(Marker::Snapshot { name, .. }) => name.as_str(),
-                _ => "",
-            };
-            println!(
+        // Segment i is sealed by marker i+1. C notes can keep a dead,
+        // travel-sealed segment visible, so label both marker kinds exactly.
+        match journal.markers.get(i + 1) {
+            Some(Marker::Snapshot { name }) => println!(
                 "{} {}",
                 format!("snapshot {}", i + 1).cyan().bold(),
                 name.dimmed()
-            );
-        } else {
-            println!("{}", "working".bold());
+            ),
+            Some(Marker::Travel { target_gen }) => println!(
+                "{} → {}",
+                format!("travel {}", i + 1).yellow().bold(),
+                target_gen
+            ),
+            None => println!("{}", "working".bold()),
         }
         if verbose {
             render(&changeset, yolofs, root);
@@ -443,8 +441,8 @@ pub fn run_after_exec(snapshot: Option<u64>) -> Result<()> {
     Ok(())
 }
 
-/// Print observational notes (A/B) under the review. These are denied or
-/// ask-resolved accesses recorded in the visible range — not staged changes, so
+/// Print observational notes (G/C) under the review. These are gate results or
+/// policy configurations recorded in the visible range — not staged changes, so
 /// they're grouped under a `not staged:` header and excluded from the count. The
 /// line shape mirrors a change (`path (kind)`), but dimmed so it reads as an
 /// access, not a commit; the op (and ask decision) ride in the parenthetical.
@@ -452,21 +450,15 @@ fn print_notes(notes: &[Note], root: &Path) {
     println!("\n{}", "not staged:".dimmed());
     for note in notes {
         let (path, kind) = match note {
-            Note::Block {
+            Note::Gate { path, op, result } => (
                 path,
-                op,
-                rule_path,
-            } => {
-                let kind = if rule_path.is_empty() {
-                    format!("blocked {}", op.label())
-                } else {
-                    format!("blocked {} by {rule_path}", op.label())
-                };
-                (path, kind)
-            }
-            Note::Ask { path, op, decision } => {
-                (path, format!("asked {} → {decision}", op.label()))
-            }
+                match result {
+                    crate::journal::GateResult::DirectDeny => format!("denied {}", op.label()),
+                    crate::journal::GateResult::AskAllow => format!("asked {} → yes", op.label()),
+                    crate::journal::GateResult::AskDeny => format!("asked {} → no", op.label()),
+                },
+            ),
+            Note::Configure { path, policy } => (path, format!("configured = {}", policy.label())),
         };
         println!(
             "{} {}",

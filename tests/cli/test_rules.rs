@@ -2,6 +2,7 @@ use crate::helpers::YOLO_BIN;
 use crate::helpers::YoloSession;
 use std::collections::BTreeMap;
 use yolofs::config::Config;
+use yolofs::journal::{Journal, Note, Record};
 use yolofs::perm::Perm;
 
 #[test]
@@ -36,6 +37,16 @@ fn apply_rules_reports_count_and_lists_via_rule() {
     let (_ok, stdout, _e) = session.cli_output(&["rule", "list"]).unwrap();
     assert!(stdout.contains("/etc = write-ask"), "rule list: {stdout}");
     assert!(stdout.contains("/usr = read-only"), "rule list: {stdout}");
+
+    let journal = Journal::read(&session.root.join(".yolofs")).expect("read journal");
+    assert!(
+        journal
+            .segments
+            .iter()
+            .flat_map(|segment| &segment.records)
+            .all(|record| !matches!(record, Record::Note(Note::Configure { .. }))),
+        "offline edits and remount-time rule application must not emit C"
+    );
 }
 
 #[test]

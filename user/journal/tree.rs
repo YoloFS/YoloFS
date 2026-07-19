@@ -1752,29 +1752,28 @@ mod tests {
     fn notes_interleaved_with_actions_do_not_affect_tree() {
         let with_notes = DirTree::build(std::iter::once(Segment {
             records: vec![
-                Record::Note(Note::Block {
+                Record::Note(Note::Gate {
                     path: "/etc/passwd".into(),
                     op: Op::Write,
-                    rule_path: "/etc".into(),
+                    result: GateResult::DirectDeny,
                 }),
                 Record::Action(Action::Stage {
                     path: "/a".into(),
                     ino: 1,
                     pre: Target::Absence,
                 }),
-                Record::Note(Note::Block {
+                Record::Note(Note::Configure {
                     path: "/etc/shadow".into(),
-                    op: Op::Write,
-                    rule_path: "/etc".into(),
+                    policy: Policy::Deny,
                 }),
                 Record::Action(Action::Delete {
                     path: "/b".into(),
                     pre: Target::Absence,
                 }),
-                Record::Note(Note::Block {
+                Record::Note(Note::Gate {
                     path: "/etc/group".into(),
                     op: Op::Write,
-                    rule_path: "/etc".into(),
+                    result: GateResult::AskDeny,
                 }),
             ],
         }));

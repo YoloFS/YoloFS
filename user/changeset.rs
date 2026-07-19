@@ -25,7 +25,7 @@ pub struct Change {
 pub struct Changeset {
     /// Net per-path changes (vacated rename sources already dropped).
     pub changes: Vec<Change>,
-    /// Observational A/B notes (deduped) — an audit overlay, not staged changes.
+    /// Observational G/C notes — an audit overlay, not staged changes.
     pub notes: Vec<Note>,
 }
 
@@ -33,20 +33,15 @@ impl Changeset {
     /// Resolve the net changes in segments `[start, end)`. Borrows the journal so
     /// `--each` can call it once per segment.
     pub fn collect(journal: &Journal, start: usize, end: usize) -> Self {
-        // One O(segment) pass over the live records collects the observational
-        // A/B accesses, deduped (a summary shouldn't repeat what `yolo journal`
-        // lists in full). The `old`/`new` per-path state comes from the folded
-        // tree below — no separate pre-image side map.
-        let mut seen = HashSet::new();
+        // One O(segment) pass collects every selected observational note in
+        // journal order. C assignments are never removed by filesystem branch
+        // reachability; G accesses follow their segment's liveness.
         let mut notes = Vec::new();
         for i in start..end {
-            if !journal.is_alive(i) {
-                continue;
-            }
             for record in &journal.segments[i].records {
                 // Notes only; the net state comes from the folded tree below.
                 let Record::Note(n) = record else { continue };
-                if seen.insert(note_key(n)) {
+                if journal.is_record_alive(i, record) {
                     notes.push(n.clone());
                 }
             }
@@ -86,22 +81,6 @@ impl Changeset {
         });
 
         Changeset { changes, notes }
-    }
-}
-
-/// A dedup key for a note: its kind, path, op, (for asks) decision, and (for
-/// blocks) the rule path — so blocks differing only by which rule fired are
-/// kept distinct.
-fn note_key(note: &Note) -> String {
-    match note {
-        Note::Block {
-            path,
-            op,
-            rule_path,
-        } => {
-            format!("B\0{path}\0{}\0{rule_path}", op.label())
-        }
-        Note::Ask { path, op, decision } => format!("A\0{path}\0{}\0{decision}", op.label()),
     }
 }
 
@@ -227,23 +206,80 @@ mod tests {
     }
 
     #[test]
-    fn blocks_differing_by_rule_path_are_not_deduped() {
-        use crate::journal::{Note, Op};
-        let block = |rule: &str| {
-            Record::Note(Note::Block {
+    fn repeated_gates_and_configurations_stay_ordered() {
+        use crate::journal::{GateResult, Note, Op, Policy};
+        let gate = || {
+            Record::Note(Note::Gate {
                 path: "/a".into(),
                 op: Op::Write,
-                rule_path: rule.into(),
+                result: GateResult::DirectDeny,
             })
         };
-        // Same path/op but different blocking rules stay distinct; an exact
-        // duplicate folds. rule_path is part of the dedup key.
-        let cs = collect(vec![block("/x"), block("/y"), block("/x")]);
-        assert_eq!(
-            cs.notes.len(),
-            2,
-            "distinct rule_paths kept, dup folded: {:?}",
-            cs.notes
-        );
+        let configure = |policy| {
+            Record::Note(Note::Configure {
+                path: "/a".into(),
+                policy,
+            })
+        };
+        let cs = collect(vec![
+            gate(),
+            gate(),
+            configure(Policy::Allow),
+            configure(Policy::Allow),
+            configure(Policy::Deny),
+        ]);
+        assert_eq!(cs.notes.len(), 5, "all notes must be kept: {:?}", cs.notes);
+        assert!(matches!(
+            &cs.notes[..],
+            [
+                Note::Gate {
+                    result: GateResult::DirectDeny,
+                    ..
+                },
+                Note::Gate {
+                    result: GateResult::DirectDeny,
+                    ..
+                },
+                Note::Configure {
+                    policy: Policy::Allow,
+                    ..
+                },
+                Note::Configure {
+                    policy: Policy::Allow,
+                    ..
+                },
+                Note::Configure {
+                    policy: Policy::Deny,
+                    ..
+                },
+            ]
+        ));
+    }
+
+    #[test]
+    fn configure_survives_dead_segment_but_gate_does_not() {
+        use crate::journal::{GateResult, Marker, Note, Op, Policy};
+        let cs = collect(vec![
+            Record::Marker(Marker::Snapshot { name: "one".into() }),
+            Record::Note(Note::Configure {
+                path: "/a".into(),
+                policy: Policy::Deny,
+            }),
+            Record::Note(Note::Gate {
+                path: "/a/x".into(),
+                op: Op::Read,
+                result: GateResult::DirectDeny,
+            }),
+            Record::Marker(Marker::Snapshot { name: "two".into() }),
+            Record::Marker(Marker::Travel { target_gen: 1 }),
+        ]);
+        assert_eq!(cs.notes.len(), 1);
+        assert!(matches!(
+            &cs.notes[0],
+            Note::Configure {
+                path,
+                policy: Policy::Deny
+            } if path == "/a"
+        ));
     }
 }
