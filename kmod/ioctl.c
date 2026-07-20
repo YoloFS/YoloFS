@@ -147,7 +147,7 @@ void yolo_release_pinned_rules(struct yolo_sb_info *sbi)
 
 		list_del_init(&di->rule_pin);
 		spin_lock(&di->lock);
-		di->perm = YOLO_PERM_UNSET;
+		di->policy = YOLO_PERM_UNSET;
 		di->rule_dentry = NULL;
 		spin_unlock(&di->lock);
 		dput(dentry);
@@ -237,14 +237,14 @@ static long yolo_rule_set_ioctl(struct file *file, unsigned long arg)
 	if (err)
 		return err;
 
-	if (rule.perm > YOLO_PERM_HIDE || rule.journal > 1) {
+	if (rule.perm > YOLO_PERM_DENY || rule.journal > 1) {
 		path_put(&rule_path);
 		return -EINVAL;
 	}
 
 	mutex_lock(&sbi->perm.update_lock);
 	spin_lock(&di->lock);
-	old_perm = di->perm;
+	old_perm = di->policy;
 	spin_unlock(&di->lock);
 	if (old_perm == (enum yolo_perm)rule.perm) {
 		err = 0;
@@ -262,9 +262,9 @@ static long yolo_rule_set_ioctl(struct file *file, unsigned long arg)
 		bool had_rule;
 
 		spin_lock(&di->lock);
-		had_rule = (di->perm != YOLO_PERM_UNSET);
+		had_rule = (di->policy != YOLO_PERM_UNSET);
 		if (had_rule) {
-			di->perm = YOLO_PERM_UNSET;
+			di->policy = YOLO_PERM_UNSET;
 			di->rule_dentry = NULL;
 		}
 		spin_unlock(&di->lock);
@@ -280,12 +280,12 @@ static long yolo_rule_set_ioctl(struct file *file, unsigned long arg)
 		bool first;
 
 		spin_lock(&di->lock);
-		first = (di->perm == YOLO_PERM_UNSET);
+		first = (di->policy == YOLO_PERM_UNSET);
 		if (first) {
 			dget(rule_path.dentry);
 			di->rule_dentry = rule_path.dentry;
 		}
-		di->perm = (enum yolo_perm)rule.perm;
+		di->policy = (enum yolo_perm)rule.perm;
 		spin_unlock(&di->lock);
 
 		if (first) {

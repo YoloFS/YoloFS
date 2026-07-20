@@ -200,63 +200,34 @@ out_tomb:
 
 /* ── permission ────────────────────────────────────────────────────── */
 
+/*
+ * Regular-file ACCESS (allow/deny/read-only/ask) is NOT decided here — it is
+ * enforced authoritatively in yolo_open(), which holds the exact dentry and
+ * may sleep. This callback only has the inode, so it must not resolve
+ * name-based access.
+ *
+ * Regular files pass here unconditionally: a write is COW'd into staging, so
+ * the lower file's unix mode is irrelevant (a read-only base is writable
+ * through the mount); a read still opens the lower file, whose mode the lower
+ * FS enforces at open.
+ *
+ * Consequence: access(2)/faccessat(2) on a regular file does not reflect the
+ * yolo access policy — it reports success; open() is the real gate.
+ * Directories/symlinks delegate to the lower FS (traversal, dir mode bits);
+ * a `deny` directory's *listing* is blocked in yolo_readdir, not here.
+ */
 static int yolo_permission(struct mnt_idmap *idmap,
 			   struct inode *inode, int mask)
 {
-	struct yolo_inode_info *info = YOLO_I(inode);
-	struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
-	enum yolo_perm perm;
-	struct inode *lower_inode = yolo_lower_inode(inode);
-	struct dentry *alias;
-
-	/* Skip all permission gating if disabled */
-	if (!sbi->perm.enabled)
+	/* Gating disabled: fully transparent — don't impose the lower FS's mode
+	 * bits (staging can COW into a read-only base). */
+	if (!YOLO_SB(inode->i_sb)->perm.enabled)
 		return 0;
 
-	/* Check generation — re-resolve if stale */
-	if (info->perm_gen != atomic64_read(&sbi->perm.gen)) {
-		struct dentry *dentry = d_find_alias(inode);
-		if (dentry) {
-			yolo_perm_refresh(inode, dentry);
-			dput(dentry);
-		}
-	}
-	perm = info->cached_perm;
-
-	/* Hidden paths return ENOENT regardless of type */
-	if (perm == YOLO_PERM_HIDE)
-		return -ENOENT;
-
-	/* Directories: delegate to lower FS (deny still allows traversal) */
-	if (!S_ISREG(inode->i_mode))
-		return inode_permission(idmap, lower_inode, mask);
-
-	/* ALLOW passes. ASK and WRITE_ASK pass too — asks are resolved in
-	 * open()/metadata-op paths where sleeping is safe. Only READ_ONLY
-	 * writes, DENY, and unexpected values fall through to -EACCES. */
-	switch (perm) {
-	case YOLO_PERM_ALLOW:
-	case YOLO_PERM_ASK:
-	case YOLO_PERM_WRITE_ASK:
+	if (S_ISREG(inode->i_mode))
 		return 0;
-	case YOLO_PERM_READ_ONLY:
-		if (!(mask & MAY_WRITE))
-			return 0;
-		break;
-	default:
-		break;
-	}
 
-	/* -EACCES path: a static deny/read-only result (ASK/WRITE_ASK returned 0
-	 * above and never reach here). Log G against the inode's dentry. */
-	alias = d_find_alias(inode);
-	if (alias) {
-		enum yolo_op op = (mask & MAY_WRITE) ? YOLO_OP_WRITE : YOLO_OP_READ;
-
-		yolo_journal_gate(sbi, alias, op, YOLO_GATE_DIRECT_DENY);
-		dput(alias);
-	}
-	return -EACCES;
+	return inode_permission(idmap, yolo_lower_inode(inode), mask);
 }
 
 /* ── setattr ───────────────────────────────────────────────────────── */
@@ -334,15 +305,9 @@ static int yolo_getattr(struct mnt_idmap *idmap,
 {
 	struct dentry *dentry = path->dentry;
 	struct inode *inode = d_inode(dentry);
-	struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
 	struct path lower_path;
 	struct inode *lower_inode;
 	int err;
-
-	/* Hidden paths return ENOENT on stat. */
-	if (sbi->perm.enabled &&
-	    yolo_perm_get(inode, dentry) == YOLO_PERM_HIDE)
-		return -ENOENT;
 
 	yolo_get_lower_path(dentry, &lower_path);
 	lower_inode = d_inode(lower_path.dentry);

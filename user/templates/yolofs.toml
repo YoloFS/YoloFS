@@ -23,8 +23,8 @@ prompt_timeout = 30    # seconds to wait for an `ask` answer before denying
 
 # Project tree and yolofs internals. The storage dir is readable (yolofs stacks
 # over /, so tools can inspect staging from inside the mount). The mountpoint
-# itself lives outside the workspace under the per-user runtime dir and is hidden
-# automatically to avoid recursion — no rule needed here.
+# itself lives outside the workspace under the per-user runtime dir — no rule
+# needed here.
 "." = "allow"
 ".yolofs" = "read-only"
 "yolofs.toml" = "read-only"

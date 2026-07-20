@@ -15,7 +15,6 @@ pub enum Perm {
     WriteAsk,
     ReadOnly,
     Deny,
-    Hide,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +31,6 @@ impl Perm {
             Perm::WriteAsk => ioctl::YOLO_PERM_WRITE_ASK,
             Perm::ReadOnly => ioctl::YOLO_PERM_READ_ONLY,
             Perm::Deny => ioctl::YOLO_PERM_DENY,
-            Perm::Hide => ioctl::YOLO_PERM_HIDE,
         }
     }
 
@@ -44,7 +42,6 @@ impl Perm {
             ioctl::YOLO_PERM_WRITE_ASK => Some(Perm::WriteAsk),
             ioctl::YOLO_PERM_READ_ONLY => Some(Perm::ReadOnly),
             ioctl::YOLO_PERM_DENY => Some(Perm::Deny),
-            ioctl::YOLO_PERM_HIDE => Some(Perm::Hide),
             _ => None,
         }
     }
@@ -67,7 +64,6 @@ impl fmt::Display for Perm {
             Perm::WriteAsk => "write-ask",
             Perm::ReadOnly => "read-only",
             Perm::Deny => "deny",
-            Perm::Hide => "hide",
         })
     }
 }
@@ -90,7 +86,6 @@ impl FromStr for Perm {
             "write-ask" => Ok(Perm::WriteAsk),
             "read-only" => Ok(Perm::ReadOnly),
             "deny" => Ok(Perm::Deny),
-            "hide" => Ok(Perm::Hide),
             _ => anyhow::bail!("unknown permission: {s}"),
         }
     }
@@ -100,13 +95,12 @@ impl FromStr for Perm {
 mod tests {
     use super::*;
 
-    const ALL: [Perm; 6] = [
+    const ALL: [Perm; 5] = [
         Perm::Ask,
         Perm::Allow,
         Perm::WriteAsk,
         Perm::ReadOnly,
         Perm::Deny,
-        Perm::Hide,
     ];
 
     #[test]

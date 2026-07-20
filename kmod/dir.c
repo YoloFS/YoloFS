@@ -24,16 +24,13 @@ static struct dentry *yolo_alloc_cursor(struct dentry *parent)
 
 static int yolo_dir_open(struct inode *inode, struct file *file)
 {
-	struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
 	struct yolo_dir_info *di;
 	struct file *lower_file;
 	struct path lower_path;
 
-	/* Hidden directories are invisible — return ENOENT.
-	 * All other perms (including deny) allow readdir. */
-	if (sbi->perm.enabled &&
-	    yolo_perm_get(inode, file->f_path.dentry) == YOLO_PERM_HIDE)
-		return -ENOENT;
+	/* Note: `deny` blocks *listing* (getdents), enforced in yolo_readdir, not
+	 * here — opening the directory fd must still succeed so the control
+	 * ioctls (which live on a mount directory fd) work even under a deny. */
 
 	di = kzalloc(sizeof(*di), GFP_KERNEL);
 	if (!di)
@@ -97,12 +94,8 @@ struct yolo_readdir_data {
 };
 
 /*
- * True if @name must not be emitted from the base directory: either
- * overridden by a pinned overlay entry (staged file, tombstone, redirect),
- * or carrying an explicit YOLO_PERM_HIDE rule. Rule dentries are pinned in
- * the dcache via dget at rule-set time and stay hashed (the d_drop in
- * yolo_lookup only hits freshly looked-up dentries, which by definition
- * were not in the dcache), so one d_lookup finds both kinds.
+ * True if @name must not be emitted from the base directory because it is
+ * overridden by a pinned overlay entry (staged file, tombstone, redirect).
  */
 static bool yolo_base_entry_skipped(struct dentry *parent,
 				    const char *name, int namelen)
@@ -116,11 +109,7 @@ static bool yolo_base_entry_skipped(struct dentry *parent,
 	if (!child)
 		return false;
 
-	/* di->perm is read without di->lock, like yolo_perm_walk: a racing
-	 * rule update is tolerated — perm.gen invalidation handles staleness. */
-	skip = YOLO_D(child)->pinned ||
-	       (YOLO_SB(parent->d_sb)->perm.enabled &&
-		YOLO_D(child)->perm == YOLO_PERM_HIDE);
+	skip = YOLO_D(child)->pinned;
 	dput(child);
 	return skip;
 }
@@ -132,7 +121,7 @@ static bool yolo_fill_base(struct dir_context *ctx, const char *name,
 	struct yolo_readdir_data *rdd =
 		container_of(ctx, struct yolo_readdir_data, ctx);
 
-	/* Skip entries overridden by the overlay or hidden by a rule. */
+	/* Skip entries overridden by a pinned overlay entry (staged/tombstone). */
 	if (yolo_base_entry_skipped(rdd->dentry, name, namelen))
 		return true;
 
@@ -267,6 +256,15 @@ static int yolo_readdir(struct file *file, struct dir_context *ctx)
 
 	if (!lower_file)
 		return -EIO;
+
+	/* `deny` on a directory blocks listing its contents. Enforced here (not
+	 * at open) so opening the dir fd still works — the control ioctls live on
+	 * a mount directory fd and must remain usable under a deny. Traversal to
+	 * explicitly-allowed children is unaffected (that goes through lookup +
+	 * per-child open, never getdents). */
+	if (sbi->perm.enabled &&
+	    yolo_access_get(file->f_path.dentry) == YOLO_PERM_DENY)
+		return -EACCES;
 
 	/* No staging → passthrough */
 	if (!sbi->staging.enabled || !sbi->staging.inodes_dir.dentry) {

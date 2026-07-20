@@ -50,8 +50,7 @@ enum yolo_perm {
 	YOLO_PERM_ALLOW		= 2,	/* read + write + execute */
 	YOLO_PERM_WRITE_ASK	= 3,	/* read + execute; writes ask userspace */
 	YOLO_PERM_READ_ONLY	= 4,	/* read + execute; writes denied */
-	YOLO_PERM_DENY		= 5,	/* all access denied */
-	YOLO_PERM_HIDE		= 6,	/* path invisible: ENOENT on lookup/stat/open */
+	YOLO_PERM_DENY		= 5,	/* files: all access denied; dirs: no listing */
 };
 
 /* One-shot ask decisions */
@@ -252,8 +251,6 @@ struct yolo_sb_info {
 
 struct yolo_inode_info {
 	struct inode		*lower_inode;
-	enum yolo_perm		cached_perm;
-	u64			perm_gen;
 	u16			staging_gen;	/* generation when last staged/COW'd */
 	u32			staging_ino;	/* store id when backing == STAGED (0 = none) */
 
@@ -267,7 +264,9 @@ struct yolo_dentry_info {
 	struct path		lower_path;	/* resolved lower path (inode entry or base) */
 	enum yolo_backing	backing;		/* where content lives */
 	bool			pinned;		/* held via dget by staging */
-	enum yolo_perm		perm;		/* explicit rule or UNSET */
+	enum yolo_perm		policy;		/* explicit rule policy or UNSET */
+	enum yolo_perm		cached_access;	/* resolved access perm (inherited) */
+	u64			cached_gen;	/* sbi->perm.gen when cached_access set */
 	struct list_head	rule_pin;	/* node in sbi->perm.pinned_rules */
 	struct dentry		*rule_dentry;	/* back-pointer for dput on release */
 };
@@ -474,8 +473,8 @@ int yolo_journal_configure(struct yolo_sb_info *sbi, struct dentry *target,
 
 /* perm.c */
 enum yolo_perm yolo_perm_walk(struct dentry *dentry, struct dentry **source);
-void yolo_perm_refresh(struct inode *inode, struct dentry *dentry);
-enum yolo_perm yolo_perm_get(struct inode *inode, struct dentry *dentry);
+void yolo_access_refresh(struct dentry *dentry);
+enum yolo_perm yolo_access_get(struct dentry *dentry);
 int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
 			   struct dentry *target, int f_flags);
 int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,

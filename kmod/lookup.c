@@ -127,15 +127,10 @@ struct dentry *yolo_lookup(struct inode *dir, struct dentry *dentry,
 	if (err)
 		return ERR_PTR(err);
 
-	if (d_inode(dentry)) {
-		yolo_perm_refresh(d_inode(dentry), dentry);
-
-		/* Hidden entries appear as if they don't exist. */
-		if (YOLO_SB(dentry->d_sb)->perm.enabled &&
-		    YOLO_I(d_inode(dentry))->cached_perm == YOLO_PERM_HIDE) {
-			d_drop(dentry);
-			return ERR_PTR(-ENOENT);
-		}
-	}
+	/* Warm the access cache on the new dentry (skipped when gating is off —
+	 * the value is never consumed then, and a later enable finds
+	 * cached_gen == 0 stale and re-resolves). */
+	if (d_inode(dentry) && YOLO_SB(dentry->d_sb)->perm.enabled)
+		yolo_access_refresh(dentry);
 	return NULL;
 }

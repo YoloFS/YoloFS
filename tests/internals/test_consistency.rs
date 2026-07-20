@@ -16,7 +16,7 @@ use std::fs;
 use std::os::unix::fs::DirEntryExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use yolofs::journal::{DirTree, Backing};
+use yolofs::journal::{Backing, DirTree};
 
 // ── Helpers ──────────────────────────────────────────────────────────
 

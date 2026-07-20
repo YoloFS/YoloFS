@@ -122,23 +122,26 @@ fn create_denied_under_deny() {
     );
 }
 
-/// Listing a directory's contents should work even under deny
-/// (readdir is not a mutation, yolo_readdir doesn't check perm).
+/// `deny` on a directory blocks listing its contents (yolo_readdir returns
+/// EACCES). Traversal to explicitly-allowed children is unaffected — see
+/// tests/perm/test_deny_listing.rs.
 #[test]
-fn readdir_allowed_under_deny() {
+fn readdir_blocked_under_deny() {
     let s = YoloSession::new_with_config(Config {
         rules: BTreeMap::from([("/".into(), Perm::Deny)]),
         ..Default::default()
     })
     .expect("session setup");
 
-    let entries: Vec<_> = fs::read_dir(s.mnt_path("."))
-        .expect("readdir should succeed")
-        .filter_map(|e| e.ok())
+    // Enumeration (getdents) is blocked; the dir fd itself still opens.
+    let listed: std::io::Result<Vec<_>> = fs::read_dir(s.mnt_path("."))
+        .expect("opening the dir fd should succeed")
         .collect();
-    assert!(
-        !entries.is_empty(),
-        "readdir should see base files even under deny"
+    assert!(listed.is_err(), "readdir under deny should be blocked");
+    assert_eq!(
+        listed.unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "readdir under deny should be EACCES"
     );
 }
 

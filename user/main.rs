@@ -128,10 +128,8 @@ enum RuleAction {
     WriteAsk { path: String },
     /// Allow read + execute, deny writes
     ReadOnly { path: String },
-    /// Deny all access
+    /// Deny all access (for a directory: also blocks listing its contents)
     Deny { path: String },
-    /// Deny access and hide the path (ENOENT)
-    Hide { path: String },
     /// List all configured rules
     List,
     /// Resolve the effective permission for a path (and where it comes from)
@@ -232,7 +230,6 @@ fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
             RuleAction::WriteAsk { path } => config::set_rule(&path, perm::Perm::WriteAsk)?,
             RuleAction::ReadOnly { path } => config::set_rule(&path, perm::Perm::ReadOnly)?,
             RuleAction::Deny { path } => config::set_rule(&path, perm::Perm::Deny)?,
-            RuleAction::Hide { path } => config::set_rule(&path, perm::Perm::Hide)?,
         },
         Some(Command::Watch { allow_all }) => watch::run(allow_all)?,
         None => print_overview(),
@@ -271,7 +268,7 @@ fn print_overview() {
             ("abort",    "Discard staged changes"),
         ]),
         ("Permissions", &[
-            ("rule",     "Manage permission rules (allow/write-ask/read-only/ask/deny/hide)"),
+            ("rule",     "Manage permission rules (allow/write-ask/read-only/ask/deny)"),
             ("watch",    "Permission-prompt daemon"),
         ]),
         ("History", &[

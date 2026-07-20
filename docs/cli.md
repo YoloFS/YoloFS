@@ -124,8 +124,7 @@ new travel become unreachable, preserving earlier history.
 $ yolo rule allow src    # set a rule (verb names the level)
 $ yolo rule write-ask /etc  # allow reads, ask before writes
 $ yolo rule read-only /usr
-$ yolo rule deny /etc
-$ yolo rule hide ~/.ssh
+$ yolo rule deny ~/.ssh       # no read/write; for a dir also blocks listing
 $ yolo rule ask /etc/hosts   # force a prompt, overriding an inherited rule
 $ yolo rule unset src    # remove a rule (revert to inherited)
 $ yolo rule list         # list configured rules (bare `yolo rule` prints the subcommands)

@@ -499,17 +499,17 @@ yolo_readdir(dir, ctx):
                  d_inode(child)->i_ino,
                  fs_umode_to_dtype(d_inode(child)->i_mode))
 
-    # Phase 2 (yolo_fill_base): emit base entries not overridden by
-    # staged entries and not hidden by a rule. Uses one d_lookup()
-    # (O(1) dcache hash) per base entry for both checks.
+    # Phase 2 (yolo_fill_base): emit base entries not overridden by a
+    # pinned overlay entry (staged file, tombstone, redirect). Uses one
+    # d_lookup() (O(1) dcache hash) per base entry.
     lower_file.f_pos = file_info.base_pos   # resume, not restart
     for entry in base_readdir(dir):
         result = d_lookup(dir_dentry, &entry.name)
         if result:
-            skip = YOLO_D(result)->pinned or YOLO_D(result)->perm == HIDE
+            skip = YOLO_D(result)->pinned
             dput(result)
             if skip:
-                continue   # overridden by staged entry, or hidden
+                continue   # overridden by a staged entry or tombstone
         dir_emit(ctx, entry.name)
     file_info.base_pos = lower_file.f_pos   # save for next call
 ```
@@ -612,14 +612,13 @@ ends against override-tree paths.
 `op` is a single letter (`r`/`w`). A G result is `d` when a static policy
 denies without prompting, `y` when an ask allows, and `n` when an ask denies.
 Timeout denial is `n`. G records omit the source rule path and are emitted only
-for prompted or denied accesses; direct allows are not logged. `hide` remains
-unlogged because recording its path would disclose a hidden name.
+for prompted or denied accesses; direct allows are not logged.
 
 C stands for Configure. `policy` is a single letter: `q` = ask, `a` = allow,
-`w` = write-ask, `r` = read-only, `d` = deny, `h` = hide, and `u` = unset.
-`unset` removes the explicit rule and restores inheritance. C records are
-emitted for successful live policy assignments made by `yolo rule`, not when
-mounting or remounting applies the saved configuration. Edits made while
+`w` = write-ask, `r` = read-only, `d` = deny, and `u` = unset. `unset` removes
+the explicit rule and restores inheritance. C records are emitted for
+successful live policy assignments made by `yolo rule`, not when mounting or
+remounting applies the saved configuration. Edits made while
 unmounted have no live journal in which to write C.
 
 S/D/R are state mutations and P/T are control markers. **G and C are

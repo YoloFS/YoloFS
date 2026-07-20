@@ -4,21 +4,25 @@ The permission gating layer controls which files an agent can access and how.
 Absent any matching rule, a path resolves to the built-in default `ask` state
 (a dentry with no rule is `UNSET` and inherits from its nearest ancestor; the
 root falls back to `ask`). A rule engine promotes matching paths to `allow`,
-`write-ask`, `read-only`, `ask`, `deny`, or `hide` — and the shipped default
-config (`user/templates/yolofs.toml`) installs such rules out of the box (e.g.
+`write-ask`, `read-only`, `ask`, or `deny` — and the shipped default config
+(`user/templates/yolofs.toml`) installs such rules out of the box (e.g.
 `/usr` read-only, `/etc` write-ask, `.` allow), so most paths resolve to those
 rather than `ask` in practice. When an access needs approval (`ask`, or a write
 under `write-ask`), the thread is put to sleep; a userspace daemon receives the
 request and writes back a decision that wakes the thread.
 
-Permission gating applies to **file access** (open for read/write/exec)
-and **metadata mutations** (create, mkdir, unlink, rmdir, rename,
-symlink).  Directory mutations use the permission of the parent
-directory.  Directory read-like operations (lookup/traversal, readdir,
-stat) are **not** permission-gated — only `hide` applies (returns
-ENOENT).  `deny` and `ask` have no effect on directory read-like ops.
+Permission gating applies to **file access** (open for read/write/exec) and
+**metadata mutations** (create, mkdir, unlink, rmdir, rename, symlink).
+Directory mutations use the permission of the parent directory. Directory
+read-like operations (lookup/traversal, stat) are **not** gated. The one
+exception is **listing**: `deny` on a directory blocks enumerating its
+contents (see below); `ask` and the other policies do not affect read-like ops.
 
-## Permission States
+## Policy States
+
+`enum yolo_perm` is the **policy** enum — the mutually-exclusive rule a user
+sets on a path. The resolved *access* value cached on a dentry
+(`cached_access`) draws from the same enum.
 
 ```c
 enum yolo_perm {
@@ -28,10 +32,8 @@ enum yolo_perm {
     YOLO_PERM_WRITE_ASK,   // Read + execute; writes ask userspace.
     YOLO_PERM_READ_ONLY,   // Read + execute; writes denied.
     YOLO_PERM_DENY,        // Files: all access denied.
-                           // Dirs: traversal/readdir/stat still work,
-                           //       but mutations are denied.
-    YOLO_PERM_HIDE,        // Like deny, but the path itself is invisible.
-                           // Parent's readdir skips it; stat returns -ENOENT.
+                           // Dirs: traversal/stat still work, mutations denied,
+                           //       and listing (getdents) is blocked.
 };
 ```
 
@@ -44,34 +46,43 @@ enum yolo_op {
 };
 ```
 
+## Two Concerns: Policy and Access
+
+`yolofs` separates the rule a user sets from the value the kernel resolves:
+
+- **Policy** — the rule a user sets on a path (`allow`/`write-ask`/`read-only`/
+  `ask`/`deny`), one mutually-exclusive choice per dentry. Stored in
+  `yolo_dentry_info.policy` (an `enum yolo_perm`, `UNSET` = no rule here).
+- **Access** — the *resolved* decision for a path, inherited from the nearest
+  ancestor policy, cached per-dentry (`cached_access`). This gates
+  open/mutate/setattr, and (for `deny`) directory listing.
+
 ## In-Kernel State
 
-Permission state is organized by concern into three groups: rule storage,
-per-inode state, and the ask protocol engine.
+### Rule Storage & Access Cache — both per-dentry
 
-### Rule Storage
-
-Rules live directly on dentries. One field, one structure.
+Everything permission-related lives on the dentry: the policy it carries and
+the resolved-access value it caches.
 
 **Per-dentry** (`yolo_dentry_info`) — one per cached dentry:
 
 | Field | Purpose |
 |-------|---------|
-| `perm` | `YOLO_PERM_UNSET` unless this dentry has an explicit rule. Set or cleared by `YOLO_IOC_RULE_SET` (a perm of `UNSET` clears it). The root dentry also starts as `UNSET`; reaching the root without finding a rule means the built-in default `ask`. The dentry is pinned (via `dget`) while a rule is attached to prevent eviction. |
+| `policy` | `YOLO_PERM_UNSET` unless this dentry has an explicit rule. Set or cleared by `YOLO_IOC_RULE_SET` (a policy of `UNSET` clears it). The root dentry also starts `UNSET`; reaching the root without a rule means the built-in default `ask`. Pinned (via `dget`) while a rule is attached. |
+| `cached_access` | Resolved access permission (inherited from the nearest ancestor `policy`), re-resolved lazily when `cached_gen` is stale. |
+| `cached_gen` | The `sbi->perm.gen` value when `cached_access` was computed. If `!= sbi->perm.gen`, the cache is stale. |
+
+Caching the resolved value on the **dentry** (not the inode) keeps it keyed by
+name: hardlinks to one inode under different policies each resolve their own
+`cached_access`, and every real check holds a dentry, so no `d_find_alias`
+guessing is needed.
 
 ### Per-Superblock (`yolo_sb_info`)
 
 | Field | Purpose |
 |-------|---------|
 | `perm.enabled` | Bool — whether permission gating is enabled. When false, all checks are skipped. |
-| `perm.gen` | Atomic generation counter, starts at 1. Bumped on every rule add/remove/invalidation. Compared against per-inode `perm_gen` for O(1) staleness check. |
-
-### Per-Inode (`yolo_inode_info`)
-
-| Field | Purpose |
-|-------|---------|
-| `cached_perm` | Resolved permission (inherited from nearest ancestor rule). Cached at lookup time, re-resolved lazily when `perm_gen` is stale. |
-| `perm_gen` | The `sbi->perm.gen` value when `cached_perm` was computed. If `!= sbi->perm.gen`, the cache is stale. |
+| `perm.gen` | Atomic generation counter, starts at 1. Bumped on every rule add/remove/invalidation. Compared against per-dentry `cached_gen` for O(1) staleness check. |
 
 ### Ask Protocol Engine
 
@@ -128,15 +139,16 @@ only exists outside).
 
 ## Rule Engine
 
-Rules are **attached to dentries**. Resolved permissions are **cached on
-inodes** with a **generation counter** for cheap invalidation.
+Rules and their resolved values are both **attached to dentries**, with a
+**generation counter** for cheap invalidation.
 
-Two levels:
-- **Dentry**: `perm` field — only set on dentries that have an explicit rule
+Two fields, one dentry:
+- **Policy**: `policy` field — only set on dentries that have an explicit rule
   (`YOLO_PERM_UNSET` otherwise). Rules are pinned so the dentry is never evicted.
-- **Inode**: `cached_perm` + `perm_gen` — resolved permission cached during
-  `lookup()` by inheriting from the nearest ancestor dentry with a rule.
-  Checked in `permission()` with O(1) cost.
+- **Access cache**: `cached_access` + `cached_gen` — resolved access permission
+  cached by inheriting from the nearest ancestor dentry's policy, re-resolved
+  lazily on a stale generation. Checked with O(1) cost by callers that hold the
+  dentry.
 
 **Setting a rule** (`yolo rule allow src`):
 
@@ -149,7 +161,7 @@ Two levels:
    "/etc"       = "write-ask"
    "/etc/hosts" = "read-only"
    "/usr/bin"   = "read-only"
-   "/secret"    = "hide"
+   "/secret"    = "deny"
   ```
 
    Paths can be **absolute** (`/etc`) or **relative** to the session root:
@@ -160,8 +172,8 @@ Two levels:
    opens the target *through the mount* (`<mnt>/<abs-path>`) with `O_PATH`
    and passes the fd in `ioctl(YOLO_IOC_RULE_SET, { fd, perm })` -> the
    kernel verifies the fd's dentry belongs to this mount, sets
-   `YOLO_D(dentry)->perm`, pins the dentry, and bumps `perm_gen` to
-   invalidate all cached inode perms. Passing an fd instead of a path string
+   `YOLO_D(dentry)->policy`, pins the dentry, and bumps `perm.gen` to
+   invalidate all cached access values. Passing an fd instead of a path string
    means the kernel never re-resolves the path (one resolution, at `open()`
    time), the in-mount check is exact (it tests the object the rule attaches
    to), and rule paths are not subject to `YOLO_PATH_MAX`.
@@ -176,7 +188,7 @@ structure, and inheritance already covers the common case — a rule on the
 nearest existing ancestor applies to everything created underneath it. A
 rule whose path doesn't exist stays in `yolofs.toml` (mount-time apply warns
 and skips it) and takes effect once the path exists, on the next mount or
-`yolo rule` invocation. To gate a future path ahead of time (e.g. `hide` a
+`yolo rule` invocation. To gate a future path ahead of time (e.g. `deny` a
 directory the agent has not created yet), create the directory first, then
 set the rule.
 
@@ -188,24 +200,23 @@ On mount, the CLI reads `yolofs.toml` and applies all `[rules]` via ioctl.
 
 1. Remove the rule from `yolofs.toml`.
 2. If a mount exists, also apply live: open the target through the mount
-   with `O_PATH` and send `ioctl(YOLO_IOC_RULE_SET)` with perm `UNSET` ->
-   kernel sets `YOLO_D(dentry)->perm = UNSET`, unpins the dentry, and bumps
-   `perm_gen`. Rule dentries are pinned in the dcache and `hide` is enforced
-   at readdir/getattr/open — not at lookup — so a hidden path still resolves
-   for the owning user outside the mount, which is what makes unsetting a
-   `hide` rule possible.
+   with `O_PATH` and send `ioctl(YOLO_IOC_RULE_SET)` with policy `UNSET` ->
+   kernel sets `YOLO_D(dentry)->policy = UNSET`, unpins the dentry, and bumps
+   `perm.gen`. Rule dentries are pinned in the dcache so the target stays
+   findable to be unset.
 
-**Permission resolution — cached on inode, resolved lazily**:
+**Access resolution — cached on the dentry, resolved lazily**:
 
 ```c
-// Resolve by walking up dentry chain (only called on cache miss).
+// Resolve policy by walking up the dentry chain. Returns the nearest
+// ancestor's policy. Used by RULE_RESOLVE (a query) and by the access refresh.
 enum yolo_perm yolo_perm_walk(struct dentry *dentry)
 {
     struct dentry *cur = dentry;
     while (cur) {
         struct yolo_dentry_info *di = YOLO_D(cur);
-        if (di && di->perm != YOLO_PERM_UNSET)
-            return di->perm;
+        if (di && di->policy != YOLO_PERM_UNSET)
+            return di->policy;
         if (cur == cur->d_parent)
             break;              // reached root dentry
         cur = cur->d_parent;
@@ -213,49 +224,37 @@ enum yolo_perm yolo_perm_walk(struct dentry *dentry)
     return YOLO_PERM_ASK;   // built-in default; no rule path
 }
 
-// Called during lookup() -- cache the resolved perm on the inode.
-void yolo_perm_refresh(struct inode *inode, struct dentry *dentry)
+// Cache the resolved access value on the dentry.
+void yolo_access_refresh(struct dentry *dentry)
 {
-    struct yolo_inode_info *info = YOLO_I(inode);
-    struct yolo_sb_info *sb = YOLO_SB(inode->i_sb);
+    struct yolo_dentry_info *di = YOLO_D(dentry);
 
-    info->cached_perm = yolo_perm_walk(dentry);
-    info->perm_gen = atomic64_read(&sb->perm.gen);
+    di->cached_access = yolo_perm_walk(dentry);
+    di->cached_gen = atomic64_read(&YOLO_SB(dentry->d_sb)->perm.gen);
 }
 
-// Cached read: refresh first if perm_gen is stale.
-enum yolo_perm yolo_perm_get(struct inode *inode, struct dentry *dentry)
+// Cached read: refresh first if cached_gen is stale.
+enum yolo_perm yolo_access_get(struct dentry *dentry)
 {
-    if (YOLO_I(inode)->perm_gen != atomic64_read(&YOLO_SB(inode->i_sb)->perm.gen))
-        yolo_perm_refresh(inode, dentry);
-    return YOLO_I(inode)->cached_perm;
+    struct yolo_dentry_info *di = YOLO_D(dentry);
+    if (di->cached_gen != atomic64_read(&YOLO_SB(dentry->d_sb)->perm.gen))
+        yolo_access_refresh(dentry);
+    return di->cached_access;
 }
 
-// Shared permission check: resolve, ask if needed, check the requested op.
-// Used by yolo_open (for file access) and yolo_check_mutate_perm (for metadata
-// ops). Lives in perm.c. Journaling lives next to the result: an ask writes a
-// G result internally; a static denial writes G with result `d`. `check` is
-// whose perm gates; `target` is the attempted path recorded by G. Callers just
-// propagate the returned errno.
+// Shared access check: resolve, ask if needed, check the requested op.
+// Used by yolo_open (file access) and yolo_check_mutate_perm (metadata ops).
+// Journaling lives next to the result: an ask writes a G result internally; a
+// static denial writes G with result `d`. `check` is whose access gates;
+// `target` is the path recorded by G. Callers propagate the returned errno.
 int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
                            struct dentry *target, int f_flags)
 {
-    enum yolo_perm perm;
-    enum yolo_decision decision;
-    enum yolo_op op = yolo_open_op(f_flags);
-
-    perm = yolo_perm_get(d_inode(check), check);
-
-    if (perm == YOLO_PERM_ASK ||
-        (perm == YOLO_PERM_WRITE_ASK && op == YOLO_OP_WRITE)) {
-        // ... ask daemon, or deny on timeout; writes one G result ...
-        return decision == YOLO_DECISION_ALLOW ? 0 : -EACCES;
-    }
-    // Static denial: writes G(target, op, d).
-    return yolo_perm_check_static(sbi, target, check, perm, f_flags);
+    enum yolo_perm perm = yolo_access_get(check);
+    // ... ask on ASK / WRITE_ASK+write, else static check; writes one G ...
 }
 
-// Metadata ops check write permission on the parent directory; a block reports
+// Metadata ops check write access on the parent directory; a block reports
 // the child (target). Exactly-one-G behavior is handled in the shared check.
 static int yolo_check_mutate_perm(struct dentry *dentry)
 {
@@ -265,26 +264,30 @@ static int yolo_check_mutate_perm(struct dentry *dentry)
     return yolo_perm_check_dentry(sbi, dentry->d_parent, dentry, O_WRONLY);
 }
 
-// yolo_permission() for VFS MAY_READ/MAY_WRITE/MAY_EXEC checks.
-// Directories do not sleep here; directory read-like ops only check `hide`.
+// yolo_permission(): regular files pass (access is gated authoritatively in
+// yolo_open, which holds the exact dentry and may sleep; writes COW, so the
+// lower mode is irrelevant). Directories/symlinks delegate to the lower FS for
+// traversal and dir mode bits. A `deny` directory's listing is blocked in
+// yolo_readdir, not here. This callback only has the inode; it never resolves
+// name-based access. Cannot sleep (may run under RCU).
 static int yolo_permission(struct mnt_idmap *idmap,
                            struct inode *inode, int mask)
 {
-    // ... regular files enforce allow/deny here ...
+    if (S_ISREG(inode->i_mode))
+        return 0;
+    return inode_permission(idmap, yolo_lower_inode(inode), mask);
 }
 ```
 
-The root dentry starts as `YOLO_PERM_UNSET`. Reaching the root without finding
-an explicit rule returns the built-in default `YOLO_PERM_ASK`; an explicit
-`/ = "ask"` rule is represented as a real root-dentry rule and is reported to
-userspace as `rule_path = "/"`. In steady state (no rule changes),
-`permission()` is a single generation compare + switch — O(1). On rule change,
-the generation bumps and inodes re-resolve lazily on next access.
+The root dentry starts as `YOLO_PERM_UNSET`. Reaching the root without an
+explicit rule returns the built-in default `YOLO_PERM_ASK`; an explicit
+`/ = "ask"` rule is a real root-dentry rule reported to userspace as
+`rule_path = "/"`. In steady state a check is a single generation compare +
+switch — O(1). On rule change the generation bumps and dentries re-resolve
+lazily on next access.
 
-The `ask` path is handled in operations that have a stable dentry and may
-sleep: `yolo_open()` for regular-file opens.  Directory read-like
-operations (readdir, lookup/traversal, stat) are **not** gated by ask —
-they only check for `hide`:
+`yolo_open` is the single authority for regular-file access (the access
+decision may sleep to `ask`):
 
 ```c
 static int yolo_open(struct inode *inode, struct file *file)
@@ -292,12 +295,27 @@ static int yolo_open(struct inode *inode, struct file *file)
     struct dentry *dentry = file->f_path.dentry;
 
     if (sbi->perm.enabled) {
-        // check == target: the file's own perm gates its open.
+        // check == target: the file's own access gates its open.
         err = yolo_perm_check_dentry(sbi, dentry, dentry, file->f_flags);
         if (err)
             return err;
     }
     // ... staging redirect (lazy COW, see staging.md#open--read--write-path) ...
+}
+```
+
+`deny` on a directory blocks *listing* its contents. The block lives in
+`yolo_readdir` (getdents), not `yolo_dir_open` — opening the directory fd must
+still succeed so the control ioctls, which live on a mount directory fd, keep
+working even under a `deny`:
+
+```c
+static int yolo_readdir(struct file *file, struct dir_context *ctx)
+{
+    if (sbi->perm.enabled &&
+        yolo_access_get(file->f_path.dentry) == YOLO_PERM_DENY)
+        return -EACCES;
+    // ... merge staged + base entries ...
 }
 ```
 
@@ -322,15 +340,17 @@ static int yolo_create(struct mnt_idmap *idmap, struct inode *dir,
  yolo rule write-ask /etc
  yolo rule read-only /etc/hosts
  yolo rule read-only /usr/bin
- yolo rule hide  ~/.mozilla
+ yolo rule deny  ~/.mozilla
 ```
 
-- `permission("src/main.rs")` -> cached_perm=ALLOW (from lookup) -> **pass**
-- `permission("etc/passwd")` -> cached_perm=WRITE_ASK -> **pass for read/exec, ask on write**
-- `permission("etc/hosts")` -> cached_perm=READ_ONLY -> **pass for read/exec, deny write**
-- `readdir("etc")` -> cached_perm=WRITE_ASK -> **pass** (dir read-like ops not gated)
-- `stat("etc")` -> cached_perm=WRITE_ASK -> **pass** (dir read-like ops not gated)
-- `open("tmp/foo")` -> cached_perm=ASK -> ask daemon -> **sleeps until decision**
+- `open("src/main.rs")` -> cached_access=ALLOW -> **pass**
+- `open("etc/passwd", O_RDONLY)` -> cached_access=WRITE_ASK -> **pass** (read/exec allowed)
+- `open("etc/passwd", O_WRONLY)` -> cached_access=WRITE_ASK -> **ask daemon on write**
+- `open("etc/hosts", O_WRONLY)` -> cached_access=READ_ONLY -> **deny write**
+- `readdir("etc")` -> **pass** (only `deny` blocks listing)
+- `stat("etc")` -> **pass** (dir read-like ops not gated)
+- `open("tmp/foo")` -> cached_access=ASK -> ask daemon -> **sleeps until decision**
+- `readdir("mozilla")` under `deny` -> **EACCES** (listing blocked); `open("mozilla/x")` -> **EACCES**
 
 ## The Ask Protocol
 
@@ -377,8 +397,6 @@ Key properties:
   Valid decisions are always `allow` or `deny`; they answer only the current
   blocked operation.
   Persisting policy is always a separate `ioctl(YOLO_IOC_RULE_SET)`.
-  `hide` is rule-only: a hidden path returns `ENOENT` and never issues an ask,
-  because prompting would already disclose the path.
 - **One-shot decisions**: Ask decisions do not mutate the cached rule mode. An
   `allow` decision lets only the current access proceed; a later access asks
   again unless userspace separately calls `ioctl(YOLO_IOC_RULE_SET)` to install
@@ -402,8 +420,13 @@ These principles rule out most alternatives:
 |---|---|
 | Sorted array scan | #1 — O(n) per access |
 | First-match glob list | #1 — O(n), #2 — order-dependent |
-| Dentry-cached inheritance | #3 — rule change requires flushing children |
+| Dentry-cached inheritance *(eager)* | #3 — rule change requires flushing children |
 | Per-file hashtable | #2 — no subtree support without enumerating all files |
+
+(yolofs *does* cache inherited access on dentries — but lazily, gated by a
+generation counter, so a rule change never flushes children: it bumps
+`perm.gen` and each dentry re-resolves on its next access. That is what makes
+dentry-caching viable, and is different from the eager variant above.)
 
 The **dentry tree is already a path-component trie**. Walking `d_parent` is
 longest-prefix-match for free. This satisfies all three principles:
@@ -411,19 +434,19 @@ longest-prefix-match for free. This satisfies all three principles:
 1. O(depth) — typically 3-8 pointer hops, independent of rule count.
 2. Walk finds the nearest ancestor with a rule — subtrees, overlaps, and
    per-file overrides all fall out naturally from bottom-up traversal.
-3. Just set `dentry->perm` — no child invalidation, immediate effect.
+3. Just set `dentry->policy` — no child invalidation, immediate effect.
 
 ## Cache Invalidation
 
-- On rule add/remove: `atomic_inc(&sb->perm.gen)`. All inode caches go
-  stale; next `permission()` call re-resolves lazily via `d_find_alias()` +
-  walk up. O(1) invalidation.
+- On rule add/remove: `atomic_inc(&sb->perm.gen)`. All per-dentry
+  `cached_access` values go stale; the next access on a dentry re-resolves
+  lazily by walking up from that dentry. O(1) invalidation, no `d_find_alias`.
 - On `YOLO_IOC_RESTORE` (including the empty-tree commit/abort case) and
   `YOLO_IOC_TRAVEL`:
-  bumps perm_gen and shrinks the dentry cache, so permission re-resolution picks
+  bumps perm.gen and shrinks the dentry cache, so permission re-resolution picks
   up changes.
-- On `rename`: pure renames do **not** bump `perm_gen`. The inode keeps its
-  `cached_perm` until some later invalidation event (rule add/remove or
+- On `rename`: pure renames do **not** bump `perm.gen`. The moved dentry keeps
+  its `cached_access` until some later invalidation event (rule add/remove or
   `YOLO_IOC_TRAVEL`). This is intentional: rename is treated as a path
   move, not an immediate permission re-resolution point. A file moved from
   `src` under `/etc` may therefore continue to use its pre-rename effective
@@ -434,13 +457,25 @@ longest-prefix-match for free. This satisfies all three principles:
 
 | Operation | Check | Gate point |
 |-----------|-------|------------|
-| open (read/write/exec) | file's own perm | `yolo_open` → `yolo_perm_check_dentry` |
-| readdir | hidden only | `yolo_dir_open` (inline hidden check) |
-| stat | hidden only | `yolo_getattr` (inline hidden check) |
-| lookup / traversal | not gated | — |
-| create, mkdir, symlink | parent dir's perm (write) | `yolo_check_mutate_perm` |
-| unlink, rmdir | parent dir's perm (write) | `yolo_check_mutate_perm` |
-| rename | both parents' perm (write) | `yolo_check_mutate_perm` × 2 |
+| open (read/write/exec) | file's own access | `yolo_open` → `yolo_perm_check_dentry` |
+| readdir (listing) | `deny` blocks it | `yolo_readdir` (`deny` → EACCES) |
+| stat | not gated | `yolo_getattr` (delegate) |
+| lookup / traversal | not gated | `yolo_permission` (delegate for dirs) |
+| create, mkdir, symlink | parent dir's access (write) | `yolo_check_mutate_perm` |
+| unlink, rmdir | parent dir's access (write) | `yolo_check_mutate_perm` |
+| rename | both parents' access (write) | `yolo_check_mutate_perm` × 2 |
+
+File access (`allow`/`deny`/`read-only`/`ask`/`write-ask`) is enforced **only**
+at the operation gates above (`open`, mutate, `setattr`), each of which holds
+the exact dentry. `yolo_permission` does **not** decide regular-file access:
+a regular file passes there unconditionally (a write is COW'd into staging, so
+the lower file's unix mode is irrelevant; a read still opens the lower file,
+whose mode the lower FS enforces at open). A consequence is that
+**`access(2)`/`faccessat(2)` on a regular file does not reflect the yolo access
+policy** (it reports success) — the real gate is `open`. The one directory
+read-like op that *is* gated is **listing**: `deny` on a directory makes
+`yolo_readdir` return EACCES (enumeration blocked), while traversal to
+explicitly-allowed children still works.
 
 The kernel appends one `G\0<path>\0<op>\0<result>\n` record for each prompted
 or denied access. `<path>` is the target the agent tried to access, including
@@ -448,16 +483,16 @@ the child of a parent-gated metadata mutation, and `op` is `r` or `w`. The
 result is `d` for a static-policy denial, `y` for an ask that allows, and `n`
 for an ask that denies, including timeout denial. Direct static allows are not
 logged. `yolo review` and `yolo journal` surface G records in order relative to
-snapshots. `HIDE` paths return `-ENOENT`, never issue asks, and are not logged.
+snapshots.
 
 A successful `yolo rule` assignment on a live mount appends
 `C\0<path>\0<policy>\n`. C stands for Configure. The one-letter policy is `q`
-for ask, `a` for allow, `w` for write-ask, `r` for read-only, `d` for deny, `h`
-for hide, or `u` for unset. Applying saved rules during mount or remount does
-not emit C. C records are chronological audit events: travel does not restore
-policy or make an earlier C unreachable. Neither G nor C affects staged state
-or the dirty bit. Review retains repeated G and C records in journal order.
-See
+for ask, `a` for allow, `w` for write-ask, `r` for read-only, `d` for deny, or
+`u` for unset. Applying saved rules during mount or
+remount does not emit C. C records are chronological audit events: travel does
+not restore policy or make an earlier C unreachable. Neither G nor C affects
+staged state or the dirty bit. Review retains repeated G and C records in
+journal order. See
 [staging.md §Journal Format](staging.md#journal-format) for the record
 shape and semantics.
 
@@ -466,33 +501,24 @@ shape and semantics.
 | Operation | Reason |
 |-----------|--------|
 | readlink | Symlink target; no open |
+| stat / lookup | Metadata read-like ops; delegate to lower |
 
-Under `deny`, an agent can see what files exist (names, sizes,
-timestamps) and can traverse directories, but cannot read file contents,
-modify, create, or delete.
+### Deny
 
-### Hidden
+Under `deny` on a directory, an agent **cannot** read/modify files under it,
+create/delete entries, or **list** the directory's contents (`readdir` →
+EACCES). It *can* still traverse to a child that a more specific rule
+explicitly allows (nearest-ancestor wins), and `stat` on a known path still
+succeeds.
 
-`hide` goes further than `deny`: it makes the path itself invisible.
-The parent directory's readdir skips hidden entries, and any access
-(stat, open, lookup) returns ENOENT as if the path doesn't exist.
-
-**Motivation**: `deny` is sufficient for preventing unauthorized
-reads and writes, but it leaks the directory structure. An agent
-under `deny` on `~/.mozilla` can still enumerate profile directories,
-discover cached site favicons and history database filenames — enough
-to infer which websites the user visits, purely from directory
-listings. Similarly, `~/tax2025/w2.pdf` and `~/tax2025/1099-broker.pdf`
-reveal financial information from filenames alone.
-`hide` prevents this information leakage entirely: the path doesn't
-exist from the agent's perspective.
-
-**When to use each**:
-
-| Level | Use case |
-|-------|----------|
-| `deny` | Directories the agent knows about but shouldn't modify (e.g., system config). Structure is visible for context. |
-| `hide` | Personal data the agent has no reason to access (e.g., `~/tax2025`, `~/.mozilla`, `~/.local/share/keyrings`, medical records, financial documents). |
+**What deny does not do:** it does not hide *existence*. The denied
+directory's own name is still visible in its parent's listing; `stat` of the
+directory succeeds; and probing a *guessed* path distinguishes existence via
+the error code (`EACCES` vs `ENOENT`). Content is protected; existence is not.
+Blocking listing does stop *bulk* enumeration (`ls`, `find`, tree walks) of the
+denied subtree, which is the common leak. (`yolofs` has no separate
+existence-hiding policy; the formal model in `paper/figures/model.tex` lists
+exactly `ask | allow | write-ask | read-only | deny`.)
 
 In `yolofs.toml`:
 
@@ -500,8 +526,8 @@ In `yolofs.toml`:
 [rules]
 "/usr"           = "read-only"
 "/home/user/src" = "allow"
-"/home/user/tax2025"          = "hide"
-"/home/user/.mozilla"         = "hide"
+"/home/user/tax2025"          = "deny"
+"/home/user/.mozilla"         = "deny"
 ```
 
 ## Comparison with Landlock
@@ -523,7 +549,7 @@ location's inherited rule.
 pointer, one tree per ruleset. On access, it walks up every ancestor of the
 target path and does an rb-tree lookup for each — O(depth x log n). YoloFS
 stores rules directly on dentries and caches the resolved permission on
-inodes with a generation counter — O(1) in steady state.
+dentries with a generation counter — O(1) in steady state.
 
 **Overlapping rules**: Landlock is additive — rules only grant permissions.
 If `/foo` has no rule and `/foo/bar` grants read access, then `/foo/bar`
@@ -550,8 +576,8 @@ rules and staging area).
 | Aspect | Landlock | YoloFS |
 |---|---|---|
 | Rule target | fd -> inode (follows renames) | fd -> dentry (name-based) |
-| Rule storage | rb-tree per ruleset | `perm` field on dentry |
-| Access check | O(depth x log n) per ancestor | O(1) via inode cache + gen counter |
+| Rule storage | rb-tree per ruleset | `policy` field on dentry |
+| Access check | O(depth x log n) per ancestor | O(1) via per-dentry cache + gen counter |
 | Overlap support | Additive only (can't deny child of allowed parent) | Nearest-ancestor wins (both directions) |
 | Dynamic rules | No (immutable after enforce) | Yes (add/remove/change anytime) |
 | Default | Deny (handled rights) | Ask (block + prompt) |

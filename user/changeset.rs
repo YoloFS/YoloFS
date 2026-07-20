@@ -4,7 +4,7 @@
 // changed across a span of the journal. Rendering lives in cmd/review.rs; this
 // file only resolves *what* happened, not *how* to show it.
 
-use crate::journal::{DirTree, Journal, Note, Record, Backing};
+use crate::journal::{Backing, DirTree, Journal, Note, Record};
 use std::collections::HashSet;
 
 /// One net change at a path. `old` is the range-start `old` side (what `--diff`
@@ -87,7 +87,7 @@ impl Changeset {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{Action, Journal, Backing};
+    use crate::journal::{Action, Backing, Journal};
 
     fn collect(records: Vec<Record>) -> Changeset {
         let journal = Journal::new(records);
@@ -139,7 +139,9 @@ mod tests {
     #[test]
     fn modify_carries_base_start() {
         let cs = collect(vec![stage("/a", 1, base("/a"))]);
-        assert!(matches!(find(&cs, "/a").unwrap().old, Some(Backing::BasePath(ref p)) if p == "/a"));
+        assert!(
+            matches!(find(&cs, "/a").unwrap().old, Some(Backing::BasePath(ref p)) if p == "/a")
+        );
     }
 
     #[test]

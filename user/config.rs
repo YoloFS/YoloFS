@@ -195,36 +195,10 @@ pub fn load_config() -> Config {
     Config::load(&cp).unwrap_or_default()
 }
 
-/// Hide the mountpoint from within the mount, breaking the infinite recursion
-/// that stacking over `/` would otherwise create (the mount root appears inside
-/// itself). The mountpoint now lives under the per-user runtime dir, so its path
-/// is dynamic — this guard is set in code rather than via a static yolofs.toml
-/// rule. Always attempted on mount, regardless of the user's config.
-///
-/// On a typical system `/run/user/<uid>` is its own tmpfs mount, which yolofs's
-/// root-fs overlay doesn't expose — so the mountpoint isn't reachable from
-/// inside the mount and opening the rule target fails with ENOENT. That's the
-/// safe case: no reachable recursion point means nothing to hide, so we
-/// tolerate it.
-fn hide_mountpoint(ctl_file: &std::fs::File, mnt: &Path) -> Result<()> {
-    let resolved = resolve_through_mount(&mnt.to_string_lossy(), mnt);
-    let target = match ioctl::open_rule_target(&resolved) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e).context("hiding the mountpoint to prevent recursion"),
-    };
-    ioctl::set_rule(ctl_file, &target, Perm::Hide.to_ioctl())
-        .context("hiding the mountpoint to prevent recursion")
-}
-
 /// Read [rules] from yolofs.toml and apply via ioctl. Called during mount.
 pub fn apply_rules(yolo_dir: &Path) -> Result<()> {
     let ctl_file = ioctl::open(yolo_dir)?;
     let mnt = crate::utils::mnt_dir(yolo_dir);
-
-    // The recursion guard must apply on every mount, before (and independent of)
-    // any user rules — even when yolofs.toml is absent or has no [rules].
-    hide_mountpoint(&ctl_file, &mnt)?;
 
     let cwd = yolo_dir.parent().unwrap_or(Path::new("."));
     let cp = cwd.join("yolofs.toml");
@@ -439,7 +413,6 @@ mod tests {
         assert_eq!(Perm::Allow.to_string(), "allow");
         assert_eq!(Perm::WriteAsk.to_string(), "write-ask");
         assert_eq!(Perm::ReadOnly.to_string(), "read-only");
-        assert_eq!(Perm::Hide.to_string(), "hide");
         assert_eq!(Perm::Deny.to_string(), "deny");
     }
 
@@ -448,8 +421,8 @@ mod tests {
         assert_eq!("allow".parse::<Perm>().unwrap(), Perm::Allow);
         assert_eq!("write-ask".parse::<Perm>().unwrap(), Perm::WriteAsk);
         assert_eq!("read-only".parse::<Perm>().unwrap(), Perm::ReadOnly);
-        assert_eq!("hide".parse::<Perm>().unwrap(), Perm::Hide);
         assert_eq!("deny".parse::<Perm>().unwrap(), Perm::Deny);
+        assert!("hide".parse::<Perm>().is_err());
         assert!("bogus".parse::<Perm>().is_err());
     }
 
@@ -535,8 +508,8 @@ mod tests {
         assert_eq!(config.rules["/usr"], Perm::ReadOnly);
         assert_eq!(config.rules["/etc"], Perm::WriteAsk);
         // Storage is readable from inside the mount (yolofs stacks over /). The
-        // mountpoint lives outside the workspace and is hidden programmatically
-        // to avoid recursion, so there's no static rule for it here.
+        // mountpoint lives outside the workspace under the per-user runtime dir,
+        // so there's no static rule for it here.
         assert_eq!(config.rules[".yolofs"], Perm::ReadOnly);
         assert_eq!(config.rules["yolofs.toml"], Perm::ReadOnly);
     }

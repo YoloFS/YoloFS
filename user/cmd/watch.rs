@@ -86,7 +86,6 @@ fn rule_phrase(perm: crate::perm::Perm) -> &'static str {
         crate::perm::Perm::ReadOnly => "is read-only",
         crate::perm::Perm::Deny => "denies access",
         crate::perm::Perm::Allow => "allows access",
-        crate::perm::Perm::Hide => "is hidden",
     }
 }
 

@@ -6,7 +6,7 @@ interposition. It adds two orthogonal capabilities:
 | Capability            | Summary |
 | --------------------- | ------- |
 | **Staging-commit**    | Every write goes to a staging layer. Changes are invisible to the lower FS until an explicit `commit`. An `abort` discards them instantly. |
-| **Permission gating** | Every file starts in the `ask` state. A rule engine promotes matching paths to `allow`, `write-ask`, `read-only`, `ask`, `deny`, or `hide`. When an access needs approval (`ask`, or a write under `write-ask`), the thread is put to sleep; a userspace daemon receives the request and writes back a decision that wakes the thread. |
+| **Permission gating** | Every file starts in the `ask` state. A rule engine promotes matching paths to `allow`, `write-ask`, `read-only`, `ask`, or `deny`. When an access needs approval (`ask`, or a write under `write-ask`), the thread is put to sleep; a userspace daemon receives the request and writes back a decision that wakes the thread. |
 
 The `.yolofs/` directory is the durable session artifact; the mount is only
 its live, gated view. Mounting an existing artifact rebuilds that view from
@@ -76,8 +76,8 @@ The two layers execute in order for every VFS operation:
    Regular-file opens use the file's own permission. Directory
    mutations use the parent directory's permission. If `ask`, the
    thread sleeps until userspace decides. Directory read-like ops
-   (lookup, traversal, readdir, stat) are **not** gated — only `hide`
-   returns `-ENOENT`; `deny`/`ask` have no effect on them.
+   (lookup, traversal, stat) are **not** gated; the one exception is
+   listing — `deny` on a directory blocks `readdir` (EACCES).
 2. **Staging Layer** — routes reads to the staged inode if the file has been
    modified, otherwise to the base. Ensures writes go to staged inodes.
    Uses per-directory linked lists of pinned staged VFS dentries for deletions and renames.
@@ -120,7 +120,7 @@ pinned), then falls back to base — one lookup.
 
 **Permission model**: OverlayFS uses standard Unix permissions only. YoloFS
 adds the progressive gating layer (`allow`, `write-ask`, `read-only`, `ask`,
-`deny`, `hide`) with the ask protocol for interactive approval.
+`deny`) with the ask protocol for interactive approval.
 
 **On-disk format**: OverlayFS requires filesystem support for whiteouts
 (`RENAME_WHITEOUT`, ext4/xfs). YoloFS uses a flat inode store + append-only
@@ -155,34 +155,34 @@ $ yolo rule read-only /etc/hosts
 
 # 2. Agent writes to a file matching an allow rule
 $ echo "hello" > /src/main.rs
-   -> kernel: yolo_lookup("src") -> explicit rule on dentry -> perm=ALLOW
+   -> kernel: yolo_lookup("src") -> explicit rule on dentry -> policy=ALLOW
    -> kernel: yolo_lookup("main.rs") -> no rule on dentry (UNSET)
-              -> yolo_perm_refresh() walks up: main.rs(UNSET) -> src(ALLOW)
-              -> caches ALLOW on main.rs inode
-   -> kernel: yolo_open() -> cached_perm=ALLOW, O_WRONLY -> pass
+              -> yolo_access_refresh() walks up: main.rs(UNSET) -> src(ALLOW)
+              -> caches ALLOW on main.rs dentry
+   -> kernel: yolo_open() -> cached_access=ALLOW, O_WRONLY -> pass
    -> kernel: yolo_write_iter() -> pass-through to staged inode
 
 # 3. Agent reads /etc/passwd (readable -- /etc has write-ask rule)
 $ cat /etc/passwd
-   -> kernel: yolo_lookup("etc") -> explicit rule on dentry -> perm=WRITE_ASK
+   -> kernel: yolo_lookup("etc") -> explicit rule on dentry -> policy=WRITE_ASK
    -> kernel: yolo_lookup("passwd") -> no rule on dentry (UNSET)
-              -> yolo_perm_refresh() walks up: passwd(UNSET) -> etc(WRITE_ASK)
-              -> caches WRITE_ASK on passwd inode
-   -> kernel: yolo_open("passwd") -> cached_perm=WRITE_ASK, O_RDONLY -> pass
+              -> yolo_access_refresh() walks up: passwd(UNSET) -> etc(WRITE_ASK)
+              -> caches WRITE_ASK on passwd dentry
+   -> kernel: yolo_open("passwd") -> cached_access=WRITE_ASK, O_RDONLY -> pass
 
 # 4. Agent reads /etc/hosts (explicit override -> read-only)
 $ cat /etc/hosts
-   -> kernel: yolo_lookup("hosts") -> explicit rule on dentry -> perm=READ_ONLY
-              -> yolo_perm_refresh() -> caches READ_ONLY on hosts inode
-   -> kernel: yolo_open() -> cached_perm=READ_ONLY -> pass
+   -> kernel: yolo_lookup("hosts") -> explicit rule on dentry -> policy=READ_ONLY
+              -> yolo_access_refresh() -> caches READ_ONLY on hosts dentry
+   -> kernel: yolo_open() -> cached_access=READ_ONLY -> pass
 
 # 5. Agent reads /tmp/secrets (no rule anywhere -> walk up reaches root -> ask)
 $ cat /tmp/secrets
    -> kernel: yolo_lookup("tmp") -> no rule on dentry (UNSET)
    -> kernel: yolo_lookup("secrets") -> no rule on dentry (UNSET)
-              -> yolo_perm_refresh() walks up: secrets(UNSET) -> tmp(UNSET) -> root(UNSET)
-              -> no rule found, caches built-in default ASK on secrets inode
-   -> kernel: yolo_open() -> cached_perm=ASK
+              -> yolo_access_refresh() walks up: secrets(UNSET) -> tmp(UNSET) -> root(UNSET)
+              -> no rule found, caches built-in default ASK on secrets dentry
+   -> kernel: yolo_open() -> cached_access=ASK
    -> kernel: enqueue request, thread sleeps
    -> daemon: ioctl(ASK_PEEK) -> yolo_ioc_ask { id:1, access_path:"/tmp/secrets",
                                                rule_path:"", rule_perm:ASK, ... }

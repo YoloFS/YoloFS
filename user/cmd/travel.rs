@@ -51,7 +51,7 @@ pub fn run(gen_arg: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::journal::{Action, DirTree, Record, Segment, Backing};
+    use crate::journal::{Action, Backing, DirTree, Record, Segment};
 
     fn build(actions: &[Action]) -> DirTree {
         DirTree::build(std::iter::once(Segment {

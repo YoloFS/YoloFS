@@ -261,30 +261,3 @@ fn rule_on_path_longer_than_yolo_path_max() {
         "a static denial on a long path must still emit G"
     );
 }
-
-/// Unsetting a `hide` rule live must work: the rule's pinned dentry stays
-/// findable in the dcache and hide is enforced at readdir/getattr/open — not
-/// at the path walk — so the CLI (outside the mount, owning uid) can still
-/// open the hidden target with O_PATH to manage its rule.
-#[test]
-fn hide_rule_unset_live_restores_visibility() {
-    let s = YoloSession::new_with_config(Config {
-        rules: BTreeMap::from([("/".into(), Perm::Allow)]),
-        ..Default::default()
-    })
-    .expect("session setup");
-
-    let secret = s.root.join("subdir").display().to_string();
-    s.cli(&["rule", "hide", &secret]).expect("set hide rule");
-    assert!(
-        fs::metadata(s.mnt_path("subdir")).is_err(),
-        "hidden path must stat ENOENT through the mount"
-    );
-
-    s.cli(&["rule", "unset", &secret])
-        .expect("unsetting a hide rule must succeed while the path is hidden");
-    assert!(
-        fs::metadata(s.mnt_path("subdir")).is_ok(),
-        "path must be visible again after the hide rule is unset"
-    );
-}

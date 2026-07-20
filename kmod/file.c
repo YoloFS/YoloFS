@@ -115,7 +115,7 @@ static int yolo_open(struct inode *inode, struct file *file)
 	int err;
 
 	if (sbi->perm.enabled) {
-		/* check == target: the file's own perm gates its open. */
+		/* check == target: the file's own access gates its open. */
 		err = yolo_perm_check_dentry(sbi, dentry, dentry, file->f_flags);
 		if (err)
 			return err;

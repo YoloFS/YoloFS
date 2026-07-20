@@ -42,7 +42,11 @@ impl Backing {
 pub enum Action {
     /// Stage (create or COW). The post-target is `StagedFile(ino)`; `pre` is the
     /// content this stage overwrote (`None` for a fresh create).
-    Stage { path: String, ino: u32, pre: Backing },
+    Stage {
+        path: String,
+        ino: u32,
+        pre: Backing,
+    },
     /// Delete. The post-target is `None`; `pre` is the removed content.
     Delete { path: String, pre: Backing },
     /// Rename. `src_pre`/`dst_pre` are the source's and destination's pre-op
@@ -109,7 +113,7 @@ impl GateResult {
 }
 
 /// An explicit policy assignment recorded by C.
-/// Journal encoding: `q` / `a` / `w` / `r` / `d` / `h` / `u`.
+/// Journal encoding: `q` / `a` / `w` / `r` / `d` / `u`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
     Ask,
@@ -117,7 +121,6 @@ pub enum Policy {
     WriteAsk,
     ReadOnly,
     Deny,
-    Hide,
     Unset,
 }
 
@@ -129,7 +132,6 @@ impl Policy {
             b'w' => Some(Self::WriteAsk),
             b'r' => Some(Self::ReadOnly),
             b'd' => Some(Self::Deny),
-            b'h' => Some(Self::Hide),
             b'u' => Some(Self::Unset),
             _ => None,
         }
@@ -142,7 +144,6 @@ impl Policy {
             Self::WriteAsk => "write-ask",
             Self::ReadOnly => "read-only",
             Self::Deny => "deny",
-            Self::Hide => "hide",
             Self::Unset => "unset",
         }
     }
@@ -223,11 +224,12 @@ mod tests {
             (b'w', Policy::WriteAsk),
             (b'r', Policy::ReadOnly),
             (b'd', Policy::Deny),
-            (b'h', Policy::Hide),
             (b'u', Policy::Unset),
         ] {
             assert_eq!(Policy::from_byte(code), Some(policy));
         }
+        // Unknown/legacy codes have no Policy variant.
+        assert_eq!(Policy::from_byte(b'h'), None);
         assert_eq!(Policy::from_byte(b'x'), None);
     }
 }

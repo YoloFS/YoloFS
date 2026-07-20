@@ -9,7 +9,7 @@
 // stanza per consecutive snapshot. See the id/range grammar below.
 
 use crate::changeset::{Change, Changeset};
-use crate::journal::{Journal, Marker, Note, Backing};
+use crate::journal::{Backing, Journal, Marker, Note};
 use crate::report;
 use anyhow::Result;
 use colored::Colorize;

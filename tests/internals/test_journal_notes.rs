@@ -311,58 +311,6 @@ fn mixed_mutations_and_gates_still_set_dirty() {
     );
 }
 
-/// HIDE paths return -ENOENT, not -EACCES, and must not produce G records.
-/// This protects the "no logging for HIDE" non-goal from accidental
-/// regressions.
-#[test]
-fn hidden_paths_do_not_log_gate() {
-    use crate::helpers::YOLO_BIN;
-    // Manual setup — rule paths must canonicalize on the host, so use
-    // an absolute host path inside the temp root.
-    let root = crate::helpers::session_tempdir().unwrap().keep();
-    fs::write(root.join("hello.txt"), "base\n").unwrap();
-    fs::write(root.join("visible.txt"), "ok\n").unwrap();
-
-    let mut rules = BTreeMap::new();
-    rules.insert(
-        root.join("hello.txt").to_string_lossy().into_owned(),
-        Perm::Hide,
-    );
-    // Permissive backdrop so visible.txt works; the hide rule above wins.
-    rules.insert("/".into(), Perm::Allow);
-    let config = Config {
-        permission: true,
-        rules,
-        ..Default::default()
-    };
-    config.save(&root.join("yolofs.toml")).unwrap();
-    let output = std::process::Command::new(YOLO_BIN)
-        .arg("mount")
-        .current_dir(&root)
-        .env("NO_COLOR", "1")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "mount failed: {:?}", output);
-    let s = YoloSession::from_existing_root(root).expect("session from root");
-
-    // Any access to the hidden path returns ENOENT, not EACCES.
-    let result = fs::read_to_string(s.mnt_path("hello.txt"));
-    assert!(
-        result.is_err(),
-        "hidden file should not be readable: {:?}",
-        result
-    );
-    let _ = fs::metadata(s.mnt_path("hello.txt"));
-
-    let j = journal(&s);
-    let bs = notes(&j);
-    assert!(
-        bs.is_empty(),
-        "HIDE -> -ENOENT must not log any G record, got: {:?}",
-        bs
-    );
-}
-
 /// An ask denial emits exactly one G with result n, not a second direct-deny G.
 #[test]
 fn ask_deny_records_one_gate_result() {
@@ -442,26 +390,32 @@ fn configure_record_format_and_noop_suppression() {
     // Mount-time configuration is initialization, not a C event.
     assert!(notes(&journal(&s)).is_empty());
 
-    for (command, expected) in [
-        ("ask", Policy::Ask),
-        ("allow", Policy::Allow),
-        ("write-ask", Policy::WriteAsk),
-        ("read-only", Policy::ReadOnly),
-        ("deny", Policy::Deny),
-        ("deny", Policy::Deny), // exact no-op: no C
-        ("unset", Policy::Unset),
-        ("hide", Policy::Hide),
-    ] {
+    // Each step: the command and the C policy it should append, or None when
+    // no C record is expected (an exact no-op).
+    let steps: &[(&str, Option<Policy>)] = &[
+        ("ask", Some(Policy::Ask)),
+        ("allow", Some(Policy::Allow)),
+        ("write-ask", Some(Policy::WriteAsk)),
+        ("read-only", Some(Policy::ReadOnly)),
+        ("deny", Some(Policy::Deny)),
+        ("deny", None), // exact no-op: no C
+        ("unset", Some(Policy::Unset)),
+    ];
+    let mut expected_c: Vec<Policy> = Vec::new();
+    for (command, expected) in steps {
         s.cli(&["rule", command, "subdir"])
             .unwrap_or_else(|e| panic!("install {command} rule: {e}"));
-        let last = notes(&journal(&s))
+        if let Some(policy) = expected {
+            expected_c.push(*policy);
+        }
+        let configured: Vec<Policy> = notes(&journal(&s))
             .into_iter()
             .filter_map(|note| match note {
                 Note::Configure { policy, .. } => Some(*policy),
                 Note::Gate { .. } => None,
             })
-            .next_back();
-        assert_eq!(last, Some(expected));
+            .collect();
+        assert_eq!(configured, expected_c, "C sequence after `rule {command}`");
     }
     s.cli(&["snapshot", "--if-changed", "notes-only"])
         .expect("C-only activity should not snapshot");
@@ -475,7 +429,7 @@ fn configure_record_format_and_noop_suppression() {
             Note::Gate { .. } => None,
         })
         .collect();
-    assert_eq!(configured.len(), 7, "repeated assignment must be a no-op");
+    assert_eq!(configured.len(), 6, "an exact no-op emits no C");
     assert!(configured.iter().all(|(path, _)| path.ends_with("/subdir")));
     assert_eq!(
         configured
@@ -489,7 +443,6 @@ fn configure_record_format_and_noop_suppression() {
             Policy::ReadOnly,
             Policy::Deny,
             Policy::Unset,
-            Policy::Hide,
         ]
     );
 
@@ -506,7 +459,7 @@ fn configure_record_format_and_noop_suppression() {
             fields[2][0]
         })
         .collect();
-    assert_eq!(policy_codes, b"qawrduh");
+    assert_eq!(policy_codes, b"qawrdu");
 }
 
 /// A journaled live assignment is published only after C was fully appended.

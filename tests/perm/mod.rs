@@ -1,6 +1,6 @@
 mod test_basic;
+mod test_deny_listing;
 mod test_dir_ops;
-mod test_hide;
 mod test_inheritance;
 mod test_ioctl_gating;
 mod test_live_rules;

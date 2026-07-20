@@ -24,6 +24,46 @@ fn ro_permits_read_denies_write() {
     assert!(result.is_err(), "write should be denied with ro rule");
 }
 
+/// Under `read-only`, `open(O_WRONLY)` is denied by the `yolo_open` gate, but
+/// `access(2)`/`faccessat(2)` does not reflect the yolo access policy:
+/// `yolo_permission` no longer decides regular-file access (a regular file
+/// passes there unconditionally, since writes are COW'd), so `access(W_OK)`
+/// returns 0 even though writing through `open` is blocked. `open()` is the
+/// real gate.
+#[test]
+fn ro_access_syscall_does_not_reflect_policy() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let s = YoloSession::new_with_config(Config {
+        rules: BTreeMap::from([("/".into(), Perm::ReadOnly)]),
+        ..Default::default()
+    })
+    .expect("session setup");
+
+    let path = s.mnt_path("hello.txt");
+    let cpath = CString::new(path.as_os_str().as_bytes()).unwrap();
+
+    // R_OK: readable via access() (and via open, tested above).
+    assert_eq!(
+        unsafe { libc::access(cpath.as_ptr(), libc::R_OK) },
+        0,
+        "access(R_OK) should succeed under read-only"
+    );
+    // W_OK: a regular file passes yolo_permission unconditionally, so access()
+    // reports writable and does NOT reflect the read-only yolo policy.
+    assert_eq!(
+        unsafe { libc::access(cpath.as_ptr(), libc::W_OK) },
+        0,
+        "access(W_OK) should not reflect the read-only rule"
+    );
+    // But an actual write open is still gated and denied.
+    assert!(
+        fs::OpenOptions::new().write(true).open(&path).is_err(),
+        "open(O_WRONLY) must still be denied under read-only"
+    );
+}
+
 // ── allow tests (perm.c: yolo_perm_check, inode.c: yolo_permission) ──
 
 /// allow should permit reads.

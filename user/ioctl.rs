@@ -27,7 +27,6 @@ pub const YOLO_PERM_ALLOW: u8 = 2;
 pub const YOLO_PERM_WRITE_ASK: u8 = 3;
 pub const YOLO_PERM_READ_ONLY: u8 = 4;
 pub const YOLO_PERM_DENY: u8 = 5;
-pub const YOLO_PERM_HIDE: u8 = 6;
 
 // Ask decision values
 pub const YOLO_DECISION_DENY: u8 = 0;

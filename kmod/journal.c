@@ -276,8 +276,6 @@ static char policy_code(enum yolo_perm perm)
 		return 'r';
 	case YOLO_PERM_DENY:
 		return 'd';
-	case YOLO_PERM_HIDE:
-		return 'h';
 	default:
 		return '\0';
 	}
