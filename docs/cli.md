@@ -48,7 +48,7 @@ it should inspect with `yolo review`/`review --diff`, rewind mistakes with `yolo
 travel`, and leave the result staged for a human rather than committing. All
 three files share one source (`user/templates/agent-guide.md`) and list exactly
 the navigation-only subcommands the agent is allowed to run — the same set the
-CLI enforces (`AGENT_ALLOWED`: `review`, `journal`, `timeline`, `travel`,
+CLI enforces (`AGENT_ALLOWED`: `review`, `audit`, `timeline`, `travel`,
 `snapshot`). An existing guide file is never overwritten.
 
 `yolo` is a host-side tool — like `docker`, you run it **outside** the mount and
@@ -91,13 +91,13 @@ $ yolo snapshot              # snapshot with timestamp as label
 $ yolo snapshot "my label"   # snapshot with explicit label
 $ yolo travel <gen>           # travel to a previous snapshot or travel point
 $ yolo timeline                # show snapshot/travel DAG (unreachable dimmed)
-$ yolo journal               # raw journal records for the latest snapshot (default)
-$ yolo journal all           # the entire journal (unreachable dimmed)
-$ yolo journal <a>..<b>      # records over a range (review's grammar)
-$ yolo journal -- /src/main.rs   # trace operations on a specific file
+$ yolo audit                 # raw journal records for the latest snapshot (default)
+$ yolo audit all             # the entire journal (unreachable dimmed)
+$ yolo audit <a>..<b>        # records over a range (review's grammar)
+$ yolo audit -- /src/main.rs     # trace operations on a specific file
 ```
 
-`review` and `journal` share one positional range grammar: a bare `<id>` is
+`review` and `audit` share one positional range grammar: a bare `<id>` is
 that snapshot's own change, `<a>..<b>` is the span between two (an empty end
 means base or tip), and `all` (== `..` == `0..`) is everything since base. Ids
 are generation numbers — `0` is the base — and only address live snapshots and
@@ -263,7 +263,7 @@ for it to reach.)
 | `mount`, `unmount`, `remount` | `cap_sys_admin` | `mount()` / `umount()` of the yolofs view |
 | `yolo run -- <cmd>` | `cap_sys_admin`, `cap_sys_module` | `unshare(CLONE_NEWPID\|CLONE_NEWNS)` + fresh `/proc` + `pivot_root()` to isolate and remap root; may mount/load on first run; capabilities are cleared for the spawned command |
 | `load`, `unload`, `reload` | `cap_sys_module` | `finit_module()` / `delete_module()` |
-| `rule`, `watch`, `commit`, `abort`, `snapshot`, `travel`, `review`, `journal`, `timeline`, `init` | none | run unprivileged as the user; ioctls go to a dir fd on the mount root |
+| `rule`, `watch`, `commit`, `abort`, `snapshot`, `travel`, `review`, `audit`, `timeline`, `init` | none | run unprivileged as the user; ioctls go to a dir fd on the mount root |
 
 Because `commit` runs as the user (no `CAP_DAC_OVERRIDE`), it applies staged
 changes only to paths the user can write — the normal project workflow. A

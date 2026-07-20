@@ -448,7 +448,7 @@ or denied access. `<path>` is the target the agent tried to access, including
 the child of a parent-gated metadata mutation, and `op` is `r` or `w`. The
 result is `d` for a static-policy denial, `y` for an ask that allows, and `n`
 for an ask that denies, including timeout denial. Direct static allows are not
-logged. `yolo review` and `yolo journal` surface G records in order relative to
+logged. `yolo review` and `yolo audit` surface G records in order relative to
 snapshots.
 
 A successful `yolo rule` assignment on a live mount appends

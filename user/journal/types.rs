@@ -152,7 +152,7 @@ impl Policy {
 /// An observational note — does not affect override state, only audit.
 ///
 /// Emitted by the kernel and ignored by commit/abort/diff/replay; review
-/// summaries and `yolo journal` surface them.
+/// summaries and `yolo audit` surface them.
 #[derive(Debug, Clone)]
 pub enum Note {
     /// Prompted or statically denied access.

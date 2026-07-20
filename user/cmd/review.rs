@@ -257,7 +257,7 @@ fn render(changeset: &Changeset, yolofs: &Path, root: &Path) -> usize {
 
 /// Translate a positional id/range spec into a segment range `[start, end)`.
 /// This parses the generation ids out of the spec and hands `u64`s to
-/// `MarkerIndex::segment_range` (`0` = base). Shared with `yolo journal`,
+/// `MarkerIndex::segment_range` (`0` = base). Shared with `yolo audit`,
 /// which takes the same `[<id>|a..b|all]` grammar.
 pub(crate) fn parse_range(
     spec: Option<&str>,
@@ -469,7 +469,7 @@ fn print_notes(notes: &[Note], root: &Path) {
 }
 
 /// In the default view (latest snapshot, something staged), point at the
-/// vs-base range. Shares its shape with `yolo journal`'s footer.
+/// vs-base range. Shares its shape with `yolo audit`'s footer.
 fn print_base_hint() {
     println!(
         "{}",

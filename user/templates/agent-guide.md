@@ -10,7 +10,7 @@ and decides whether to keep or discard it. You cannot damage the real tree.
 
 - `yolo review` — summary of all staged changes since the base.
 - `yolo review --diff` — the staged changes as a git-style diff.
-- `yolo journal -- <path>` — the operation history for one path.
+- `yolo audit -- <path>` — the operation history for one path.
 - `yolo timeline` — the snapshot/travel graph.
 
 ## Recover from a mistake
@@ -41,4 +41,4 @@ review.** Finalizing is not yours to do:
   discarding them, and changing permissions are the human's decisions — these
   commands are blocked for you anyway.
 
-You may run only these YoloFS subcommands: `review`, `journal`, `timeline`, `travel`, `snapshot`.
+You may run only these YoloFS subcommands: `review`, `audit`, `timeline`, `travel`, `snapshot`.

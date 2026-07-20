@@ -149,7 +149,7 @@ pub enum Snapshot {
 
 /// Print the post-command snapshot outcome for the quiet `yolo run --no-review -- <cmd>`
 /// (to stderr). The snapshot's name is omitted — it just echoes the command you
-/// already typed; `timeline`/`journal` still show it.
+/// already typed; `timeline`/`audit` still show it.
 pub fn announce(snapshot: &Snapshot) {
     match snapshot {
         Snapshot::Created(gen_id) => {
@@ -204,7 +204,7 @@ pub fn run(exec_args: &[String]) -> Result<(u8, Snapshot)> {
 
     // Snapshot after the command so it captures what the command did (skipped
     // when nothing was staged, to avoid empty snapshots). The name — a
-    // display-only label shown in `timeline`/`journal` — is just the command;
+    // display-only label shown in `timeline`/`audit` — is just the command;
     // how the outcome is surfaced is left to the caller.
     let snapshot = if config::load_config().auto_snapshot {
         let cmd_desc = exec_args.join(" ");

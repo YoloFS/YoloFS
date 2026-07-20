@@ -1,11 +1,12 @@
-// yolo CLI — journal.rs
+// yolo CLI — audit.rs
 //
-// `yolo journal`                  — the raw record log over a range (every op +
-//                                   audit note, dead branches dimmed).
-// `yolo journal [<id>|a..b|all]`  — scope to a snapshot / range (review's grammar).
-// `yolo journal -- <path>`        — trace operations on a specific file.
+// `yolo audit`                  — the raw record log over a range (every op +
+//                                 audit note, dead branches dimmed).
+// `yolo audit [<id>|a..b|all]`  — scope to a snapshot / range (review's grammar).
+// `yolo audit -- <path>`        — trace operations on a specific file.
 //
-// The curated net-change view is `yolo review`; this is the raw underside.
+// The curated net-change view is `yolo review`; this is the raw underside. The
+// records it prints come from the on-disk journal (see `crate::journal`).
 
 use crate::journal::{self, Journal};
 use anyhow::Result;
@@ -75,7 +76,7 @@ pub fn run(range: Option<&str>, path: Option<&str>) -> Result<()> {
     if range.is_none() && start > 0 {
         println!(
             "{}",
-            "(latest snapshot · `yolo journal all` for the full log)".dimmed()
+            "(latest snapshot · `yolo audit all` for the full log)".dimmed()
         );
     }
 

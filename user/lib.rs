@@ -6,7 +6,7 @@ pub mod cmd;
 /// is the human's, so the gate in `main.rs` is default-deny against this list.
 /// `yolo init`'s scaffolded agent guide (`user/templates/agent-guide.md`)
 /// documents exactly this set, so the two cannot drift.
-pub const AGENT_ALLOWED: &[&str] = &["review", "journal", "timeline", "travel", "snapshot"];
+pub const AGENT_ALLOWED: &[&str] = &["review", "audit", "timeline", "travel", "snapshot"];
 
 pub mod config;
 pub mod ioctl;

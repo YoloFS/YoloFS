@@ -623,7 +623,7 @@ unmounted have no live journal in which to write C.
 
 S/D/R are state mutations and P/T are control markers. **G and C are
 observational notes**: the CLI's dir-tree builder, commit, abort, and diff ignore
-them, while `yolo review` and `yolo journal` surface them. G/C writes do not set
+them, while `yolo review` and `yolo audit` surface them. G/C writes do not set
 `sbi->dirty`, so note-only commands do not cause an automatic snapshot under
 `YOLO_SNAPSHOT_IF_CHANGED`. G follows the reachability of the filesystem
 segment in which the access occurred. C is chronological and non-branching:
@@ -633,7 +633,7 @@ journal but leave `yolofs.toml`; C is a session audit event, not a durable
 policy-history store.
 
 Review preserves every selected G and C note in journal order. It does not
-deduplicate repeated accesses; `yolo journal` remains the raw view that also
+deduplicate repeated accesses; `yolo audit` remains the raw view that also
 shows the surrounding action and marker records.
 
 The stage/modify distinction comes from the `S` record's `<pre>` field — `a`
@@ -682,7 +682,7 @@ segment\[i\] contains the records from marker\[i\] up to (but not
 including) marker\[i+1\]. The phantom marker at index 0 opens segment 0
 (pre-first-snapshot records). This is O(N) total.
 
-A P record names a snapshot. `review` and `journal` take a positional
+A P record names a snapshot. `review` and `audit` take a positional
 id/range spec (`[<id>|a..b|all]`); `parse_range` resolves it to a half-open
 segment range `[start, end)` via `MarkerIndex::segment_range`, and
 `Journal::live_segments_range(start, end)` yields the live filesystem segments
@@ -796,7 +796,7 @@ is bumped (open-for-write holds at least a read lock while incrementing
 The name defaults to `"after <cmd>"` when auto-snapshotting via `yolo run -- <cmd>`
 (e.g., `"after make build"`), or a human-readable timestamp like
 `chk-20260315-043807` when run via `yolo snapshot` with no argument. Names need
-not be unique; `review` and `journal` address snapshots by their numeric gen id
+not be unique; `review` and `audit` address snapshots by their numeric gen id
 only (`0` is the base), so a duplicate name never makes a range ambiguous.
 
 Auto-snapshotting after `yolo run -- <cmd>` is skipped when the command produced no
@@ -886,7 +886,7 @@ The positional id/range spec works by slicing the journal records before
 resolving into segments, so the output always preserves snapshot boundaries
 within the requested range.
 
-**`yolo review`** and **`yolo journal`** share the spec `[<id>|a..b|all]`:
+**`yolo review`** and **`yolo audit`** share the spec `[<id>|a..b|all]`:
 - `<id>` — the single segment that snapshot sealed (`prev(id)..id`).
 - `<a>..<b>` — changes between two snapshots; an empty end is base (`0`) or tip.
 - `all` (== `..` == `0..`) — everything from base to tip.
@@ -896,7 +896,7 @@ within the requested range.
 (snapshot or travel) with that generation id. The journal is **append-only** —
 travel appends a T record instead of truncating. T records create
 unreachable records — records between the target marker and the T record that no longer reflect
-current state. All CLI consumers (commit, review, journal, travel) build a
+current state. All CLI consumers (commit, review, audit, travel) build a
 `Journal` to filter unreachable records before resolving.
 
 The reachability algorithm: O(N) single pass to collect P/T positions,
@@ -932,6 +932,6 @@ taken (since gen is bumped to a fresh value by the travel ioctl). Editing
 files without a new snapshot reuses the existing inodes in place.
 
 **`yolo timeline`**: Show the snapshot/travel DAG in chronological
-order, with unreachable branches dimmed. **`yolo journal`**: Show every
+order, with unreachable branches dimmed. **`yolo audit`**: Show every
 raw journal record (unreachable dimmed), with an optional `-- <path>` filter
 to trace operations on a specific file.

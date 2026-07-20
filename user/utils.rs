@@ -20,7 +20,7 @@ pub fn plural(count: usize) -> &'static str {
 }
 
 /// Parse a CLI argument into a generation id, with a uniform error message.
-/// Shared by `travel` and the `review`/`journal` range grammar.
+/// Shared by `travel` and the `review`/`audit` range grammar.
 pub fn parse_gen(arg: &str) -> Result<u64> {
     arg.parse::<u64>()
         .map_err(|_| anyhow::anyhow!("`{arg}` is not a generation id (see `yolo timeline`)"))

@@ -241,7 +241,7 @@ yolofs/
 │   ├── cmd/                   # CLI subcommand implementations
 │   │   ├── init.rs            # `yolo init` -- scaffold yolofs.toml + agent hooks
 │   │   ├── abort.rs
-│   │   ├── journal.rs         # `yolo journal` (raw record display, `-- <path>` filter)
+│   │   ├── audit.rs           # `yolo audit` (raw record display, `-- <path>` filter)
 │   │   ├── snapshot.rs      # `yolo snapshot` (create only)
 │   │   ├── commit.rs
 │   │   ├── review.rs          # `yolo review` (summary, or git-style diff with `--diff`)

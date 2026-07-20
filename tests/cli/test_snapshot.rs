@@ -514,7 +514,7 @@ fn status_from_to_same_snapshot_empty() {
 }
 
 /// A range still diffs every changed file (the `-- <path>` review filter was
-/// removed; `yolo journal -- <path>` keeps its own).
+/// removed; `yolo audit -- <path>` keeps its own).
 #[test]
 fn diff_from_range_shows_all_changed_files() {
     let s = YoloSession::new().expect("session setup");

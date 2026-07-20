@@ -92,7 +92,7 @@ fn diff_renamed_file() {
 
 // The `yolo review -- <path>` single-file filter was removed (a rename shifts
 // paths, making a path filter ambiguous under the start/end model). `yolo
-// journal -- <path>` keeps its own filter; review shows the whole range.
+// audit -- <path>` keeps its own filter; review shows the whole range.
 
 /// Creating a staged-only file, then deleting it, should produce no diff
 /// output (the tombstone is spurious — nothing in base to hide).

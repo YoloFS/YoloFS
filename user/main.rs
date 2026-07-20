@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use yolofs::AGENT_ALLOWED;
 use yolofs::cmd::{
-    abort, commit, exec, init, journal, load, mount, review, snapshot, timeline, travel, watch,
+    abort, audit, commit, exec, init, load, mount, review, snapshot, timeline, travel, watch,
 };
 use yolofs::config;
 use yolofs::perm;
@@ -21,7 +21,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    // ── Workflow ─────────────────────────────────────────────────────
+    // ── Setup ─────────────────────────────────────────────────────────
     /// Create yolofs.toml and scaffold agent hook templates
     Init {
         /// Project directory to initialize (created if missing). Defaults to the
@@ -33,6 +33,7 @@ enum Command {
         #[arg(long = "agents", num_args = 1.., ignore_case = true)]
         agents: Vec<init::AgentChoice>,
     },
+    // ── Staging ───────────────────────────────────────────────────────
     /// Run a command under yolofs, mounting on first run, then review it
     Run {
         /// Skip the review summary; emit only the terse snapshot line (stderr)
@@ -55,6 +56,14 @@ enum Command {
         #[arg(long)]
         each: bool,
     },
+    /// Audit the raw journal: every op + note over a range (vs `review`'s net view)
+    Audit {
+        /// Snapshot id or range (see `review`); `all` = the full log
+        range: Option<String>,
+        /// Limit to ops on a single file, passed after `--` (e.g. `-- foo.txt`)
+        #[arg(last = true)]
+        path: Option<String>,
+    },
     /// Apply staged changes to base
     Commit,
     /// Discard staged changes
@@ -63,20 +72,7 @@ enum Command {
         #[arg(long, short)]
         force: bool,
     },
-    // ── Permissions ──────────────────────────────────────────────────
-    /// Manage permission rules
-    #[command(arg_required_else_help = true)]
-    Rule {
-        #[command(subcommand)]
-        action: RuleAction,
-    },
-    /// Handle ask requests (daemon mode)
-    Watch {
-        /// Automatically allow all requests without prompting
-        #[arg(long)]
-        allow_all: bool,
-    },
-    // ── History ──────────────────────────────────────────────────────
+    // ── Snapshots ─────────────────────────────────────────────────────
     /// Create a snapshot
     Snapshot {
         /// Snapshot name (defaults to timestamp)
@@ -92,15 +88,20 @@ enum Command {
     },
     /// Show snapshot/travel timeline (unreachable branches dimmed)
     Timeline,
-    /// Raw journal: every op + audit note over a range (vs `review`'s net view)
-    Journal {
-        /// Snapshot id or range (see `review`); `all` = the full log
-        range: Option<String>,
-        /// Limit to ops on a single file, passed after `--` (e.g. `-- foo.txt`)
-        #[arg(last = true)]
-        path: Option<String>,
+    // ── Permissions ───────────────────────────────────────────────────
+    /// Manage permission rules
+    #[command(arg_required_else_help = true)]
+    Rule {
+        #[command(subcommand)]
+        action: RuleAction,
     },
-    // ── Manual control ───────────────────────────────────────────────
+    /// Handle ask requests (daemon mode)
+    Watch {
+        /// Automatically allow all requests without prompting
+        #[arg(long)]
+        allow_all: bool,
+    },
+    // ── Advanced ──────────────────────────────────────────────────────
     /// Create .yolofs/ layout and mount the filesystem
     Mount,
     /// Unmount the live view, preserving staged state
@@ -220,7 +221,7 @@ fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
         }
         Some(Command::Travel { id }) => travel::run(&id)?,
         Some(Command::Timeline) => timeline::run()?,
-        Some(Command::Journal { range, path }) => journal::run(range.as_deref(), path.as_deref())?,
+        Some(Command::Audit { range, path }) => audit::run(range.as_deref(), path.as_deref())?,
         Some(Command::Rule { action }) => match action {
             RuleAction::List => config::list_rules()?,
             RuleAction::Resolve { path } => config::resolve_rule(&path)?,
@@ -260,30 +261,28 @@ fn run_and_review(run_args: &[String], no_review: bool) -> anyhow::Result<u8> {
 fn print_overview() {
     #[rustfmt::skip]
     let groups: &[(&str, &[(&str, &str)])] = &[
-        ("Workflow", &[
+        ("Setup", &[
             ("init",     "Create yolofs.toml + agent hook templates"),
+        ]),
+        ("Staging", &[
             ("run",      "Run under yolofs, mounting on first run (`--no-review` skips review)"),
             ("review",   "Review staged changes (summary; `--diff` for the diff)"),
+            ("audit",    "Raw record log (low-level; `timeline` is the curated view)"),
             ("commit",   "Apply staged changes to base"),
             ("abort",    "Discard staged changes"),
+        ]),
+        ("Snapshots", &[
+            ("snapshot", "Create a snapshot"),
+            ("travel",   "Travel to a previous snapshot"),
+            ("timeline", "Show the snapshot/travel timeline"),
         ]),
         ("Permissions", &[
             ("rule",     "Manage permission rules (allow/write-ask/read-only/ask/deny)"),
             ("watch",    "Permission-prompt daemon"),
         ]),
-        ("History", &[
-            ("snapshot", "Create a snapshot"),
-            ("travel",   "Travel to a previous snapshot"),
-            ("timeline", "Show the snapshot/travel timeline"),
-            ("journal",  "Raw record log (low-level; `timeline` is the curated view)"),
-        ]),
-        ("Manual control", &[
-            ("mount",    "Create .yolofs/ and mount the filesystem"),
-            ("unmount",  "Tear down the live view, preserving staged state"),
-            ("remount",  "Rebuild the view while preserving staged work"),
-            ("load",     "Load the kernel module"),
-            ("unload",   "Unmount all sessions and unload the module"),
-            ("reload",   "Unload then reload the kernel module"),
+        ("Advanced", &[
+            ("mount",    "Mount the filesystem — `unmount` / `remount` tear it down / rebuild it"),
+            ("load",     "Load the kernel module — `unload` / `reload` remove it / reload it"),
         ]),
     ];
 

@@ -528,7 +528,7 @@ fn configure_is_not_made_unreachable_by_travel() {
         .expect("change live policy before travel");
     s.cli(&["travel", "1"]).expect("travel to one");
 
-    let output = s.cli(&["journal", "all"]).expect("journal all");
+    let output = s.cli(&["audit", "all"]).expect("audit all");
     let configure = output
         .lines()
         .find(|line| line.contains("configured") && line.contains("subdir"))
