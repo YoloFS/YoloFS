@@ -157,32 +157,28 @@ $ yolo rule read-only /etc/hosts
 $ echo "hello" > /src/main.rs
    -> kernel: yolo_lookup("src") -> explicit rule on dentry -> policy=ALLOW
    -> kernel: yolo_lookup("main.rs") -> no rule on dentry (UNSET)
-              -> yolo_access_refresh() walks up: main.rs(UNSET) -> src(ALLOW)
-              -> caches ALLOW on main.rs dentry
-   -> kernel: yolo_open() -> cached_access=ALLOW, O_WRONLY -> pass
+   -> kernel: yolo_open() -> yolo_perm_walk() up: main.rs(UNSET) -> src(ALLOW)
+              -> ALLOW, O_WRONLY -> pass
    -> kernel: yolo_write_iter() -> pass-through to staged inode
 
 # 3. Agent reads /etc/passwd (readable -- /etc has write-ask rule)
 $ cat /etc/passwd
    -> kernel: yolo_lookup("etc") -> explicit rule on dentry -> policy=WRITE_ASK
    -> kernel: yolo_lookup("passwd") -> no rule on dentry (UNSET)
-              -> yolo_access_refresh() walks up: passwd(UNSET) -> etc(WRITE_ASK)
-              -> caches WRITE_ASK on passwd dentry
-   -> kernel: yolo_open("passwd") -> cached_access=WRITE_ASK, O_RDONLY -> pass
+   -> kernel: yolo_open("passwd") -> yolo_perm_walk() up: passwd(UNSET) -> etc(WRITE_ASK)
+              -> WRITE_ASK, O_RDONLY -> pass
 
 # 4. Agent reads /etc/hosts (explicit override -> read-only)
 $ cat /etc/hosts
    -> kernel: yolo_lookup("hosts") -> explicit rule on dentry -> policy=READ_ONLY
-              -> yolo_access_refresh() -> caches READ_ONLY on hosts dentry
-   -> kernel: yolo_open() -> cached_access=READ_ONLY -> pass
+   -> kernel: yolo_open() -> yolo_perm_walk() -> READ_ONLY -> pass
 
 # 5. Agent reads /tmp/secrets (no rule anywhere -> walk up reaches root -> ask)
 $ cat /tmp/secrets
    -> kernel: yolo_lookup("tmp") -> no rule on dentry (UNSET)
    -> kernel: yolo_lookup("secrets") -> no rule on dentry (UNSET)
-              -> yolo_access_refresh() walks up: secrets(UNSET) -> tmp(UNSET) -> root(UNSET)
-              -> no rule found, caches built-in default ASK on secrets dentry
-   -> kernel: yolo_open() -> cached_access=ASK
+   -> kernel: yolo_open() -> yolo_perm_walk() up: secrets(UNSET) -> tmp(UNSET) -> root(UNSET)
+              -> no rule found, built-in default ASK
    -> kernel: enqueue request, thread sleeps
    -> daemon: ioctl(ASK_PEEK) -> yolo_ioc_ask { id:1, access_path:"/tmp/secrets",
                                                rule_path:"", rule_perm:ASK, ... }

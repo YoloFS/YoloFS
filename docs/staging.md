@@ -223,9 +223,9 @@ yolo_lookup(dir, dentry):
     lower = base_lookup(dir, dentry->d_name)   # returns a positive or negative dentry
     lower_path = { dentry: lower, mnt: lower_mnt }
     interpose(dentry, lower_path)
-    if dentry is positive:
-        cache_perm(dentry)
     return NULL
+    # No perm work here — access is resolved live (walk up d_parent) at check
+    # time, not cached at lookup. See permissions.md "Why Walk Live".
 ```
 
 **Readdir** merges the staged dentries with the base directory:

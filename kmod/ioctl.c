@@ -296,7 +296,6 @@ static long yolo_rule_set_ioctl(struct file *file, unsigned long arg)
 		}
 	}
 
-	atomic64_inc(&sbi->perm.gen);
 	err = 0;
 out_unlock:
 	mutex_unlock(&sbi->perm.update_lock);
@@ -630,16 +629,15 @@ out_free:
 	return err;
 }
 
-/* Invalidate the caches that both reset and travel must drop before changing
- * the staging view: perm caches, pinned dentries, and the cached shard dir
- * (the CLI is about to delete or reorganize the shard directories). Must be
- * called with sbi->staging.sem held for write. */
+/* Drop the state that both reset and travel must clear before changing the
+ * staging view: pinned dentries and the cached shard dir (the CLI is about to
+ * delete or reorganize the shard directories). Must be called with
+ * sbi->staging.sem held for write. */
 static void yolo_staging_quiesce(struct super_block *sb,
 				 struct yolo_sb_info *sbi)
 {
 	struct dentry *old;
 
-	atomic64_inc(&sbi->perm.gen);
 	yolo_dentry_unpin_all(sb);
 
 	/* shard_lock, not just staging.sem: creates reach the shard cache

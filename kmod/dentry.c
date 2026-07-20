@@ -27,8 +27,6 @@ static int yolo_d_init(struct dentry *dentry)
 	/* Ground state: unpinned, following base filesystem */
 	info->backing = YOLO_BACKING_BASE;
 	info->policy = YOLO_PERM_UNSET;
-	/* cached_access/cached_gen are zeroed by zalloc; cached_gen == 0 reads as
-	 * stale (perm.gen starts at 1), so the first access resolves lazily. */
 	INIT_LIST_HEAD(&info->rule_pin);
 	info->rule_dentry = NULL;
 	dentry->d_fsdata = info;

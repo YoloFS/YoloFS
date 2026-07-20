@@ -8,7 +8,7 @@ use yolofs::perm::Perm;
 // ── Newly created files respect permissions ──
 
 /// A file created under yolofs should still be subject to perm gating
-/// when reopened. The perm_gen fix ensures new inodes get re-resolved.
+/// when reopened — every check resolves live by walking up the dentry chain.
 #[test]
 fn newly_created_file_checked_on_reopen() {
     let s = YoloSession::new_with_config(Config {
@@ -42,10 +42,10 @@ fn newly_created_file_checked_on_reopen() {
     );
 }
 
-// ── Rule change via live ioctl (cache invalidation) ──
+// ── Rule change via live ioctl ──
 
 /// Changing rules at runtime via `yolofs rule <verb>` should take effect
-/// on subsequent opens (perm_gen increment forces cache re-resolution).
+/// on subsequent opens (each check walks up live, so no invalidation needed).
 #[test]
 fn live_rule_change_takes_effect() {
     let s = YoloSession::new_with_config(Config {
@@ -155,10 +155,9 @@ fn rule_write_ask_resolve_matches_enforcement() {
 
 // ── Rename across permission boundaries ──
 
-/// Renaming a file from an allowed dir to a denied dir should succeed (dir op),
-/// but reading the renamed file in the denied dir should fail after a cache
-/// invalidation (the inode may still cache the old permission until perm_gen
-/// is bumped by a rule change).
+/// Renaming a file from an allowed dir into a denied dir is rejected: the
+/// mutate check gates on the destination parent's access (deny), and the
+/// source file stays readable in the allowed dir.
 #[test]
 fn rename_across_permission_boundary() {
     let s = YoloSession::new_with_config(Config {

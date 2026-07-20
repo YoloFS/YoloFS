@@ -120,8 +120,8 @@ fn deny_dir_with_staged_child_still_blocks_listing() {
     );
 }
 
-/// A live rule flip to/from `deny` must take effect on directory listing (the
-/// generation bump invalidates cached_access as consumed by yolo_readdir).
+/// A live rule flip to/from `deny` must take effect on directory listing
+/// (yolo_readdir resolves the policy live, so the change is seen immediately).
 #[test]
 fn live_deny_toggles_listing() {
     let s = YoloSession::new_with_config(Config {

@@ -131,7 +131,6 @@ static void yolo_init_sbi(struct yolo_sb_info *sbi,
 	sbi->staging.enabled = opts->staging;
 
 	/* Permission gating state */
-	atomic64_set(&sbi->perm.gen, 1);
 	INIT_LIST_HEAD(&sbi->perm.pending_reqs);
 	spin_lock_init(&sbi->perm.pending_lock);
 	init_waitqueue_head(&sbi->perm.request_waitq);

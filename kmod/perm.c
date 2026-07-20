@@ -2,8 +2,8 @@
 /*
  * yolofs — permission gating layer.
  *
- * Resolve, cache, and check permissions. Implements the ask protocol
- * for blocking threads on unresolved permissions.
+ * Resolve (walk up the dentry chain, live) and check permissions. Implements
+ * the ask protocol for blocking threads on unresolved permissions.
  */
 
 #include "yolofs.h"
@@ -31,33 +31,6 @@ enum yolo_perm yolo_perm_walk(struct dentry *dentry, struct dentry **source)
 		cur = cur->d_parent;
 	}
 	return YOLO_PERM_ASK;
-}
-
-/* ── Cache resolved access perm on the dentry ──────────────────────── */
-
-/* Stamp the resolved @policy onto @dentry at the current gen. */
-static void yolo_access_store(struct dentry *dentry, enum yolo_perm policy)
-{
-	struct yolo_dentry_info *di = YOLO_D(dentry);
-
-	di->cached_access = policy;
-	di->cached_gen = atomic64_read(&YOLO_SB(dentry->d_sb)->perm.gen);
-}
-
-void yolo_access_refresh(struct dentry *dentry)
-{
-	yolo_access_store(dentry, yolo_perm_walk(dentry, NULL));
-}
-
-/* The dentry's resolved access perm, re-resolved if the cache is stale. */
-enum yolo_perm yolo_access_get(struct dentry *dentry)
-{
-	struct yolo_dentry_info *di = YOLO_D(dentry);
-	struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
-
-	if (di->cached_gen != atomic64_read(&sbi->perm.gen))
-		yolo_access_refresh(dentry);
-	return di->cached_access;
 }
 
 /* ── Check perm against file flags ─────────────────────────────────── */
@@ -114,7 +87,7 @@ static int yolo_perm_check_static(struct yolo_sb_info *sbi,
 }
 
 /*
- * Slow path for yolo_perm_check_dentry: the cached perm says ask. Re-walk to
+ * Slow path for yolo_perm_check_dentry: the resolved perm says ask. Re-walk to
  * pin the source rule, prompt the daemon, and journal the result — unless the
  * re-walk finds the perm is now static (a racing rule update), in which case
  * fall through to the static check. Writes exactly one G for the resolved ask.
@@ -132,7 +105,6 @@ static int yolo_perm_ask(struct yolo_sb_info *sbi, struct dentry *check,
 	int err;
 
 	perm = yolo_perm_walk(check, &source);
-	yolo_access_store(check, perm);
 	if (!yolo_perm_needs_ask(perm, op)) {
 		/* Race: rules changed and it is now a static perm. */
 		if (source)
@@ -165,9 +137,9 @@ static int yolo_perm_ask(struct yolo_sb_info *sbi, struct dentry *check,
 }
 
 /*
- * Full permission check: resolve @check's cached perm and either ask the daemon
- * (slow path) or apply it statically. Used by yolo_open (via file.c) and
- * metadata ops (via inode.c).
+ * Full permission check: resolve @check's perm (walk up the dentry chain) and
+ * either ask the daemon (slow path) or apply it statically. Used by yolo_open
+ * (via file.c) and metadata ops (via inode.c).
  *
  * Journaling lives next to the result: a resolved ask writes G on the @target
  * dentry; a static denial writes G in yolo_perm_check_static. Callers just
@@ -179,7 +151,7 @@ int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
 			   struct dentry *target, int f_flags)
 {
 	enum yolo_op op = yolo_open_op(f_flags);
-	enum yolo_perm perm = yolo_access_get(check);
+	enum yolo_perm perm = yolo_perm_walk(check, NULL);
 
 	if (yolo_perm_needs_ask(perm, op))
 		return yolo_perm_ask(sbi, check, target, op, f_flags);

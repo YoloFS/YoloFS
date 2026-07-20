@@ -263,7 +263,7 @@ static int yolo_readdir(struct file *file, struct dir_context *ctx)
 	 * explicitly-allowed children is unaffected (that goes through lookup +
 	 * per-child open, never getdents). */
 	if (sbi->perm.enabled &&
-	    yolo_access_get(file->f_path.dentry) == YOLO_PERM_DENY)
+	    yolo_perm_walk(file->f_path.dentry, NULL) == YOLO_PERM_DENY)
 		return -EACCES;
 
 	/* No staging → passthrough */

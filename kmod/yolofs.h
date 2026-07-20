@@ -221,7 +221,6 @@ struct yolo_staging {
 
 struct yolo_permission {
 	bool			enabled;	/* permission gating on/off toggle */
-	atomic64_t		gen;		/* cache invalidation counter */
 	struct list_head	pinned_rules;	/* dget()'d dentries with perm rules */
 	spinlock_t		pinned_rules_lock;/* protects pinned_rules */
 	struct mutex		update_lock;	/* serializes live rule assignment + C */
@@ -265,8 +264,6 @@ struct yolo_dentry_info {
 	enum yolo_backing	backing;		/* where content lives */
 	bool			pinned;		/* held via dget by staging */
 	enum yolo_perm		policy;		/* explicit rule policy or UNSET */
-	enum yolo_perm		cached_access;	/* resolved access perm (inherited) */
-	u64			cached_gen;	/* sbi->perm.gen when cached_access set */
 	struct list_head	rule_pin;	/* node in sbi->perm.pinned_rules */
 	struct dentry		*rule_dentry;	/* back-pointer for dput on release */
 };
@@ -473,8 +470,6 @@ int yolo_journal_configure(struct yolo_sb_info *sbi, struct dentry *target,
 
 /* perm.c */
 enum yolo_perm yolo_perm_walk(struct dentry *dentry, struct dentry **source);
-void yolo_access_refresh(struct dentry *dentry);
-enum yolo_perm yolo_access_get(struct dentry *dentry);
 int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
 			   struct dentry *target, int f_flags);
 int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
