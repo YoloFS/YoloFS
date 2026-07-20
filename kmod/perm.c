@@ -87,30 +87,21 @@ static int yolo_perm_check_static(struct yolo_sb_info *sbi,
 }
 
 /*
- * Slow path for yolo_perm_check_dentry: the resolved perm says ask. Re-walk to
- * pin the source rule, prompt the daemon, and journal the result — unless the
- * re-walk finds the perm is now static (a racing rule update), in which case
- * fall through to the static check. Writes exactly one G for the resolved ask.
+ * Slow path for yolo_perm_check_dentry: the resolved @perm says ask. @source is
+ * the rule dentry that resolved it (NULL for the built-in default) — ownership
+ * passes here, and we dput it. Prompt the daemon and journal the result.
+ * Writes exactly one G for the resolved ask.
  */
-static int yolo_perm_ask(struct yolo_sb_info *sbi, struct dentry *check,
-			 struct dentry *target, enum yolo_op op, int f_flags)
+static int yolo_perm_ask(struct yolo_sb_info *sbi, struct dentry *source,
+			 struct dentry *target, enum yolo_perm perm,
+			 enum yolo_op op, int f_flags)
 {
 	char buf[YOLO_PATH_MAX];
 	char rule_buf[YOLO_PATH_MAX];
 	char *access_path;
 	const char *rule_path = "";
-	struct dentry *source = NULL;
 	enum yolo_decision decision;
-	enum yolo_perm perm;
 	int err;
-
-	perm = yolo_perm_walk(check, &source);
-	if (!yolo_perm_needs_ask(perm, op)) {
-		/* Race: rules changed and it is now a static perm. */
-		if (source)
-			dput(source);
-		return yolo_perm_check_static(sbi, target, perm, f_flags);
-	}
 
 	if (source) {
 		rule_path = dentry_path_raw(source, rule_buf, sizeof(rule_buf));
@@ -119,9 +110,6 @@ static int yolo_perm_ask(struct yolo_sb_info *sbi, struct dentry *check,
 			return PTR_ERR(rule_path);
 	}
 
-	/* Resolve the target path only now that we know we will ask. A race
-	 * that flipped this to a static perm above took the static path, which
-	 * resolves its own note path. */
 	access_path = dentry_path_raw(target, buf, sizeof(buf));
 	if (IS_ERR(access_path))
 		return PTR_ERR(access_path);
@@ -137,9 +125,11 @@ static int yolo_perm_ask(struct yolo_sb_info *sbi, struct dentry *check,
 }
 
 /*
- * Full permission check: resolve @check's perm (walk up the dentry chain) and
- * either ask the daemon (slow path) or apply it statically. Used by yolo_open
- * (via file.c) and metadata ops (via inode.c).
+ * Full permission check: resolve @check's perm with a single walk up the dentry
+ * chain, then either ask the daemon (slow path) or apply it statically. Used by
+ * yolo_open (via file.c) and metadata ops (via inode.c). The walk captures the
+ * source rule dentry (for the ask prompt's rule_path); the ask path consumes
+ * it, the static path dputs it.
  *
  * Journaling lives next to the result: a resolved ask writes G on the @target
  * dentry; a static denial writes G in yolo_perm_check_static. Callers just
@@ -151,11 +141,14 @@ int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
 			   struct dentry *target, int f_flags)
 {
 	enum yolo_op op = yolo_open_op(f_flags);
-	enum yolo_perm perm = yolo_perm_walk(check, NULL);
+	struct dentry *source = NULL;
+	enum yolo_perm perm = yolo_perm_walk(check, &source);
 
 	if (yolo_perm_needs_ask(perm, op))
-		return yolo_perm_ask(sbi, check, target, op, f_flags);
+		return yolo_perm_ask(sbi, source, target, perm, op, f_flags);
 
+	if (source)
+		dput(source);
 	return yolo_perm_check_static(sbi, target, perm, f_flags);
 }
 

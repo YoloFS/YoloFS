@@ -220,8 +220,10 @@ enum yolo_perm yolo_perm_walk(struct dentry *dentry, struct dentry **source)
 int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
                            struct dentry *target, int f_flags)
 {
-    enum yolo_perm perm = yolo_perm_walk(check, NULL);
-    // ... ask on ASK / WRITE_ASK+write, else static check; writes one G ...
+    struct dentry *source = NULL;
+    enum yolo_perm perm = yolo_perm_walk(check, &source);  // one walk
+    // ask on ASK / WRITE_ASK+write (consumes source), else static (dputs it);
+    // writes exactly one G ...
 }
 
 // Metadata ops check write access on the parent directory; a block reports
