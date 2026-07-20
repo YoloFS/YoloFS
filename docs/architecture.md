@@ -245,7 +245,7 @@ yolofs/
 │   │   ├── snapshot.rs      # `yolo snapshot` (create only)
 │   │   ├── commit.rs
 │   │   ├── review.rs          # `yolo review` (summary, or git-style diff with `--diff`)
-│   │   ├── exec.rs
+│   │   ├── run.rs             # `yolo run` (exec a command under yolofs; unshare/pivot_root engine)
 │   │   ├── load.rs            # `yolo load/unload/reload` -- kernel module management
 │   │   ├── mount.rs           # mount, unmount, remount, and on-demand mount
 │   │   ├── travel.rs         # `yolo travel` -- travel to a previous snapshot

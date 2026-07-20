@@ -119,7 +119,7 @@ fn run_write_file_relative_path() {
 #[test]
 fn run_env_var_propagated() {
     let session = YoloSession::new().expect("session setup");
-    // YOLO_SESSION is always set by exec.rs — verify the yolofs sees it
+    // YOLO_SESSION is always set by run.rs — verify the yolofs sees it
     let code = session
         .run_in_yolofs(&["sh", "-c", "test -n \"$YOLO_SESSION\""])
         .unwrap();

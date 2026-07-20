@@ -1,4 +1,4 @@
-// yolo CLI — exec.rs
+// yolo CLI — run.rs
 //
 // Isolate a command in its own pid + mount namespace, pivot_root onto the
 // session mountpoint, and exec it, preserving the caller's working directory.

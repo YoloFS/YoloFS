@@ -225,7 +225,7 @@ step.
 
 ### Command execution lifecycle
 
-Before spawning, `exec.rs` calls `unshare(CLONE_NEWPID)` in the parent so the
+Before spawning, `run.rs` calls `unshare(CLONE_NEWPID)` in the parent so the
 command it is about to fork becomes PID 1 in a new pid namespace (`unshare`
 places *future children* in the new pidns, not the caller, so this cannot be
 done from the child). The `pre_exec` hook then runs in that child (after fork,

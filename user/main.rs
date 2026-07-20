@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use yolofs::AGENT_ALLOWED;
 use yolofs::cmd::{
-    abort, audit, commit, exec, init, load, mount, review, snapshot, timeline, travel, watch,
+    abort, audit, commit, init, load, mount, review, run, snapshot, timeline, travel, watch,
 };
 use yolofs::config;
 use yolofs::perm;
@@ -243,13 +243,13 @@ fn dispatch(command: Option<Command>) -> anyhow::Result<u8> {
 /// status summary of what it changed. `--no-review` emits only the terse
 /// snapshot line. Returns the command's exit code.
 fn run_and_review(run_args: &[String], no_review: bool) -> anyhow::Result<u8> {
-    let (code, snapshot) = exec::run(run_args)?;
+    let (code, snapshot) = run::run(run_args)?;
     if no_review {
-        exec::announce(&snapshot);
+        run::announce(&snapshot);
     } else {
         let snapshot_id = match snapshot {
-            exec::Snapshot::Created(gen_id) => Some(gen_id),
-            exec::Snapshot::NoChanges | exec::Snapshot::Off => None,
+            run::Snapshot::Created(gen_id) => Some(gen_id),
+            run::Snapshot::NoChanges | run::Snapshot::Off => None,
         };
         review::run_after_exec(snapshot_id)?;
     }

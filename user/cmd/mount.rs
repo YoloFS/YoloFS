@@ -116,7 +116,7 @@ pub fn unmount_at(yolo_dir: &Path) -> Result<()> {
     let _ = fs::remove_file(yolo_dir.join("cwd"));
 
     // `/proc` `/sys` `/dev` are mounted per-command inside each `yolo run`'s
-    // private namespace (see exec.rs), not here, so there is nothing to unbind —
+    // private namespace (see run.rs), not here, so there is nothing to unbind —
     // just unmount the yolofs view itself.
     if mnt.exists() && is_mountpoint(&mnt) {
         umount_or_prompt(&mnt).with_context(|| format!("unmounting {}", mnt.display()))?;

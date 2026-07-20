@@ -1,7 +1,7 @@
 pub mod abort;
 pub mod audit;
 pub mod commit;
-pub mod exec;
+pub mod run;
 pub mod init;
 pub mod load;
 pub mod mount;
