@@ -106,6 +106,14 @@ static struct file *yolo_open_staged(struct yolo_sb_info *sbi,
 
 /* ── open ──────────────────────────────────────────────────────────── */
 
+/* Map VFS open flags to the operation being attempted (read vs write). */
+static enum yolo_op yolo_open_op(int f_flags)
+{
+	if (f_flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC))
+		return YOLO_OP_WRITE;
+	return YOLO_OP_READ;
+}
+
 static int yolo_open(struct inode *inode, struct file *file)
 {
 	struct yolo_sb_info *sbi = YOLO_SB(inode->i_sb);
@@ -116,7 +124,8 @@ static int yolo_open(struct inode *inode, struct file *file)
 
 	if (sbi->perm.enabled) {
 		/* check == target: the file's own access gates its open. */
-		err = yolo_perm_check_dentry(sbi, dentry, dentry, file->f_flags);
+		err = yolo_perm_check_dentry(sbi, dentry, dentry,
+					     yolo_open_op(file->f_flags));
 		if (err)
 			return err;
 	}

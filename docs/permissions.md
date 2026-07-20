@@ -218,7 +218,7 @@ enum yolo_perm yolo_perm_walk(struct dentry *dentry, struct dentry **source)
 // static denial writes G with result `d`. `check` is whose access gates;
 // `target` is the path recorded by G. Callers propagate the returned errno.
 int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
-                           struct dentry *target, int f_flags)
+                           struct dentry *target, enum yolo_op op)
 {
     struct dentry *source = NULL;
     enum yolo_perm perm = yolo_perm_walk(check, &source);  // one walk
@@ -233,7 +233,7 @@ static int yolo_check_mutate_perm(struct dentry *dentry)
     struct yolo_sb_info *sbi = YOLO_SB(dentry->d_sb);
     if (!sbi->perm.enabled)
         return 0;
-    return yolo_perm_check_dentry(sbi, dentry->d_parent, dentry, O_WRONLY);
+    return yolo_perm_check_dentry(sbi, dentry->d_parent, dentry, YOLO_OP_WRITE);
 }
 
 // yolo_permission(): regular files pass (access is gated authoritatively in
@@ -270,7 +270,9 @@ static int yolo_open(struct inode *inode, struct file *file)
 
     if (sbi->perm.enabled) {
         // check == target: the file's own access gates its open.
-        err = yolo_perm_check_dentry(sbi, dentry, dentry, file->f_flags);
+        // yolo_open_op() maps VFS open flags to YOLO_OP_READ / WRITE.
+        err = yolo_perm_check_dentry(sbi, dentry, dentry,
+                                     yolo_open_op(file->f_flags));
         if (err)
             return err;
     }

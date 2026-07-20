@@ -471,10 +471,12 @@ int yolo_journal_configure(struct yolo_sb_info *sbi, struct dentry *target,
 /* perm.c */
 enum yolo_perm yolo_perm_walk(struct dentry *dentry, struct dentry **source);
 int yolo_perm_check_dentry(struct yolo_sb_info *sbi, struct dentry *check,
-			   struct dentry *target, int f_flags);
+			   struct dentry *target, enum yolo_op op);
 int yolo_ask_userspace(struct yolo_sb_info *sbi, const char *access_path,
 		       const char *rule_path, enum yolo_perm rule_perm,
 		       enum yolo_op op, enum yolo_decision *result);
+long yolo_ask_peek_ioctl(struct file *file, unsigned long arg);
+long yolo_ask_decide_ioctl(struct file *file, unsigned long arg);
 
 /* ioctl.c — control ioctls live on the mount-root directory (yolo_dir_fops). */
 long yolo_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg);

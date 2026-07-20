@@ -6,11 +6,8 @@
  * opens the mount root; commands run inside the mount open "."). Only the
  * owning uid (or CAP_SYS_ADMIN) may issue them.
  *
- * ASK_PEEK reads the head of the ask queue without removing it; ASK_DECIDE
- * answers an ask by id and removes it. There is no daemon registration — any
- * fd (from outside the mount) may issue them, and asks are matched by id, so a
- * late or duplicate ASK_DECIDE simply returns -ENOENT. An ask nobody answers
- * is denied once its prompt_timeout elapses.
+ * The ASK_PEEK / ASK_DECIDE handlers (the daemon side of the ask protocol)
+ * live in perm.c next to the requester; this file only dispatches to them.
  */
 
 #include "yolofs.h"
@@ -31,104 +28,6 @@ static bool yolo_caller_inside(struct super_block *sb)
 	inside = (root.dentry->d_sb == sb);
 	path_put(&root);
 	return inside;
-}
-
-/* ── ASK_PEEK: read the head ask without removing it ───────────────── */
-
-static long yolo_ask_peek_ioctl(struct file *file, unsigned long arg)
-{
-	struct yolo_sb_info *sbi = YOLO_SB(file_inode(file)->i_sb);
-	struct yolo_permission *perm = &sbi->perm;
-	struct yolo_ask *req;
-	struct yolo_ioc_ask out;
-	int err;
-
-	memset(&out, 0, sizeof(out));
-
-	/* Block until a request is pending (unless non-blocking), then take the
-	 * lock and re-check — the requester may have reclaimed it meanwhile. */
-	if (!(file->f_flags & O_NONBLOCK)) {
-		err = wait_event_interruptible(perm->request_waitq,
-			!list_empty(&perm->pending_reqs));
-		if (err)
-			return err;
-	}
-	spin_lock(&perm->pending_lock);
-	if (list_empty(&perm->pending_reqs)) {
-		spin_unlock(&perm->pending_lock);
-		return -EAGAIN;
-	}
-
-	req = list_first_entry(&perm->pending_reqs, struct yolo_ask, list);
-
-	out.id = req->id;
-	out.op = req->op;
-	out.pid = req->pid;
-	strscpy(out.comm, req->comm, sizeof(out.comm));
-	out.rule_perm = (__u8)req->rule_perm;
-	out.access_path_len = req->access_path_len;
-	out.rule_path_len = req->rule_path_len;
-	memcpy(out.access_path, req->access_path, req->access_path_len);
-	memcpy(out.rule_path, req->rule_path, req->rule_path_len);
-
-	spin_unlock(&perm->pending_lock);
-
-	/* PEEK does not consume: the ask stays queued for ASK_DECIDE to
-	 * resolve. `out` is a private copy, so once we drop the lock we never
-	 * touch `req` again on the success path. */
-	if (copy_to_user((void __user *)arg, &out, sizeof(out))) {
-		/* Bad daemon buffer. Deny this ask by id (it may already be gone
-		 * if its requester timed out) so the queue head advances instead
-		 * of faulting on the same ask forever. */
-		spin_lock(&perm->pending_lock);
-		list_for_each_entry(req, &perm->pending_reqs, list) {
-			if (req->id == out.id) {
-				req->decision = YOLO_DECISION_DENY;
-				list_del_init(&req->list);
-				complete(&req->done);
-				break;
-			}
-		}
-		spin_unlock(&perm->pending_lock);
-		return -EFAULT;
-	}
-
-	return 0;
-}
-
-/* ── ASK_DECIDE: answer an ask by id and remove it ─────────────────── */
-
-static long yolo_ask_decide_ioctl(struct file *file, unsigned long arg)
-{
-	struct yolo_permission *perm = &YOLO_SB(file_inode(file)->i_sb)->perm;
-	struct yolo_ioc_decision in;
-	struct yolo_ask *req;
-	bool found = false;
-
-	if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
-		return -EFAULT;
-
-	if (in.decision > YOLO_DECISION_ALLOW)
-		return -EINVAL;
-
-	/* Anything still on pending_reqs is unanswered: settling an ask — here or
-	 * on the requester's timeout — sets its decision and unlinks it in the
-	 * same locked section, so being on the list means "not yet resolved".
-	 * Complete under the lock so the woken requester cannot free the req
-	 * before we are done touching it. */
-	spin_lock(&perm->pending_lock);
-	list_for_each_entry(req, &perm->pending_reqs, list) {
-		if (req->id == in.id) {
-			req->decision = (enum yolo_decision)in.decision;
-			list_del_init(&req->list);
-			complete(&req->done);
-			found = true;
-			break;
-		}
-	}
-	spin_unlock(&perm->pending_lock);
-
-	return found ? 0 : -ENOENT;
 }
 
 /* ── Release all rule-pinned dentries ───────────────────────────────── */

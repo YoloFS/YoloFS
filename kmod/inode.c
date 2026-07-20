@@ -26,7 +26,8 @@ static int yolo_check_mutate_perm(struct dentry *dentry)
 
 	/* Mutates are gated on the parent's perm (check); a block reports the
 	 * child (target). */
-	return yolo_perm_check_dentry(sbi, dentry->d_parent, dentry, O_WRONLY);
+	return yolo_perm_check_dentry(sbi, dentry->d_parent, dentry,
+				      YOLO_OP_WRITE);
 }
 
 /* ── create/mkdir/symlink — allocate inode + set up dentry ────────── */
@@ -252,7 +253,7 @@ static int yolo_setattr(struct mnt_idmap *idmap,
 
 	if (sbi->perm.enabled && yolo_setattr_needs_write_check(ia)) {
 		/* check == target: the file's own perm gates the setattr. */
-		err = yolo_perm_check_dentry(sbi, dentry, dentry, O_WRONLY);
+		err = yolo_perm_check_dentry(sbi, dentry, dentry, YOLO_OP_WRITE);
 		if (err)
 			return err;
 	}
