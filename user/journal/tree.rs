@@ -162,14 +162,12 @@ impl DirTree {
         let mut parts = path.split('/').filter(|s| !s.is_empty()).peekable();
         let mut current = self;
         while let Some(part) = parts.next() {
-            match current.nodes.get(part) {
-                Some(node) => {
-                    if parts.peek().is_none() {
-                        return Some(node);
-                    }
-                    current = &node.children;
+            {
+                let node = current.nodes.get(part)?;
+                if parts.peek().is_none() {
+                    return Some(node);
                 }
-                None => return None,
+                current = &node.children;
             }
         }
         None
@@ -270,9 +268,9 @@ impl DirTree {
         }
         let mut current = self;
         for part in path[..last_slash].split('/').filter(|s| !s.is_empty()) {
-            match current.nodes.get_mut(part) {
-                Some(node) => current = &mut node.children,
-                None => return None,
+            {
+                let node = current.nodes.get_mut(part)?;
+                current = &mut node.children
             }
         }
         Some((current, name))
