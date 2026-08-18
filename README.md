@@ -167,7 +167,7 @@ into the guest at the same path:
 For a quick cloud-based setup, GitHub Codespaces also works well for basic
 CLI and test iteration without managing a local VM or kernel setup.
 
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/YoloFS/YoloFS)
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/YoloFS/YoloFS?quickstart=1)
 
 ## Documentation
 
