@@ -143,7 +143,9 @@ Paths in `[rules]` can be absolute or relative to the session root.
 
 ## Building
 
-**Prerequisites**: Linux kernel headers, Rust toolchain, `make`.
+**Prerequisites**: Linux kernel headers, Rust toolchain, `make` —
+`./setup.sh` installs all of them on Ubuntu/Debian. Kernels 6.8 through 7.x
+are what CI and the dev VM run.
 
 ```bash
 make build                       # CLI (cargo) + kernel module
@@ -153,6 +155,20 @@ make test                        # run unit + e2e tests
 
 The binary is installed with file capabilities (`cap_sys_admin`,
 `cap_sys_module`), not setuid root — it always runs as the invoking user.
+
+### Trying it in a VM
+
+If you'd rather not load a development kernel module on your own machine —
+or your kernel is outside the supported range — `./vm.py` manages a QEMU VM
+(Ubuntu 24.04, KVM-accelerated) with this repo shared into the guest at the
+same path:
+
+```bash
+./vm.py                          # boot the VM (downloads the image on first run) + SSH shell
+./vm.py -- ./setup.sh            # install build deps in the guest (first time only)
+./vm.py -- make install test     # run commands in the VM over SSH
+./vm.py stop                     # shut the VM down (`reset` recreates it from scratch)
+```
 
 ## Documentation
 

@@ -37,6 +37,36 @@ PASSWORD_PATH = DATA_DIR / "password"
 VM_HOSTNAME = "ubuntu-vm"
 
 
+def _ensure_deps():
+    """Check for the host tools vm.py invokes; install or instruct if missing.
+
+    Maps each required binary to the Ubuntu package providing it. On apt-based
+    systems missing packages are installed (announcing the exact command
+    first); elsewhere we exit with a hint.
+    """
+    qemu_bin, qemu_pkg = (
+        ("qemu-system-aarch64", "qemu-system-arm")
+        if GUEST_ARCH == "arm64"
+        else ("qemu-system-x86_64", "qemu-system-x86")
+    )
+    required = {qemu_bin: qemu_pkg, "qemu-img": "qemu-utils", "xorriso": "xorriso"}
+    missing = [pkg for binary, pkg in required.items() if not shutil.which(binary)]
+    if not missing:
+        return
+    if not shutil.which("apt-get"):
+        hint = (
+            "brew install qemu xorriso"
+            if sys.platform == "darwin"
+            else "install them with your package manager"
+        )
+        sys.exit(f"Error: missing VM dependencies: {', '.join(missing)} — {hint}")
+    install = ["sudo", "apt-get", "install", "-y", "--no-install-recommends", *missing]
+    print(f"Installing missing VM dependencies: {' '.join(missing)}")
+    print(f"  $ {' '.join(install)}")
+    subprocess.run(["sudo", "apt-get", "update"], check=True)
+    subprocess.run(install, check=True)
+
+
 def download_image():
     if IMAGE_PATH.exists():
         print(f"Base image already exists: {IMAGE_PATH}")
@@ -186,8 +216,6 @@ def _write_seed_iso(iso_path: Path, files: list[Path]):
     -R (Rock Ridge) preserves those lowercase hyphenated names, and the sources
     are already named that way, so they can be passed directly.
     """
-    if not shutil.which("xorriso"):
-        raise RuntimeError("xorriso not found; install it (e.g. apt-get install xorriso)")
     print("Creating cloud-init seed ISO with xorriso...")
     subprocess.run(
         ["xorriso", "-as", "mkisofs", "-o", str(iso_path), "-V", "CIDATA", "-R",
@@ -247,6 +275,7 @@ def ensure_vm_started():
         _print_vm_info()
         return
     print("VM not running, starting...")
+    _ensure_deps()
     download_image()
     create_disk(DEFAULT_DISK_SIZE)
     create_seed_iso(Path.cwd())
@@ -420,6 +449,7 @@ def main():
         stop_vm()
     elif args.command == "reset":
         stop_vm()
+        _ensure_deps()
         download_image()
         create_disk(DEFAULT_DISK_SIZE, reset=True)
         PASSWORD_PATH.unlink(missing_ok=True)
@@ -433,6 +463,7 @@ def main():
             print(f"VM is already running.")
             _print_vm_info()
             sys.exit(1)
+        _ensure_deps()
         download_image()
         create_disk(args.disk_size)
         create_seed_iso(Path.cwd())
