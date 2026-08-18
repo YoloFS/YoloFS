@@ -1,4 +1,4 @@
-# YoloFS
+# YoloFS [![CI](https://github.com/YoloFS/YoloFS/actions/workflows/ci.yml/badge.svg)](https://github.com/YoloFS/YoloFS/actions/workflows/ci.yml)
 
 **Don't let AI agents YOLO your files.**
 
@@ -46,10 +46,6 @@ See the [website](https://yolofs.github.io/) for an overview and the
 evaluation.
 
 ## Quick start
-
-`yolo` is a host-side tool — like `docker`, you run it **outside** the mount
-and it manages the session; every `yolo` command refuses to run inside the
-mount.
 
 ```bash
 make install                     # build + install CLI and kernel module
@@ -169,6 +165,12 @@ into the guest at the same path:
 ./vm.py -- make install test     # run commands in the VM over SSH
 ./vm.py stop                     # shut the VM down (`reset` recreates it from scratch)
 ```
+### Trying it in GitHub Codespaces
+
+For a quick cloud-based setup, GitHub Codespaces also works well for basic
+CLI and test iteration without managing a local VM or kernel setup.
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/YoloFS/YoloFS)
 
 ## Documentation
 
