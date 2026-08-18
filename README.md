@@ -7,8 +7,7 @@ interactively prompt. Stacks on any lower filesystem (ext4, xfs, NFS, …)
 via VFS interposition with a zero-copy data path.
 
 See the [website](https://yolofs.github.io/) for an overview and the
-[paper](https://arxiv.org/abs/2604.13536) for details. Part of the
-[YoloFS](https://github.com/YoloFS/YoloFS) project.
+[paper](https://arxiv.org/abs/2604.13536) for details.
 
 ## Quick start
 
@@ -62,3 +61,11 @@ Paths in `[rules]` can be absolute or relative to the session root.
 - [Staging](docs/staging.md) — COW, journal, path resolution, snapshots
 - [Permissions](docs/permissions.md) — rule engine, ask protocol
 - [CLI](docs/cli.md) — commands, options, terminal handling
+
+## Related repositories
+
+- [`perf-eval`](https://github.com/YoloFS/perf-eval) — performance benchmark suite (`yolo-bench`)
+- [`perf-results`](https://github.com/YoloFS/perf-results) — benchmark output data
+- [`agent-eval`](https://github.com/YoloFS/agent-eval) — agent behavior evaluation harness
+- [`sosp-ae`](https://github.com/YoloFS/sosp-ae) — SOSP artifact evaluation instructions
+- [`yolofs.github.io`](https://github.com/YoloFS/yolofs.github.io) — project website source
