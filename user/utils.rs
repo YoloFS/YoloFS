@@ -71,12 +71,20 @@ pub fn session_dir() -> Result<PathBuf> {
 /// mountpoint is an empty directory the over-`/` mount lands on — no data is
 /// stored there — so it belongs on ephemeral, per-user runtime storage *outside*
 /// the workspace, where editors and indexers won't wander into a recursive view
-/// of `/`. `/run/user/<uid>` is the systemd per-user runtime dir: tmpfs, mode
-/// 0700, wiped on logout. The CLI runs as the invoking user, so `getuid()`
-/// lands this in *their* runtime dir.
+/// of `/`. Prefer the standard per-user runtime dir when available, then fall
+/// back to the user's cache directory; avoid project-local state and avoid a
+/// hardcoded `/run/user/<uid>` fallback because that path is not present in many
+/// containerized environments.
 pub(crate) fn runtime_base() -> PathBuf {
-    let uid = nix::unistd::getuid().as_raw();
-    PathBuf::from(format!("/run/user/{uid}/yolofs"))
+    if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR") {
+        return PathBuf::from(xdg).join("yolofs");
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".cache").join("yolofs");
+    }
+
+    panic!("YoloFS runtime directory unavailable: neither XDG_RUNTIME_DIR nor HOME is set")
 }
 
 /// Create a fresh, unique mountpoint directory under the per-user runtime base
@@ -177,6 +185,50 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = session_dir().unwrap();
         assert_eq!(result, yolo_dir);
+    }
+
+    #[test]
+    fn runtime_base_prefers_xdg_runtime_dir() {
+        let old_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+        let old_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", "/tmp/xdg-runtime");
+            std::env::set_var("HOME", "/tmp/fake-home");
+        }
+
+        let result = runtime_base();
+        assert_eq!(result, PathBuf::from("/tmp/xdg-runtime/yolofs"));
+
+        match old_runtime {
+            Some(v) => unsafe { std::env::set_var("XDG_RUNTIME_DIR", v) },
+            None => unsafe { std::env::remove_var("XDG_RUNTIME_DIR") },
+        }
+        match old_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+    }
+
+    #[test]
+    fn runtime_base_uses_home_cache_when_xdg_missing() {
+        let old_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+        let old_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+            std::env::set_var("HOME", "/tmp/fake-home");
+        }
+
+        let result = runtime_base();
+        assert_eq!(result, PathBuf::from("/tmp/fake-home/.cache/yolofs"));
+
+        match old_runtime {
+            Some(v) => unsafe { std::env::set_var("XDG_RUNTIME_DIR", v) },
+            None => unsafe { std::env::remove_var("XDG_RUNTIME_DIR") },
+        }
+        match old_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
     }
 
     #[test]
