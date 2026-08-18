@@ -160,8 +160,8 @@ The binary is installed with file capabilities (`cap_sys_admin`,
 
 If you'd rather not load a development kernel module on your own machine —
 or your kernel is outside the supported range — `./vm.py` manages a QEMU VM
-(Ubuntu 24.04, KVM-accelerated) with this repo shared into the guest at the
-same path:
+(Ubuntu 24.04, hardware-accelerated via KVM or HVF) with this repo shared
+into the guest at the same path:
 
 ```bash
 ./vm.py                          # boot the VM (downloads the image on first run) + SSH shell

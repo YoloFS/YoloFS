@@ -38,19 +38,27 @@ VM_HOSTNAME = "ubuntu-vm"
 
 
 def _ensure_deps():
-    """Check for the host tools vm.py invokes; install or instruct if missing.
-
-    Maps each required binary to the Ubuntu package providing it. On apt-based
-    systems missing packages are installed (announcing the exact command
-    first); elsewhere we exit with a hint.
-    """
-    qemu_bin, qemu_pkg = (
-        ("qemu-system-aarch64", "qemu-system-arm")
-        if GUEST_ARCH == "arm64"
-        else ("qemu-system-x86_64", "qemu-system-x86")
-    )
-    required = {qemu_bin: qemu_pkg, "qemu-img": "qemu-utils", "xorriso": "xorriso"}
-    missing = [pkg for binary, pkg in required.items() if not shutil.which(binary)]
+    """Ensure the host tools vm.py invokes exist, installing them on apt systems."""
+    # checks: (name, found?, Ubuntu packages providing it). On arm64 the UEFI
+    # firmware (qemu-efi-aarch64) and virtio NIC ROM (ipxe-qemu) are only
+    # Recommends of qemu-system-arm, which --no-install-recommends skips, so
+    # they are listed explicitly and the firmware is probed separately.
+    if GUEST_ARCH == "arm64":
+        qemu = ("qemu-system-aarch64", ["qemu-system-arm", "qemu-efi-aarch64", "ipxe-qemu"])
+    else:
+        qemu = ("qemu-system-x86_64", ["qemu-system-x86"])
+    checks = [
+        (qemu[0], shutil.which(qemu[0]), qemu[1]),
+        ("qemu-img", shutil.which("qemu-img"), ["qemu-utils"]),
+        ("xorriso", shutil.which("xorriso"), ["xorriso"]),
+    ]
+    if GUEST_ARCH == "arm64":
+        try:
+            firmware = _find_aarch64_firmware()
+        except RuntimeError:
+            firmware = None
+        checks.append(("aarch64 UEFI firmware", firmware, ["qemu-efi-aarch64", "ipxe-qemu"]))
+    missing = [name for name, found, _ in checks if not found]
     if not missing:
         return
     if not shutil.which("apt-get"):
@@ -59,10 +67,14 @@ def _ensure_deps():
             if sys.platform == "darwin"
             else "install them with your package manager"
         )
-        sys.exit(f"Error: missing VM dependencies: {', '.join(missing)} — {hint}")
-    install = ["sudo", "apt-get", "install", "-y", "--no-install-recommends", *missing]
-    print(f"Installing missing VM dependencies: {' '.join(missing)}")
-    print(f"  $ {' '.join(install)}")
+        print(f"Error: missing VM dependencies: {', '.join(missing)} — {hint}")
+        sys.exit(1)
+    packages = []
+    for name, found, pkgs in checks:
+        if not found:
+            packages += [p for p in pkgs if p not in packages]
+    install = ["sudo", "apt-get", "install", "-y", "--no-install-recommends", *packages]
+    print(f"Installing missing VM dependencies:\n  $ {' '.join(install)}")
     subprocess.run(["sudo", "apt-get", "update"], check=True)
     subprocess.run(install, check=True)
 
@@ -443,13 +455,15 @@ def main():
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+    if args.command in ("start", "restart", "reset"):
+        _ensure_deps()
+
     if args.command == "download":
         download_image()
     elif args.command == "stop":
         stop_vm()
     elif args.command == "reset":
         stop_vm()
-        _ensure_deps()
         download_image()
         create_disk(DEFAULT_DISK_SIZE, reset=True)
         PASSWORD_PATH.unlink(missing_ok=True)
@@ -463,7 +477,6 @@ def main():
             print(f"VM is already running.")
             _print_vm_info()
             sys.exit(1)
-        _ensure_deps()
         download_image()
         create_disk(args.disk_size)
         create_seed_iso(Path.cwd())
