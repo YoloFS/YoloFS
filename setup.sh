@@ -8,8 +8,10 @@ if [[ "$(hostname)" != "ubuntu-vm" ]]; then
     deps+=("${vm_deps[@]}")
 fi
 
-sudo apt-get update
-sudo apt-get install -y --no-install-recommends "${deps[@]}"
+if ! dpkg -s "${deps[@]}" &>/dev/null; then
+    sudo apt-get update
+    sudo apt-get install -y --no-install-recommends "${deps[@]}"
+fi
 
 if ! command -v rustc &>/dev/null; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q
