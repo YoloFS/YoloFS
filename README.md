@@ -149,9 +149,6 @@ make install                     # install to /usr/local/bin and /lib/modules
 make test                        # run unit + e2e tests
 ```
 
-The binary is installed with file capabilities (`cap_sys_admin`,
-`cap_sys_module`), not setuid root — it always runs as the invoking user.
-
 ### Trying it in a VM
 
 If you'd rather not load a development kernel module on your own machine —
