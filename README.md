@@ -6,7 +6,7 @@
 [Website](https://yolofs.github.io/) · [Paper](https://arxiv.org/abs/2604.13536) ·
 [Slides](https://yolofs.github.io/slides.pdf) · [Poster](https://yolofs.github.io/poster/)
 
-![YoloFS demo: an agent runs a malicious script; YoloFS asks before it reads the SSH key, shows the change it made to ~/.bashrc, and travels back to undo it](demo/demo.gif)
+![YoloFS demo: an agent runs a malicious script; YoloFS asks before it reads the SSH key, shows the change it made to ~/.bashrc, and travels back to undo it](https://yolofs.github.io/demo.gif)
 
 ## The problem
 
@@ -41,6 +41,8 @@ The filesystem sees every access, no matter which command or tool makes it.
 So we move information and control from the agent into the filesystem, with
 three primitives:
 
+<p align="center"><img src="https://yolofs.github.io/fig/shift.svg" width="640" alt="Traditional vs agent-native filesystems: in agent-native filesystems, the filesystem gives users and agents information and control"></p>
+
 1. **Introspect effects** — show which files each command actually read and changed.
 2. **Undo mutations** — let the agent try a command, inspect the result, and roll it back.
 3. **Gate accesses** — stop things that can't be undone, like reading a secret,
@@ -55,6 +57,8 @@ YoloFS is a Linux kernel module plus a `yolo` CLI. It stacks on any local
 filesystem (ext4, xfs, btrfs, …) with a zero-copy data path, becomes the root
 filesystem for the agent's commands, and plugs into Claude Code, Copilot, and
 Gemini through their tool hooks.
+
+<p align="center"><img src="https://yolofs.github.io/fig/arch.svg" width="560" alt="YoloFS architecture: the agent and user talk to the yolo CLI; commands run on the YoloFS kernel filesystem, which is layered over the base filesystem"></p>
 
 - 📝 **Staging** — every change goes to a staging area, not your files. You
   `yolo review`, then `yolo commit` or `yolo abort`. File contents and paths
