@@ -1,61 +1,107 @@
 # YoloFS [![CI](https://github.com/YoloFS/YoloFS/actions/workflows/ci.yml/badge.svg)](https://github.com/YoloFS/YoloFS/actions/workflows/ci.yml)
 
 **Don't let AI agents YOLO your files.**
+*Information and control in agent-native filesystems* (SOSP 2026)
 
-AI coding agents run hundreds of file operations and shell commands on your
-machine, with your privileges. They have wiped drives, destroyed personal
-documents, and silently leaked credentials — and the usual defense, a
-command-approval prompt, shows you an innocuous-looking command with no
-indication of its actual filesystem effects. Approval fatigue sets in, and
-users end up in "YOLO mode," letting the agent run unchecked.
+[Website](https://yolofs.github.io/) · [Paper](https://arxiv.org/abs/2604.13536) ·
+[Slides](https://yolofs.github.io/slides.pdf) · [Poster](https://yolofs.github.io/poster/)
 
-The root problem is two gaps: neither you nor the agent has **information**
-about what a command did to the filesystem, and neither has **control** to
-prevent or undo it. YoloFS closes both gaps by shifting information and
-control from the agent to the filesystem itself.
+![YoloFS demo: an agent runs a malicious script; YoloFS asks before it reads the SSH key, shows the change it made to ~/.bashrc, and travels back to undo it](demo/demo.gif)
 
-YoloFS is an **agent-native filesystem**: a Linux kernel filesystem that
-stacks on any local base filesystem (ext4, xfs, btrfs, …) via VFS interposition with
-a zero-copy data path, plus a `yolo` CLI. It provides three mechanisms:
+## The problem
 
-- **Staging** — every mutation is isolated in a staging area instead of being
-  applied to your files. You review the accumulated changes and commit or
-  abort them. Arbitrary path mutations are handled without copying unchanged
-  data.
-- **Snapshots & travel** — the agent (or you) can snapshot after each
-  command, inspect exactly what changed, and travel back to any earlier
-  state to undo mistakes and retry — without slowing normal file operations.
-- **Progressive permission** — path-based rules `allow`, `deny`, or `ask`
-  about accesses as they happen. No complete upfront policy needed: you
-  refine rules interactively based on what the agent actually touches.
+AI coding agents run shell commands on your machine with your privileges.
+Today you have two choices. Let the agent run everything ("YOLO mode") and
+hope it never runs `rm -rf foo ~/`. Or approve every command, which stalls
+the agent until you stop reading the prompts.
 
-Together these let an agent work autonomously and correct its own mistakes,
-while your interaction is reserved for sensitive accesses and final review.
+Approving a command also tells you very little. If the agent asks to run
+`cargo build`, you'll say yes, but a dependency's build script can read your
+SSH key and edit your shell config, and neither the prompt nor the command
+says so. The agent doesn't know either.
 
-**Example.** An agent runs `cargo build` on a project with a compromised
-dependency whose build script reads your SSH key and edits your shell config.
-Under YoloFS the command runs without a command-level prompt — but the SSH
-key read trips an `ask` rule, so you see the actual path and operation and
-deny it. All writes land in staging, not your real files. After the command,
-the agent inspects the denied access and staged changes, recognizes the
-attack, travels back to the previous snapshot, and retries with a different
-dependency. At the end, you review what remains and commit.
+We studied **290 public reports** of agents misusing files (Claude Code,
+Codex, Copilot, Cursor, Gemini, …). Of the 207 incidents with known impact,
+44% overwrote data, 39% deleted files, and 17% leaked secrets. 42% of the
+harm was outside the project, **40% was unrecoverable**, and in 68% of cases
+the agent never noticed.
 
-See the [website](https://yolofs.github.io/) for an overview and the
-[paper](https://arxiv.org/abs/2604.13536) for the misuse study, design, and
-evaluation.
+The causes point to two gaps:
+
+- **Information gap** — neither users nor agents can tell what a command
+  actually does to files. Harness guardrails check command strings, not
+  effects: blocking `rm` doesn't stop `python -c "shutil.rmtree(...)"`.
+- **Control gap** — harm can't be reliably prevented, or undone afterwards.
+  Policies are fixed up front, and sandboxes are too strict for real work, so
+  users turn them off.
+
+## Agent-native filesystems
+
+The filesystem sees every access, no matter which command or tool makes it.
+So we move information and control from the agent into the filesystem, with
+three primitives:
+
+1. **Introspect effects** — show which files each command actually read and changed.
+2. **Undo mutations** — let the agent try a command, inspect the result, and roll it back.
+3. **Gate accesses** — stop things that can't be undone, like reading a secret,
+   before they happen. Rules apply to paths, not commands.
+
+The agent can then work on its own. You step in only for sensitive accesses
+and the final review.
+
+## YoloFS
+
+YoloFS is a Linux kernel module plus a `yolo` CLI. It stacks on any local
+filesystem (ext4, xfs, btrfs, …) with a zero-copy data path, becomes the root
+filesystem for the agent's commands, and plugs into Claude Code, Copilot, and
+Gemini through their tool hooks.
+
+- 📝 **Staging** — every change goes to a staging area, not your files. You
+  `yolo review`, then `yolo commit` or `yolo abort`. File contents and paths
+  are decoupled, so renaming a large file is a pointer update, not a copy.
+- 📸 **Snapshots & travel** — a snapshot after every command shows exactly
+  what it changed, and `yolo travel` goes back. Snapshots are markers in a
+  journal, so hundreds of them don't slow down normal file operations.
+- 🔐 **Progressive permission** — path rules `allow`, `deny`, or `ask`. No
+  complete policy is needed up front: an `ask` pauses the calling thread and
+  shows you the real path and operation (e.g. read `~/.ssh/id_rsa`), and your
+  answer can become a new rule.
+
+## Results
+
+- **Safety** — 11 routine tasks (lint, build, format, …) with damage hidden
+  behind scripts, Makefiles, or binaries. No baseline agent reliably prevented
+  it; with YoloFS, Claude Code noticed and undid the damage on its own in
+  **8 of 11**, and the other 3 were still staged for the user to reject.
+- **Autonomy** — on 112 single-file-operation tasks, Claude Code needed
+  **0.4 user interactions per task** with YoloFS, down from 0.9 without it,
+  at 99% success.
+- **Performance** — file I/O matches ext4. On a Linux kernel development
+  workload YoloFS matches ext4 (plus 3.5 s to commit over 100,000 files), while
+  OverlayFS is 18% slower. See the
+  [performance dashboard](https://yolofs.github.io/perf-results/report/).
 
 ## Quick start
 
+YoloFS needs Linux (kernel 6.8–7.x) and `sudo` to install the kernel module.
+To avoid loading it on your own machine, see [Trying it in a VM](#trying-it-in-a-vm).
+
 ```bash
+git clone https://github.com/YoloFS/YoloFS && cd YoloFS
+./setup.sh                       # install build deps (Ubuntu/Debian); then open a new shell
 make install                     # build + install CLI and kernel module
 
 cd /path/to/project
 yolo init                        # scaffold yolofs.toml + agent hooks + agent guide
-yolo run -- make build           # mounts on first run, stages the command, shows changes
+yolo mount                       # start the session
+yolo watch                       # (another terminal) answer `ask` prompts as they arrive
+yolo run -- make build           # stage the command's changes and show them
 yolo review                      # inspect staged changes (`--diff` for the diff body)
 yolo commit                      # apply to your real files, or `yolo abort` to discard
 ```
+
+After `yolo init`, your coding agent's shell commands run through `yolo run`
+automatically (see [Agent integration](#agent-integration)).
 
 ## Usage
 
@@ -74,15 +120,33 @@ yolo commit                  # apply staged changes to the base filesystem
 yolo abort                   # discard everything staged
 ```
 
+### Agent integration
+
+`yolo init` scaffolds pre-tool-use hooks for Claude Code (`.claude/`), Gemini
+CLI (`.gemini/`), and Copilot (`.github/hooks/`) — pass `--agents <name>...`
+to pick — so every shell command the agent runs goes through `yolo run`
+automatically. It also writes an always-loaded guide (`CLAUDE.md`,
+`GEMINI.md`, or `AGENTS.md`) telling the agent its writes are staged and that
+it may inspect and rewind (`review`, `audit`, `timeline`, `travel`,
+`snapshot` — the navigation-only subcommands the CLI allows agents) but must
+leave committing to you.
+
 ### Permission rules
 
-Rules map paths to access levels; the verb names the level:
+Rules map paths to access levels and apply to everything below them:
+
+| Level       | Read | Write |
+|-------------|------|-------|
+| `allow`     | ✓    | ✓     |
+| `write-ask` | ✓    | ask   |
+| `read-only` | ✓    | ✗     |
+| `ask`       | ask  | ask   |
+| `deny`      | ✗    | ✗ (a denied dir also can't be listed) |
 
 ```bash
-yolo rule allow src          # free read/write
-yolo rule write-ask /etc     # allow reads, ask before writes
-yolo rule read-only /usr
-yolo rule deny ~/.ssh        # no read/write; for a dir also blocks listing
+yolo rule allow src          # the verb names the level
+yolo rule write-ask /etc
+yolo rule deny ~/.ssh
 yolo rule ask /etc/hosts     # force a prompt, overriding an inherited rule
 yolo rule list               # configured rules
 yolo rule resolve src        # effective level for a path + where it comes from
@@ -106,17 +170,6 @@ yolo audit -- /src/main.rs       # journal records for one file
 
 Any generation id is a valid travel target, so mistakes can be undone and
 retried without losing earlier history.
-
-### Agent integration
-
-`yolo init` scaffolds pre-tool-use hooks for Claude Code (`.claude/`), Gemini
-CLI (`.gemini/`), and Copilot (`.github/hooks/`) — pass `--agents <name>...`
-to pick — so every shell command the agent runs goes through `yolo run`
-automatically. It also writes an always-loaded guide (`CLAUDE.md`,
-`GEMINI.md`, or `AGENTS.md`) telling the agent its writes are staged and that
-it may inspect and rewind (`review`, `audit`, `timeline`, `travel`,
-`snapshot` — the navigation-only subcommands the CLI allows agents) but must
-leave committing to you.
 
 ### Configuration
 
@@ -162,6 +215,7 @@ into the guest at the same path:
 ./vm.py -- make install test     # run commands in the VM over SSH
 ./vm.py stop                     # shut the VM down (`reset` recreates it from scratch)
 ```
+
 ### Trying it in GitHub Codespaces
 
 For a quick cloud-based setup, GitHub Codespaces also works well for basic
@@ -183,3 +237,18 @@ CLI and test iteration without managing a local VM or kernel setup.
 - [`agent-eval`](https://github.com/YoloFS/agent-eval) — agent behavior evaluation harness
 - [`sosp-ae`](https://github.com/YoloFS/sosp-ae) — SOSP artifact evaluation instructions
 - [`yolofs.github.io`](https://github.com/YoloFS/yolofs.github.io) — project website source
+
+## Citation
+
+```bibtex
+@inproceedings{yolofs-sosp26,
+  title     = {Don't Let AI Agents YOLO Your Files: Information and Control
+               in Agent-Native Filesystems},
+  author    = {Zhong, Shawn Wanxiang and Liao, Junxuan and Liu, Jing and
+               Zheng, Mai and Arpaci-Dusseau, Andrea C. and
+               Arpaci-Dusseau, Remzi H.},
+  booktitle = {Symposium on Operating Systems Principles (SOSP '26)},
+  year      = {2026},
+  doi       = {10.1145/3830418.3843858}
+}
+```
