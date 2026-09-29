@@ -11,29 +11,19 @@
 ## The problem
 
 AI coding agents run shell commands on your machine with your privileges.
-Today you have two choices. Let the agent run everything ("YOLO mode") and
-hope it never runs `rm -rf foo ~/`. Or approve every command, which stalls
-the agent until you stop reading the prompts.
+You can let the agent run everything ("YOLO mode") and hope it never runs
+`rm -rf foo ~/`, or approve every command, which stalls the agent until you
+stop reading the prompts. Either way, an approval prompt shows you the
+command, not what it does to your files.
 
-Approving a command also tells you very little. If the agent asks to run
-`cargo build`, you'll say yes, but a dependency's build script can read your
-SSH key and edit your shell config, and neither the prompt nor the command
-says so. The agent doesn't know either.
-
-We studied **290 public reports** of agents misusing files (Claude Code,
-Codex, Copilot, Cursor, Gemini, …). Of the 207 incidents with known impact,
-44% overwrote data, 39% deleted files, and 17% leaked secrets. 42% of the
-harm was outside the project, **40% was unrecoverable**, and in 68% of cases
-the agent never noticed.
-
+We studied **290 public reports** of agents misusing files. **40%** of the
+harm was unrecoverable, and in **68%** of cases the agent never noticed.
 The causes point to two gaps:
 
 - **Information gap** — neither users nor agents can tell what a command
-  actually does to files. Harness guardrails check command strings, not
-  effects: blocking `rm` doesn't stop `python -c "shutil.rmtree(...)"`.
+  actually does to files. Guardrails check command strings, not effects:
+  blocking `rm` doesn't stop `python -c "shutil.rmtree(...)"`.
 - **Control gap** — harm can't be reliably prevented, or undone afterwards.
-  Policies are fixed up front, and sandboxes are too strict for real work, so
-  users turn them off.
 
 ## Agent-native filesystems
 
@@ -46,98 +36,81 @@ three primitives:
 1. **Introspect effects** — show which files each command actually read and changed.
 2. **Undo mutations** — let the agent try a command, inspect the result, and roll it back.
 3. **Gate accesses** — stop things that can't be undone, like reading a secret,
-   before they happen. Rules apply to paths, not commands.
+   before they happen.
 
 The agent can then work on its own. You step in only for sensitive accesses
 and the final review.
 
 ## YoloFS
 
-YoloFS is a Linux kernel module plus a `yolo` CLI. It stacks on any local
-filesystem (ext4, xfs, btrfs, …) with a zero-copy data path, becomes the root
-filesystem for the agent's commands, and plugs into Claude Code, Copilot, and
-Gemini through their tool hooks.
+YoloFS is a Linux kernel filesystem plus a `yolo` CLI. It stacks on any local
+filesystem (ext4, xfs, btrfs, …), becomes the root filesystem for the agent's
+commands, and plugs into Claude Code, Copilot, and Gemini through their tool
+hooks.
 
 <p align="center"><img src="https://yolofs.github.io/fig/arch.svg" width="560" alt="YoloFS architecture: the agent and user talk to the yolo CLI; commands run on the YoloFS kernel filesystem, which is layered over the base filesystem"></p>
 
-- 📝 **Staging** — every change goes to a staging area, not your files. You
-  `yolo review`, then `yolo commit` or `yolo abort`. File contents and paths
-  are decoupled, so renaming a large file is a pointer update, not a copy.
-- 📸 **Snapshots & travel** — a snapshot after every command shows exactly
-  what it changed, and `yolo travel` goes back. Snapshots are markers in a
-  journal, so hundreds of them don't slow down normal file operations.
-- 🔐 **Progressive permission** — path rules `allow`, `deny`, or `ask`. No
-  complete policy is needed up front: an `ask` pauses the calling thread and
-  shows you the real path and operation (e.g. read `~/.ssh/id_rsa`), and your
-  answer can become a new rule.
+- 📝 **Staging** — every change lands in a staging area, not your files. You
+  review it and commit or abort.
+- 📸 **Snapshots & travel** — a snapshot after every command shows what it
+  changed; travel goes back to any snapshot.
+- 🔐 **Progressive permission** — path rules `allow`, `deny`, or `ask`. An
+  `ask` pauses the access until you answer, so you refine the policy as you go
+  instead of writing it all up front.
 
 ## Results
 
-- **Safety** — 11 routine tasks (lint, build, format, …) with damage hidden
-  behind scripts, Makefiles, or binaries. No baseline agent reliably prevented
-  it; with YoloFS, Claude Code noticed and undid the damage on its own in
-  **8 of 11**, and the other 3 were still staged for the user to reject.
-- **Autonomy** — on 112 single-file-operation tasks, Claude Code needed
-  **0.4 user interactions per task** with YoloFS, down from 0.9 without it,
-  at 99% success.
-- **Performance** — file I/O matches ext4. On a Linux kernel development
-  workload YoloFS matches ext4 (plus 3.5 s to commit over 100,000 files), while
-  OverlayFS is 18% slower. See the
-  [performance dashboard](https://yolofs.github.io/perf-results/report/).
+- **Safety** — on 11 routine tasks with hidden destructive side effects, Claude
+  Code with YoloFS noticed and undid the damage on its own in **8 of 11**; the
+  other 3 stayed staged for the user to reject. No agent without YoloFS
+  reliably prevented the damage.
+- **Autonomy** — on 112 routine tasks, user interactions dropped from 0.9 to
+  **0.4 per task** for Claude Code, at 99% success.
+- **Performance** — matches ext4 on file I/O and on a Linux kernel development
+  workload (plus 3.5 s to commit over 100,000 files), where OverlayFS is 18%
+  slower ([dashboard](https://yolofs.github.io/perf-results/report/)).
 
 ## Quick start
 
-YoloFS needs Linux (kernel 6.8–7.x) and `sudo` to install the kernel module.
-To avoid loading it on your own machine, see [Trying it in a VM](#trying-it-in-a-vm).
+YoloFS needs Linux (kernel 6.8–7.x) and `sudo` to install its kernel module.
+To keep it off your own machine, use [the VM](#trying-it-in-a-vm).
 
 ```bash
 git clone https://github.com/YoloFS/YoloFS && cd YoloFS
 ./setup.sh                       # install build deps (Ubuntu/Debian); then open a new shell
-make install                     # build + install CLI and kernel module
+make install                     # build + install the CLI and kernel module
 
 cd /path/to/project
-yolo init                        # scaffold yolofs.toml + agent hooks + agent guide
+yolo init                        # write yolofs.toml, agent hooks, and agent guides
 yolo mount                       # start the session
-yolo watch                       # (another terminal) answer `ask` prompts as they arrive
-yolo run -- make build           # stage the command's changes and show them
-yolo review                      # inspect staged changes (`--diff` for the diff body)
-yolo commit                      # apply to your real files, or `yolo abort` to discard
+yolo watch                       # (another terminal) answer `ask` prompts
+yolo run -- make build           # run a command; its changes are staged and shown
+yolo review --diff               # inspect everything staged
+yolo commit                      # apply to your real files (or `yolo abort`)
 ```
 
-After `yolo init`, your coding agent's shell commands run through `yolo run`
-automatically (see [Agent integration](#agent-integration)).
+`yolo run` executes the command in an isolated view of the filesystem
+(private pid and mount namespace) and snapshots afterwards. Nothing reaches
+your real files until `yolo commit`.
 
 ## Usage
 
-### Session workflow
-
-`yolo init` creates `yolofs.toml` and per-agent hook files. `yolo run -- <cmd>`
-runs a command through YoloFS: it mounts on demand, executes the command in an
-isolated view (private pid + mount namespace, pivoted onto the mount), stages
-all of its writes, auto-snapshots, and prints a review summary. Nothing
-touches your real files until you decide:
-
-```bash
-yolo review                  # summary of staged changes
-yolo review --diff           # full diff
-yolo commit                  # apply staged changes to the base filesystem
-yolo abort                   # discard everything staged
-```
-
 ### Agent integration
 
-`yolo init` scaffolds pre-tool-use hooks for Claude Code (`.claude/`), Gemini
-CLI (`.gemini/`), and Copilot (`.github/hooks/`) — pass `--agents <name>...`
-to pick — so every shell command the agent runs goes through `yolo run`
-automatically. It also writes an always-loaded guide (`CLAUDE.md`,
-`GEMINI.md`, or `AGENTS.md`) telling the agent its writes are staged and that
-it may inspect and rewind (`review`, `audit`, `timeline`, `travel`,
-`snapshot` — the navigation-only subcommands the CLI allows agents) but must
-leave committing to you.
+`yolo init` sets up Claude Code, Gemini CLI, and Copilot (`--agents <name>...`
+to pick):
+
+- A pre-tool-use hook (`.claude/`, `.gemini/`, `.github/hooks/`) routes every
+  shell command the agent runs through `yolo run`.
+- An always-loaded guide (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`) tells the
+  agent its writes are staged and how to inspect and rewind them.
+- The agent may use only `review`, `audit`, `timeline`, `travel`, and
+  `snapshot`. Committing is left to you.
 
 ### Permission rules
 
-Rules map paths to access levels and apply to everything below them:
+Rules map paths to access levels and apply to everything below them. Paths
+without a rule default to `ask`.
 
 | Level       | Read | Write |
 |-------------|------|-------|
@@ -148,82 +121,69 @@ Rules map paths to access levels and apply to everything below them:
 | `deny`      | ✗    | ✗ (a denied dir also can't be listed) |
 
 ```bash
-yolo rule allow src          # the verb names the level
+yolo rule deny ~/.ssh            # the verb names the level
 yolo rule write-ask /etc
-yolo rule deny ~/.ssh
-yolo rule ask /etc/hosts     # force a prompt, overriding an inherited rule
-yolo rule list               # configured rules
-yolo rule resolve src        # effective level for a path + where it comes from
+yolo rule list                   # configured rules
+yolo rule resolve src            # effective level for a path, and which rule sets it
 ```
 
-Run `yolo watch` (e.g. in another terminal) to answer `ask` prompts as they
-arrive; each answer applies to that one access only — use `yolo rule` to
-refine the policy for the rest of the session. An unanswered ask is denied
-after `prompt_timeout`. Files under the session root
-are typically ruled `allow`; everything else defaults to `ask`.
+`yolo watch` answers `ask` prompts one access at a time; use `yolo rule` to
+make an answer stick. An unanswered ask is denied after `prompt_timeout`.
 
 ### Snapshots and travel
 
 ```bash
-yolo snapshot "before refactor"  # explicit snapshot (auto after each `yolo run` that changed something)
-yolo timeline                    # snapshot/travel DAG
+yolo timeline                    # snapshots and travels so far
 yolo review 2..4                 # changes between two snapshots
-yolo travel 2                    # restore the state at snapshot 2
-yolo audit -- /src/main.rs       # journal records for one file
+yolo travel 2                    # go back to snapshot 2
+yolo snapshot "before refactor"  # take one explicitly
+yolo audit -- /src/main.rs       # every recorded operation on one file
 ```
 
-Any generation id is a valid travel target, so mistakes can be undone and
-retried without losing earlier history.
+You can travel to any snapshot, including ones on a branch you traveled away
+from, so nothing is lost by undoing.
 
 ### Configuration
 
-`yolofs.toml` in the session directory:
+`yolo init` writes a commented `yolofs.toml` (see the
+[default](user/templates/yolofs.toml)):
 
 ```toml
-permission     = true            # enable permission gating
-staging        = true            # enable staging area
-auto_snapshot  = true            # snapshot after each command run through yolofs
-prompt_timeout = 30              # seconds to wait for an `ask` answer before denying (0 = infinite)
+permission     = true            # gate accesses through [rules]
+staging        = true            # stage writes instead of applying them
+auto_snapshot  = true            # snapshot after each `yolo run`
+prompt_timeout = 30              # seconds before an unanswered ask is denied (0 = wait forever)
 
-[rules]
-"."          = "allow"
-"/etc"       = "write-ask"
-"/etc/hosts" = "read-only"
-"/usr/bin"   = "read-only"
+[rules]                          # absolute paths, or relative to the session root
+"."    = "allow"
+"/etc" = "write-ask"
 ```
 
-Paths in `[rules]` can be absolute or relative to the session root.
-
-## Building
-
-**Prerequisites**: Linux kernel headers, Rust toolchain, `make` —
-`./setup.sh` installs all of them on Ubuntu/Debian. Kernels 6.8 through 7.x
-are what CI and the dev VM run.
+## Development
 
 ```bash
 make build                       # CLI (cargo) + kernel module
-make install                     # install to /usr/local/bin and /lib/modules
-make test                        # run unit + e2e tests
+make test                        # unit + e2e tests
 ```
 
 ### Trying it in a VM
 
-If you'd rather not load a development kernel module on your own machine —
-or your kernel is outside the supported range — `./vm.py` manages a QEMU VM
-(Ubuntu 24.04, hardware-accelerated via KVM or HVF) with this repo shared
-into the guest at the same path:
+`./vm.py` runs an Ubuntu 24.04 QEMU VM (accelerated via KVM or HVF) with this
+repo shared at the same path — useful if you'd rather not load a development
+kernel module on your machine, or your kernel is outside the supported range:
 
 ```bash
 ./vm.py                          # boot the VM (downloads the image on first run) + SSH shell
 ./vm.py -- ./setup.sh            # install build deps in the guest (first time only)
 ./vm.py -- make install test     # run commands in the VM over SSH
-./vm.py stop                     # shut the VM down (`reset` recreates it from scratch)
+./vm.py stop                     # shut down (`reset` recreates it from scratch)
 ```
 
-### Trying it in GitHub Codespaces
+### GitHub Codespaces
 
-For a quick cloud-based setup, GitHub Codespaces also works well for basic
-CLI and test iteration without managing a local VM or kernel setup.
+A Codespace is enough to browse the code, build the CLI, and run
+`make test-unit`. It can't load the kernel module, so use the VM for anything
+that mounts.
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/YoloFS/YoloFS?quickstart=1)
 
@@ -239,7 +199,6 @@ CLI and test iteration without managing a local VM or kernel setup.
 - [`perf-eval`](https://github.com/YoloFS/perf-eval) — performance benchmark suite (`yolo-bench`)
 - [`perf-results`](https://github.com/YoloFS/perf-results) — benchmark output data
 - [`agent-eval`](https://github.com/YoloFS/agent-eval) — agent behavior evaluation harness
-- [`sosp-ae`](https://github.com/YoloFS/sosp-ae) — SOSP artifact evaluation instructions
 - [`yolofs.github.io`](https://github.com/YoloFS/yolofs.github.io) — project website source
 
 ## Citation
