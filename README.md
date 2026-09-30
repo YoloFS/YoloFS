@@ -6,7 +6,7 @@
 [Website](https://yolofs.github.io/) · [Paper](https://arxiv.org/abs/2604.13536) ·
 [Slides](https://yolofs.github.io/slides.pdf) · [Poster](https://yolofs.github.io/poster/)
 
-![YoloFS demo: an agent runs a malicious script; YoloFS asks before it reads the SSH key, shows the change it made to ~/.bashrc, and travels back to undo it](https://yolofs.github.io/demo.gif)
+![YoloFS demo: without YoloFS, an agent runs a malicious setup script and never notices; with YoloFS, it sees the change to ~/.bashrc, travels back to undo it, and the SSH key read asks the user first](https://yolofs.github.io/demo/demo.gif)
 
 ## The problem
 
